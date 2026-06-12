@@ -1243,6 +1243,7 @@ export function issueDojoProofCapsule(
     evidence_max_age_ms?: number;
     ledger_checkpoint_hash?: string;
     require_verified_evidence?: boolean;
+    tenant_id?: string;
     substrate_claim?: DojoExecutionSubstrate;
     expires_at?: string;
     now?: string;
@@ -3124,6 +3125,7 @@ function evidenceClaimsForProofIssue(
     evidence_max_age_ms?: number;
     ledger_checkpoint_hash?: string;
     require_verified_evidence?: boolean;
+    tenant_id?: string;
   },
   checkedAt: string
 ): { claims: DojoEvidenceClaim[]; recordIds: string[]; ledgerCheckpointHash?: string } {
@@ -3141,6 +3143,9 @@ function evidenceClaimsForProofIssue(
   const results = resolveDojoEvidenceClaims({
     claim_ids: requiredClaims,
     records,
+    tenant_id: input.tenant_id,
+    workspace_id: skill.workspace_id,
+    skill_id: skill.skill_id,
     checked_at: checkedAt,
     max_age_ms: input.evidence_max_age_ms,
   });

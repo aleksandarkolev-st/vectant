@@ -325,6 +325,37 @@ describe("Agent Dojo MCP tools", () => {
       retention_class: "standard",
     });
 
+    const wrongWorkspaceEvidence = buildDojoEvidenceLedgerRecord({
+      record_id: "evidence-production-proof-wrong-workspace",
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-other",
+      skill_id: skillId,
+      run_id: "checkride-run-b",
+      kind: "checkride",
+      artifact_uri: "dojo-artifact://proof/checkride-wrong-workspace.report.md",
+      artifact_sha256: "c".repeat(64),
+      redaction_manifest_sha256: "d".repeat(64),
+      claim_ids: storedSkill?.permission_license.proof_requirements.required_evidence_claims ?? [],
+      previous_hash: "0".repeat(64),
+      created_at: "2026-06-11T00:00:00.000Z",
+      created_by: "dojo-tool-production-test",
+      retention_class: "standard",
+    });
+    const wrongScope = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: [wrongWorkspaceEvidence],
+      now: "2026-06-11T00:05:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(wrongScope?.isError).toBe(true);
+    expect(wrongScope?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_evidence_claim_unverified",
+      ok: false,
+      failed_evidence_claims: expect.arrayContaining(storedSkill?.permission_license.proof_requirements.required_evidence_claims ?? []),
+    }));
+
     const issued = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
       requested_action: "run_workflow",

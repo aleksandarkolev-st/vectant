@@ -62,6 +62,41 @@ describe("Dojo proof issuance evidence claims", () => {
     })).toThrow(/dojo_proof_evidence_claim_unverified:/);
   });
 
+  it("blocks strict proof issuance when backing evidence belongs to another skill scope", () => {
+    const skill = skillFixture();
+    const record = evidenceRecord(
+      "evidence-other-skill",
+      "skill-other",
+      skill.permission_license.proof_requirements.required_evidence_claims,
+      "2026-06-11T00:00:00.000Z"
+    );
+
+    expect(() => issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: [record],
+      require_verified_evidence: true,
+      now: "2026-06-11T00:05:00.000Z",
+    })).toThrow(/dojo_proof_evidence_claim_unverified:/);
+  });
+
+  it("blocks strict proof issuance when backing evidence belongs to another workspace scope", () => {
+    const skill = skillFixture();
+    const record = evidenceRecord(
+      "evidence-other-workspace",
+      skill.skill_id,
+      skill.permission_license.proof_requirements.required_evidence_claims,
+      "2026-06-11T00:00:00.000Z",
+      { workspace_id: "workspace-other" }
+    );
+
+    expect(() => issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: [record],
+      require_verified_evidence: true,
+      now: "2026-06-11T00:05:00.000Z",
+    })).toThrow(/dojo_proof_evidence_claim_unverified:/);
+  });
+
   it("keeps development-compatible proof issuance available without strict evidence", () => {
     const skill = skillFixture();
 
@@ -96,7 +131,13 @@ function skillFixture() {
   });
 }
 
-function evidenceRecord(recordId: string, skillId: string, claimIds: string[], createdAt: string): DojoEvidenceLedgerRecord {
+function evidenceRecord(
+  recordId: string,
+  skillId: string,
+  claimIds: string[],
+  createdAt: string,
+  overrides: Partial<Parameters<typeof buildDojoEvidenceLedgerRecord>[0]> = {}
+): DojoEvidenceLedgerRecord {
   return buildDojoEvidenceLedgerRecord({
     record_id: recordId,
     tenant_id: "tenant-a",
@@ -112,6 +153,7 @@ function evidenceRecord(recordId: string, skillId: string, claimIds: string[], c
     created_at: createdAt,
     created_by: "dojo-checkride",
     retention_class: "standard",
+    ...overrides,
   });
 }
 

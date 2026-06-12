@@ -65,6 +65,30 @@ describe("Dojo evidence claim verifier", () => {
     ]);
   });
 
+  it("fails claims backed only by records outside the requested evidence scope", () => {
+    expect(resolveDojoEvidenceClaims({
+      claim_ids: ["workspace_verified"],
+      records: [
+        evidenceRecord("record-other-workspace", ["workspace_verified"], "2026-06-11T00:00:00.000Z", {
+          workspace_id: "workspace-other",
+        }),
+      ],
+      workspace_id: "workspace-a",
+      skill_id: "skill-a",
+      checked_at: "2026-06-11T00:05:00.000Z",
+      max_age_ms: 10 * 60 * 1000,
+    })).toEqual([
+      {
+        claim_id: "workspace_verified",
+        ok: false,
+        status: "failed",
+        evidence_record_ids: ["record-other-workspace"],
+        checked_at: "2026-06-11T00:05:00.000Z",
+        blocked_by: ["evidence_claim_scope_mismatch:workspace_verified"],
+      },
+    ]);
+  });
+
   it("treats evidence_fresh as a freshness claim over any evidence record", () => {
     expect(resolveDojoEvidenceClaims({
       claim_ids: ["evidence_fresh"],
@@ -94,9 +118,15 @@ describe("Dojo evidence claim verifier", () => {
   });
 });
 
-function evidenceRecord(recordId: string, claimIds: string[], createdAt: string): DojoEvidenceLedgerRecord {
+function evidenceRecord(
+  recordId: string,
+  claimIds: string[],
+  createdAt: string,
+  overrides: Partial<DojoEvidenceRecordInput> = {}
+): DojoEvidenceLedgerRecord {
   return buildDojoEvidenceLedgerRecord({
     ...baseInput(recordId, createdAt),
+    ...overrides,
     claim_ids: claimIds,
   });
 }
