@@ -50,7 +50,7 @@ export default function PracticeWorldDashboard({
       style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
       data-testid="dojo-practice-world"
     >
-      <div className="mx-auto flex max-w-7xl flex-col gap-4">
+      <div className="mx-auto flex min-w-0 max-w-7xl flex-col gap-4">
         <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
           <div className="min-w-0">
             <a href={backHref} className="mb-3 inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs" style={panelStyle}>
@@ -77,7 +77,7 @@ export default function PracticeWorldDashboard({
 
         {skill ? (
           <>
-            <section className="grid gap-3 md:grid-cols-5" aria-label="Practice metrics">
+            <section className="grid min-w-0 gap-3 md:grid-cols-5" aria-label="Practice metrics">
               <Metric label="Scenarios" value={practice.scenarios.length || skill.scenarioCount || 0} />
               <Metric label="Wind Runs" value={practice.windTunnel.runCount} />
               <Metric label="Passed" value={practice.windTunnel.passCount} tone="passed" />
@@ -85,7 +85,7 @@ export default function PracticeWorldDashboard({
               <Metric label="Blocked" value={practice.windTunnel.blockedCount} tone="blocked" />
             </section>
 
-            <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <section className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
               <div className="min-w-0 rounded-md border" style={panelStyle}>
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
                   <div className="min-w-0">
@@ -99,7 +99,7 @@ export default function PracticeWorldDashboard({
                 <ScenarioList scenarios={practice.scenarios} selectedScenario={selectedScenario} />
               </div>
 
-              <aside className="rounded-md border p-4" style={panelStyle}>
+              <aside className="min-w-0 rounded-md border p-4" style={panelStyle}>
                 <h2 className="text-sm font-semibold">Organoid Fixture</h2>
                 <dl className="mt-3 grid gap-2 text-xs">
                   <Detail label="Synthetic data" value={practice.organoid.syntheticOnly ? 'Only' : 'Unverified'} />
@@ -132,7 +132,7 @@ export default function PracticeWorldDashboard({
               </aside>
             </section>
 
-            <section className="rounded-md border" style={panelStyle} data-testid="dojo-wind-tunnel-matrix">
+            <section className="min-w-0 rounded-md border" style={panelStyle} data-testid="dojo-wind-tunnel-matrix">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
                 <div>
                   <h2 className="text-sm font-semibold">Wind Tunnel Matrix</h2>
@@ -172,7 +172,7 @@ function ScenarioList({ scenarios, selectedScenario }) {
       {scenarios.map((scenario) => (
         <div
           key={scenario.id}
-          className="grid gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_140px_140px]"
+          className="grid min-w-0 gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_140px_140px]"
           style={{ background: scenario.id === selectedScenario?.id ? 'color-mix(in srgb, var(--accent-primary) 8%, transparent)' : 'transparent' }}
         >
           <div className="min-w-0">
@@ -208,7 +208,7 @@ function WindTunnelMatrix({ runs }) {
     <>
       <div className="divide-y md:hidden" style={{ borderColor: 'var(--border-subtle)' }}>
         {runs.map((run) => (
-          <div key={run.runId} className="grid gap-3 px-4 py-4">
+          <div key={run.runId} className="grid min-w-0 gap-3 px-4 py-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="truncate font-medium">{run.scenarioId || run.runId}</div>
@@ -273,7 +273,7 @@ function Metric({ label, value, tone = '' }) {
 
 function Detail({ label, value }) {
   return (
-    <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-3">
+    <div className="grid min-w-0 grid-cols-[96px_minmax(0,1fr)] gap-3">
       <dt style={{ color: 'var(--text-muted)' }}>{label}</dt>
       <dd className="min-w-0 truncate text-right">{value}</dd>
     </div>
