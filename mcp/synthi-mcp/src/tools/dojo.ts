@@ -657,10 +657,10 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = dojoGenerateVivariumScenariosTool(args);
         break;
       case "synthi_dojo_run_vivarium_scenario":
-        response = dojoRunVivariumScenarioTool(args);
+        response = await dojoRunVivariumScenarioTool(args);
         break;
       case "synthi_dojo_run_wind_tunnel":
-        response = dojoRunWindTunnelTool(args);
+        response = await dojoRunWindTunnelTool(args);
         break;
       case "synthi_dojo_run_checkride":
         response = dojoRunCheckrideTool(args);
@@ -1086,11 +1086,11 @@ function dojoGenerateVivariumScenariosTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoRunVivariumScenarioTool(args: unknown): ToolResponse {
+async function dojoRunVivariumScenarioTool(args: unknown): Promise<ToolResponse> {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
   const a = obj(args);
-  const scenarioRun = runDojoVivariumScenario(skill.skill, {
+  const scenarioRun = await runDojoVivariumScenario(skill.skill, {
     scenario_id: stringOpt(a["scenario_id"]),
     mutation_kind: stringOpt(a["mutation_kind"]),
   });
@@ -1104,10 +1104,10 @@ function dojoRunVivariumScenarioTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoRunWindTunnelTool(args: unknown): ToolResponse {
+async function dojoRunWindTunnelTool(args: unknown): Promise<ToolResponse> {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
-  const tunnel = runDojoWindTunnel(skill.skill, {
+  const tunnel = await runDojoWindTunnel(skill.skill, {
     max_scenarios: numberOpt(obj(args)["max_scenarios"]),
   });
   const updated = persistDojoRuns(skill.skill, tunnel.runs.map((run) => run.run), tunnel);
@@ -1808,7 +1808,7 @@ function actorTypeOpt(value: unknown): DojoTenantContext["actor_type"] {
 function persistDojoRuns(
   skill: DojoSkill,
   runs: DojoSkill["training_runs"],
-  windTunnelExecution?: ReturnType<typeof runDojoWindTunnel>
+  windTunnelExecution?: Awaited<ReturnType<typeof runDojoWindTunnel>>
 ): DojoSkill {
   if (runs.length === 0) return skill;
   const updated = cloneJson(skill);

@@ -454,8 +454,9 @@ describe("Agent Dojo MCP tools", () => {
       mutation_kind: "duplicate_entity",
     });
     expect(scenarioRun?.structuredContent).toEqual(expect.objectContaining({
-      implementation_status: "deterministic_projection",
-      runtime_enforced: false,
+      implementation_status: "executable",
+      runtime_enforced: true,
+      simulation_backing: "materialized_synthetic_fixture",
       vivarium_run: expect.objectContaining({
         schema_version: "synthi.dojo.vivariumScenarioRun.v1",
         materialized_fixture: expect.objectContaining({ synthetic_data_only: true }),

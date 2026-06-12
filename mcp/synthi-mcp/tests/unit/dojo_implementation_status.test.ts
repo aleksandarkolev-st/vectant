@@ -34,7 +34,7 @@ describe("Dojo implementation status registry", () => {
     );
   });
 
-  it("marks current Vivarium and graph surfaces as deterministic projections", () => {
+  it("marks graph report surfaces as deterministic projections and Vivarium runs as executable fixtures", () => {
     expect(getDojoToolImplementationMetadata("synthi_dojo_get_skill_cortex")).toEqual(
       expect.objectContaining({
         implementation_status: "deterministic_projection",
@@ -43,8 +43,9 @@ describe("Dojo implementation status registry", () => {
     );
     expect(getDojoToolImplementationMetadata("synthi_dojo_run_vivarium_scenario")).toEqual(
       expect.objectContaining({
-        implementation_status: "deterministic_projection",
-        simulation_backing: "scenario_catalog",
+        implementation_status: "executable",
+        runtime_enforced: true,
+        simulation_backing: "materialized_synthetic_fixture",
       })
     );
   });

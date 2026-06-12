@@ -18,6 +18,7 @@ export interface DojoScenarioRunResult {
   run_id: string;
   scenario_id: string;
   materialized_id: string;
+  fixture_materialization_hash: string;
   status: DojoScenarioOracleStatus;
   expectation_met: boolean;
   graph_result: DojoGraphRunResult;
@@ -104,6 +105,7 @@ export class DojoVivariumRunner {
       run_id: runId,
       scenario_id: input.materialized.definition.scenario_id,
       materialized_id: input.materialized.materialized_id,
+      fixture_materialization_hash: input.materialized.fixture.materialization_hash,
       status: oracleResult.status,
       expectation_met: oracleResult.expectation_met,
       graph_result: graphResult,

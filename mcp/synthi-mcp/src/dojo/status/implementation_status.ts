@@ -64,8 +64,8 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_run_ghost_mode: report("Returns Ghost Mode comparison data; production shadow execution is not implemented yet."),
   synthi_dojo_request_permission_upgrade: report("Returns a permission-upgrade request artifact; approval workflow is not durable yet."),
   synthi_dojo_generate_vivarium_scenarios: deterministic("Generates scenario catalog data from a Skill Seed."),
-  synthi_dojo_run_vivarium_scenario: deterministic("Runs the current Vivarium wrapper over precomputed scenario/checkride data."),
-  synthi_dojo_run_wind_tunnel: deterministic("Runs the current Wind Tunnel wrapper over deterministic scenario data."),
+  synthi_dojo_run_vivarium_scenario: syntheticRuntime("Materializes a synthetic fixture, runs the Skill Graph in checkride mode, and evaluates the oracle from observed evidence."),
+  synthi_dojo_run_wind_tunnel: syntheticRuntime("Runs a budgeted set of materialized Vivarium scenarios through the graph runtime and oracle evaluator."),
   synthi_dojo_run_checkride: deterministic("Runs the current heuristic checkride evaluator."),
   synthi_dojo_publish_skill: executable("Builds, stores, and publishes a Dojo skill and backing private tool manifest."),
   synthi_dojo_recertify_skill: deterministic("Rebuilds skill artifacts using the current deterministic checkride and report builders."),
@@ -84,8 +84,8 @@ export const DOJO_REPORT_IMPLEMENTATION_STATUS: Record<string, DojoImplementatio
   skill_cortex: deterministic("Skill Cortex is graph-shaped data; executable graph runtime remains planned."),
   workspace_organoid: deterministic("Workspace Organoid is a manifest; disposable synthetic infrastructure remains planned."),
   vivarium_scenarios: deterministic("Vivarium scenarios are generated catalog entries."),
-  vivarium_run: deterministic("Vivarium run wrapper selects current generated results; materialized fixtures remain planned."),
-  wind_tunnel: deterministic("Wind Tunnel currently summarizes deterministic scenario results."),
+  vivarium_run: syntheticRuntime("Vivarium scenario runs materialize synthetic fixtures and evaluate graph outcomes with an oracle."),
+  wind_tunnel: syntheticRuntime("Wind Tunnel executes materialized scenario runs through the current graph runtime and oracle evaluator."),
   checkride: deterministic("Checkride is currently heuristic and not evidence-backed by materialized fixtures."),
   case_law: deterministic("Case law can be generated or recorded but lacks mature review and propagation workflow."),
   guardrails: deterministic("Guardrails are generated data and are not yet graph-runtime predicates."),
@@ -131,6 +131,20 @@ function deterministic(summary: string): DojoImplementationMetadata {
       "no_executable_graph_runtime",
       "no_materialized_synthetic_fixture",
       "no_authoritative_evidence_ledger",
+    ],
+  };
+}
+
+function syntheticRuntime(summary: string): DojoImplementationMetadata {
+  return {
+    implementation_status: "executable",
+    runtime_enforced: true,
+    evidence_backing: "runtime_validation",
+    simulation_backing: "materialized_synthetic_fixture",
+    summary,
+    maturity_blockers: [
+      "no_authoritative_evidence_ledger",
+      "no_hosted_runtime_gateway",
     ],
   };
 }

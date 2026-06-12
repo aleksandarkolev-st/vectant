@@ -1,4 +1,7 @@
 import type { DojoRun, DojoScenario, DojoScenarioResult, DojoSkill } from "./dojo.js";
+import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
+import { DojoVivariumRunner, type DojoScenarioRunResult } from "../dojo/vivarium/runner.js";
+import { toDojoScenarioDefinition } from "../dojo/vivarium/scenario_dsl.js";
 
 export interface DojoVivariumScenarioRun {
   schema_version: "synthi.dojo.vivariumScenarioRun.v1";
@@ -32,23 +35,25 @@ export interface DojoWindTunnelExecution {
   stop_reason: string;
 }
 
-export function runDojoVivariumScenario(
+export async function runDojoVivariumScenario(
   skill: DojoSkill,
   input: { scenario_id?: string; mutation_kind?: string; now?: string } = {}
-): DojoVivariumScenarioRun {
+): Promise<DojoVivariumScenarioRun> {
   const scenario = selectScenario(skill, input);
   if (!scenario) throw new Error("dojo_scenario_not_found");
-  const result = skill.checkride.results.find((item) => item.scenario_id === scenario.scenario_id) ?? fallbackResult(scenario, skill);
+
   const now = input.now ?? new Date().toISOString();
+  const scenarioRun = await executeMaterializedScenario(skill, scenario, now);
+  const result = scenarioResultForRun(scenario, scenarioRun);
   const guardrails = guardrailsForResult(skill, result);
   const evidenceRefs = [
     `workflow:${skill.workflow_id}`,
     `organoid:${skill.workspace_organoid.organoid_id}`,
     `scenario:${scenario.scenario_id}`,
-    ...result.evidence_refs,
+    ...scenarioRun.evidence_refs,
   ];
   const run: DojoRun = {
-    run_id: `vivarium_${Date.now().toString(36)}_${scenario.scenario_id.slice(-12)}`,
+    run_id: scenarioRun.run_id,
     skill_id: skill.skill_id,
     workflow_id: skill.workflow_id,
     scenario_id: scenario.scenario_id,
@@ -56,29 +61,30 @@ export function runDojoVivariumScenario(
     simulator_tier: scenario.simulator_tier,
     substrate: skill.preferred_substrate,
     status: result.status,
-    started_at: now,
-    finished_at: now,
+    started_at: scenarioRun.started_at,
+    finished_at: scenarioRun.completed_at,
     finding: result.finding,
     guardrails_triggered: guardrails,
     license_checks: [{
       action: "run_workflow",
       status: result.status === "passed" ? "allowed" : "blocked",
-      blocked_by: result.status === "passed" ? [] : guardrails.length ? guardrails : [scenario.mutation_kind],
+      blocked_by: result.status === "passed" ? [] : guardrails.length ? guardrails : scenarioRun.oracle_result.blocked_by,
     }],
     cost: {
       estimated_tokens: 0,
-      estimated_ms: 50 + scenario.simulator_tier * 25,
-      model_calls: 0,
+      estimated_ms: scenarioRun.budget.max_estimated_ms,
+      model_calls: scenarioRun.budget.max_model_calls,
     },
     evidence_refs: evidenceRefs,
   };
+
   return {
     schema_version: "synthi.dojo.vivariumScenarioRun.v1",
     ok: result.status === "passed",
     skill_id: skill.skill_id,
     workflow_id: skill.workflow_id,
     scenario,
-    materialized_fixture: materializedFixtureFor(skill, scenario),
+    materialized_fixture: materializedFixtureFor(skill, scenario, scenarioRun),
     result,
     run,
     evidence_refs: evidenceRefs,
@@ -86,14 +92,15 @@ export function runDojoVivariumScenario(
   };
 }
 
-export function runDojoWindTunnel(
+export async function runDojoWindTunnel(
   skill: DojoSkill,
   input: { max_scenarios?: number; now?: string } = {}
-): DojoWindTunnelExecution {
+): Promise<DojoWindTunnelExecution> {
   const max = Math.max(1, Math.min(skill.scenarios.length, Number(input.max_scenarios ?? skill.scenarios.length)));
-  const runs = skill.scenarios.slice(0, max).map((scenario) =>
-    runDojoVivariumScenario(skill, { scenario_id: scenario.scenario_id, now: input.now })
-  );
+  const runs: DojoVivariumScenarioRun[] = [];
+  for (const scenario of skill.scenarios.slice(0, max)) {
+    runs.push(await runDojoVivariumScenario(skill, { scenario_id: scenario.scenario_id, now: input.now }));
+  }
   return {
     schema_version: "synthi.dojo.windTunnelExecution.v1",
     ok: runs.every((run) => run.result.status === "passed" || run.result.status === "blocked"),
@@ -108,33 +115,77 @@ export function runDojoWindTunnel(
   };
 }
 
+async function executeMaterializedScenario(
+  skill: DojoSkill,
+  scenario: DojoScenario,
+  now: string
+): Promise<DojoScenarioRunResult> {
+  const definition = toDojoScenarioDefinition(scenario, {
+    target_graph_node_ids: ["action"],
+    input_overrides: syntheticInputOverridesFor(skill, scenario),
+  });
+  const runner = new DojoVivariumRunner();
+  const materialized = runner.materialize({
+    skill_id: skill.skill_id,
+    scenario: definition,
+    seed: scenario.scenario_id,
+    now,
+  });
+  const compiled = compileDojoSkillGraphForSkill(skill, {
+    mode: "checkride",
+    created_at: now,
+  });
+  return await runner.run({
+    materialized,
+    graph: compiled.graph,
+    run_id: `vivarium_${Date.now().toString(36)}_${scenario.scenario_id.slice(-12)}`,
+    inputs: graphInputsForScenario(skill),
+    observed_evidence: observedEvidenceHintsForScenario(scenario),
+    now,
+  });
+}
+
 function selectScenario(skill: DojoSkill, input: { scenario_id?: string; mutation_kind?: string }): DojoScenario | null {
   if (input.scenario_id) return skill.scenarios.find((scenario) => scenario.scenario_id === input.scenario_id) ?? null;
   if (input.mutation_kind) return skill.scenarios.find((scenario) => scenario.mutation_kind === input.mutation_kind) ?? null;
   return skill.scenarios[0] ?? null;
 }
 
-function fallbackResult(scenario: DojoScenario, skill: DojoSkill): DojoScenarioResult {
+function scenarioResultForRun(scenario: DojoScenario, scenarioRun: DojoScenarioRunResult): DojoScenarioResult {
   return {
     scenario_id: scenario.scenario_id,
     layer: scenario.layer,
-    status: "blocked",
-    critical: false,
-    finding: "Scenario was materialized but has no checkride result; recertification is required before production use.",
-    guardrail_suggestion: "Run a checkride for this scenario before expanding the license.",
-    evidence_refs: [`workflow:${skill.workflow_id}`, `scenario:${scenario.scenario_id}`],
+    status: dojoStatusForOracleStatus(scenarioRun.status),
+    critical: scenario.layer === "risk" && scenarioRun.status === "failed",
+    finding: scenarioRun.oracle_result.finding,
+    guardrail_suggestion: scenarioRun.oracle_result.blocked_by.length > 0
+      ? `Harden scenario ${scenario.mutation_kind}: ${scenarioRun.oracle_result.blocked_by.join(", ")}.`
+      : "Scenario executed against materialized synthetic fixtures.",
+    evidence_refs: scenarioRun.evidence_refs,
   };
 }
 
-function materializedFixtureFor(skill: DojoSkill, scenario: DojoScenario): DojoVivariumScenarioRun["materialized_fixture"] {
-  const inputOverrides = Object.fromEntries(skill.skill_seed.input_schema.map((input) => [
-    input.name,
-    syntheticValueFor(input.value_shape, scenario.mutation_kind),
-  ]));
+function dojoStatusForOracleStatus(status: DojoScenarioRunResult["status"]): DojoScenarioResult["status"] {
+  if (status === "passed") return "passed";
+  if (status === "failed") return "failed";
+  return "blocked";
+}
+
+function materializedFixtureFor(
+  skill: DojoSkill,
+  scenario: DojoScenario,
+  scenarioRun: DojoScenarioRunResult
+): DojoVivariumScenarioRun["materialized_fixture"] {
   return {
     simulator_tier: scenario.simulator_tier,
     synthetic_data_only: true,
     tissues: {
+      fixture: {
+        materialized_id: scenarioRun.materialized_id,
+        materialization_hash: scenarioRun.fixture_materialization_hash,
+        observed_evidence: scenarioRun.observed_evidence,
+      },
+      oracle: scenarioRun.oracle_result,
       ui: skill.workspace_organoid.tissues.ui,
       data: {
         ...skill.workspace_organoid.tissues.data,
@@ -146,9 +197,38 @@ function materializedFixtureFor(skill: DojoSkill, scenario: DojoScenario): DojoV
       evidence: skill.workspace_organoid.tissues.evidence,
       license: skill.workspace_organoid.tissues.license,
     },
-    input_overrides: inputOverrides,
+    input_overrides: syntheticInputOverridesFor(skill, scenario),
     expected_behavior: scenario.expected_behavior,
   };
+}
+
+function syntheticInputOverridesFor(skill: DojoSkill, scenario: DojoScenario): Record<string, string> {
+  return Object.fromEntries(skill.skill_seed.input_schema.map((input) => [
+    input.name,
+    syntheticValueFor(input.value_shape, scenario.mutation_kind),
+  ]));
+}
+
+function graphInputsForScenario(skill: DojoSkill): Record<string, unknown> {
+  return {
+    entrustment_level: skill.permission_license.entrustment_level,
+    workspace_verified: true,
+    client_id_verified: true,
+    line_items_total_verified: true,
+    source_anchor_current: true,
+    approval_status: "approved",
+    assertion_results: Object.fromEntries(
+      skill.skill_seed.candidate_success_assertions.map((assertion) => [assertion.assertion_id, true])
+    ),
+  };
+}
+
+function observedEvidenceHintsForScenario(scenario: DojoScenario): string[] {
+  const evidence = ["graph_run_result", "oracle_result"];
+  if (scenario.mutation_kind === "auth_expiry" || scenario.mutation_kind === "permission_change") {
+    evidence.push("identity_policy_state");
+  }
+  return evidence;
 }
 
 function syntheticValueFor(shape: string, mutationKind: string): string {
