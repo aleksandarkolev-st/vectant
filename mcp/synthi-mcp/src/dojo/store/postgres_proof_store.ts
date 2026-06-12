@@ -1,6 +1,6 @@
 import type { QueryResult, QueryResultRow } from "pg";
 import { dojoPostgresMigrationStatements } from "./migrations.js";
-import type { DojoAuditActor, DojoAuditStore, DojoProofCapsuleRecord } from "./interfaces.js";
+import type { DojoAuditActor, DojoAuditStore, DojoProofCapsuleRecord, DojoProofConsumeResult } from "./interfaces.js";
 
 export interface DojoPostgresQueryable {
   query<T extends QueryResultRow = QueryResultRow>(text: string, values?: readonly unknown[]): Promise<QueryResult<T>>;
@@ -24,12 +24,7 @@ export interface PostgresDojoProofStoreOptions {
   correlation_id?: string;
 }
 
-export interface DojoPostgresProofConsumeResult {
-  ok: boolean;
-  record: DojoProofCapsuleRecord | null;
-  status: "used" | "missing" | "already_used" | "revoked";
-  blocked_by: string[];
-}
+export type DojoPostgresProofConsumeResult = DojoProofConsumeResult;
 
 interface ProofRecordRow {
   capsule_id: string;

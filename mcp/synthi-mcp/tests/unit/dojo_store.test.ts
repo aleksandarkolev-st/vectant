@@ -92,6 +92,30 @@ describe("EncryptedFileDojoSkillStore", () => {
     expect(reopened.listProofRecords()).toEqual([
       expect.objectContaining({ capsule_id: capsule.capsule_id, status: "issued" }),
     ]);
+    const consumed = reopened.markProofCapsuleUsed(
+      capsule.capsule_id,
+      "run-encrypted-store",
+      "2026-06-11T00:01:00.000Z"
+    );
+    expect(consumed).toEqual(expect.objectContaining({
+      ok: true,
+      status: "used",
+      blocked_by: [],
+      record: expect.objectContaining({
+        capsule_id: capsule.capsule_id,
+        status: "used",
+        first_used_at: "2026-06-11T00:01:00.000Z",
+      }),
+    }));
+    expect(reopened.markProofCapsuleUsed(
+      capsule.capsule_id,
+      "run-encrypted-store-replay",
+      "2026-06-11T00:02:00.000Z"
+    )).toEqual(expect.objectContaining({
+      ok: false,
+      status: "already_used",
+      blocked_by: ["proof_capsule_replay_detected"],
+    }));
     expect(reopened.listPermissionUpgradeRequests({ skill_id: skill.skill_id })).toEqual([
       expect.objectContaining({
         request_id: "upgrade-encrypted-store",
@@ -105,6 +129,15 @@ describe("EncryptedFileDojoSkillStore", () => {
       capsule_id: capsule.capsule_id,
       status: "revoked",
       revoked_reason: "unit_test_revoked",
+    }));
+    expect(reopened.markProofCapsuleUsed(
+      capsule.capsule_id,
+      "run-encrypted-store-after-revoke",
+      "2026-06-11T00:02:30.000Z"
+    )).toEqual(expect.objectContaining({
+      ok: false,
+      status: "revoked",
+      blocked_by: ["proof_capsule_revoked"],
     }));
 
     const otherScope = new EncryptedFileDojoSkillStore({

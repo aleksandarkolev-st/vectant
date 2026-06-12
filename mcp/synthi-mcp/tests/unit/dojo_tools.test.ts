@@ -514,6 +514,78 @@ describe("Agent Dojo MCP tools", () => {
       }),
     }));
 
+    const prefixCapsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_prefix_validation",
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(prefixCapsuleResponse?.isError).toBeUndefined();
+    const prefixCapsule = (prefixCapsuleResponse?.structuredContent as { proof_capsule: unknown }).proof_capsule;
+    const prefixDryRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_prefix_validation",
+      proof_capsule: prefixCapsule,
+      dry_run: true,
+      run_id: "unit-prefix-run-dry",
+      now: "2026-06-11T00:01:00.000Z",
+    });
+    expect(prefixDryRun?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: true,
+      skill_bus: expect.objectContaining({ dry_run: true }),
+    }));
+    expect(dojoSkillRegistry.getProofRecord((prefixCapsule as { capsule_id: string }).capsule_id)).toEqual(
+      expect.objectContaining({ status: "issued" })
+    );
+    const prefixRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_prefix_validation",
+      proof_capsule: prefixCapsule,
+      run_id: "unit-prefix-run-1",
+      now: "2026-06-11T00:02:00.000Z",
+    });
+    expect(prefixRun?.isError).toBeUndefined();
+    expect(prefixRun?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      run_id: "unit-prefix-run-1",
+      proof_consume: expect.objectContaining({
+        ok: true,
+        status: "used",
+        blocked_by: [],
+      }),
+      proof_record: expect.objectContaining({
+        status: "used",
+        first_used_at: "2026-06-11T00:02:00.000Z",
+      }),
+      skill_bus: expect.objectContaining({
+        ok: true,
+        status: "allowed",
+        dry_run: false,
+      }),
+      result: expect.objectContaining({
+        ok: true,
+        validation: expect.objectContaining({ status: expect.any(String) }),
+      }),
+    }));
+    const prefixReplay = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_prefix_validation",
+      proof_capsule: prefixCapsule,
+      run_id: "unit-prefix-run-2",
+      now: "2026-06-11T00:03:00.000Z",
+    });
+    expect(prefixReplay?.isError).toBe(true);
+    expect(prefixReplay?.structuredContent).toEqual(expect.objectContaining({
+      validation: expect.objectContaining({
+        blocked_by: expect.arrayContaining(["proof_capsule_replay_detected"]),
+      }),
+      license_kernel: expect.objectContaining({
+        blocked_by: expect.arrayContaining(["proof_capsule_replay_detected"]),
+      }),
+    }));
+
     dojoSkillRegistry.markProofCapsuleUsed((capsule as { capsule_id: string }).capsule_id, "2026-06-11T00:01:00.000Z");
     const replay = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
       skill_id: published.skill.skill_id,
@@ -854,7 +926,7 @@ describe("Agent Dojo MCP tools", () => {
     const health = await dispatchDojoTool("synthi_dojo_get_license_health", { skill_id: published.skill.skill_id });
     expect(health?.structuredContent).toEqual(expect.objectContaining({
       license_health: expect.objectContaining({
-        proof_records: expect.objectContaining({ used: 1, revoked: 1 }),
+        proof_records: expect.objectContaining({ used: 2, revoked: 1 }),
       }),
     }));
     const recertified = await dispatchDojoTool("synthi_dojo_recertify_skill", {

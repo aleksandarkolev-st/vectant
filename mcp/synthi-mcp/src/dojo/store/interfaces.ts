@@ -37,6 +37,15 @@ export interface DojoProofCapsuleRecord {
   revoked_by?: DojoAuditActor;
 }
 
+export type DojoProofConsumeStatus = "used" | "missing" | "already_used" | "revoked";
+
+export interface DojoProofConsumeResult {
+  ok: boolean;
+  record: DojoProofCapsuleRecord | null;
+  status: DojoProofConsumeStatus;
+  blocked_by: string[];
+}
+
 export type DojoPermissionUpgradeRequestStatus = "pending" | "not_required" | "approved" | "denied" | "superseded";
 
 export interface DojoPermissionUpgradeRequestRecord {
@@ -95,6 +104,7 @@ export interface DojoProofStore {
   saveProofRecord(record: DojoProofCapsuleRecord): void;
   getProofRecord(capsuleId: string): DojoProofCapsuleRecord | null;
   listProofRecords(): DojoProofCapsuleRecord[];
+  markProofCapsuleUsed(capsuleId: string, runId: string, now?: string): DojoProofConsumeResult;
   revokeProofCapsule(capsuleId: string, reason: string, now?: string, revokedBy?: DojoAuditActor): DojoProofCapsuleRecord | null;
 }
 

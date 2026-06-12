@@ -19,6 +19,7 @@ import {
   type DojoControlPlaneStore,
   type DojoPermissionUpgradeRequestFilter,
   type DojoPermissionUpgradeRequestRecord,
+  type DojoProofConsumeResult,
   type DojoProofCapsuleRecord,
 } from "./dojo_store.js";
 import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
@@ -768,17 +769,15 @@ export class DojoSkillRegistry {
     return this.store.getProofRecord(capsuleId);
   }
 
+  consumeProofCapsule(capsuleId: string, options: { run_id?: string; now?: string } = {}): DojoProofConsumeResult {
+    const now = options.now ?? new Date().toISOString();
+    const runId = options.run_id ?? `dojo_run_${shortHash(`${capsuleId}:${now}`)}`;
+    const result = this.store.markProofCapsuleUsed(capsuleId, runId, now);
+    return cloneJson(result);
+  }
+
   markProofCapsuleUsed(capsuleId: string, now: string = new Date().toISOString()): DojoProofCapsuleRecord | null {
-    const record = this.store.getProofRecord(capsuleId);
-    if (!record) return null;
-    const used = {
-      ...record,
-      status: "used" as const,
-      first_used_at: record.first_used_at ?? now,
-      last_validated_at: now,
-    };
-    this.store.saveProofRecord(used);
-    return cloneJson(used);
+    return this.consumeProofCapsule(capsuleId, { now }).record;
   }
 
   revokeProofCapsule(capsuleId: string, reason: string, now?: string, revokedBy?: DojoAuditActor): DojoProofCapsuleRecord | null {

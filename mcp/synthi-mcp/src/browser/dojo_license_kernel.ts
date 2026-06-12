@@ -5,7 +5,7 @@ import {
   type DojoSkill,
 } from "./dojo.js";
 import type { DojoSkillRegistry } from "./dojo.js";
-import type { DojoProofCapsuleRecord } from "./dojo_store.js";
+import type { DojoProofCapsuleRecord, DojoProofConsumeResult } from "./dojo_store.js";
 import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/proof/errors.js";
 
 export interface DojoLicenseKernelDecision {
@@ -115,9 +115,13 @@ function normalizedLicenseKernelErrorCodes(
 export function markDojoProofExecution(input: {
   registry: DojoSkillRegistry;
   proof_capsule: DojoProofCarryingSkillCapsule;
+  run_id?: string;
   now?: string;
-}): DojoProofCapsuleRecord | null {
-  return input.registry.markProofCapsuleUsed(input.proof_capsule.capsule_id, input.now);
+}): DojoProofConsumeResult {
+  return input.registry.consumeProofCapsule(input.proof_capsule.capsule_id, {
+    run_id: input.run_id,
+    now: input.now,
+  });
 }
 
 function stringOpt(value: unknown): string | undefined {

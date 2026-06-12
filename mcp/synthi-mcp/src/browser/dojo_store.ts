@@ -10,6 +10,7 @@ import type {
   DojoAuditActor,
   DojoPermissionUpgradeRequestFilter,
   DojoPermissionUpgradeRequestRecord,
+  DojoProofConsumeResult,
   DojoProofCapsuleRecord,
 } from "../dojo/store/interfaces.js";
 
@@ -25,6 +26,7 @@ export type {
   DojoPermissionUpgradeRequestFilter,
   DojoPermissionUpgradeRequestRecord,
   DojoPermissionUpgradeRequestStatus,
+  DojoProofConsumeResult,
   DojoProofCapsuleRecord,
   DojoProofStore,
   DojoSkillStore,
@@ -92,6 +94,21 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
 
   listProofRecords(): DojoProofCapsuleRecord[] {
     return [...this.proofRecords.values()].map(cloneJson);
+  }
+
+  markProofCapsuleUsed(capsuleId: string, _runId: string, now: string = new Date().toISOString()): DojoProofConsumeResult {
+    const record = this.proofRecords.get(capsuleId);
+    if (!record) return proofConsumeBlocked(null, "missing", "proof_capsule_not_issued_by_registry");
+    if (record.status === "revoked") return proofConsumeBlocked(record, "revoked", "proof_capsule_revoked");
+    if (record.status === "used") return proofConsumeBlocked(record, "already_used", "proof_capsule_replay_detected");
+    const used = {
+      ...record,
+      status: "used" as const,
+      first_used_at: record.first_used_at ?? now,
+      last_validated_at: now,
+    };
+    this.proofRecords.set(capsuleId, cloneJson(used));
+    return { ok: true, record: cloneJson(used), status: "used", blocked_by: [] };
   }
 
   savePermissionUpgradeRequest(record: DojoPermissionUpgradeRequestRecord): void {
@@ -246,6 +263,34 @@ export class EncryptedFileDojoSkillStore implements DojoControlPlaneStore {
 
   listProofRecords(): DojoProofCapsuleRecord[] {
     return Object.values(this.scope().proof_records).map(cloneJson);
+  }
+
+  markProofCapsuleUsed(capsuleId: string, _runId: string, now: string = new Date().toISOString()): DojoProofConsumeResult {
+    let result: DojoProofConsumeResult | null = null;
+    this.updateScope((scope) => {
+      const record = scope.proof_records[capsuleId];
+      if (!record) {
+        result = proofConsumeBlocked(null, "missing", "proof_capsule_not_issued_by_registry");
+        return;
+      }
+      if (record.status === "revoked") {
+        result = proofConsumeBlocked(record, "revoked", "proof_capsule_revoked");
+        return;
+      }
+      if (record.status === "used") {
+        result = proofConsumeBlocked(record, "already_used", "proof_capsule_replay_detected");
+        return;
+      }
+      const used = {
+        ...record,
+        status: "used" as const,
+        first_used_at: record.first_used_at ?? now,
+        last_validated_at: now,
+      };
+      scope.proof_records[capsuleId] = cloneJson(used);
+      result = { ok: true, record: cloneJson(used), status: "used", blocked_by: [] };
+    });
+    return result ?? proofConsumeBlocked(null, "missing", "proof_capsule_not_issued_by_registry");
   }
 
   savePermissionUpgradeRequest(record: DojoPermissionUpgradeRequestRecord): void {
@@ -432,6 +477,19 @@ function normalizeScopeId(scopeId: string | undefined): string {
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function proofConsumeBlocked(
+  record: DojoProofCapsuleRecord | null,
+  status: DojoProofConsumeResult["status"],
+  reason: string
+): DojoProofConsumeResult {
+  return {
+    ok: false,
+    record: record ? cloneJson(record) : null,
+    status,
+    blocked_by: [reason],
+  };
 }
 
 function removeToolIndexesForSkill(index: Record<string, string>, skillId: string): void {
