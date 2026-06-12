@@ -541,15 +541,27 @@ describe("Agent Dojo MCP tools", () => {
     });
     expect(capsuleResponse?.isError).toBeUndefined();
     const capsule = (capsuleResponse?.structuredContent as { proof_capsule: unknown }).proof_capsule;
+    const capsuleRecord = capsule as { capsule_id: string; issued_at: string };
+    const validationTime = new Date(Date.parse(capsuleRecord.issued_at) + 1000).toISOString();
 
     const validate = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
       skill_id: published.skill.skill_id,
       requested_action: "run_workflow",
       proof_capsule: capsule,
+      now: validationTime,
     });
     expect(validate?.isError).toBeUndefined();
     expect(validate?.structuredContent).toEqual(expect.objectContaining({
+      proof_record: expect.objectContaining({
+        capsule_id: capsuleRecord.capsule_id,
+        last_validated_at: validationTime,
+        status: "issued",
+      }),
       license_kernel: expect.objectContaining({ ok: true, status: "allowed" }),
+    }));
+    expect(dojoSkillRegistry.getProofRecord(capsuleRecord.capsule_id)).toEqual(expect.objectContaining({
+      last_validated_at: validationTime,
+      status: "issued",
     }));
 
     const dryRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {

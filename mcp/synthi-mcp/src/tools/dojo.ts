@@ -1979,6 +1979,7 @@ function dojoValidateProofCapsuleTool(args: unknown): ToolResponse {
       error_codes: ["proof_capsule_missing"],
     });
   }
+  const now = stringOpt(a["now"]);
   const decision = evaluateDojoLicenseKernel({
     skill: skill.skill,
     registry: dojoSkillRegistry,
@@ -1986,12 +1987,20 @@ function dojoValidateProofCapsuleTool(args: unknown): ToolResponse {
     requested_action: requestedAction,
     tool_args: objectOpt(a["tool_args"]) ?? {},
     dry_run: true,
+    now,
   });
+  const proofRecord = decision.ok
+    ? dojoSkillRegistry.markProofCapsuleValidated(capsule.capsule_id, now) ?? decision.proof_record ?? null
+    : decision.proof_record ?? null;
+  const licenseKernel = proofRecord
+    ? { ...decision, proof_record: proofRecord }
+    : decision;
   return jsonResponse({
     ok: decision.ok,
     skill_id: skill.skill.skill_id,
     requested_action: requestedAction,
-    license_kernel: decision,
+    proof_record: proofRecord,
+    license_kernel: licenseKernel,
   });
 }
 
