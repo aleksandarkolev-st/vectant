@@ -21,27 +21,30 @@ mcp/synthi-mcp/src/dojo/status/implementation_status.ts
 
 ## Current Honest Baseline
 
-Agent Dojo currently implements a generic proof-gated competency core loop:
+Agent Dojo currently implements a repo-local proof-gated competency system with several mature foundations:
 
 - workflow demonstration to `SkillSeed`
 - workflow contract to `DojoSkill`
-- deterministic scenarios and checkride reports
-- license and proof capsule issuance/validation
-- proof-gated backing private workflow tool execution
+- executable Skill Cortex graph IR and graph runtime v1
+- materialized synthetic Vivarium fixtures and oracle-backed scenario runs
+- runtime-backed Wind Tunnel and checkride runner foundations
+- durable proof replay repository and append-only evidence ledger store modules
+- license and proof capsule issuance/validation with strict evidence-claim mode and Ed25519 signing support
+- proof-gated backing private workflow tool and raw workflow boundary checks
+- case-law records that can bind guardrail predicates
+- source/API contract, linter, candidate, substrate, and React codemod foundations
+- dedicated Dojo product UX surfaces and governance view models
 - repo artifact export
-- compact UI status surface
+- compact UI status surface plus dedicated Dojo routes
 
-It does not yet implement the full mature Vivarium Cortex universe:
+It does not yet prove the full mature Vivarium Cortex universe in production:
 
-- no executable Skill Cortex graph interpreter
-- no disposable synthetic workplace with materialized fixtures
-- no oracle-backed checkride over observed runtime evidence
-- no authoritative append-only evidence ledger
-- no KMS/HSM-backed proof service
-- no tenant-aware production control plane
-- no source/API substrate promotion runtime
-- no enterprise graph editor or governance dashboard
-- no deployed non-loopback MCP conformance proof
+- no default external KMS/HSM-backed proof signer adapter
+- no externally deployed tenant-aware control plane proven against a production database
+- no live non-loopback MCP host conformance proof in the current validation bundle
+- no broad arbitrary-app source/API promotion guarantee
+- no complete chaos, soak, performance, privacy, and compliance release gate bundle
+- some UI surfaces are read-only governance/inspection views rather than full operator workflows
 
 ## Current Tool Classification
 
@@ -78,8 +81,8 @@ It does not yet implement the full mature Vivarium Cortex universe:
 | `synthi_dojo_run_ghost_mode` | `report_only` |
 | `synthi_dojo_request_permission_upgrade` | `report_only` |
 | `synthi_dojo_generate_vivarium_scenarios` | `deterministic_projection` |
-| `synthi_dojo_run_vivarium_scenario` | `deterministic_projection` |
-| `synthi_dojo_run_wind_tunnel` | `deterministic_projection` |
+| `synthi_dojo_run_vivarium_scenario` | `executable` |
+| `synthi_dojo_run_wind_tunnel` | `executable` |
 | `synthi_dojo_run_checkride` | `deterministic_projection` |
 | `synthi_dojo_publish_skill` | `executable` |
 | `synthi_dojo_recertify_skill` | `deterministic_projection` |
@@ -100,15 +103,15 @@ It does not yet implement the full mature Vivarium Cortex universe:
 | `skill_cortex` | `deterministic_projection` |
 | `workspace_organoid` | `deterministic_projection` |
 | `vivarium_scenarios` | `deterministic_projection` |
-| `vivarium_run` | `deterministic_projection` |
-| `wind_tunnel` | `deterministic_projection` |
+| `vivarium_run` | `executable` |
+| `wind_tunnel` | `executable` |
 | `checkride` | `deterministic_projection` |
-| `case_law` | `deterministic_projection` |
+| `case_law` | `report_only` |
 | `guardrails` | `deterministic_projection` |
 | `permission_license` | `executable` |
 | `proof_capsule` | `executable` |
 | `evidence_ledger` | `report_only` |
-| `source_affordance_pr_plan` | `report_only` |
+| `source_affordance_pr_plan` | `deterministic_projection` |
 | `mcp_manifest` | `executable` |
 | `universe_dossier` | `report_only` |
 
@@ -117,13 +120,16 @@ It does not yet implement the full mature Vivarium Cortex universe:
 Safe current claim:
 
 ```text
-Agent Dojo implements a repo-local proof-gated competency core loop with deterministic
-Vivarium Cortex artifacts, proof capsules, scoped licenses, repo exports, and MCP tool exposure.
+Agent Dojo implements a repo-local proof-gated competency system with executable graph
+runtime foundations, materialized synthetic Vivarium scenarios, evidence/proof/ledger
+foundations, scoped licenses, repo exports, source/API scaffolding, governance views, and
+MCP tool exposure.
 ```
 
 Unsafe current claim:
 
 ```text
-Agent Dojo implements a mature synthetic workplace runtime, evidence-backed checkride,
-production evidence ledger, source/API graduation runtime, and enterprise governance system.
+Agent Dojo has completed production deployment proof for non-loopback hosted MCP,
+external KMS/HSM signing, broad arbitrary-app source/API graduation, complete governance
+operator workflows, and chaos/soak/performance/compliance release gates.
 ```

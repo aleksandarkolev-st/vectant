@@ -35,29 +35,29 @@ export interface DojoImplementationMetadata {
 export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationMetadata> = {
   synthi_dojo_list_competencies: executable("Queries the current Dojo skill registry and returns published competencies."),
   synthi_dojo_get_skill: deterministic("Returns a built Dojo skill artifact derived from the workflow contract."),
-  synthi_dojo_get_skill_cortex: deterministic("Returns graph-shaped Skill Cortex data; graph nodes are not yet executed by an interpreter."),
-  synthi_dojo_get_workspace_organoid: deterministic("Returns a Workspace Organoid manifest; no disposable synthetic workplace is materialized yet."),
-  synthi_dojo_get_wind_tunnel_report: deterministic("Returns deterministic Wind Tunnel report data from generated scenario summaries."),
+  synthi_dojo_get_skill_cortex: graphProjection("Returns the executable Skill Cortex graph IR; execution occurs through graph runtime, Vivarium, checkride, or proof-gated run paths."),
+  synthi_dojo_get_workspace_organoid: syntheticProjection("Returns a Workspace Organoid manifest; materialized synthetic fixtures are produced by Vivarium run surfaces."),
+  synthi_dojo_get_wind_tunnel_report: syntheticProjection("Returns Wind Tunnel report data derived from generated and runtime-capable scenario definitions."),
   synthi_dojo_get_counterfactual_twin: deterministic("Returns generated counterfactual variants from scenario metadata."),
-  synthi_dojo_get_evil_twin_report: deterministic("Returns adversarial report data from generated attack scenarios, not active attacks."),
+  synthi_dojo_get_evil_twin_report: syntheticProjection("Returns adversarial report data; the runtime Evil Twin runner executes targeted Vivarium attacks in integration paths."),
   synthi_dojo_get_training_report: report("Returns a training report assembled from current Dojo artifacts."),
   synthi_dojo_get_skill_passport: report("Returns a compact skill passport assembled from the current license and artifacts."),
   synthi_dojo_get_skill_genome: report("Returns a redacted, shareable skill pattern artifact."),
-  synthi_dojo_get_antibodies: deterministic("Returns antibodies generated from current checkride failures and guardrails."),
-  synthi_dojo_get_agent_ready_ui_contract: deterministic("Returns a generated Agent-Ready UI Contract report; CI enforcement is not implemented yet."),
+  synthi_dojo_get_antibodies: graphProjection("Returns antibodies generated from current checkride failures and guardrails; approved case law can bind guardrail predicates at runtime."),
+  synthi_dojo_get_agent_ready_ui_contract: sourceProjection("Returns a generated Agent-Ready UI Contract report backed by schema/lint validation; project CI adoption remains deployment-specific."),
   synthi_dojo_get_cost_policy: report("Returns a generated cost policy report for scenario budgets and stop conditions."),
   synthi_dojo_get_universe_dossier: report("Returns a dossier assembled from lifecycle, governance, metrics, evidence, and source reports."),
   synthi_dojo_get_lifecycle: report("Returns lifecycle state projected from the current skill and proof records."),
-  synthi_dojo_get_governance_report: report("Returns generated governance and approval report data; no enterprise workflow exists yet."),
+  synthi_dojo_get_governance_report: governanceReport("Returns governance, approval, license-health, recertification, audit-export, and compliance view data."),
   synthi_dojo_get_metrics: report("Returns generated registry and skill metrics from current in-process state."),
-  synthi_dojo_get_source_affordance_pr_plan: deterministic("Returns a generated source-affordance PR plan; it does not patch source files yet."),
-  synthi_dojo_get_registry: report("Returns organization registry report data from current Dojo registry state."),
+  synthi_dojo_get_source_affordance_pr_plan: sourceProjection("Returns a typed generated source-affordance PR plan; the codemod harness can patch controlled React fixtures and prove generated tests."),
+  synthi_dojo_get_registry: governanceReport("Returns organization registry report data with governance-service view models."),
   synthi_dojo_get_skill_assurance_case: report("Returns an assurance case artifact assembled from current reports."),
-  synthi_dojo_get_entrustment_level: deterministic("Returns entrustment and readiness calculated by current checkride heuristics."),
+  synthi_dojo_get_entrustment_level: syntheticProjection("Returns entrustment and readiness calculated from current checkride and runtime evidence artifacts."),
   synthi_dojo_get_license: executable("Returns the currently stored permission license for a skill."),
-  synthi_dojo_get_guardrails: deterministic("Returns guardrails generated from current case-law/checkride artifacts."),
-  synthi_dojo_get_case_law: deterministic("Returns generated or recorded case law; review workflow is not mature yet."),
-  synthi_dojo_explain_block: report("Returns an explanatory refusal summary from current license and guardrail data."),
+  synthi_dojo_get_guardrails: graphProjection("Returns guardrails generated from current case-law/checkride artifacts; approved runtime guardrail predicates are supported."),
+  synthi_dojo_get_case_law: governanceReport("Returns generated or recorded case law with lifecycle state for review and binding guardrail use."),
+  synthi_dojo_explain_block: reportWithRuntimeEvidence("Returns an explanatory refusal summary from current license, proof, guardrail, and case-law data."),
   synthi_dojo_explain_failure: report("Returns a failure explanation from generated scenario/checkride findings."),
   synthi_dojo_debug_counterfactual: deterministic("Returns a generated counterfactual debug report; it is not an executable replay."),
   synthi_dojo_run_time_machine_debugger: deterministic("Runs the current deterministic time-machine report builder."),
@@ -66,14 +66,14 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_generate_vivarium_scenarios: deterministic("Generates scenario catalog data from a Skill Seed."),
   synthi_dojo_run_vivarium_scenario: syntheticRuntime("Materializes a synthetic fixture, runs the Skill Graph in checkride mode, and evaluates the oracle from observed evidence."),
   synthi_dojo_run_wind_tunnel: syntheticRuntime("Runs a budgeted set of materialized Vivarium scenarios through the graph runtime and oracle evaluator."),
-  synthi_dojo_run_checkride: deterministic("Runs the current heuristic checkride evaluator."),
+  synthi_dojo_run_checkride: syntheticProjection("Runs the current checkride report surface; executable checkride runner modules exist for runtime scenario evidence paths."),
   synthi_dojo_publish_skill: executable("Builds, stores, and publishes a Dojo skill and backing private tool manifest."),
   synthi_dojo_recertify_skill: deterministic("Rebuilds skill artifacts using the current deterministic checkride and report builders."),
   synthi_dojo_get_license_health: executable("Computes license health from current license and proof registry state."),
   synthi_dojo_revoke_license: executable("Mutates the stored license into a revoked/blocked state."),
   synthi_dojo_record_case_law: executable("Records a binding case-law entry and guardrail into the current skill store."),
   synthi_dojo_export_artifacts: executable("Exports repo artifacts from the current stored skill."),
-  synthi_dojo_issue_proof_capsule: executable("Issues and stores an HMAC proof capsule using current context/evidence claim checks."),
+  synthi_dojo_issue_proof_capsule: proofExecutable("Issues and stores a proof capsule using current context and evidence-claim checks; Ed25519 signing is supported when configured."),
   synthi_dojo_validate_proof_capsule: executable("Validates proof capsule signature, registry status, action scope, expiry, and replay state."),
   synthi_dojo_revoke_proof_capsule: executable("Revokes a stored proof capsule record."),
   synthi_dojo_run_with_proof_capsule: executable("Runs the proof-gated Dojo dispatch path and blocks replay through current proof records."),
@@ -81,18 +81,18 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
 
 export const DOJO_REPORT_IMPLEMENTATION_STATUS: Record<string, DojoImplementationMetadata> = {
   skill_seed: deterministic("Skill Seed extraction is deterministic from the workflow contract and trace metadata."),
-  skill_cortex: deterministic("Skill Cortex is graph-shaped data; executable graph runtime remains planned."),
-  workspace_organoid: deterministic("Workspace Organoid is a manifest; disposable synthetic infrastructure remains planned."),
+  skill_cortex: graphProjection("Skill Cortex has a stable executable graph IR and runtime; this report surface returns the graph artifact."),
+  workspace_organoid: syntheticProjection("Workspace Organoid report is a manifest; Vivarium run surfaces materialize deterministic synthetic fixtures."),
   vivarium_scenarios: deterministic("Vivarium scenarios are generated catalog entries."),
   vivarium_run: syntheticRuntime("Vivarium scenario runs materialize synthetic fixtures and evaluate graph outcomes with an oracle."),
   wind_tunnel: syntheticRuntime("Wind Tunnel executes materialized scenario runs through the current graph runtime and oracle evaluator."),
-  checkride: deterministic("Checkride is currently heuristic and not evidence-backed by materialized fixtures."),
-  case_law: deterministic("Case law can be generated or recorded but lacks mature review and propagation workflow."),
-  guardrails: deterministic("Guardrails are generated data and are not yet graph-runtime predicates."),
+  checkride: syntheticProjection("Current skill checkride reports are projections; executable checkride runner modules can score graph runs against Vivarium fixtures and oracle evidence."),
+  case_law: governanceReport("Case law can be generated, recorded, approved/deprecated, and bound into runtime guardrail predicates."),
+  guardrails: graphProjection("Guardrails include generated and case-law-bound predicates executable by the graph guardrail runtime."),
   permission_license: executable("Permission license is stored and checked by the current proof-gated path."),
-  proof_capsule: executable("Proof capsules are issued and validated, but production-grade signing and evidence backing remain planned."),
-  evidence_ledger: report("Evidence ledger is a report-style hash chain, not an authoritative append-only ledger."),
-  source_affordance_pr_plan: report("Source-affordance PR plan is report-only and does not patch source yet."),
+  proof_capsule: proofExecutable("Proof capsules support evidence claim verification, replay checks, Ed25519 signing when configured, and public verification."),
+  evidence_ledger: ledgerReport("Evidence ledger report surfaces are projections; the Postgres ledger store has append-only hash-chain semantics for runtime evidence records."),
+  source_affordance_pr_plan: sourceProjection("Source-affordance plans are typed and can drive the controlled React codemod plus generated contract tests."),
   mcp_manifest: executable("Published private tool manifest exists and direct private tool calls are proof-gated."),
   universe_dossier: report("Universe dossier aggregates current reports and deterministic projections."),
 };
@@ -143,8 +143,106 @@ function syntheticRuntime(summary: string): DojoImplementationMetadata {
     simulation_backing: "materialized_synthetic_fixture",
     summary,
     maturity_blockers: [
-      "no_authoritative_evidence_ledger",
-      "no_hosted_runtime_gateway",
+      "not_yet_proven_in_deployed_non_loopback_host",
+      "chaos_soak_performance_gates_not_complete",
+    ],
+  };
+}
+
+function graphProjection(summary: string): DojoImplementationMetadata {
+  return {
+    implementation_status: "deterministic_projection",
+    runtime_enforced: false,
+    evidence_backing: "generated_report",
+    simulation_backing: "scenario_catalog",
+    summary,
+    maturity_blockers: [
+      "read_only_report_surface",
+      "release_gate_visual_and_hosted_proof_required",
+    ],
+  };
+}
+
+function syntheticProjection(summary: string): DojoImplementationMetadata {
+  return {
+    implementation_status: "deterministic_projection",
+    runtime_enforced: false,
+    evidence_backing: "generated_report",
+    simulation_backing: "materialized_synthetic_fixture",
+    summary,
+    maturity_blockers: [
+      "read_only_report_surface",
+      "not_yet_proven_in_deployed_non_loopback_host",
+    ],
+  };
+}
+
+function sourceProjection(summary: string): DojoImplementationMetadata {
+  return {
+    implementation_status: "deterministic_projection",
+    runtime_enforced: false,
+    evidence_backing: "repo_local_artifact",
+    simulation_backing: "none",
+    summary,
+    maturity_blockers: [
+      "reviewed_source_pr_workflow_not_connected_to_hosted_repo",
+      "broad_arbitrary_app_codemods_not_complete",
+    ],
+  };
+}
+
+function governanceReport(summary: string): DojoImplementationMetadata {
+  return {
+    implementation_status: "report_only",
+    runtime_enforced: false,
+    evidence_backing: "runtime_validation",
+    simulation_backing: "none",
+    summary,
+    maturity_blockers: [
+      "operator_workflows_are_read_only_or_partial",
+      "external_enterprise_control_plane_not_deployed",
+    ],
+  };
+}
+
+function reportWithRuntimeEvidence(summary: string): DojoImplementationMetadata {
+  return {
+    implementation_status: "report_only",
+    runtime_enforced: false,
+    evidence_backing: "runtime_validation",
+    simulation_backing: "none",
+    summary,
+    maturity_blockers: [
+      "read_only_report_surface",
+      "release_gate_visual_and_hosted_proof_required",
+    ],
+  };
+}
+
+function proofExecutable(summary: string): DojoImplementationMetadata {
+  return {
+    implementation_status: "executable",
+    runtime_enforced: true,
+    evidence_backing: "runtime_validation",
+    simulation_backing: "none",
+    summary,
+    maturity_blockers: [
+      "external_kms_hsm_adapter_not_configured_by_default",
+      "not_yet_proven_in_deployed_non_loopback_host",
+    ],
+  };
+}
+
+function ledgerReport(summary: string): DojoImplementationMetadata {
+  return {
+    implementation_status: "report_only",
+    runtime_enforced: false,
+    evidence_backing: "durable_evidence_ledger",
+    simulation_backing: "none",
+    summary,
+    maturity_blockers: [
+      "retention_and_legal_hold_operations_are_limited",
+      "external_storage_custody_not_proven_in_release_gate",
     ],
   };
 }

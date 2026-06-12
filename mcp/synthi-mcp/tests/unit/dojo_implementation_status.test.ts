@@ -34,11 +34,12 @@ describe("Dojo implementation status registry", () => {
     );
   });
 
-  it("marks graph report surfaces as deterministic projections and Vivarium runs as executable fixtures", () => {
+  it("marks graph report surfaces as runtime-backed projections and Vivarium runs as executable fixtures", () => {
     expect(getDojoToolImplementationMetadata("synthi_dojo_get_skill_cortex")).toEqual(
       expect.objectContaining({
         implementation_status: "deterministic_projection",
         runtime_enforced: false,
+        maturity_blockers: expect.arrayContaining(["read_only_report_surface"]),
       })
     );
     expect(getDojoToolImplementationMetadata("synthi_dojo_run_vivarium_scenario")).toEqual(
@@ -65,12 +66,24 @@ describe("Dojo implementation status registry", () => {
       expect.objectContaining({
         implementation_status: "report_only",
         runtime_enforced: false,
+        evidence_backing: "durable_evidence_ledger",
       })
     );
     expect(getDojoReportImplementationMetadata("skill_cortex")).toEqual(
       expect.objectContaining({
         implementation_status: "deterministic_projection",
-        maturity_blockers: expect.arrayContaining(["no_executable_graph_runtime"]),
+        maturity_blockers: expect.not.arrayContaining(["no_executable_graph_runtime"]),
+      })
+    );
+  });
+
+  it("describes proof issuing as evidence-aware and production signer configurable", () => {
+    expect(getDojoToolImplementationMetadata("synthi_dojo_issue_proof_capsule")).toEqual(
+      expect.objectContaining({
+        implementation_status: "executable",
+        runtime_enforced: true,
+        summary: expect.stringContaining("Ed25519 signing is supported"),
+        maturity_blockers: expect.arrayContaining(["external_kms_hsm_adapter_not_configured_by_default"]),
       })
     );
   });
