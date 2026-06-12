@@ -1026,6 +1026,30 @@ export default function EditorPage({ params }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // ── Restore host session after reload ───────────────────────────────
+    // The backend keeps collaboration rooms alive across page reloads, but
+    // the browser singleton resets to idle.  Reattach the host socket to an
+    // existing session without auto-creating a new sharing session.
+    useEffect(() => {
+        if (authStatus === 'loading') return;
+        if (collabSessionService?.isActive) return;
+        const authUser = authSession?.user || {};
+        const hostId = authUser.id || authUser.email || localStorage.getItem(USER_ID_KEY);
+        if (!hostId || !slug) return;
+        const hostName =
+            authUser.name ||
+            authUser.email ||
+            localStorage.getItem(USER_NAME_KEY) ||
+            hostId;
+        const hostAvatar = authUser.image || localStorage.getItem(USER_AVATAR_KEY) || '';
+        collabSessionService.restoreHostSession({
+            hostId,
+            hostName,
+            hostAvatar,
+            slug,
+        }).catch(() => {});
+    }, [authStatus, authSession?.user?.id, authSession?.user?.email, authSession?.user?.name, authSession?.user?.image, slug]);
+
     // ── AI Jumpstart: consume pending prompt from dashboard ──────────
     // If the payload carries a projectType, prepend its systemPromptHint
     // to the user prompt so the AI receives the project-context directive

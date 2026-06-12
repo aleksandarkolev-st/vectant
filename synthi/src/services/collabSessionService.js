@@ -24,6 +24,35 @@ function fetchWithTimeout(url, init = {}, timeoutMs = FETCH_TIMEOUT_MS) {
     .finally(() => clearTimeout(timer));
 }
 
+function hostSessionStorageKey(slug, hostId) {
+  return `synthi-host-session-v1:${encodeURIComponent(String(slug || ''))}:${encodeURIComponent(String(hostId || ''))}`;
+}
+
+function saveHostSessionRecord(record) {
+  if (typeof window === 'undefined' || !record?.slug || !record?.hostId || !record?.sessionId) return;
+  try {
+    localStorage.setItem(hostSessionStorageKey(record.slug, record.hostId), JSON.stringify({
+      ...record,
+      savedAt: Date.now(),
+    }));
+  } catch (_) {}
+}
+
+function loadHostSessionRecord(slug, hostId) {
+  if (typeof window === 'undefined' || !slug || !hostId) return null;
+  try {
+    const raw = localStorage.getItem(hostSessionStorageKey(slug, hostId));
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function clearHostSessionRecord(slug, hostId) {
+  if (typeof window === 'undefined' || !slug || !hostId) return;
+  try { localStorage.removeItem(hostSessionStorageKey(slug, hostId)); } catch (_) {}
+}
+
 // ── Permission defaults ─────────────────────────────────────────────────────
 
 export const DEFAULT_GUEST_PERMISSIONS = Object.freeze({
@@ -156,25 +185,84 @@ class CollabSessionService extends EventTarget {
     }
 
     const data = await res.json();
+    this._adoptHostSession(data, {
+      hostId,
+      hostName,
+      hostAvatar,
+      slug,
+      emitType: data.reused ? 'session:restored' : 'session:created',
+    });
+
+    return data;
+  }
+
+  async restoreHostSession({ hostId, hostName = '', hostAvatar = '', slug }) {
+    if (!hostId || !slug) return null;
+    if (this._role === 'hosting' && this._userId === hostId && this._sessionSlug === slug && this._sessionId) {
+      return this._session;
+    }
+
+    const stored = loadHostSessionRecord(slug, hostId);
+    const res = await fetchWithTimeout(
+      `${COLLAB_URL}/session/host/${encodeURIComponent(hostId)}?slug=${encodeURIComponent(slug)}`
+    ).catch(() => null);
+    if (!res || !res.ok) {
+      if (res?.status === 404) clearHostSessionRecord(slug, hostId);
+      return null;
+    }
+
+    const data = await res.json();
+    this._adoptHostSession({ ...(stored || {}), ...data }, {
+      hostId,
+      hostName: hostName || data.hostName || hostId,
+      hostAvatar: hostAvatar || data.hostAvatar || '',
+      slug: data.slug || slug,
+      emitType: 'session:restored',
+    });
+    return data;
+  }
+
+  _adoptHostSession(data, { hostId, hostName = '', hostAvatar = '', slug, emitType = 'session:created' } = {}) {
+    const sessionId = data.sessionId || data.id;
+    const sessionSlug = data.slug || slug;
+    if (!sessionId || !hostId || !sessionSlug) return;
 
     this._role = 'hosting';
-    this._sessionId = data.sessionId;
+    this._sessionId = sessionId;
     this._userId = hostId;
-    this._sessionSlug = slug;
+    this._hostId = null;
+    this._sessionSlug = sessionSlug;
     this._permissions = { ...HOST_PERMISSIONS };
     this._session = {
-      id: data.sessionId,
-      inviteLink: data.inviteLink,
-      inviteToken: data.inviteToken,
-      roomCode: data.roomCode || null,
-      createdAt: data.createdAt || new Date().toISOString(),
+      ...this._session,
+      ...data,
+      id: sessionId,
+      sessionId,
+      hostId,
+      hostName: data.hostName || hostName || hostId,
+      hostAvatar: data.hostAvatar || hostAvatar || '',
+      slug: sessionSlug,
+      inviteLink: data.inviteLink || this._session?.inviteLink || '',
+      inviteToken: data.inviteToken || this._session?.inviteToken || '',
+      roomCode: data.roomCode || this._session?.roomCode || null,
+      createdAt: data.createdAt || this._session?.createdAt || new Date().toISOString(),
     };
     this._pendingKnocks = [];
 
-    this._connectWs();
-    this._emit('session:created', data);
+    saveHostSessionRecord({
+      sessionId,
+      hostId,
+      hostName: this._session.hostName,
+      hostAvatar: this._session.hostAvatar,
+      slug: sessionSlug,
+      inviteToken: this._session.inviteToken,
+      inviteLink: this._session.inviteLink,
+      roomCode: this._session.roomCode,
+      createdAt: this._session.createdAt,
+    });
 
-    return data;
+    this._connectWs();
+    this._emit(emitType, { ...data, sessionId, hostId, slug: sessionSlug });
   }
 
   // ── Guest: Validate token → knock → join ─────────────────────────────────
@@ -465,6 +553,19 @@ class CollabSessionService extends EventTarget {
       this._session.inviteToken = data.inviteToken;
       if (data.roomCode) this._session.roomCode = data.roomCode;
     }
+    if (this.isHost) {
+      saveHostSessionRecord({
+        sessionId: this._sessionId,
+        hostId: this._userId,
+        hostName: this._session?.hostName || this._userId,
+        hostAvatar: this._session?.hostAvatar || '',
+        slug: this._sessionSlug,
+        inviteToken: this._session?.inviteToken || '',
+        inviteLink: this._session?.inviteLink || '',
+        roomCode: this._session?.roomCode || null,
+        createdAt: this._session?.createdAt || new Date().toISOString(),
+      });
+    }
     this._emit('invite:regenerated', data);
     return data;
   }
@@ -480,6 +581,19 @@ class CollabSessionService extends EventTarget {
 
     const data = await res.json();
     this._session = { ...this._session, ...data };
+    if (this.isHost) {
+      saveHostSessionRecord({
+        sessionId: this._sessionId,
+        hostId: this._userId,
+        hostName: this._session?.hostName || this._userId,
+        hostAvatar: this._session?.hostAvatar || '',
+        slug: this._sessionSlug || this._session?.slug,
+        inviteToken: this._session?.inviteToken || '',
+        inviteLink: this._session?.inviteLink || '',
+        roomCode: this._session?.roomCode || null,
+        createdAt: this._session?.createdAt || new Date().toISOString(),
+      });
+    }
     this._emit('session:updated', data);
     return data;
   }
@@ -699,20 +813,7 @@ class CollabSessionService extends EventTarget {
     const data = await res.json();
     // Auto-adopt hosting role if not already hosting
     if (!this.isHost) {
-      this._role = 'hosting';
-      this._sessionId = data.sessionId;
-      this._userId = hostId;
-      this._sessionSlug = slug;
-      this._permissions = { ...HOST_PERMISSIONS };
-      this._session = {
-        id: data.sessionId,
-        inviteLink: data.inviteLink,
-        inviteToken: data.inviteToken,
-        roomCode: data.roomCode || null,
-      };
-      this._pendingKnocks = [];
-      this._connectWs();
-      this._emit('session:created', data);
+      this._adoptHostSession(data, { hostId, hostName, hostAvatar, slug });
     }
     return data;
   }
@@ -792,14 +893,12 @@ class CollabSessionService extends EventTarget {
   acceptPendingSession() {
     if (!this._pendingSession) return;
     const { sessionId, inviteToken, slug } = this._pendingSession;
-    this._role = 'hosting';
-    this._sessionId = sessionId;
-    this._sessionSlug = slug;
-    this._permissions = { ...HOST_PERMISSIONS };
-    this._session = { id: sessionId, inviteToken };
     this._pendingSession = null;
-    this._connectWs();
-    this._emit('session:created', { sessionId, inviteToken });
+    const hostId = this._userId || (typeof window !== 'undefined' ? localStorage.getItem('synthi-user-id') : null) || 'host';
+    this._adoptHostSession(
+      { sessionId, inviteToken, slug },
+      { hostId, slug, emitType: 'session:created' },
+    );
   }
 
   // ── WebSocket for real-time events ────────────────────────────────────────
@@ -1021,6 +1120,9 @@ class CollabSessionService extends EventTarget {
   // ── Internal helpers ──────────────────────────────────────────────────────
 
   _cleanup() {
+    const wasHost = this._role === 'hosting';
+    const hostSlug = this._sessionSlug;
+    const hostId = this._userId;
     // Invalidate any pending reconnect from a stale _connectWs() cycle
     this._wsConnectTag = (this._wsConnectTag || 0) + 1;
     if (this._reconnectTimer) {
@@ -1041,6 +1143,7 @@ class CollabSessionService extends EventTarget {
     this._pendingSession = null;
     this._pendingInvite = null;
     this._reconnectDelay = 1000;
+    if (wasHost) clearHostSessionRecord(hostSlug, hostId);
   }
 
   _emit(type, detail) {

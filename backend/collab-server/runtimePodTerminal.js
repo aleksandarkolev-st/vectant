@@ -7,6 +7,25 @@ const spawner = require('./spawner');
 const NAMESPACE = process.env.K8S_NAMESPACE || 'synthi';
 const CONTAINER_NAME = process.env.SYNTHI_TERMINAL_K8S_CONTAINER || 'worker';
 
+function sanitizeDimension(value, fallback, max) {
+  const number = Math.floor(Number(value) || fallback);
+  return Math.max(1, Math.min(max, number));
+}
+
+class ResizablePassThrough extends PassThrough {
+  constructor({ cols = 80, rows = 24 } = {}) {
+    super();
+    this.columns = sanitizeDimension(cols, 80, 500);
+    this.rows = sanitizeDimension(rows, 24, 200);
+  }
+
+  resize(cols, rows) {
+    this.columns = sanitizeDimension(cols, this.columns, 500);
+    this.rows = sanitizeDimension(rows, this.rows, 200);
+    this.emit('resize');
+  }
+}
+
 function shellQuote(value) {
   return `'${String(value ?? '').replace(/'/g, `'\\''`)}'`;
 }
@@ -30,6 +49,7 @@ class RuntimePodPty {
   constructor({ ws, stdin, stdout, stderr, pid }) {
     this._ws = ws;
     this._stdin = stdin;
+    this._stdout = stdout;
     this.pid = pid;
     this._dataHandlers = new Set();
     this._exitHandlers = new Set();
@@ -72,9 +92,9 @@ class RuntimePodPty {
     this._stdin.write(data);
   }
 
-  resize() {
-    // Kubernetes exec does not expose a portable terminal resize hook through
-    // the client used here. The shell still works; it just keeps its initial PTY.
+  resize(cols, rows) {
+    if (typeof this._stdout?.resize !== 'function') return;
+    this._stdout.resize(cols, rows);
   }
 
   kill() {
@@ -90,8 +110,12 @@ async function createRuntimePodPty({
   filesystemUserId,
   cwd,
   env = {},
+  cols = 80,
+  rows = 24,
 }) {
   if (!runtimeScope) throw new Error('runtimeScope is required for runtime pod terminal');
+  const safeCols = sanitizeDimension(cols, 80, 500);
+  const safeRows = sanitizeDimension(rows, 24, 200);
 
   const pod = await spawner.ensurePod(runtimeScope, actorUserId || filesystemUserId || runtimeScope, {
     workspaceSlug,
@@ -102,7 +126,14 @@ async function createRuntimePodPty({
     throw new Error(`Runtime pod for ${runtimeScope} is not ready`);
   }
 
-  const exports = Object.entries(env)
+  const terminalEnv = {
+    ...env,
+    TERM: env.TERM || 'xterm-256color',
+    COLORTERM: env.COLORTERM || 'truecolor',
+    COLUMNS: String(safeCols),
+    LINES: String(safeRows),
+  };
+  const exports = Object.entries(terminalEnv)
     .filter(([key, value]) => key && value !== undefined && value !== null)
     .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
     .join('; ');
@@ -111,10 +142,11 @@ async function createRuntimePodPty({
     `export WORKSPACE_DIR=${shellQuote(cwd)}`,
     'mkdir -p "$WORKSPACE_DIR"',
     'cd "$WORKSPACE_DIR"',
+    `stty rows ${safeRows} cols ${safeCols} 2>/dev/null || true`,
     'exec /bin/bash --login -i',
   ].filter(Boolean).join('; ');
 
-  const stdout = new PassThrough();
+  const stdout = new ResizablePassThrough({ cols: safeCols, rows: safeRows });
   const stderr = new PassThrough();
   const stdin = new PassThrough();
   const exec = new k8s.Exec(kubeConfig());

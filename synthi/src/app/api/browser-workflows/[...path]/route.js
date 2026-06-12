@@ -228,7 +228,7 @@ async function ensureRuntimeBridge(context) {
   return { ok: false, status: res.status, detail };
 }
 
-async function proxyWorkflowBridge(request, routeContext) {
+export async function proxyWorkflowBridge(request, routeContext) {
   const authorized = await authorizeRuntimeContext(parseRuntimeContext(request));
   if (!authorized.ok) {
     return NextResponse.json(
