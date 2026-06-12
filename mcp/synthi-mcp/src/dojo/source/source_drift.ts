@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import type { DojoSourceSnapshot, DojoSourceTokenSnapshot } from "./source_snapshot.js";
+import {
+  verifyDojoSourceSnapshot,
+  type DojoSourceSnapshot,
+  type DojoSourceTokenSnapshot,
+} from "./source_snapshot.js";
 
 export interface DojoGraphNodeSourceBinding {
   node_id: string;
@@ -38,7 +42,10 @@ export function detectDojoSourceDrift(input: {
   previous_snapshot: DojoSourceSnapshot;
   next_snapshot: DojoSourceSnapshot;
   node_bindings: DojoGraphNodeSourceBinding[];
+  source_snapshot_signing_keys_by_id: Record<string, string>;
 }): DojoSourceDriftReport {
+  assertVerifiedSnapshot("previous", input.previous_snapshot, input.source_snapshot_signing_keys_by_id);
+  assertVerifiedSnapshot("next", input.next_snapshot, input.source_snapshot_signing_keys_by_id);
   if (input.previous_snapshot.app_origin !== input.next_snapshot.app_origin) {
     throw new Error("dojo_source_drift_app_origin_mismatch");
   }
@@ -86,6 +93,17 @@ export function detectDojoSourceDrift(input: {
       ...(node.license_id ? { license_id: node.license_id } : {}),
     })),
   };
+}
+
+function assertVerifiedSnapshot(
+  label: "previous" | "next",
+  snapshot: DojoSourceSnapshot,
+  signingKeysById: Record<string, string>
+): void {
+  const verification = verifyDojoSourceSnapshot(snapshot, { signing_keys_by_id: signingKeysById });
+  if (!verification.ok) {
+    throw new Error(`dojo_source_drift_${label}_snapshot_unverified:${verification.blocked_by.join(",")}`);
+  }
 }
 
 function tokenMap(tokens: DojoSourceTokenSnapshot[]): Map<string, DojoSourceTokenSnapshot> {
