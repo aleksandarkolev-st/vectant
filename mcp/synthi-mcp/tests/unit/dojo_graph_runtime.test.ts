@@ -496,10 +496,15 @@ describe("Dojo graph runtime skeleton", () => {
   it("evaluates simple equality preconditions", () => {
     expect(evaluateStaticCondition("workspace_verified == true", { workspace_verified: true })).toBe(true);
     expect(evaluateStaticCondition("amount == 50", { amount: 50 })).toBe(true);
+    expect(evaluateStaticCondition("amount <= 500", { amount: 50 })).toBe(true);
+    expect(evaluateStaticCondition("approval_status != denied", { approval_status: "pending" })).toBe(true);
     expect(evaluateStaticCondition("currency == EUR", { currency: "EUR" })).toBe(true);
     expect(evaluateStaticCondition("currency == \"EUR\"", { currency: "EUR" })).toBe(true);
+    expect(evaluateStaticCondition("currency in [\"EUR\",\"USD\"]", { currency: "EUR" })).toBe(true);
+    expect(evaluateStaticCondition("workspace_verified", { workspace_verified: true })).toBe(true);
     expect(evaluateStaticCondition("workspace_verified == true", { workspace_verified: false })).toBe(false);
-    expect(evaluateStaticCondition("unsupported > 1", { unsupported: 2 })).toBe(false);
+    expect(evaluateStaticCondition("amount <= 500", { amount: 501 })).toBe(false);
+    expect(evaluateStaticCondition("unsupported >== 1", { unsupported: 2 })).toBe(false);
   });
 });
 

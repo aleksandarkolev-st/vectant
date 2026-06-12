@@ -633,21 +633,5 @@ function nodeRequiresProductionProofValidation(node: DojoGraphNode, mode: DojoGr
 }
 
 export function evaluateStaticCondition(condition: string, inputs: Record<string, unknown>): boolean {
-  const match = condition.match(/^([a-zA-Z0-9_.-]+)\s*==\s*(true|false|[-]?\d+(?:\.\d+)?|".*"|'.*'|[a-zA-Z0-9_.:-]+)$/);
-  if (!match) return false;
-  const [, key, rawExpected] = match;
-  if (!key || rawExpected === undefined) return false;
-  const actual = inputs[key];
-  const expected = parseExpectedValue(rawExpected);
-  return actual === expected;
-}
-
-function parseExpectedValue(raw: string): unknown {
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  if (/^-?\d+(?:\.\d+)?$/.test(raw)) return Number(raw);
-  if ((raw.startsWith("\"") && raw.endsWith("\"")) || (raw.startsWith("'") && raw.endsWith("'"))) {
-    return raw.slice(1, -1);
-  }
-  return raw;
+  return evaluateDojoGuardrailPredicate(condition, inputs).ok;
 }
