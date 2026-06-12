@@ -528,8 +528,12 @@ export const DOJO_TOOLS = [
         skill_id: { type: "string" },
         workflow_id: { type: "string" },
         reason: { type: "string" },
+        actor_id: { type: "string" },
+        actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        evidence_refs: { type: "array", items: { type: "string" } },
+        now: { type: "string" },
       },
-      required: [],
+      required: ["reason", "actor_id", "actor_type"],
     },
   },
   {
@@ -1630,14 +1634,19 @@ function dojoRevokeLicenseTool(args: unknown): ToolResponse {
   if (!skill.ok) return skill.error;
   const a = obj(args);
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
-  const reason = stringOpt(obj(args)["reason"]) ?? "operator_revoked";
+  const reason = stringOpt(a["reason"]);
+  if (!reason) return errorResponse("dojo_license_revocation_reason_required");
+  const actorId = stringOpt(a["actor_id"]);
+  if (!actorId) return errorResponse("dojo_license_revocation_actor_required");
+  const actorType = actorTypeInputOpt(a["actor_type"]);
+  if (!actorType) return errorResponse("dojo_license_revocation_actor_type_required");
   const revocation = revokeDojoSkillLicense({
     skill: skill.skill,
     reason,
     revoked_at: now,
     revoked_by: {
-      actor_id: stringOpt(a["actor_id"]) ?? "operator",
-      actor_type: actorTypeOpt(a["actor_type"]),
+      actor_id: actorId,
+      actor_type: actorType,
     },
     evidence_refs: stringArrayOpt(a["evidence_refs"]),
   });
@@ -2382,6 +2391,10 @@ function dojoTenantContextFromArgs(args: unknown): DojoTenantContext {
 
 function actorTypeOpt(value: unknown): DojoTenantContext["actor_type"] {
   return value === "human" || value === "service" ? value : "agent";
+}
+
+function actorTypeInputOpt(value: unknown): DojoTenantContext["actor_type"] | undefined {
+  return value === "human" || value === "agent" || value === "service" ? value : undefined;
 }
 
 function permissionUpgradeDecisionOpt(value: unknown): "approved" | "denied" | undefined {

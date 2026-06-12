@@ -89,7 +89,7 @@ const ROUTES = [
     id: "governance",
     path: `/workspace/${WORKSPACE_SLUG}/dojo/governance`,
     selector: "[data-testid=\"governance-dashboard\"]",
-    requiredText: ["Governance", "License and proof audit", "Issue verified proof capsule", "deployed_host_conformance", "Approve", "Deprecate", "Recertify", "Export pack", "Revoke license"],
+    requiredText: ["Governance", "License and proof audit", "Issue verified proof capsule", "deployed_host_conformance", "Approve", "Deprecate", "Recertify", "Export pack", "Reason", "Revoke license"],
   },
   {
     id: "time-machine",

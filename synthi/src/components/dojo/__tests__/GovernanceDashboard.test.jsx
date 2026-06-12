@@ -10,6 +10,13 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 let root;
 let container;
 
+function typeIntoInput(input, value) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 afterEach(() => {
   if (root) {
     act(() => root.unmount());
@@ -319,12 +326,18 @@ describe('GovernanceDashboard', () => {
     }));
     expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('compliance exported in test');
 
+    const reasonInput = view.querySelector('[data-testid="license-license-001-revoke-reason"]');
+    await act(async () => {
+      typeIntoInput(reasonInput, 'manual revocation requested by compliance');
+    });
+    expect(view.querySelector('[data-testid="license-license-001-revoke"]')?.disabled).toBe(false);
     await act(async () => {
       view.querySelector('[data-testid="license-license-001-revoke"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(revoke).toHaveBeenCalledWith(expect.objectContaining({
       skillId: 'skill-save-invoice',
       licenseId: 'license-001',
+      revocationReason: 'manual revocation requested by compliance',
     }));
     expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('license revoked in test');
   });
@@ -468,6 +481,11 @@ describe('GovernanceDashboard', () => {
       });
       expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Case law approved: Duplicate client guardrail');
 
+      const reasonInput = view.querySelector('[data-testid="license-license-001-revoke-reason"]');
+      await act(async () => {
+        typeIntoInput(reasonInput, 'license revoked after governance review');
+      });
+      expect(view.querySelector('[data-testid="license-license-001-revoke"]')?.disabled).toBe(false);
       await act(async () => {
         view.querySelector('[data-testid="license-license-001-revoke"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       });
@@ -476,6 +494,7 @@ describe('GovernanceDashboard', () => {
         tool: 'synthi_dojo_revoke_license',
         arguments: {
           skill_id: 'skill-save-invoice',
+          reason: 'license revoked after governance review',
           actor_id: 'governance-operator',
           actor_type: 'human',
           evidence_refs: [],

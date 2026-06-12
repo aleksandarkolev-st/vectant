@@ -267,6 +267,28 @@ describe("Dojo governance service", () => {
     ]));
   });
 
+  it("requires explicit reason and actor attribution for license revocation", () => {
+    const skill = skillFixture({ skillId: "skill-revoke-required-audit" });
+
+    expect(() => revokeDojoSkillLicense({
+      skill,
+      reason: "",
+      revoked_by: { actor_id: "operator-a", actor_type: "human" },
+    })).toThrow("dojo_license_revocation_reason_required");
+
+    expect(() => revokeDojoSkillLicense({
+      skill,
+      reason: "policy_review",
+      revoked_by: { actor_id: "", actor_type: "human" },
+    })).toThrow("dojo_license_revocation_actor_required");
+
+    expect(() => revokeDojoSkillLicense({
+      skill,
+      reason: "policy_review",
+      revoked_by: { actor_id: "operator-a", actor_type: undefined as never },
+    })).toThrow("dojo_license_revocation_actor_type_required");
+  });
+
   it("builds approval queue items from gated actions and explicit requirements", () => {
     const skill = skillFixture({
       skillId: "skill-a",

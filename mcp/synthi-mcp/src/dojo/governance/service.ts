@@ -240,13 +240,18 @@ export function decideDojoPermissionUpgradeRequest(input: {
 
 export function revokeDojoSkillLicense(input: {
   skill: DojoSkill;
-  reason?: string;
+  reason: string;
   revoked_at?: string;
-  revoked_by?: DojoAuditActor;
+  revoked_by: DojoAuditActor;
   evidence_refs?: string[];
 }): DojoSkillLicenseRevocationResult {
   const revokedAt = input.revoked_at ?? new Date().toISOString();
-  const reason = normalizedReason(input.reason, "operator_revoked");
+  const reason = normalizedReason(input.reason, "");
+  if (!reason) throw new Error("dojo_license_revocation_reason_required");
+  if (!input.revoked_by?.actor_id) throw new Error("dojo_license_revocation_actor_required");
+  if (!["human", "agent", "service"].includes(input.revoked_by.actor_type)) {
+    throw new Error("dojo_license_revocation_actor_type_required");
+  }
   const evidenceRefs = uniqueStrings(input.evidence_refs ?? []);
   const skill = cloneJson(input.skill);
   const previousLicenseVersion = skill.permission_license.license_version;
@@ -325,7 +330,7 @@ export function revokeDojoSkillLicense(input: {
     previous_license_version: previousLicenseVersion,
     revoked_license_version: skill.permission_license.license_version,
     blocked_actions: skill.permission_license.blocked_actions.map((action) => action.action),
-    audit_event: input.revoked_by ? {
+    audit_event: {
       event_type: "license_revoked",
       actor: cloneJson(input.revoked_by),
       occurred_at: revokedAt,
@@ -334,7 +339,7 @@ export function revokeDojoSkillLicense(input: {
       license_id: skill.permission_license.license_id,
       reason,
       evidence_refs: evidenceRefs,
-    } : undefined,
+    },
   };
 }
 

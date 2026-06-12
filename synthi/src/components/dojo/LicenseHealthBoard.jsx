@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { ShieldAlert, ShieldOff } from 'lucide-react';
 
 const panelStyle = {
@@ -8,6 +9,8 @@ const panelStyle = {
 };
 
 export default function LicenseHealthBoard({ items = [], onRevoke, busyLicenseId = '' }) {
+  const [revocationReasons, setRevocationReasons] = useState({});
+
   return (
     <section className="rounded-md border p-4" style={panelStyle} data-testid="license-health-board">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -19,7 +22,14 @@ export default function LicenseHealthBoard({ items = [], onRevoke, busyLicenseId
       </div>
       {items.length ? (
         <div className="grid gap-2">
-          {items.map((item) => (
+          {items.map((item) => {
+            const licenseKey = item.licenseId || item.skillId;
+            const revocationReason = revocationReasons[licenseKey] || '';
+            const canRevoke = Boolean(onRevoke)
+              && busyLicenseId !== item.licenseId
+              && item.status !== 'revoked'
+              && revocationReason.trim().length > 0;
+            return (
             <article key={`${item.skillId}-${item.licenseId}`} className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -38,14 +48,30 @@ export default function LicenseHealthBoard({ items = [], onRevoke, busyLicenseId
                 <Info label="Proof" value={item.proofRequired ? 'Required' : 'Optional'} />
                 <Info label="Actions" value={`${item.allowedActionCount}/${item.gatedActionCount}/${item.blockedActionCount}`} />
               </dl>
+              <label className="mt-3 block text-xs" style={{ color: 'var(--text-muted)' }}>
+                Reason
+                <input
+                  type="text"
+                  className="mt-1 h-8 w-full rounded-md border px-2 text-xs outline-none"
+                  style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+                  value={revocationReason}
+                  onChange={(event) => setRevocationReasons((current) => ({
+                    ...current,
+                    [licenseKey]: event.target.value,
+                  }))}
+                  placeholder="Required for audit"
+                  data-testid={`license-${item.licenseId}-revoke-reason`}
+                  disabled={!onRevoke || item.status === 'revoked'}
+                />
+              </label>
               <div className="mt-3">
                 <button
                   type="button"
                   className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs disabled:cursor-not-allowed disabled:opacity-45"
                   style={panelStyle}
-                  disabled={!onRevoke || busyLicenseId === item.licenseId || item.status === 'revoked'}
+                  disabled={!canRevoke}
                   data-testid={`license-${item.licenseId}-revoke`}
-                  onClick={() => onRevoke?.(item)}
+                  onClick={() => onRevoke?.({ ...item, revocationReason: revocationReason.trim() })}
                   title={!onRevoke ? 'Action handler unavailable' : 'Revoke license'}
                 >
                   <ShieldOff size={13} aria-hidden="true" />
@@ -53,7 +79,8 @@ export default function LicenseHealthBoard({ items = [], onRevoke, busyLicenseId
                 </button>
               </div>
             </article>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No license health records available.</p>

@@ -1250,8 +1250,9 @@ function summaryFromToolBody(body, workspaceSlug) {
 
 function resolveGovernanceActor({ actorId, actorType = 'human' } = {}) {
   const currentUser = getCurrentUser();
+  const currentUserId = currentUser?.id && currentUser.id !== 'guest' ? currentUser.id : '';
   return {
-    actorId: actorId || currentUser?.id || '',
+    actorId: actorId || currentUserId,
     actorType,
   };
 }
@@ -1416,7 +1417,10 @@ export async function revokeDojoLicense({
 } = {}) {
   const skillId = item?.skillId || item?.skill_id || '';
   if (!skillId) throw new Error('dojo_license_skill_id_required');
+  const resolvedReason = reason || item?.revocationReason || item?.revocation_reason || '';
+  if (!resolvedReason) throw new Error('dojo_license_revocation_reason_required');
   const actor = resolveGovernanceActor({ actorId, actorType });
+  if (!actor.actorId) throw new Error('dojo_governance_actor_required');
   const body = await callAgentWorkflowTool({
     url,
     token,
@@ -1424,7 +1428,7 @@ export async function revokeDojoLicense({
     tool: 'synthi_dojo_revoke_license',
     arguments: {
       skill_id: skillId,
-      ...(reason ? { reason } : {}),
+      reason: resolvedReason,
       actor_id: actor.actorId,
       actor_type: actor.actorType,
       evidence_refs: compactStrings(evidenceRefs),

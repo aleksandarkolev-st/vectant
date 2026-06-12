@@ -877,6 +877,25 @@ describe("Agent Dojo MCP tools", () => {
       expect.objectContaining({ path: expect.stringContaining("assurance.case.md") }),
     ]));
 
+    const revokeMissingReason = await dispatchDojoTool("synthi_dojo_revoke_license", {
+      skill_id: published.skill.skill_id,
+      actor_id: "unit-reviewer",
+      actor_type: "human",
+    });
+    expect(revokeMissingReason?.isError).toBe(true);
+    expect(revokeMissingReason?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_license_revocation_reason_required",
+    }));
+    const revokeMissingActor = await dispatchDojoTool("synthi_dojo_revoke_license", {
+      skill_id: published.skill.skill_id,
+      reason: "unit_test_policy_change",
+      actor_type: "human",
+    });
+    expect(revokeMissingActor?.isError).toBe(true);
+    expect(revokeMissingActor?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_license_revocation_actor_required",
+    }));
+
     const cortex = await dispatchDojoTool("synthi_dojo_get_skill_cortex", { skill_id: published.skill.skill_id });
     expect(cortex?.structuredContent).toEqual(expect.objectContaining({
       skill_cortex: expect.objectContaining({
@@ -896,9 +915,19 @@ describe("Agent Dojo MCP tools", () => {
     const revoke = await dispatchDojoTool("synthi_dojo_revoke_license", {
       skill_id: published.skill.skill_id,
       reason: "unit_test_policy_change",
+      actor_id: "unit-reviewer",
+      actor_type: "human",
+      evidence_refs: ["unit-test-evidence"],
     });
     expect(revoke?.structuredContent).toEqual(expect.objectContaining({
       license: expect.objectContaining({ entrustment_level: "EX", autonomy_level: "blocked" }),
+      revocation: expect.objectContaining({
+        audit_event: expect.objectContaining({
+          actor: { actor_id: "unit-reviewer", actor_type: "human" },
+          reason: "unit_test_policy_change",
+          evidence_refs: ["unit-test-evidence"],
+        }),
+      }),
     }));
     const revokedHealth = await dispatchDojoTool("synthi_dojo_get_license_health", { skill_id: published.skill.skill_id });
     expect(revokedHealth?.structuredContent).toEqual(expect.objectContaining({
