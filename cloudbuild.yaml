@@ -285,6 +285,7 @@ steps:
         NS="synthi"
 
         echo "=== Deploying tag: $${TAG} ==="
+        echo "=== Region: ${_REGION} ==="
 
         # Render Kustomize once with the immutable image tag before applying.
         # Applying raw k8s/ directly would briefly roll Deployments to the
