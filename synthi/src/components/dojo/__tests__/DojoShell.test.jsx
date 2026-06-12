@@ -78,6 +78,8 @@ describe('DojoShell', () => {
     expect(view.textContent).toContain('Debugger');
     expect(view.textContent).toContain('Evidence');
     expect(view.textContent).toContain('Case Law');
+    expect(view.textContent).toContain('Overview');
+    expect(view.querySelector('a[href="/workspace/workspace-a/dojo/skills"]')?.textContent).toContain('Skills');
   });
 
   it('loads summary through the provided client', async () => {

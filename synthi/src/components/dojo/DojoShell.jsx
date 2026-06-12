@@ -43,7 +43,8 @@ export default function DojoShell({
   const baseHref = `/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`;
   const selectedSkillHref = selectedSkill?.skillId ? encodeURIComponent(selectedSkill.skillId) : '';
   const navItems = [
-    ['Skills', baseHref],
+    ['Overview', baseHref],
+    ['Skills', `${baseHref}/skills`],
     ['Passport', selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/passport` : baseHref],
     ['Cortex', selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/cortex` : baseHref],
     ['Practice', `${baseHref}/practice`],
