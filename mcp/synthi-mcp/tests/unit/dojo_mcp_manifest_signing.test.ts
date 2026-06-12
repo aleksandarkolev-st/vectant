@@ -5,7 +5,10 @@ import type { BrowserTraceEvent } from "../../src/browser/types.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import {
   buildDojoMcpSkillManifest,
+  configuredDojoMcpManifestSigningEnv,
+  DOJO_DEFAULT_MCP_MANIFEST_SIGNING_KEY,
   dojoMcpManifestRequiresProof,
+  isDojoDefaultMcpManifestSigningKey,
   validateDojoMcpSkillManifest,
   type DojoMcpSkillManifestV1,
 } from "../../src/dojo/mcp/manifest_signing.js";
@@ -92,6 +95,19 @@ describe("Dojo MCP skill manifest signing", () => {
       ok: false,
       blocked_by: expect.arrayContaining(["dojo_mcp_manifest_signature_invalid"]),
     }));
+  });
+
+  it("reports configured manifest signing env and detects default local signing keys", () => {
+    expect(isDojoDefaultMcpManifestSigningKey({})).toBe(true);
+    expect(isDojoDefaultMcpManifestSigningKey({
+      SYNTHI_DOJO_MCP_MANIFEST_SIGNING_KEY: DOJO_DEFAULT_MCP_MANIFEST_SIGNING_KEY,
+    })).toBe(true);
+    expect(isDojoDefaultMcpManifestSigningKey(manifestEnv())).toBe(false);
+    expect(configuredDojoMcpManifestSigningEnv(manifestEnv())).toEqual([
+      "SYNTHI_DOJO_MCP_MANIFEST_ISSUER",
+      "SYNTHI_DOJO_MCP_MANIFEST_KEY_ID",
+      "SYNTHI_DOJO_MCP_MANIFEST_SIGNING_KEY",
+    ]);
   });
 });
 

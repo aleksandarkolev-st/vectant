@@ -23,6 +23,13 @@ import {
   resolveDojoEnforcementConfig,
   type DojoEnforcementConfig,
 } from "../dojo/config/enforcement.js";
+import {
+  configuredDojoMcpManifestSigningEnv,
+  DOJO_MCP_MANIFEST_ISSUER_ENV,
+  DOJO_MCP_MANIFEST_KEY_ID_ENV,
+  DOJO_MCP_MANIFEST_SIGNING_KEY_ENV,
+  isDojoDefaultMcpManifestSigningKey,
+} from "../dojo/mcp/manifest_signing.js";
 
 export type BrowserWorkflowDeploymentMode = "production" | "development";
 export type BrowserWorkflowDeploymentCheckStatus = "pass" | "warn" | "fail";
@@ -157,6 +164,7 @@ function checkDojoProductionBoundary(
   checks.push(checkDojoProductionEnforcement(config, production));
   checks.push(checkDojoDurableStore(config, env, production));
   checks.push(checkDojoExternalSigning(config, env, production));
+  checks.push(checkDojoMcpManifestSigning(env, production));
   checks.push(checkDojoEvidenceLedger(config, env, production));
   return checks;
 }
@@ -277,6 +285,36 @@ function checkDojoEvidenceLedger(
     id: "dojo_evidence_ledger",
     status: production ? "fail" : "warn",
     message: "Dojo evidence ledger is not configured; production proof claims cannot be treated as evidence-backed.",
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkDojoMcpManifestSigning(
+  env: NodeJS.ProcessEnv,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = [
+    DOJO_MCP_MANIFEST_ISSUER_ENV,
+    DOJO_MCP_MANIFEST_KEY_ID_ENV,
+    DOJO_MCP_MANIFEST_SIGNING_KEY_ENV,
+  ];
+  const configured = configuredDojoMcpManifestSigningEnv(env);
+  const issuer = nonEmpty(env[DOJO_MCP_MANIFEST_ISSUER_ENV]);
+  const keyId = nonEmpty(env[DOJO_MCP_MANIFEST_KEY_ID_ENV]);
+  const hasNonDefaultSigningKey = !isDojoDefaultMcpManifestSigningKey(env);
+  if (issuer && keyId && hasNonDefaultSigningKey) {
+    return pass(
+      "dojo_mcp_manifest_signing",
+      "Dojo MCP skill manifests use an explicit issuer, key ID, and non-default signing key.",
+      required,
+      configured
+    );
+  }
+  return {
+    id: "dojo_mcp_manifest_signing",
+    status: production ? "fail" : "warn",
+    message: "Dojo MCP skill manifest signing is not production-ready; explicit issuer, key ID, and non-default signing key are required.",
     required_env: required,
     configured_env: configured,
   };

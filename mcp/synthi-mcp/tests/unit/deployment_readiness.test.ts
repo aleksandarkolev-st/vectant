@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { browserWorkflowDeploymentReadiness } from "../../src/browser/deployment_readiness.js";
+import { DOJO_DEFAULT_MCP_MANIFEST_SIGNING_KEY } from "../../src/dojo/mcp/manifest_signing.js";
 import { dispatchBrowserTool } from "../../src/tools/browser.js";
 
 describe("browser workflow deployment readiness", () => {
@@ -31,13 +32,14 @@ describe("browser workflow deployment readiness", () => {
       expect.objectContaining({ id: "dojo_production_enforcement", status: "pass" }),
       expect.objectContaining({ id: "dojo_durable_store", status: "pass" }),
       expect.objectContaining({ id: "dojo_external_signing", status: "pass" }),
+      expect.objectContaining({ id: "dojo_mcp_manifest_signing", status: "pass" }),
       expect.objectContaining({ id: "dojo_evidence_ledger", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_runtime_endpoint", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_origin_policy", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_session_policy", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_tenant_policy", status: "pass" }),
     ]));
-    expect(JSON.stringify(readiness)).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret/);
+    expect(JSON.stringify(readiness)).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret|dojo-manifest-secret/);
     expect(JSON.stringify(readiness)).not.toMatch(/SYNTHI_BROWSER_CDP_URL/);
   });
 
@@ -62,6 +64,7 @@ describe("browser workflow deployment readiness", () => {
       expect.objectContaining({ id: "dojo_production_enforcement", status: "fail" }),
       expect.objectContaining({ id: "dojo_durable_store", status: "fail" }),
       expect.objectContaining({ id: "dojo_external_signing", status: "fail" }),
+      expect.objectContaining({ id: "dojo_mcp_manifest_signing", status: "fail" }),
       expect.objectContaining({ id: "dojo_evidence_ledger", status: "fail" }),
     ]));
     expect(JSON.stringify(readiness)).not.toMatch(/127\.0\.0\.1:9222|\/port\/\d+|browser-mcp-live/i);
@@ -128,6 +131,19 @@ describe("browser workflow deployment readiness", () => {
     expect(readiness.ok).toBe(false);
     expect(readiness.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "dojo_external_signing", status: "fail" }),
+    ]));
+  });
+
+  it("fails production readiness when MCP skill manifest signing falls back to the default local key", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_MCP_MANIFEST_KEY_ID: undefined,
+      SYNTHI_DOJO_MCP_MANIFEST_SIGNING_KEY: DOJO_DEFAULT_MCP_MANIFEST_SIGNING_KEY,
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "dojo_mcp_manifest_signing", status: "fail" }),
     ]));
   });
 
@@ -229,7 +245,7 @@ describe("browser workflow deployment readiness", () => {
       const text = response?.content?.[0]?.type === "text" ? response.content[0].text : "";
       expect(text).toContain("synthi.browserWorkflowDeploymentReadiness.v1");
       expect(text).toContain("synthi.dojo.enforcementConfig.v1");
-      expect(text).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret/);
+      expect(text).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret|dojo-manifest-secret/);
     } finally {
       process.env = originalEnv;
     }
@@ -262,6 +278,9 @@ function productionReadyEnv(): NodeJS.ProcessEnv {
     SYNTHI_DOJO_PROOF_SIGNING_PROVIDER: "test-kms",
     SYNTHI_DOJO_PROOF_SIGNING_KEY_ID: "dojo-prod-key-1",
     SYNTHI_DOJO_PROOF_SIGNING_KEY: "dojo-signing-secret",
+    SYNTHI_DOJO_MCP_MANIFEST_ISSUER: "synthi-dojo-skill-bus-prod",
+    SYNTHI_DOJO_MCP_MANIFEST_KEY_ID: "dojo-mcp-manifest-key-1",
+    SYNTHI_DOJO_MCP_MANIFEST_SIGNING_KEY: "dojo-manifest-secret",
     SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER: "1",
     SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "postgres://dojo-evidence-ledger",
   };

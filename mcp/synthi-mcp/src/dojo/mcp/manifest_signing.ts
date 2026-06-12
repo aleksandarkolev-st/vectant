@@ -60,6 +60,11 @@ export interface DojoMcpSkillManifestOptions {
   now?: string;
 }
 
+export const DOJO_MCP_MANIFEST_ISSUER_ENV = "SYNTHI_DOJO_MCP_MANIFEST_ISSUER";
+export const DOJO_MCP_MANIFEST_KEY_ID_ENV = "SYNTHI_DOJO_MCP_MANIFEST_KEY_ID";
+export const DOJO_MCP_MANIFEST_SIGNING_KEY_ENV = "SYNTHI_DOJO_MCP_MANIFEST_SIGNING_KEY";
+export const DOJO_DEFAULT_MCP_MANIFEST_SIGNING_KEY = "synthi-dojo-mcp-manifest-development-key";
+
 export function buildDojoMcpSkillManifest(
   skill: DojoSkill,
   options: DojoMcpSkillManifestOptions = {}
@@ -176,18 +181,31 @@ export function validateDojoMcpSkillManifest(
 }
 
 export function dojoMcpManifestIssuer(env: NodeJS.ProcessEnv = process.env): string {
-  return env["SYNTHI_DOJO_MCP_MANIFEST_ISSUER"]?.trim() || "synthi-dojo-skill-bus";
+  return env[DOJO_MCP_MANIFEST_ISSUER_ENV]?.trim() || "synthi-dojo-skill-bus";
 }
 
 export function dojoMcpManifestKeyId(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env["SYNTHI_DOJO_MCP_MANIFEST_KEY_ID"]?.trim();
+  const configured = env[DOJO_MCP_MANIFEST_KEY_ID_ENV]?.trim();
   if (configured) return configured;
   return `dojo-mcp-manifest-dev-${shortHash(dojoMcpManifestSigningKey(env))}`;
 }
 
+export function configuredDojoMcpManifestSigningEnv(env: NodeJS.ProcessEnv = process.env): string[] {
+  return [
+    DOJO_MCP_MANIFEST_ISSUER_ENV,
+    DOJO_MCP_MANIFEST_KEY_ID_ENV,
+    DOJO_MCP_MANIFEST_SIGNING_KEY_ENV,
+  ].filter((name) => Boolean(env[name]?.trim()));
+}
+
+export function isDojoDefaultMcpManifestSigningKey(env: NodeJS.ProcessEnv = process.env): boolean {
+  const configured = env[DOJO_MCP_MANIFEST_SIGNING_KEY_ENV]?.trim();
+  return !configured || configured === DOJO_DEFAULT_MCP_MANIFEST_SIGNING_KEY;
+}
+
 function dojoMcpManifestSigningKey(env: NodeJS.ProcessEnv): string {
-  return env["SYNTHI_DOJO_MCP_MANIFEST_SIGNING_KEY"]?.trim()
-    || "synthi-dojo-mcp-manifest-development-key";
+  return env[DOJO_MCP_MANIFEST_SIGNING_KEY_ENV]?.trim()
+    || DOJO_DEFAULT_MCP_MANIFEST_SIGNING_KEY;
 }
 
 function signManifestDigest(manifestDigest: string, env: NodeJS.ProcessEnv): string {
