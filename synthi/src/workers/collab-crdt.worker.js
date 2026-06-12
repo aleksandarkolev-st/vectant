@@ -165,19 +165,19 @@ function ensureDocInternal(key, params) {
 
   // ── Y.Text observer — only forward REMOTE deltas to the main thread ──
   // Coalesce bursts of remote deltas (e.g. when an LLM streams many small
-  // inserts) onto a single microtask flush.  When only one delta arrives we
-  // forward it incrementally; when multiple arrive in the same task we send
-  // an empty delta and rely on the main thread's full-text fallback, since
-  // later deltas' offsets no longer reference the initial model state.
+  // inserts) onto a single microtask flush.  We keep every delta in order so
+  // Monaco can apply them incrementally, avoiding full-model replacements
+  // while multiple collaborators are typing.
   let pendingDeltas = null;
   let flushScheduled = false;
   const flushPending = () => {
     flushScheduled = false;
     if (!pendingDeltas || pendingDeltas.length === 0) return;
     const fullText = ytext.toString();
-    const delta = pendingDeltas.length === 1 ? pendingDeltas[0] : [];
+    const deltas = pendingDeltas;
+    const delta = deltas.length === 1 ? deltas[0] : [];
     pendingDeltas = null;
-    post({ type: 'remote-delta', key, delta, fullText, length: fullText.length });
+    post({ type: 'remote-delta', key, delta, deltas, fullText, length: fullText.length });
   };
   ytext.observe((event) => {
     if (entry.applyingLocal) return; // local edits already came FROM main thread
