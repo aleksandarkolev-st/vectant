@@ -56,9 +56,10 @@ describe("Dojo assertion and rollback runtime", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
-        proof_capsule_valid: true,
         assertion_results: { assert_submission_state: false },
       },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -79,6 +80,8 @@ describe("Dojo assertion and rollback runtime", () => {
     }));
   });
 });
+
+const validProofValidator = () => ({ ok: true, blocked_by: [] });
 
 function graphFixture(rollbackPolicy: Record<string, unknown>): DojoSkillGraph {
   return {

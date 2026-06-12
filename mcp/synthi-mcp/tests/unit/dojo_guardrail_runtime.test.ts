@@ -45,7 +45,6 @@ describe("Dojo guardrail runtime", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: false,
-        proof_capsule_valid: true,
       },
     })).resolves.toEqual(expect.objectContaining({
       ok: false,

@@ -29,10 +29,26 @@ export interface DojoGraphRunResult {
   blocked_by: string[];
 }
 
+export interface DojoGraphProofValidationResult {
+  ok: boolean;
+  blocked_by: string[];
+}
+
+export type DojoGraphProofValidator = (input: {
+  graph: DojoSkillGraph;
+  node: DojoGraphNode;
+  mode: DojoGraphMode;
+  proof_capsule: unknown;
+  inputs: Record<string, unknown>;
+}) => DojoGraphProofValidationResult | Promise<DojoGraphProofValidationResult>;
+
 export interface DojoSkillGraphRuntimeInput {
   graph: DojoSkillGraph;
   mode?: DojoGraphMode;
   inputs?: Record<string, unknown>;
+  proof_capsule?: unknown;
+  proof_validator?: DojoGraphProofValidator;
+  allow_self_attested_proof?: boolean;
   substrate_executor?: DojoSubstrateExecutor;
 }
 
@@ -60,6 +76,10 @@ export class DojoSkillGraphRuntime {
     const nodeResults: DojoGraphNodeRunResult[] = [];
     for (const node of graph.nodes) {
       const blockedBy = blockedByForNode(node, mode, inputs);
+      const proofBlockedBy = blockedBy.length === 0
+        ? await proofBlockedByForNode(node, mode, graph, input, inputs)
+        : [];
+      blockedBy.push(...proofBlockedBy);
       const result: DojoGraphNodeRunResult = {
         node_id: node.node_id,
         kind: node.kind,
@@ -153,10 +173,29 @@ function blockedByForNode(node: DojoGraphNode, mode: DojoGraphMode, inputs: Reco
       blockedBy.push(`guardrail_failed:${guardrail.guardrail_id}`);
     }
   }
-  if (mode === "production" && node.kind === "Action" && node.proof?.required === true && inputs["proof_capsule_valid"] !== true) {
-    blockedBy.push("proof_capsule_missing");
-  }
   return blockedBy;
+}
+
+async function proofBlockedByForNode(
+  node: DojoGraphNode,
+  mode: DojoGraphMode,
+  graph: DojoSkillGraph,
+  input: DojoSkillGraphRuntimeInput,
+  inputs: Record<string, unknown>
+): Promise<string[]> {
+  if (mode !== "production" || node.kind !== "Action" || node.proof?.required !== true) return [];
+  if (input.allow_self_attested_proof === true && inputs["proof_capsule_valid"] === true) return [];
+  if (!input.proof_capsule) return ["proof_capsule_missing"];
+  if (!input.proof_validator) return ["proof_validator_missing"];
+  const result = await input.proof_validator({
+    graph,
+    node,
+    mode,
+    proof_capsule: input.proof_capsule,
+    inputs,
+  });
+  if (!result.ok) return result.blocked_by.length > 0 ? result.blocked_by : ["proof_capsule_invalid"];
+  return [];
 }
 
 export function evaluateStaticCondition(condition: string, inputs: Record<string, unknown>): boolean {

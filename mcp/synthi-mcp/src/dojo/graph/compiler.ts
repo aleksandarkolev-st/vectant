@@ -110,7 +110,7 @@ function actionNode(skill: DojoSkill): DojoGraphNode {
   return {
     ...baseNode("action", "Action", skill.published_tool_name ?? "Workflow replay", risk),
     action: "run_workflow",
-    preconditions: ["proof_capsule_valid == true"],
+    preconditions: [],
     postconditions: skill.skill_seed.candidate_success_assertions.map((assertion) => assertion.label),
     guardrails: skill.guardrails.map((guardrail) => ({
       guardrail_id: guardrail.guardrail_id,

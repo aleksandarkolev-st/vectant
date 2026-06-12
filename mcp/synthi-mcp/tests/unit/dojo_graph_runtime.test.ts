@@ -11,9 +11,10 @@ describe("Dojo graph runtime skeleton", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
-        proof_capsule_valid: true,
         assertion_results: { assert_submission_state: true },
       },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
     })).resolves.toEqual(expect.objectContaining({
       ok: true,
       status: "completed",
@@ -30,7 +31,7 @@ describe("Dojo graph runtime skeleton", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
-      inputs: { proof_capsule_valid: true, client_id_verified: true, assertion_results: { assert_submission_state: true } },
+      inputs: { client_id_verified: true, assertion_results: { assert_submission_state: true } },
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -58,6 +59,50 @@ describe("Dojo graph runtime skeleton", () => {
     }));
   });
 
+  it("blocks production proof-required actions when proof validation fails", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: () => ({ ok: false, blocked_by: ["proof_capsule_signature_invalid"] }),
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["proof_capsule_signature_invalid"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["proof_capsule_signature_invalid"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks production proof-required actions without a validator", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["proof_validator_missing"],
+    }));
+  });
+
   it("blocks execution when graph validation fails", async () => {
     const runtime = new DojoSkillGraphRuntime();
     const invalid = graphFixture();
@@ -67,7 +112,7 @@ describe("Dojo graph runtime skeleton", () => {
 
     await expect(runtime.execute({
       graph: invalid,
-      inputs: { workspace_verified: true, proof_capsule_valid: true },
+      inputs: { workspace_verified: true },
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -85,6 +130,8 @@ describe("Dojo graph runtime skeleton", () => {
     expect(evaluateStaticCondition("unsupported > 1", { unsupported: 2 })).toBe(false);
   });
 });
+
+const validProofValidator = () => ({ ok: true, blocked_by: [] });
 
 function graphFixture(): DojoSkillGraph {
   return {

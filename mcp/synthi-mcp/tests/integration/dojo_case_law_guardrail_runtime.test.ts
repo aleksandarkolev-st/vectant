@@ -39,7 +39,6 @@ describe("Dojo case-law guardrail runtime binding", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
-        proof_capsule_valid: true,
         stable_entity_identity: false,
         assertion_results: { assert_submission_state: true },
       },

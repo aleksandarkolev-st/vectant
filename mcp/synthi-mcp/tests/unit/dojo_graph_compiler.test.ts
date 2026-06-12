@@ -38,6 +38,7 @@ describe("Dojo graph compiler", () => {
     expect(graph.nodes.filter((node) => node.kind === "Guardrail").length).toBeGreaterThan(0);
     expect(action).toEqual(expect.objectContaining({
       kind: "Action",
+      preconditions: [],
       proof: expect.objectContaining({
         required: true,
         required_claims: skill.permission_license.proof_requirements.required_evidence_claims,

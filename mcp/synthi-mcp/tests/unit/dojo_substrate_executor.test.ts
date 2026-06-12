@@ -15,9 +15,10 @@ describe("Dojo substrate executor", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
-        proof_capsule_valid: true,
         assertion_results: { assert_submission_state: true },
       },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor(),
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
@@ -35,10 +36,11 @@ describe("Dojo substrate executor", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
-        proof_capsule_valid: true,
         license_allowed_substrates: ["api", "mcp"],
         assertion_results: { assert_submission_state: true },
       },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -55,10 +57,11 @@ describe("Dojo substrate executor", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
-        proof_capsule_valid: true,
         approved_api_candidates: ["api-a"],
         assertion_results: { assert_submission_state: true },
       },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
     })).resolves.toEqual(expect.objectContaining({
       ok: true,
       node_results: expect.arrayContaining([
@@ -83,7 +86,6 @@ describe("Dojo substrate executor", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
-        proof_capsule_valid: true,
         compiled_api_tool: tool,
         api_tool_args: {
           proof_capsule: { capsule_id: "capsule-a" },
@@ -98,6 +100,8 @@ describe("Dojo substrate executor", () => {
         },
         assertion_results: { assert_submission_state: true },
       },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
     })).resolves.toEqual(expect.objectContaining({
       ok: true,
       node_results: expect.arrayContaining([
@@ -116,7 +120,6 @@ describe("Dojo substrate executor", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
-        proof_capsule_valid: true,
         compiled_api_tool: tool,
         api_tool_args: {
           proof_capsule: { capsule_id: "capsule-a" },
@@ -131,6 +134,8 @@ describe("Dojo substrate executor", () => {
         },
         assertion_results: { assert_submission_state: true },
       },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -138,6 +143,8 @@ describe("Dojo substrate executor", () => {
     }));
   });
 });
+
+const validProofValidator = () => ({ ok: true, blocked_by: [] });
 
 function graphFixture(input: { substrate_options: string[]; metadata?: Record<string, unknown> }): DojoSkillGraph {
   return {
