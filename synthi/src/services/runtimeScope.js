@@ -35,10 +35,11 @@ export function getWorkspaceRuntimeIdentity(slug, { userId = null } = {}) {
     const collabSessionId = collabSessionService?.isActive ? collabSessionService.sessionId : null;
     if (collabSessionId) {
         const actorUserId = userId || browserStoredUserId() || collabSessionService?.effectiveUserId || 'guest';
+        const collabFilesystemUserId = scopedRuntimePart('collab', collabSessionId);
         return {
             runtimeScope: `${workspacePart}-collab-${hashRuntimeScopePart(collabSessionId)}`,
             runtimeKind: 'collab',
-            filesystemUserId: collabSessionService?.effectiveUserId || actorUserId,
+            filesystemUserId: collabFilesystemUserId,
             actorUserId,
             collabSessionId,
         };

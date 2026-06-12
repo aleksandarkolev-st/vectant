@@ -69,7 +69,7 @@ rules:
   # Open interactive shells inside per-runtime pods for the terminal service.
   - apiGroups: [""]
     resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get", "create"]
   # Create/delete ClusterIP Services per workspace for health checks.
   - apiGroups: [""]
     resources: ["services"]

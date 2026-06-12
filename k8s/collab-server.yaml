@@ -84,6 +84,21 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_PREVIEW_SIDECAR_IMAGE
+            - name: SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE
+            - name: SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT
+            - name: SYNTHI_HOSTED_BROWSER_CDP_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_HOSTED_BROWSER_CDP_PORT
             - name: SYNTHI_PREVIEW_SCAN_PORTS
               valueFrom:
                 configMapKeyRef:
