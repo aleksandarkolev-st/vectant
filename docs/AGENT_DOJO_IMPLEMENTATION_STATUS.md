@@ -92,6 +92,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_revoke_license` | `executable` |
 | `synthi_dojo_record_case_law` | `executable` |
 | `synthi_dojo_export_artifacts` | `executable` |
+| `synthi_dojo_export_compliance_pack` | `executable` |
 | `synthi_dojo_issue_proof_capsule` | `executable` |
 | `synthi_dojo_validate_proof_capsule` | `executable` |
 | `synthi_dojo_revoke_proof_capsule` | `executable` |

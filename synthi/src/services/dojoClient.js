@@ -1377,6 +1377,32 @@ export async function recertifyDojoSkill({
   };
 }
 
+export async function exportDojoCompliancePack({
+  skillId = '',
+  workspaceSlug = '',
+  signal,
+  url,
+  token,
+} = {}) {
+  const body = await callAgentWorkflowTool({
+    url,
+    token,
+    signal,
+    tool: 'synthi_dojo_export_compliance_pack',
+    arguments: {
+      ...(skillId ? { skill_id: skillId } : {}),
+    },
+  });
+  assertBridgeToolActionOk(body, 'dojo_compliance_pack_export_failed');
+  const exportId = body?.result?.export_id || body?.result?.pack?.export_id || '';
+  return {
+    body,
+    result: body.result,
+    summary: summaryFromToolBody(body, workspaceSlug),
+    message: `Compliance pack exported${exportId ? `: ${exportId}` : ''}`,
+  };
+}
+
 export async function revokeDojoLicense({
   item,
   workspaceSlug = '',

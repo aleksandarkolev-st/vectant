@@ -463,6 +463,45 @@ describe("Dojo governance service", () => {
       expect.objectContaining({ artifact_id: "license_and_proof_audit", status: "available" }),
       expect.objectContaining({ artifact_id: "case_law_registry", status: "missing" }),
     ]));
+
+    const withCaseLaw = skillFixture({
+      skillId: "skill-with-case-law",
+      caseLaw: [{
+        case_id: "case-approved",
+        title: "Approved duplicate guardrail",
+        date: "2026-06-11",
+        finding: "Duplicate entities require stable IDs.",
+        impact: "Wrong entity could be updated.",
+        rule_created: "stable_id_verified == true",
+        applies_to: ["submit_invoice"],
+        evidence_refs: ["evidence-case-approved"],
+        status: "binding",
+        binding_scope: "workspace",
+        guardrail_id: "guard-approved",
+      }],
+    });
+    const caseLawAuditExports = queryDojoAuditExports({
+      skills: [withCaseLaw],
+      case_law_review_queue: [],
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+    const caseLawPack = buildDojoComplianceEvidencePack({
+      skills: [withCaseLaw],
+      case_law_review_queue: [],
+      audit_exports: caseLawAuditExports,
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+    expect(caseLawAuditExports).toEqual(expect.arrayContaining([
+      expect.objectContaining({ export_id: "case_law_registry", status: "available", record_count: 1 }),
+    ]));
+    expect(caseLawPack.missing_artifacts).toEqual([]);
+    expect(caseLawPack.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        artifact_id: "case_law_registry",
+        status: "available",
+        evidence_refs: ["evidence-case-approved"],
+      }),
+    ]));
   });
 });
 

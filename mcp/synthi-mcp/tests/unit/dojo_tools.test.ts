@@ -263,6 +263,7 @@ describe("Agent Dojo MCP tools", () => {
         expect.objectContaining({ name: "synthi_dojo_record_case_law" }),
         expect.objectContaining({ name: "synthi_dojo_revoke_license" }),
         expect.objectContaining({ name: "synthi_dojo_export_artifacts" }),
+        expect.objectContaining({ name: "synthi_dojo_export_compliance_pack" }),
         expect.objectContaining({ name: "synthi_dojo_run_with_proof_capsule" }),
       ]));
     } finally {
@@ -833,6 +834,48 @@ describe("Agent Dojo MCP tools", () => {
       ]),
     }));
     expect((exported?.structuredContent as { artifact_count: number }).artifact_count).toBeGreaterThan(20);
+    const complianceExport = await dispatchDojoTool("synthi_dojo_export_compliance_pack", {
+      skill_id: published.skill.skill_id,
+      now: "2026-06-11T00:06:00.000Z",
+    });
+    const complianceContent = complianceExport?.structuredContent as {
+      pack: {
+        schema_version: string;
+        artifact_count: number;
+        compliance_evidence_pack: { artifacts: Array<{ artifact_id: string; status: string }> };
+        missing_artifacts: string[];
+      };
+      artifacts: Array<{ path: string; content: string; content_type: string; sensitive: false }>;
+      artifact_count: number;
+    };
+    expect(complianceContent).toEqual(expect.objectContaining({
+      ok: true,
+      export_id: expect.stringMatching(/^compliance_export_/),
+      pack: expect.objectContaining({
+        schema_version: "synthi.dojo.complianceEvidencePackExport.v1",
+        compliance_evidence_pack: expect.objectContaining({
+          artifacts: expect.arrayContaining([
+            expect.objectContaining({ artifact_id: "skill_assurance_case", status: "available" }),
+            expect.objectContaining({ artifact_id: "license_and_proof_audit", status: "available" }),
+            expect.objectContaining({ artifact_id: "case_law_registry", status: "available" }),
+          ]),
+        }),
+      }),
+    }));
+    expect(complianceContent.artifact_count).toBe(complianceContent.artifacts.length);
+    expect(complianceContent.artifacts.every((artifact) => artifact.sensitive === false)).toBe(true);
+    expect(complianceContent.artifacts.map((artifact) => artifact.path)).toEqual(expect.arrayContaining([
+      expect.stringContaining("assurance.case.md"),
+      expect.stringContaining("license.json"),
+      expect.stringContaining("case-law.md"),
+    ]));
+    const complianceManifest = JSON.parse(
+      complianceContent.artifacts.find((artifact) => artifact.path.endsWith(".manifest.json"))?.content ?? "null"
+    ) as { artifact_count: number; artifacts: Array<{ path: string }> };
+    expect(complianceManifest.artifact_count).toBe(complianceContent.artifacts.length - 1);
+    expect(complianceManifest.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: expect.stringContaining("assurance.case.md") }),
+    ]));
 
     const cortex = await dispatchDojoTool("synthi_dojo_get_skill_cortex", { skill_id: published.skill.skill_id });
     expect(cortex?.structuredContent).toEqual(expect.objectContaining({

@@ -97,6 +97,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_dojo_revoke_license",
   "synthi_dojo_record_case_law",
   "synthi_dojo_export_artifacts",
+  "synthi_dojo_export_compliance_pack",
   "synthi_dojo_issue_proof_capsule",
   "synthi_dojo_validate_proof_capsule",
   "synthi_dojo_revoke_proof_capsule",

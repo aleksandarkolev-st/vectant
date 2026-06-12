@@ -84,6 +84,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_revoke_license: executable("Mutates the stored license into a revoked/blocked state."),
   synthi_dojo_record_case_law: executable("Records a binding case-law entry and guardrail into the current skill store."),
   synthi_dojo_export_artifacts: executable("Exports repo artifacts from the current stored skill."),
+  synthi_dojo_export_compliance_pack: executable("Exports a compliance evidence pack manifest and selected redacted Dojo artifacts from the current stored skills."),
   synthi_dojo_issue_proof_capsule: proofExecutable("Issues and stores a proof capsule using current context and evidence-claim checks; Ed25519 local and external command signing are supported when configured."),
   synthi_dojo_validate_proof_capsule: executable("Validates proof capsule signature, registry status, action scope, expiry, and replay state."),
   synthi_dojo_revoke_proof_capsule: executable("Revokes a stored proof capsule record."),

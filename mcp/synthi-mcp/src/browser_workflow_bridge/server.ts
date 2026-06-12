@@ -615,6 +615,19 @@ function updateBridgeState(
     state.latestDojoGovernance = payload;
     pushBridgeHistory(state, now, "Dojo governance", "Policy gates and audit report", "passed", "Governed", "ok");
   }
+  if (ok && toolName === "synthi_dojo_export_compliance_pack") {
+    state.latestDojoGovernance = payload;
+    const pack = recordAt(payload, "pack");
+    pushBridgeHistory(
+      state,
+      now,
+      "Compliance pack exported",
+      stringOpt(pack?.["export_id"]) ?? stringOpt(payload["export_id"]) ?? "Evidence pack",
+      "passed",
+      "Exported",
+      "ok"
+    );
+  }
   if (ok && toolName === "synthi_dojo_get_metrics") {
     state.latestDojoMetrics = payload;
     pushBridgeHistory(state, now, "Dojo metrics", "Universe metrics refreshed", "passed", "Metrics", "ok");

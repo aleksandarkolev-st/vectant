@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { ArchiveX, ArrowLeft, CheckCircle2, Landmark } from 'lucide-react';
 import {
   createEmptyDojoSummary,
+  exportDojoCompliancePack,
   getDojoWorkspaceSummary,
   recertifyDojoSkill,
   reviewDojoCaseLaw,
@@ -33,6 +34,7 @@ export default function GovernanceDashboard({
   onDenyApproval,
   onApproveCaseLaw,
   onDeprecateCaseLaw,
+  onExportCompliancePack,
   onRecertifySkill,
   onRevokeLicense,
   enableBridgeActions = true,
@@ -74,6 +76,8 @@ export default function GovernanceDashboard({
     ?? (enableBridgeActions ? (item) => reviewDojoCaseLaw({ item, decision: 'deprecated', workspaceSlug }) : undefined);
   const recertifySkillHandler = onRecertifySkill
     ?? (enableBridgeActions ? (item) => recertifyDojoSkill({ item, workspaceSlug }) : undefined);
+  const exportComplianceHandler = onExportCompliancePack
+    ?? (enableBridgeActions ? () => exportDojoCompliancePack({ skillId: summary.selectedSkill?.skillId || '', workspaceSlug }) : undefined);
   const revokeLicenseHandler = onRevokeLicense
     ?? (enableBridgeActions ? (item) => revokeDojoLicense({ item, workspaceSlug }) : undefined);
 
@@ -203,7 +207,16 @@ export default function GovernanceDashboard({
         />
 
         <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
-          <ComplianceEvidencePack pack={governance.complianceEvidencePack} />
+          <ComplianceEvidencePack
+            pack={governance.complianceEvidencePack}
+            busy={actionState.busyKey === 'compliance:export'}
+            onExport={exportComplianceHandler ? (pack) => invokeGovernanceAction({
+              busyKey: 'compliance:export',
+              successLabel: 'Compliance pack exported',
+              item: pack,
+              handler: exportComplianceHandler,
+            }) : undefined}
+          />
           <AuditExportPanel items={governance.auditExports} />
         </section>
       </div>

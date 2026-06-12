@@ -241,6 +241,7 @@ describe('GovernanceDashboard', () => {
     expect(view.querySelector('[data-testid="case-law-CASE-001-approve"]')?.disabled).toBe(true);
     expect(view.querySelector('[data-testid="case-law-CASE-001-deprecate"]')?.disabled).toBe(true);
     expect(view.querySelector('[data-testid="recertification-recert-001-run"]')?.disabled).toBe(true);
+    expect(view.querySelector('[data-testid="compliance-pack-export"]')?.disabled).toBe(true);
   });
 
   it('invokes governance approval and revocation actions with operator feedback', async () => {
@@ -249,6 +250,7 @@ describe('GovernanceDashboard', () => {
     const approveCaseLaw = vi.fn().mockResolvedValue({ message: 'case law approved in test' });
     const deprecateCaseLaw = vi.fn().mockResolvedValue({ message: 'case law deprecated in test' });
     const recertify = vi.fn().mockResolvedValue({ message: 'skill recertified in test' });
+    const exportCompliance = vi.fn().mockResolvedValue({ message: 'compliance exported in test' });
     const revoke = vi.fn().mockResolvedValue({ message: 'license revoked in test' });
     const view = renderDashboard({
       workspaceSlug: 'workspace-a',
@@ -258,6 +260,7 @@ describe('GovernanceDashboard', () => {
       onApproveCaseLaw: approveCaseLaw,
       onDeprecateCaseLaw: deprecateCaseLaw,
       onRecertifySkill: recertify,
+      onExportCompliancePack: exportCompliance,
       onRevokeLicense: revoke,
     });
 
@@ -306,6 +309,15 @@ describe('GovernanceDashboard', () => {
       reason: 'source_drift',
     }));
     expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('skill recertified in test');
+
+    await act(async () => {
+      view.querySelector('[data-testid="compliance-pack-export"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(exportCompliance).toHaveBeenCalledWith(expect.objectContaining({
+      packId: 'compliance-pack-001',
+      retentionClass: 'regulated',
+    }));
+    expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('compliance exported in test');
 
     await act(async () => {
       view.querySelector('[data-testid="license-license-001-revoke"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -409,6 +421,18 @@ describe('GovernanceDashboard', () => {
         },
       });
       expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Skill recertified: Stale approval skill');
+
+      await act(async () => {
+        view.querySelector('[data-testid="compliance-pack-export"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      const complianceCall = global.fetch.mock.calls.at(-1);
+      expect(JSON.parse(complianceCall?.[1]?.body || '{}')).toEqual({
+        tool: 'synthi_dojo_export_compliance_pack',
+        arguments: {
+          skill_id: 'skill-save-invoice',
+        },
+      });
+      expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Compliance pack exported');
 
       await act(async () => {
         view.querySelector('[data-testid="approval-permission-upgrade-001-approve"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));

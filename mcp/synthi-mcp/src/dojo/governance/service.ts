@@ -700,7 +700,8 @@ export function queryDojoAuditExports(input: {
   generated_at: string;
 }): DojoGovernanceAuditExportItem[] {
   const skillCount = input.skills.length;
-  const proposedCaseCount = input.case_law_review_queue.length;
+  const caseLawRecordCount = input.skills.reduce((count, skill) => count + skill.case_law.length, 0)
+    + input.case_law_review_queue.length;
   return [
     {
       export_id: "skill_assurance_case",
@@ -723,11 +724,15 @@ export function queryDojoAuditExports(input: {
     {
       export_id: "case_law_registry",
       title: "Case Law Registry",
-      status: proposedCaseCount > 0 ? "available" : "missing",
+      status: caseLawRecordCount > 0 ? "available" : "missing",
       generated_at: input.generated_at,
       format: "json",
-      record_count: proposedCaseCount,
-      digest: digestFor(["case_law_registry", ...input.case_law_review_queue.map((item) => item.case_id)]),
+      record_count: caseLawRecordCount,
+      digest: digestFor([
+        "case_law_registry",
+        ...input.skills.flatMap((skill) => skill.case_law.map((item) => item.case_id)),
+        ...input.case_law_review_queue.map((item) => item.case_id),
+      ]),
     },
   ];
 }
@@ -738,6 +743,11 @@ export function buildDojoComplianceEvidencePack(input: {
   audit_exports: DojoGovernanceAuditExportItem[];
   generated_at: string;
 }): DojoGovernanceComplianceEvidencePack {
+  const skillCaseLaw = input.skills.flatMap((skill) => skill.case_law);
+  const caseLawEvidenceRefs = [
+    ...skillCaseLaw.flatMap((item) => item.evidence_refs),
+    ...input.case_law_review_queue.flatMap((item) => item.evidence_refs),
+  ];
   const artifacts: DojoGovernanceComplianceArtifact[] = [
     {
       artifact_id: "skill_assurance_case",
@@ -758,9 +768,14 @@ export function buildDojoComplianceEvidencePack(input: {
     {
       artifact_id: "case_law_registry",
       title: "Case Law Registry",
-      status: input.case_law_review_queue.length > 0 ? "available" : "missing",
-      digest: digestFor(["compliance", "case_law_registry", ...input.case_law_review_queue.map((item) => item.case_id)]),
-      evidence_refs: input.case_law_review_queue.flatMap((item) => item.evidence_refs),
+      status: skillCaseLaw.length > 0 || input.case_law_review_queue.length > 0 ? "available" : "missing",
+      digest: digestFor([
+        "compliance",
+        "case_law_registry",
+        ...skillCaseLaw.map((item) => item.case_id),
+        ...input.case_law_review_queue.map((item) => item.case_id),
+      ]),
+      evidence_refs: caseLawEvidenceRefs,
     },
   ];
   return {

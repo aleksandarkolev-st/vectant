@@ -99,6 +99,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_revoke_license",
   "synthi_dojo_record_case_law",
   "synthi_dojo_export_artifacts",
+  "synthi_dojo_export_compliance_pack",
   "synthi_dojo_issue_proof_capsule",
   "synthi_dojo_validate_proof_capsule",
   "synthi_dojo_revoke_proof_capsule",
@@ -562,6 +563,20 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_export_compliance_pack",
+    description:
+      "Export a reviewable Dojo compliance evidence pack assembled from existing assurance, license, proof, case-law, governance, evidence, and MCP artifacts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        now: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
     name: "synthi_dojo_issue_proof_capsule",
     description:
       "Issue a proof-carrying skill capsule for a licensed Dojo skill and requested action. The capsule must be supplied to synthi_dojo_run_with_proof_capsule before execution.",
@@ -756,6 +771,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         break;
       case "synthi_dojo_export_artifacts":
         response = dojoExportArtifactsTool(args);
+        break;
+      case "synthi_dojo_export_compliance_pack":
+        response = dojoExportCompliancePackTool(args);
         break;
       case "synthi_dojo_issue_proof_capsule":
         response = dojoIssueProofCapsuleTool(args);
@@ -1737,6 +1755,52 @@ function dojoExportArtifactsTool(args: unknown): ToolResponse {
   });
 }
 
+function dojoExportCompliancePackTool(args: unknown): ToolResponse {
+  const explicitSkill = skillByArgs(args);
+  const skills = explicitSkill ? [explicitSkill] : dojoSkillRegistry.list();
+  if (skills.length === 0) return errorResponse("dojo_skill_required");
+  const now = stringOpt(obj(args)["now"]) ?? new Date().toISOString();
+  const governanceService = buildDojoGovernanceServiceView({
+    skills,
+    case_law_records: dojoSkillRegistry.listCaseLawRecords(),
+    permission_upgrade_requests: dojoSkillRegistry.listPermissionUpgradeRequests(),
+    now,
+  });
+  const exportedArtifacts = skills.flatMap((skill) => exportDojoRepoArtifacts(skill));
+  const complianceArtifactIds = governanceService.compliance_evidence_pack.artifacts
+    .filter((artifact) => artifact.status === "available")
+    .map((artifact) => artifact.artifact_id);
+  const selectedArtifacts = selectComplianceArtifacts(exportedArtifacts, complianceArtifactIds);
+  const manifest = {
+    schema_version: "synthi.dojo.complianceEvidencePackExport.v1",
+    export_id: `compliance_export_${hashId(`${now}:${skills.map((skill) => skill.skill_id).join(":")}:${selectedArtifacts.length}`)}`,
+    generated_at: now,
+    skill_ids: skills.map((skill) => skill.skill_id),
+    workspace_ids: [...new Set(skills.map((skill) => skill.workspace_id))],
+    compliance_evidence_pack: governanceService.compliance_evidence_pack,
+    audit_exports: governanceService.audit_exports,
+    artifact_count: selectedArtifacts.length,
+    artifacts: artifactSummary(selectedArtifacts),
+    missing_artifacts: governanceService.compliance_evidence_pack.missing_artifacts,
+    secret_policy: "redacted_metadata_and_review_artifacts_only",
+  };
+  const manifestArtifact = {
+    path: `.synthi/dojo/compliance/${manifest.export_id}.manifest.json`,
+    content_type: "application/json",
+    content: JSON.stringify(manifest, null, 2),
+    sensitive: false as const,
+  };
+  return jsonResponse({
+    ok: true,
+    export_id: manifest.export_id,
+    generated_at: now,
+    pack: manifest,
+    governance_service: governanceService,
+    artifact_count: selectedArtifacts.length + 1,
+    artifacts: [manifestArtifact, ...selectedArtifacts],
+  });
+}
+
 function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
   const a = obj(args);
   const skill = requiredSkill(args);
@@ -2027,6 +2091,49 @@ function artifactSummary(artifacts: ReturnType<typeof exportDojoRepoArtifacts>):
     content_type: artifact.content_type,
     sensitive: artifact.sensitive,
   }));
+}
+
+function selectComplianceArtifacts(
+  artifacts: ReturnType<typeof exportDojoRepoArtifacts>,
+  complianceArtifactIds: string[]
+): ReturnType<typeof exportDojoRepoArtifacts> {
+  const selected = new Map<string, ReturnType<typeof exportDojoRepoArtifacts>[number]>();
+  for (const artifact of artifacts) {
+    if (complianceArtifactIds.some((artifactId) => complianceArtifactCoversPath(artifactId, artifact.path))) {
+      selected.set(artifact.path, artifact);
+    }
+  }
+  return [...selected.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function complianceArtifactCoversPath(artifactId: string, path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  switch (artifactId) {
+    case "skill_assurance_case":
+      return normalized.includes("assurance.case.md")
+        || normalized.includes("checkride.report.md")
+        || normalized.includes("training-report")
+        || normalized.includes("skill-passport.json");
+    case "license_and_proof_audit":
+      return normalized.includes("license.json")
+        || normalized.includes("proof-capsule.schema.json")
+        || normalized.includes("lifecycle.report.json")
+        || normalized.includes("governance.report.json")
+        || normalized.includes("mcp.manifest.json");
+    case "case_law_registry":
+      return normalized.includes("case-law.md")
+        || normalized.includes("/cases/")
+        || normalized.includes("guardrails.json")
+        || normalized.includes("antibodies.json");
+    case "evidence_ledger_manifest":
+      return normalized.includes("evidence-ledger.json")
+        || normalized.includes("evidence-manifest.json")
+        || normalized.includes("redacted-evidence-manifest.json")
+        || normalized.includes("/evidence/")
+        || normalized.includes(".ledger.json");
+    default:
+      return false;
+  }
 }
 
 function refusalFor(skill: DojoSkill, blockedBy: string[]): string {

@@ -1,19 +1,19 @@
 'use client';
 
-import { PackageCheck } from 'lucide-react';
+import { Download, PackageCheck } from 'lucide-react';
 
 const panelStyle = {
   borderColor: 'var(--border-subtle)',
   background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
 };
 
-export default function ComplianceEvidencePack({ pack }) {
+export default function ComplianceEvidencePack({ pack, onExport, busy = false }) {
   const artifacts = pack?.artifacts || [];
   const missing = pack?.missingArtifacts || [];
 
   return (
     <section className="rounded-md border p-4" style={panelStyle} data-testid="compliance-evidence-pack">
-      <div className="mb-3 flex items-center justify-between gap-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <h2 className="flex items-center gap-2 text-sm font-semibold">
             <PackageCheck size={15} aria-hidden="true" />
@@ -21,7 +21,21 @@ export default function ComplianceEvidencePack({ pack }) {
           </h2>
           <p className="mt-1 truncate text-xs" style={{ color: 'var(--text-muted)' }}>{pack?.packId || 'No pack ID'}</p>
         </div>
-        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{artifacts.length} artifacts</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{artifacts.length} artifacts</span>
+          <button
+            type="button"
+            className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs disabled:cursor-not-allowed disabled:opacity-45"
+            style={panelStyle}
+            disabled={!onExport || busy}
+            data-testid="compliance-pack-export"
+            onClick={() => onExport?.(pack)}
+            title={!onExport ? 'Action handler unavailable' : 'Export compliance pack'}
+          >
+            <Download size={13} aria-hidden="true" />
+            Export pack
+          </button>
+        </div>
       </div>
 
       {artifacts.length ? (
