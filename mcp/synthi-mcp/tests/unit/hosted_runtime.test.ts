@@ -55,9 +55,12 @@ describe("hosted browser runtime resolver", () => {
 
     const result = await attachHostedBrowserRuntime(
       {
+        tenant_id: "tenant-a",
         workspace_id: "workspace-a",
+        actor_id: "agent-a",
         workspace_url: "https://workspace.example.test/workspace/browser",
         runtime_id: "runtime-a",
+        runtime_session_id: "session-a",
       },
       deps,
       broker,
@@ -74,8 +77,11 @@ describe("hosted browser runtime resolver", () => {
     expect(result).not.toHaveProperty("cdp_url");
     expect(result.runtime).toEqual(expect.objectContaining({
       kind: "hosted",
+      tenant_id: "tenant-a",
       workspace_id: "workspace-a",
+      actor_id: "agent-a",
       runtime_id: "runtime-a",
+      session_id: "session-a",
       workspace_url: "https://workspace.example.test/workspace/browser",
       adapter: "hosted-playwright-cdp",
       origin_allowlist: ["https://workspace.example.test"],
@@ -87,6 +93,47 @@ describe("hosted browser runtime resolver", () => {
     expect(result.tabs.map((tab) => tab.tab_id)).toEqual(["hosted_tab_2"]);
     expect(result.hidden_tabs).toBe(1);
     expect(broker.runtimeAttachment()).toEqual(expect.objectContaining({ kind: "hosted" }));
+  });
+
+  it("generates a hosted runtime session id when callers do not provide one", async () => {
+    const broker = new BrowserBroker();
+    broker.requestConsent("https://workspace.example.test", "granted", "unit", { screenshot: true });
+    const deps: HostedBrowserAttachDeps = {
+      async attach() {
+        return [{ tab_id: "hosted_tab_1", url: "https://workspace.example.test/workspace/browser", active: true }];
+      },
+      async open(url: string) {
+        return { tab_id: "hosted_tab_1", url, active: true };
+      },
+      async listTabs() {
+        return [{ tab_id: "hosted_tab_1", url: "https://workspace.example.test/workspace/browser", active: true }];
+      },
+    };
+
+    const result = await attachHostedBrowserRuntime(
+      {
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        actor_id: "agent-a",
+        workspace_url: "https://workspace.example.test/workspace/browser",
+      },
+      deps,
+      broker,
+      {
+        SYNTHI_HOSTED_BROWSER_CDP_URL: "ws://hosted-runtime/devtools",
+        SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST: "https://workspace.example.test",
+        SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS: "900000",
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected_hosted_attach_success");
+    expect(result.runtime.session_id).toMatch(/^hosted_session_/);
+    expect(result.runtime).toEqual(expect.objectContaining({
+      tenant_id: "tenant-a",
+      actor_id: "agent-a",
+      workspace_id: "workspace-a",
+    }));
   });
 
   it("fails closed when a configured origin allowlist excludes the workspace origin", async () => {

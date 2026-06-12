@@ -1,18 +1,25 @@
+import { randomUUID } from "node:crypto";
 import type { BrowserBroker, BrowserRuntimeAttachment } from "./broker.js";
 import type { BrowserTab } from "./types.js";
 
 export interface HostedBrowserRuntimeInput {
+  tenant_id?: string;
   workspace_id?: string;
+  actor_id?: string;
   workspace_url?: string;
   runtime_id?: string;
+  runtime_session_id?: string;
   open_workspace?: boolean;
 }
 
 export interface HostedBrowserRuntimeConfig {
   configured: boolean;
+  tenant_id: string | null;
   workspace_id: string;
+  actor_id: string | null;
   workspace_url: string | null;
   runtime_id: string | null;
+  runtime_session_id: string | null;
   adapter: "hosted-playwright-cdp" | "not-configured";
   required_env: string[];
   ignored_local_dev_env: string[];
@@ -55,10 +62,14 @@ interface HostedBrowserRuntimeResolvedConfig extends HostedBrowserRuntimeConfig 
 }
 
 const HOSTED_CDP_ENV = "SYNTHI_HOSTED_BROWSER_CDP_URL";
+const TENANT_ID_ENV = "SYNTHI_TENANT_ID";
 const WORKSPACE_ID_ENV = "SYNTHI_WORKSPACE_ID";
+const AGENT_ID_ENV = "SYNTHI_AGENT_ID";
+const ACTOR_ID_ENV = "SYNTHI_ACTOR_ID";
 const WORKSPACE_URL_ENV = "SYNTHI_WORKSPACE_URL";
 const HOSTED_WORKSPACE_URL_ENV = "SYNTHI_HOSTED_BROWSER_WORKSPACE_URL";
 const RUNTIME_ID_ENV = "SYNTHI_HOSTED_BROWSER_RUNTIME_ID";
+const RUNTIME_SESSION_ID_ENV = "SYNTHI_HOSTED_BROWSER_SESSION_ID";
 const ORIGIN_ALLOWLIST_ENV = "SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST";
 const SESSION_TTL_MS_ENV = "SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS";
 const ALLOW_LOCAL_NETWORK_ENV = "SYNTHI_HOSTED_BROWSER_ALLOW_LOCAL_NETWORK";
@@ -103,8 +114,11 @@ export async function attachHostedBrowserRuntime(
 
   const runtime = broker.setRuntimeAttachment({
     kind: "hosted",
+    tenant_id: config.tenant_id,
     workspace_id: config.workspace_id,
+    actor_id: config.actor_id,
     runtime_id: config.runtime_id,
+    session_id: config.runtime_session_id ?? `hosted_session_${randomUUID()}`,
     workspace_url: config.workspace_url,
     adapter: config.adapter,
     expires_at: config.session_ttl_ms ? Date.now() + config.session_ttl_ms : null,
@@ -134,17 +148,23 @@ function resolveHostedBrowserRuntimeInternal(
   env: NodeJS.ProcessEnv
 ): HostedBrowserRuntimeResolvedConfig {
   const cdpUrl = nonEmpty(env[HOSTED_CDP_ENV]);
+  const tenantId = nonEmpty(input.tenant_id) ?? nonEmpty(env[TENANT_ID_ENV]) ?? null;
   const workspaceId = nonEmpty(input.workspace_id) ?? nonEmpty(env[WORKSPACE_ID_ENV]) ?? "default";
+  const actorId = nonEmpty(input.actor_id) ?? nonEmpty(env[AGENT_ID_ENV]) ?? nonEmpty(env[ACTOR_ID_ENV]) ?? null;
   const workspaceUrl = nonEmpty(input.workspace_url) ?? nonEmpty(env[WORKSPACE_URL_ENV]) ?? nonEmpty(env[HOSTED_WORKSPACE_URL_ENV]) ?? null;
   const runtimeId = nonEmpty(input.runtime_id) ?? nonEmpty(env[RUNTIME_ID_ENV]) ?? null;
+  const runtimeSessionId = nonEmpty(input.runtime_session_id) ?? nonEmpty(env[RUNTIME_SESSION_ID_ENV]) ?? null;
   const ignoredLocalDevEnv = nonEmpty(env["SYNTHI_BROWSER_CDP_URL"]) ? ["SYNTHI_BROWSER_CDP_URL"] : [];
   const originAllowlist = parseOriginAllowlist(env[ORIGIN_ALLOWLIST_ENV]);
   return {
     configured: Boolean(cdpUrl),
     cdpUrl: cdpUrl ?? null,
+    tenant_id: tenantId,
     workspace_id: workspaceId,
+    actor_id: actorId,
     workspace_url: workspaceUrl,
     runtime_id: runtimeId,
+    runtime_session_id: runtimeSessionId,
     adapter: cdpUrl ? "hosted-playwright-cdp" : "not-configured",
     required_env: [HOSTED_CDP_ENV],
     ignored_local_dev_env: ignoredLocalDevEnv,

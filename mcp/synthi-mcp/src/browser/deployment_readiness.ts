@@ -77,6 +77,7 @@ export function browserWorkflowDeploymentReadiness(
   checks.push(checkHostedRuntime(hostedRuntime, env, production));
   checks.push(checkHostedRuntimeOriginPolicy(hostedRuntime, production));
   checks.push(checkHostedRuntimeSessionPolicy(hostedRuntime, production));
+  checks.push(checkHostedRuntimeTenantPolicy(hostedRuntime, production));
   checks.push(checkWorkspaceScope(workspaceId, production));
   checks.push(checkStorePair({
     id: "private_workflow_tool_store",
@@ -338,6 +339,31 @@ function checkHostedRuntimeSessionPolicy(
     message: runtime.session_ttl_ms
       ? "Hosted runtime session TTL exceeds the one-hour production maximum."
       : "Hosted runtime session TTL is missing; production credentials must be short-lived.",
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkHostedRuntimeTenantPolicy(
+  runtime: ReturnType<typeof resolveHostedBrowserRuntime>,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = ["SYNTHI_TENANT_ID", "SYNTHI_AGENT_ID or SYNTHI_ACTOR_ID"];
+  const configured = [
+    ...(runtime.tenant_id ? ["SYNTHI_TENANT_ID"] : []),
+    ...(runtime.actor_id ? ["SYNTHI_AGENT_ID or SYNTHI_ACTOR_ID"] : []),
+  ];
+  const missing = [
+    ...(!runtime.tenant_id ? ["SYNTHI_TENANT_ID"] : []),
+    ...(!runtime.actor_id ? ["SYNTHI_AGENT_ID or SYNTHI_ACTOR_ID"] : []),
+  ];
+  if (missing.length === 0) {
+    return pass("hosted_browser_tenant_policy", "Hosted runtime sessions are tenant- and actor-scoped.", required, configured);
+  }
+  return {
+    id: "hosted_browser_tenant_policy",
+    status: production ? "fail" : "warn",
+    message: `Hosted runtime session scope is missing ${missing.join(", ")}.`,
     required_env: required,
     configured_env: configured,
   };

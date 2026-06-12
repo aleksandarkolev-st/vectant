@@ -354,9 +354,12 @@ export const BROWSER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
+        tenant_id: { type: "string", description: "Optional tenant scope. Defaults to SYNTHI_TENANT_ID." },
         workspace_id: { type: "string", description: "Optional workspace scope. Defaults to SYNTHI_WORKSPACE_ID or the active/default workspace." },
+        actor_id: { type: "string", description: "Optional actor scope for runtime audit. Defaults to SYNTHI_AGENT_ID or SYNTHI_ACTOR_ID." },
         workspace_url: { type: "string", description: "Optional workspace URL to open in the hosted runtime. Defaults to SYNTHI_WORKSPACE_URL or SYNTHI_HOSTED_BROWSER_WORKSPACE_URL." },
         runtime_id: { type: "string", description: "Optional hosted runtime id for diagnostics." },
+        runtime_session_id: { type: "string", description: "Optional runtime session id. Defaults to a generated short-lived hosted session id." },
         open_workspace: { type: "boolean", description: "Open the workspace URL in the hosted runtime after attach. Defaults true when a workspace URL is known." },
       },
       required: [],
@@ -974,9 +977,12 @@ async function browserAttachCurrentWorkspaceTool(args: unknown): Promise<ToolRes
   const a = obj(args);
   const result = await attachHostedBrowserRuntime(
     {
+      tenant_id: stringOpt(a["tenant_id"]),
       workspace_id: stringOpt(a["workspace_id"]),
+      actor_id: stringOpt(a["actor_id"]),
       workspace_url: stringOpt(a["workspace_url"]),
       runtime_id: stringOpt(a["runtime_id"]),
+      runtime_session_id: stringOpt(a["runtime_session_id"]),
       open_workspace: boolOpt(a["open_workspace"]),
     },
     browserPlaywrightAdapter,
@@ -988,8 +994,11 @@ async function browserAttachCurrentWorkspaceTool(args: unknown): Promise<ToolRes
       low_level_local_dev_tool: "synthi_browser_attach",
       readiness: resolveHostedBrowserRuntime({
         workspace_id: stringOpt(a["workspace_id"]),
+        tenant_id: stringOpt(a["tenant_id"]),
+        actor_id: stringOpt(a["actor_id"]),
         workspace_url: stringOpt(a["workspace_url"]),
         runtime_id: stringOpt(a["runtime_id"]),
+        runtime_session_id: stringOpt(a["runtime_session_id"]),
       }),
     });
   }

@@ -11,7 +11,9 @@ describe("browser workflow deployment readiness", () => {
     expect(readiness.checks.every((check) => check.status !== "fail")).toBe(true);
     expect(readiness.hosted_runtime).toEqual(expect.objectContaining({
       configured: true,
+      tenant_id: "tenant-a",
       workspace_id: "tenant-a:workspace-a",
+      actor_id: "agent-a",
       workspace_url: "https://app.example.test/workspace/acme",
       origin_allowlist: ["https://app.example.test"],
       session_ttl_ms: 900000,
@@ -30,6 +32,7 @@ describe("browser workflow deployment readiness", () => {
       expect.objectContaining({ id: "dojo_evidence_ledger", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_origin_policy", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_session_policy", status: "pass" }),
+      expect.objectContaining({ id: "hosted_browser_tenant_policy", status: "pass" }),
     ]));
     expect(JSON.stringify(readiness)).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret/);
     expect(JSON.stringify(readiness)).not.toMatch(/SYNTHI_BROWSER_CDP_URL/);
@@ -51,6 +54,7 @@ describe("browser workflow deployment readiness", () => {
       expect.objectContaining({ id: "local_cdp_env_absent", status: "fail" }),
       expect.objectContaining({ id: "hosted_browser_origin_policy", status: "fail" }),
       expect.objectContaining({ id: "hosted_browser_session_policy", status: "fail" }),
+      expect.objectContaining({ id: "hosted_browser_tenant_policy", status: "fail" }),
       expect.objectContaining({ id: "dojo_production_enforcement", status: "fail" }),
       expect.objectContaining({ id: "dojo_durable_store", status: "fail" }),
       expect.objectContaining({ id: "dojo_external_signing", status: "fail" }),
@@ -71,6 +75,22 @@ describe("browser workflow deployment readiness", () => {
     ]);
     expect(readiness.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "dojo_enforcement_flag_values", status: "fail" }),
+    ]));
+  });
+
+  it("fails production readiness when hosted runtime tenant or actor scope is missing", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_TENANT_ID: undefined,
+      SYNTHI_AGENT_ID: undefined,
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "hosted_browser_tenant_policy",
+        status: "fail",
+      }),
     ]));
   });
 
@@ -152,6 +172,8 @@ function productionReadyEnv(): NodeJS.ProcessEnv {
     SYNTHI_HOSTED_BROWSER_WORKSPACE_URL: "https://app.example.test/workspace/acme",
     SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST: "https://app.example.test",
     SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS: "900000",
+    SYNTHI_TENANT_ID: "tenant-a",
+    SYNTHI_AGENT_ID: "agent-a",
     SYNTHI_WORKSPACE_ID: "tenant-a:workspace-a",
     SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: "/var/lib/synthi/private-tools.enc.json",
     SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: "private-tool-secret",

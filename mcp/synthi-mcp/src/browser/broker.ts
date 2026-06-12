@@ -57,8 +57,11 @@ export interface BrowserBridgeMessage {
 
 export interface BrowserRuntimeAttachment {
   kind: "hosted" | "local-dev-cdp";
+  tenant_id?: string | null;
   workspace_id: string | null;
+  actor_id?: string | null;
   runtime_id: string | null;
+  session_id?: string | null;
   workspace_url: string | null;
   adapter: string;
   attached_at: number;
