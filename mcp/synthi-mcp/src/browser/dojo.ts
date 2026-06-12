@@ -14,6 +14,7 @@ import {
 import {
   createDefaultDojoSkillStore,
   InMemoryDojoSkillStore,
+  type DojoAuditActor,
   type DojoCaseLawRecordFilter,
   type DojoControlPlaneStore,
   type DojoPermissionUpgradeRequestFilter,
@@ -780,8 +781,8 @@ export class DojoSkillRegistry {
     return cloneJson(used);
   }
 
-  revokeProofCapsule(capsuleId: string, reason: string, now?: string): DojoProofCapsuleRecord | null {
-    return this.store.revokeProofCapsule(capsuleId, reason, now);
+  revokeProofCapsule(capsuleId: string, reason: string, now?: string, revokedBy?: DojoAuditActor): DojoProofCapsuleRecord | null {
+    return this.store.revokeProofCapsule(capsuleId, reason, now, revokedBy);
   }
 
   listProofRecords(): DojoProofCapsuleRecord[] {

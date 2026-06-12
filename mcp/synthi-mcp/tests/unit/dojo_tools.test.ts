@@ -456,12 +456,47 @@ describe("Agent Dojo MCP tools", () => {
       context_claims: { workspace_verified: true },
     });
     const secondCapsule = (secondCapsuleResponse?.structuredContent as { proof_capsule: { capsule_id: string } }).proof_capsule;
+    const revokedProofMissingReason = await dispatchDojoTool("synthi_dojo_revoke_proof_capsule", {
+      capsule_id: secondCapsule.capsule_id,
+      actor_id: "proof-reviewer-a",
+      actor_type: "human",
+    });
+    expect(revokedProofMissingReason?.isError).toBe(true);
+    expect(revokedProofMissingReason?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_revocation_reason_required",
+    }));
+    const revokedProofMissingActor = await dispatchDojoTool("synthi_dojo_revoke_proof_capsule", {
+      capsule_id: secondCapsule.capsule_id,
+      reason: "unit_test_revocation",
+      actor_type: "human",
+    });
+    expect(revokedProofMissingActor?.isError).toBe(true);
+    expect(revokedProofMissingActor?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_revocation_actor_required",
+    }));
+    const revokedProofMissingActorType = await dispatchDojoTool("synthi_dojo_revoke_proof_capsule", {
+      capsule_id: secondCapsule.capsule_id,
+      reason: "unit_test_revocation",
+      actor_id: "proof-reviewer-a",
+    });
+    expect(revokedProofMissingActorType?.isError).toBe(true);
+    expect(revokedProofMissingActorType?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_revocation_actor_type_required",
+    }));
     const revokedProof = await dispatchDojoTool("synthi_dojo_revoke_proof_capsule", {
       capsule_id: secondCapsule.capsule_id,
       reason: "unit_test_revocation",
+      actor_id: "proof-reviewer-a",
+      actor_type: "human",
+      now: "2026-06-11T00:01:30.000Z",
     });
     expect(revokedProof?.structuredContent).toEqual(expect.objectContaining({
-      proof_record: expect.objectContaining({ status: "revoked" }),
+      proof_record: expect.objectContaining({
+        status: "revoked",
+        revoked_at: "2026-06-11T00:01:30.000Z",
+        revoked_reason: "unit_test_revocation",
+        revoked_by: { actor_id: "proof-reviewer-a", actor_type: "human" },
+      }),
     }));
     const revokedProofValidation = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
       skill_id: published.skill.skill_id,

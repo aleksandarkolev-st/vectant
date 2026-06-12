@@ -34,6 +34,7 @@ export interface DojoProofCapsuleRecord {
   last_validated_at?: string;
   revoked_at?: string;
   revoked_reason?: string;
+  revoked_by?: DojoAuditActor;
 }
 
 export type DojoPermissionUpgradeRequestStatus = "pending" | "not_required" | "approved" | "denied" | "superseded";
@@ -94,7 +95,7 @@ export interface DojoProofStore {
   saveProofRecord(record: DojoProofCapsuleRecord): void;
   getProofRecord(capsuleId: string): DojoProofCapsuleRecord | null;
   listProofRecords(): DojoProofCapsuleRecord[];
-  revokeProofCapsule(capsuleId: string, reason: string, now?: string): DojoProofCapsuleRecord | null;
+  revokeProofCapsule(capsuleId: string, reason: string, now?: string, revokedBy?: DojoAuditActor): DojoProofCapsuleRecord | null;
 }
 
 export interface DojoControlPlaneStore extends DojoSkillStore, DojoProofStore, DojoApprovalStore, DojoCaseLawStore, DojoTransactionalStore {

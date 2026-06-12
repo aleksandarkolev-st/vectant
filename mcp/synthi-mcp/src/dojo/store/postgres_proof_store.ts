@@ -167,7 +167,8 @@ export class PostgresDojoProofStore {
   async revokeProofCapsule(
     capsuleId: string,
     reason: string,
-    now: string = new Date().toISOString()
+    now: string = new Date().toISOString(),
+    revokedBy?: DojoAuditActor
   ): Promise<DojoProofCapsuleRecord | null> {
     const result = await this.queryable.query<ProofRecordRow>(
       `UPDATE dojo_proof_records
@@ -186,6 +187,7 @@ export class PostgresDojoProofStore {
         requested_action: revoked.requested_action,
         proof_status: revoked.status,
         revoked_reason: reason,
+        ...(revokedBy ? { revoked_by: revokedBy } : {}),
       });
     }
     return revoked;

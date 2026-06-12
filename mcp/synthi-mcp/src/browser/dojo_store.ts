@@ -7,6 +7,7 @@ import { publishedToolNamesForSkill, publishedWorkflowBindingForSkill, type Dojo
 import type {
   DojoCaseLawRecordFilter,
   DojoControlPlaneStore,
+  DojoAuditActor,
   DojoPermissionUpgradeRequestFilter,
   DojoPermissionUpgradeRequestRecord,
   DojoProofCapsuleRecord,
@@ -14,6 +15,7 @@ import type {
 
 export type {
   DojoApprovalStore,
+  DojoAuditActor,
   DojoAuditStore,
   DojoCaseLawRecordFilter,
   DojoCaseLawStore,
@@ -113,7 +115,7 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
     return filterCaseLawRecords([...this.caseLawRecords.values()], filter).map(cloneJson);
   }
 
-  revokeProofCapsule(capsuleId: string, reason: string, now: string = new Date().toISOString()): DojoProofCapsuleRecord | null {
+  revokeProofCapsule(capsuleId: string, reason: string, now: string = new Date().toISOString(), revokedBy?: DojoAuditActor): DojoProofCapsuleRecord | null {
     const record = this.proofRecords.get(capsuleId);
     if (!record) return null;
     const revoked = {
@@ -121,6 +123,7 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
       status: "revoked" as const,
       revoked_at: now,
       revoked_reason: reason,
+      revoked_by: revokedBy ? cloneJson(revokedBy) : record.revoked_by,
     };
     this.proofRecords.set(capsuleId, cloneJson(revoked));
     return cloneJson(revoked);
@@ -270,7 +273,7 @@ export class EncryptedFileDojoSkillStore implements DojoControlPlaneStore {
     return filterCaseLawRecords(Object.values(this.scope().case_law_records), filter).map(cloneJson);
   }
 
-  revokeProofCapsule(capsuleId: string, reason: string, now: string = new Date().toISOString()): DojoProofCapsuleRecord | null {
+  revokeProofCapsule(capsuleId: string, reason: string, now: string = new Date().toISOString(), revokedBy?: DojoAuditActor): DojoProofCapsuleRecord | null {
     let revoked: DojoProofCapsuleRecord | null = null;
     this.updateScope((scope) => {
       const record = scope.proof_records[capsuleId];
@@ -280,6 +283,7 @@ export class EncryptedFileDojoSkillStore implements DojoControlPlaneStore {
         status: "revoked",
         revoked_at: now,
         revoked_reason: reason,
+        revoked_by: revokedBy ? cloneJson(revokedBy) : record.revoked_by,
       };
       scope.proof_records[capsuleId] = cloneJson(revoked);
     });

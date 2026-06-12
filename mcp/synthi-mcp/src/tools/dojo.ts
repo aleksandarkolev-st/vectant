@@ -622,8 +622,11 @@ export const DOJO_TOOLS = [
       properties: {
         capsule_id: { type: "string" },
         reason: { type: "string" },
+        actor_id: { type: "string" },
+        actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        now: { type: "string" },
       },
-      required: ["capsule_id"],
+      required: ["capsule_id", "reason", "actor_id", "actor_type"],
     },
   },
   {
@@ -1877,8 +1880,16 @@ function dojoRevokeProofCapsuleTool(args: unknown): ToolResponse {
   const a = obj(args);
   const capsuleId = stringOpt(a["capsule_id"]);
   if (!capsuleId) return errorResponse("dojo_proof_capsule_id_required");
-  const reason = stringOpt(a["reason"]) ?? "operator_revoked";
-  const record = dojoSkillRegistry.revokeProofCapsule(capsuleId, reason);
+  const reason = stringOpt(a["reason"]);
+  if (!reason) return errorResponse("dojo_proof_capsule_revocation_reason_required");
+  const actorId = stringOpt(a["actor_id"]);
+  if (!actorId) return errorResponse("dojo_proof_capsule_revocation_actor_required");
+  const actorType = actorTypeInputOpt(a["actor_type"]);
+  if (!actorType) return errorResponse("dojo_proof_capsule_revocation_actor_type_required");
+  const record = dojoSkillRegistry.revokeProofCapsule(capsuleId, reason, stringOpt(a["now"]), {
+    actor_id: actorId,
+    actor_type: actorType,
+  });
   if (!record) return errorResponse("dojo_proof_capsule_not_found", { capsule_id: capsuleId });
   return jsonResponse({ ok: true, proof_record: record });
 }
