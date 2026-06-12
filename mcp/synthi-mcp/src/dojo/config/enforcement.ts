@@ -8,6 +8,8 @@ export const DOJO_STORE_SCOPE_ENV = "SYNTHI_DOJO_STORE_SCOPE";
 export const DOJO_PROOF_SIGNING_KEY_ENV = "SYNTHI_DOJO_PROOF_SIGNING_KEY";
 export const DOJO_PROOF_SIGNING_PROVIDER_ENV = "SYNTHI_DOJO_PROOF_SIGNING_PROVIDER";
 export const DOJO_PROOF_SIGNING_KEY_ID_ENV = "SYNTHI_DOJO_PROOF_SIGNING_KEY_ID";
+export const DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV = "SYNTHI_DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM";
+export const DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV = "SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM";
 export const DOJO_EVIDENCE_LEDGER_STORE_ENV = "SYNTHI_DOJO_EVIDENCE_LEDGER_STORE";
 export const DOJO_DEFAULT_LOCAL_PROOF_SIGNING_KEY = "synthi-dojo-local-development-signing-key";
 
@@ -66,7 +68,13 @@ export function configuredDojoStoreEnv(env: NodeJS.ProcessEnv = process.env): st
 }
 
 export function configuredDojoExternalSigningEnv(env: NodeJS.ProcessEnv = process.env): string[] {
-  return [DOJO_PROOF_SIGNING_PROVIDER_ENV, DOJO_PROOF_SIGNING_KEY_ID_ENV, DOJO_PROOF_SIGNING_KEY_ENV].filter((name) => nonEmpty(env[name]));
+  return [
+    DOJO_PROOF_SIGNING_PROVIDER_ENV,
+    DOJO_PROOF_SIGNING_KEY_ID_ENV,
+    DOJO_PROOF_SIGNING_KEY_ENV,
+    DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
+    DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
+  ].filter((name) => nonEmpty(env[name]));
 }
 
 export function configuredDojoEvidenceLedgerEnv(env: NodeJS.ProcessEnv = process.env): string[] {

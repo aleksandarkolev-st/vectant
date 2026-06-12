@@ -26,10 +26,23 @@ import {
   type DojoRedactedEvidenceExportManifest,
 } from "../dojo/evidence/export.js";
 import {
+  DOJO_DEFAULT_LOCAL_PROOF_SIGNING_KEY,
+  DOJO_PROOF_SIGNING_KEY_ENV,
+  DOJO_PROOF_SIGNING_KEY_ID_ENV,
+  DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
+  DOJO_PROOF_SIGNING_PROVIDER_ENV,
+  DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
+} from "../dojo/config/enforcement.js";
+import {
   canonicalDojoProofPayload,
+  createEd25519DojoProofSigner,
+  createEd25519DojoProofVerifier,
   createLocalHmacDojoProofSigner,
   encodeDojoProofSignatureEnvelope,
   parseDojoProofSignatureEnvelope,
+  type DojoProofSigner,
+  type DojoProofSigningAlgorithm,
+  type DojoProofVerifier,
 } from "../dojo/proof/signing.js";
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 import { toDojoScenarioDefinitions } from "../dojo/vivarium/scenario_dsl.js";
@@ -277,7 +290,7 @@ export interface DojoProofCarryingSkillCapsule {
   assurance_case_ref: string;
   issued_at: string;
   expires_at: string;
-  signature_algorithm: "hmac-sha256";
+  signature_algorithm: DojoProofSigningAlgorithm;
   signature: string;
 }
 
@@ -1209,6 +1222,7 @@ export function issueDojoProofCapsule(
   const now = input.now ?? new Date().toISOString();
   const expiresAt = input.expires_at ?? new Date(Date.parse(now) + 15 * 60_000).toISOString();
   const evidence = evidenceClaimsForProofIssue(skill, input, now);
+  const signer = dojoProofSigner();
   const capsuleWithoutSignature = {
     schema_version: "synthi.dojo.proofCapsule.v1" as const,
     capsule_id: `capsule_${randomUUID()}`,
@@ -1218,7 +1232,7 @@ export function issueDojoProofCapsule(
     license_version: skill.permission_license.license_version,
     entrustment_level: skill.entrustment_level,
     issuer: dojoProofIssuer(),
-    key_id: dojoProofKeyId(),
+    key_id: signer.key_id,
     nonce: randomUUID(),
     context_claims: input.context_claims ?? {},
     evidence_claims: evidence.claims,
@@ -1229,11 +1243,11 @@ export function issueDojoProofCapsule(
     assurance_case_ref: skill.assurance_case.assurance_case_id,
     issued_at: now,
     expires_at: expiresAt,
-    signature_algorithm: "hmac-sha256" as const,
+    signature_algorithm: signer.algorithm,
   };
   return {
     ...capsuleWithoutSignature,
-    signature: signatureForCapsule(capsuleWithoutSignature),
+    signature: signatureForCapsule(capsuleWithoutSignature, signer),
   };
 }
 
@@ -1253,7 +1267,9 @@ export function validateDojoProofCapsule(
   if (capsule.requested_action !== requestedAction) blockedBy.push("proof_capsule_action_mismatch");
   if (capsule.issuer !== dojoProofIssuer()) blockedBy.push("proof_capsule_issuer_mismatch");
   if (capsule.key_id !== dojoProofKeyId()) blockedBy.push("proof_capsule_key_mismatch");
-  if (capsule.signature_algorithm !== "hmac-sha256") blockedBy.push("proof_capsule_signature_algorithm_mismatch");
+  if (capsule.signature_algorithm !== "hmac-sha256" && capsule.signature_algorithm !== "ed25519") {
+    blockedBy.push("proof_capsule_signature_algorithm_mismatch");
+  }
   if (!capsule.nonce) blockedBy.push("proof_capsule_nonce_missing");
   if (Date.parse(capsule.expires_at) <= Date.parse(now)) blockedBy.push("proof_capsule_expired");
   if (!verifyCapsuleSignature(capsule)) blockedBy.push("proof_capsule_signature_invalid");
@@ -3127,13 +3143,15 @@ function latestLedgerHeadForEvidenceRecords(records: DojoEvidenceLedgerRecord[],
   return undefined;
 }
 
-function signatureForCapsule(capsule: Omit<DojoProofCarryingSkillCapsule, "signature">): string {
-  return encodeDojoProofSignatureEnvelope(dojoProofSigner().sign(canonicalDojoProofPayload(capsule)));
+function signatureForCapsule(capsule: Omit<DojoProofCarryingSkillCapsule, "signature">, signer: DojoProofSigner = dojoProofSigner()): string {
+  return encodeDojoProofSignatureEnvelope(signer.sign(canonicalDojoProofPayload(capsule)));
 }
 
 function verifyCapsuleSignature(capsule: DojoProofCarryingSkillCapsule): boolean {
+  const verifier = dojoProofVerifierForCapsule(capsule);
+  if (!verifier) return false;
   try {
-    return dojoProofSigner().verify(
+    return verifier.verify(
       canonicalDojoProofPayload(unsignedCapsule(capsule)),
       parseDojoProofSignatureEnvelope({
         algorithm: capsule.signature_algorithm,
@@ -3156,18 +3174,50 @@ function dojoProofIssuer(): string {
 }
 
 function dojoProofSigningKey(): string {
-  return process.env["SYNTHI_DOJO_PROOF_SIGNING_KEY"]?.trim() || "synthi-dojo-local-development-signing-key";
+  return process.env[DOJO_PROOF_SIGNING_KEY_ENV]?.trim() || DOJO_DEFAULT_LOCAL_PROOF_SIGNING_KEY;
 }
 
 function dojoProofKeyId(): string {
+  if (dojoProofSigningProvider() === "ed25519-local") {
+    const keyId = process.env[DOJO_PROOF_SIGNING_KEY_ID_ENV]?.trim();
+    if (!keyId) throw new Error("dojo_proof_signing_key_id_required");
+    return keyId;
+  }
   return `dojo-key-${createHash("sha256").update(dojoProofSigningKey()).digest("hex").slice(0, 12)}`;
 }
 
-function dojoProofSigner(): ReturnType<typeof createLocalHmacDojoProofSigner> {
+function dojoProofSigner(): DojoProofSigner {
+  if (dojoProofSigningProvider() === "ed25519-local") {
+    const privateKeyPem = process.env[DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV]?.trim();
+    if (!privateKeyPem) throw new Error("dojo_proof_signing_private_key_required");
+    return createEd25519DojoProofSigner({
+      key_id: dojoProofKeyId(),
+      private_key_pem: privateKeyPem,
+    });
+  }
   return createLocalHmacDojoProofSigner({
     key: dojoProofSigningKey(),
     key_id: dojoProofKeyId(),
   });
+}
+
+function dojoProofVerifierForCapsule(capsule: DojoProofCarryingSkillCapsule): DojoProofVerifier | null {
+  if (capsule.signature_algorithm === "ed25519") {
+    const publicKeyPem = process.env[DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV]?.trim();
+    if (!publicKeyPem) return null;
+    return createEd25519DojoProofVerifier({
+      key_id: capsule.key_id,
+      public_key_pem: publicKeyPem,
+    });
+  }
+  return createLocalHmacDojoProofSigner({
+    key: dojoProofSigningKey(),
+    key_id: capsule.key_id,
+  });
+}
+
+function dojoProofSigningProvider(): string {
+  return process.env[DOJO_PROOF_SIGNING_PROVIDER_ENV]?.trim() || "hmac-local";
 }
 
 function workflowWorkspaceId(contract: WorkflowContractV7): string {
