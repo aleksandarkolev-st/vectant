@@ -20,6 +20,8 @@ export interface HostedBrowserRuntimeConfig {
   workspace_url: string | null;
   runtime_id: string | null;
   runtime_session_id: string | null;
+  runtime_host_class: "remote" | "loopback" | "local-bind" | "invalid";
+  non_loopback_runtime: boolean;
   adapter: "hosted-playwright-cdp" | "not-configured";
   required_env: string[];
   ignored_local_dev_env: string[];
@@ -148,6 +150,7 @@ function resolveHostedBrowserRuntimeInternal(
   env: NodeJS.ProcessEnv
 ): HostedBrowserRuntimeResolvedConfig {
   const cdpUrl = nonEmpty(env[HOSTED_CDP_ENV]);
+  const runtimeHostClass = classifyRuntimeEndpoint(cdpUrl);
   const tenantId = nonEmpty(input.tenant_id) ?? nonEmpty(env[TENANT_ID_ENV]) ?? null;
   const workspaceId = nonEmpty(input.workspace_id) ?? nonEmpty(env[WORKSPACE_ID_ENV]) ?? "default";
   const actorId = nonEmpty(input.actor_id) ?? nonEmpty(env[AGENT_ID_ENV]) ?? nonEmpty(env[ACTOR_ID_ENV]) ?? null;
@@ -165,6 +168,8 @@ function resolveHostedBrowserRuntimeInternal(
     workspace_url: workspaceUrl,
     runtime_id: runtimeId,
     runtime_session_id: runtimeSessionId,
+    runtime_host_class: runtimeHostClass,
+    non_loopback_runtime: runtimeHostClass === "remote",
     adapter: cdpUrl ? "hosted-playwright-cdp" : "not-configured",
     required_env: [HOSTED_CDP_ENV],
     ignored_local_dev_env: ignoredLocalDevEnv,
@@ -215,4 +220,17 @@ function parsePositiveInteger(value: unknown): number | null {
 function parseBoolean(value: unknown): boolean {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function classifyRuntimeEndpoint(value: unknown): HostedBrowserRuntimeConfig["runtime_host_class"] {
+  const raw = nonEmpty(value);
+  if (!raw) return "invalid";
+  try {
+    const host = new URL(raw).hostname.toLowerCase();
+    if (host === "localhost" || host.startsWith("127.") || host === "::1" || host === "[::1]") return "loopback";
+    if (host === "0.0.0.0" || host === "::" || host === "[::]") return "local-bind";
+    return "remote";
+  } catch {
+    return "invalid";
+  }
 }

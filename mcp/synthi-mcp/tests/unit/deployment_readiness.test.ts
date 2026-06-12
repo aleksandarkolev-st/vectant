@@ -17,6 +17,8 @@ describe("browser workflow deployment readiness", () => {
       workspace_url: "https://app.example.test/workspace/acme",
       origin_allowlist: ["https://app.example.test"],
       session_ttl_ms: 900000,
+      runtime_host_class: "remote",
+      non_loopback_runtime: true,
     }));
     expect(readiness.dojo_enforcement).toEqual(expect.objectContaining({
       enforcement_mode: "production",
@@ -30,6 +32,7 @@ describe("browser workflow deployment readiness", () => {
       expect.objectContaining({ id: "dojo_durable_store", status: "pass" }),
       expect.objectContaining({ id: "dojo_external_signing", status: "pass" }),
       expect.objectContaining({ id: "dojo_evidence_ledger", status: "pass" }),
+      expect.objectContaining({ id: "hosted_browser_runtime_endpoint", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_origin_policy", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_session_policy", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_tenant_policy", status: "pass" }),
@@ -52,6 +55,7 @@ describe("browser workflow deployment readiness", () => {
       expect.objectContaining({ id: "private_workflow_tool_store", status: "fail" }),
       expect.objectContaining({ id: "auth_checkpoint_store", status: "fail" }),
       expect.objectContaining({ id: "local_cdp_env_absent", status: "fail" }),
+      expect.objectContaining({ id: "hosted_browser_runtime_endpoint", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_origin_policy", status: "fail" }),
       expect.objectContaining({ id: "hosted_browser_session_policy", status: "fail" }),
       expect.objectContaining({ id: "hosted_browser_tenant_policy", status: "fail" }),
@@ -92,6 +96,27 @@ describe("browser workflow deployment readiness", () => {
         status: "fail",
       }),
     ]));
+  });
+
+  it("fails production readiness when hosted runtime points at a loopback endpoint", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_HOSTED_BROWSER_CDP_URL: "ws://127.0.0.1:9222/devtools/browser/session",
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.hosted_runtime).toEqual(expect.objectContaining({
+      runtime_host_class: "loopback",
+      non_loopback_runtime: false,
+    }));
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "hosted_browser_runtime_endpoint",
+        status: "fail",
+        message: expect.stringContaining("loopback"),
+      }),
+    ]));
+    expect(JSON.stringify(readiness)).not.toMatch(/127\.0\.0\.1:9222/);
   });
 
   it("fails production readiness when Dojo proof signing falls back to the default local key", () => {

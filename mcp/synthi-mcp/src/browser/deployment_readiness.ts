@@ -75,6 +75,7 @@ export function browserWorkflowDeploymentReadiness(
   const checks: BrowserWorkflowDeploymentCheck[] = [];
 
   checks.push(checkHostedRuntime(hostedRuntime, env, production));
+  checks.push(checkHostedRuntimeEndpointPolicy(hostedRuntime, production));
   checks.push(checkHostedRuntimeOriginPolicy(hostedRuntime, production));
   checks.push(checkHostedRuntimeSessionPolicy(hostedRuntime, production));
   checks.push(checkHostedRuntimeTenantPolicy(hostedRuntime, production));
@@ -297,6 +298,26 @@ function checkHostedRuntime(
     id: "hosted_browser_runtime",
     status: production ? "fail" : "warn",
     message: `Hosted browser runtime is missing ${missing.join(", ")}.`,
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkHostedRuntimeEndpointPolicy(
+  runtime: ReturnType<typeof resolveHostedBrowserRuntime>,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = ["SYNTHI_HOSTED_BROWSER_CDP_URL"];
+  const configured = runtime.configured ? required : [];
+  if (runtime.configured && runtime.non_loopback_runtime) {
+    return pass("hosted_browser_runtime_endpoint", "Hosted runtime endpoint is non-loopback.", required, configured);
+  }
+  return {
+    id: "hosted_browser_runtime_endpoint",
+    status: production ? "fail" : "warn",
+    message: runtime.configured
+      ? `Hosted runtime endpoint is ${runtime.runtime_host_class}; production runtime sessions must use a non-loopback endpoint.`
+      : "Hosted runtime endpoint is not configured.",
     required_env: required,
     configured_env: configured,
   };

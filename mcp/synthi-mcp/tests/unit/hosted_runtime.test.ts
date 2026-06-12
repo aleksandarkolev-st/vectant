@@ -27,6 +27,8 @@ describe("hosted browser runtime resolver", () => {
       adapter: "not-configured",
       ignored_local_dev_env: ["SYNTHI_BROWSER_CDP_URL"],
       required_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
+      runtime_host_class: "invalid",
+      non_loopback_runtime: false,
       origin_allowlist: [],
       session_ttl_ms: null,
       local_network_allowed: false,
