@@ -1,4 +1,10 @@
-import { type DojoGraphNode, type DojoGraphMode, type DojoSkillGraph, validateDojoSkillGraph } from "./types.js";
+import {
+  type DojoGraphEdge,
+  type DojoGraphNode,
+  type DojoGraphMode,
+  type DojoSkillGraph,
+  validateDojoSkillGraph,
+} from "./types.js";
 import { evaluateDojoGuardrailPredicate } from "./guardrail_runtime.js";
 import { evaluateDojoGraphAssertions, type DojoAssertionRuntimeResult } from "./assertion_runtime.js";
 import { decideDojoRollbackForAssertionFailure, noRollbackRequired, type DojoRollbackDecision } from "./rollback_runtime.js";
@@ -19,6 +25,11 @@ export interface DojoGraphNodeRunResult {
   assertion_results: DojoAssertionRuntimeResult[];
   rollback_decision: DojoRollbackDecision;
   substrate_result?: DojoSubstrateExecutionResult;
+  control_flow?: {
+    selected_edge_id?: string;
+    selected_to_node_id?: string;
+    skipped_by?: string[];
+  };
 }
 
 export interface DojoGraphRunResult {
@@ -74,7 +85,22 @@ export class DojoSkillGraphRuntime {
     const inputs = input.inputs ?? {};
     const substrateExecutor = input.substrate_executor ?? createFakeDojoSubstrateExecutor();
     const nodeResults: DojoGraphNodeRunResult[] = [];
+    const skippedNodes = new Map<string, string[]>();
     for (const node of graph.nodes) {
+      const skippedBy = skippedNodes.get(node.node_id);
+      if (skippedBy) {
+        nodeResults.push({
+          node_id: node.node_id,
+          kind: node.kind,
+          status: "skipped",
+          blocked_by: [],
+          assertion_results: [],
+          rollback_decision: noRollbackRequired(),
+          control_flow: { skipped_by: skippedBy },
+        });
+        continue;
+      }
+
       const blockedBy = blockedByForNode(node, mode, inputs);
       const proofBlockedBy = blockedBy.length === 0
         ? await proofBlockedByForNode(node, mode, graph, input, inputs)
@@ -120,6 +146,36 @@ export class DojoSkillGraphRuntime {
         nodeResults[nodeResults.length - 1] = {
           ...result,
           substrate_result: substrateResult,
+        };
+      }
+
+      if (node.kind === "Branch") {
+        const branchDecision = decideBranch(node, graph, inputs);
+        if (!branchDecision.ok) {
+          const branchResult: DojoGraphNodeRunResult = {
+            ...result,
+            status: "blocked",
+            blocked_by: branchDecision.blocked_by,
+          };
+          nodeResults[nodeResults.length - 1] = branchResult;
+          return {
+            ok: false,
+            status: "blocked",
+            mode,
+            node_results: nodeResults,
+            blocked_by: branchDecision.blocked_by,
+          };
+        }
+        for (const [nodeId, reasons] of branchDecision.skipped_nodes) {
+          const existing = skippedNodes.get(nodeId) ?? [];
+          skippedNodes.set(nodeId, [...existing, ...reasons]);
+        }
+        nodeResults[nodeResults.length - 1] = {
+          ...result,
+          control_flow: {
+            selected_edge_id: branchDecision.selected_edge.edge_id,
+            selected_to_node_id: branchDecision.selected_edge.to_node_id,
+          },
         };
       }
 
@@ -174,6 +230,84 @@ function blockedByForNode(node: DojoGraphNode, mode: DojoGraphMode, inputs: Reco
     }
   }
   return blockedBy;
+}
+
+type DojoBranchDecision =
+  | {
+      ok: true;
+      selected_edge: DojoGraphEdge;
+      skipped_nodes: Map<string, string[]>;
+    }
+  | {
+      ok: false;
+      blocked_by: string[];
+    };
+
+function decideBranch(
+  node: DojoGraphNode,
+  graph: DojoSkillGraph,
+  inputs: Record<string, unknown>
+): DojoBranchDecision {
+  const outgoing = graph.edges.filter((edge) => edge.from_node_id === node.node_id);
+  if (outgoing.length === 0) {
+    return { ok: false, blocked_by: ["branch_edge_missing"] };
+  }
+
+  const selected = outgoing.find((edge) => edge.condition ? evaluateStaticCondition(edge.condition, inputs) : false)
+    ?? outgoing.find((edge) => !edge.condition);
+  if (!selected) {
+    return { ok: false, blocked_by: ["branch_condition_unmatched"] };
+  }
+
+  return {
+    ok: true,
+    selected_edge: selected,
+    skipped_nodes: skippedNodesForUnchosenBranchEdges(graph, node.node_id, selected, outgoing),
+  };
+}
+
+function skippedNodesForUnchosenBranchEdges(
+  graph: DojoSkillGraph,
+  branchNodeId: string,
+  selectedEdge: DojoGraphEdge,
+  outgoing: DojoGraphEdge[]
+): Map<string, string[]> {
+  const adjacency = buildAdjacency(graph.edges);
+  const selectedReachable = reachableNodeIds(selectedEdge.to_node_id, adjacency);
+  const skipped = new Map<string, string[]>();
+  for (const edge of outgoing) {
+    if (edge.edge_id === selectedEdge.edge_id) continue;
+    const unchosenReachable = reachableNodeIds(edge.to_node_id, adjacency);
+    for (const nodeId of unchosenReachable) {
+      if (nodeId === branchNodeId || selectedReachable.has(nodeId)) continue;
+      const existing = skipped.get(nodeId) ?? [];
+      skipped.set(nodeId, [...existing, `branch_not_selected:${branchNodeId}`]);
+    }
+  }
+  return skipped;
+}
+
+function buildAdjacency(edges: DojoGraphEdge[]): Map<string, string[]> {
+  const adjacency = new Map<string, string[]>();
+  for (const edge of edges) {
+    const existing = adjacency.get(edge.from_node_id) ?? [];
+    adjacency.set(edge.from_node_id, [...existing, edge.to_node_id]);
+  }
+  return adjacency;
+}
+
+function reachableNodeIds(startNodeId: string, adjacency: Map<string, string[]>): Set<string> {
+  const reachable = new Set<string>();
+  const stack = [startNodeId];
+  while (stack.length > 0) {
+    const nodeId = stack.pop();
+    if (!nodeId || reachable.has(nodeId)) continue;
+    reachable.add(nodeId);
+    for (const nextNodeId of adjacency.get(nodeId) ?? []) {
+      if (!reachable.has(nextNodeId)) stack.push(nextNodeId);
+    }
+  }
+  return reachable;
 }
 
 async function proofBlockedByForNode(

@@ -103,6 +103,84 @@ describe("Dojo graph runtime skeleton", () => {
     }));
   });
 
+  it("selects a matching branch path and skips unchosen branch-only nodes", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: branchGraphFixture(),
+      mode: "practice",
+      inputs: { duplicate_display_name_count: 2 },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "branch_duplicate_client",
+          status: "completed",
+          control_flow: expect.objectContaining({
+            selected_edge_id: "edge_branch_duplicate",
+            selected_to_node_id: "action_duplicate",
+          }),
+        }),
+        expect.objectContaining({
+          node_id: "action_unique",
+          status: "skipped",
+          control_flow: expect.objectContaining({
+            skipped_by: ["branch_not_selected:branch_duplicate_client"],
+          }),
+        }),
+        expect.objectContaining({ node_id: "action_duplicate", status: "completed" }),
+        expect.objectContaining({ node_id: "assertion", status: "completed" }),
+      ]),
+    }));
+  });
+
+  it("selects a default branch path when no conditional edge matches", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: branchGraphFixture({ includeDefault: true }),
+      mode: "practice",
+      inputs: { duplicate_display_name_count: 0 },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "branch_duplicate_client",
+          status: "completed",
+          control_flow: expect.objectContaining({
+            selected_edge_id: "edge_branch_default",
+            selected_to_node_id: "action_unique",
+          }),
+        }),
+        expect.objectContaining({ node_id: "action_unique", status: "completed" }),
+        expect.objectContaining({ node_id: "action_duplicate", status: "skipped" }),
+      ]),
+    }));
+  });
+
+  it("blocks a branch node when no outgoing edge condition matches", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: branchGraphFixture(),
+      mode: "practice",
+      inputs: { duplicate_display_name_count: 0 },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["branch_condition_unmatched"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "branch_duplicate_client",
+          status: "blocked",
+          blocked_by: ["branch_condition_unmatched"],
+        }),
+      ]),
+    }));
+  });
+
   it("blocks execution when graph validation fails", async () => {
     const runtime = new DojoSkillGraphRuntime();
     const invalid = graphFixture();
@@ -199,5 +277,84 @@ function graphFixture(): DojoSkillGraph {
         observed_variants: [],
       },
     ],
+  };
+}
+
+function branchGraphFixture(input: { includeDefault?: boolean } = {}): DojoSkillGraph {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-branch",
+    skill_id: "skill-branch",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "practice",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      safeNode("trigger", "Trigger", "Skill invocation"),
+      safeNode("branch_duplicate_client", "Branch", "Choose duplicate client path"),
+      safeNode("action_unique", "Action", "Proceed with selected client"),
+      safeNode("action_duplicate", "Action", "Ask for stable client ID"),
+      safeNode("assertion", "Assertion", "Verify branch outcome"),
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_branch",
+        from_node_id: "trigger",
+        to_node_id: "branch_duplicate_client",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: input.includeDefault ? "edge_branch_default" : "edge_branch_unique",
+        from_node_id: "branch_duplicate_client",
+        to_node_id: "action_unique",
+        ...(input.includeDefault ? {} : { condition: "duplicate_display_name_count == 1" }),
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_branch_duplicate",
+        from_node_id: "branch_duplicate_client",
+        to_node_id: "action_duplicate",
+        condition: "duplicate_display_name_count == 2",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_unique_assertion",
+        from_node_id: "action_unique",
+        to_node_id: "assertion",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_duplicate_assertion",
+        from_node_id: "action_duplicate",
+        to_node_id: "assertion",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function safeNode(
+  nodeId: string,
+  kind: DojoSkillGraph["nodes"][number]["kind"],
+  label: string
+): DojoSkillGraph["nodes"][number] {
+  return {
+    node_id: nodeId,
+    kind,
+    label,
+    risk: "safe",
+    preconditions: [],
+    postconditions: [],
+    guardrails: [],
+    assertions: [],
+    substrate_options: kind === "Action" ? ["dom"] : [],
+    evidence_policy: [],
+    case_law_refs: [],
+    expiry_triggers: [],
   };
 }
