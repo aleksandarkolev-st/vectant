@@ -145,6 +145,38 @@ describe("Dojo hosted runtime gateway", () => {
     ]);
   });
 
+  it("rejects local-network hosted sessions unless egress is explicitly allowed", async () => {
+    const audit = new MemoryAuditStore();
+    const gateway = gatewayWith({ audit });
+
+    const blocked = await gateway.createSession({
+      tenant: tenant("tenant-a", "workspace-a"),
+      skill_id: "skill-a",
+      run_id: "run-a",
+      workspace_url: "http://127.0.0.1:3000/app",
+      origin_allowlist: ["http://127.0.0.1:3000"],
+      now: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(blocked).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["runtime_local_network_blocked"],
+    }));
+    const allowed = await gateway.createSession({
+      tenant: tenant("tenant-a", "workspace-a"),
+      skill_id: "skill-a",
+      run_id: "run-a",
+      workspace_url: "http://127.0.0.1:3000/app",
+      origin_allowlist: ["http://127.0.0.1:3000"],
+      local_network_allowed: true,
+      now: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(allowed).toEqual(expect.objectContaining({ ok: true }));
+    if (!allowed.ok) throw new Error("expected_local_network_opt_in_success");
+    expect(allowed.session.egress_policy).toEqual({ local_network_allowed: true });
+  });
+
   it("authorizes runtime actions only with matching tenant, skill, run, origin, credential, and evidence write", async () => {
     const audit = new MemoryAuditStore();
     const evidence = new MemoryRuntimeEvidenceWriter();

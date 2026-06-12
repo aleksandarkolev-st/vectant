@@ -283,6 +283,11 @@ class InProcessDojoHostedRuntimeGateway implements DojoHostedRuntimeGateway {
     if (workspaceOrigin && originAllowlist.length > 0 && !originAllowlist.includes(workspaceOrigin)) {
       blockedBy.push("runtime_workspace_origin_not_allowed");
     }
+    if (input.local_network_allowed !== true && (
+      isLocalNetworkUrl(input.workspace_url) || originAllowlist.some((origin) => isLocalNetworkUrl(origin))
+    )) {
+      blockedBy.push("runtime_local_network_blocked");
+    }
     if (!Number.isInteger(sessionTtlMs) || sessionTtlMs <= 0) blockedBy.push("runtime_session_ttl_invalid");
     if (sessionTtlMs > this.maxSessionTtlMs) blockedBy.push("runtime_session_ttl_too_long");
     if (!Number.isInteger(credentialTtlMs) || credentialTtlMs <= 0 || credentialTtlMs > sessionTtlMs) {
