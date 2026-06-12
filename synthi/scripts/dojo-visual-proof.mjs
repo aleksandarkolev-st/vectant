@@ -66,6 +66,10 @@ const ROUTES = [
     path: `/workspace/${WORKSPACE_SLUG}/dojo/skills/${SKILL_ID}/cortex`,
     selector: "[data-testid=\"skill-cortex-view\"]",
     requiredText: ["Skill Cortex", "synthi.dojo.skillGraph.v1", "Validate proof capsule", "Runtime stable ID check"],
+    interaction: {
+      click: "[data-testid=\"cortex-node-action-submit\"]",
+      requiredText: ["case_guard_CASE-DUPLICATE-CLIENT", "CASE-DUPLICATE-CLIENT", "API state confirms submitted invoice"],
+    },
   },
   {
     id: "practice-world",
@@ -157,10 +161,15 @@ async function captureRoute({ browser, port, route, viewport }) {
     await page.goto(`http://${HOST}:${port}${route.path}`, { waitUntil: "networkidle" });
     await page.addStyleTag({ content: DEV_OVERLAY_CSS });
     await page.waitForSelector(route.selector, { timeout: 20_000 });
+    await applyRouteInteraction(page, route.interaction);
     const text = await page.locator(route.selector).innerText({ timeout: 10_000 });
     const layoutMetrics = await collectRouteLayoutMetrics(page, route.selector);
+    const requiredText = [
+      ...route.requiredText,
+      ...(route.interaction?.requiredText || []),
+    ];
     const checks = Object.fromEntries(
-      route.requiredText.map((required) => [`text:${required}`, text.includes(required)])
+      requiredText.map((required) => [`text:${required}`, text.includes(required)])
     );
     const screenshotPath = path.join(OUT_DIR, `${route.id}-${viewport.name}.png`);
     await page.screenshot({ path: screenshotPath, fullPage: true });
@@ -190,6 +199,14 @@ async function captureRoute({ browser, port, route, viewport }) {
   } finally {
     await page.close();
   }
+}
+
+async function applyRouteInteraction(page, interaction) {
+  if (!interaction?.click) return;
+  const target = page.locator(interaction.click).first();
+  await target.scrollIntoViewIfNeeded({ timeout: 10_000 });
+  await target.click({ timeout: 10_000 });
+  await page.waitForTimeout(100);
 }
 
 function buildBridgeState() {
