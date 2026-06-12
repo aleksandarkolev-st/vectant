@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
@@ -77,30 +77,58 @@ export async function runDojoChaosPerformanceSelfCheck({
     timeout: timeoutMs,
     windowsHide: true,
   });
-  const durationMs = performance.now() - started;
+  const basicRunDurationMs = performance.now() - started;
   const stdout = String(result.stdout ?? "");
   const stderr = String(result.stderr ?? "");
   const stdoutPath = path.join(outputDir, "dojo-chaos-performance.stdout.log");
   const stderrPath = path.join(outputDir, "dojo-chaos-performance.stderr.log");
+  const jsonReportPath = path.join(outputDir, "dojo-chaos-performance.vitest.json");
   await writeFile(stdoutPath, stdout);
   await writeFile(stderrPath, stderr);
+  const jsonResult = spawnSync(process.execPath, [
+    vitestPath,
+    "run",
+    ...DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+    "--reporter=json",
+    "--outputFile",
+    jsonReportPath,
+  ], {
+    cwd: MCP_ROOT,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    windowsHide: true,
+  });
+  const jsonStdout = String(jsonResult.stdout ?? "");
+  const jsonStderr = String(jsonResult.stderr ?? "");
+  await writeFile(path.join(outputDir, "dojo-chaos-performance.json-reporter.stdout.log"), jsonStdout);
+  await writeFile(path.join(outputDir, "dojo-chaos-performance.json-reporter.stderr.log"), jsonStderr);
+  const jsonReportError = existsSync(jsonReportPath) ? undefined : `json_report_missing:${jsonReportPath}`;
+  const jsonReport = jsonReportError ? null : await readVitestJsonReport(jsonReportPath);
+  const durationMs = performance.now() - started;
   const evidence = buildDojoChaosPerformanceEvidenceManifest({
     now,
-    exitCode: result.status,
-    signal: result.signal,
+    exitCode: result.status ?? jsonResult.status,
+    signal: result.signal ?? jsonResult.signal,
     durationMs,
+    basicRunDurationMs,
     testFiles: DOJO_CHAOS_PERFORMANCE_TEST_FILES,
     scenarios: DOJO_CHAOS_SCENARIOS,
     stdout,
-    stderr,
+    stderr: [stderr, jsonStderr].filter(Boolean).join("\n"),
     stdoutPath,
     stderrPath,
-    error: result.error ? result.error.message : undefined,
+    jsonReport,
+    jsonReportPath,
+    timeoutMs,
+    error: result.error?.message ?? jsonResult.error?.message ?? jsonReportError,
   });
   const evidencePath = path.join(outputDir, "dojo-chaos-performance.evidence.json");
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
   if (result.error) throw new Error(`dojo_chaos_performance_self_check_failed:${result.error.message}`);
   if (result.status !== 0) throw new Error(`dojo_chaos_performance_self_check_failed:exit_${result.status}`);
+  if (jsonResult.error) throw new Error(`dojo_chaos_performance_json_report_failed:${jsonResult.error.message}`);
+  if (jsonResult.status !== 0) throw new Error(`dojo_chaos_performance_json_report_failed:exit_${jsonResult.status}`);
+  if (jsonReportError) throw new Error(`dojo_chaos_performance_json_report_failed:${jsonReportError}`);
   assert.equal(evidence.ok, true);
   return {
     evidence_path: evidencePath,
@@ -115,25 +143,49 @@ export function buildDojoChaosPerformanceEvidenceManifest({
   exitCode,
   signal,
   durationMs,
+  basicRunDurationMs,
   testFiles,
   scenarios,
   stdout,
   stderr,
   stdoutPath,
   stderrPath,
+  jsonReport,
+  jsonReportPath,
+  timeoutMs = 120000,
   error,
 }) {
+  const testSummary = summarizeVitestJsonReport(jsonReport);
+  const scenarioCoverage = buildScenarioCoverage({ scenarios, jsonReport });
+  const performanceMetrics = buildPerformanceMetrics({ durationMs, testSummary });
+  const budgetEvaluation = buildBudgetEvaluation({
+    performanceMetrics,
+    testSummary,
+    timeoutMs,
+    error,
+  });
   return {
     schema_version: "synthi.dojo.chaosPerformanceEvidence.v1",
     generated_at: now,
-    ok: exitCode === 0 && !error,
+    ok: exitCode === 0 && !error && budgetEvaluation.ok,
     exit_code: exitCode,
     signal: signal ?? null,
     duration_ms: Number(durationMs.toFixed(3)),
-    tested_chaos_scenarios: [...scenarios],
-    scenario_count: scenarios.length,
+    configured_chaos_scenarios: [...scenarios],
+    tested_chaos_scenarios: scenarioCoverage.filter((item) => item.covered).map((item) => item.scenario),
+    missing_chaos_scenarios: scenarioCoverage.filter((item) => !item.covered).map((item) => item.scenario),
+    scenario_coverage: scenarioCoverage,
+    scenario_count: scenarioCoverage.filter((item) => item.covered).length,
+    configured_scenario_count: scenarios.length,
+    scenario_coverage_complete: scenarioCoverage.every((item) => item.covered),
     test_files: [...testFiles],
     test_file_count: testFiles.length,
+    reported_test_file_count: testSummary.reported_test_file_count,
+    test_summary: testSummary,
+    performance_metrics: performanceMetrics,
+    basic_run_duration_ms: typeof basicRunDurationMs === "number" ? Number(basicRunDurationMs.toFixed(3)) : null,
+    budget_evaluation: budgetEvaluation,
+    json_report_path: jsonReportPath ?? null,
     stdout_path: stdoutPath,
     stderr_path: stderrPath,
     stdout_sha256: sha256(stdout),
@@ -141,11 +193,114 @@ export function buildDojoChaosPerformanceEvidenceManifest({
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
     budget: {
-      self_check_timeout_ms: 120000,
+      self_check_timeout_ms: timeoutMs,
       intended_gate: "lightweight_preflight_not_long_soak",
     },
     ...(error ? { error } : {}),
   };
+}
+
+export function summarizeVitestJsonReport(report) {
+  const testResults = Array.isArray(report?.testResults) ? report.testResults : [];
+  const assertions = testResults.flatMap((result) => Array.isArray(result.assertionResults) ? result.assertionResults : []);
+  const assertionDurations = assertions
+    .map((assertion) => Number(assertion.duration))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  const fileDurations = testResults
+    .map((result) => Number(result.endTime) - Number(result.startTime))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  return {
+    success: report?.success === true,
+    total_tests: numberOrZero(report?.numTotalTests),
+    passed_tests: numberOrZero(report?.numPassedTests),
+    failed_tests: numberOrZero(report?.numFailedTests),
+    pending_tests: numberOrZero(report?.numPendingTests),
+    total_suites: numberOrZero(report?.numTotalTestSuites),
+    passed_suites: numberOrZero(report?.numPassedTestSuites),
+    failed_suites: numberOrZero(report?.numFailedTestSuites),
+    reported_test_file_count: testResults.length,
+    assertion_duration_p95_ms: percentile(assertionDurations, 0.95),
+    test_file_duration_p95_ms: percentile(fileDurations, 0.95),
+    assertion_titles: assertions.map((assertion) => String(assertion.fullName || assertion.title || "")).filter(Boolean),
+  };
+}
+
+export function buildScenarioCoverage({ scenarios, jsonReport }) {
+  const titles = summarizeVitestJsonReport(jsonReport).assertion_titles;
+  return scenarios.map((scenario) => {
+    const matchers = scenarioMatchers(scenario);
+    const evidenceTitles = titles.filter((title) => {
+      const normalizedTitle = normalizeScenarioText(title);
+      return matchers.some((matcher) => normalizedTitle.includes(matcher));
+    });
+    return {
+      scenario,
+      covered: evidenceTitles.length > 0,
+      evidence_titles: evidenceTitles,
+    };
+  });
+}
+
+function buildPerformanceMetrics({ durationMs, testSummary }) {
+  return {
+    self_check_duration_ms: Number(durationMs.toFixed(3)),
+    test_case_duration_p95_ms: testSummary.assertion_duration_p95_ms,
+    test_file_duration_p95_ms: testSummary.test_file_duration_p95_ms,
+    failed_test_count: testSummary.failed_tests,
+    passed_test_count: testSummary.passed_tests,
+  };
+}
+
+function buildBudgetEvaluation({ performanceMetrics, testSummary, timeoutMs, error }) {
+  const checks = {
+    no_spawn_error: !error,
+    no_failed_tests: testSummary.failed_tests === 0,
+    all_reported_tests_passed: testSummary.total_tests > 0 && testSummary.passed_tests === testSummary.total_tests,
+    self_check_within_timeout: performanceMetrics.self_check_duration_ms <= timeoutMs,
+    test_case_p95_recorded: Number.isFinite(performanceMetrics.test_case_duration_p95_ms),
+    test_file_p95_recorded: Number.isFinite(performanceMetrics.test_file_duration_p95_ms),
+  };
+  return {
+    ok: Object.values(checks).every(Boolean),
+    checks,
+  };
+}
+
+async function readVitestJsonReport(jsonReportPath) {
+  const raw = await readFile(jsonReportPath, "utf8");
+  return JSON.parse(raw);
+}
+
+function scenarioMatchers(scenario) {
+  const normalized = normalizeScenarioText(scenario);
+  const aliases = {
+    api_timeout: ["timeout"],
+    partial_write: ["partial write"],
+    fake_success_ui: ["fake visual success", "fake success"],
+    validation_error: ["validation error"],
+    downstream_failure: ["downstream failure"],
+    duplicate_entity_fixture: ["duplicate", "duplicate entity"],
+    prompt_injection_fixture: ["prompt injection"],
+    runtime_oracle_classification: ["oracle", "classifies"],
+    evil_twin_attack_hardening: ["evil twin", "attack hardening", "hardening"],
+  };
+  return [...new Set([normalized, ...(aliases[scenario] ?? [])].map(normalizeScenarioText))];
+}
+
+function normalizeScenarioText(value) {
+  return String(value || "").toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function numberOrZero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function percentile(values, ratio) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1);
+  return Number(sorted[index].toFixed(3));
 }
 
 function sha256(value) {
