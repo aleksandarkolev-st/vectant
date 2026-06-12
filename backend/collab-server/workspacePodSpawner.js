@@ -253,7 +253,7 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
       args: [
         [
           'set -euo pipefail',
-          'BROWSER="$(node -e "const { chromium } = require(\'playwright\'); process.stdout.write(chromium.executablePath())")"',
+          'BROWSER="$(node -e "const { chromium } = require(\'playwright-core\'); process.stdout.write(chromium.executablePath())")"',
           'exec "$BROWSER" --headless=new --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-address=0.0.0.0 --remote-debugging-port="$SYNTHI_HOSTED_BROWSER_CDP_PORT" --user-data-dir=/tmp/synthi-chrome-profile about:blank',
         ].join('\n'),
       ],
