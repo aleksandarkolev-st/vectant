@@ -1014,11 +1014,62 @@ describe("Agent Dojo MCP tools", () => {
       error: "dojo_license_revocation_actor_required",
     }));
 
-    const cortex = await dispatchDojoTool("synthi_dojo_get_skill_cortex", { skill_id: published.skill.skill_id });
-    expect(cortex?.structuredContent).toEqual(expect.objectContaining({
-      skill_cortex: expect.objectContaining({
-        nodes: expect.arrayContaining([expect.objectContaining({ kind: "Proof" })]),
+    const proposedRuntimeCase = await dispatchDojoTool("synthi_dojo_record_case_law", {
+      skill_id: published.skill.skill_id,
+      title: "External duplicate-client case",
+      finding: "Duplicate display name caused unsafe selection.",
+      impact: "Wrong client record may be mutated.",
+      rule: "Require stable entity identity before mutation.",
+      applies_to: ["run_workflow"],
+      binding_scope: "workspace",
+      status: "proposed",
+      evidence_refs: ["evidence:external-case"],
+    });
+    const runtimeCaseId = (proposedRuntimeCase?.structuredContent as { case_law_record?: { case_id?: string } } | undefined)
+      ?.case_law_record?.case_id;
+    expect(runtimeCaseId).toMatch(/^case_/);
+    const reviewedRuntimeCase = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      skill_id: published.skill.skill_id,
+      case_id: runtimeCaseId,
+      decision: "approved",
+      reviewer_actor_id: "case-reviewer-a",
+      reviewer_actor_type: "human",
+      reason: "Runtime guardrail binding reviewed.",
+      evidence_refs: ["evidence:external-case-review"],
+      decided_at: "2026-06-11T00:06:00.000Z",
+    });
+    expect(reviewedRuntimeCase?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      case_law_record: expect.objectContaining({
+        case_id: runtimeCaseId,
+        status: "approved",
       }),
+    }));
+    const cortex = await dispatchDojoTool("synthi_dojo_get_skill_cortex", { skill_id: published.skill.skill_id });
+    const executableGraph = cortex?.structuredContent?.executable_graph as { nodes?: Array<{ node_id?: string; guardrails?: Array<{ guardrail_id: string; predicate: string }>; case_law_refs?: string[] }> };
+    const actionNode = executableGraph.nodes?.find((node) => node.node_id === "action");
+    const runtimeCaseGuardrailId = `case_guard_${runtimeCaseId}`;
+    expect(cortex?.structuredContent).toEqual(expect.objectContaining({
+      skill_cortex: expect.objectContaining({ schema_version: "synthi.dojo.skillCortex.v1" }),
+      executable_graph: expect.objectContaining({
+        schema_version: "synthi.dojo.skillGraph.v1",
+        skill_id: published.skill.skill_id,
+      }),
+      executable_graph_validation: { ok: true, issues: [] },
+      case_law_runtime_bindings: expect.objectContaining({
+        approved_case_law_record_count: expect.any(Number),
+        bound_case_law_refs: expect.arrayContaining([runtimeCaseId]),
+        bound_case_law_guardrail_ids: expect.arrayContaining([runtimeCaseGuardrailId]),
+      }),
+    }));
+    expect(actionNode).toEqual(expect.objectContaining({
+      guardrails: expect.arrayContaining([
+        expect.objectContaining({
+          guardrail_id: runtimeCaseGuardrailId,
+          predicate: "stable_entity_identity == true",
+        }),
+      ]),
+      case_law_refs: expect.arrayContaining([runtimeCaseId]),
     }));
     const failure = await dispatchDojoTool("synthi_dojo_explain_failure", {
       skill_id: published.skill.skill_id,

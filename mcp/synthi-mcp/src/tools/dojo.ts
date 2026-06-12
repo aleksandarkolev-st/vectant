@@ -28,6 +28,7 @@ import { privateWorkflowToolDefinition, privateWorkflowToolRegistry } from "../b
 import { evaluateDojoLicenseKernel, markDojoProofExecution } from "../browser/dojo_license_kernel.js";
 import { runDojoVivariumScenario, runDojoWindTunnel } from "../browser/dojo_vivarium.js";
 import { explainDojoRuntimeRefusal } from "../dojo/case_law/refusal.js";
+import { bindCaseLawGuardrailsToGraph } from "../dojo/case_law/guardrail_synthesizer.js";
 import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
 import { runDojoExecutableCheckride } from "../dojo/checkride/runner.js";
 import {
@@ -37,6 +38,7 @@ import {
   revokeDojoSkillLicense,
 } from "../dojo/governance/service.js";
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
+import { validateDojoSkillGraph, type DojoSkillGraph } from "../dojo/graph/types.js";
 import {
   contextKeyForDojoGuardrailPredicate,
   normalizeDojoGuardrailPredicate,
@@ -842,7 +844,18 @@ function dojoGetSkillTool(args: unknown): ToolResponse {
 function dojoGetSkillCortexTool(args: unknown): ToolResponse {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, skill_cortex: skill.skill.skill_cortex });
+  const caseLawRecords = storedCaseLawRecordsForSkill(skill.skill);
+  const compiledGraph = compileDojoSkillGraphForSkill(skill.skill);
+  const executableGraph = bindCaseLawGuardrailsToGraph(compiledGraph.graph, caseLawRecords);
+  const executableGraphValidation = validateDojoSkillGraph(executableGraph);
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    skill_cortex: skill.skill.skill_cortex,
+    executable_graph: executableGraph,
+    executable_graph_validation: executableGraphValidation,
+    case_law_runtime_bindings: caseLawRuntimeBindingSummary(executableGraph, caseLawRecords),
+  });
 }
 
 function dojoGetWorkspaceOrganoidTool(args: unknown): ToolResponse {
@@ -2217,6 +2230,22 @@ function storedCaseLawRecordsForSkill(skill: DojoSkill): DojoCaseLawRecord[] {
       return false;
     })
     .sort((left, right) => left.case_id.localeCompare(right.case_id));
+}
+
+function caseLawRuntimeBindingSummary(graph: DojoSkillGraph, caseLawRecords: DojoCaseLawRecord[]) {
+  const boundCaseLawRefs = [...new Set(graph.nodes.flatMap((node) => node.case_law_refs))].sort();
+  const boundCaseLawGuardrailIds = [...new Set(graph.nodes
+    .flatMap((node) => node.guardrails)
+    .filter((guardrail) => guardrail.guardrail_id.startsWith("case_guard_"))
+    .map((guardrail) => guardrail.guardrail_id))]
+    .sort();
+  return {
+    case_law_record_count: caseLawRecords.length,
+    approved_case_law_record_count: caseLawRecords.filter((record) => record.status === "approved").length,
+    bound_case_law_refs: boundCaseLawRefs,
+    bound_case_law_guardrail_ids: boundCaseLawGuardrailIds,
+    graph_node_count: graph.nodes.length,
+  };
 }
 
 function applyCaseLawReviewToSkill(skill: DojoSkill, record: DojoCaseLawRecord): DojoSkill {
