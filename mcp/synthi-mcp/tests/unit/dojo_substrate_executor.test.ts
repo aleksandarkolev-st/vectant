@@ -97,6 +97,7 @@ describe("Dojo substrate executor", () => {
           license_id: "license-a",
           license_version: "1.0.0",
           action: "run_workflow",
+          auth_scopes: ["invoice:write"],
         },
         assertion_results: { assert_submission_state: true },
       },
@@ -131,6 +132,7 @@ describe("Dojo substrate executor", () => {
           license_id: "wrong-license",
           license_version: "1.0.0",
           action: "run_workflow",
+          auth_scopes: ["invoice:write"],
         },
         assertion_results: { assert_submission_state: true },
       },
@@ -159,6 +161,7 @@ describe("Dojo substrate executor", () => {
           license_id: "license-a",
           license_version: "1.0.0",
           action: "run_workflow",
+          auth_scopes: ["invoice:write"],
         },
         assertion_results: { assert_submission_state: true },
       },
@@ -168,6 +171,35 @@ describe("Dojo substrate executor", () => {
       ok: false,
       status: "blocked",
       blocked_by: ["api_tool_proof_action_mismatch"],
+    }));
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: tool.candidate_id } }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        compiled_api_tool: tool,
+        api_tool_args: {
+          proof_capsule: proofCapsuleFixture(),
+          request: { amount: 42 },
+          idempotency_key: "idem-a",
+        },
+        license_context: {
+          skill_id: "skill-a",
+          license_id: "license-a",
+          license_version: "1.0.0",
+          action: "run_workflow",
+          auth_scopes: ["invoice:read"],
+        },
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_auth_scope_missing"],
     }));
   });
 });

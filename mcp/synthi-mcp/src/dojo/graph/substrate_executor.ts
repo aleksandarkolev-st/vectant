@@ -2,6 +2,7 @@ import type { DojoGraphNode } from "./types.js";
 import {
   validateDojoApiBackedToolInvocation,
   type DojoApiBackedMcpTool,
+  type DojoApiToolLicenseContext,
 } from "../api/api_tool_compiler.js";
 
 export type DojoExecutionSubstrate = "vision" | "dom" | "source" | "api" | "mcp";
@@ -104,15 +105,22 @@ function apiCandidateApproved(node: DojoGraphNode, inputs: Record<string, unknow
     && approvedCandidates.includes(candidateId);
 }
 
-function licenseContextOpt(value: unknown): { skill_id: string; license_id: string; license_version: string; action: string } | null {
+function licenseContextOpt(value: unknown): DojoApiToolLicenseContext | null {
   const record = objectOpt(value);
   if (!record) return null;
   const skillId = stringOpt(record["skill_id"]);
   const licenseId = stringOpt(record["license_id"]);
   const licenseVersion = stringOpt(record["license_version"]);
   const action = stringOpt(record["action"]);
+  const authScopes = stringArrayOpt(record["auth_scopes"]);
   return skillId && licenseId && licenseVersion && action
-    ? { skill_id: skillId, license_id: licenseId, license_version: licenseVersion, action }
+    ? {
+        skill_id: skillId,
+        license_id: licenseId,
+        license_version: licenseVersion,
+        action,
+        ...(authScopes ? { auth_scopes: authScopes } : {}),
+      }
     : null;
 }
 
@@ -122,6 +130,13 @@ function objectOpt(value: unknown): Record<string, unknown> | null {
 
 function stringOpt(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function stringArrayOpt(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    .map((entry) => entry.trim());
+  return strings.length > 0 ? strings : undefined;
 }
 
 function isExecutionSubstrate(value: unknown): value is DojoExecutionSubstrate {

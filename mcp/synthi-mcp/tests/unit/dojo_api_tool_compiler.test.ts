@@ -86,6 +86,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
         license_id: "wrong-license",
         license_version: "1.0.0",
         action: "run_workflow",
+        auth_scopes: ["invoice:write"],
       },
     })).toEqual({
       ok: false,
@@ -108,6 +109,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
         license_id: "license_save_invoice",
         license_version: "1.0.0",
         action: "run_workflow",
+        auth_scopes: ["invoice:write"],
       },
     })).toEqual({ ok: true, blocked_by: [] });
 
@@ -123,10 +125,30 @@ describe("Dojo API-backed MCP tool compiler", () => {
         license_id: "license_save_invoice",
         license_version: "1.0.0",
         action: "run_workflow",
+        auth_scopes: ["invoice:write"],
       },
     })).toEqual({
       ok: false,
       blocked_by: ["api_tool_proof_action_mismatch"],
+    });
+
+    expect(validateDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: proofCapsuleFixture(),
+        request: { amount: 42 },
+        idempotency_key: "idem-a",
+      },
+      license_context: {
+        skill_id: "dojo_save_invoice",
+        license_id: "license_save_invoice",
+        license_version: "1.0.0",
+        action: "run_workflow",
+        auth_scopes: ["invoice:read"],
+      },
+    })).toEqual({
+      ok: false,
+      blocked_by: ["api_tool_auth_scope_missing"],
     });
   });
 });

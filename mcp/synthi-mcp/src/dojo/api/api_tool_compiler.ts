@@ -41,6 +41,14 @@ export interface DojoApiToolInvocationValidation {
   blocked_by: string[];
 }
 
+export interface DojoApiToolLicenseContext {
+  skill_id: string;
+  license_id: string;
+  license_version: string;
+  action: string;
+  auth_scopes?: string[];
+}
+
 export function compileDojoApiBackedMcpTool(input: {
   candidate: DojoApiEndpointCandidate;
   skill_id: string;
@@ -87,7 +95,7 @@ export function compileDojoApiBackedMcpTool(input: {
 export function validateDojoApiBackedToolInvocation(input: {
   tool: DojoApiBackedMcpTool;
   args: Record<string, unknown>;
-  license_context: { skill_id: string; license_id: string; license_version: string; action: string };
+  license_context: DojoApiToolLicenseContext;
 }): DojoApiToolInvocationValidation {
   const blockedBy: string[] = [];
   const proofCapsule = objectRecord(input.args["proof_capsule"]);
@@ -139,6 +147,9 @@ export function validateDojoApiBackedToolInvocation(input: {
   if (input.license_context.license_id !== input.tool.license_id) blockedBy.push("api_tool_license_mismatch");
   if (input.license_context.license_version !== input.tool.license_version) blockedBy.push("api_tool_license_version_mismatch");
   if (input.license_context.action !== input.tool.action) blockedBy.push("api_tool_action_mismatch");
+  if (input.tool.auth_scope && !input.license_context.auth_scopes?.includes(input.tool.auth_scope)) {
+    blockedBy.push("api_tool_auth_scope_missing");
+  }
   return {
     ok: blockedBy.length === 0,
     blocked_by: blockedBy,
