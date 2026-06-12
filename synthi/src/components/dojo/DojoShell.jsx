@@ -50,6 +50,7 @@ export default function DojoShell({
     ['Source/API', `${baseHref}/source`],
     ['Debugger', `${baseHref}/debug/time-machine`],
     ['Evidence', `${baseHref}/evidence`],
+    ['Case Law', `${baseHref}/case-law`],
     ['Governance', `${baseHref}/governance`],
   ];
   const scopeRows = useMemo(() => {

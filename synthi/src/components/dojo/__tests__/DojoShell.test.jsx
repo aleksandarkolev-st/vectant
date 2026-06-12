@@ -77,6 +77,7 @@ describe('DojoShell', () => {
     expect(view.textContent).toContain('Source/API');
     expect(view.textContent).toContain('Debugger');
     expect(view.textContent).toContain('Evidence');
+    expect(view.textContent).toContain('Case Law');
   });
 
   it('loads summary through the provided client', async () => {

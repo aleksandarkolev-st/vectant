@@ -106,6 +106,19 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
         exportArtifactCount: 0,
       },
     },
+    caseLaw: {
+      records: [],
+      guardrails: [],
+      antibodies: [],
+      metrics: {
+        recordCount: 0,
+        bindingCount: 0,
+        proposedCount: 0,
+        deprecatedCount: 0,
+        guardrailCount: 0,
+        antibodyCount: 0,
+      },
+    },
     bridgeStatus: 'unknown',
   };
 }
@@ -929,6 +942,87 @@ function normalizeEvidenceState(state, dojo, skill) {
   };
 }
 
+function normalizeCaseLawRecord(item, index = 0) {
+  const bindingScope = item?.binding_scope || item?.bindingScope || '';
+  return {
+    caseId: item?.case_id || item?.caseId || item?.id || `case-${index + 1}`,
+    title: item?.title || item?.finding || `Case ${index + 1}`,
+    date: item?.date || item?.created_at || item?.createdAt || item?.updated_at || item?.updatedAt || '',
+    sourceSkillId: item?.source_skill_id || item?.sourceSkillId || item?.skill_id || item?.skillId || '',
+    sourceRunId: item?.source_run_id || item?.sourceRunId || item?.run_id || item?.runId || '',
+    finding: item?.finding || '',
+    impact: item?.impact || '',
+    ruleCreated: item?.rule_created || item?.ruleCreated || item?.rule || '',
+    appliesTo: compactStrings(item?.applies_to || item?.appliesTo),
+    bindingScope: typeof bindingScope === 'string' ? bindingScope : [bindingScope?.kind, bindingScope?.id].filter(Boolean).join(':'),
+    status: item?.status || 'proposed',
+    reviewer: item?.reviewer || '',
+    appealStatus: item?.appeal_status || item?.appealStatus || '',
+    supersededBy: item?.superseded_by || item?.supersededBy || '',
+    evidenceRefs: compactStrings(item?.evidence_refs || item?.evidenceRefs),
+  };
+}
+
+function normalizeGuardrailRecord(item, index = 0) {
+  return {
+    guardrailId: item?.guardrail_id || item?.guardrailId || item?.id || `guardrail-${index + 1}`,
+    title: item?.title || item?.label || `Guardrail ${index + 1}`,
+    rule: item?.rule || item?.predicate || '',
+    blocksActions: compactStrings(item?.blocks_actions || item?.blocksActions || item?.blocked_actions || item?.blockedActions),
+    sourceCaseId: item?.source_case_id || item?.sourceCaseId || '',
+    severity: item?.severity || '',
+    evidenceRefs: compactStrings(item?.evidence_refs || item?.evidenceRefs),
+  };
+}
+
+function normalizeAntibodyRecord(item, index = 0) {
+  return {
+    antibodyId: item?.antibody_id || item?.antibodyId || item?.id || `antibody-${index + 1}`,
+    caseId: item?.case_id || item?.caseId || '',
+    guardrailId: item?.guardrail_id || item?.guardrailId || '',
+    trigger: item?.trigger || '',
+    response: item?.response || '',
+    appliesTo: compactStrings(item?.applies_to || item?.appliesTo),
+    bindingScope: item?.binding_scope || item?.bindingScope || '',
+    evidenceRefs: compactStrings(item?.evidence_refs || item?.evidenceRefs),
+    createdAt: item?.created_at || item?.createdAt || '',
+  };
+}
+
+function normalizeCaseLawState(state, dojo) {
+  const rawRecords = dojo.caseLawRecords
+    || dojo.case_law_records
+    || dojo.caseLaw
+    || dojo.case_law
+    || state.caseLawRecords
+    || state.case_law_records
+    || state.caseLaw
+    || state.case_law
+    || state.governanceService?.case_law_review_queue
+    || state.governanceService?.caseLawReviewQueue
+    || [];
+  const records = asArray(rawRecords).map(normalizeCaseLawRecord).filter((record) => record.caseId || record.title);
+  const guardrails = asArray(dojo.guardrails || state.guardrails)
+    .map(normalizeGuardrailRecord)
+    .filter((guardrail) => guardrail.guardrailId || guardrail.title);
+  const antibodies = asArray(dojo.antibodies || dojo.antibodyRegistry || dojo.antibody_registry || state.antibodies || state.antibodyRegistry || state.antibody_registry)
+    .map(normalizeAntibodyRecord)
+    .filter((antibody) => antibody.antibodyId || antibody.caseId || antibody.guardrailId);
+  return {
+    records,
+    guardrails,
+    antibodies,
+    metrics: {
+      recordCount: records.length,
+      bindingCount: records.filter((record) => record.status === 'binding' || record.status === 'approved').length,
+      proposedCount: records.filter((record) => record.status === 'proposed').length,
+      deprecatedCount: records.filter((record) => record.status === 'deprecated').length,
+      guardrailCount: guardrails.length,
+      antibodyCount: antibodies.length,
+    },
+  };
+}
+
 export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   const state = input?.state || input || {};
   const dojo = state.dojo || state.skillCredential || state.skill_credential || {};
@@ -942,6 +1036,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
       debug: normalizeDebugState(dojo),
       source: normalizeSourceState(state, dojo, null),
       evidence: normalizeEvidenceState(state, dojo, null),
+      caseLaw: normalizeCaseLawState(state, dojo),
       bridgeStatus: state.runtime?.status || state.status || 'ready',
     };
   }
@@ -979,6 +1074,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   skill.debug = normalizeDebugState(dojo);
   skill.source = normalizeSourceState(state, dojo, skill);
   skill.evidence = normalizeEvidenceState(state, dojo, skill);
+  skill.caseLaw = normalizeCaseLawState(state, dojo);
 
   return {
     ...empty,
@@ -997,6 +1093,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
     debug: skill.debug,
     source: skill.source,
     evidence: skill.evidence,
+    caseLaw: skill.caseLaw,
     bridgeStatus: state.runtime?.status || state.status || 'ready',
   };
 }
