@@ -18,6 +18,7 @@ const PACKAGE_SCRIPTS = {
     "test:integration": "vitest run tests/integration",
     "proof:dojo:self-check": "node scripts/dojo-proof-self-check.mjs",
     "proof:dojo:mcp-host-conformance:self-check": "node scripts/dojo-mcp-host-conformance.mjs --self-check",
+    "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
     "live:browser:workflow-pipeline": "node scripts/workflow-pipeline-e2e.mjs",
     "live:browser:private-tool-stdio": "node scripts/private-tool-stdio-acceptance.mjs",
     "live:browser:private-tool-codex": "node scripts/private-tool-codex-acceptance.mjs",
@@ -81,7 +82,12 @@ describe("Dojo release gate manifest", () => {
         script_exists: true,
       }),
       expect.objectContaining({ id: "dojo_mcp_host_conformance", tier: "T6", script_exists: true }),
-      expect.objectContaining({ id: "security_abuse_suite", tier: "T7" }),
+      expect.objectContaining({
+        id: "security_abuse_suite",
+        tier: "T7",
+        package_script: "proof:dojo:security-abuse:self-check",
+        script_exists: true,
+      }),
       expect.objectContaining({ id: "soak_performance", tier: "T8", script_exists: true }),
     ]));
   });

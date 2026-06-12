@@ -267,7 +267,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     id: "security_abuse_suite",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
-    command: "run focused security/abuse tests for tamper, replay, bypass, cross-tenant, stale evidence, revocation, and prompt-injection fixtures",
+    package_script: "proof:dojo:security-abuse:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:security-abuse:self-check",
     required_for: ["release"],
     evidence_kind: "test_report",
   },
@@ -459,6 +460,7 @@ export async function runSelfCheck({ outDir }) {
   assert(manifest.milestone_gate_ids.includes("dojo_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_full_visual_proof"));
   assert(manifest.release_gate_ids.includes("dojo_mcp_host_conformance"));
+  assert(manifest.release_gate_ids.includes("security_abuse_suite"));
   assert(manifest.gates.some((gate) => gate.tier === "T8"));
   return writeDojoReleaseGateArtifacts({ outDir, manifest });
 }
