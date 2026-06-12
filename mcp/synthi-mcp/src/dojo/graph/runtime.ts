@@ -234,6 +234,9 @@ function blockedByForNode(
   const expiryBlockedBy = expiryBlockedByForNode(node, expiryState);
   if (expiryBlockedBy.length > 0) return expiryBlockedBy;
 
+  const retryBlockedBy = retryBlockedByForNode(node, inputs);
+  if (retryBlockedBy.length > 0) return retryBlockedBy;
+
   const blockedBy = node.preconditions
     .filter((condition) => !evaluateStaticCondition(condition, inputs))
     .map((condition) => `precondition_failed:${condition}`);
@@ -257,6 +260,38 @@ function expiryBlockedByForNode(node: DojoGraphNode, expiryState?: DojoGraphExpi
   const expiredTriggers = new Set(expiryState.expired_triggers ?? []);
   const activeTrigger = node.expiry_triggers.find((trigger) => expiredTriggers.has(trigger));
   return activeTrigger ? [`expiry_trigger_active:${activeTrigger}`] : [];
+}
+
+function retryBlockedByForNode(node: DojoGraphNode, inputs: Record<string, unknown>): string[] {
+  if (node.kind !== "Retry") return [];
+
+  const maxAttempts = integerMetadata(node, "max_attempts") ?? integerMetadata(node, "retry_limit");
+  if (maxAttempts === undefined || maxAttempts < 1) return ["retry_policy_missing"];
+
+  const attemptKey = stringMetadata(node, "attempt_key") ?? node.node_id;
+  const attemptCount = retryAttemptCountForKey(inputs, attemptKey);
+  return attemptCount >= maxAttempts ? [`retry_limit_exceeded:${attemptKey}`] : [];
+}
+
+function retryAttemptCountForKey(inputs: Record<string, unknown>, attemptKey: string): number {
+  const retryAttempts = inputs["retry_attempts"];
+  if (retryAttempts && typeof retryAttempts === "object" && !Array.isArray(retryAttempts)) {
+    const value = (retryAttempts as Record<string, unknown>)[attemptKey];
+    return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  }
+  const value = inputs["retry_attempt"];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function integerMetadata(node: DojoGraphNode, key: string): number | undefined {
+  const value = node.metadata?.[key];
+  if (typeof value !== "number" || !Number.isInteger(value)) return undefined;
+  return value;
+}
+
+function stringMetadata(node: DojoGraphNode, key: string): string | undefined {
+  const value = node.metadata?.[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 type DojoBranchDecision =

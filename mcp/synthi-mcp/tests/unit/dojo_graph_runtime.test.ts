@@ -235,6 +235,60 @@ describe("Dojo graph runtime skeleton", () => {
     }));
   });
 
+  it("allows a retry node while attempts are below the configured limit", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: retryGraphFixture(),
+      mode: "practice",
+      inputs: { retry_attempts: { submit_invoice: 1 } },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({ node_id: "retry_submit", status: "completed" }),
+      ]),
+    }));
+  });
+
+  it("blocks a retry node once the configured attempt limit is reached", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: retryGraphFixture(),
+      mode: "practice",
+      inputs: { retry_attempts: { submit_invoice: 2 } },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["retry_limit_exceeded:submit_invoice"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "retry_submit",
+          status: "blocked",
+          blocked_by: ["retry_limit_exceeded:submit_invoice"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks retry nodes that do not declare a retry policy", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const graph = retryGraphFixture();
+    graph.nodes = graph.nodes.map((node) =>
+      node.node_id === "retry_submit" ? { ...node, metadata: undefined } : node
+    );
+
+    await expect(runtime.execute({
+      graph,
+      mode: "practice",
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["retry_policy_missing"],
+    }));
+  });
+
   it("blocks execution when graph validation fails", async () => {
     const runtime = new DojoSkillGraphRuntime();
     const invalid = graphFixture();
@@ -326,6 +380,42 @@ function graphFixture(): DojoSkillGraph {
       {
         edge_id: "edge_trigger_action",
         from_node_id: "trigger",
+        to_node_id: "action_submit",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function retryGraphFixture(): DojoSkillGraph {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-retry",
+    skill_id: "skill-retry",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "practice",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      safeNode("trigger", "Trigger", "Skill invocation"),
+      {
+        ...safeNode("retry_submit", "Retry", "Retry submit invoice"),
+        metadata: { attempt_key: "submit_invoice", max_attempts: 2 },
+      },
+      safeNode("action_submit", "Action", "Submit invoice"),
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_retry",
+        from_node_id: "trigger",
+        to_node_id: "retry_submit",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_retry_action",
+        from_node_id: "retry_submit",
         to_node_id: "action_submit",
         confidence: 1,
         observed_variants: [],
