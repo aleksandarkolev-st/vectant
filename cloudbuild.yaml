@@ -34,7 +34,7 @@ substitutions:
   # NEXT_PUBLIC_* build args baked into the frontend client bundle.
   # Override these per environment via trigger substitutions.
   _NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.vectant.dev/collab"
-  _NEXT_PUBLIC_YSWEET_URL: "https://beta.vectant.dev/ysweet"
+  _NEXT_PUBLIC_YSWEET_URL: "https://beta.vectant.dev/collab"
   _NEXT_PUBLIC_COLLAB_PORT: "443"
   _NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.vectant.dev/signal"
   _NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.vectant.dev/gateway/ws"
@@ -110,6 +110,14 @@ steps:
       - --dockerfile=synthi/Dockerfile
       - --context=dir:///workspace/synthi
       - --destination=${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}
+      - --build-arg=NEXT_PUBLIC_COLLAB_SERVER_URL=${_NEXT_PUBLIC_COLLAB_SERVER_URL}
+      - --build-arg=NEXT_PUBLIC_YSWEET_URL=${_NEXT_PUBLIC_YSWEET_URL}
+      - --build-arg=NEXT_PUBLIC_COLLAB_PORT=${_NEXT_PUBLIC_COLLAB_PORT}
+      - --build-arg=NEXT_PUBLIC_COMPILE_SIGNAL_URL=${_NEXT_PUBLIC_COMPILE_SIGNAL_URL}
+      - --build-arg=NEXT_PUBLIC_GATEWAY_WS_URL=${_NEXT_PUBLIC_GATEWAY_WS_URL}
+      - --build-arg=NEXT_PUBLIC_CODE_INTEL_URL=${_NEXT_PUBLIC_CODE_INTEL_URL}
+      - --build-arg=NEXT_PUBLIC_AI_ENGINE_URL=${_NEXT_PUBLIC_AI_ENGINE_URL}
+      - --build-arg=NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=${_NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER}
       - --cache=true
       - --cache-ttl=168h
 
@@ -277,14 +285,25 @@ steps:
         NS="synthi"
 
         echo "=== Deploying tag: $${TAG} ==="
+        echo "=== Region: ${_REGION} ==="
 
-        # Apply manifest changes first so Services, Ingress, ConfigMaps,
-        # BackendConfigs, and Deployment specs stay in sync with the images.
-        kubectl apply -k k8s/
+        # Render Kustomize once with the immutable image tag before applying.
+        # Applying raw k8s/ directly would briefly roll Deployments to the
+        # placeholder image tag "build-tag-required".
+        RENDERED="/workspace/.cloudbuild/synthi-k8s.yaml"
+        DEFAULT_REGISTRY="europe-west10-docker.pkg.dev/vectant-proj/synthi"
+        mkdir -p "$$(dirname "$${RENDERED}")"
+        kubectl kustomize k8s > "$${RENDERED}"
+        sed -i "s|$${DEFAULT_REGISTRY}|$${REGISTRY}|g" "$${RENDERED}"
+        sed -i "s|build-tag-required|$${TAG}|g" "$${RENDERED}"
+        if grep -n "build-tag-required" "$${RENDERED}"; then
+          echo "Rendered manifests still contain build-tag-required." >&2
+          exit 1
+        fi
 
         echo "=== Running Prisma migrations ==="
         kubectl delete job prisma-migrate -n $${NS} --ignore-not-found
-        sed "s|synthi-prisma-migrate:build-tag-required|synthi-prisma-migrate:$${TAG}|g" \
+        sed "s|$${DEFAULT_REGISTRY}|$${REGISTRY}|g; s|build-tag-required|$${TAG}|g" \
           k8s/prisma-migrate-job.yaml | kubectl apply -f -
         if ! kubectl wait --for=condition=complete job/prisma-migrate -n $${NS} --timeout=300s; then
           kubectl logs job/prisma-migrate -n $${NS} -c migrate || true
@@ -292,27 +311,8 @@ steps:
         fi
         kubectl logs job/prisma-migrate -n $${NS} -c migrate --tail=100 || true
 
-        # Update the worker image in ConfigMap before restarting collab-server.
-        # The dynamic spawner reads WORKER_IMAGE from its process env, so the
-        # collab rollout must happen after this patch.
-        kubectl patch configmap synthi-config -n $${NS} \
-          -p "{\"data\":{\"WORKER_IMAGE\":\"$${REGISTRY}/synthi-worker:$${TAG}\"}}"
-
-        # Update each Deployment's container image
-        kubectl set image deployment/frontend \
-          nextjs=$${REGISTRY}/synthi-frontend:$${TAG} -n $${NS}
-
-        kubectl set image deployment/collab-server \
-          collab=$${REGISTRY}/synthi-collab-server:$${TAG} -n $${NS}
-
-        kubectl set image deployment/ai-engine \
-          ai-engine=$${REGISTRY}/synthi-ai-engine:$${TAG} -n $${NS}
-
-        kubectl set image deployment/ai-gateway \
-          gateway=$${REGISTRY}/synthi-ai-gateway:$${TAG} -n $${NS}
-
-        kubectl set image deployment/signaling-server \
-          signaling=$${REGISTRY}/synthi-signaling-server:$${TAG} -n $${NS}
+        echo "=== Applying Kubernetes manifests ==="
+        kubectl apply -f "$${RENDERED}"
 
         echo "=== Waiting for rollouts ==="
         kubectl rollout status deployment/frontend -n $${NS} --timeout=300s

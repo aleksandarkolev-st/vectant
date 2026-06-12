@@ -188,7 +188,58 @@ gcloud builds triggers create github \
   --project=overview-synti
 ```
 
+For the current beta production environment, use one of these paths instead of
+running `kubectl apply -k k8s/` directly:
+
+```bash
+# Local operator deploy from the current checkout.
+scripts/deploy-prod.sh
+
+# Push the current commit to cloud-deploy first, then deploy the same local snapshot.
+scripts/deploy-prod.sh --push
+
+# Use an explicit immutable image tag.
+scripts/deploy-prod.sh --tag prod-20260611-a1b2c3d4
+```
+
+`scripts/deploy-prod.sh` submits `cloudbuild.yaml` to Cloud Build with these
+production defaults:
+
+| Setting | Value |
+|---------|-------|
+| Project | `vectant-proj` |
+| Registry region | `europe-west10` |
+| Registry | `europe-west10-docker.pkg.dev/vectant-proj/synthi` |
+| Cluster | `synthi-beta-cluster` |
+| Cluster location | `europe-west10-a` |
+| Deploy branch | `cloud-deploy` |
+
+The script refuses dirty local deploys by default because Cloud Build uploads
+the local checkout snapshot. Use `--allow-dirty` only when you intentionally
+want to deploy uncommitted local files.
+
+The repo also includes `.github/workflows/deploy-prod.yml`. It submits the same
+Cloud Build pipeline on every push to `cloud-deploy`, and can also be run
+manually from GitHub Actions. Configure these repository secrets before using it:
+
+| Secret | Purpose |
+|--------|---------|
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | GitHub OIDC provider resource name |
+| `GCP_DEPLOY_SERVICE_ACCOUNT` | Service account email allowed to submit Cloud Builds |
+
+The GitHub deploy service account only needs to submit Cloud Builds. The Cloud
+Build service account still performs the image pushes and GKE rollout, so it
+must keep the Artifact Registry and GKE permissions listed above.
+
+Production deploys render Kustomize with the immutable image tag before applying
+manifests. This prevents the live cluster from briefly rolling Deployments to
+the placeholder `build-tag-required` image.
+
 ### Deploy
+
+Use this section for first-time cluster bootstrap or manual debugging. For
+repeat production rollouts, prefer `scripts/deploy-prod.sh` or the GitHub
+Actions workflow above.
 
 ```bash
 # Apply everything in dependency order

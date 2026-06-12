@@ -13,6 +13,7 @@ import {
 import collabSessionService from '@/services/collabSessionService';
 import { getCurrentUser } from '@/services/userIdentity';
 import { useTheme } from '@/components/ThemeProvider';
+import { resolveCollabHttpUrl } from '@/lib/collab-url';
 
 // Map file extensions to Shiki language IDs.  Kept in sync with the richer
 // table in CodeBlock.jsx; if a file has an unknown extension we fall back to
@@ -39,12 +40,7 @@ function langFromPath(filePath) {
   return EXT_TO_LANG[ext] || 'text';
 }
 
-const COLLAB_URL = (
-  process.env.NEXT_PUBLIC_COLLAB_SERVER_URL ||
-  process.env.NEXT_PUBLIC_COLLAB_URL ||
-  process.env.NEXT_PUBLIC_YJS_URL ||
-  'http://localhost:1234'
-).replace(/^ws/, 'http').replace(/\/$/, '');
+const COLLAB_URL = resolveCollabHttpUrl();
 
 function fmtTime(ts) {
   if (!ts) return '';
