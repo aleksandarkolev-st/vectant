@@ -27,6 +27,30 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
       approvalQueue: [],
       caseLawReviewQueue: [],
     },
+    practice: {
+      scenarios: [],
+      latestRun: null,
+      organoid: {
+        syntheticOnly: false,
+        fixtureSeed: '',
+        tissueNames: [],
+        dataPolicy: {},
+      },
+      windTunnel: {
+        runCount: 0,
+        passCount: 0,
+        failCount: 0,
+        blockedCount: 0,
+        stopReason: '',
+        budget: {},
+        runs: [],
+      },
+      coverage: {
+        score: 0,
+        criticalFailures: 0,
+        blockedScenarios: 0,
+      },
+    },
     bridgeStatus: 'unknown',
   };
 }
@@ -364,6 +388,107 @@ function normalizeGovernanceState(state, skill, workspaceSlug) {
   };
 }
 
+function normalizeScenarioItem(item, index = 0) {
+  const id = item?.scenario_id || item?.scenarioId || item?.id || `scenario-${index + 1}`;
+  return {
+    id,
+    title: item?.title || item?.name || id,
+    layer: item?.layer || item?.kind || '',
+    simulatorTier: item?.simulator_tier || item?.simulatorTier || item?.tier || '',
+    mutationKind: item?.mutation_kind || item?.mutationKind || '',
+    expectedBehavior: item?.expected_behavior || item?.expectedBehavior || item?.oracle?.expected_behavior || '',
+    riskTags: compactStrings(item?.risk_tags || item?.riskTags),
+    generatedFrom: item?.generated_from || item?.generatedFrom || '',
+    status: item?.status || item?.result?.status || 'queued',
+    evidenceRefs: compactStrings(item?.evidence_refs || item?.evidenceRefs),
+  };
+}
+
+function normalizeScenarioRunItem(item, index = 0) {
+  const runId = item?.run_id || item?.runId || item?.id || `run-${index + 1}`;
+  return {
+    runId,
+    scenarioId: item?.scenario_id || item?.scenarioId || '',
+    mutationKind: item?.mutation_kind || item?.mutationKind || '',
+    mode: item?.mode || '',
+    simulatorTier: item?.simulator_tier || item?.simulatorTier || item?.tier || '',
+    substrate: item?.substrate || '',
+    status: item?.status || item?.oracle_result?.status || item?.oracleResult?.status || 'unknown',
+    expectationMet: Boolean(item?.expectation_met ?? item?.expectationMet),
+    finding: item?.finding || item?.oracle_result?.finding || item?.oracleResult?.finding || '',
+    guardrailsTriggered: compactStrings(item?.guardrails_triggered || item?.guardrailsTriggered),
+    evidenceRefs: compactStrings(item?.evidence_refs || item?.evidenceRefs || item?.observed_evidence || item?.observedEvidence),
+    startedAt: item?.started_at || item?.startedAt || '',
+    completedAt: item?.completed_at || item?.completedAt || item?.finished_at || item?.finishedAt || '',
+    fixtureHash: item?.fixture_materialization_hash || item?.fixtureMaterializationHash || '',
+    cost: item?.cost || {},
+  };
+}
+
+function normalizeOrganoidState(dojo) {
+  const raw = dojo.workspaceOrganoid || dojo.workspace_organoid || dojo.organoid || dojo.vivarium || {};
+  const dataPolicy = raw.data_policy || raw.dataPolicy || {};
+  const tissues = raw.tissues || {};
+  return {
+    syntheticOnly: Boolean(dataPolicy.synthetic_data_only ?? dataPolicy.syntheticDataOnly ?? raw.synthetic_data_only ?? raw.syntheticDataOnly),
+    fixtureSeed: raw.fixture_seed || raw.fixtureSeed || raw.reset_profile?.seed || raw.resetProfile?.seed || '',
+    tissueNames: Object.keys(tissues).filter(Boolean),
+    dataPolicy,
+  };
+}
+
+function normalizeWindTunnelState(dojo) {
+  const raw = dojo.windTunnel || dojo.wind_tunnel || {};
+  const summary = raw.summary || {};
+  const runs = asArray(raw.runs || raw.scenario_runs || raw.scenarioRuns)
+    .map(normalizeScenarioRunItem)
+    .filter((run) => run.runId || run.scenarioId);
+  const passCount = Number(raw.passCount ?? raw.pass_count ?? summary.passed ?? runs.filter((run) => run.status === 'passed').length);
+  const failCount = Number(raw.failCount ?? raw.fail_count ?? summary.failed ?? runs.filter((run) => run.status === 'failed').length);
+  const blockedCount = Number(raw.blockedCount ?? raw.blocked_count ?? summary.blocked ?? runs.filter((run) => run.status === 'blocked').length);
+  return {
+    runCount: Number(raw.runCount ?? raw.run_count ?? summary.run_count ?? runs.length),
+    passCount,
+    failCount,
+    blockedCount,
+    stopReason: raw.stopReason || raw.stop_reason || summary.stop_reason || '',
+    budget: raw.budget || summary.budget || {},
+    runs,
+  };
+}
+
+function normalizePracticeState(state, dojo, skill) {
+  const rawScenarios = asArray(
+    dojo.scenarios
+      || dojo.vivarium?.scenarios
+      || dojo.workspaceOrganoid?.scenarios
+      || dojo.workspace_organoid?.scenarios
+      || dojo.organoid?.scenarios,
+  );
+  const scenarios = rawScenarios.map(normalizeScenarioItem).filter((scenario) => scenario.id);
+  const latestRunRaw = dojo.vivariumRun
+    || dojo.vivarium_run
+    || dojo.scenarioRun
+    || dojo.scenario_run
+    || dojo.latestScenarioRun
+    || dojo.latest_scenario_run
+    || null;
+  const latestRun = latestRunRaw ? normalizeScenarioRunItem(latestRunRaw) : null;
+  const windTunnel = normalizeWindTunnelState(dojo);
+  const checkride = dojo.checkride || {};
+  return {
+    scenarios,
+    latestRun,
+    organoid: normalizeOrganoidState(dojo),
+    windTunnel,
+    coverage: {
+      score: Number(checkride.coverageScore ?? checkride.coverage_score ?? skill?.coverageScore ?? state.metrics?.coverage ?? 0),
+      criticalFailures: Number(checkride.criticalFailures ?? checkride.critical_failures ?? 0),
+      blockedScenarios: Number(checkride.blockedScenarios ?? checkride.blocked_scenarios ?? 0),
+    },
+  };
+}
+
 export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   const state = input?.state || input || {};
   const dojo = state.dojo || state.skillCredential || state.skill_credential || {};
@@ -373,6 +498,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
     return {
       ...empty,
       governance: normalizeGovernanceState(state, null, workspaceSlug),
+      practice: normalizePracticeState(state, dojo, null),
       bridgeStatus: state.runtime?.status || state.status || 'ready',
     };
   }
@@ -406,6 +532,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   skill.graph = normalizeSkillGraph(dojo, skill);
   skill.proofCapsule = normalizeProofCapsule(dojo);
   skill.refusal = normalizeRefusal(dojo, skill);
+  skill.practice = normalizePracticeState(state, dojo, skill);
 
   return {
     ...empty,
@@ -420,6 +547,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
       artifactCount: skill.artifactCount,
     },
     governance: normalizeGovernanceState(state, skill, workspaceSlug),
+    practice: skill.practice,
     bridgeStatus: state.runtime?.status || state.status || 'ready',
   };
 }
