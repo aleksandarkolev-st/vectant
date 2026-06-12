@@ -252,6 +252,36 @@ async function main() {
     typedPatchPlan.required_tests.includes("npm --prefix mcp/synthi-mcp run proof:dojo:affordance-codemod:self-check"),
     "typed patch plan should require the affordance codemod proof self-check"
   );
+  const generatedPrMetadata = sourcePlan.source_affordance_pr_plan.generated_pr_metadata;
+  assert.equal(
+    generatedPrMetadata.schema_version,
+    "synthi.dojo.generatedSourcePrMetadata.v1",
+    "source affordance plan should include generated PR metadata"
+  );
+  assert(
+    /^dojo\/source-affordance\/[a-z0-9._/-]+-[a-f0-9]{12}$/.test(generatedPrMetadata.branch_name),
+    "generated PR metadata should include a safe generated branch name"
+  );
+  assert(
+    generatedPrMetadata.review_requirements.some((requirement) => requirement.gate === "code_owner"),
+    "generated PR metadata should represent the code-owner review gate"
+  );
+  assert(
+    generatedPrMetadata.review_requirements.some((requirement) => requirement.gate === "security_for_risky_action"),
+    "generated PR metadata should represent the security review gate"
+  );
+  assert(
+    generatedPrMetadata.artifact_refs.some((artifact) => artifact.kind === "patch_plan"),
+    "generated PR metadata should reference the patch plan artifact"
+  );
+  assert(
+    generatedPrMetadata.artifact_refs.some((artifact) => artifact.kind === "contract_test"),
+    "generated PR metadata should reference the generated contract or proof test artifact"
+  );
+  assert(
+    generatedPrMetadata.promotion_blockers.every((blocker) => typeof blocker === "string" && blocker.length > 0),
+    "generated PR metadata promotion blockers should be explicit strings"
+  );
   const licenseHealth = structured(await dispatchDojoTool("synthi_dojo_get_license_health", { skill_id: publish.skill.skill_id }));
   assert.equal(licenseHealth.license_health.schema_version, "synthi.dojo.licenseHealth.v1", "license health schema should match");
   log("ok", "queried universe, source affordance, and license health reports");
@@ -285,6 +315,9 @@ async function main() {
     source_affordance_patch_count: sourcePlan.source_affordance_pr_plan.patch_count,
     source_affordance_typed_operation_count: typedPatchPlan.operations.length,
     source_affordance_typed_target_match_count: typedPatchPlan.operations.filter((operation) => operation.target_match?.role).length,
+    source_affordance_generated_pr_review_gate_count: generatedPrMetadata.review_requirements.length,
+    source_affordance_generated_pr_artifact_ref_count: generatedPrMetadata.artifact_refs.length,
+    source_affordance_generated_pr_promotion_blocker_count: generatedPrMetadata.promotion_blockers.length,
     license_health_status: licenseHealth.license_health.status,
     generated_playwright_spec: path.relative(RUN_ROOT, generatedSpec).replace(/\\/g, "/"),
     executed_playwright_spec: path.relative(RUN_ROOT, executableSpec).replace(/\\/g, "/"),
