@@ -3,7 +3,12 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, wri
 import path from "node:path";
 import type { DojoSkill } from "./dojo.js";
 import { publishedToolNamesForSkill, publishedWorkflowBindingForSkill, type DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
-import type { DojoControlPlaneStore, DojoProofCapsuleRecord } from "../dojo/store/interfaces.js";
+import type {
+  DojoControlPlaneStore,
+  DojoPermissionUpgradeRequestFilter,
+  DojoPermissionUpgradeRequestRecord,
+  DojoProofCapsuleRecord,
+} from "../dojo/store/interfaces.js";
 
 export type {
   DojoApprovalStore,
@@ -12,6 +17,9 @@ export type {
   DojoControlPlaneStore,
   DojoEvidenceStore,
   DojoLicenseStore,
+  DojoPermissionUpgradeRequestFilter,
+  DojoPermissionUpgradeRequestRecord,
+  DojoPermissionUpgradeRequestStatus,
   DojoProofCapsuleRecord,
   DojoProofStore,
   DojoSkillStore,
@@ -26,6 +34,7 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
   private readonly workflowIndex = new Map<string, string>();
   private readonly toolIndex = new Map<string, string>();
   private readonly proofRecords = new Map<string, DojoProofCapsuleRecord>();
+  private readonly permissionUpgradeRequests = new Map<string, DojoPermissionUpgradeRequestRecord>();
 
   saveSkill(skill: DojoSkill): void {
     const clone = cloneJson(skill);
@@ -79,6 +88,14 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
     return [...this.proofRecords.values()].map(cloneJson);
   }
 
+  savePermissionUpgradeRequest(record: DojoPermissionUpgradeRequestRecord): void {
+    this.permissionUpgradeRequests.set(record.request_id, cloneJson(record));
+  }
+
+  listPermissionUpgradeRequests(filter: DojoPermissionUpgradeRequestFilter = {}): DojoPermissionUpgradeRequestRecord[] {
+    return filterPermissionUpgradeRequests([...this.permissionUpgradeRequests.values()], filter).map(cloneJson);
+  }
+
   revokeProofCapsule(capsuleId: string, reason: string, now: string = new Date().toISOString()): DojoProofCapsuleRecord | null {
     const record = this.proofRecords.get(capsuleId);
     if (!record) return null;
@@ -97,6 +114,7 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
     this.workflowIndex.clear();
     this.toolIndex.clear();
     this.proofRecords.clear();
+    this.permissionUpgradeRequests.clear();
   }
 
   private removeToolIndexesForSkill(skillId: string): void {
@@ -117,6 +135,7 @@ interface PersistedDojoScope {
   workflow_index: Record<string, string>;
   published_tool_index: Record<string, string>;
   proof_records: Record<string, DojoProofCapsuleRecord>;
+  permission_upgrade_requests: Record<string, DojoPermissionUpgradeRequestRecord>;
 }
 
 interface EncryptedDojoStoreDocument {
@@ -205,6 +224,16 @@ export class EncryptedFileDojoSkillStore implements DojoControlPlaneStore {
 
   listProofRecords(): DojoProofCapsuleRecord[] {
     return Object.values(this.scope().proof_records).map(cloneJson);
+  }
+
+  savePermissionUpgradeRequest(record: DojoPermissionUpgradeRequestRecord): void {
+    this.updateScope((scope) => {
+      scope.permission_upgrade_requests[record.request_id] = cloneJson(record);
+    });
+  }
+
+  listPermissionUpgradeRequests(filter: DojoPermissionUpgradeRequestFilter = {}): DojoPermissionUpgradeRequestRecord[] {
+    return filterPermissionUpgradeRequests(Object.values(this.scope().permission_upgrade_requests), filter).map(cloneJson);
   }
 
   revokeProofCapsule(capsuleId: string, reason: string, now: string = new Date().toISOString()): DojoProofCapsuleRecord | null {
@@ -323,7 +352,13 @@ function emptyDocument(): EncryptedDojoStoreDocument {
 }
 
 function emptyScope(): PersistedDojoScope {
-  return { skills: {}, workflow_index: {}, published_tool_index: {}, proof_records: {} };
+  return {
+    skills: {},
+    workflow_index: {},
+    published_tool_index: {},
+    proof_records: {},
+    permission_upgrade_requests: {},
+  };
 }
 
 function cloneScope(scope: PersistedDojoScope): PersistedDojoScope {
@@ -332,6 +367,9 @@ function cloneScope(scope: PersistedDojoScope): PersistedDojoScope {
     workflow_index: { ...(scope.workflow_index ?? {}) },
     published_tool_index: { ...(scope.published_tool_index ?? {}) },
     proof_records: Object.fromEntries(Object.entries(scope.proof_records ?? {}).map(([key, value]) => [key, cloneJson(value)])),
+    permission_upgrade_requests: Object.fromEntries(
+      Object.entries(scope.permission_upgrade_requests ?? {}).map(([key, value]) => [key, cloneJson(value)])
+    ),
   };
 }
 
@@ -358,4 +396,20 @@ function removeToolIndexesForSkill(index: Record<string, string>, skillId: strin
   for (const [toolName, indexedSkillId] of Object.entries(index)) {
     if (indexedSkillId === skillId) delete index[toolName];
   }
+}
+
+function filterPermissionUpgradeRequests(
+  records: DojoPermissionUpgradeRequestRecord[],
+  filter: DojoPermissionUpgradeRequestFilter
+): DojoPermissionUpgradeRequestRecord[] {
+  const limit = Number.isFinite(filter.limit) && typeof filter.limit === "number" && filter.limit > 0
+    ? Math.floor(filter.limit)
+    : undefined;
+  const filtered = records
+    .filter((record) => !filter.skill_id || record.skill_id === filter.skill_id)
+    .filter((record) => !filter.workflow_id || record.workflow_id === filter.workflow_id)
+    .filter((record) => !filter.requested_action || record.requested_action === filter.requested_action)
+    .filter((record) => !filter.status || record.status === filter.status)
+    .sort((left, right) => right.requested_at.localeCompare(left.requested_at) || left.request_id.localeCompare(right.request_id));
+  return typeof limit === "number" ? filtered.slice(0, limit) : filtered;
 }

@@ -514,6 +514,46 @@ describe("Agent Dojo MCP tools", () => {
         }),
       }),
     }));
+    const upgradeRequest = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
+      skill_id: published.skill.skill_id,
+      requested_action: "commit_mutation",
+      actor_id: "reviewer-a",
+      request_id: "upgrade-test-request",
+      correlation_id: "upgrade-test-correlation",
+      now: "2026-06-11T00:03:00.000Z",
+    });
+    expect(upgradeRequest?.structuredContent).toEqual(expect.objectContaining({
+      implementation_status: "executable",
+      requested_action: "commit_mutation",
+      permission_upgrade_request: expect.objectContaining({
+        schema_version: "synthi.dojo.permissionUpgradeRequest.v1",
+        request_id: "upgrade-test-request",
+        skill_id: published.skill.skill_id,
+        requested_action: "commit_mutation",
+        status: "pending",
+        requested_by: { actor_id: "reviewer-a", actor_type: "agent" },
+        required_steps: expect.arrayContaining(["rerun_checkride_for_requested_action"]),
+      }),
+      matching_approval_queue: [
+        expect.objectContaining({
+          request_id: "upgrade-test-request",
+          source: "permission_upgrade_request",
+          action: "commit_mutation",
+          status: "pending",
+        }),
+      ],
+    }));
+    const governanceAfterUpgrade = await dispatchDojoTool("synthi_dojo_get_governance_report", { skill_id: published.skill.skill_id });
+    expect(governanceAfterUpgrade?.structuredContent).toEqual(expect.objectContaining({
+      governance_service: expect.objectContaining({
+        approval_queue: expect.arrayContaining([
+          expect.objectContaining({
+            request_id: "upgrade-test-request",
+            source: "permission_upgrade_request",
+          }),
+        ]),
+      }),
+    }));
     const scenarioRun = await dispatchDojoTool("synthi_dojo_run_vivarium_scenario", {
       skill_id: published.skill.skill_id,
       mutation_kind: "duplicate_entity",

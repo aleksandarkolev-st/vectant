@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildDojoSkill, issueDojoProofCapsule } from "../../src/browser/dojo.js";
 import { EncryptedFileDojoSkillStore, InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import type {
+  DojoApprovalStore,
   DojoControlPlaneStore,
+  DojoPermissionUpgradeRequestRecord,
   DojoProofCapsuleRecord,
   DojoProofStore,
   DojoSkillStore,
@@ -40,6 +42,7 @@ describe("Dojo store interface split", () => {
 function assertControlPlaneStore(store: DojoControlPlaneStore): void {
   const skillStore: DojoSkillStore = store;
   const proofStore: DojoProofStore = store;
+  const approvalStore: DojoApprovalStore = store;
   const skill = buildDojoSkill(compileWorkflowContract([
     event({
       event_id: "open",
@@ -67,14 +70,43 @@ function assertControlPlaneStore(store: DojoControlPlaneStore): void {
     expires_at: capsule.expires_at,
     status: "issued",
   };
+  const upgradeRequest: DojoPermissionUpgradeRequestRecord = {
+    schema_version: "synthi.dojo.permissionUpgradeRequest.v1",
+    request_id: "upgrade-unit-test",
+    skill_id: skill.skill_id,
+    workflow_id: skill.workflow_id,
+    workspace_id: skill.workspace_id,
+    license_id: skill.permission_license.license_id,
+    license_version: skill.permission_license.license_version,
+    requested_action: "commit_mutation",
+    current_entrustment_level: skill.entrustment_level,
+    required_steps: ["rerun_checkride_for_requested_action"],
+    status: "pending",
+    evidence_refs: [`skill:${skill.skill_id}`],
+    requested_at: "2026-06-11T00:01:00.000Z",
+    requested_by: { actor_id: "unit-test", actor_type: "agent" },
+    request_context: {
+      request_id: "upgrade-unit-test",
+      correlation_id: "upgrade-unit-test-correlation",
+    },
+  };
 
   skillStore.saveSkill(skill);
   proofStore.saveProofRecord(proofRecord);
+  approvalStore.savePermissionUpgradeRequest(upgradeRequest);
 
   expect(skillStore.getSkill(skill.skill_id)).toEqual(expect.objectContaining({ skill_id: skill.skill_id }));
   expect(skillStore.getSkillByWorkflowId(skill.workflow_id)).toEqual(expect.objectContaining({ skill_id: skill.skill_id }));
   expect(proofStore.getProofRecord(capsule.capsule_id)).toEqual(expect.objectContaining({ status: "issued" }));
   expect(proofStore.listProofRecords()).toHaveLength(1);
+  expect(approvalStore.listPermissionUpgradeRequests({ skill_id: skill.skill_id })).toEqual([
+    expect.objectContaining({
+      request_id: "upgrade-unit-test",
+      requested_action: "commit_mutation",
+      status: "pending",
+    }),
+  ]);
+  expect(approvalStore.listPermissionUpgradeRequests({ status: "approved" })).toEqual([]);
   expect(store.clear).toEqual(expect.any(Function));
   expect(store.withTransaction).toBeUndefined();
 }

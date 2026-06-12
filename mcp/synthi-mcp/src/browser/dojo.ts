@@ -15,6 +15,8 @@ import {
   createDefaultDojoSkillStore,
   InMemoryDojoSkillStore,
   type DojoControlPlaneStore,
+  type DojoPermissionUpgradeRequestFilter,
+  type DojoPermissionUpgradeRequestRecord,
   type DojoProofCapsuleRecord,
 } from "./dojo_store.js";
 import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/proof/errors.js";
@@ -779,6 +781,15 @@ export class DojoSkillRegistry {
 
   listProofRecords(): DojoProofCapsuleRecord[] {
     return this.store.listProofRecords();
+  }
+
+  recordPermissionUpgradeRequest(record: DojoPermissionUpgradeRequestRecord): DojoPermissionUpgradeRequestRecord {
+    this.store.savePermissionUpgradeRequest(record);
+    return cloneJson(record);
+  }
+
+  listPermissionUpgradeRequests(filter?: DojoPermissionUpgradeRequestFilter): DojoPermissionUpgradeRequestRecord[] {
+    return this.store.listPermissionUpgradeRequests(filter);
   }
 
   useStoreForTests(store: DojoControlPlaneStore = new InMemoryDojoSkillStore()): void {

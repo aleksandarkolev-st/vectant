@@ -61,6 +61,17 @@ describe("Dojo implementation status registry", () => {
     );
   });
 
+  it("classifies permission upgrade requests as control-plane writes, not runtime enforcement", () => {
+    expect(getDojoToolImplementationMetadata("synthi_dojo_request_permission_upgrade")).toEqual(
+      expect.objectContaining({
+        implementation_status: "executable",
+        runtime_enforced: false,
+        evidence_backing: "caller_context",
+        maturity_blockers: expect.arrayContaining(["enterprise_approval_decision_workflow_not_complete"]),
+      })
+    );
+  });
+
   it("classifies current report artifacts without implying mature runtime backing", () => {
     expect(DOJO_REPORT_IMPLEMENTATION_STATUS.evidence_ledger).toEqual(
       expect.objectContaining({

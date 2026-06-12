@@ -5,6 +5,7 @@ import type {
   DojoSkillCase,
   DojoSkillReadinessLevel,
 } from "../../browser/dojo.js";
+import type { DojoPermissionUpgradeRequestRecord } from "../store/interfaces.js";
 import type { DojoCaseLawRecord } from "../case_law/registry.js";
 
 export type DojoGovernanceLicenseStatus = "active" | "expiring" | "expired" | "revoked";
@@ -31,6 +32,7 @@ export interface DojoGovernanceLicenseHealth {
 
 export interface DojoGovernanceApprovalQueueItem {
   queue_id: string;
+  request_id?: string;
   skill_id: string;
   workspace_id: string;
   license_id: string;
@@ -38,7 +40,9 @@ export interface DojoGovernanceApprovalQueueItem {
   constraints: string[];
   reason: string;
   status: DojoGovernanceApprovalStatus;
-  source: "license_gated_action" | "license_approval_requirement";
+  source: "license_gated_action" | "license_approval_requirement" | "permission_upgrade_request";
+  requested_at?: string;
+  evidence_refs?: string[];
 }
 
 export interface DojoGovernanceCaseLawReviewItem {
@@ -143,6 +147,7 @@ export interface DojoGovernanceServiceView {
 export function buildDojoGovernanceServiceView(input: {
   skills: DojoSkill[];
   case_law_records?: DojoCaseLawRecord[];
+  permission_upgrade_requests?: DojoPermissionUpgradeRequestRecord[];
   now?: string;
   expiry_warning_days?: number;
 }): DojoGovernanceServiceView {
@@ -153,7 +158,10 @@ export function buildDojoGovernanceServiceView(input: {
     now,
     expiry_warning_days: expiryWarningDays,
   });
-  const approvalQueue = queryDojoApprovalQueue({ skills: input.skills });
+  const approvalQueue = queryDojoApprovalQueue({
+    skills: input.skills,
+    permission_upgrade_requests: input.permission_upgrade_requests ?? [],
+  });
   const caseLawReviewQueue = queryDojoCaseLawReviewQueue({
     skills: input.skills,
     case_law_records: input.case_law_records ?? [],
@@ -242,8 +250,11 @@ export function queryDojoLicenseHealth(input: {
     .sort((left, right) => sortStatus(left.status) - sortStatus(right.status) || left.skill_id.localeCompare(right.skill_id));
 }
 
-export function queryDojoApprovalQueue(input: { skills: DojoSkill[] }): DojoGovernanceApprovalQueueItem[] {
-  return input.skills
+export function queryDojoApprovalQueue(input: {
+  skills: DojoSkill[];
+  permission_upgrade_requests?: DojoPermissionUpgradeRequestRecord[];
+}): DojoGovernanceApprovalQueueItem[] {
+  const licenseDerived: DojoGovernanceApprovalQueueItem[] = input.skills
     .flatMap((skill) => {
       const gated = skill.permission_license.gated_actions.map((action) => ({
         queue_id: `approval_${skill.skill_id}_${action.action}`,
@@ -269,7 +280,30 @@ export function queryDojoApprovalQueue(input: { skills: DojoSkill[] }): DojoGove
       }));
       return [...gated, ...explicit];
     })
-    .sort((left, right) => left.skill_id.localeCompare(right.skill_id) || left.action.localeCompare(right.action));
+
+  const upgradeRequests: DojoGovernanceApprovalQueueItem[] = (input.permission_upgrade_requests ?? [])
+    .filter((request) => request.status === "pending")
+    .map((request) => ({
+      queue_id: `permission_upgrade_${request.request_id}`,
+      request_id: request.request_id,
+      skill_id: request.skill_id,
+      workspace_id: request.workspace_id,
+      license_id: request.license_id,
+      action: request.requested_action,
+      constraints: [...request.required_steps],
+      reason: "Permission upgrade request is waiting for review, evidence, or recertification.",
+      status: "pending" as const,
+      source: "permission_upgrade_request" as const,
+      requested_at: request.requested_at,
+      evidence_refs: [...request.evidence_refs],
+    }));
+
+  return [...licenseDerived, ...upgradeRequests]
+    .sort((left, right) =>
+      left.skill_id.localeCompare(right.skill_id)
+        || left.action.localeCompare(right.action)
+        || (left.requested_at ?? "").localeCompare(right.requested_at ?? "")
+    );
 }
 
 export function queryDojoCaseLawReviewQueue(input: {

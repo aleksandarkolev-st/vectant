@@ -35,6 +35,37 @@ export interface DojoProofCapsuleRecord {
   revoked_reason?: string;
 }
 
+export type DojoPermissionUpgradeRequestStatus = "pending" | "not_required" | "approved" | "denied" | "superseded";
+
+export interface DojoPermissionUpgradeRequestRecord {
+  schema_version: "synthi.dojo.permissionUpgradeRequest.v1";
+  request_id: string;
+  skill_id: string;
+  workflow_id: string;
+  workspace_id: string;
+  license_id: string;
+  license_version: string;
+  requested_action: string;
+  current_entrustment_level: string;
+  required_steps: string[];
+  status: DojoPermissionUpgradeRequestStatus;
+  evidence_refs: string[];
+  requested_at: string;
+  requested_by: DojoAuditActor;
+  request_context: {
+    request_id: string;
+    correlation_id: string;
+  };
+}
+
+export interface DojoPermissionUpgradeRequestFilter {
+  skill_id?: string;
+  workflow_id?: string;
+  requested_action?: string;
+  status?: DojoPermissionUpgradeRequestStatus;
+  limit?: number;
+}
+
 export interface DojoSkillStore {
   saveSkill(skill: DojoSkill): void;
   getSkill(skillId: string): DojoSkill | null;
@@ -52,7 +83,7 @@ export interface DojoProofStore {
   revokeProofCapsule(capsuleId: string, reason: string, now?: string): DojoProofCapsuleRecord | null;
 }
 
-export interface DojoControlPlaneStore extends DojoSkillStore, DojoProofStore, DojoTransactionalStore {
+export interface DojoControlPlaneStore extends DojoSkillStore, DojoProofStore, DojoApprovalStore, DojoTransactionalStore {
   clear(): void;
 }
 
@@ -66,6 +97,8 @@ export interface DojoEvidenceStore {
 
 export interface DojoApprovalStore {
   readonly store_contract_kind?: "approval";
+  savePermissionUpgradeRequest(record: DojoPermissionUpgradeRequestRecord): void;
+  listPermissionUpgradeRequests(filter?: DojoPermissionUpgradeRequestFilter): DojoPermissionUpgradeRequestRecord[];
 }
 
 export type DojoAuditActorType = "human" | "agent" | "service";

@@ -50,11 +50,32 @@ describe("EncryptedFileDojoSkillStore", () => {
       expires_at: capsule.expires_at,
       status: "issued",
     });
+    store.savePermissionUpgradeRequest({
+      schema_version: "synthi.dojo.permissionUpgradeRequest.v1",
+      request_id: "upgrade-encrypted-store",
+      skill_id: skill.skill_id,
+      workflow_id: skill.workflow_id,
+      workspace_id: skill.workspace_id,
+      license_id: skill.permission_license.license_id,
+      license_version: skill.permission_license.license_version,
+      requested_action: "commit_mutation",
+      current_entrustment_level: skill.entrustment_level,
+      required_steps: ["rerun_checkride_for_requested_action"],
+      status: "pending",
+      evidence_refs: [`skill:${skill.skill_id}`, `license:${skill.permission_license.license_id}`],
+      requested_at: "2026-06-11T00:01:00.000Z",
+      requested_by: { actor_id: "unit-test", actor_type: "agent" },
+      request_context: {
+        request_id: "upgrade-encrypted-store",
+        correlation_id: "upgrade-encrypted-store-correlation",
+      },
+    });
 
     const rawStore = readFileSync(filePath, "utf8");
     expect(rawStore).toContain("synthi_dojo_store_envelope_v1");
     expect(rawStore).not.toContain(skill.name);
     expect(rawStore).not.toContain(skill.skill_seed.inferred_intent);
+    expect(rawStore).not.toContain("upgrade-encrypted-store");
 
     const reopened = new EncryptedFileDojoSkillStore({
       file_path: filePath,
@@ -71,6 +92,13 @@ describe("EncryptedFileDojoSkillStore", () => {
     expect(reopened.listProofRecords()).toEqual([
       expect.objectContaining({ capsule_id: capsule.capsule_id, status: "issued" }),
     ]);
+    expect(reopened.listPermissionUpgradeRequests({ skill_id: skill.skill_id })).toEqual([
+      expect.objectContaining({
+        request_id: "upgrade-encrypted-store",
+        requested_action: "commit_mutation",
+        status: "pending",
+      }),
+    ]);
 
     const revoked = reopened.revokeProofCapsule(capsule.capsule_id, "unit_test_revoked", "2026-06-11T00:01:00.000Z");
     expect(revoked).toEqual(expect.objectContaining({
@@ -86,6 +114,7 @@ describe("EncryptedFileDojoSkillStore", () => {
     });
     expect(otherScope.listSkills()).toEqual([]);
     expect(otherScope.listProofRecords()).toEqual([]);
+    expect(otherScope.listPermissionUpgradeRequests()).toEqual([]);
   });
 });
 

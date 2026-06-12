@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DojoSkill } from "../../src/browser/dojo.js";
 import type { DojoCaseLawRecord } from "../../src/dojo/case_law/registry.js";
+import type { DojoPermissionUpgradeRequestRecord } from "../../src/dojo/store/interfaces.js";
 import {
   buildDojoGovernanceServiceView,
   buildDojoComplianceEvidencePack,
@@ -55,17 +56,25 @@ describe("Dojo governance service", () => {
   });
 
   it("builds approval queue items from gated actions and explicit requirements", () => {
+    const skill = skillFixture({
+      skillId: "skill-a",
+      gatedActions: [{ action: "submit_invoice", constraints: ["manager_approval"] }],
+      approvalRequirements: ["security_review"],
+    });
     const queue = queryDojoApprovalQueue({
-      skills: [
-        skillFixture({
-          skillId: "skill-a",
-          gatedActions: [{ action: "submit_invoice", constraints: ["manager_approval"] }],
-          approvalRequirements: ["security_review"],
-        }),
-      ],
+      skills: [skill],
+      permission_upgrade_requests: [permissionUpgradeRequestFixture(skill)],
     });
 
     expect(queue).toEqual([
+      expect.objectContaining({
+        skill_id: "skill-a",
+        action: "commit_mutation",
+        source: "permission_upgrade_request",
+        status: "pending",
+        request_id: "upgrade-skill-a",
+        evidence_refs: [`skill:${skill.skill_id}`],
+      }),
       expect.objectContaining({
         skill_id: "skill-a",
         action: "security_review",
@@ -123,6 +132,7 @@ describe("Dojo governance service", () => {
         }),
       ],
       case_law_records: [externalCaseFixture()],
+      permission_upgrade_requests: [permissionUpgradeRequestFixture(skillFixture({ skillId: "skill-active" }))],
       now: "2026-06-11T00:00:00.000Z",
     });
 
@@ -132,7 +142,7 @@ describe("Dojo governance service", () => {
         skill_count: 2,
         active_license_count: 1,
         expired_license_count: 1,
-        pending_approval_count: 1,
+        pending_approval_count: 2,
         case_law_review_count: 1,
         policy_gate_count: 3,
         recertification_count: 3,
@@ -259,6 +269,7 @@ function skillFixture(input: {
   const expiresAt = input.expiresAt ?? "2026-07-11T00:00:00.000Z";
   return {
     skill_id: input.skillId,
+    workflow_id: `workflow-${input.skillId}`,
     name: `Skill ${input.skillId}`,
     workspace_id: "workspace-a",
     owner_id: input.ownerId ?? "",
@@ -288,6 +299,29 @@ function skillFixture(input: {
       },
     },
   } as unknown as DojoSkill;
+}
+
+function permissionUpgradeRequestFixture(skill: DojoSkill): DojoPermissionUpgradeRequestRecord {
+  return {
+    schema_version: "synthi.dojo.permissionUpgradeRequest.v1",
+    request_id: `upgrade-${skill.skill_id}`,
+    skill_id: skill.skill_id,
+    workflow_id: skill.workflow_id,
+    workspace_id: skill.workspace_id,
+    license_id: skill.permission_license.license_id,
+    license_version: skill.permission_license.license_version,
+    requested_action: "commit_mutation",
+    current_entrustment_level: skill.entrustment_level,
+    required_steps: ["rerun_checkride_for_requested_action"],
+    status: "pending",
+    evidence_refs: [`skill:${skill.skill_id}`],
+    requested_at: "2026-06-11T00:01:00.000Z",
+    requested_by: { actor_id: "unit-test", actor_type: "agent" },
+    request_context: {
+      request_id: `upgrade-${skill.skill_id}`,
+      correlation_id: `upgrade-${skill.skill_id}-correlation`,
+    },
+  };
 }
 
 function externalCaseFixture(): DojoCaseLawRecord {

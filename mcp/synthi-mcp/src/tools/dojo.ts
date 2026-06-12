@@ -32,6 +32,7 @@ import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
 import { buildDojoGovernanceServiceView } from "../dojo/governance/service.js";
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
+import type { DojoPermissionUpgradeRequestRecord } from "../dojo/store/interfaces.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
 import {
   createInProcessDojoMcpSkillBus,
@@ -367,6 +368,11 @@ export const DOJO_TOOLS = [
         skill_id: { type: "string" },
         workflow_id: { type: "string" },
         requested_action: { type: "string", default: "run_workflow" },
+        actor_id: { type: "string" },
+        actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        request_id: { type: "string" },
+        correlation_id: { type: "string" },
+        now: { type: "string" },
       },
       required: [],
     },
@@ -849,6 +855,7 @@ function dojoGetGovernanceReportTool(args: unknown): ToolResponse {
     governance_report: buildDojoGovernanceReport(skill.skill),
     governance_service: buildDojoGovernanceServiceView({
       skills: dojoSkillRegistry.list(),
+      permission_upgrade_requests: dojoSkillRegistry.listPermissionUpgradeRequests(),
       now: new Date().toISOString(),
     }),
   });
@@ -877,6 +884,7 @@ function dojoGetRegistryTool(): ToolResponse {
     registry: buildDojoOrganizationRegistry(skills),
     governance_service: buildDojoGovernanceServiceView({
       skills,
+      permission_upgrade_requests: dojoSkillRegistry.listPermissionUpgradeRequests(),
       now: new Date().toISOString(),
     }),
   });
@@ -1101,12 +1109,47 @@ function dojoPermissionUpgradeTool(args: unknown): ToolResponse {
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
+  const requiredSteps = permissionUpgradeSteps(skill.skill, requestedAction);
+  const requestId = stringOpt(a["request_id"])
+    ?? `upgrade_${hashId(`${skill.skill.skill_id}:${requestedAction}:${now}:${requiredSteps.join("|")}`)}`;
+  const evidenceRefs = permissionUpgradeEvidenceRefs(skill.skill, requestedAction, requiredSteps);
+  const requestRecord: DojoPermissionUpgradeRequestRecord = {
+    schema_version: "synthi.dojo.permissionUpgradeRequest.v1",
+    request_id: requestId,
+    skill_id: skill.skill.skill_id,
+    workflow_id: skill.skill.workflow_id,
+    workspace_id: skill.skill.workspace_id,
+    license_id: skill.skill.permission_license.license_id,
+    license_version: skill.skill.permission_license.license_version,
+    requested_action: requestedAction,
+    current_entrustment_level: skill.skill.entrustment_level,
+    required_steps: requiredSteps,
+    status: requiredSteps.includes("no_upgrade_required_for_current_license") ? "not_required" : "pending",
+    evidence_refs: evidenceRefs,
+    requested_at: now,
+    requested_by: {
+      actor_id: stringOpt(a["actor_id"]) ?? "anonymous-agent",
+      actor_type: actorTypeOpt(a["actor_type"]),
+    },
+    request_context: {
+      request_id: requestId,
+      correlation_id: stringOpt(a["correlation_id"]) ?? `upgrade-${hashId(`${requestId}:${skill.skill.workflow_id}`)}`,
+    },
+  };
+  const storedRequest = dojoSkillRegistry.recordPermissionUpgradeRequest(requestRecord);
   return jsonResponse({
     ok: true,
     skill_id: skill.skill.skill_id,
     requested_action: requestedAction,
     current_entrustment_level: skill.skill.entrustment_level,
-    required_steps: permissionUpgradeSteps(skill.skill, requestedAction),
+    required_steps: requiredSteps,
+    permission_upgrade_request: storedRequest,
+    matching_approval_queue: buildDojoGovernanceServiceView({
+      skills: [skill.skill],
+      permission_upgrade_requests: [storedRequest],
+      now,
+    }).approval_queue.filter((item) => item.request_id === storedRequest.request_id),
   });
 }
 
@@ -1800,6 +1843,18 @@ function permissionUpgradeSteps(skill: DojoSkill, requestedAction: string): stri
     required.push("harden_evil_twin_escaped_attacks");
   }
   return required.length > 0 ? required : ["no_upgrade_required_for_current_license"];
+}
+
+function permissionUpgradeEvidenceRefs(skill: DojoSkill, requestedAction: string, requiredSteps: string[]): string[] {
+  return [...new Set([
+    `skill:${skill.skill_id}`,
+    `workflow:${skill.workflow_id}`,
+    `license:${skill.permission_license.license_id}`,
+    `checkride:${skill.checkride.checkride_id}`,
+    ...skill.guardrails.map((guardrail) => `guardrail:${guardrail.guardrail_id}`),
+    ...skill.case_law.flatMap((item) => item.evidence_refs),
+    ...requiredSteps.map((step) => `required_step:${requestedAction}:${step}`),
+  ])];
 }
 
 function scenarioFilters(args: unknown): { scenario_id?: string; mutation_kind?: string } {

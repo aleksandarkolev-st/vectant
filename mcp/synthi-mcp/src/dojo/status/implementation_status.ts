@@ -62,7 +62,10 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_debug_counterfactual: deterministic("Returns a generated counterfactual debug report; it is not an executable replay."),
   synthi_dojo_run_time_machine_debugger: deterministic("Runs the current deterministic time-machine report builder."),
   synthi_dojo_run_ghost_mode: reportWithRuntimeEvidence("Returns non-mutating Ghost Mode comparison data with structured shadow evidence and entrustment impact."),
-  synthi_dojo_request_permission_upgrade: report("Returns a permission-upgrade request artifact; approval workflow is not durable yet."),
+  synthi_dojo_request_permission_upgrade: controlPlaneWrite(
+    "Records a permission-upgrade request in the configured Dojo store and exposes it through the governance approval queue.",
+    ["enterprise_approval_decision_workflow_not_complete"]
+  ),
   synthi_dojo_generate_vivarium_scenarios: deterministic("Generates scenario catalog data from a Skill Seed."),
   synthi_dojo_run_vivarium_scenario: syntheticRuntime("Materializes a synthetic fixture, runs the Skill Graph in checkride mode, and evaluates the oracle from observed evidence."),
   synthi_dojo_run_wind_tunnel: syntheticRuntime("Runs a budgeted set of materialized Vivarium scenarios through the graph runtime and oracle evaluator."),
@@ -216,6 +219,17 @@ function reportWithRuntimeEvidence(summary: string): DojoImplementationMetadata 
       "read_only_report_surface",
       "release_gate_visual_and_hosted_proof_required",
     ],
+  };
+}
+
+function controlPlaneWrite(summary: string, maturityBlockers: string[] = []): DojoImplementationMetadata {
+  return {
+    implementation_status: "executable",
+    runtime_enforced: false,
+    evidence_backing: "caller_context",
+    simulation_backing: "none",
+    summary,
+    maturity_blockers: maturityBlockers,
   };
 }
 
