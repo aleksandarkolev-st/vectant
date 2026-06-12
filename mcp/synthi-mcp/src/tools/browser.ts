@@ -373,6 +373,7 @@ export const BROWSER_TOOLS = [
         workspace_url: { type: "string", description: "Current workspace URL. Used to avoid observing the IDE tab and to derive local-dev loopback preview policy." },
         preferred_url: { type: "string", description: "Optional exact preview URL to prefer when the host already knows it." },
         preview_url: { type: "string", description: "Optional workspace preview URL from the cloud preview/tunnel service." },
+        user_gesture: { type: "boolean", description: "True when the operator explicitly requested Observe from the UI, allowing screenshot consent for the selected preview origin." },
         allowed_preview_origins: {
           type: "array",
           items: { type: "string" },
@@ -814,7 +815,7 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
       case "synthi_browser_observe":
         return await browserSnapshotTool(args);
       case "synthi_browser_observe_preview":
-        return await browserObservePreviewTool(args);
+        return await browserObservePreviewTool(args, { userGesture: boolOpt(obj(args)["user_gesture"]) });
       case "synthi_browser_begin_teach":
         return await browserBeginTeachTool(args);
       case "synthi_browser_end_teach":

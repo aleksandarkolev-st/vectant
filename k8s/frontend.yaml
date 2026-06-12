@@ -143,12 +143,26 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL
+            - name: SYNTHI_BROWSER_WORKFLOW_BRIDGE_TARGET_TEMPLATE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_BROWSER_WORKFLOW_BRIDGE_TARGET_TEMPLATE
+            - name: SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT
             - name: SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: synthi-secrets
                   key: SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN
-                  optional: true
+            - name: SYNTHI_RUNTIME_ID_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: SYNTHI_RUNTIME_ID_SECRET
             # ── TURN credentials (server-side API route) ────────────────────
             - name: CLOUDFLARE_TURN_TOKEN_ID
               valueFrom:

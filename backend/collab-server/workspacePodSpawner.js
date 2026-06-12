@@ -55,6 +55,9 @@ const WORKSPACE_REPOS_PATH = (process.env.WORKSPACE_REPOS_PATH || `${WORKSPACE_D
 const PREVIEW_SIDECAR_PORT = parseSinglePort(process.env.SYNTHI_PREVIEW_SIDECAR_PORT, 18080);
 const PREVIEW_SIDECAR_PREFIX = normalizePreviewPrefix(process.env.SYNTHI_PREVIEW_SIDECAR_PREFIX || '/__synthi_preview');
 const PREVIEW_SIDECAR_IMAGE = (process.env.SYNTHI_PREVIEW_SIDECAR_IMAGE || 'node:20-alpine').trim();
+const WORKFLOW_BRIDGE_IMAGE = (process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE || '').trim();
+const WORKFLOW_BRIDGE_PORT = parseSinglePort(process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT, 9466);
+const HOSTED_BROWSER_CDP_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT, 9222);
 
 // ── K8s client ─────────────────────────────────────────────────────────────
 
@@ -153,6 +156,133 @@ function workspaceDirForMetadata(metadata = {}) {
   return fsUser
     ? `${WORKSPACE_REPOS_PATH.replace(/\/+$/, '')}/${slug}/${fsUser}`
     : `${WORKSPACE_REPOS_PATH.replace(/\/+$/, '')}/${slug}`;
+}
+
+function runtimeWorkflowStoreDir(sessionId, metadata = {}) {
+  return `${workspaceDirForMetadata(metadata).replace(/\/+$/, '')}/.synthi/workflows/${safePathSegment(runtimeResourceId(sessionId))}`;
+}
+
+function runtimeWorkspaceUrl(metadata = {}) {
+  const appUrl = (process.env.SYNTHI_APP_INTERNAL_URL || 'http://frontend.synthi.svc.cluster.local:3000').replace(/\/+$/, '');
+  const slug = String(metadata.workspaceSlug || '').trim();
+  return slug ? `${appUrl}/workspace/${encodeURIComponent(slug)}` : appUrl;
+}
+
+function workflowBridgeContainers(sessionId, metadata = {}) {
+  if (!WORKFLOW_BRIDGE_IMAGE) return [];
+
+  const storeDir = runtimeWorkflowStoreDir(sessionId, metadata);
+  const workspaceUrl = runtimeWorkspaceUrl(metadata);
+  const runtimeId = runtimeResourceId(sessionId);
+  const workspaceId = String(metadata.workspaceSlug || runtimeId);
+  const workspaceDataMount = WORKSPACE_DATA_PVC ? [{ name: 'workspace-data', mountPath: WORKSPACE_DATA_MOUNT }] : [];
+
+  return [
+    {
+      name: 'workflow-bridge',
+      image: WORKFLOW_BRIDGE_IMAGE,
+      securityContext: {
+        runAsUser: 0,
+        runAsGroup: 0,
+        allowPrivilegeEscalation: true,
+      },
+      command: ['node', 'dist/browser_workflow_bridge/standalone.js'],
+      env: [
+        { name: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_HOST', value: '0.0.0.0' },
+        { name: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT', value: String(WORKFLOW_BRIDGE_PORT) },
+        {
+          name: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN',
+          valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN' } },
+        },
+        { name: 'SYNTHI_HOSTED_BROWSER_CDP_URL', value: `http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}` },
+        { name: 'SYNTHI_WORKSPACE_ID', value: workspaceId },
+        { name: 'SYNTHI_WORKSPACE_URL', value: workspaceUrl },
+        { name: 'SYNTHI_HOSTED_BROWSER_WORKSPACE_URL', value: workspaceUrl },
+        { name: 'SYNTHI_HOSTED_BROWSER_RUNTIME_ID', value: runtimeId },
+        { name: 'SYNTHI_WORKFLOW_RUNTIME_SCOPE', value: sessionId },
+        { name: 'SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE', value: sessionId },
+        { name: 'SYNTHI_AUTH_CHECKPOINT_SCOPE', value: sessionId },
+        {
+          name: 'SYNTHI_COLLAB_SERVER_URL',
+          valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'COLLAB_SERVER_URL' } },
+        },
+        {
+          name: 'COLLAB_SERVER_URL',
+          valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'COLLAB_SERVER_URL' } },
+        },
+        { name: 'SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE', value: `${storeDir}/private-tools.enc.json` },
+        {
+          name: 'SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY',
+          valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY' } },
+        },
+        { name: 'SYNTHI_AUTH_CHECKPOINT_STORE_FILE', value: `${storeDir}/auth-checkpoints.enc.json` },
+        {
+          name: 'SYNTHI_AUTH_CHECKPOINT_STORE_KEY',
+          valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'SYNTHI_AUTH_CHECKPOINT_STORE_KEY' } },
+        },
+        { name: 'SYNTHI_VISION_BACKEND', value: 'agent_side' },
+      ],
+      ports: [
+        { name: 'workflow', containerPort: WORKFLOW_BRIDGE_PORT },
+      ],
+      resources: {
+        requests: { cpu: '100m', memory: '256Mi' },
+        limits: { cpu: '1', memory: '1Gi' },
+      },
+      readinessProbe: {
+        httpGet: { path: '/healthz', port: WORKFLOW_BRIDGE_PORT },
+        initialDelaySeconds: 2,
+        periodSeconds: 5,
+      },
+      livenessProbe: {
+        httpGet: { path: '/healthz', port: WORKFLOW_BRIDGE_PORT },
+        initialDelaySeconds: 10,
+        periodSeconds: 15,
+      },
+      volumeMounts: workspaceDataMount,
+    },
+    {
+      name: 'hosted-browser',
+      image: WORKFLOW_BRIDGE_IMAGE,
+      securityContext: {
+        runAsUser: 0,
+        runAsGroup: 0,
+        allowPrivilegeEscalation: true,
+      },
+      command: ['/bin/bash', '-lc'],
+      args: [
+        [
+          'set -euo pipefail',
+          'BROWSER="$(node -e "const { chromium } = require(\'playwright\'); process.stdout.write(chromium.executablePath())")"',
+          'exec "$BROWSER" --headless=new --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-address=0.0.0.0 --remote-debugging-port="$SYNTHI_HOSTED_BROWSER_CDP_PORT" --user-data-dir=/tmp/synthi-chrome-profile about:blank',
+        ].join('\n'),
+      ],
+      env: [
+        { name: 'SYNTHI_HOSTED_BROWSER_CDP_PORT', value: String(HOSTED_BROWSER_CDP_PORT) },
+      ],
+      ports: [
+        { name: 'cdp', containerPort: HOSTED_BROWSER_CDP_PORT },
+      ],
+      resources: {
+        requests: { cpu: '200m', memory: '512Mi' },
+        limits: { cpu: '2', memory: '2Gi' },
+      },
+      readinessProbe: {
+        httpGet: { path: '/json/version', port: HOSTED_BROWSER_CDP_PORT },
+        initialDelaySeconds: 3,
+        periodSeconds: 5,
+      },
+      livenessProbe: {
+        httpGet: { path: '/json/version', port: HOSTED_BROWSER_CDP_PORT },
+        initialDelaySeconds: 15,
+        periodSeconds: 20,
+      },
+      volumeMounts: [
+        { name: 'dshm', mountPath: '/dev/shm' },
+        { name: 'tmp', mountPath: '/tmp' },
+      ],
+    },
+  ];
 }
 
 function previewSidecarScript() {
@@ -346,6 +476,7 @@ async function ensureService(sessionId) {
       },
       ports: [
         { name: 'preview-proxy', port: PREVIEW_SIDECAR_PORT, targetPort: PREVIEW_SIDECAR_PORT },
+        ...(WORKFLOW_BRIDGE_IMAGE ? [{ name: 'workflow', port: WORKFLOW_BRIDGE_PORT, targetPort: WORKFLOW_BRIDGE_PORT }] : []),
       ],
     },
   };
@@ -609,6 +740,7 @@ exec worker`,
                 periodSeconds: 10,
               },
             },
+            ...workflowBridgeContainers(sessionId, { ...metadata, filesystemUserId }),
           ],
           volumes: [
             { name: 'dshm', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } },

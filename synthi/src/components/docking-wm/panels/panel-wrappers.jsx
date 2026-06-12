@@ -14,8 +14,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { resolveCollabHttpUrl } from '@/lib/collab-url';
-import { getSession } from 'next-auth/react';
+import { useSession } from 'next-auth/react';
 import { useWorkspacePanelContext } from '../context/workspace-panel-context';
 import { useAppSelector } from '@/redux/hooks';
 import { selectFocusedEditorPaneId } from '../state/layout-slice';
@@ -30,9 +29,7 @@ import {
   resolveAgentWorkflowBridgeUrl,
 } from '@/services/agentWorkflowClient';
 import { gitClient } from '@/services/gitClient';
-import { buildWorkspaceRuntimeScope } from '@/services/runtimeScope';
-
-const WORKSPACE_PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
+import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 
 // ────────────────────────────────────────────────────────
 //  Lazy component imports (code-split, no SSR)
@@ -73,77 +70,6 @@ const ProblemsPanel = dynamic(
   () => import('@/components/analysis').then(m => ({ default: m.ProblemsPanel })),
   { ssr: false, loading: Placeholder },
 );
-
-function resolveCollabServerUrl() {
-  return resolveCollabHttpUrl();
-}
-
-async function discoverWorkspacePreviewUrl(workspaceSlug) {
-  if (typeof window === 'undefined') return null;
-  const base = resolveCollabServerUrl();
-  const resolvePreviewUrl = (path) => {
-    if (typeof path !== 'string' || !path.trim()) return null;
-    try {
-      return new URL(path, `${base}/`).href;
-    } catch {
-      return null;
-    }
-  };
-  try {
-    const params = new URLSearchParams();
-    let runtimeScope = '';
-    if (typeof workspaceSlug === 'string' && workspaceSlug.trim()) {
-      const slug = workspaceSlug.trim();
-      params.set('workspace', slug);
-      try {
-        const session = await getSession();
-        const userId = session?.user?.id || session?.user?.email || null;
-        runtimeScope = buildWorkspaceRuntimeScope(slug, { userId });
-        if (runtimeScope) params.set('runtimeScope', runtimeScope);
-      } catch (_) {
-        runtimeScope = buildWorkspaceRuntimeScope(slug);
-        if (runtimeScope) params.set('runtimeScope', runtimeScope);
-      }
-    }
-    const query = params.toString() ? `?${params.toString()}` : '';
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), WORKSPACE_PREVIEW_DISCOVERY_TIMEOUT_MS);
-    const res = await fetch(`${base}/ports${query}`, {
-      cache: 'no-store',
-      signal: controller.signal,
-    }).finally(() => window.clearTimeout(timer));
-    if (!res.ok) return null;
-    const data = await res.json();
-    const previews = Array.isArray(data?.previews)
-      ? data.previews
-        .map((preview) => ({
-          port: Number(preview?.port),
-          url: resolvePreviewUrl(preview?.url),
-        }))
-        .filter((preview) => (
-          Number.isInteger(preview.port) &&
-          preview.port > 0 &&
-          preview.port <= 65535 &&
-          preview.url
-        ))
-        .sort((a, b) => a.port - b.port)
-      : [];
-    if (previews[0]?.url) return previews[0].url;
-
-    const ports = Array.isArray(data?.activePorts)
-      ? data.activePorts
-        .map((port) => Number(port))
-        .filter((port) => Number.isInteger(port) && port > 0 && port <= 65535)
-        .sort((a, b) => a - b)
-      : [];
-    const port = ports[0];
-    return port
-      ? resolvePreviewUrl(runtimeScope ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${port}/` : `/port/${port}/`)
-      : null;
-  } catch {
-    return null;
-  }
-}
 
 const SearchView = dynamic(
   () => import('@/app/workspace/[slug]/SearchView'),
@@ -300,13 +226,21 @@ export const ChatPanelWrapper = memo(function ChatPanelWrapper({ data }) {
 
 export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapper({ data }) {
   const ctx = useWorkspacePanelContext();
+  const { data: session } = useSession();
   const [workflowState, setWorkflowState] = useState(null);
   const [busyAction, setBusyAction] = useState(null);
   const latestRequestRef = useRef(0);
+  const workflowUserId = session?.user?.id || session?.user?.email || null;
   const bridgeConfig = useMemo(() => ({
     url: resolveAgentWorkflowBridgeUrl(),
     token: resolveAgentWorkflowBridgeToken(),
-  }), []);
+    runtime: ctx?.workspaceSlug && workflowUserId
+      ? {
+          workspaceSlug: ctx.workspaceSlug,
+          ...getWorkspaceRuntimeIdentity(ctx.workspaceSlug, { userId: workflowUserId }),
+        }
+      : {},
+  }), [ctx?.workspaceSlug, workflowUserId]);
 
   const workspaceUrl = useCallback(() => {
     if (typeof window === 'undefined') return '';
@@ -357,6 +291,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
       const nextState = await getAgentWorkflowState({
         url: bridgeConfig.url,
         token: bridgeConfig.token,
+        runtime: bridgeConfig.runtime,
         signal,
       });
       if (!signal?.aborted && requestId === latestRequestRef.current) {
@@ -367,12 +302,13 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
         setWorkflowState((prev) => stateWithBridgeError(err, prev));
       }
     }
-  }, [applyBridgeState, bridgeConfig.token, bridgeConfig.url, stateWithBridgeError]);
+  }, [applyBridgeState, bridgeConfig.runtime, bridgeConfig.token, bridgeConfig.url, stateWithBridgeError]);
 
   const callWorkflowTool = useCallback(async (tool, args = {}) => {
     const body = await callAgentWorkflowTool({
       url: bridgeConfig.url,
       token: bridgeConfig.token,
+      runtime: bridgeConfig.runtime,
       tool,
       arguments: args,
     });
@@ -382,7 +318,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
       throw new Error(result.error || body.error || `${tool}_failed`);
     }
     return body;
-  }, [applyBridgeState, bridgeConfig.token, bridgeConfig.url]);
+  }, [applyBridgeState, bridgeConfig.runtime, bridgeConfig.token, bridgeConfig.url]);
 
   const readWorkspaceFileOrEmpty = useCallback(async (path) => {
     const workspaceId = ctx?.workspaceSlug;
@@ -414,10 +350,10 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
   const ensureObservedWorkspace = useCallback(async () => {
     const currentUrl = workspaceUrl();
     if (!currentUrl) throw new Error('workspace_url_unavailable');
-    const previewUrl = await discoverWorkspacePreviewUrl(ctx?.workspaceSlug);
     return callWorkflowTool(WORKFLOW_ACTIONS.OBSERVE, {
+      ...(ctx?.workspaceSlug ? { workspace_id: ctx.workspaceSlug } : {}),
       workspace_url: currentUrl,
-      ...(previewUrl ? { preview_url: previewUrl, preferred_url: previewUrl } : {}),
+      user_gesture: true,
     });
   }, [callWorkflowTool, ctx?.workspaceSlug, workspaceUrl]);
 
@@ -433,7 +369,8 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           await callWorkflowTool(WORKFLOW_ACTIONS.ATTACH_WORKSPACE, {
             ...(workspaceId ? { workspace_id: workspaceId } : {}),
             ...(currentUrl ? { workspace_url: currentUrl } : {}),
-            open_workspace: true,
+            runtime_id: bridgeConfig.runtime?.runtimeScope || undefined,
+            open_workspace: false,
           });
           break;
         case WORKFLOW_ACTIONS.OBSERVE:
@@ -513,7 +450,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     } finally {
       setBusyAction(null);
     }
-  }, [callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, stateWithBridgeError, workflowState, workspaceUrl]);
+  }, [bridgeConfig.runtime, callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, stateWithBridgeError, workflowState, workspaceUrl]);
 
   useEffect(() => {
     const controller = new AbortController();
