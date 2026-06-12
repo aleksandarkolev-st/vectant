@@ -215,7 +215,7 @@ function normalizeGraphNode(node) {
     substrate: node.substrate || node.substrate_options?.[0] || node.substrateOptions?.[0] || '',
     action: node.action || node.metadata?.action_kind || '',
     inputs: compactStrings(node.inputs),
-    outputs: compactStrings(node.outputs),
+    outputs: compactStrings(node.outputs || node.postconditions),
     guardrailRefs,
     caseRefs: compactStrings(node.case_refs || node.caseRefs || node.case_law_refs || node.caseLawRefs),
     proofRequired: Boolean(node.proof?.required || node.kind === 'Proof'),
@@ -268,8 +268,28 @@ function fallbackGraphForSkill(skill) {
   };
 }
 
+function selectSkillGraphReport(dojo) {
+  return dojo.executableGraph
+    || dojo.executable_graph
+    || dojo.skillGraph
+    || dojo.skill_graph
+    || dojo.graph
+    || dojo.skillCortex
+    || dojo.skill_cortex
+    || dojo.cortex;
+}
+
+function selectSkillGraphValidation(dojo, rawGraph) {
+  return dojo.executableGraphValidation
+    || dojo.executable_graph_validation
+    || rawGraph.validation
+    || rawGraph.graph_validation
+    || rawGraph.graphValidation
+    || { ok: true, issues: [] };
+}
+
 function normalizeSkillGraph(dojo, skill) {
-  const rawGraph = dojo.skillCortex || dojo.skill_cortex || dojo.skillGraph || dojo.skill_graph || dojo.graph || dojo.cortex;
+  const rawGraph = selectSkillGraphReport(dojo);
   if (!rawGraph || !Array.isArray(rawGraph.nodes)) return fallbackGraphForSkill(skill);
   const nodes = rawGraph.nodes.map(normalizeGraphNode).filter((node) => node.id);
   const edges = asArray(rawGraph.edges).map(normalizeGraphEdge).filter((edge) => edge.from && edge.to);
@@ -281,10 +301,11 @@ function normalizeSkillGraph(dojo, skill) {
     mode: rawGraph.mode || (skill.licenseStatus === 'licensed' ? 'production' : 'practice'),
     nodes,
     edges,
-    validation: rawGraph.validation || { ok: true, issues: [] },
+    validation: selectSkillGraphValidation(dojo, rawGraph),
     entryNodeId: rawGraph.entry_node_id || rawGraph.entryNodeId || nodes[0]?.id || '',
     exitNodeIds: compactStrings(rawGraph.exit_node_ids || rawGraph.exitNodeIds),
     derived: false,
+    caseLawRuntimeBindings: dojo.caseLawRuntimeBindings || dojo.case_law_runtime_bindings || {},
   };
 }
 
