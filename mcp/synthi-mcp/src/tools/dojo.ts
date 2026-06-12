@@ -2798,23 +2798,21 @@ function licenseHealthFor(skill: DojoSkill): Record<string, unknown> {
     counts[record.status] = (counts[record.status] ?? 0) + 1;
     return counts;
   }, {});
-  const now = Date.now();
-  const expiresAt = Date.parse(skill.license_expires_at);
-  const daysUntilExpiry = Number.isFinite(expiresAt) ? Math.ceil((expiresAt - now) / 86_400_000) : null;
   const lifecycle = buildDojoLifecycleReport(skill);
   const governance = buildDojoGovernanceReport(skill);
+  const blockedByLifecycle = lifecycle.status === "blocked" || lifecycle.status === "expired";
   return {
     schema_version: "synthi.dojo.licenseHealth.v1",
     skill_id: skill.skill_id,
     workflow_id: skill.workflow_id,
-    status: skill.entrustment_level === "EX" || (typeof daysUntilExpiry === "number" && daysUntilExpiry <= 0)
+    status: skill.entrustment_level === "EX" || blockedByLifecycle
       ? "blocked"
       : lifecycle.status,
     entrustment_level: skill.entrustment_level,
     skill_readiness_level: skill.skill_readiness_level,
     license_version: skill.permission_license.license_version,
     license_expires_at: skill.license_expires_at,
-    days_until_expiry: daysUntilExpiry,
+    days_until_expiry: lifecycle.days_until_expiry,
     proof_records: proofRecordCounts,
     active_guardrails: skill.guardrails.length,
     binding_case_law: skill.case_law.filter((item) => item.status === "binding").length,

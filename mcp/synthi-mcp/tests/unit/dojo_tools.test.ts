@@ -433,6 +433,36 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("reports malformed license expiry metadata as blocked license health", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", { workspace_id: "workspace-a" });
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const storedSkill = dojoSkillRegistry.get(skillId);
+    expect(storedSkill).toBeTruthy();
+    dojoSkillRegistry.publish({
+      ...storedSkill!,
+      license_expires_at: "not-a-date",
+    });
+
+    const health = await dispatchDojoTool("synthi_dojo_get_license_health", { skill_id: skillId });
+    expect(health?.isError).toBeUndefined();
+    expect(health?.structuredContent).toEqual(expect.objectContaining({
+      license_health: expect.objectContaining({
+        status: "blocked",
+        days_until_expiry: null,
+        lifecycle: expect.objectContaining({
+          status: "blocked",
+          recertification: expect.objectContaining({
+            required: true,
+            downgrade_to: "EX",
+            triggers: expect.arrayContaining(["license_expiry_invalid"]),
+          }),
+        }),
+      }),
+    }));
+  });
+
   it("publishes a licensed skill before exposing the backing private workflow tool and validates proof-gated dry runs", async () => {
     const url = "https://app.example.test/settings";
     browserBroker.requestConsent(url);

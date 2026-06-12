@@ -323,10 +323,17 @@ export function buildDojoLifecycleReport(skill: DojoSkill, options: { now?: stri
   const daysUntilExpiry = Number.isFinite(expiryMs) && Number.isFinite(nowMs)
     ? Math.ceil((expiryMs - nowMs) / 86_400_000)
     : null;
+  const invalidExpiry = !Number.isFinite(expiryMs);
+  const invalidNow = !Number.isFinite(nowMs);
   const expired = daysUntilExpiry !== null && daysUntilExpiry <= 0;
   const expiresSoon = daysUntilExpiry !== null && daysUntilExpiry <= 7;
-  const blocked = skill.entrustment_level === "EX" || skill.checkride.critical_failures > 0;
+  const blocked = skill.entrustment_level === "EX" || skill.checkride.critical_failures > 0 || invalidExpiry || invalidNow;
   const recertRequired = blocked || expired || skill.retrain_triggers.length > 0 && expiresSoon;
+  const recertificationTriggers = [
+    ...skill.retrain_triggers.map((trigger) => trigger.condition),
+    ...(invalidExpiry ? ["license_expiry_invalid"] : []),
+    ...(invalidNow ? ["lifecycle_validation_time_invalid"] : []),
+  ];
   return {
     schema_version: "synthi.dojo.lifecycleReport.v1",
     lifecycle_id: `lifecycle_${hash(`${skill.skill_id}:${skill.permission_license.license_id}:${skill.license_expires_at}`)}`,
@@ -340,7 +347,7 @@ export function buildDojoLifecycleReport(skill: DojoSkill, options: { now?: stri
     recertification: {
       required: recertRequired,
       downgrade_to: blocked || expired ? "EX" : expiresSoon ? "E1" : null,
-      triggers: skill.retrain_triggers.map((trigger) => trigger.condition),
+      triggers: recertificationTriggers,
       smallest_actions: lifecycleActionsFor(skill, recertRequired),
     },
     release_gates: [
