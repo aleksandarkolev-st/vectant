@@ -84,6 +84,25 @@ export const DOJO_RELEASE_GATE_TIERS = [
   },
 ];
 
+export const DOJO_VISUAL_REPORT_REQUIREMENTS = Object.freeze({
+  requires_report_ok: true,
+  requires_result_ok: true,
+  requires_empty_failed_visual_gates: true,
+  requires_pixel_metrics: true,
+  requires_layout_metrics: true,
+  max_horizontal_overflow_px: 4,
+  required_result_fields: [
+    "screenshot_path",
+    "bytes",
+    "image_metrics.pixel_metrics_verified",
+    "image_metrics.unique_color_sample_count",
+    "image_metrics.background_diff_pixel_ratio",
+    "image_metrics.luma_stddev",
+    "layout_metrics.horizontal_overflow_px",
+    "layout_metrics.selector_visible_area_px",
+  ],
+});
+
 export const DOJO_RELEASE_GATE_COMMANDS = [
   {
     id: "mcp_typecheck",
@@ -190,7 +209,10 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     package_script: "proof:dojo:visual",
     command: "npm --prefix synthi run proof:dojo:visual",
     required_for: ["milestone", "release"],
-    evidence_kind: "screenshot",
+    evidence_kind: "visual_report",
+    report_schema_version: "synthi.dojo.visualProof.v1",
+    default_report_path: "synthi/tmp/dojo-visual-proof/visual-proof.json",
+    visual_report_requirements: DOJO_VISUAL_REPORT_REQUIREMENTS,
   },
   {
     id: "dojo_ghost_mode_visual_proof",
@@ -200,7 +222,10 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     package_script: "proof:dojo:ghost-mode-visual",
     command: "npm --prefix synthi run proof:dojo:ghost-mode-visual",
     required_for: ["milestone", "release"],
-    evidence_kind: "screenshot",
+    evidence_kind: "visual_report",
+    report_schema_version: "synthi.dojo.ghostModeVisualProof.v1",
+    default_report_path: "synthi/tmp/dojo-ghost-mode-visual/ghost-mode-shadow-visual-report.json",
+    visual_report_requirements: DOJO_VISUAL_REPORT_REQUIREMENTS,
   },
   {
     id: "workflow_e2e_hosted",
@@ -409,6 +434,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
   for (const required of ["T5", "T6", "T7"]) {
     if (!releaseTiers.has(required)) errors.push(`release_missing_${required}`);
   }
+  for (const gate of gates.filter((item) => item.tier === "T4")) {
+    if (gate.evidence_kind !== "visual_report") errors.push(`visual_gate_missing_report_contract:${gate.id}`);
+    if (!gate.report_schema_version) errors.push(`visual_gate_missing_schema:${gate.id}`);
+    if (!gate.default_report_path) errors.push(`visual_gate_missing_report_path:${gate.id}`);
+    if (!gate.visual_report_requirements?.requires_pixel_metrics) errors.push(`visual_gate_missing_pixel_metrics:${gate.id}`);
+    if (!gate.visual_report_requirements?.requires_layout_metrics) errors.push(`visual_gate_missing_layout_metrics:${gate.id}`);
+  }
   return {
     ok: errors.length === 0,
     errors,
@@ -417,9 +449,61 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
   };
 }
 
+export function validateDojoVisualProofReport(report, {
+  gate = {},
+  requirements = gate.visual_report_requirements || DOJO_VISUAL_REPORT_REQUIREMENTS,
+} = {}) {
+  const errors = [];
+  if (gate.report_schema_version && report?.schema_version !== gate.report_schema_version) {
+    errors.push(`schema_mismatch:${report?.schema_version || "missing"}:${gate.report_schema_version}`);
+  }
+  if (requirements.requires_report_ok && report?.ok !== true) {
+    errors.push("visual_report_not_ok");
+  }
+  const results = Array.isArray(report?.results) ? report.results : [];
+  if (results.length === 0) {
+    errors.push("visual_report_missing_results");
+  }
+  for (const [index, result] of results.entries()) {
+    const label = result.route_id || result.name || String(index);
+    if (requirements.requires_result_ok && result.ok !== true) {
+      errors.push(`visual_result_not_ok:${label}`);
+    }
+    if (
+      requirements.requires_empty_failed_visual_gates
+      && Array.isArray(result.failed_visual_gates)
+      && result.failed_visual_gates.length > 0
+    ) {
+      errors.push(`visual_result_failed_gates:${label}:${result.failed_visual_gates.join(",")}`);
+    }
+    for (const fieldPath of requirements.required_result_fields || []) {
+      if (valueAtPath(result, fieldPath) === undefined) {
+        errors.push(`visual_result_missing_field:${label}:${fieldPath}`);
+      }
+    }
+    if (requirements.requires_pixel_metrics && result.image_metrics?.pixel_metrics_verified !== true) {
+      errors.push(`visual_result_pixel_metrics_unverified:${label}`);
+    }
+    const overflow = Number(result.layout_metrics?.horizontal_overflow_px);
+    if (!Number.isFinite(overflow)) {
+      errors.push(`visual_result_layout_overflow_unmeasured:${label}`);
+    } else if (overflow > requirements.max_horizontal_overflow_px) {
+      errors.push(`visual_result_horizontal_overflow:${label}:${overflow}`);
+    }
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+    result_count: results.length,
+  };
+}
+
 export function buildDojoReleaseGateEvidenceManifest({ manifest, manifestPath, serialized }) {
   const body = typeof serialized === "string" ? serialized : JSON.stringify(manifest);
   const validation = validateDojoReleaseGateManifest(manifest);
+  const visualGates = Array.isArray(manifest?.gates)
+    ? manifest.gates.filter((gate) => gate.evidence_kind === "visual_report")
+    : [];
   return {
     schema_version: "synthi.dojo.releaseGateEvidence.v1",
     generated_at: new Date().toISOString(),
@@ -433,6 +517,8 @@ export function buildDojoReleaseGateEvidenceManifest({ manifest, manifestPath, s
     minimal_pr_gate_count: Array.isArray(manifest?.minimal_pr_gate_ids) ? manifest.minimal_pr_gate_ids.length : 0,
     milestone_gate_count: Array.isArray(manifest?.milestone_gate_ids) ? manifest.milestone_gate_ids.length : 0,
     release_gate_count: Array.isArray(manifest?.release_gate_ids) ? manifest.release_gate_ids.length : 0,
+    visual_report_gate_count: visualGates.length,
+    visual_report_gate_ids: visualGates.map((gate) => gate.id),
   };
 }
 
@@ -497,6 +583,13 @@ function gatePackageScriptIsPresent(packageScripts, gate) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function valueAtPath(source, fieldPath) {
+  return String(fieldPath).split(".").reduce((current, key) => {
+    if (current === undefined || current === null) return undefined;
+    return current[key];
+  }, source);
 }
 
 function parseArgs(argv) {

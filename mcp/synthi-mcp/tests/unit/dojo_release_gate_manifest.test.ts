@@ -8,6 +8,7 @@ import {
   DOJO_RELEASE_GATE_IDS,
   DOJO_RELEASE_GATE_TIERS,
   validateDojoReleaseGateManifest,
+  validateDojoVisualProofReport,
 } from "../../scripts/dojo-release-gate-manifest.mjs";
 
 const PACKAGE_SCRIPTS = {
@@ -69,18 +70,28 @@ describe("Dojo release gate manifest", () => {
       expect.objectContaining({
         id: "dojo_full_visual_proof",
         tier: "T4",
-        evidence_kind: "screenshot",
+        evidence_kind: "visual_report",
         package_json: "synthi/package.json",
         package_script: "proof:dojo:visual",
         script_exists: true,
+        report_schema_version: "synthi.dojo.visualProof.v1",
+        visual_report_requirements: expect.objectContaining({
+          requires_pixel_metrics: true,
+          requires_layout_metrics: true,
+        }),
       }),
       expect.objectContaining({
         id: "dojo_ghost_mode_visual_proof",
         tier: "T4",
-        evidence_kind: "screenshot",
+        evidence_kind: "visual_report",
         package_json: "synthi/package.json",
         package_script: "proof:dojo:ghost-mode-visual",
         script_exists: true,
+        report_schema_version: "synthi.dojo.ghostModeVisualProof.v1",
+        visual_report_requirements: expect.objectContaining({
+          requires_pixel_metrics: true,
+          requires_layout_metrics: true,
+        }),
       }),
       expect.objectContaining({ id: "dojo_mcp_host_conformance", tier: "T6", script_exists: true }),
       expect.objectContaining({
@@ -167,7 +178,69 @@ describe("Dojo release gate manifest", () => {
       minimal_pr_gate_count: manifest.minimal_pr_gate_ids.length,
       milestone_gate_count: manifest.milestone_gate_ids.length,
       release_gate_count: manifest.release_gate_ids.length,
+      visual_report_gate_count: 2,
+      visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
     }));
     expect(evidence.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("validates visual proof reports against pixel and layout evidence requirements", () => {
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts: PACKAGE_SCRIPTS,
+    });
+    const gate = manifest.gates.find((item) => item.id === "dojo_full_visual_proof");
+    const validReport = {
+      schema_version: "synthi.dojo.visualProof.v1",
+      ok: true,
+      results: [
+        {
+          route_id: "practice-world",
+          viewport: "mobile",
+          ok: true,
+          failed_visual_gates: [],
+          screenshot_path: "/tmp/practice-world-mobile.png",
+          bytes: 120_000,
+          image_metrics: {
+            pixel_metrics_verified: true,
+            unique_color_sample_count: 96,
+            background_diff_pixel_ratio: 0.41,
+            luma_stddev: 22,
+          },
+          layout_metrics: {
+            horizontal_overflow_px: 0,
+            selector_visible_area_px: 468_000,
+          },
+        },
+      ],
+    };
+
+    expect(validateDojoVisualProofReport(validReport, { gate })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      result_count: 1,
+    }));
+
+    const rejectedReport = {
+      ...validReport,
+      ok: false,
+      results: [
+        {
+          ...validReport.results[0],
+          ok: false,
+          failed_visual_gates: ["horizontal_overflow"],
+          image_metrics: { pixel_metrics_verified: false },
+          layout_metrics: { horizontal_overflow_px: 125 },
+        },
+      ],
+    };
+
+    expect(validateDojoVisualProofReport(rejectedReport, { gate }).errors).toEqual(expect.arrayContaining([
+      "visual_report_not_ok",
+      "visual_result_not_ok:practice-world",
+      "visual_result_failed_gates:practice-world:horizontal_overflow",
+      "visual_result_pixel_metrics_unverified:practice-world",
+      "visual_result_horizontal_overflow:practice-world:125",
+    ]));
   });
 });
