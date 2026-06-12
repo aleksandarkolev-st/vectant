@@ -141,6 +141,39 @@ describe("Dojo graph runtime skeleton", () => {
     }));
   });
 
+  it("blocks explicit production proof nodes before action execution", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const validatedNodeIds: string[] = [];
+
+    const result = await runtime.execute({
+      graph: proofNodeGraphFixture(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: ({ node }) => {
+        validatedNodeIds.push(node.node_id);
+        return { ok: false, blocked_by: ["proof_capsule_revoked"] };
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["proof_capsule_revoked"],
+    }));
+    expect(result.node_results.map((nodeResult) => nodeResult.node_id)).toEqual(["trigger", "proof_gate"]);
+    expect(result.node_results[1]).toEqual(expect.objectContaining({
+      node_id: "proof_gate",
+      kind: "Proof",
+      status: "blocked",
+      blocked_by: ["proof_capsule_revoked"],
+    }));
+    expect(validatedNodeIds).toEqual(["proof_gate"]);
+  });
+
   it("blocks production proof-required actions without a validator", async () => {
     const runtime = new DojoSkillGraphRuntime();
 
@@ -510,6 +543,55 @@ function graphFixture(): DojoSkillGraph {
       {
         edge_id: "edge_trigger_action",
         from_node_id: "trigger",
+        to_node_id: "action_submit",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function proofNodeGraphFixture(): DojoSkillGraph {
+  const graph = graphFixture();
+  const trigger = graph.nodes.find((node) => node.node_id === "trigger")!;
+  const action = graph.nodes.find((node) => node.node_id === "action_submit")!;
+  return {
+    ...graph,
+    graph_id: "graph-proof-node",
+    nodes: [
+      trigger,
+      {
+        node_id: "proof_gate",
+        kind: "Proof",
+        label: "Validate proof capsule",
+        risk: "safe",
+        preconditions: [],
+        postconditions: [],
+        guardrails: [],
+        proof: {
+          required: true,
+          required_claims: ["checkride_passed", "workspace_verified"],
+          required_guardrails: ["guard_client_stable_id"],
+        },
+        assertions: [],
+        substrate_options: [],
+        evidence_policy: ["proof_validation_recorded"],
+        case_law_refs: [],
+        expiry_triggers: [],
+      },
+      action,
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_proof",
+        from_node_id: "trigger",
+        to_node_id: "proof_gate",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_proof_action",
+        from_node_id: "proof_gate",
         to_node_id: "action_submit",
         confidence: 1,
         observed_variants: [],

@@ -580,7 +580,7 @@ async function proofBlockedByForNode(
   input: DojoSkillGraphRuntimeInput,
   inputs: Record<string, unknown>
 ): Promise<string[]> {
-  if (mode !== "production" || node.kind !== "Action" || node.proof?.required !== true) return [];
+  if (!nodeRequiresProductionProofValidation(node, mode)) return [];
   if (input.allow_self_attested_proof === true && inputs["proof_capsule_valid"] === true) return [];
   if (!input.proof_capsule) return ["proof_capsule_missing"];
   if (!input.proof_validator) return ["proof_validator_missing"];
@@ -593,6 +593,12 @@ async function proofBlockedByForNode(
   });
   if (!result.ok) return result.blocked_by.length > 0 ? result.blocked_by : ["proof_capsule_invalid"];
   return [];
+}
+
+function nodeRequiresProductionProofValidation(node: DojoGraphNode, mode: DojoGraphMode): boolean {
+  if (mode !== "production") return false;
+  if (node.proof?.required !== true) return false;
+  return node.kind === "Action" || node.kind === "Proof";
 }
 
 export function evaluateStaticCondition(condition: string, inputs: Record<string, unknown>): boolean {
