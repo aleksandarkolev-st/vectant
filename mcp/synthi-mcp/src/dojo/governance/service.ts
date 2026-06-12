@@ -9,6 +9,13 @@ import type {
 import type { DojoAuditActor, DojoAuditEventType, DojoPermissionUpgradeRequestRecord } from "../store/interfaces.js";
 import type { DojoCaseLawRecord } from "../case_law/registry.js";
 
+const LICENSE_EXPIRY_INVALID_TRIGGER = "license_expiry_invalid";
+const GOVERNANCE_VALIDATION_TIME_INVALID_TRIGGER = "governance_validation_time_invalid";
+const BLOCKING_HEALTH_RECERTIFICATION_TRIGGERS = new Set([
+  LICENSE_EXPIRY_INVALID_TRIGGER,
+  GOVERNANCE_VALIDATION_TIME_INVALID_TRIGGER,
+]);
+
 export type DojoGovernanceLicenseStatus = "active" | "expiring" | "expired" | "revoked";
 export type DojoGovernanceApprovalStatus = "pending" | "approved" | "denied";
 export type DojoGovernanceActionStatus = "applied" | "rejected";
@@ -481,19 +488,19 @@ export function queryDojoLicenseHealth(input: {
     .map((skill) => {
       const license = skill.permission_license;
       const expiresAt = skill.license_expires_at || skill.skill_passport.license_expires_at || "";
-      const daysUntilExpiry = daysUntil(expiresAt, nowMs);
+      const expiry = licenseExpiryState(expiresAt, nowMs);
       return {
         skill_id: skill.skill_id,
         skill_name: skill.name,
         workspace_id: skill.workspace_id,
         license_id: license.license_id,
         license_version: license.license_version,
-        status: licenseStatusFor(skill, daysUntilExpiry, warningDays),
+        status: licenseStatusFor(skill, expiry.days_until_expiry, warningDays, expiry.invalid),
         entrustment_level: skill.entrustment_level,
         readiness_level: skill.skill_readiness_level,
         autonomy_level: license.autonomy_level,
         expires_at: expiresAt,
-        days_until_expiry: daysUntilExpiry,
+        days_until_expiry: expiry.days_until_expiry,
         proof_required: skill.skill_passport.proof_required,
         allowed_action_count: license.allowed_actions.length,
         gated_action_count: license.gated_actions.length,
@@ -501,6 +508,8 @@ export function queryDojoLicenseHealth(input: {
         recertification_triggers: [
           ...license.expiry_policy.expires_on,
           ...skill.retrain_triggers.map((trigger) => trigger.condition),
+          ...(expiry.invalid_expires_at ? [LICENSE_EXPIRY_INVALID_TRIGGER] : []),
+          ...(expiry.invalid_now ? [GOVERNANCE_VALIDATION_TIME_INVALID_TRIGGER] : []),
         ],
       };
     })
@@ -677,10 +686,11 @@ export function queryDojoRecertificationQueue(input: {
       const triggers = new Set([
         ...(health?.status === "expired" ? ["license_expired"] : []),
         ...(health?.status === "expiring" ? ["license_expiring"] : []),
+        ...blockingHealthRecertificationTriggers(health),
         ...skill.retrain_triggers.map((trigger) => trigger.condition),
       ]);
       return [...triggers].map((reason) => {
-        const overdue = health?.status === "expired";
+        const overdue = health?.status === "expired" || isBlockingHealthRecertificationTrigger(reason);
         const due = health?.status === "expiring" || reason === "license_expiring";
         const status: DojoGovernanceRecertificationQueueItem["status"] = overdue ? "overdue" : due ? "due" : "queued";
         const priority: DojoGovernanceRecertificationQueueItem["priority"] = overdue ? "high" : due ? "medium" : "low";
@@ -792,17 +802,50 @@ export function buildDojoComplianceEvidencePack(input: {
   };
 }
 
-function licenseStatusFor(skill: DojoSkill, daysUntilExpiry: number | null, warningDays: number): DojoGovernanceLicenseStatus {
+function licenseStatusFor(
+  skill: DojoSkill,
+  daysUntilExpiry: number | null,
+  warningDays: number,
+  invalidExpiryState = false
+): DojoGovernanceLicenseStatus {
   if (skill.entrustment_level === "EX" || skill.permission_license.autonomy_level === "blocked") return "revoked";
+  if (invalidExpiryState) return "revoked";
   if (daysUntilExpiry !== null && daysUntilExpiry < 0) return "expired";
   if (daysUntilExpiry !== null && daysUntilExpiry <= warningDays) return "expiring";
   return "active";
 }
 
-function daysUntil(expiresAt: string, nowMs: number): number | null {
+function licenseExpiryState(expiresAt: string, nowMs: number): {
+  days_until_expiry: number | null;
+  invalid: boolean;
+  invalid_expires_at: boolean;
+  invalid_now: boolean;
+} {
   const expiresMs = Date.parse(expiresAt);
-  if (!Number.isFinite(expiresMs) || !Number.isFinite(nowMs)) return null;
-  return Math.ceil((expiresMs - nowMs) / 86_400_000);
+  const invalidExpiresAt = !Number.isFinite(expiresMs);
+  const invalidNow = !Number.isFinite(nowMs);
+  if (invalidExpiresAt || invalidNow) {
+    return {
+      days_until_expiry: null,
+      invalid: true,
+      invalid_expires_at: invalidExpiresAt,
+      invalid_now: invalidNow,
+    };
+  }
+  return {
+    days_until_expiry: Math.ceil((expiresMs - nowMs) / 86_400_000),
+    invalid: false,
+    invalid_expires_at: false,
+    invalid_now: false,
+  };
+}
+
+function blockingHealthRecertificationTriggers(health: DojoGovernanceLicenseHealth | undefined): string[] {
+  return health?.recertification_triggers.filter(isBlockingHealthRecertificationTrigger) ?? [];
+}
+
+function isBlockingHealthRecertificationTrigger(reason: string): boolean {
+  return BLOCKING_HEALTH_RECERTIFICATION_TRIGGERS.has(reason);
 }
 
 function sortStatus(status: DojoGovernanceLicenseStatus): number {

@@ -58,6 +58,25 @@ describe("Dojo governance service", () => {
     }));
   });
 
+  it("fails closed when license health expiry metadata is malformed", () => {
+    const [health] = queryDojoLicenseHealth({
+      skills: [
+        skillFixture({
+          skillId: "skill-invalid-expiry",
+          expiresAt: "not-a-date",
+        }),
+      ],
+      now: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(health).toEqual(expect.objectContaining({
+      skill_id: "skill-invalid-expiry",
+      status: "revoked",
+      days_until_expiry: null,
+      recertification_triggers: expect.arrayContaining(["license_expiry_invalid"]),
+    }));
+  });
+
   it("records permission upgrade approval and denial decisions with review evidence", () => {
     const skill = skillFixture({ skillId: "skill-review" });
     const request = permissionUpgradeRequestFixture(skill);
@@ -401,6 +420,39 @@ describe("Dojo governance service", () => {
         expect.objectContaining({ artifact_id: "case_law_registry", status: "available" }),
       ]),
     }));
+  });
+
+  it("surfaces malformed license expiry in governance metrics and recertification queue", () => {
+    const view = buildDojoGovernanceServiceView({
+      skills: [
+        skillFixture({
+          skillId: "skill-invalid-expiry",
+          expiresAt: "not-a-date",
+        }),
+      ],
+      now: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(view.license_health).toEqual([
+      expect.objectContaining({
+        skill_id: "skill-invalid-expiry",
+        status: "revoked",
+        recertification_triggers: expect.arrayContaining(["license_expiry_invalid"]),
+      }),
+    ]);
+    expect(view.metrics).toEqual(expect.objectContaining({
+      active_license_count: 0,
+      expired_license_count: 1,
+      recertification_count: 2,
+    }));
+    expect(view.recertification_queue).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        skill_id: "skill-invalid-expiry",
+        reason: "license_expiry_invalid",
+        status: "overdue",
+        priority: "high",
+      }),
+    ]));
   });
 
   it("builds skill registry and policy gates from licenses and binding case law", () => {
