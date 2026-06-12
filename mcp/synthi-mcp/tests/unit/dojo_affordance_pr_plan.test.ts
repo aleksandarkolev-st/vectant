@@ -11,11 +11,13 @@ describe("Dojo affordance PR plan contract", () => {
     const operation = stableLocatorPatchOperation({
       file_path: "src/InvoiceForm.jsx",
       target_component: "InvoiceForm",
+      target_match: { role: "button", text: "Save invoice" },
       affordance_id: "invoice.save",
     });
 
     expect(validateDojoAffordancePrPlan(planFixture([operation]))).toEqual({ ok: true, issues: [] });
     expect(operation.after).toBe("data-agent-action=\"invoice.save\"");
+    expect(operation.target_match).toEqual({ role: "button", text: "Save invoice" });
   });
 
   it("validates proof hook patch operations", () => {
@@ -54,6 +56,32 @@ describe("Dojo affordance PR plan contract", () => {
     expect(validateDojoAffordancePrPlan(plan).issues.map((issue) => issue.issue_id)).toEqual(expect.arrayContaining([
       "affordance_patch_stable_locator_invalid",
       "affordance_patch_proof_hook_invalid",
+    ]));
+  });
+
+  it("rejects empty or malformed target matchers", () => {
+    const plan = planFixture([
+      {
+        ...stableLocatorPatchOperation({
+          file_path: "src/InvoiceForm.jsx",
+          target_component: "InvoiceForm",
+          affordance_id: "invoice.save",
+        }),
+        target_match: {},
+      },
+      {
+        ...stableLocatorPatchOperation({
+          file_path: "src/InvoiceForm.jsx",
+          target_component: "InvoiceForm",
+          affordance_id: "invoice.delete",
+        }),
+        target_match: { attribute: { name: "1-invalid", value: "delete" } },
+      },
+    ]);
+
+    expect(validateDojoAffordancePrPlan(plan).issues.map((issue) => issue.issue_id)).toEqual(expect.arrayContaining([
+      "affordance_patch_target_match_empty",
+      "affordance_patch_target_attribute_invalid",
     ]));
   });
 });

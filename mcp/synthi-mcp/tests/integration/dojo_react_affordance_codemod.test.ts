@@ -71,6 +71,55 @@ describe("Dojo React affordance codemod", () => {
     }));
   });
 
+  it("patches the matched action when a component has multiple actions", () => {
+    const operation = stableLocatorPatchOperation({
+      file_path: "src/InvoiceForm.jsx",
+      target_component: "InvoiceForm",
+      target_match: { role: "button", text: "Delete invoice" },
+      affordance_id: "invoice.delete",
+    });
+
+    const result = applyReactAffordanceCodemodPlan(multiActionInvoiceFormSource(), [operation]);
+
+    expect(result).toEqual(expect.objectContaining({
+      changed: true,
+      applied_operations: [operation.operation_id],
+    }));
+    expect(openingTagForText(result.source, "Save invoice")).not.toContain("data-agent-action");
+    expect(openingTagForText(result.source, "Delete invoice")).toContain("data-agent-action=\"invoice.delete\"");
+    expect(() => parseReactSourceOrThrow(result.source)).not.toThrow();
+  });
+
+  it("adds proof hook to the matched action without wrapping neighboring actions", () => {
+    const operation = proofHookPatchOperation({
+      file_path: "src/InvoiceForm.jsx",
+      target_component: "InvoiceForm",
+      target_match: { role: "button", text: "Save invoice" },
+      affordance_id: "invoice.save",
+      hook_name: "assertDojoProof",
+    });
+
+    const result = applyReactAffordanceCodemodPlan(multiActionInvoiceFormSourceWithProofHook(), [operation]);
+
+    expect(openingTagForText(result.source, "Save invoice")).toContain("assertDojoProof(\"invoice.save\")");
+    expect(openingTagForText(result.source, "Delete invoice")).not.toContain("assertDojoProof");
+    expect(result.source).toContain("return (onSave)(event);");
+    expect(result.source).toContain("onClick={onDelete}");
+    expect(() => parseReactSourceOrThrow(result.source)).not.toThrow();
+  });
+
+  it("fails closed when target match criteria are ambiguous", () => {
+    const operation = stableLocatorPatchOperation({
+      file_path: "src/InvoiceForm.jsx",
+      target_component: "InvoiceForm",
+      target_match: { role: "button", text: "Submit" },
+      affordance_id: "invoice.submit",
+    });
+
+    expect(() => applyReactAffordanceCodemodPlan(ambiguousActionSource(), [operation]))
+      .toThrow(/dojo_react_codemod_target_ambiguous/);
+  });
+
   it("generates contract tests that fail before the patch and pass after it", () => {
     const stableOperation = stableLocatorPatchOperation({
       file_path: "src/InvoiceForm.jsx",
@@ -180,4 +229,55 @@ export function InvoiceForm({ onSave }) {
   );
 }
 `;
+}
+
+function multiActionInvoiceFormSource(): string {
+  return `
+export function InvoiceForm({ onSave, onDelete }) {
+  return (
+    <form>
+      <button type="button" onClick={onSave}>Save invoice</button>
+      <button type="button" onClick={onDelete}>Delete invoice</button>
+    </form>
+  );
+}
+`;
+}
+
+function multiActionInvoiceFormSourceWithProofHook(): string {
+  return `
+function assertDojoProof(affordanceId) {
+  return affordanceId;
+}
+
+export function InvoiceForm({ onSave, onDelete }) {
+  return (
+    <form>
+      <button type="button" onClick={onSave}>Save invoice</button>
+      <button type="button" onClick={onDelete}>Delete invoice</button>
+    </form>
+  );
+}
+`;
+}
+
+function ambiguousActionSource(): string {
+  return `
+export function InvoiceForm({ onSubmitPrimary, onSubmitSecondary }) {
+  return (
+    <form>
+      <button type="button" onClick={onSubmitPrimary}>Submit</button>
+      <button type="button" onClick={onSubmitSecondary}>Submit</button>
+    </form>
+  );
+}
+`;
+}
+
+function openingTagForText(source: string, text: string): string {
+  const textIndex = source.indexOf(text);
+  expect(textIndex).toBeGreaterThanOrEqual(0);
+  const start = source.lastIndexOf("<", textIndex);
+  expect(start).toBeGreaterThanOrEqual(0);
+  return source.slice(start, textIndex);
 }

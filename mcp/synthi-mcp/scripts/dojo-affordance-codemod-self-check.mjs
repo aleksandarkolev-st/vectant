@@ -45,11 +45,13 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
   const stableOperation = modules.stableLocatorPatchOperation({
     file_path: "src/InvoiceForm.jsx",
     target_component: "InvoiceForm",
+    target_match: { role: "button", text: "Save invoice" },
     affordance_id: "invoice.save",
   });
   const proofOperation = modules.proofHookPatchOperation({
     file_path: "src/InvoiceForm.jsx",
     target_component: "InvoiceForm",
+    target_match: { role: "button", text: "Save invoice" },
     affordance_id: "invoice.save",
     hook_name: "assertDojoProof",
   });
@@ -92,6 +94,11 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
     after_vitest: summarizeVitestRun(afterRun),
     applied_operations: patched.applied_operations,
     skipped_operations: patched.skipped_operations,
+    target_matchers: operations.map((operation) => ({
+      operation_id: operation.operation_id,
+      target_component: operation.target_component,
+      target_match: operation.target_match ?? null,
+    })),
   };
   const artifacts = await writeAffordanceCodemodArtifacts({ outDir, report });
   return { ...report, ...artifacts };
@@ -110,6 +117,7 @@ export function buildAffordanceCodemodEvidenceManifest({ report, reportPath, ser
     operation_ids: Array.isArray(report?.operation_ids) ? report.operation_ids : report?.operation_id ? [report.operation_id] : [],
     generated_test_path: report?.generated_test_path ?? null,
     patched_source_path: report?.patched_source_path ?? null,
+    target_matchers: Array.isArray(report?.target_matchers) ? report.target_matchers : [],
   };
 }
 
@@ -215,6 +223,7 @@ export function InvoiceForm({ onSave }) {
         Client
         <input name="client" />
       </label>
+      <button type="button" onClick={() => undefined}>Preview invoice</button>
       <button type="button" onClick={onSave}>Save invoice</button>
     </form>
   );

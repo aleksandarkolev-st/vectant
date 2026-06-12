@@ -12,10 +12,20 @@ export interface DojoAffordancePatchOperation {
   kind: DojoAffordancePatchKind;
   file_path: string;
   target_component: string;
+  target_match?: DojoAffordancePatchTargetMatch;
   affordance_id: string;
   before?: string;
   after: string;
   validation_expectation: string;
+}
+
+export interface DojoAffordancePatchTargetMatch {
+  text?: string;
+  role?: "button" | "link" | "input" | "action";
+  attribute?: {
+    name: string;
+    value?: string;
+  };
 }
 
 export interface DojoAffordancePrPlan {
@@ -61,6 +71,7 @@ export function validateDojoAffordancePrPlan(plan: DojoAffordancePrPlan): DojoAf
 export function stableLocatorPatchOperation(input: {
   file_path: string;
   target_component: string;
+  target_match?: DojoAffordancePatchTargetMatch;
   affordance_id: string;
   locator_attribute?: string;
 }): DojoAffordancePatchOperation {
@@ -70,6 +81,7 @@ export function stableLocatorPatchOperation(input: {
     kind: "stable_locator",
     file_path: input.file_path,
     target_component: input.target_component,
+    ...(input.target_match ? { target_match: input.target_match } : {}),
     affordance_id: input.affordance_id,
     after: `${attribute}="${input.affordance_id}"`,
     validation_expectation: `Component ${input.target_component} exposes stable locator ${attribute}=${input.affordance_id}.`,
@@ -79,6 +91,7 @@ export function stableLocatorPatchOperation(input: {
 export function proofHookPatchOperation(input: {
   file_path: string;
   target_component: string;
+  target_match?: DojoAffordancePatchTargetMatch;
   affordance_id: string;
   hook_name: string;
 }): DojoAffordancePatchOperation {
@@ -87,6 +100,7 @@ export function proofHookPatchOperation(input: {
     kind: "proof_hook",
     file_path: input.file_path,
     target_component: input.target_component,
+    ...(input.target_match ? { target_match: input.target_match } : {}),
     affordance_id: input.affordance_id,
     after: input.hook_name,
     validation_expectation: `Risky affordance ${input.affordance_id} calls proof hook ${input.hook_name}.`,
@@ -105,6 +119,21 @@ function lintOperation(operation: DojoAffordancePatchOperation, issues: DojoAffo
   }
   if (operation.kind === "proof_hook" && !/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(operation.after)) {
     issues.push(errorIssue("affordance_patch_proof_hook_invalid", "Proof hook patch must name a callable hook.", operation.operation_id));
+  }
+  lintTargetMatch(operation, issues);
+}
+
+function lintTargetMatch(operation: DojoAffordancePatchOperation, issues: DojoAffordancePrPlanIssue[]): void {
+  const match = operation.target_match;
+  if (!match) return;
+  if (!match.text?.trim() && !match.role && !match.attribute) {
+    issues.push(errorIssue("affordance_patch_target_match_empty", "Target match must include text, role, or attribute criteria.", operation.operation_id));
+  }
+  if (match.attribute && !/^[a-zA-Z_][a-zA-Z0-9_:-]*$/.test(match.attribute.name)) {
+    issues.push(errorIssue("affordance_patch_target_attribute_invalid", "Target match attribute name is not a valid JSX attribute name.", operation.operation_id));
+  }
+  if (match.attribute?.value !== undefined && !match.attribute.value.trim()) {
+    issues.push(errorIssue("affordance_patch_target_attribute_value_empty", "Target match attribute value cannot be empty.", operation.operation_id));
   }
 }
 

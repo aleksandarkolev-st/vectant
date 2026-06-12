@@ -1,5 +1,5 @@
 import ts from "typescript";
-import type { DojoAffordancePatchOperation } from "./affordance_pr_plan.js";
+import type { DojoAffordancePatchOperation, DojoAffordancePatchTargetMatch } from "./affordance_pr_plan.js";
 
 export interface DojoReactCodemodResult {
   changed: boolean;
@@ -58,7 +58,7 @@ export function applyReactAffordanceOperation(
   }
   const attribute = parseJsxAttribute(operation.after);
   const sourceFile = parseReactSourceOrThrow(source);
-  const target = findTargetElement(sourceFile, operation.target_component);
+  const target = findTargetElement(sourceFile, operation.target_component, operation.target_match);
   if (!target) throw new Error("dojo_react_codemod_target_not_found");
   if (hasJsxAttribute(target, attribute.name, attribute.value)) {
     return {
@@ -148,26 +148,30 @@ export function parseReactSourceOrThrow(source: string): ts.SourceFile {
   return sourceFile;
 }
 
-function findTargetElement(sourceFile: ts.SourceFile, targetComponent: string): ts.JsxOpeningLikeElement | null {
-  let target: ts.JsxOpeningLikeElement | null = null;
+function findTargetElement(
+  sourceFile: ts.SourceFile,
+  targetComponent: string,
+  targetMatch?: DojoAffordancePatchTargetMatch
+): ts.JsxOpeningLikeElement | null {
+  const candidates: ts.JsxOpeningLikeElement[] = [];
   function visit(node: ts.Node): void {
-    if (target) return;
     if (isNamedComponent(node, targetComponent)) {
-      findFirstActionElement(node);
+      collectActionElements(node);
       return;
     }
     ts.forEachChild(node, visit);
   }
-  function findFirstActionElement(node: ts.Node): void {
-    if (target) return;
+  function collectActionElements(node: ts.Node): void {
     if ((ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) && isActionElement(node)) {
-      target = node;
-      return;
+      candidates.push(node);
     }
-    ts.forEachChild(node, findFirstActionElement);
+    ts.forEachChild(node, collectActionElements);
   }
   visit(sourceFile);
-  return target;
+  if (!targetMatch) return candidates[0] ?? null;
+  const matches = candidates.filter((candidate) => targetElementMatches(sourceFile, candidate, targetMatch));
+  if (matches.length > 1) throw new Error("dojo_react_codemod_target_ambiguous");
+  return matches[0] ?? null;
 }
 
 function applyReactProofHookOperation(source: string, operation: DojoAffordancePatchOperation): DojoReactCodemodResult {
@@ -176,7 +180,7 @@ function applyReactProofHookOperation(source: string, operation: DojoAffordanceP
     throw new Error("dojo_react_codemod_proof_hook_not_in_scope");
   }
   const sourceFile = parseReactSourceOrThrow(source);
-  const target = findTargetElement(sourceFile, operation.target_component);
+  const target = findTargetElement(sourceFile, operation.target_component, operation.target_match);
   if (!target) throw new Error("dojo_react_codemod_target_not_found");
   const expectedCall = proofHookCallExpression(operation);
   if (target.getText(sourceFile).includes(expectedCall)) {
@@ -244,10 +248,77 @@ function isActionElement(node: ts.JsxOpeningLikeElement): boolean {
   );
 }
 
+function targetElementMatches(
+  sourceFile: ts.SourceFile,
+  node: ts.JsxOpeningLikeElement,
+  targetMatch: DojoAffordancePatchTargetMatch
+): boolean {
+  if (targetMatch.role && !elementRoleMatches(node, targetMatch.role)) return false;
+  if (targetMatch.attribute && !hasTargetAttribute(node, targetMatch.attribute.name, targetMatch.attribute.value)) return false;
+  if (targetMatch.text?.trim() && normalizeVisibleText(getVisibleJsxText(sourceFile, node)) !== normalizeVisibleText(targetMatch.text)) return false;
+  return true;
+}
+
+function elementRoleMatches(node: ts.JsxOpeningLikeElement, role: NonNullable<DojoAffordancePatchTargetMatch["role"]>): boolean {
+  if (role === "action") return isActionElement(node);
+  const tagName = node.tagName.getText();
+  if (role === "button" && tagName === "button") return true;
+  if (role === "link" && tagName === "a") return true;
+  if (role === "input" && tagName === "input") return true;
+  return hasTargetAttribute(node, "role", role);
+}
+
+function hasTargetAttribute(node: ts.JsxOpeningLikeElement, name: string, value?: string): boolean {
+  return node.attributes.properties.some((property) => {
+    if (!ts.isJsxAttribute(property) || property.name.getText() !== name) return false;
+    if (value === undefined) return true;
+    return attributeInitializerText(property) === value;
+  });
+}
+
+function attributeInitializerText(attribute: ts.JsxAttribute): string | undefined {
+  const initializer = attribute.initializer;
+  if (!initializer) return undefined;
+  if (ts.isStringLiteral(initializer)) return initializer.text;
+  if (ts.isJsxExpression(initializer) && initializer.expression) {
+    if (ts.isStringLiteral(initializer.expression) || ts.isNoSubstitutionTemplateLiteral(initializer.expression)) {
+      return initializer.expression.text;
+    }
+  }
+  return initializer.getText().replace(/^"|"$/g, "");
+}
+
+function getVisibleJsxText(sourceFile: ts.SourceFile, node: ts.JsxOpeningLikeElement): string {
+  if (ts.isJsxSelfClosingElement(node)) return "";
+  const parent = node.parent;
+  if (!parent || !ts.isJsxElement(parent) || parent.openingElement !== node) return "";
+  const fragments: string[] = [];
+  collectVisibleJsxText(sourceFile, parent, fragments);
+  return fragments.join(" ");
+}
+
+function collectVisibleJsxText(sourceFile: ts.SourceFile, node: ts.Node, fragments: string[]): void {
+  if (ts.isJsxText(node)) {
+    fragments.push(node.getText(sourceFile));
+    return;
+  }
+  if (ts.isJsxExpression(node) && node.expression) {
+    if (ts.isStringLiteral(node.expression) || ts.isNoSubstitutionTemplateLiteral(node.expression)) {
+      fragments.push(node.expression.text);
+    }
+    return;
+  }
+  ts.forEachChild(node, (child) => collectVisibleJsxText(sourceFile, child, fragments));
+}
+
+function normalizeVisibleText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 function hasJsxAttribute(node: ts.JsxOpeningLikeElement, name: string, value: string): boolean {
   return node.attributes.properties.some((property) => {
     if (!ts.isJsxAttribute(property) || property.name.getText() !== name) return false;
-    return property.initializer?.getText().replace(/^"|"$/g, "") === value;
+    return attributeInitializerText(property) === value;
   });
 }
 

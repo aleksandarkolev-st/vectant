@@ -12,6 +12,13 @@ describe("Dojo affordance codemod self-check script", () => {
       after_contract: { ok: true },
       before_vitest: { ok: false },
       after_vitest: { ok: true },
+      target_matchers: [
+        {
+          operation_id: "patch_stable_locator_invoice_save",
+          target_component: "InvoiceForm",
+          target_match: { role: "button", text: "Save invoice" },
+        },
+      ],
     };
     const serialized = JSON.stringify(report, null, 2);
     const evidence = buildAffordanceCodemodEvidenceManifest({
@@ -27,6 +34,13 @@ describe("Dojo affordance codemod self-check script", () => {
       before_failed: true,
       after_passed: true,
       operation_ids: ["patch_stable_locator_invoice_save", "patch_proof_hook_invoice_save"],
+      target_matchers: [
+        {
+          operation_id: "patch_stable_locator_invoice_save",
+          target_component: "InvoiceForm",
+          target_match: { role: "button", text: "Save invoice" },
+        },
+      ],
     }));
     expect(evidence.report_sha256).toMatch(/^[a-f0-9]{64}$/);
   });
