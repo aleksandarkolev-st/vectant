@@ -303,7 +303,7 @@ function normalizeEvidenceClaims(values) {
 }
 
 function normalizeProofCapsule(dojo) {
-  const proof = dojo.proof || dojo.proofCapsule || dojo.proof_capsule || {};
+  const proof = dojo.proof || dojo.proofCapsule || dojo.proof_capsule || dojo.proofRecord || dojo.proof_record || {};
   const validation = proof.validation || dojo.proofValidation || dojo.proof_validation || {};
   const dryRun = dojo.proofDryRun || dojo.proof_dry_run || {};
   const capsuleId = proof.capsuleId || proof.capsule_id || proof.id || '';
@@ -335,8 +335,10 @@ function normalizeProofCapsule(dojo) {
     substrate: proof.substrateClaim || proof.substrate_claim || '',
     replayState: proof.replayState || proof.replay_state || proof.status || '',
     revocationReason: proof.revocationReason || proof.revocation_reason || '',
-    blockedBy: compactStrings(validation.blocked_by || validation.blockedBy),
-    errorCodes: compactStrings(validation.error_codes || validation.errorCodes),
+    revokedAt: proof.revokedAt || proof.revoked_at || '',
+    revokedBy: proof.revokedBy || proof.revoked_by || null,
+    blockedBy: compactStrings(validation.blocked_by || validation.blockedBy || proof.blockedBy || proof.blocked_by),
+    errorCodes: compactStrings(validation.error_codes || validation.errorCodes || proof.errorCodes || proof.error_codes),
     evidenceClaims,
     evidenceRecordIds: compactStrings(proof.evidence_record_ids || proof.evidenceRecordIds),
     guardrailsActive: compactStrings(proof.guardrails_active || proof.guardrailsActive),
@@ -1443,5 +1445,42 @@ export async function revokeDojoLicense({
     result: body.result,
     summary: summaryFromToolBody(body, workspaceSlug),
     message: `License revoked: ${item?.skillName || item?.skillId || skillId}`,
+  };
+}
+
+export async function revokeDojoProofCapsule({
+  proof,
+  workspaceSlug = '',
+  reason = '',
+  actorId,
+  actorType = 'human',
+  signal,
+  url,
+  token,
+} = {}) {
+  const capsuleId = proof?.capsuleId || proof?.capsule_id || proof?.id || '';
+  if (!capsuleId) throw new Error('dojo_proof_capsule_id_required');
+  const resolvedReason = reason || proof?.revocationReason || proof?.revocation_reason || '';
+  if (!resolvedReason) throw new Error('dojo_proof_capsule_revocation_reason_required');
+  const actor = resolveGovernanceActor({ actorId, actorType });
+  if (!actor.actorId) throw new Error('dojo_governance_actor_required');
+  const body = await callAgentWorkflowTool({
+    url,
+    token,
+    signal,
+    tool: 'synthi_dojo_revoke_proof_capsule',
+    arguments: {
+      capsule_id: capsuleId,
+      reason: resolvedReason,
+      actor_id: actor.actorId,
+      actor_type: actor.actorType,
+    },
+  });
+  assertBridgeToolActionOk(body, 'dojo_proof_capsule_revoke_failed');
+  return {
+    body,
+    result: body.result,
+    summary: summaryFromToolBody(body, workspaceSlug),
+    message: `Proof revoked: ${capsuleId}`,
   };
 }

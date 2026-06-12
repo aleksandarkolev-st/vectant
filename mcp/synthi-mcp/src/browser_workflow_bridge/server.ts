@@ -74,6 +74,7 @@ interface BrowserWorkflowBridgeState {
   latestDojoArtifactExport?: Record<string, unknown>;
   latestProof?: Record<string, unknown>;
   latestProofDryRun?: Record<string, unknown>;
+  latestProofRevocation?: Record<string, unknown>;
   latestBlockExplanation?: Record<string, unknown>;
   latestPermissionUpgrade?: Record<string, unknown>;
   latestDojoUniverse?: Record<string, unknown>;
@@ -457,6 +458,7 @@ function updateBridgeState(
     state.latestDojoArtifactExport = undefined;
     state.latestProof = undefined;
     state.latestProofDryRun = undefined;
+    state.latestProofRevocation = undefined;
     state.latestBlockExplanation = undefined;
     state.latestPermissionUpgrade = undefined;
     clearDojoUniverseState(state);
@@ -471,6 +473,7 @@ function updateBridgeState(
     state.latestDojoArtifactExport = undefined;
     state.latestProof = undefined;
     state.latestProofDryRun = undefined;
+    state.latestProofRevocation = undefined;
     state.latestBlockExplanation = undefined;
     state.latestPermissionUpgrade = undefined;
     clearDojoUniverseState(state);
@@ -548,6 +551,7 @@ function updateBridgeState(
   }
   if (ok && toolName === "synthi_dojo_issue_proof_capsule") {
     state.latestProof = payload;
+    state.latestProofRevocation = undefined;
     const capsule = payload["proof_capsule"] as Record<string, unknown> | undefined;
     const entry: BridgeHistoryEntry = {
       id: `dojo_proof_${Date.now()}`,
@@ -573,6 +577,42 @@ function updateBridgeState(
       startedAt: now,
     };
     state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
+  if (ok && toolName === "synthi_dojo_revoke_proof_capsule") {
+    state.latestProofRevocation = payload;
+    const record = payload["proof_record"] as Record<string, unknown> | undefined;
+    const previousCapsule = state.latestProof?.["proof_capsule"] as Record<string, unknown> | undefined;
+    const previousMatches = stringOpt(previousCapsule?.["capsule_id"]) === stringOpt(record?.["capsule_id"]);
+    state.latestProof = {
+      ...(previousMatches && state.latestProof ? state.latestProof : {}),
+      ...payload,
+      proof_capsule: {
+        ...(previousMatches ? previousCapsule : {}),
+        capsule_id: stringOpt(record?.["capsule_id"]) ?? stringOpt(previousCapsule?.["capsule_id"]) ?? "",
+        requested_action: stringOpt(record?.["requested_action"]) ?? stringOpt(previousCapsule?.["requested_action"]) ?? "",
+        issued_at: stringOpt(record?.["issued_at"]) ?? stringOpt(previousCapsule?.["issued_at"]) ?? "",
+        expires_at: stringOpt(record?.["expires_at"]) ?? stringOpt(previousCapsule?.["expires_at"]) ?? "",
+        nonce: stringOpt(record?.["nonce"]) ?? stringOpt(previousCapsule?.["nonce"]) ?? "",
+        status: stringOpt(record?.["status"]) ?? "revoked",
+        revocation_reason: stringOpt(record?.["revoked_reason"]) ?? "",
+        revoked_at: stringOpt(record?.["revoked_at"]) ?? "",
+        revoked_by: record?.["revoked_by"] ?? null,
+      },
+      validation: {
+        status: "blocked",
+        blocked_by: ["proof_capsule_revoked"],
+        error_codes: ["proof_capsule_revoked"],
+      },
+    };
+    pushBridgeHistory(
+      state,
+      now,
+      "Proof capsule revoked",
+      stringOpt(record?.["capsule_id"]) ?? "Proof capsule",
+      "blocked",
+      "Revoked",
+      "warn"
+    );
   }
   if (toolName === "synthi_dojo_explain_block") {
     state.latestBlockExplanation = payload;
@@ -1213,11 +1253,19 @@ function dojoPanelStateFor(
 function proofPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
   if (!payload) return null;
   const capsule = payload["proof_capsule"] as Record<string, unknown> | undefined;
+  const record = payload["proof_record"] as Record<string, unknown> | undefined;
   const validation = payload["validation"] as Record<string, unknown> | undefined;
+  const proofSource = capsule ?? record ?? payload;
   return {
-    capsuleId: stringOpt(capsule?.["capsule_id"]) ?? null,
-    requestedAction: stringOpt(payload["requested_action"]) ?? stringOpt(capsule?.["requested_action"]) ?? null,
-    status: stringOpt(validation?.["status"]) ?? null,
+    capsuleId: stringOpt(proofSource?.["capsule_id"]) ?? stringOpt(payload["capsule_id"]) ?? null,
+    requestedAction: stringOpt(payload["requested_action"]) ?? stringOpt(proofSource?.["requested_action"]) ?? null,
+    status: stringOpt(proofSource?.["status"]) ?? stringOpt(validation?.["status"]) ?? null,
+    replayState: stringOpt(proofSource?.["status"]) ?? null,
+    revokedAt: stringOpt(record?.["revoked_at"]) ?? stringOpt(proofSource?.["revoked_at"]) ?? null,
+    revokedBy: record?.["revoked_by"] ?? proofSource?.["revoked_by"] ?? null,
+    revocationReason: stringOpt(record?.["revoked_reason"]) ?? stringOpt(proofSource?.["revocation_reason"]) ?? null,
+    blockedBy: Array.isArray(validation?.["blocked_by"]) ? validation?.["blocked_by"] : [],
+    errorCodes: Array.isArray(validation?.["error_codes"]) ? validation?.["error_codes"] : [],
   };
 }
 

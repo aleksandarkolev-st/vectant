@@ -1,15 +1,23 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import ProofCapsuleDrawer from '../ProofCapsuleDrawer';
 import RefusalExplainerDrawer from '../RefusalExplainerDrawer';
 import SkillPassport from '../SkillPassport';
-import { normalizeDojoWorkspaceSummary } from '@/services/dojoClient';
+import { normalizeDojoWorkspaceSummary, revokeDojoProofCapsule } from '@/services/dojoClient';
+import { USER_ID_KEY } from '@/services/userIdentity';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 let root;
 let container;
+
+function typeIntoInput(input, value) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
 
 afterEach(() => {
   if (root) {
@@ -20,6 +28,7 @@ afterEach(() => {
     container.remove();
     container = undefined;
   }
+  localStorage.removeItem(USER_ID_KEY);
 });
 
 function render(ui) {
@@ -76,6 +85,26 @@ describe('Proof and refusal drawers', () => {
     expect(text).toContain('workspace_verified');
     expect(text).toContain('ev-001');
     expect(text).toContain('Consumed');
+  });
+
+  it('requires an audit reason before invoking proof capsule revocation', async () => {
+    const onRevoke = vi.fn();
+    const view = render(<ProofCapsuleDrawer proof={proofFixture()} requirements={['workspace_verified']} onRevoke={onRevoke} />);
+
+    expect(view.querySelector('[data-testid="proof-capsule-revoke"]')?.disabled).toBe(true);
+
+    await act(async () => {
+      typeIntoInput(view.querySelector('[data-testid="proof-capsule-revoke-reason"]'), 'manual key rotation');
+    });
+    expect(view.querySelector('[data-testid="proof-capsule-revoke"]')?.disabled).toBe(false);
+
+    await act(async () => {
+      view.querySelector('[data-testid="proof-capsule-revoke"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onRevoke).toHaveBeenCalledWith(expect.objectContaining({
+      capsuleId: 'capsule-001',
+      revocationReason: 'manual key rotation',
+    }));
   });
 
   it('renders refusal rule, case law, and next steps', () => {
@@ -152,5 +181,104 @@ describe('Proof and refusal drawers', () => {
     expect(view.textContent).toContain('Provide a valid proof capsule.');
     expect(view.textContent).toContain('ev-proof-001');
     expect(view.textContent).toContain('Issue proof before submit_invoice.');
+  });
+
+  it('invokes passport proof revocation with operator feedback', async () => {
+    const revokeProof = vi.fn().mockResolvedValue({ message: 'proof revoked in test' });
+    const summary = normalizeDojoWorkspaceSummary({
+      runtime: { status: 'ready' },
+      dojo: {
+        skillId: 'skill-save-invoice',
+        label: 'Save invoice',
+        status: 'licensed',
+        proofRequired: true,
+        license: { allowedActions: ['Create draft invoice'], requiredProofClaims: ['workspace_verified'] },
+        proof: proofFixture(),
+      },
+    }, 'workspace-a');
+
+    const view = render(
+      <SkillPassport
+        autoLoad={false}
+        workspaceSlug="workspace-a"
+        skillId="skill-save-invoice"
+        initialSummary={summary}
+        onRevokeProofCapsule={revokeProof}
+      />,
+    );
+
+    await act(async () => {
+      typeIntoInput(view.querySelector('[data-testid="proof-capsule-revoke-reason"]'), 'operator requested proof rotation');
+    });
+    await act(async () => {
+      view.querySelector('[data-testid="proof-capsule-revoke"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(revokeProof).toHaveBeenCalledWith(expect.objectContaining({
+      capsuleId: 'capsule-001',
+      revocationReason: 'operator requested proof rotation',
+    }));
+    expect(view.querySelector('[data-testid="skill-passport-action-status"]')?.textContent).toContain('proof revoked in test');
+  });
+
+  it('uses the bridge-backed proof revocation action with explicit actor attribution', async () => {
+    const originalFetch = global.fetch;
+    localStorage.setItem(USER_ID_KEY, 'proof-operator-a');
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        is_error: false,
+        result: {
+          ok: true,
+          proof_record: {
+            capsule_id: 'capsule-001',
+            requested_action: 'submit_invoice',
+            status: 'revoked',
+            revoked_reason: 'manual key rotation',
+            revoked_by: { actor_id: 'proof-operator-a', actor_type: 'human' },
+          },
+        },
+        state: {
+          runtime: { status: 'ready' },
+          dojo: {
+            skillId: 'skill-save-invoice',
+            label: 'Save invoice',
+            status: 'licensed',
+            proof: {
+              capsuleId: 'capsule-001',
+              status: 'revoked',
+              requestedAction: 'submit_invoice',
+              revocationReason: 'manual key rotation',
+            },
+          },
+        },
+      }),
+    }));
+
+    try {
+      const result = await revokeDojoProofCapsule({
+        proof: { capsuleId: 'capsule-001', revocationReason: 'manual key rotation' },
+        workspaceSlug: 'workspace-a',
+      });
+      const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+      expect(requestBody).toEqual({
+        tool: 'synthi_dojo_revoke_proof_capsule',
+        arguments: {
+          capsule_id: 'capsule-001',
+          reason: 'manual key rotation',
+          actor_id: 'proof-operator-a',
+          actor_type: 'human',
+        },
+      });
+      expect(result.message).toBe('Proof revoked: capsule-001');
+      expect(result.summary.selectedSkill.proofCapsule).toEqual(expect.objectContaining({
+        capsuleId: 'capsule-001',
+        status: 'revoked',
+        revocationReason: 'manual key rotation',
+      }));
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 });

@@ -1,13 +1,16 @@
 'use client';
 
-import { KeyRound, ShieldCheck } from 'lucide-react';
+import { useState } from 'react';
+import { KeyRound, ShieldCheck, ShieldOff } from 'lucide-react';
 
 const panelStyle = {
   borderColor: 'var(--border-subtle)',
   background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
 };
 
-export default function ProofCapsuleDrawer({ proof, requirements = [] }) {
+export default function ProofCapsuleDrawer({ proof, requirements = [], onRevoke, busy = false }) {
+  const [revocationReason, setRevocationReason] = useState('');
+
   if (!proof) {
     return (
       <section className="rounded-md border p-4" style={panelStyle} data-testid="proof-capsule-drawer-empty">
@@ -23,6 +26,8 @@ export default function ProofCapsuleDrawer({ proof, requirements = [] }) {
   const claims = proof.evidenceClaims?.length
     ? proof.evidenceClaims
     : requirements.map((claim) => ({ claim, status: 'required', satisfied: false, evidenceRecordIds: [] }));
+  const revoked = proof.status === 'revoked' || Boolean(proof.revocationReason);
+  const canRevoke = Boolean(onRevoke) && !busy && !revoked && revocationReason.trim().length > 0;
 
   return (
     <section className="rounded-md border p-4" style={panelStyle} data-testid="proof-capsule-drawer">
@@ -50,6 +55,38 @@ export default function ProofCapsuleDrawer({ proof, requirements = [] }) {
           {proof.revocationReason}
         </div>
       ) : null}
+
+      <section className="mt-4 rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+        <h3 className="flex items-center gap-2 text-xs font-semibold">
+          <ShieldOff size={13} aria-hidden="true" />
+          Revoke Proof
+        </h3>
+        <label className="mt-3 block text-xs" style={{ color: 'var(--text-muted)' }}>
+          Reason
+          <input
+            type="text"
+            className="mt-1 h-8 w-full rounded-md border px-2 text-xs outline-none"
+            style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+            value={revocationReason}
+            onChange={(event) => setRevocationReason(event.target.value)}
+            placeholder="Required for audit"
+            disabled={!onRevoke || revoked}
+            data-testid="proof-capsule-revoke-reason"
+          />
+        </label>
+        <button
+          type="button"
+          className="mt-3 inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs disabled:cursor-not-allowed disabled:opacity-45"
+          style={panelStyle}
+          disabled={!canRevoke}
+          onClick={() => onRevoke?.({ ...proof, revocationReason: revocationReason.trim() })}
+          data-testid="proof-capsule-revoke"
+          title={!onRevoke ? 'Action handler unavailable' : revoked ? 'Proof already revoked' : 'Revoke proof capsule'}
+        >
+          <ShieldOff size={13} aria-hidden="true" />
+          {busy ? 'Revoking' : 'Revoke proof'}
+        </button>
+      </section>
 
       <section className="mt-4">
         <h3 className="mb-2 text-xs font-semibold">Evidence Claims</h3>

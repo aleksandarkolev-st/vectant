@@ -2,7 +2,11 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, BadgeCheck, ShieldCheck, Timer, Wrench } from 'lucide-react';
-import { createEmptyDojoSummary, getDojoWorkspaceSummary } from '@/services/dojoClient';
+import {
+  createEmptyDojoSummary,
+  getDojoWorkspaceSummary,
+  revokeDojoProofCapsule,
+} from '@/services/dojoClient';
 import ProofCapsuleDrawer from './ProofCapsuleDrawer';
 import RefusalExplainerDrawer from './RefusalExplainerDrawer';
 
@@ -17,10 +21,13 @@ export default function SkillPassport({
   initialSummary,
   loadSummary = getDojoWorkspaceSummary,
   autoLoad = true,
+  onRevokeProofCapsule,
+  enableBridgeActions = true,
 }) {
   const [summary, setSummary] = useState(initialSummary || createEmptyDojoSummary(workspaceSlug));
   const [loading, setLoading] = useState(autoLoad && !initialSummary);
   const [error, setError] = useState('');
+  const [actionState, setActionState] = useState({ busyKey: '', message: '', error: '' });
 
   useEffect(() => {
     if (!autoLoad) return undefined;
@@ -48,6 +55,28 @@ export default function SkillPassport({
   }, [decodedSkillId, summary.selectedSkill, summary.skills]);
 
   const backHref = `/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`;
+  const revokeProofHandler = onRevokeProofCapsule
+    ?? (enableBridgeActions ? (proof) => revokeDojoProofCapsule({ proof, workspaceSlug }) : undefined);
+
+  const invokePassportAction = async ({ busyKey, successLabel, item, handler }) => {
+    if (!handler) return;
+    setActionState({ busyKey, message: '', error: '' });
+    try {
+      const result = await handler(item);
+      if (result?.summary) setSummary(result.summary);
+      setActionState({
+        busyKey: '',
+        message: result?.message || successLabel,
+        error: '',
+      });
+    } catch (err) {
+      setActionState({
+        busyKey: '',
+        message: '',
+        error: err?.message || 'dojo_passport_action_failed',
+      });
+    }
+  };
 
   return (
     <main
@@ -78,6 +107,17 @@ export default function SkillPassport({
         {error ? (
           <section className="rounded-md border p-3 text-xs" style={{ ...panelStyle, color: 'var(--accent-warning)' }} role="status">
             {error}
+          </section>
+        ) : null}
+
+        {actionState.message || actionState.error ? (
+          <section
+            className="rounded-md border p-3 text-xs"
+            style={{ ...panelStyle, color: actionState.error ? 'var(--accent-danger, #ef4444)' : 'var(--accent-success, #22c55e)' }}
+            role="status"
+            data-testid="skill-passport-action-status"
+          >
+            {actionState.error || actionState.message}
           </section>
         ) : null}
 
@@ -121,7 +161,17 @@ export default function SkillPassport({
 
             {(skill.proofRequired || skill.proofCapsule || skill.refusal) ? (
               <section className="grid gap-4 lg:grid-cols-2">
-                <ProofCapsuleDrawer proof={skill.proofCapsule} requirements={skill.proofRequirements} />
+                <ProofCapsuleDrawer
+                  proof={skill.proofCapsule}
+                  requirements={skill.proofRequirements}
+                  busy={actionState.busyKey === 'proof:revoke'}
+                  onRevoke={revokeProofHandler ? (proof) => invokePassportAction({
+                    busyKey: 'proof:revoke',
+                    successLabel: `Proof revoked: ${proof.capsuleId || proof.capsule_id || 'capsule'}`,
+                    item: proof,
+                    handler: revokeProofHandler,
+                  }) : undefined}
+                />
                 <RefusalExplainerDrawer refusal={skill.refusal} />
               </section>
             ) : null}

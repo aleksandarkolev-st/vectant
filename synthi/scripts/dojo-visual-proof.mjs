@@ -53,7 +53,7 @@ const ROUTES = [
     id: "skill-passport",
     path: `/workspace/${WORKSPACE_SLUG}/dojo/skills/${SKILL_ID}/passport`,
     selector: "[data-testid=\"skill-passport\"]",
-    requiredText: ["Skill Passport", "Allowed Alone", "capsule-visual-001", "CASE-DUPLICATE-CLIENT"],
+    requiredText: ["Skill Passport", "Allowed Alone", "capsule-visual-001", "CASE-DUPLICATE-CLIENT", "Revoke proof", "Reason"],
   },
   {
     id: "skill-cortex",

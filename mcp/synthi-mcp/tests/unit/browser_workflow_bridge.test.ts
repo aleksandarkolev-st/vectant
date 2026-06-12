@@ -555,6 +555,103 @@ describe("browser workflow bridge", () => {
     expect(replay).not.toHaveBeenCalled();
   });
 
+  it("updates panel proof state when a proof capsule is revoked through the bridge", async () => {
+    seedSaveWorkflow();
+    bridge = startBrowserWorkflowBridge({ port: 0 });
+    await bridge.ready;
+
+    const publish = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool: "synthi_workflow_publish_tool",
+        arguments: { workspace_id: "workspace-a" },
+      }),
+    });
+    expect(publish.status).toBe(200);
+    const publishBody = await publish.json() as { result: { skill: { skill_id: string } } };
+    const skillId = publishBody.result.skill.skill_id;
+
+    const issue = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool: "synthi_dojo_issue_proof_capsule",
+        arguments: {
+          skill_id: skillId,
+          requested_action: "run_workflow",
+          context_claims: { workspace_verified: true },
+        },
+      }),
+    });
+    expect(issue.status).toBe(200);
+    const issueBody = await issue.json() as {
+      result: { proof_capsule: { capsule_id: string } };
+    };
+    const capsuleId = issueBody.result.proof_capsule.capsule_id;
+    expect(capsuleId).toMatch(/^capsule_/);
+
+    const revoke = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool: "synthi_dojo_revoke_proof_capsule",
+        arguments: {
+          capsule_id: capsuleId,
+          reason: "operator requested key rotation",
+          actor_id: "proof-operator-a",
+          actor_type: "human",
+          now: "2026-06-11T00:01:30.000Z",
+        },
+      }),
+    });
+    expect(revoke.status).toBe(200);
+    const revokeBody = await revoke.json() as {
+      ok: boolean;
+      result: {
+        proof_record: {
+          capsule_id: string;
+          status: string;
+          revoked_reason: string;
+          revoked_by: { actor_id: string; actor_type: string };
+        };
+      };
+      state: {
+        dojo: {
+          proof: {
+            capsuleId: string;
+            status: string;
+            replayState: string;
+            revocationReason: string;
+            revokedBy: { actor_id: string; actor_type: string };
+            errorCodes: string[];
+          };
+        };
+        history: Array<{ label: string; statusLabel: string }>;
+      };
+    };
+
+    expect(revokeBody.ok).toBe(true);
+    expect(revokeBody.result.proof_record).toEqual(expect.objectContaining({
+      capsule_id: capsuleId,
+      status: "revoked",
+      revoked_reason: "operator requested key rotation",
+      revoked_by: { actor_id: "proof-operator-a", actor_type: "human" },
+    }));
+    expect(revokeBody.state.dojo.proof).toEqual(expect.objectContaining({
+      capsuleId,
+      status: "revoked",
+      replayState: "revoked",
+      revocationReason: "operator requested key rotation",
+      revokedBy: { actor_id: "proof-operator-a", actor_type: "human" },
+      errorCodes: ["proof_capsule_revoked"],
+    }));
+    expect(revokeBody.state.history[0]).toEqual(expect.objectContaining({
+      label: "Proof capsule revoked",
+      statusLabel: "Revoked",
+    }));
+  });
+
   it("returns unknown tool errors with the current state snapshot", async () => {
     bridge = startBrowserWorkflowBridge({ port: 0 });
     await bridge.ready;
