@@ -140,7 +140,7 @@ export class DojoSkillGraphRuntime {
     const evidenceRefs: string[] = [];
     const skippedNodes = new Map<string, string[]>();
     const resumeCompletedNodeIds = new Set(input.resume_state?.completed_node_ids ?? []);
-    for (const node of graph.nodes) {
+    for (const node of executionNodesForGraph(graph)) {
       if (resumeCompletedNodeIds.has(node.node_id)) {
         const skippedResult: DojoGraphNodeRunResult = {
           node_id: node.node_id,
@@ -347,6 +347,37 @@ export class DojoSkillGraphRuntime {
       evidence_refs: evidenceRefs,
     };
   }
+}
+
+function executionNodesForGraph(graph: DojoSkillGraph): DojoGraphNode[] {
+  const nodesById = new Map(graph.nodes.map((node) => [node.node_id, node]));
+  const incomingNodeIds = new Set(graph.edges.map((edge) => edge.to_node_id));
+  const triggerNodeIds = graph.nodes
+    .filter((node) => node.kind === "Trigger")
+    .map((node) => node.node_id);
+  const rootNodeIds = triggerNodeIds.length > 0
+    ? triggerNodeIds
+    : graph.nodes.filter((node) => !incomingNodeIds.has(node.node_id)).map((node) => node.node_id);
+  const queue = rootNodeIds.length > 0 ? [...rootNodeIds] : graph.nodes.slice(0, 1).map((node) => node.node_id);
+  const visited = new Set<string>();
+  const ordered: DojoGraphNode[] = [];
+
+  while (queue.length > 0) {
+    const nodeId = queue.shift();
+    if (!nodeId || visited.has(nodeId)) continue;
+    const node = nodesById.get(nodeId);
+    if (!node) continue;
+    visited.add(nodeId);
+    ordered.push(node);
+    for (const edge of graph.edges.filter((candidate) => candidate.from_node_id === nodeId)) {
+      if (!visited.has(edge.to_node_id)) queue.push(edge.to_node_id);
+    }
+  }
+
+  for (const node of graph.nodes) {
+    if (!visited.has(node.node_id)) ordered.push(node);
+  }
+  return ordered;
 }
 
 async function emitGraphNodeEvidence(

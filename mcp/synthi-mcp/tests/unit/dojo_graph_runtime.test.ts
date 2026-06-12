@@ -30,6 +30,29 @@ describe("Dojo graph runtime skeleton", () => {
     }));
   });
 
+  it("executes nodes in graph edge order rather than node array order", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const graph = graphFixture();
+    graph.nodes = [...graph.nodes].reverse();
+
+    const result = await runtime.execute({
+      graph,
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+    }));
+    expect(result.node_results.map((nodeResult) => nodeResult.node_id)).toEqual(["trigger", "action_submit"]);
+  });
+
   it("emits graph run evidence events with stable run and node refs", async () => {
     const runtime = new DojoSkillGraphRuntime();
     const events: DojoGraphEvidenceEvent[] = [];
