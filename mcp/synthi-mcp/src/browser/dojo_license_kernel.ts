@@ -57,7 +57,11 @@ export function evaluateDojoLicenseKernel(input: {
     hardBlockedBy.push(...proofRecordMetadataMismatches(record, input.skill, input.proof_capsule, toolArgs));
   }
 
-  if (Date.parse(input.skill.license_expires_at) <= Date.parse(now)) {
+  const licenseExpiresAtMs = parseTimestamp(input.skill.license_expires_at);
+  const nowMs = parseTimestamp(now);
+  if (licenseExpiresAtMs === undefined) {
+    hardBlockedBy.push("license_expiry_invalid");
+  } else if (nowMs !== undefined && licenseExpiresAtMs <= nowMs) {
     hardBlockedBy.push("license_expired");
   }
 
@@ -255,4 +259,9 @@ function approvalStatusOpt(toolArgs: Record<string, unknown>): "approved" | "den
   if (toolArgs["approval_granted"] === true || toolArgs["approved"] === true) return "approved";
   if (toolArgs["approval_granted"] === false || toolArgs["approved"] === false) return "denied";
   return undefined;
+}
+
+function parseTimestamp(value: string): number | undefined {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }

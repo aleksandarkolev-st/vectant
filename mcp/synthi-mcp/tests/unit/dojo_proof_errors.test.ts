@@ -28,6 +28,7 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("guardrail_not_active:guard_1")).toBe("guardrail_failed");
     expect(normalizeDojoProofErrorCode("approval_constraint:human_confirmation_required")).toBe("approval_required");
     expect(normalizeDojoProofErrorCode("approval_not_granted")).toBe("approval_required");
+    expect(normalizeDojoProofErrorCode("license_expiry_invalid")).toBe("license_expired");
     expect(normalizeDojoProofErrorCode("unexpected-low-level-detail")).toBe("unknown");
   });
 
@@ -87,6 +88,38 @@ describe("Dojo proof error taxonomy", () => {
     expect(decision.blocked_by).toContain("proof_capsule_not_issued_by_registry");
     expect(decision.error_codes).toContain("proof_capsule_not_issued");
     expect(decision.validation.error_codes).toContain("proof_capsule_not_issued");
+  });
+
+  it("blocks license-kernel execution when license expiry metadata is malformed", () => {
+    const skill = buildDojoSkill(workflowContract(), {
+      workspace_id: "workspace-a",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const malformedLicenseSkill = {
+      ...skill,
+      license_expires_at: "not-a-date",
+    };
+    dojoSkillRegistry.publish(malformedLicenseSkill);
+    const capsule = issueDojoProofCapsule(malformedLicenseSkill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    dojoSkillRegistry.recordProofCapsule(capsule);
+
+    const decision = evaluateDojoLicenseKernel({
+      skill: malformedLicenseSkill,
+      registry: dojoSkillRegistry,
+      proof_capsule: capsule,
+      requested_action: "run_workflow",
+      now: "2026-06-11T00:01:00.000Z",
+    });
+
+    expect(decision.ok).toBe(false);
+    expect(decision.status).toBe("blocked");
+    expect(decision.blocked_by).toContain("license_expiry_invalid");
+    expect(decision.error_codes).toContain("license_expired");
+    expect(decision.validation.error_codes).toContain("license_expired");
   });
 
   it("blocks proof capsules when persisted record metadata no longer matches the capsule", () => {
