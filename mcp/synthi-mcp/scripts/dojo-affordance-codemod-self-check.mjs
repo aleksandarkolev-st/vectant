@@ -110,10 +110,15 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
   const wrongTargetRun = await runGeneratedVitest({ testPath, fixtureDir, configPath: vitestConfigPath });
   assert.equal(wrongTargetRun.ok, false, "generated Vitest contract should fail when affordances are on the wrong target");
 
-  const patchWriteResult = await modules.writeDojoGeneratedSourcePatchBundle({
-    bundle: sourcePatchBundle,
+  const branchApplyResult = await modules.applyDojoGeneratedPrBranchPlan({
+    branch_plan: generatedPrBranchPlan,
+    patch_bundle: sourcePatchBundle,
     workspace_root: fixtureDir,
   });
+  assert.equal(branchApplyResult.ok, true, "generated PR branch applicator should apply the generated bundle");
+  assert.equal(branchApplyResult.applied_files.length, 2, "generated PR branch applicator should apply source and contract test artifacts");
+  const patchWriteResult = branchApplyResult.write_result;
+  assert.ok(patchWriteResult, "generated PR branch applicator should include the source patch write result");
   assert.equal(patchWriteResult.ok, true, "source patch writer should write the generated bundle");
   assert.equal(patchWriteResult.written_files.length, 2, "source patch writer should write source and generated test artifacts");
 
@@ -135,6 +140,7 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
     source_patch_bundle: summarizeSourcePatchBundle(sourcePatchBundle),
     generated_pr_metadata: summarizeGeneratedPrMetadata(generatedPrMetadata),
     generated_pr_branch_plan: summarizeGeneratedPrBranchPlan(generatedPrBranchPlan),
+    generated_pr_branch_apply_result: summarizeGeneratedPrBranchApplyResult(branchApplyResult),
     source_patch_write_result: summarizeSourcePatchWriteResult(patchWriteResult),
     before_vitest: summarizeVitestRun(beforeRun),
     wrong_target_vitest: summarizeVitestRun(wrongTargetRun),
@@ -177,6 +183,10 @@ export function buildAffordanceCodemodEvidenceManifest({ report, reportPath, ser
     generated_pr_branch_plan_file_count: Array.isArray(report?.generated_pr_branch_plan?.file_writes)
       ? report.generated_pr_branch_plan.file_writes.length
       : 0,
+    generated_pr_branch_apply_ok: report?.generated_pr_branch_apply_result?.ok === true,
+    generated_pr_branch_apply_file_count: Array.isArray(report?.generated_pr_branch_apply_result?.applied_files)
+      ? report.generated_pr_branch_apply_result.applied_files.length
+      : 0,
     generated_pr_review_gate_count: Array.isArray(report?.generated_pr_metadata?.review_requirements)
       ? report.generated_pr_metadata.review_requirements.length
       : 0,
@@ -210,12 +220,13 @@ async function importBuiltSourceModules() {
   const affordancePlanModule = path.join(MCP_ROOT, "dist", "dojo", "source", "affordance_pr_plan.js");
   const codemodModule = path.join(MCP_ROOT, "dist", "dojo", "source", "codemod.js");
   const prGeneratorModule = path.join(MCP_ROOT, "dist", "dojo", "source", "pr_generator.js");
+  const prBranchApplierModule = path.join(MCP_ROOT, "dist", "dojo", "source", "pr_branch_applier.js");
   try {
-    const [plan, codemod, prGenerator, patchWriter] = await Promise.all([
+    const [plan, codemod, prGenerator, prBranchApplier] = await Promise.all([
       import(pathToFileURL(affordancePlanModule).href),
       import(pathToFileURL(codemodModule).href),
       import(pathToFileURL(prGeneratorModule).href),
-      import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "source", "patch_writer.js")).href),
+      import(pathToFileURL(prBranchApplierModule).href),
     ]);
     return {
       stableLocatorPatchOperation: plan.stableLocatorPatchOperation,
@@ -226,7 +237,7 @@ async function importBuiltSourceModules() {
       buildDojoGeneratedPrMetadata: prGenerator.buildDojoGeneratedPrMetadata,
       buildDojoGeneratedPrBranchPlan: prGenerator.buildDojoGeneratedPrBranchPlan,
       buildDojoGeneratedSourcePatchBundle: (await import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "source", "patch_bundle.js")).href)).buildDojoGeneratedSourcePatchBundle,
-      writeDojoGeneratedSourcePatchBundle: patchWriter.writeDojoGeneratedSourcePatchBundle,
+      applyDojoGeneratedPrBranchPlan: prBranchApplier.applyDojoGeneratedPrBranchPlan,
     };
   } catch (err) {
     throw new Error(`dojo_affordance_codemod_dist_missing: run npm --prefix mcp/synthi-mcp run build first (${err instanceof Error ? err.message : String(err)})`);
@@ -376,6 +387,27 @@ function summarizeGeneratedPrBranchPlan(plan) {
     })),
     required_tests: plan.required_tests,
     promotion_blockers: plan.promotion_blockers,
+  };
+}
+
+function summarizeGeneratedPrBranchApplyResult(result) {
+  return {
+    schema_version: result.schema_version,
+    plan_id: result.plan_id,
+    branch_name: result.branch_name,
+    base_ref: result.base_ref ?? null,
+    checkout_strategy: result.checkout_strategy,
+    workspace_root: result.workspace_root,
+    dry_run: result.dry_run,
+    ok: result.ok,
+    issue_count: result.issues.length,
+    applied_files: result.applied_files.map((file) => ({
+      kind: file.kind,
+      path: file.path,
+      sha256: file.sha256,
+      bytes: file.bytes,
+      written: file.written,
+    })),
   };
 }
 

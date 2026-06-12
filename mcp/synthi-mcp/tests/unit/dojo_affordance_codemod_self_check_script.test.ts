@@ -26,6 +26,13 @@ describe("Dojo affordance codemod self-check script", () => {
           { kind: "contract_test", path: "src/__tests__/InvoiceForm.dojo-affordance.test.ts" },
         ],
       },
+      generated_pr_branch_apply_result: {
+        ok: true,
+        applied_files: [
+          { kind: "source", path: "src/InvoiceForm.jsx" },
+          { kind: "contract_test", path: "src/__tests__/InvoiceForm.dojo-affordance.test.ts" },
+        ],
+      },
       source_patch_write_result: {
         ok: true,
         written_files: [
@@ -65,6 +72,8 @@ describe("Dojo affordance codemod self-check script", () => {
       patch_write_file_count: 2,
       generated_pr_branch_plan_ready: true,
       generated_pr_branch_plan_file_count: 2,
+      generated_pr_branch_apply_ok: true,
+      generated_pr_branch_apply_file_count: 2,
       generated_pr_review_gate_count: 2,
       operation_ids: ["patch_stable_locator_invoice_save", "patch_proof_hook_invoice_save"],
       target_matchers: [
@@ -88,6 +97,7 @@ describe("Dojo affordance codemod self-check script", () => {
         source_patch_bundle: { ok: true, modified_files: [], generated_tests: [] },
         generated_pr_metadata: { review_requirements: [] },
         generated_pr_branch_plan: { ready_to_apply: false, file_writes: [] },
+        generated_pr_branch_apply_result: { ok: false, applied_files: [] },
         source_patch_write_result: { ok: true, written_files: [] },
         before_vitest: { ok: false },
         wrong_target_vitest: { ok: false },
