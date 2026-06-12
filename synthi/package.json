@@ -8,6 +8,7 @@
     "build:turbopack": "node scripts/build-node-polyfills.js && next build --turbopack",
     "start": "next start",
     "lint": "eslint",
+    "proof:dojo:visual": "node scripts/dojo-visual-proof.mjs",
     "proof:dojo:ghost-mode-visual": "node scripts/dojo-ghost-mode-visual-proof.mjs",
     "test:ai-primitives": "node scripts/test-ai-primitives.mjs",
     "build:polyfills": "node scripts/build-node-polyfills.js",
