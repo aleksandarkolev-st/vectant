@@ -1,0 +1,246 @@
+#!/usr/bin/env node
+/*
+ * Prove the Agent-Ready UI affordance codemod and generated test artifact.
+ *
+ * The harness writes a controlled React fixture, generates a Vitest contract
+ * test for the reviewed affordance, proves the generated test fails before
+ * patching, applies the codemod, then proves the same generated test passes.
+ */
+
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const MCP_ROOT = path.resolve(__dirname, "..");
+const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
+const args = parseArgs(process.argv.slice(2));
+
+if (isDirectRun()) {
+  main().catch((err) => {
+    console.error(`[fail] ${err instanceof Error ? err.stack || err.message : String(err)}`);
+    process.exit(1);
+  });
+}
+
+async function main() {
+  const outDir = path.resolve(args["out-dir"] || path.join(REPO_ROOT, "tmp", "dojo-affordance-codemod-self-check"));
+  const report = await runAffordanceCodemodSelfCheck({ outDir });
+  console.log(`[ok] Dojo affordance codemod self-check passed - report=${report.report_path} evidence=${report.evidence_path}`);
+}
+
+export async function runAffordanceCodemodSelfCheck({ outDir }) {
+  const modules = await importBuiltSourceModules();
+  const fixtureDir = path.join(outDir, "fixture");
+  const sourcePath = path.join(fixtureDir, "src", "InvoiceForm.jsx");
+  const testPath = path.join(fixtureDir, "src", "__tests__", "InvoiceForm.dojo-affordance.test.ts");
+  const vitestConfigPath = path.join(fixtureDir, "vitest.config.mjs");
+  await mkdir(path.dirname(sourcePath), { recursive: true });
+  await mkdir(path.dirname(testPath), { recursive: true });
+
+  const operation = modules.stableLocatorPatchOperation({
+    file_path: "src/InvoiceForm.jsx",
+    target_component: "InvoiceForm",
+    affordance_id: "invoice.save",
+  });
+  const generatedTest = modules.generateReactAffordanceVitestContractTest({
+    source_file_path: "src/InvoiceForm.jsx",
+    test_file_path: "src/__tests__/InvoiceForm.dojo-affordance.test.ts",
+    component_name: "InvoiceForm",
+    operations: [operation],
+  });
+
+  await writeFile(sourcePath, invoiceFormSource());
+  await writeFile(testPath, generatedTest.source);
+  await writeFile(vitestConfigPath, fixtureVitestConfigSource());
+
+  const beforeContract = modules.evaluateReactAffordanceContract(await readFile(sourcePath, "utf8"), [operation]);
+  assert.equal(beforeContract.ok, false, "generated affordance contract should fail before patch");
+  const beforeRun = await runGeneratedVitest({ testPath, fixtureDir, configPath: vitestConfigPath });
+  assert.equal(beforeRun.ok, false, "generated Vitest contract should fail before codemod patch");
+
+  const patched = modules.applyReactAffordanceCodemodPlan(await readFile(sourcePath, "utf8"), [operation]);
+  assert.equal(patched.changed, true, "codemod should patch the fixture once");
+  await writeFile(sourcePath, patched.source);
+
+  const afterContract = modules.evaluateReactAffordanceContract(await readFile(sourcePath, "utf8"), [operation]);
+  assert.equal(afterContract.ok, true, "generated affordance contract should pass after patch");
+  const afterRun = await runGeneratedVitest({ testPath, fixtureDir, configPath: vitestConfigPath });
+  assert.equal(afterRun.ok, true, "generated Vitest contract should pass after codemod patch");
+
+  const report = {
+    schema_version: "synthi.dojo.affordanceCodemodSelfCheck.v1",
+    generated_at: new Date().toISOString(),
+    operation_id: operation.operation_id,
+    generated_test_path: testPath,
+    patched_source_path: sourcePath,
+    fixture_vitest_config_path: vitestConfigPath,
+    before_contract: beforeContract,
+    after_contract: afterContract,
+    before_vitest: summarizeVitestRun(beforeRun),
+    after_vitest: summarizeVitestRun(afterRun),
+    applied_operations: patched.applied_operations,
+    skipped_operations: patched.skipped_operations,
+  };
+  const artifacts = await writeAffordanceCodemodArtifacts({ outDir, report });
+  return { ...report, ...artifacts };
+}
+
+export function buildAffordanceCodemodEvidenceManifest({ report, reportPath, serialized }) {
+  const body = typeof serialized === "string" ? serialized : JSON.stringify(report);
+  return {
+    schema_version: "synthi.dojo.affordanceCodemodEvidence.v1",
+    generated_at: new Date().toISOString(),
+    report_path: reportPath,
+    report_sha256: sha256(body),
+    report_bytes: Buffer.byteLength(body),
+    before_failed: report?.before_contract?.ok === false && report?.before_vitest?.ok === false,
+    after_passed: report?.after_contract?.ok === true && report?.after_vitest?.ok === true,
+    operation_id: report?.operation_id ?? null,
+    generated_test_path: report?.generated_test_path ?? null,
+    patched_source_path: report?.patched_source_path ?? null,
+  };
+}
+
+async function writeAffordanceCodemodArtifacts({ outDir, report }) {
+  await mkdir(outDir, { recursive: true });
+  const reportPath = path.join(outDir, "dojo-affordance-codemod-self-check.json");
+  const evidencePath = path.join(outDir, "dojo-affordance-codemod-self-check.evidence.json");
+  const serialized = JSON.stringify(report, null, 2);
+  const evidence = buildAffordanceCodemodEvidenceManifest({
+    report,
+    reportPath,
+    serialized,
+  });
+  await writeFile(reportPath, serialized);
+  await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
+  return {
+    report_path: reportPath,
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function importBuiltSourceModules() {
+  const affordancePlanModule = path.join(MCP_ROOT, "dist", "dojo", "source", "affordance_pr_plan.js");
+  const codemodModule = path.join(MCP_ROOT, "dist", "dojo", "source", "codemod.js");
+  try {
+    const [plan, codemod] = await Promise.all([
+      import(pathToFileURL(affordancePlanModule).href),
+      import(pathToFileURL(codemodModule).href),
+    ]);
+    return {
+      stableLocatorPatchOperation: plan.stableLocatorPatchOperation,
+      applyReactAffordanceCodemodPlan: codemod.applyReactAffordanceCodemodPlan,
+      evaluateReactAffordanceContract: codemod.evaluateReactAffordanceContract,
+      generateReactAffordanceVitestContractTest: codemod.generateReactAffordanceVitestContractTest,
+    };
+  } catch (err) {
+    throw new Error(`dojo_affordance_codemod_dist_missing: run npm --prefix mcp/synthi-mcp run build first (${err instanceof Error ? err.message : String(err)})`);
+  }
+}
+
+async function runGeneratedVitest({ testPath, fixtureDir, configPath }) {
+  const vitestBin = path.join(MCP_ROOT, "node_modules", "vitest", "vitest.mjs");
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [
+      vitestBin,
+      "run",
+      testPath,
+      "--root",
+      fixtureDir,
+      "--config",
+      configPath,
+    ], {
+      cwd: MCP_ROOT,
+      env: { ...process.env, CI: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.once("exit", (code, signal) => {
+      resolve({
+        ok: code === 0,
+        exit_code: code,
+        signal,
+        stdout,
+        stderr,
+      });
+    });
+  });
+}
+
+function summarizeVitestRun(run) {
+  return {
+    ok: run.ok,
+    exit_code: run.exit_code,
+    signal: run.signal,
+    stdout_tail: tail(run.stdout),
+    stderr_tail: tail(run.stderr),
+  };
+}
+
+function tail(value) {
+  const text = String(value || "").trim();
+  return text.length > 1200 ? text.slice(-1200) : text;
+}
+
+function invoiceFormSource() {
+  return `export function InvoiceForm({ onSave }) {
+  return (
+    <form>
+      <label>
+        Client
+        <input name="client" />
+      </label>
+      <button type="button" onClick={onSave}>Save invoice</button>
+    </form>
+  );
+}
+`;
+}
+
+function fixtureVitestConfigSource() {
+  return `export default {
+  test: {
+    environment: "node",
+    include: ["src/**/*.test.ts"],
+  },
+};
+`;
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function parseArgs(argv) {
+  const parsed = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const item = argv[i];
+    if (!item.startsWith("--")) continue;
+    const key = item.slice(2);
+    const next = argv[i + 1];
+    if (!next || next.startsWith("--")) {
+      parsed[key] = "1";
+      continue;
+    }
+    parsed[key] = next;
+    i += 1;
+  }
+  return parsed;
+}
+
+function isDirectRun() {
+  return process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
+}
