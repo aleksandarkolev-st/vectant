@@ -21,6 +21,9 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { chromium } from "playwright-core";
+import { freshMcpProcessEnv } from "./lib/workflow-pipeline-e2e-helpers.mjs";
+
+export { freshMcpProcessEnv } from "./lib/workflow-pipeline-e2e-helpers.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1053,25 +1056,6 @@ async function workflowBridgeTool(tool, args) {
 
 async function workflowBridgeState() {
   return await httpJson("GET", `${CFG.bridgeUrl}/browser-workflows/state`);
-}
-
-export function freshMcpProcessEnv({
-  baseEnv = process.env,
-  privateWorkflowStoreEnv,
-  cdpUrl,
-  previewUrl,
-  workspaceId,
-}) {
-  const env = {
-    ...baseEnv,
-    ...privateWorkflowStoreEnv,
-    SYNTHI_HOSTED_BROWSER_CDP_URL: cdpUrl,
-    SYNTHI_HOSTED_BROWSER_WORKSPACE_URL: previewUrl,
-    SYNTHI_WORKSPACE_ID: workspaceId,
-    SYNTHI_AGENT_ID: "workflow_pipeline_fresh_mcp_acceptance",
-  };
-  delete env.SYNTHI_BROWSER_CDP_URL;
-  return env;
 }
 
 async function verifyFreshMcpPrivateTool({

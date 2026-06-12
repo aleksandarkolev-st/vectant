@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, expect, it } from "vitest";
-import { freshMcpProcessEnv } from "../../scripts/workflow-pipeline-e2e.mjs";
+import { freshMcpProcessEnv } from "../../scripts/lib/workflow-pipeline-e2e-helpers.mjs";
 
 describe("workflow pipeline harness", () => {
   it("passes hosted runtime env to fresh MCP verification without local CDP leakage", () => {
