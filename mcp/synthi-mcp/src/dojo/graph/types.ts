@@ -1,3 +1,5 @@
+import { isParseableDojoGuardrailPredicate } from "./guardrail_predicates.js";
+
 export type DojoGraphNodeKind =
   | "Trigger"
   | "Input"
@@ -117,6 +119,15 @@ export function validateDojoSkillGraph(graph: DojoSkillGraph): DojoGraphValidati
     }
     if (graph.mode === "production" && node.kind === "Action" && node.proof?.required !== true) {
       issues.push(errorIssue("production_action_proof_required", "Production action nodes require an explicit proof requirement.", node.node_id));
+    }
+    for (const guardrail of node.guardrails) {
+      if (!isParseableDojoGuardrailPredicate(guardrail.predicate)) {
+        issues.push(errorIssue(
+          "guardrail_predicate_parseable_required",
+          `Guardrail ${guardrail.guardrail_id} on node ${node.node_id} must use an executable predicate.`,
+          node.node_id
+        ));
+      }
     }
   }
 

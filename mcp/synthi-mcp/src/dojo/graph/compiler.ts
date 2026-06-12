@@ -7,6 +7,7 @@ import {
   type DojoSkillGraph,
   validateDojoSkillGraph,
 } from "./types.js";
+import { normalizeDojoGuardrailPredicate } from "./guardrail_predicates.js";
 
 export interface DojoGraphCompileResult {
   graph: DojoSkillGraph;
@@ -81,15 +82,25 @@ function permissionNode(skill: DojoSkill): DojoGraphNode {
 }
 
 function guardrailNode(guardrail: DojoGuardrail): DojoGraphNode {
+  const normalized = normalizeDojoGuardrailPredicate({
+    rule: guardrail.rule,
+    title: guardrail.title,
+    guardrail_id: guardrail.guardrail_id,
+  });
   return {
     ...baseNode(guardrail.guardrail_id, "Guardrail", guardrail.title, "safe"),
     guardrails: [{
       guardrail_id: guardrail.guardrail_id,
-      predicate: guardrail.rule,
+      predicate: normalized.predicate,
       severity: "block",
     }],
     case_law_refs: guardrail.source_case_id ? [guardrail.source_case_id] : [],
-    metadata: { blocks_actions: guardrail.blocks_actions },
+    metadata: {
+      blocks_actions: guardrail.blocks_actions,
+      predicate_source: normalized.source,
+      original_rule: normalized.original_rule,
+      ...(normalized.generated_context_key ? { generated_context_key: normalized.generated_context_key } : {}),
+    },
   };
 }
 
@@ -107,16 +118,24 @@ function proofNode(skill: DojoSkill): DojoGraphNode {
 
 function actionNode(skill: DojoSkill): DojoGraphNode {
   const risk = actionRisk(skill);
+  const guardrails = skill.guardrails.map((guardrail) => {
+    const normalized = normalizeDojoGuardrailPredicate({
+      rule: guardrail.rule,
+      title: guardrail.title,
+      guardrail_id: guardrail.guardrail_id,
+    });
+    return {
+      guardrail_id: guardrail.guardrail_id,
+      predicate: normalized.predicate,
+      severity: "block" as const,
+    };
+  });
   return {
     ...baseNode("action", "Action", skill.published_tool_name ?? "Workflow replay", risk),
     action: "run_workflow",
     preconditions: [],
     postconditions: skill.skill_seed.candidate_success_assertions.map((assertion) => assertion.label),
-    guardrails: skill.guardrails.map((guardrail) => ({
-      guardrail_id: guardrail.guardrail_id,
-      predicate: guardrail.rule,
-      severity: "block",
-    })),
+    guardrails,
     proof: {
       required: true,
       required_claims: skill.permission_license.proof_requirements.required_evidence_claims,
@@ -127,7 +146,13 @@ function actionNode(skill: DojoSkill): DojoGraphNode {
     evidence_policy: ["append_action_trace", "append_postcondition_evidence"],
     case_law_refs: skill.case_law.map((item) => item.case_id),
     expiry_triggers: skill.permission_license.expiry_policy.expires_on,
-    metadata: { rollback_policy: skill.rollback_policy },
+    metadata: {
+      rollback_policy: skill.rollback_policy,
+      guardrail_predicates: guardrails.map((guardrail) => ({
+        guardrail_id: guardrail.guardrail_id,
+        predicate: guardrail.predicate,
+      })),
+    },
   };
 }
 

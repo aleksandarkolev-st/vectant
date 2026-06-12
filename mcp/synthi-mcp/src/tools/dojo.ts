@@ -32,6 +32,10 @@ import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
 import { runDojoExecutableCheckride } from "../dojo/checkride/runner.js";
 import { buildDojoGovernanceServiceView } from "../dojo/governance/service.js";
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
+import {
+  contextKeyForDojoGuardrailPredicate,
+  normalizeDojoGuardrailPredicate,
+} from "../dojo/graph/guardrail_predicates.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
 import { toDojoScenarioDefinitions, validateDojoScenarioDefinition } from "../dojo/vivarium/scenario_dsl.js";
 import type { DojoPermissionUpgradeRequestRecord } from "../dojo/store/interfaces.js";
@@ -1296,37 +1300,13 @@ function withExecutableCheckrideGuardrails(skill: DojoSkill): DojoSkill {
   const updated = cloneJson(skill);
   updated.guardrails = updated.guardrails.map((guardrail) => ({
     ...guardrail,
-    rule: executableCheckrideGuardrailPredicate(guardrail.rule, guardrail.title),
+    rule: normalizeDojoGuardrailPredicate({
+      rule: guardrail.rule,
+      title: guardrail.title,
+      guardrail_id: guardrail.guardrail_id,
+    }).predicate,
   }));
   return updated;
-}
-
-function executableCheckrideGuardrailPredicate(rule: string, title = ""): string {
-  const trimmed = rule.trim();
-  if (isParseableGuardrailPredicate(trimmed)) return trimmed;
-
-  const normalized = `${title} ${trimmed}`.toLowerCase();
-  if (normalized.includes("stable") && (normalized.includes("entity") || normalized.includes("identifier") || normalized.includes(" id"))) {
-    return "client_id_verified == true";
-  }
-  if (normalized.includes("source") && (normalized.includes("anchor") || normalized.includes("affordance") || normalized.includes("backed"))) {
-    return "source_anchor_current == true";
-  }
-  if (normalized.includes("durable") || normalized.includes("success assertion") || normalized.includes("postcondition")) {
-    return "durable_state_evidence == true";
-  }
-  if (normalized.includes("approval") || normalized.includes("review")) {
-    return "human_review_ready == true";
-  }
-  return `guardrail_${hashId(trimmed || title)} == true`;
-}
-
-function isParseableGuardrailPredicate(predicate: string): boolean {
-  return Boolean(
-    predicate.match(/^([a-zA-Z0-9_.-]+)\s+in\s+(\[.*\])$/)
-      || predicate.match(/^([a-zA-Z0-9_.-]+)\s*(==|!=|<=|>=|<|>)\s*(.+)$/)
-      || predicate.match(/^[a-zA-Z0-9_.-]+$/)
-  );
 }
 
 function checkrideRuntimeInputsFor(skill: DojoSkill): Record<string, unknown> {
@@ -1350,8 +1330,8 @@ function checkrideRuntimeInputsFor(skill: DojoSkill): Record<string, unknown> {
     inputs[claim] = true;
   }
   for (const guardrail of skill.guardrails) {
-    const match = guardrail.rule.match(/^([a-zA-Z0-9_.-]+)\s*(?:==\s*true)?$/);
-    if (match?.[1]) inputs[match[1]] = true;
+    const contextKey = contextKeyForDojoGuardrailPredicate(guardrail.rule);
+    if (contextKey) inputs[contextKey] = true;
   }
   return inputs;
 }

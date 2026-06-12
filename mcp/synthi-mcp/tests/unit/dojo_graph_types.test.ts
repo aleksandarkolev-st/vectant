@@ -51,6 +51,28 @@ describe("Dojo Skill Graph IR", () => {
     ]));
   });
 
+  it("rejects guardrail predicates that are not executable", () => {
+    const graph = minimalGraph();
+    graph.nodes = graph.nodes.map((node) =>
+      node.node_id === "action_submit"
+        ? {
+            ...node,
+            guardrails: node.guardrails.map((guardrail) => ({
+              ...guardrail,
+              predicate: "Require a stable client identifier before submit.",
+            })),
+          }
+        : node
+    );
+
+    expect(validateDojoSkillGraph(graph).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issue_id: "guardrail_predicate_parseable_required",
+        node_id: "action_submit",
+      }),
+    ]));
+  });
+
   it("rejects edges that reference missing nodes or invalid confidence", () => {
     const graph = minimalGraph();
     graph.edges.push({

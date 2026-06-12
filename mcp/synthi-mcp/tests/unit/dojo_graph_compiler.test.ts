@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildDojoSkill, exportDojoRepoArtifacts } from "../../src/browser/dojo.js";
 import { compileDojoSkillGraphForSkill } from "../../src/dojo/graph/compiler.js";
+import { isParseableDojoGuardrailPredicate } from "../../src/dojo/graph/guardrail_predicates.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
 
@@ -48,6 +49,18 @@ describe("Dojo graph compiler", () => {
       ]),
       guardrails: expect.arrayContaining([
         expect.objectContaining({ severity: "block" }),
+      ]),
+    }));
+    expect(
+      graph.nodes.flatMap((node) => node.guardrails).every((guardrail) =>
+        isParseableDojoGuardrailPredicate(guardrail.predicate)
+      )
+    ).toBe(true);
+    expect(action?.metadata).toEqual(expect.objectContaining({
+      guardrail_predicates: expect.arrayContaining([
+        expect.objectContaining({
+          predicate: expect.stringMatching(/^(client_id_verified|source_anchor_current|durable_state_evidence|human_review_ready|guardrail_[a-f0-9]{12})/),
+        }),
       ]),
     }));
   });

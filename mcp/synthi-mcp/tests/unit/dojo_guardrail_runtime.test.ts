@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+import {
+  contextKeyForDojoGuardrailPredicate,
+  isParseableDojoGuardrailPredicate,
+  normalizeDojoGuardrailPredicate,
+} from "../../src/dojo/graph/guardrail_predicates.js";
 import { evaluateDojoGuardrailPredicate } from "../../src/dojo/graph/guardrail_runtime.js";
 import { DojoSkillGraphRuntime } from "../../src/dojo/graph/runtime.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
@@ -17,6 +22,46 @@ describe("Dojo guardrail runtime", () => {
     expect(evaluateDojoGuardrailPredicate("amount <= 500", context).ok).toBe(true);
     expect(evaluateDojoGuardrailPredicate("currency in [\"EUR\",\"USD\"]", context).ok).toBe(true);
     expect(evaluateDojoGuardrailPredicate("client_id_verified", context).ok).toBe(true);
+  });
+
+  it("normalizes generated prose guardrails into executable runtime predicates", () => {
+    const stableId = normalizeDojoGuardrailPredicate({
+      rule: "Require a stable entity identifier before submitting.",
+      title: "Stable client identity",
+      guardrail_id: "guard_client_identity",
+    });
+    const sourceAnchor = normalizeDojoGuardrailPredicate({
+      rule: "Action must remain backed by the current source affordance.",
+      title: "Source affordance current",
+    });
+    const durableState = normalizeDojoGuardrailPredicate({
+      rule: "Durable success assertion must prove the postcondition.",
+    });
+    const humanReview = normalizeDojoGuardrailPredicate({
+      rule: "Require human review before high-risk submission.",
+    });
+    const generated = normalizeDojoGuardrailPredicate({
+      rule: "Business-specific policy flag is satisfied.",
+      guardrail_id: "guard_custom_policy",
+    });
+
+    expect(stableId).toEqual(expect.objectContaining({
+      predicate: "client_id_verified == true",
+      source: "normalized",
+      generated_context_key: "client_id_verified",
+    }));
+    expect(sourceAnchor.predicate).toBe("source_anchor_current == true");
+    expect(durableState.predicate).toBe("durable_state_evidence == true");
+    expect(humanReview.predicate).toBe("human_review_ready == true");
+    expect(generated).toEqual(expect.objectContaining({
+      source: "generated_key",
+      predicate: expect.stringMatching(/^guardrail_[a-f0-9]{12} == true$/),
+    }));
+
+    const generatedKey = contextKeyForDojoGuardrailPredicate(generated.predicate);
+    expect(generatedKey).toBe(generated.generated_context_key);
+    expect(evaluateDojoGuardrailPredicate(generated.predicate, { [generatedKey!]: true }).ok).toBe(true);
+    expect(isParseableDojoGuardrailPredicate("unsupported >== 1")).toBe(false);
   });
 
   it("returns explicit failure reasons for failed predicates", () => {
