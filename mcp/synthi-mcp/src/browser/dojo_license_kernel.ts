@@ -191,6 +191,12 @@ function proofRecordMetadataMismatches(
   if (record.signature_algorithm && record.signature_algorithm !== capsule.signature_algorithm) {
     blockedBy.push("proof_record_signature_algorithm_mismatch");
   }
+  if (record.issued_at !== capsule.issued_at) {
+    blockedBy.push("proof_record_issued_at_mismatch");
+  }
+  if (record.expires_at !== capsule.expires_at) {
+    blockedBy.push("proof_record_expires_at_mismatch");
+  }
   if (record.substrate_claim && record.substrate_claim !== capsule.substrate_claim) {
     blockedBy.push("proof_record_substrate_mismatch");
   }
