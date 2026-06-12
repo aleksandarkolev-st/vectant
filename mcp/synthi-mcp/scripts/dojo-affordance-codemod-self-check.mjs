@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -86,8 +86,13 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
     patch_bundle: sourcePatchBundle,
     base_ref: process.env.SYNTHI_DOJO_AFFORDANCE_PR_BASE_REF || "main",
   });
+  const generatedPrCurrentHeadBranchPlan = modules.buildDojoGeneratedPrBranchPlan({
+    metadata: generatedPrMetadata,
+    patch_bundle: sourcePatchBundle,
+  });
   assert.equal(generatedPrBranchPlan.ready_to_apply, true, "generated PR branch plan should be ready for the controlled fixture");
   assert.equal(generatedPrBranchPlan.file_writes.length, 2, "generated PR branch plan should include source and contract test writes");
+  assert.equal(generatedPrCurrentHeadBranchPlan.ready_to_apply, true, "generated PR current-head branch plan should be ready for git proof");
 
   const sourcePath = path.join(fixtureDir, sourcePatchBundle.modified_files[0].path);
   const testPath = path.join(fixtureDir, sourcePatchBundle.generated_tests[0].path);
@@ -127,6 +132,20 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
   const afterRun = await runGeneratedVitest({ testPath, fixtureDir, configPath: vitestConfigPath });
   assert.equal(afterRun.ok, true, "generated Vitest contract should pass after codemod patch");
 
+  const gitFixtureDir = await prepareGitFixture({ outDir, sourcePatchBundle, originalSource });
+  const gitBranchResult = await modules.createDojoGeneratedPrGitBranch({
+    branch_plan: generatedPrCurrentHeadBranchPlan,
+    patch_bundle: sourcePatchBundle,
+    repository_root: gitFixtureDir,
+  });
+  assert.equal(gitBranchResult.ok, true, "generated PR git branch workflow should create a branch and apply planned files");
+  assert.equal(gitBranchResult.apply_result?.applied_files?.length, 2, "generated PR git branch workflow should apply source and contract test files");
+  const gitVitestConfigPath = path.join(gitFixtureDir, "vitest.config.mjs");
+  const gitTestPath = path.join(gitFixtureDir, sourcePatchBundle.generated_tests[0].path);
+  await writeFile(gitVitestConfigPath, fixtureVitestConfigSource());
+  const gitBranchRun = await runGeneratedVitest({ testPath: gitTestPath, fixtureDir: gitFixtureDir, configPath: gitVitestConfigPath });
+  assert.equal(gitBranchRun.ok, true, "generated Vitest contract should pass on the generated PR git branch");
+
   const report = {
     schema_version: "synthi.dojo.affordanceCodemodSelfCheck.v1",
     generated_at: new Date().toISOString(),
@@ -141,10 +160,12 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
     generated_pr_metadata: summarizeGeneratedPrMetadata(generatedPrMetadata),
     generated_pr_branch_plan: summarizeGeneratedPrBranchPlan(generatedPrBranchPlan),
     generated_pr_branch_apply_result: summarizeGeneratedPrBranchApplyResult(branchApplyResult),
+    generated_pr_git_branch_result: summarizeGeneratedPrGitBranchResult(gitBranchResult),
     source_patch_write_result: summarizeSourcePatchWriteResult(patchWriteResult),
     before_vitest: summarizeVitestRun(beforeRun),
     wrong_target_vitest: summarizeVitestRun(wrongTargetRun),
     after_vitest: summarizeVitestRun(afterRun),
+    git_branch_vitest: summarizeVitestRun(gitBranchRun),
     applied_operations: sourcePatchBundle.modified_files.flatMap((file) => file.applied_operations),
     skipped_operations: sourcePatchBundle.modified_files.flatMap((file) => file.skipped_operations),
     target_matchers: operations.map((operation) => ({
@@ -187,6 +208,14 @@ export function buildAffordanceCodemodEvidenceManifest({ report, reportPath, ser
     generated_pr_branch_apply_file_count: Array.isArray(report?.generated_pr_branch_apply_result?.applied_files)
       ? report.generated_pr_branch_apply_result.applied_files.length
       : 0,
+    generated_pr_git_branch_ok: report?.generated_pr_git_branch_result?.ok === true,
+    generated_pr_git_branch_command_count: Array.isArray(report?.generated_pr_git_branch_result?.commands)
+      ? report.generated_pr_git_branch_result.commands.length
+      : 0,
+    generated_pr_git_branch_applied_file_count: Array.isArray(report?.generated_pr_git_branch_result?.applied_files)
+      ? report.generated_pr_git_branch_result.applied_files.length
+      : 0,
+    git_branch_generated_test_passed: report?.git_branch_vitest?.ok === true,
     generated_pr_review_gate_count: Array.isArray(report?.generated_pr_metadata?.review_requirements)
       ? report.generated_pr_metadata.review_requirements.length
       : 0,
@@ -221,12 +250,14 @@ async function importBuiltSourceModules() {
   const codemodModule = path.join(MCP_ROOT, "dist", "dojo", "source", "codemod.js");
   const prGeneratorModule = path.join(MCP_ROOT, "dist", "dojo", "source", "pr_generator.js");
   const prBranchApplierModule = path.join(MCP_ROOT, "dist", "dojo", "source", "pr_branch_applier.js");
+  const prBranchGitModule = path.join(MCP_ROOT, "dist", "dojo", "source", "pr_branch_git.js");
   try {
-    const [plan, codemod, prGenerator, prBranchApplier] = await Promise.all([
+    const [plan, codemod, prGenerator, prBranchApplier, prBranchGit] = await Promise.all([
       import(pathToFileURL(affordancePlanModule).href),
       import(pathToFileURL(codemodModule).href),
       import(pathToFileURL(prGeneratorModule).href),
       import(pathToFileURL(prBranchApplierModule).href),
+      import(pathToFileURL(prBranchGitModule).href),
     ]);
     return {
       stableLocatorPatchOperation: plan.stableLocatorPatchOperation,
@@ -238,27 +269,64 @@ async function importBuiltSourceModules() {
       buildDojoGeneratedPrBranchPlan: prGenerator.buildDojoGeneratedPrBranchPlan,
       buildDojoGeneratedSourcePatchBundle: (await import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "source", "patch_bundle.js")).href)).buildDojoGeneratedSourcePatchBundle,
       applyDojoGeneratedPrBranchPlan: prBranchApplier.applyDojoGeneratedPrBranchPlan,
+      createDojoGeneratedPrGitBranch: prBranchGit.createDojoGeneratedPrGitBranch,
     };
   } catch (err) {
     throw new Error(`dojo_affordance_codemod_dist_missing: run npm --prefix mcp/synthi-mcp run build first (${err instanceof Error ? err.message : String(err)})`);
   }
 }
 
+async function prepareGitFixture({ outDir, sourcePatchBundle, originalSource }) {
+  const gitFixtureDir = await resetGeneratedSubdirectory(outDir, "git-fixture");
+  const sourcePath = path.join(gitFixtureDir, sourcePatchBundle.modified_files[0].path);
+  await mkdir(path.dirname(sourcePath), { recursive: true });
+  await writeFile(sourcePath, originalSource);
+  await runCommandOrThrow("git", ["init"], gitFixtureDir, "git init should succeed for generated PR self-check");
+  await runCommandOrThrow("git", ["config", "user.email", "dojo-self-check@example.test"], gitFixtureDir, "git user.email config should succeed");
+  await runCommandOrThrow("git", ["config", "user.name", "Dojo Self Check"], gitFixtureDir, "git user.name config should succeed");
+  await runCommandOrThrow("git", ["add", sourcePatchBundle.modified_files[0].path], gitFixtureDir, "git add should stage the fixture source");
+  await runCommandOrThrow("git", ["commit", "-m", "seed dojo affordance fixture"], gitFixtureDir, "git commit should create the seed fixture commit");
+  return gitFixtureDir;
+}
+
+async function resetGeneratedSubdirectory(parentDir, subdirectoryName) {
+  const parent = path.resolve(parentDir);
+  const target = path.resolve(parent, subdirectoryName);
+  const relative = path.relative(parent, target);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`dojo_affordance_codemod_unsafe_temp_reset: ${target}`);
+  }
+  await rm(target, { recursive: true, force: true });
+  await mkdir(target, { recursive: true });
+  return target;
+}
+
+async function runCommandOrThrow(command, commandArgs, cwd, message) {
+  const run = await runCommand(command, commandArgs, cwd);
+  assert.equal(run.ok, true, `${message}\nstdout=${tail(run.stdout)}\nstderr=${tail(run.stderr)}`);
+  return run;
+}
+
 async function runGeneratedVitest({ testPath, fixtureDir, configPath }) {
   const vitestBin = path.join(MCP_ROOT, "node_modules", "vitest", "vitest.mjs");
+  return runCommand(process.execPath, [
+    vitestBin,
+    "run",
+    testPath,
+    "--root",
+    fixtureDir,
+    "--config",
+    configPath,
+  ], MCP_ROOT, { ...process.env, CI: "1" });
+}
+
+async function runCommand(command, commandArgs, cwd, env = process.env) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [
-      vitestBin,
-      "run",
-      testPath,
-      "--root",
-      fixtureDir,
-      "--config",
-      configPath,
-    ], {
-      cwd: MCP_ROOT,
-      env: { ...process.env, CI: "1" },
+    const child = spawn(command, commandArgs, {
+      cwd,
+      env,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     let stdout = "";
     let stderr = "";
@@ -408,6 +476,32 @@ function summarizeGeneratedPrBranchApplyResult(result) {
       bytes: file.bytes,
       written: file.written,
     })),
+  };
+}
+
+function summarizeGeneratedPrGitBranchResult(result) {
+  return {
+    schema_version: result.schema_version,
+    repository_root: result.repository_root,
+    branch_name: result.branch_name,
+    previous_ref: result.previous_ref ?? null,
+    dry_run: result.dry_run,
+    ok: result.ok,
+    issue_count: result.issues.length,
+    command_count: result.commands.length,
+    commands: result.commands.map((commandResult) => ({
+      args: commandResult.args,
+      exit_code: commandResult.exit_code,
+      stdout_tail: commandResult.stdout_tail,
+      stderr_tail: commandResult.stderr_tail,
+    })),
+    applied_files: result.apply_result?.applied_files?.map((file) => ({
+      kind: file.kind,
+      path: file.path,
+      sha256: file.sha256,
+      bytes: file.bytes,
+      written: file.written,
+    })) ?? [],
   };
 }
 
