@@ -1,0 +1,51 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Sysbox acceptance smoke test (Slice 0, step C1)
+# ─────────────────────────────────────────────────────────────────────────────
+#  Proves the substrate works end-to-end:
+#    kubectl apply -f k8s/sysbox/smoke-pod.yaml
+#    kubectl wait --for=condition=Ready pod/sysbox-smoke-test --timeout=180s
+#    kubectl exec sysbox-smoke-test -- docker run --rm hello-world
+#    kubectl exec sysbox-smoke-test -- docker info --format '{{.SecurityOptions}}'   # expect userns
+#    kubectl delete -f k8s/sysbox/smoke-pod.yaml
+#
+#  The POINT: a full Docker daemon runs inside this pod with NO privileged flag and
+#  NO host docker.sock — Sysbox provides root-in-userns isolation. If `docker run`
+#  works here without privileged, the substrate is good.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sysbox-smoke-test
+  namespace: default
+  labels:
+    app: sysbox-smoke-test
+spec:
+  # Sysbox engine. The RuntimeClass auto-injects nodeSelector sysbox-runtime=running,
+  # so this only schedules onto a node where Sysbox finished installing.
+  runtimeClassName: sysbox-runc
+  # Tolerate the dedicated pool taint (RuntimeClass handles the nodeSelector).
+  tolerations:
+  - key: workload
+    operator: Equal
+    value: sysbox
+    effect: NoSchedule
+  containers:
+  - name: dind
+    # Fully-qualified (CRI-O is strict about short names) + non-:latest tag (passes
+    # reject-mutable-images). Standard dind image — runs a normal dockerd; Sysbox,
+    # not --privileged, is what makes it safe on the host.
+    image: docker.io/library/docker:27-dind
+    env:
+    # Listen on the local unix socket without TLS so `docker` in this container just works.
+    - name: DOCKER_TLS_CERTDIR
+      value: ""
+    securityContext:
+      # The whole thesis of the design: NO privileged. Sysbox supplies the isolation.
+      privileged: false
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "1Gi"

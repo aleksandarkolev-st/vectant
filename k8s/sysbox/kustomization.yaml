@@ -1,0 +1,18 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Sysbox install — STANDALONE kustomization (cluster-scoped node infra)
+# ─────────────────────────────────────────────────────────────────────────────
+#  Apply directly:  kubectl apply -k k8s/sysbox/
+#
+#  DELIBERATELY standalone — NOT referenced by the top-level k8s/kustomization.yaml.
+#  That one sets `namespace: synthi` + commonLabels on every resource, which would
+#  (a) force the Sysbox DaemonSet/ServiceAccount out of kube-system and break the
+#  install, and (b) mutate the cluster-scoped RuntimeClass. Sysbox is node/cluster
+#  infra, so it gets its own kustomization with NO namespace override and NO labels.
+#
+#  Targets the SCRATCH cluster's sysbox-pool only (nodes labeled sysbox-install=yes).
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - sysbox-install.yaml

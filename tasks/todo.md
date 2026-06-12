@@ -460,3 +460,63 @@ COEP:credentialless document (verified live). The EXISTING global `/port/<N>/` p
 embedded in the App tab will hit Chrome's blocked-frame error for the same reason. Mirror the
 two response headers in proxyService when wiring up web-program previews (was never noticed
 because web programs need a real package.json, which test workspaces lacked).
+
+---
+
+# Task: Phase 2 Sysbox Runtime — Slice 0 (cluster substrate) (2026-06-12, feat/docker-sysbox-engine)
+
+Spec: `docs/superpowers/specs/2026-06-12-sysbox-runtime-design.md` §4. Plan: `docs/superpowers/plans/2026-06-12-sysbox-runtime-phase2-plan.md` (Slice 0).
+**Decision (user):** stand up Sysbox on a **dedicated scratch cluster** (NOT the prod `synthi-beta-cluster`) — spec "scratch-first" rule + REGULAR-channel auto-upgrade can't be disabled on prod.
+
+## Grounded facts (verified this session — do not re-derive)
+- gcloud authed `aleksandar.georgiev@vectant.dev`, project `vectant-proj`; kubectl context `gke_vectant-proj_europe-west10-a_synthi-beta-cluster`.
+- Prod cluster: Standard, zonal `europe-west10-a`, k8s **1.35.3**, channel **REGULAR**; pools `default-pool`(e2-standard-4 COS), `workspace-pool`(n2-standard-16 COS); RuntimeClasses present = gvisor, confidential-linked-runner (**no sysbox-runc**).
+- Sysbox **v0.7.0** (latest, 2026-06-02). Install = single manifest `sysbox-k8s-manifests/sysbox-install.yaml` @ tag `v0.7.0`. Namespace **kube-system**. One image **`registry.nestybox.com/nestybox/sysbox-deploy-k8s:v0.7.0-0`** (CRI-O handled on-node by the script, no separate image). Bundles **RuntimeClass `sysbox-runc`**. Supports k8s 1.32–1.35; needs **Ubuntu nodes, kernel 5.4+**.
+- DaemonSet nodeSelector `sysbox-install: "yes"`; tolerates only `sysbox-runtime=not-running:NoSchedule` → **must add a `workload=sysbox:NoSchedule` toleration to the vendored DaemonSet** or it won't install on our tainted pool.
+- `reject-mutable-images` (cloudbuild.yaml:58) greps `Dockerfile`+`*.yaml`/`*.yml` for `:latest` NOT followed by `@sha256` → a `:tag@sha256:` AR ref passes. `vulnerability-scan` (cloudbuild.yaml:190, default OFF) scans a hardcoded 7-image list, fails on any CRITICAL — sysbox image not in it yet.
+- Main `k8s/kustomization.yaml` forces `namespace: synthi` + commonLabels → **Sysbox install must be a standalone `k8s/sysbox/` kustomization**, applied directly, NOT wired into it.
+
+## Phase A — Author + pin (files only; reversible; no infra mutation) — DONE
+- [x] A1 Vendored `k8s/sysbox/sysbox-install.yaml` from the **`v0.7.0` tag**; added `workload=sysbox:NoSchedule` toleration to the DaemonSet; image → AR ref (tag now; B3 appends `@sha256`). Verified via `kubectl kustomize` render (both tolerations + RuntimeClass present, namespace kube-system preserved, no `:latest`).
+- [x] A2 `k8s/sysbox/kustomization.yaml` — standalone (no namespace override), references only `sysbox-install.yaml`. NOT wired into top-level kustomization (would force `synthi` ns + break install).
+- [x] A3 `k8s/sysbox/create-scratch-cluster.ps1` (**.ps1**, not .sh — matches `ops/gke/*.ps1` + user shell). Parameterized, idempotent (list-filter existence guards), echo-before-run. Flags confirmed via `gcloud ... --help`.
+- [x] A4 `k8s/sysbox/smoke-pod.yaml` — `runtimeClassName: sysbox-runc`, `privileged: false`, `workload` toleration (RuntimeClass injects the nodeSelector), dind image `docker:27-dind`.
+- [x] A5 `k8s/sysbox/README.md` — runbook (B1–C2), re-host commands, Spike-5 rehearsal, codified warm-floor/maintenance/PDB policy, teardown.
+- Cleanup: deleted the loose `sysbox-install.upstream.yaml` (footgun: stray `apply -f dir` would clobber the patched copy); provenance kept via the pinned Source URL in the vendored header.
+
+## Phase B — Create infra
+- [x] B1 Created scratch cluster `synthi-sysbox-scratch` — Standard, zonal `europe-west10-a`, channel None, pinned `1.35.3-gke.2190000`, default VPC, 1× e2-medium, no auto-upgrade/repair. RUNNING; kubeconfig context set. (Ran the bare `gcloud ... create` directly — the script's existence-skip wrapper had skipped it under `-File`+`Stop`; script since fixed to `Continue`.)
+- [x] B2 Created `sysbox-pool` — `ubuntu_containerd`, e2-standard-4, 1 node, no auto-upgrade/repair, label `sysbox-install=yes`, taint `workload=sysbox:NoSchedule`. Verified via `kubectl get nodes`: node Ready, label + taint present; default-pool clean.
+- [x] B3 Re-hosted via **crane** (daemon-free; Docker Desktop was down). `crane copy sysbox-deploy-k8s:v0.7.0-0 → AR`; auth via `gcloud auth print-access-token`. AR index digest `sha256:c7859de4753a0baaf9d51f577e2290393254fea83206c1f9cc56c57684a294fb`, pinned into `sysbox-install.yaml` (tag+digest, passes reject-mutable).
+- [x] B4 `kubectl apply -k k8s/sysbox/` → all 6 resources created. DaemonSet installed Sysbox v0.7.0-0 (~1.5 min). **Grounding finds:** node kernel **6.8 → idmapped mounts, shiftfs skipped** (so Secure-Boot was moot here); **containerd 2.1.5 + sysbox-runc, no CRI-O swap**. RuntimeClass `sysbox-runc` present; node flipped `sysbox-runtime=running`; transient `not-running` taint cleared (only `workload` remains). Log: "Sysbox installation completed (version v0.7.0-0). Done."
+
+## Phase C — Acceptance + Spike 5 + gate (evidence required)
+- [⛔] C1 **BLOCKED — upstream Sysbox bug.** Smoke pod (`runtimeClassName: sysbox-runc`, no privileged) never starts: pod **sandbox** fails with `mounting "sysfs" ... mount through procfd: operation not permitted`. This is open bug **nestybox/sysbox#1006** — Sysbox **v0.7.0** + containerd 2.x CRI; reproduced exactly on our node (k8s 1.35.3, containerd 2.1.5). Version bind: v0.7.0 is the ONLY release supporting k8s 1.33–1.35 (needs containerd ≥2.0.5) and it's buggy; prior-stable v0.6.7 supports only k8s ≤1.32 (min available GKE node here = 1.33.11). **No stock Sysbox version works on currently-available GKE.** STOPPED to re-plan with user. See memory `sysbox-070-cri-blocker`.
+- [ ] C2 **Spike 5** — recreate/upgrade a sysbox node; confirm DaemonSet re-installs + a sysbox-runc pod recovers; measure the window; codify PDB + warm-floor + maintenance-exclusion policy in the README.
+- [ ] C3 **Gate** — `gcloud artifacts docker images scan` the re-hosted image; record CRITICAL count; if any, surface honestly (third-party installer image — decide accept/patch policy; doesn't block scratch validation but blocks prod wiring).
+- [ ] C4 Hardcoded-values audit (prod-bound) + 1–2 sentence plain-words recap.
+
+## Open question to resolve before B
+- Scratch cluster networking: default new VPC vs. reuse prod VPC (default new is simpler/isolated for a throwaway; will confirm at B1). [RESOLVED: used default VPC.]
+
+---
+
+## Slice 0 — PARKED (2026-06-12)
+Substrate blocked by Sysbox **#1006** (see C1 + memory `sysbox-070-cri-blocker`). Scripts in `k8s/sysbox/` + the AR image are kept (one command to rebuild when #1006 is fixed). ⚠️ **Scratch cluster teardown FAILED on expired gcloud auth (DELETE_EXIT:1, masked by a trailing `echo`) — cluster still running/billing; awaiting user re-auth to delete `synthi-sysbox-scratch`.**
+
+---
+
+# Task: Slice 2 — spawnRuntimePod() (TDD, flag-gated dark) (2026-06-12, feat/docker-sysbox-engine)
+
+Spec §3/§5; plan Slice 2. Per-workspace Sysbox runtime pod lifecycle, mirroring `workspacePodSpawner.ensurePod()`. Flag-gated `RUNTIME_BACKEND=sysbox-pod` (default off → zero behavior change). **Unit-tested now; integration/security tests deferred until the substrate works (#1006).** Local-dev `ENABLE_CONTAINER_RUNTIME` path untouched.
+Test gate (lessons — scope it): `node --test --test-timeout=20000 backend/collab-server/__tests__/*.test.js`.
+
+## TDD checklist (red→green per item) — pure builder + gate DONE (61/61 green)
+- [x] T1 `buildRuntimeDeployment()` pure spec builder (`runtimePodSpec.js`): `runtimeClassName: sysbox-runc`, never privileged. (test 1)
+- [x] T2 PVC `collab-data-pvc` mounted at `/workspace` with `subPath: repos/<slug>/<fsUser>` (tenant confinement). (test 2)
+- [x] T3 `hostUsers: false`; labels `app: runtime` + `synthi/runtime-id`; matching selector. (test 3)
+- [x] T4 sysbox-pool nodeSelector + toleration `workload=sysbox:NoSchedule` (env-driven `RUNTIME_NODE_*`, separate from worker's). (test 4)
+- [x] T5 runtime container: image (`RUNTIME_POD_IMAGE`) + env `DOCKER_HOST` (in-pod unix socket) + slug/scope/fs-user. (test 5)
+- [x] T6→ flag predicate `isSysboxRuntimeEnabled()` (`RUNTIME_BACKEND=sysbox-pod`, default off, read at call time). (test 6)
+- [ ] **NEXT** `spawnRuntimePod()` in `workspacePodSpawner.js` — flag-gated, uses `buildRuntimeDeployment`, mirrors `ensurePod` (create / ready-watch + dockerd-ready / teardown releases FS pin); reuse cull + max-guard. Create/watch is integration-tested later (deferred, #1006); flag-gating + local-bypass are unit-testable now.
+- [x] T7 Regression: full collab-server suite green — **61/61** (55 existing + 6 new). Local-dev path untouched.

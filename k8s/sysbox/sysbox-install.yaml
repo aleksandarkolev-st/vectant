@@ -1,0 +1,210 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Sysbox install (Community Edition) — VENDORED + PINNED
+# ─────────────────────────────────────────────────────────────────────────────
+#  Source : https://raw.githubusercontent.com/nestybox/sysbox/v0.7.0/sysbox-k8s-manifests/sysbox-install.yaml
+#  Tag    : v0.7.0   (released 2026-06-02; latest at vendoring time 2026-06-12)
+#  Audit the local mods: re-fetch the Source URL above and diff against this file.
+#
+#  Apply (scratch cluster only, NOT via the synthi-namespace kustomization):
+#      kubectl apply -k k8s/sysbox/
+#  Installs sysbox-runc + CRI-O onto nodes labeled `sysbox-install=yes` and
+#  creates the cluster-scoped RuntimeClass `sysbox-runc`. Resources live in kube-system.
+#
+#  LOCAL MODIFICATIONS vs upstream v0.7.0 (the ONLY two diffs — keep this list current):
+#    1. DaemonSet .spec.template.spec.tolerations: ADDED a toleration for our
+#       dedicated-pool taint `workload=sysbox:NoSchedule` so the installer can
+#       schedule onto sysbox-pool. (Upstream only tolerates sysbox-runtime=not-running.)
+#    2. DaemonSet container image: RE-HOSTED into Artifact Registry + digest-pinned
+#       (supply-chain guardrail). Upstream ref was
+#       `registry.nestybox.com/nestybox/sysbox-deploy-k8s:v0.7.0-0`.
+#       >>> Pinned 2026-06-12 (Slice-0 B3) to the AR index digest
+#       >>> sha256:c7859de4753a0baaf9d51f577e2290393254fea83206c1f9cc56c57684a294fb.
+#       >>> Passes reject-mutable-images (tag + digest, not bare :latest).
+# ─────────────────────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sysbox-label-node
+  namespace: kube-system
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: sysbox-node-labeler
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "delete", "watch"]
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: sysbox-label-node-rb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sysbox-node-labeler
+subjects:
+- kind: ServiceAccount
+  name: sysbox-label-node
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sysbox-operational-attributes
+  namespace: kube-system
+data:
+  SYSBOX_MGR_CONFIG: ""
+  SYSBOX_FS_CONFIG: ""
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: sysbox-deploy-k8s
+  namespace: kube-system
+spec:
+  selector:
+      matchLabels:
+        sysbox-install: "yes"
+  template:
+    metadata:
+        labels:
+          sysbox-install: "yes"
+    spec:
+      serviceAccountName: sysbox-label-node
+      nodeSelector:
+        sysbox-install: "yes"
+      tolerations:
+      - key: "sysbox-runtime"
+        operator: "Equal"
+        value: "not-running"
+        effect: "NoSchedule"
+      # LOCAL MOD #1: tolerate our dedicated sysbox-pool taint so the installer runs here.
+      - key: "workload"
+        operator: "Equal"
+        value: "sysbox"
+        effect: "NoSchedule"
+      containers:
+      - name: sysbox-deploy-k8s
+        # LOCAL MOD #2: re-hosted in Artifact Registry, digest-pinned (Slice-0 B3, 2026-06-12).
+        image: europe-west10-docker.pkg.dev/vectant-proj/synthi/sysbox-deploy-k8s:v0.7.0-0@sha256:c7859de4753a0baaf9d51f577e2290393254fea83206c1f9cc56c57684a294fb
+        imagePullPolicy: Always
+        command: [ "bash", "-c", "/opt/sysbox/scripts/sysbox-deploy-k8s.sh ce install" ]
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: SYSBOX_MGR_CONFIG
+          valueFrom:
+            configMapKeyRef:
+              name: sysbox-operational-attributes
+              key: SYSBOX_MGR_CONFIG
+        - name: SYSBOX_FS_CONFIG
+          valueFrom:
+            configMapKeyRef:
+              name: sysbox-operational-attributes
+              key: SYSBOX_FS_CONFIG
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: host-etc
+          mountPath: /mnt/host/etc
+        - name: host-osrelease
+          mountPath: /mnt/host/os-release
+        - name: host-dbus
+          mountPath: /var/run/dbus
+        - name: host-run-systemd
+          mountPath: /run/systemd
+        - name: host-lib-systemd
+          mountPath: /mnt/host/lib/systemd/system
+        - name: host-etc-systemd
+          mountPath: /mnt/host/etc/systemd/system
+        - name: host-lib-sysctl
+          mountPath: /mnt/host/lib/sysctl.d
+        - name: host-opt-lib-sysctl
+          mountPath: /mnt/host/opt/lib/sysctl.d
+        - name: host-usr-bin
+          mountPath: /mnt/host/usr/bin
+        - name: host-opt-bin
+          mountPath: /mnt/host/opt/bin
+        - name: host-usr-local-bin
+          mountPath: /mnt/host/usr/local/bin
+        - name: host-opt-local-bin
+          mountPath: /mnt/host/opt/local/bin
+        - name: host-usr-lib-mod-load
+          mountPath: /mnt/host/usr/lib/modules-load.d
+        - name: host-opt-lib-mod-load
+          mountPath: /mnt/host/opt/lib/modules-load.d
+        - name: host-run
+          mountPath: /mnt/host/run
+        - name: host-var-lib
+          mountPath: /mnt/host/var/lib
+      volumes:
+        - name: host-etc
+          hostPath:
+            path: /etc
+        - name: host-osrelease
+          hostPath:
+            path: /etc/os-release
+        - name: host-dbus
+          hostPath:
+            path: /var/run/dbus
+        - name: host-run-systemd
+          hostPath:
+            path: /run/systemd
+        - name: host-lib-systemd
+          hostPath:
+            path: /lib/systemd/system
+        - name: host-etc-systemd
+          hostPath:
+            path: /etc/systemd/system
+        - name: host-lib-sysctl
+          hostPath:
+            path: /lib/sysctl.d
+        - name: host-opt-lib-sysctl
+          hostPath:
+            path: /opt/lib/sysctl.d
+        - name: host-usr-bin
+          hostPath:
+            path: /usr/bin/
+        - name: host-opt-bin
+          hostPath:
+            path: /opt/bin/
+        - name: host-usr-local-bin
+          hostPath:
+            path: /usr/local/bin/
+        - name: host-opt-local-bin
+          hostPath:
+            path: /opt/local/bin/
+        - name: host-usr-lib-mod-load
+          hostPath:
+            path: /usr/lib/modules-load.d
+        - name: host-opt-lib-mod-load
+          hostPath:
+            path: /opt/lib/modules-load.d
+        - name: host-run
+          hostPath:
+            path: /run
+        - name: host-var-lib
+          hostPath:
+            path: /var/lib
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: sysbox-runc
+handler: sysbox-runc
+scheduling:
+  nodeSelector:
+    sysbox-runtime: running
+---
