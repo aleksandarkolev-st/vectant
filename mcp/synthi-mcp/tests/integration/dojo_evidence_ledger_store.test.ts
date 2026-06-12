@@ -71,6 +71,36 @@ describeWithPostgres("PostgresDojoEvidenceLedgerStore", () => {
     }));
   });
 
+  it("fails chain verification when the verification timestamp is malformed", async () => {
+    const store = new PostgresDojoEvidenceLedgerStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
+    await store.append(evidenceInput("evidence_checked_at", skillId, "run_a", "1".repeat(64), "2026-06-11T00:01:00.000Z"));
+
+    expect(await store.verifyRecordChain("not-a-date")).toEqual({
+      ok: false,
+      checked_at: "not-a-date",
+      blocked_by: ["evidence_ledger_checked_at_invalid"],
+    });
+  });
+
+  it("detects tampered ledger checkpoint record counts", async () => {
+    const store = new PostgresDojoEvidenceLedgerStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
+    const record = await store.append(evidenceInput("evidence_checkpoint_count", skillId, "run_a", "2".repeat(64), "2026-06-11T00:01:00.000Z"));
+
+    await pool.query(
+      `UPDATE dojo_ledger_checkpoints
+      SET record_count = $4
+      WHERE tenant_id = $1 AND workspace_id = $2 AND ledger_head_hash = $3`,
+      [tenantId, workspaceId, record.record_hash, 3]
+    );
+
+    expect(await store.verifyRecordChain("2026-06-11T00:04:00.000Z")).toEqual(expect.objectContaining({
+      ok: false,
+      failed_record_id: "evidence_checkpoint_count",
+      ledger_head_hash: record.record_hash,
+      blocked_by: ["evidence_checkpoint_record_count_mismatch"],
+    }));
+  });
+
   it("isolates ledger reads by tenant", async () => {
     const otherTenantId = `${tenantId}_other`;
     await seedSkill(pool, otherTenantId, workspaceId, skillId);

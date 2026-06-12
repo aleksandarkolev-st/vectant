@@ -167,6 +167,13 @@ export class PostgresDojoEvidenceLedgerStore {
   }
 
   async verifyRecordChain(checkedAt: string = new Date().toISOString()): Promise<DojoLedgerVerification> {
+    if (!Number.isFinite(Date.parse(checkedAt))) {
+      return {
+        ok: false,
+        checked_at: checkedAt,
+        blocked_by: ["evidence_ledger_checked_at_invalid"],
+      };
+    }
     const records = await this.listRecords();
     let previousHash = ZERO_HASH;
     let headHash: string | undefined;
@@ -194,6 +201,15 @@ export class PostgresDojoEvidenceLedgerStore {
       headHash = record.ledger_head_hash;
     }
     const checkpoint = await this.latestCheckpoint();
+    if (checkpoint && checkpoint.record_count !== records.length) {
+      return {
+        ok: false,
+        checked_at: checkedAt,
+        ledger_head_hash: checkpoint.ledger_head_hash,
+        failed_record_id: records.at(-1)?.record_id,
+        blocked_by: ["evidence_checkpoint_record_count_mismatch"],
+      };
+    }
     if (checkpoint && checkpoint.ledger_head_hash !== (headHash ?? ZERO_HASH)) {
       return {
         ok: false,
