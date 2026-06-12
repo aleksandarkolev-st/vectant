@@ -26,6 +26,8 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("missing_context_claim:workspace_verified")).toBe("proof_context_claim_unverified");
     expect(normalizeDojoProofErrorCode("app_origin_mismatch")).toBe("origin_mismatch");
     expect(normalizeDojoProofErrorCode("guardrail_not_active:guard_1")).toBe("guardrail_failed");
+    expect(normalizeDojoProofErrorCode("approval_constraint:human_confirmation_required")).toBe("approval_required");
+    expect(normalizeDojoProofErrorCode("approval_not_granted")).toBe("approval_required");
     expect(normalizeDojoProofErrorCode("unexpected-low-level-detail")).toBe("unknown");
   });
 
@@ -137,6 +139,84 @@ describe("Dojo proof error taxonomy", () => {
     ]));
     expect(decision.error_codes).toContain("proof_capsule_registry_mismatch");
     expect(decision.validation.error_codes).toContain("proof_capsule_registry_mismatch");
+  });
+
+  it("requires approved actor context before allowing gated license actions", () => {
+    const skill = buildDojoSkill(workflowContract(), {
+      workspace_id: "workspace-a",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const gatedSkill = {
+      ...skill,
+      permission_license: {
+        ...skill.permission_license,
+        gated_actions: [
+          ...skill.permission_license.gated_actions,
+          { action: "run_workflow", constraints: ["human_confirmation_required"] },
+        ],
+        approval_requirements: [...new Set([...skill.permission_license.approval_requirements, "run_workflow"])],
+      },
+    };
+    dojoSkillRegistry.publish(gatedSkill);
+    const capsule = issueDojoProofCapsule(gatedSkill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    dojoSkillRegistry.recordProofCapsule(capsule);
+
+    const missingApproval = evaluateDojoLicenseKernel({
+      skill: gatedSkill,
+      registry: dojoSkillRegistry,
+      proof_capsule: capsule,
+      requested_action: "run_workflow",
+      now: "2026-06-11T00:01:00.000Z",
+    });
+
+    expect(missingApproval).toEqual(expect.objectContaining({
+      ok: false,
+      status: "approval_required",
+      error_codes: ["approval_required"],
+      blocked_by: expect.arrayContaining([
+        "approval_constraint:human_confirmation_required",
+        "approval_required",
+        "approval_not_granted",
+        "approval_actor_required",
+        "approval_actor_type_required",
+      ]),
+    }));
+
+    const approved = evaluateDojoLicenseKernel({
+      skill: gatedSkill,
+      registry: dojoSkillRegistry,
+      proof_capsule: capsule,
+      requested_action: "run_workflow",
+      tool_args: {
+        approval_id: "approval-a",
+        approval_status: "approved",
+        actor_id: "reviewer-a",
+        actor_type: "human",
+      },
+      now: "2026-06-11T00:01:00.000Z",
+    });
+
+    expect(approved).toEqual(expect.objectContaining({
+      ok: true,
+      status: "allowed",
+      blocked_by: [],
+      error_codes: [],
+      runtime_claims: expect.objectContaining({
+        actor_id: "reviewer-a",
+        actor_type: "human",
+        approval_id: "approval-a",
+      }),
+    }));
+    expect(approved.validation).toEqual(expect.objectContaining({
+      ok: true,
+      status: "allowed",
+      blocked_by: [],
+      error_codes: [],
+    }));
   });
 });
 

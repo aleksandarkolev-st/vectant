@@ -60,7 +60,16 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
   if (reason.startsWith("substrate_not_allowed:")) return "substrate_not_allowed";
   if (reason === "workspace_mismatch") return "workspace_mismatch";
   if (reason === "app_origin_mismatch" || reason === "app_origin_unparseable" || reason === "origin_mismatch") return "origin_mismatch";
-  if (reason === "dojo_action_requires_approval" || reason === "approval_required") return "approval_required";
+  if (
+    reason === "dojo_action_requires_approval" ||
+    reason === "approval_required" ||
+    reason === "approval_not_granted" ||
+    reason === "approval_actor_required" ||
+    reason === "approval_actor_type_required" ||
+    reason.startsWith("approval_constraint:")
+  ) {
+    return "approval_required";
+  }
   if (reason.startsWith("guardrail_not_active:") || reason === "guardrail_failed") return "guardrail_failed";
   if (reason === "dojo_execution_policy_blocked" || reason === "published_skill_mapping_unknown") return "dojo_execution_policy_blocked";
   return "unknown";
