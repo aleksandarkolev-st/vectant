@@ -642,9 +642,22 @@ export const DOJO_TOOLS = [
       properties: {
         skill_id: { type: "string" },
         workflow_id: { type: "string" },
+        tenant_id: { type: "string" },
+        organization_id: { type: "string" },
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        roles: { type: "array", items: { type: "string" } },
+        request_id: { type: "string" },
+        correlation_id: { type: "string" },
         requested_action: { type: "string", default: "run_workflow" },
         proof_capsule: { type: "object" },
         tool_args: { type: "object" },
+        approval_id: { type: "string" },
+        approval_status: { type: "string", enum: ["approved", "denied", "pending"] },
+        approval_granted: { type: "boolean" },
+        approved: { type: "boolean" },
+        now: { type: "string" },
       },
       required: ["proof_capsule"],
     },
@@ -673,9 +686,21 @@ export const DOJO_TOOLS = [
       properties: {
         skill_id: { type: "string" },
         workflow_id: { type: "string" },
+        tenant_id: { type: "string" },
+        organization_id: { type: "string" },
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        roles: { type: "array", items: { type: "string" } },
+        request_id: { type: "string" },
+        correlation_id: { type: "string" },
         requested_action: { type: "string", default: "run_workflow" },
         proof_capsule: { type: "object" },
         tool_args: { type: "object" },
+        approval_id: { type: "string" },
+        approval_status: { type: "string", enum: ["approved", "denied", "pending"] },
+        approval_granted: { type: "boolean" },
+        approved: { type: "boolean" },
         dry_run: { type: "boolean" },
         run_id: { type: "string" },
         now: { type: "string" },
@@ -1980,12 +2005,17 @@ function dojoValidateProofCapsuleTool(args: unknown): ToolResponse {
     });
   }
   const now = stringOpt(a["now"]);
+  const tenant = dojoTenantContextFromArgs({
+    ...a,
+    workspace_id: stringOpt(a["workspace_id"]) ?? skill.skill.workspace_id,
+  });
+  const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, objectOpt(a["tool_args"]) ?? {});
   const decision = evaluateDojoLicenseKernel({
     skill: skill.skill,
     registry: dojoSkillRegistry,
     proof_capsule: capsule,
     requested_action: requestedAction,
-    tool_args: objectOpt(a["tool_args"]) ?? {},
+    tool_args: licenseToolArgs,
     dry_run: true,
     now,
   });
@@ -2046,16 +2076,17 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
     ...a,
     workspace_id: stringOpt(a["workspace_id"]) ?? skill.skill.workspace_id,
   });
+  const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, toolArgs);
   let decision: ReturnType<typeof evaluateDojoLicenseKernel> | undefined;
   const skillBus = createInProcessDojoMcpSkillBus({
     listSkills: () => dojoSkillRegistry.list(),
-    validateProof: ({ skill: resolvedSkill, proof_capsule: proofCapsule, requested_action: action, args: proofArgs }) => {
+    validateProof: ({ skill: resolvedSkill, proof_capsule: proofCapsule, requested_action: action }) => {
       decision = evaluateDojoLicenseKernel({
         skill: resolvedSkill,
         registry: dojoSkillRegistry,
         proof_capsule: proofCapsule,
         requested_action: action,
-        tool_args: proofArgs,
+        tool_args: licenseToolArgs,
         dry_run: dryRun,
         now,
       });
@@ -2653,12 +2684,48 @@ function dojoTenantContextFromArgs(args: unknown): DojoTenantContext {
   };
 }
 
+function dojoLicenseKernelToolArgsFromArgs(
+  args: unknown,
+  tenant: DojoTenantContext,
+  toolArgs: Record<string, unknown>
+): Record<string, unknown> {
+  const a = obj(args);
+  const merged = { ...toolArgs };
+  setMissingString(merged, "tenant_id", stringOpt(a["tenant_id"]) ?? tenant.tenant_id);
+  setMissingString(merged, "organization_id", stringOpt(a["organization_id"]) ?? tenant.organization_id);
+  setMissingString(merged, "workspace_id", stringOpt(a["workspace_id"]) ?? tenant.workspace_id);
+  setMissingString(merged, "actor_id", stringOpt(a["actor_id"]) ?? tenant.actor_id);
+  setMissingString(merged, "actor_type", actorTypeInputOpt(a["actor_type"]) ?? tenant.actor_type);
+  setMissingString(merged, "request_id", stringOpt(a["request_id"]) ?? tenant.request_id);
+  setMissingString(merged, "correlation_id", stringOpt(a["correlation_id"]) ?? tenant.correlation_id);
+  setMissingString(merged, "approval_id", stringOpt(a["approval_id"]));
+  setMissingString(merged, "approval_status", approvalStatusInputOpt(a["approval_status"]));
+  setMissingBoolean(merged, "approval_granted", a["approval_granted"]);
+  setMissingBoolean(merged, "approved", a["approved"]);
+  if (!Object.prototype.hasOwnProperty.call(merged, "roles") && tenant.roles.length > 0) {
+    merged["roles"] = [...tenant.roles];
+  }
+  return merged;
+}
+
+function setMissingString(target: Record<string, unknown>, key: string, value: string | undefined): void {
+  if (!Object.prototype.hasOwnProperty.call(target, key) && value) target[key] = value;
+}
+
+function setMissingBoolean(target: Record<string, unknown>, key: string, value: unknown): void {
+  if (!Object.prototype.hasOwnProperty.call(target, key) && typeof value === "boolean") target[key] = value;
+}
+
 function actorTypeOpt(value: unknown): DojoTenantContext["actor_type"] {
   return value === "human" || value === "service" ? value : "agent";
 }
 
 function actorTypeInputOpt(value: unknown): DojoTenantContext["actor_type"] | undefined {
   return value === "human" || value === "agent" || value === "service" ? value : undefined;
+}
+
+function approvalStatusInputOpt(value: unknown): "approved" | "denied" | "pending" | undefined {
+  return value === "approved" || value === "denied" || value === "pending" ? value : undefined;
 }
 
 function permissionUpgradeDecisionOpt(value: unknown): "approved" | "denied" | undefined {

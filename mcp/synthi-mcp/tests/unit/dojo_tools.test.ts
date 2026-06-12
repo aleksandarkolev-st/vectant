@@ -1361,6 +1361,121 @@ describe("Agent Dojo MCP tools", () => {
       license_health: expect.objectContaining({ status: "blocked", entrustment_level: "EX" }),
     }));
   });
+
+  it("uses top-level approval and actor context for license validation without duplicating workflow args", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", { workspace_id: "workspace-a" });
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const skill = dojoSkillRegistry.get(skillId);
+    expect(skill).toBeTruthy();
+    const currentGatedRun = skill!.permission_license.gated_actions.find((action) => action.action === "run_workflow");
+    dojoSkillRegistry.publish({
+      ...skill!,
+      permission_license: {
+        ...skill!.permission_license,
+        gated_actions: [
+          ...skill!.permission_license.gated_actions.filter((action) => action.action !== "run_workflow"),
+          {
+            action: "run_workflow",
+            constraints: [...new Set([...(currentGatedRun?.constraints ?? []), "human_confirmation_required"])],
+          },
+        ],
+        approval_requirements: [...new Set([...skill!.permission_license.approval_requirements, "run_workflow"])],
+      },
+    });
+
+    const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(capsuleResponse?.isError).toBeUndefined();
+    const capsule = (capsuleResponse?.structuredContent as { proof_capsule: unknown }).proof_capsule;
+    const workflowArgs = { client_id: "client-a" };
+    const missingApproval = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      tool_args: workflowArgs,
+      dry_run: true,
+      now: "2026-06-11T00:01:00.000Z",
+    });
+    expect(missingApproval?.isError).toBe(true);
+    expect(missingApproval?.structuredContent).toEqual(expect.objectContaining({
+      license_kernel: expect.objectContaining({
+        ok: false,
+        status: "approval_required",
+        blocked_by: expect.arrayContaining([
+          "approval_constraint:human_confirmation_required",
+          "approval_required",
+          "approval_not_granted",
+        ]),
+      }),
+    }));
+
+    const approvedRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      tool_args: workflowArgs,
+      approval_id: "approval-a",
+      approval_status: "approved",
+      actor_id: "reviewer-a",
+      actor_type: "human",
+      dry_run: true,
+      now: "2026-06-11T00:02:00.000Z",
+    });
+    expect(approvedRun?.isError).toBeUndefined();
+    expect(approvedRun?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: true,
+      license_kernel: expect.objectContaining({
+        ok: true,
+        status: "allowed",
+        runtime_claims: expect.objectContaining({
+          actor_id: "reviewer-a",
+          actor_type: "human",
+          approval_id: "approval-a",
+        }),
+      }),
+      skill_bus: expect.objectContaining({
+        ok: true,
+        validation: expect.objectContaining({ ok: true, status: "allowed" }),
+      }),
+    }));
+    expect(workflowArgs).toEqual({ client_id: "client-a" });
+
+    const approvedValidation = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      tool_args: workflowArgs,
+      approval_id: "approval-a",
+      approval_status: "approved",
+      actor_id: "reviewer-a",
+      actor_type: "human",
+      now: "2026-06-11T00:03:00.000Z",
+    });
+    expect(approvedValidation?.isError).toBeUndefined();
+    expect(approvedValidation?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      license_kernel: expect.objectContaining({
+        ok: true,
+        status: "allowed",
+        runtime_claims: expect.objectContaining({
+          actor_id: "reviewer-a",
+          actor_type: "human",
+          approval_id: "approval-a",
+        }),
+      }),
+      proof_record: expect.objectContaining({
+        last_validated_at: "2026-06-11T00:03:00.000Z",
+      }),
+    }));
+  });
 });
 
 function recordOpenDetailsWorkflowForDojoToolTest(): void {
