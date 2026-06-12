@@ -1,6 +1,8 @@
 // @ts-nocheck
 import { describe, expect, it } from "vitest";
 import {
+  buildConformanceEvidenceManifest,
+  buildConformanceReleaseGateSummary,
   buildDojoMcpHostConformanceConfig,
   classifyMcpHost,
   isExpectedBlockedToolCall,
@@ -144,4 +146,84 @@ describe("Dojo MCP host conformance harness", () => {
       conformance: { ok: true },
     });
   });
+
+  it("summarizes release-gate steps and skipped raw backing checks", () => {
+    const requiredGate = buildConformanceReleaseGateSummary({
+      config: { raw_backing_tool_required: true },
+      steps: [
+        { name: "initialize", ok: true },
+        { name: "required Dojo tool surface advertised", ok: true },
+        { name: "select published Dojo competency", ok: true },
+        { name: "issue proof capsule", ok: true },
+        { name: "validate proof capsule", ok: true },
+        { name: "dry-run proof-gated Dojo skill", ok: true },
+        { name: "raw backing tool blocked outside Dojo proof path", ok: true },
+        { name: "revoke proof capsule", ok: true },
+        { name: "revoked proof validation blocked", ok: true },
+        { name: "revoked proof run blocked", ok: true },
+      ],
+    });
+
+    expect(requiredGate).toEqual(expect.objectContaining({
+      ok: true,
+      failed: 0,
+      skipped: 0,
+    }));
+
+    const skippedGate = buildConformanceReleaseGateSummary({
+      config: { raw_backing_tool_required: false },
+      steps: requiredGate.checks
+        .filter((check) => check.id !== "raw_backing_tool_blocked")
+        .map((check) => ({ name: nameForGateCheck(check.id), ok: true })),
+    });
+    expect(skippedGate.ok).toBe(true);
+    expect(skippedGate.skipped).toBe(1);
+    expect(skippedGate.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "raw_backing_tool_blocked", skipped: true }),
+    ]));
+  });
+
+  it("builds a digest evidence manifest for redacted conformance reports", () => {
+    const report = {
+      release_gate: { ok: true, failed: 0 },
+      steps: [{ name: "initialize", ok: true }],
+      conformance: { mcp_host_class: "remote", non_loopback_mcp_host: true },
+      config: { raw_backing_tool_required: true },
+    };
+    const serialized = JSON.stringify(report, null, 2);
+    const manifest = buildConformanceEvidenceManifest({
+      report,
+      reportPath: "/tmp/dojo-mcp-host-conformance.json",
+      serialized,
+    });
+
+    expect(manifest).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.mcpHostConformanceEvidence.v1",
+      report_path: "/tmp/dojo-mcp-host-conformance.json",
+      report_bytes: Buffer.byteLength(serialized),
+      gate_ok: true,
+      gate_failed: 0,
+      step_count: 1,
+      mcp_host_class: "remote",
+      non_loopback_mcp_host: true,
+      raw_backing_tool_required: true,
+    }));
+    expect(manifest.report_sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
 });
+
+function nameForGateCheck(id: string): string {
+  const names: Record<string, string> = {
+    mcp_initialize: "initialize",
+    required_dojo_tool_surface: "required Dojo tool surface advertised",
+    published_competency_selected: "select published Dojo competency",
+    proof_capsule_issued: "issue proof capsule",
+    proof_capsule_validated: "validate proof capsule",
+    proof_gated_run: "dry-run proof-gated Dojo skill",
+    raw_backing_tool_blocked: "raw backing tool blocked outside Dojo proof path",
+    proof_capsule_revoked: "revoke proof capsule",
+    revoked_proof_validation_blocked: "revoked proof validation blocked",
+    revoked_proof_run_blocked: "revoked proof run blocked",
+  };
+  return names[id] || id;
+}

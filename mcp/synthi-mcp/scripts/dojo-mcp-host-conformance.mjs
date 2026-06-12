@@ -13,6 +13,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -241,9 +242,9 @@ async function main() {
     });
     log("ok", "revoked proof run blocked");
 
-    const reportPath = path.join(config.outDir, "dojo-mcp-host-conformance.json");
-    await writeFile(reportPath, JSON.stringify(redactConformanceReport(report), null, 2));
-    log("ok", `Dojo MCP host conformance passed - report=${reportPath}`);
+    report.release_gate = buildConformanceReleaseGateSummary(report);
+    const artifacts = await writeConformanceArtifacts(config.outDir, report);
+    log("ok", `Dojo MCP host conformance passed - report=${artifacts.report_path} manifest=${artifacts.manifest_path}`);
   } finally {
     await client.close().catch(() => undefined);
   }
@@ -595,6 +596,73 @@ export function redactConformanceReport(report) {
   return clone;
 }
 
+export function buildConformanceReleaseGateSummary(report) {
+  const steps = Array.isArray(report?.steps) ? report.steps : [];
+  const hasStep = (name) => steps.some((step) => step?.name === name && step?.ok === true);
+  const rawBackingRequired = report?.config?.raw_backing_tool_required !== false;
+  const checks = [
+    { id: "mcp_initialize", ok: hasStep("initialize") },
+    { id: "required_dojo_tool_surface", ok: hasStep("required Dojo tool surface advertised") },
+    { id: "published_competency_selected", ok: hasStep("select published Dojo competency") },
+    { id: "proof_capsule_issued", ok: hasStep("issue proof capsule") },
+    { id: "proof_capsule_validated", ok: hasStep("validate proof capsule") },
+    {
+      id: "proof_gated_run",
+      ok: hasStep("dry-run proof-gated Dojo skill") || hasStep("execute proof-gated Dojo skill"),
+    },
+    rawBackingRequired
+      ? { id: "raw_backing_tool_blocked", ok: hasStep("raw backing tool blocked outside Dojo proof path") }
+      : { id: "raw_backing_tool_blocked", ok: true, skipped: true },
+    { id: "proof_capsule_revoked", ok: hasStep("revoke proof capsule") },
+    { id: "revoked_proof_validation_blocked", ok: hasStep("revoked proof validation blocked") },
+    { id: "revoked_proof_run_blocked", ok: hasStep("revoked proof run blocked") },
+  ];
+  return {
+    ok: checks.every((check) => check.ok === true),
+    passed: checks.filter((check) => check.ok === true && !check.skipped).length,
+    skipped: checks.filter((check) => check.skipped === true).length,
+    failed: checks.filter((check) => check.ok !== true).length,
+    checks,
+  };
+}
+
+export function buildConformanceEvidenceManifest({ report, reportPath, serialized }) {
+  const body = typeof serialized === "string" ? serialized : JSON.stringify(report);
+  return {
+    schema_version: "synthi.dojo.mcpHostConformanceEvidence.v1",
+    generated_at: new Date().toISOString(),
+    report_path: reportPath,
+    report_sha256: sha256(body),
+    report_bytes: Buffer.byteLength(body),
+    gate_ok: report?.release_gate?.ok === true,
+    gate_failed: Number(report?.release_gate?.failed ?? 0),
+    step_count: Array.isArray(report?.steps) ? report.steps.length : 0,
+    mcp_host_class: report?.conformance?.mcp_host_class ?? null,
+    non_loopback_mcp_host: report?.conformance?.non_loopback_mcp_host === true,
+    raw_backing_tool_required: report?.config?.raw_backing_tool_required !== false,
+  };
+}
+
+async function writeConformanceArtifacts(outDir, report) {
+  await mkdir(outDir, { recursive: true });
+  const reportPath = path.join(outDir, "dojo-mcp-host-conformance.json");
+  const manifestPath = path.join(outDir, "dojo-mcp-host-conformance.evidence.json");
+  const redacted = redactConformanceReport(report);
+  const serialized = JSON.stringify(redacted, null, 2);
+  const manifest = redactConformanceReport(buildConformanceEvidenceManifest({
+    report: redacted,
+    reportPath,
+    serialized,
+  }));
+  await writeFile(reportPath, serialized);
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  return { report_path: reportPath, manifest_path: manifestPath, report: redacted, manifest };
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 async function runSelfCheck({ outDir }) {
   assert.equal(classifyMcpHost("http://127.0.0.1:3000/mcp"), "loopback");
   assert.equal(classifyMcpHost("https://mcp.example.test/mcp"), "remote");
@@ -625,6 +693,26 @@ async function runSelfCheck({ outDir }) {
   const report = redactConformanceReport({
     schema_version: "synthi.dojo.mcpHostConformance.selfCheck.v1",
     generated_at: new Date().toISOString(),
+    conformance: {
+      ok: true,
+      mcp_host_class: "remote",
+      non_loopback_mcp_host: true,
+    },
+    config: {
+      raw_backing_tool_required: true,
+    },
+    steps: [
+      { name: "initialize", ok: true },
+      { name: "required Dojo tool surface advertised", ok: true },
+      { name: "select published Dojo competency", ok: true },
+      { name: "issue proof capsule", ok: true },
+      { name: "validate proof capsule", ok: true },
+      { name: "dry-run proof-gated Dojo skill", ok: true },
+      { name: "raw backing tool blocked outside Dojo proof path", ok: true },
+      { name: "revoke proof capsule", ok: true },
+      { name: "revoked proof validation blocked", ok: true },
+      { name: "revoked proof run blocked", ok: true },
+    ],
     checks: [
       "remote host classification",
       "loopback rejection",
@@ -633,10 +721,9 @@ async function runSelfCheck({ outDir }) {
       "report redaction",
     ],
   });
-  await mkdir(outDir, { recursive: true });
-  const reportPath = path.join(outDir, "dojo-mcp-host-conformance-self-check.json");
-  await writeFile(reportPath, JSON.stringify(report, null, 2));
-  return { report_path: reportPath, report };
+  report.release_gate = buildConformanceReleaseGateSummary(report);
+  const artifacts = await writeConformanceArtifacts(outDir, report);
+  return { report_path: artifacts.report_path, manifest_path: artifacts.manifest_path, report: artifacts.report, manifest: artifacts.manifest };
 }
 
 async function fetchWithTimeout(endpoint, { timeoutMs, bearerToken, body }) {
