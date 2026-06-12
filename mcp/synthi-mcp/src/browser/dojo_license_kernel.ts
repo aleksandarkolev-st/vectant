@@ -34,6 +34,7 @@ export function evaluateDojoLicenseKernel(input: {
 }): DojoLicenseKernelDecision {
   const now = input.now ?? new Date().toISOString();
   const dryRun = input.dry_run === true;
+  const toolArgs = input.tool_args ?? {};
   const blockedBy: string[] = [];
   const validation = validateDojoProofCapsule(input.skill, input.proof_capsule, input.requested_action, now);
   blockedBy.push(...validation.blocked_by);
@@ -47,13 +48,13 @@ export function evaluateDojoLicenseKernel(input: {
     if (record.skill_id !== input.skill.skill_id) blockedBy.push("proof_record_skill_mismatch");
     if (record.requested_action !== input.requested_action) blockedBy.push("proof_record_action_mismatch");
     if (record.nonce && record.nonce !== input.proof_capsule.nonce) blockedBy.push("proof_record_nonce_mismatch");
+    blockedBy.push(...proofRecordMetadataMismatches(record, input.skill, input.proof_capsule, toolArgs));
   }
 
   if (Date.parse(input.skill.license_expires_at) <= Date.parse(now)) {
     blockedBy.push("license_expired");
   }
 
-  const toolArgs = input.tool_args ?? {};
   const workspaceArg = stringOpt(toolArgs["workspace_id"]) ?? stringOpt(toolArgs["workspace"]);
   if (workspaceArg && workspaceArg !== input.skill.workspace_id) {
     blockedBy.push("workspace_mismatch");
@@ -101,6 +102,56 @@ export function evaluateDojoLicenseKernel(input: {
       dry_run: dryRun,
     },
   };
+}
+
+function proofRecordMetadataMismatches(
+  record: DojoProofCapsuleRecord,
+  skill: DojoSkill,
+  capsule: DojoProofCarryingSkillCapsule,
+  toolArgs: Record<string, unknown>
+): string[] {
+  const blockedBy: string[] = [];
+  const tenantArg = stringOpt(toolArgs["tenant_id"]) ?? stringOpt(toolArgs["tenant"]);
+
+  if (record.tenant_id && tenantArg && record.tenant_id !== tenantArg) {
+    blockedBy.push("proof_record_tenant_mismatch");
+  }
+  if (record.workspace_id && record.workspace_id !== skill.workspace_id) {
+    blockedBy.push("proof_record_workspace_mismatch");
+  }
+  if (record.license_id && record.license_id !== skill.permission_license.license_id) {
+    blockedBy.push("proof_record_license_mismatch");
+  }
+  if (record.license_version && record.license_version !== capsule.license_version) {
+    blockedBy.push("proof_record_license_version_mismatch");
+  }
+  if (record.key_id && record.key_id !== capsule.key_id) {
+    blockedBy.push("proof_record_key_mismatch");
+  }
+  if (record.signature_algorithm && record.signature_algorithm !== capsule.signature_algorithm) {
+    blockedBy.push("proof_record_signature_algorithm_mismatch");
+  }
+  if (record.substrate_claim && record.substrate_claim !== capsule.substrate_claim) {
+    blockedBy.push("proof_record_substrate_mismatch");
+  }
+  if (record.ledger_checkpoint_hash && record.ledger_checkpoint_hash !== capsule.ledger_checkpoint_hash) {
+    blockedBy.push("proof_record_ledger_checkpoint_mismatch");
+  }
+  if (
+    record.evidence_record_ids &&
+    !sameStringSet(record.evidence_record_ids, capsule.evidence_record_ids)
+  ) {
+    blockedBy.push("proof_record_evidence_mismatch");
+  }
+
+  return blockedBy;
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  const normalizedLeft = [...left].sort();
+  const normalizedRight = [...right].sort();
+  if (normalizedLeft.length !== normalizedRight.length) return false;
+  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
 function normalizedLicenseKernelErrorCodes(

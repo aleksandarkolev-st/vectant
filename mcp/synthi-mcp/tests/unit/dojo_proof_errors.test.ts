@@ -86,6 +86,58 @@ describe("Dojo proof error taxonomy", () => {
     expect(decision.error_codes).toContain("proof_capsule_not_issued");
     expect(decision.validation.error_codes).toContain("proof_capsule_not_issued");
   });
+
+  it("blocks proof capsules when persisted record metadata no longer matches the capsule", () => {
+    const store = new InMemoryDojoSkillStore();
+    dojoSkillRegistry.useStoreForTests(store);
+    const skill = buildDojoSkill(workflowContract(), {
+      workspace_id: "workspace-a",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    dojoSkillRegistry.publish(skill);
+    const capsule = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    const record = dojoSkillRegistry.recordProofCapsule(capsule, { tenant_id: "tenant-a" });
+    store.saveProofRecord({
+      ...record,
+      tenant_id: "tenant-b",
+      workspace_id: "workspace-b",
+      license_id: "license-other",
+      license_version: "2.0.0",
+      key_id: "key-other",
+      signature_algorithm: "ed25519",
+      substrate_claim: capsule.substrate_claim === "mcp" ? "dom" : "mcp",
+      evidence_record_ids: ["evidence-other"],
+      ledger_checkpoint_hash: "ledger-other",
+    });
+
+    const decision = evaluateDojoLicenseKernel({
+      skill,
+      registry: dojoSkillRegistry,
+      proof_capsule: capsule,
+      requested_action: "run_workflow",
+      tool_args: { tenant_id: "tenant-a" },
+      now: "2026-06-11T00:01:00.000Z",
+    });
+
+    expect(decision.ok).toBe(false);
+    expect(decision.blocked_by).toEqual(expect.arrayContaining([
+      "proof_record_tenant_mismatch",
+      "proof_record_workspace_mismatch",
+      "proof_record_license_mismatch",
+      "proof_record_license_version_mismatch",
+      "proof_record_key_mismatch",
+      "proof_record_signature_algorithm_mismatch",
+      "proof_record_substrate_mismatch",
+      "proof_record_evidence_mismatch",
+      "proof_record_ledger_checkpoint_mismatch",
+    ]));
+    expect(decision.error_codes).toContain("proof_capsule_registry_mismatch");
+    expect(decision.validation.error_codes).toContain("proof_capsule_registry_mismatch");
+  });
 });
 
 function workflowContract() {
