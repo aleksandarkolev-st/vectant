@@ -183,7 +183,17 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     ],
   },
   {
-    id: "playwright_visual_proof",
+    id: "dojo_full_visual_proof",
+    tier: "T4",
+    working_directory: "synthi",
+    package_json: "synthi/package.json",
+    package_script: "proof:dojo:visual",
+    command: "npm --prefix synthi run proof:dojo:visual",
+    required_for: ["milestone", "release"],
+    evidence_kind: "screenshot",
+  },
+  {
+    id: "dojo_ghost_mode_visual_proof",
     tier: "T4",
     working_directory: "synthi",
     package_json: "synthi/package.json",
@@ -287,7 +297,8 @@ export const DOJO_MILESTONE_GATE_IDS = [
   "dojo_self_check",
   "dojo_mcp_host_conformance_self_check",
   "docker_integration",
-  "playwright_visual_proof",
+  "dojo_full_visual_proof",
+  "dojo_ghost_mode_visual_proof",
 ];
 
 export const DOJO_RELEASE_GATE_IDS = [
@@ -446,6 +457,7 @@ export async function runSelfCheck({ outDir }) {
   assert.equal(manifest.tiers.length, 9);
   assert(manifest.minimal_pr_gate_ids.length > 0);
   assert(manifest.milestone_gate_ids.includes("dojo_self_check"));
+  assert(manifest.milestone_gate_ids.includes("dojo_full_visual_proof"));
   assert(manifest.release_gate_ids.includes("dojo_mcp_host_conformance"));
   assert(manifest.gates.some((gate) => gate.tier === "T8"));
   return writeDojoReleaseGateArtifacts({ outDir, manifest });

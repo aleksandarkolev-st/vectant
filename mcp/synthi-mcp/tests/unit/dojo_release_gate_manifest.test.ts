@@ -29,6 +29,7 @@ const PACKAGE_SCRIPTS = {
   "synthi/package.json": {
     lint: "next lint",
     build: "next build",
+    "proof:dojo:visual": "node scripts/dojo-visual-proof.mjs",
     "proof:dojo:ghost-mode-visual": "node scripts/dojo-ghost-mode-visual-proof.mjs",
     test: "vitest run",
   },
@@ -64,7 +65,15 @@ describe("Dojo release gate manifest", () => {
     expect(manifest.gates).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "dojo_self_check", tier: "T2", script_exists: true }),
       expect.objectContaining({
-        id: "playwright_visual_proof",
+        id: "dojo_full_visual_proof",
+        tier: "T4",
+        evidence_kind: "screenshot",
+        package_json: "synthi/package.json",
+        package_script: "proof:dojo:visual",
+        script_exists: true,
+      }),
+      expect.objectContaining({
+        id: "dojo_ghost_mode_visual_proof",
         tier: "T4",
         evidence_kind: "screenshot",
         package_json: "synthi/package.json",
