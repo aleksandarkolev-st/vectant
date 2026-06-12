@@ -27,7 +27,8 @@ import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/p
 import type { DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
 import { resolveDojoEvidenceClaims } from "../dojo/evidence/verifier.js";
 import type { DojoEvidenceClaimResult } from "../dojo/evidence/claims.js";
-import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
+import { buildDojoEvidenceLedgerRecord } from "../dojo/evidence/ledger_record.js";
+import type { DojoEvidenceLedgerRecord, DojoEvidenceRecordInput } from "../dojo/evidence/types.js";
 import {
   buildDojoRedactedEvidenceExportManifest,
   type DojoRedactedEvidenceExportManifest,
@@ -3200,6 +3201,10 @@ function evidenceClaimsForProofIssue(
       ledgerCheckpointHash: input.ledger_checkpoint_hash,
     };
   }
+  const integrityFailures = evidenceRecordIntegrityFailures(records, checkedAt);
+  if (integrityFailures.length > 0) {
+    throw new DojoProofEvidenceClaimError(integrityFailures);
+  }
 
   const requiredClaims = skill.permission_license.proof_requirements.required_evidence_claims;
   const results = resolveDojoEvidenceClaims({
@@ -3249,6 +3254,57 @@ function latestLedgerHeadForEvidenceRecords(records: DojoEvidenceLedgerRecord[],
     if (record && ids.has(record.record_id)) return record.ledger_head_hash;
   }
   return undefined;
+}
+
+function evidenceRecordIntegrityFailures(records: DojoEvidenceLedgerRecord[], checkedAt: string): DojoEvidenceClaimResult[] {
+  return records.flatMap((record) => {
+    try {
+      const rebuilt = buildDojoEvidenceLedgerRecord(evidenceRecordInputFromLedgerRecord(record));
+      const blockedBy = [
+        ...(rebuilt.record_hash !== record.record_hash ? ["evidence_record_hash_mismatch"] : []),
+        ...(record.ledger_head_hash !== record.record_hash ? ["evidence_record_ledger_head_mismatch"] : []),
+      ];
+      return blockedBy.length > 0
+        ? [evidenceRecordIntegrityResult(record.record_id, checkedAt, blockedBy)]
+        : [];
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "evidence_record_invalid";
+      return [evidenceRecordIntegrityResult(record.record_id, checkedAt, [message])];
+    }
+  });
+}
+
+function evidenceRecordIntegrityResult(recordId: string, checkedAt: string, blockedBy: string[]): DojoEvidenceClaimResult {
+  return {
+    claim_id: "evidence_record_integrity",
+    ok: false,
+    status: "failed",
+    evidence_record_ids: recordId ? [recordId] : [],
+    checked_at: checkedAt,
+    blocked_by: blockedBy,
+  };
+}
+
+function evidenceRecordInputFromLedgerRecord(record: DojoEvidenceLedgerRecord): DojoEvidenceRecordInput {
+  return {
+    record_id: record.record_id,
+    tenant_id: record.tenant_id,
+    workspace_id: record.workspace_id,
+    skill_id: record.skill_id,
+    run_id: record.run_id,
+    kind: record.kind,
+    artifact_uri: record.artifact_uri,
+    artifact_sha256: record.artifact_sha256,
+    redaction_manifest_sha256: record.redaction_manifest_sha256 ?? undefined,
+    claim_ids: record.claim_ids,
+    previous_hash: record.previous_hash,
+    signer_key_id: record.signer_key_id ?? undefined,
+    created_at: record.created_at,
+    created_by: record.created_by,
+    retention_class: record.retention_class,
+    legal_hold: record.legal_hold,
+    source_refs: record.source_refs,
+  };
 }
 
 function isSha256Hex(value: string): boolean {
