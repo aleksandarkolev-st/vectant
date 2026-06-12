@@ -35,6 +35,7 @@
 const k8s = require('@kubernetes/client-node');
 const { runtimeResourceId, metadataHash, dnsLabelValue } = require('./runtimeIdentity');
 const { ensureRuntimeFilesystem, releaseRuntimeFilesystem } = require('./runtimeFilesystem');
+const lifecycle = require('./sessionLifecycle');
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -459,6 +460,57 @@ async function getReadyPodForSession(sessionId) {
   return { podIP: null, podName: null };
 }
 
+async function getPodSnapshotForSession(sessionId) {
+  const labelSelector = `synthi/runtime-id=${runtimeResourceId(sessionId)}`;
+  try {
+    const { body } = await coreApi.listNamespacedPod(
+      NAMESPACE,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      labelSelector,
+    );
+    const pods = Array.isArray(body?.items) ? body.items : [];
+    if (!pods.length) {
+      return {
+        pod_running: false,
+        pod_ready: false,
+        pod_name: null,
+        pod_ip: null,
+        pod_phase: 'missing',
+        container_ready_count: 0,
+        container_count: 0,
+      };
+    }
+
+    const pod = pods.find(p => p?.status?.phase === 'Running') || pods[0];
+    const statuses = pod?.status?.containerStatuses || [];
+    const readyCount = statuses.filter(c => c.ready).length;
+    const allReady = statuses.length > 0 && readyCount === statuses.length;
+    return {
+      pod_running: pod?.status?.phase === 'Running',
+      pod_ready: allReady,
+      pod_name: pod?.metadata?.name || null,
+      pod_ip: pod?.status?.podIP || null,
+      pod_phase: pod?.status?.phase || 'unknown',
+      container_ready_count: readyCount,
+      container_count: statuses.length,
+    };
+  } catch (err) {
+    console.warn(`[Spawner] Failed to get pod snapshot for ${runtimeResourceId(sessionId)}:`, err.message);
+    return {
+      pod_running: false,
+      pod_ready: false,
+      pod_name: null,
+      pod_ip: null,
+      pod_phase: 'unknown',
+      container_ready_count: 0,
+      container_count: 0,
+    };
+  }
+}
+
 // ── Dynamic Service per workspace ─────────────────────────────────────────
 
 /**
@@ -586,6 +638,7 @@ async function ensurePod(sessionId, userId, metadata = {}) {
       headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
     });
     activeSessions.add(sessionId);
+    await ensureService(sessionId);
     try {
       const readyPod = await getReadyPodForSession(sessionId);
       if (readyPod.podName) return { name, created: false, ...readyPod };
@@ -638,7 +691,6 @@ async function ensurePod(sessionId, userId, metadata = {}) {
         spec: {
           terminationGracePeriodSeconds: 15,
           securityContext: {
-            fsGroup: 1000,
             seccompProfile: { type: 'RuntimeDefault' },
           },
           serviceAccountName: 'workspace-runtime-sa',
@@ -822,6 +874,91 @@ async function touch(sessionId) {
 }
 
 /**
+ * Reconcile Kubernetes state into the common lifecycle endpoint.
+ */
+async function lifecycleSnapshot(sessionId) {
+  if (process.env.SPAWNER_MODE === 'local') {
+    return {
+      ...lifecycle.snapshot(sessionId),
+      pod_running: false,
+      pod_ready: false,
+      spawner_tracked: activeSessions.has(sessionId),
+      k8s_deployment: false,
+    };
+  }
+
+  const name = deploymentName(sessionId);
+  const advisory = lifecycle.snapshot(sessionId);
+  let deploymentExists = false;
+
+  try {
+    await appsApi.readNamespacedDeployment(name, NAMESPACE);
+    deploymentExists = true;
+  } catch (err) {
+    if (err.response?.statusCode !== 404) {
+      throw err;
+    }
+  }
+
+  if (!deploymentExists) {
+    if (advisory.state !== 'unknown' && advisory.state !== 'terminated') {
+      lifecycle.markTerminated(sessionId, 'deployment_missing');
+    }
+    return {
+      ...lifecycle.snapshot(sessionId),
+      pod_running: false,
+      pod_ready: false,
+      spawner_tracked: activeSessions.has(sessionId),
+      k8s_deployment: false,
+      deployment_name: name,
+    };
+  }
+
+  const pod = await getPodSnapshotForSession(sessionId);
+  if (pod.pod_ready) {
+    const current = lifecycle.snapshot(sessionId).state;
+    if (current !== 'running' && current !== 'migrating') {
+      lifecycle.markReady(sessionId);
+    }
+  } else if (pod.pod_phase === 'Failed') {
+    lifecycle.markCrashed(sessionId, 'pod_failed');
+  } else {
+    lifecycle.markWarming(sessionId, {
+      stage: pod.pod_running ? 'containers_starting' : 'pod_scheduled',
+      stage_progress_pct: pod.pod_running ? 70 : 40,
+      estimated_ready_at: Date.now() + 30_000,
+    });
+  }
+
+  return {
+    ...lifecycle.snapshot(sessionId),
+    ...pod,
+    spawner_tracked: activeSessions.has(sessionId),
+    k8s_deployment: true,
+    deployment_name: name,
+  };
+}
+
+/**
+ * Pre-warm a Kubernetes runtime without blocking the HTTP request.
+ */
+async function warm(sessionId, userId, metadata = {}) {
+  if (!sessionId) throw new Error('sessionId is required');
+  lifecycle.markWarming(sessionId, {
+    stage: 'warm_triggered',
+    stage_progress_pct: 5,
+    estimated_ready_at: Date.now() + 60_000,
+  });
+  ensurePod(sessionId, userId, metadata).then(() => {
+    lifecycle.markReady(sessionId);
+  }).catch((err) => {
+    console.error(`[Spawner] warm ensurePod failed for ${sessionId}:`, err.message);
+    lifecycle.markCrashed(sessionId, `warm_failed: ${err.message}`);
+  });
+  return lifecycle.snapshot(sessionId);
+}
+
+/**
  * Immediately delete the workspace Deployment and Service for a session.
  * Called when the signaling server reports both peers disconnected.
  */
@@ -989,6 +1126,8 @@ async function handleSessionEnded(req, res) {
 
 module.exports = {
   ensurePod,
+  warm,
+  lifecycleSnapshot,
   touch,
   teardown,
   cullIdleWorkspaces,

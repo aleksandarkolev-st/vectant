@@ -25,6 +25,9 @@ const SKIP_DIRS = new Set([
   '.vscode',
   '.dart_tool',
   '.synthi',
+  '.synthi-backups',
+  '.code_intel',
+  '.code_intel_backups',
 ]);
 
 const EMPTY_FINGERPRINT = crypto

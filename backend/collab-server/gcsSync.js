@@ -125,7 +125,20 @@ async function uploadRepoToGcs(repoPath, slug, options = {}) {
         return { success: false, reason: 'GCS not configured' };
     }
 
-    const { onProgress, excludePatterns = ['.git'], userId } = options;
+    const { onProgress, excludePatterns = [
+        '.git',
+        '.synthi',
+        '.synthi-backups',
+        '.code_intel',
+        '.code_intel_backups',
+        'node_modules',
+        '.next',
+        '.turbo',
+        '.cache',
+        'dist',
+        'build',
+        'coverage',
+    ], userId } = options;
     const gcsPrefix = userId
         ? `${GCS_PREFIX}/${slug}/${userId}/`
         : `${GCS_PREFIX}/${slug}/`;

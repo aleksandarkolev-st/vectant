@@ -580,7 +580,6 @@ async function runK8sJobTask(task, runtime, shellCommand, timeoutMs, scope) {
         spec: {
           restartPolicy: 'Never',
           securityContext: {
-            fsGroup: 1000,
             seccompProfile: { type: 'RuntimeDefault' },
           },
           ...(scheduling.nodeSelector ? { nodeSelector: scheduling.nodeSelector } : {}),

@@ -1137,7 +1137,7 @@ const server = http.createServer(async (req, res) => {
       try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
     }
     try {
-      const snapshot = await spawner.warm(sessionId, parsed.user_id || parsed.userId || 'warm_trigger');
+      const snapshot = await spawner.warm(sessionId, parsed.user_id || parsed.userId || 'warm_trigger', parsed);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(snapshot));
     } catch (e) {

@@ -87,6 +87,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const terminalRef = useRef(null);   // { term, fitAddon, dispose() }
   const wsRef = useRef(null);
   const currentSessionIdRef = useRef(null);
+  const inputDataDisposableRef = useRef(null);
+  const inputBinaryDisposableRef = useRef(null);
   const inputBufferRef = useRef('');
   const initializedRef = useRef(false);
   // ─── Ctrl+Z undo stack ───────────────────────────────────────────────
@@ -150,6 +152,17 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   }, [terminalTheme, colorOverrides]);
 
   // ─── Cleanup helper ───────────────────────────────────────────────────
+  const disposeInputHandlers = useCallback(() => {
+    if (inputDataDisposableRef.current) {
+      try { inputDataDisposableRef.current.dispose(); } catch (_) {}
+      inputDataDisposableRef.current = null;
+    }
+    if (inputBinaryDisposableRef.current) {
+      try { inputBinaryDisposableRef.current.dispose(); } catch (_) {}
+      inputBinaryDisposableRef.current = null;
+    }
+  }, []);
+
   const cleanup = useCallback(() => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
@@ -159,6 +172,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       try { wsRef.current.close(1000); } catch (_) {}
       wsRef.current = null;
     }
+    disposeInputHandlers();
     const terminalInstance = terminalRef.current;
     terminalRef.current = null;
     if (terminalInstance?.dispose) {
@@ -167,7 +181,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       try { terminalInstance.term.dispose(); } catch (_) {}
     }
     sessionIdRef.current = null;
-  }, []);
+    currentSessionIdRef.current = null;
+  }, [disposeInputHandlers]);
 
   // ─── Send resize to server ───────────────────────────────────────────
   const sendResize = useCallback((cols, rows) => {
@@ -499,8 +514,10 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     function connectWS(term, fitAddon) {
       if (disposed) return;
 
-      // Use the fixed session ID (from AI terminal) or generate a new one
-      const sid = fixedSessionId || (sessionKey + '-' + Date.now().toString(36));
+      // Reconnect to the same PTY session. A new PTY behind an old xterm
+      // buffer makes typed text appear duplicated or inserted in odd places.
+      const sid = fixedSessionId || currentSessionIdRef.current || (sessionKey + '-' + Date.now().toString(36));
+      currentSessionIdRef.current = sid;
       sessionIdRef.current = sid;
 
       const { cols, rows } = term;
@@ -551,7 +568,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       // Send user input to backend and forward to WebRTC path.
       // Also provide a local-echo fallback when no backend is connected so
       // the user sees their keystrokes while offline/disconnected.
-      term.onData((data) => {
+      disposeInputHandlers();
+      inputDataDisposableRef.current = term.onData((data) => {
         if (isResizingRef.current) return;
 
         // ── Session permission gate ──────────────────────────────────
@@ -671,11 +689,12 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       };
 
       // Also forward binary (paste, etc.)
-      term.onBinary((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
+      inputBinaryDisposableRef.current = term.onBinary((data) => {
+        const wsLocal = wsRef.current;
+        if (wsLocal && wsLocal.readyState === WebSocket.OPEN) {
           const buffer = new Uint8Array(data.length);
           for (let i = 0; i < data.length; i++) buffer[i] = data.charCodeAt(i);
-          ws.send(buffer);
+          wsLocal.send(buffer);
         }
       });
     }
@@ -706,13 +725,14 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         try { wsRef.current.close(1000); } catch (_) {}
         wsRef.current = null;
       }
+      disposeInputHandlers();
       const terminalInstance = terminalRef.current;
       terminalRef.current = null;
       if (terminalInstance?.dispose) {
         try { terminalInstance.dispose(); } catch (_) {}
       }
     };
-  }, [sessionKey, workspaceSlug, fixedSessionId, shellType, isGuest, canTerminal, cleanup]); // Re-connect if terminal tab, workspace, shell type, or terminal permission changes
+  }, [sessionKey, workspaceSlug, fixedSessionId, shellType, isGuest, canTerminal, cleanup, disposeInputHandlers]); // Re-connect if terminal tab, workspace, shell type, or terminal permission changes
 
   // ─── Reconnect button handler ─────────────────────────────────────────
   const handleReconnect = useCallback(() => {
