@@ -131,6 +131,38 @@ describe("Dojo public proof capsule verifier", () => {
       blocked_by: [],
     }));
   });
+
+  it("blocks signed capsules with malformed ledger checkpoint hashes", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("ed-key-malformed-checkpoint");
+    const signer = createEd25519DojoProofSigner({
+      key_id: keyPair.key_id,
+      private_key_pem: keyPair.private_key_pem,
+    });
+    const verifier = createEd25519DojoProofVerifier({
+      key_id: keyPair.key_id,
+      public_key_pem: keyPair.public_key_pem,
+    });
+    const unsigned = {
+      ...ed25519CapsuleWithoutSignature(keyPair.key_id),
+      ledger_checkpoint_hash: "not-a-sha256-ledger-head",
+    };
+    const capsule: DojoPublicProofCapsule = {
+      ...unsigned,
+      signature: encodeDojoProofSignatureEnvelope(signer.sign(canonicalDojoProofPayload(unsigned))),
+    };
+
+    expect(verifyDojoProofCapsulePublic({
+      capsule,
+      verifier,
+      require_ledger_checkpoint: true,
+      now: "2026-06-11T00:01:00.000Z",
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      signature_verified: true,
+      blocked_by: ["proof_capsule_ledger_checkpoint_invalid"],
+    }));
+  });
 });
 
 function skillFixture() {

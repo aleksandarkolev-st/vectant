@@ -65,6 +65,9 @@ export function verifyDojoProofCapsulePublic(input: {
     blockedBy.push("proof_capsule_ledger_checkpoint_mismatch");
   }
   if (input.require_ledger_checkpoint && !capsule.ledger_checkpoint_hash) blockedBy.push("proof_capsule_ledger_checkpoint_missing");
+  if (capsule.ledger_checkpoint_hash && !isSha256Hex(capsule.ledger_checkpoint_hash)) {
+    blockedBy.push("proof_capsule_ledger_checkpoint_invalid");
+  }
   if (capsule.signature_algorithm !== input.verifier.algorithm) blockedBy.push("proof_capsule_signature_algorithm_mismatch");
   if (capsule.key_id !== input.verifier.key_id) blockedBy.push("proof_capsule_key_mismatch");
   if (!validTimestamp(capsule.issued_at)) blockedBy.push("proof_capsule_issued_at_invalid");
@@ -105,4 +108,8 @@ function verifySignature(capsule: DojoPublicProofCapsule, verifier: DojoProofVer
 
 function validTimestamp(value: string): boolean {
   return Number.isFinite(Date.parse(value));
+}
+
+function isSha256Hex(value: string): boolean {
+  return /^[a-f0-9]{64}$/i.test(value);
 }
