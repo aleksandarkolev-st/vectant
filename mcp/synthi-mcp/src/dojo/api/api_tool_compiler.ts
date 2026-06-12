@@ -136,6 +136,7 @@ export function validateDojoApiBackedToolInvocation(input: {
       blockedBy,
       "api_tool_proof_action_mismatch"
     );
+    requireProofEvidenceBacked(proofCapsule, Object.keys(input.tool.proof_claim_mapping), blockedBy);
   }
   if (input.tool.enforcement.idempotency_required && typeof input.args["idempotency_key"] !== "string") {
     blockedBy.push("api_tool_idempotency_key_required");
@@ -213,6 +214,53 @@ function requireMatchingProofField(
   if (expectedValue !== undefined && value !== expectedValue) {
     blockedBy.push(mismatchCode ?? missingCode);
   }
+}
+
+function requireProofEvidenceBacked(
+  proofCapsule: Record<string, unknown>,
+  requiredClaims: string[],
+  blockedBy: string[]
+): void {
+  const evidenceRecordIds = proofCapsule["evidence_record_ids"];
+  if (!Array.isArray(evidenceRecordIds) || evidenceRecordIds.every((item) => typeof item !== "string" || item.trim().length === 0)) {
+    blockedBy.push("api_tool_proof_evidence_records_required");
+  }
+  if (typeof proofCapsule["ledger_checkpoint_hash"] !== "string" || proofCapsule["ledger_checkpoint_hash"].trim().length === 0) {
+    blockedBy.push("api_tool_proof_ledger_checkpoint_required");
+  }
+
+  const evidenceClaims = parseProofEvidenceClaims(proofCapsule["evidence_claims"]);
+  for (const claim of requiredClaims) {
+    const evidenceClaim = evidenceClaims.find((item) => item.claim === claim);
+    if (!evidenceClaim) {
+      blockedBy.push(`api_tool_proof_evidence_claim_missing:${claim}`);
+      continue;
+    }
+    if (evidenceClaim.satisfied !== true) {
+      blockedBy.push(`api_tool_proof_evidence_claim_unverified:${claim}`);
+      continue;
+    }
+    if (evidenceClaim.evidence_refs.length === 0) {
+      blockedBy.push(`api_tool_proof_evidence_claim_refs_required:${claim}`);
+    }
+  }
+}
+
+function parseProofEvidenceClaims(value: unknown): Array<{ claim: string; satisfied: boolean; evidence_refs: string[] }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record["claim"] !== "string" || record["claim"].trim().length === 0) return [];
+    const refs = Array.isArray(record["evidence_refs"])
+      ? record["evidence_refs"].filter((ref): ref is string => typeof ref === "string" && ref.trim().length > 0)
+      : [];
+    return [{
+      claim: record["claim"],
+      satisfied: record["satisfied"] === true,
+      evidence_refs: refs,
+    }];
+  });
 }
 
 function canonicalJson(value: unknown): string {

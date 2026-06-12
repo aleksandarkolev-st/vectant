@@ -150,6 +150,38 @@ describe("Dojo API-backed MCP tool compiler", () => {
       ok: false,
       blocked_by: ["api_tool_auth_scope_missing"],
     });
+
+    expect(validateDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: {
+          ...proofCapsuleFixture(),
+          evidence_record_ids: [],
+          ledger_checkpoint_hash: "",
+          evidence_claims: [
+            { claim: "workspace_verified", satisfied: true, evidence_refs: [] },
+            { claim: "checkride_passed", satisfied: false, evidence_refs: ["evidence:checkride"] },
+          ],
+        },
+        request: { amount: 42 },
+        idempotency_key: "idem-a",
+      },
+      license_context: {
+        skill_id: "dojo_save_invoice",
+        license_id: "license_save_invoice",
+        license_version: "1.0.0",
+        action: "run_workflow",
+        auth_scopes: ["invoice:write"],
+      },
+    })).toEqual({
+      ok: false,
+      blocked_by: [
+        "api_tool_proof_evidence_records_required",
+        "api_tool_proof_ledger_checkpoint_required",
+        "api_tool_proof_evidence_claim_refs_required:workspace_verified",
+        "api_tool_proof_evidence_claim_unverified:checkride_passed",
+      ],
+    });
   });
 });
 
@@ -161,6 +193,12 @@ function proofCapsuleFixture() {
     license_id: "license_save_invoice",
     license_version: "1.0.0",
     requested_action: "run_workflow",
+    evidence_record_ids: ["evidence-workspace", "evidence-checkride"],
+    ledger_checkpoint_hash: "sha256:checkpoint-a",
+    evidence_claims: [
+      { claim: "workspace_verified", satisfied: true, evidence_refs: ["evidence-workspace"] },
+      { claim: "checkride_passed", satisfied: true, evidence_refs: ["evidence-checkride"] },
+    ],
   };
 }
 

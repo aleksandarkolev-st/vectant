@@ -338,5 +338,10 @@ function proofCapsuleFixture() {
     license_id: "license-a",
     license_version: "1.0.0",
     requested_action: "run_workflow",
+    evidence_record_ids: ["evidence-workspace"],
+    ledger_checkpoint_hash: "sha256:checkpoint-a",
+    evidence_claims: [
+      { claim: "workspace_verified", satisfied: true, evidence_refs: ["evidence-workspace"] },
+    ],
   };
 }
