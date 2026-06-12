@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildDojoSkill,
+  DojoProofEvidenceClaimError,
   issueDojoProofCapsule,
   validateDojoProofCapsule,
 } from "../../src/browser/dojo.js";
@@ -81,6 +82,9 @@ describe("Dojo proof issuance evidence claims", () => {
 
   it("blocks strict proof issuance when backing evidence belongs to another workspace scope", () => {
     const skill = skillFixture();
+    const requiredClaims = skill.permission_license.proof_requirements.required_evidence_claims;
+    expect(requiredClaims.length).toBeGreaterThan(0);
+    const expectedClaim = requiredClaims[0]!;
     const record = evidenceRecord(
       "evidence-other-workspace",
       skill.skill_id,
@@ -89,12 +93,25 @@ describe("Dojo proof issuance evidence claims", () => {
       { workspace_id: "workspace-other" }
     );
 
-    expect(() => issueDojoProofCapsule(skill, "run_workflow", {
+    const error = captureProofIssueError(() => issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [record],
       require_verified_evidence: true,
       now: "2026-06-11T00:05:00.000Z",
-    })).toThrow(/dojo_proof_evidence_claim_unverified:/);
+    }));
+
+    expect(error).toBeInstanceOf(DojoProofEvidenceClaimError);
+    expect(error).toEqual(expect.objectContaining({
+      code: "dojo_proof_evidence_claim_unverified",
+      failed_results: expect.arrayContaining([
+        expect.objectContaining({
+          ok: false,
+          status: "failed",
+          evidence_record_ids: ["evidence-other-workspace"],
+          blocked_by: expect.arrayContaining([`evidence_claim_scope_mismatch:${expectedClaim}`]),
+        }),
+      ]),
+    }));
   });
 
   it("keeps development-compatible proof issuance available without strict evidence", () => {
@@ -114,6 +131,15 @@ describe("Dojo proof issuance evidence claims", () => {
     );
   });
 });
+
+function captureProofIssueError(issue: () => unknown): unknown {
+  try {
+    issue();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("Expected proof issuance to fail");
+}
 
 function skillFixture() {
   return buildDojoSkill(compileWorkflowContract([

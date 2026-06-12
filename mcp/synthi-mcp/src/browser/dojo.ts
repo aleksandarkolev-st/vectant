@@ -26,6 +26,7 @@ import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
 import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/proof/errors.js";
 import type { DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
 import { resolveDojoEvidenceClaims } from "../dojo/evidence/verifier.js";
+import type { DojoEvidenceClaimResult } from "../dojo/evidence/claims.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import {
   buildDojoRedactedEvidenceExportManifest,
@@ -714,6 +715,21 @@ export interface DojoProofValidation {
     license_version: string;
     entrustment_level: DojoEntrustmentLevel;
   };
+}
+
+export class DojoProofEvidenceClaimError extends Error {
+  readonly code = "dojo_proof_evidence_claim_unverified" as const;
+  readonly failed_results: DojoEvidenceClaimResult[];
+
+  constructor(failedResults: DojoEvidenceClaimResult[]) {
+    super(`dojo_proof_evidence_claim_unverified:${failedResults.map((result) => result.claim_id).join(",")}`);
+    this.name = "DojoProofEvidenceClaimError";
+    this.failed_results = failedResults;
+  }
+}
+
+export function isDojoProofEvidenceClaimError(error: unknown): error is DojoProofEvidenceClaimError {
+  return error instanceof DojoProofEvidenceClaimError;
 }
 
 export class DojoSkillRegistry {
@@ -3151,7 +3167,7 @@ function evidenceClaimsForProofIssue(
   });
   const failed = results.filter((result) => !result.ok);
   if (failed.length > 0) {
-    throw new Error(`dojo_proof_evidence_claim_unverified:${failed.map((result) => result.claim_id).join(",")}`);
+    throw new DojoProofEvidenceClaimError(failed);
   }
 
   const recordIds = [...new Set(results.flatMap((result) => result.evidence_record_ids))].sort();

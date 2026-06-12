@@ -6,6 +6,7 @@ import {
   exportDojoRepoArtifacts,
   extractDojoSkillSeed,
   generateDojoVivariumScenarios,
+  isDojoProofEvidenceClaimError,
   issueDojoProofCapsule,
   runDojoCheckride,
   validateDojoProofCapsule,
@@ -1906,6 +1907,24 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
       expires_at: stringOpt(a["expires_at"]),
     });
   } catch (err) {
+    if (isDojoProofEvidenceClaimError(err)) {
+      const failedResults = err.failed_results;
+      const failedClaims = failedResults.map((result) => result.claim_id);
+      const blockedBy = [...new Set(failedResults.flatMap((result) => result.blocked_by))].sort();
+      return errorResponse(err.code, {
+        ok: false,
+        skill_id: skill.skill.skill_id,
+        requested_action: requestedAction,
+        enforcement_mode: enforcement.enforcement_mode,
+        require_verified_evidence: requireVerifiedEvidence,
+        evidence_record_count: evidenceLedgerRecords.length,
+        failed_evidence_claims: failedClaims,
+        failed_evidence_claim_results: failedResults,
+        blocked_by: blockedBy,
+        error_codes: ["proof_evidence_claim_unverified"],
+        message: err.message,
+      });
+    }
     const message = err instanceof Error ? err.message : String(err);
     if (message.startsWith("dojo_proof_evidence_claim_unverified:")) {
       const failedClaims = message.slice("dojo_proof_evidence_claim_unverified:".length).split(",").filter(Boolean);
@@ -1917,6 +1936,15 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
         require_verified_evidence: requireVerifiedEvidence,
         evidence_record_count: evidenceLedgerRecords.length,
         failed_evidence_claims: failedClaims,
+        failed_evidence_claim_results: failedClaims.map((claim) => ({
+          claim_id: claim,
+          ok: false,
+          status: "failed",
+          evidence_record_ids: [],
+          checked_at: stringOpt(a["now"]) ?? new Date().toISOString(),
+          blocked_by: [`evidence_claim_unverified:${claim}`],
+        })),
+        blocked_by: failedClaims.map((claim) => `evidence_claim_unverified:${claim}`),
         error_codes: ["proof_evidence_claim_unverified"],
         message,
       });

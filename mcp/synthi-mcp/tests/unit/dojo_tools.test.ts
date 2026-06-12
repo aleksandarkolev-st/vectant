@@ -350,10 +350,23 @@ describe("Agent Dojo MCP tools", () => {
       expires_at: "2026-06-11T00:15:00.000Z",
     });
     expect(wrongScope?.isError).toBe(true);
+    const requiredClaims = storedSkill?.permission_license.proof_requirements.required_evidence_claims ?? [];
+    expect(requiredClaims.length).toBeGreaterThan(0);
+    const expectedClaim = requiredClaims[0]!;
     expect(wrongScope?.structuredContent).toEqual(expect.objectContaining({
       error: "dojo_proof_evidence_claim_unverified",
       ok: false,
-      failed_evidence_claims: expect.arrayContaining(storedSkill?.permission_license.proof_requirements.required_evidence_claims ?? []),
+      failed_evidence_claims: expect.arrayContaining(requiredClaims),
+      blocked_by: expect.arrayContaining([`evidence_claim_scope_mismatch:${expectedClaim}`]),
+      failed_evidence_claim_results: expect.arrayContaining([
+        expect.objectContaining({
+          claim_id: expectedClaim,
+          ok: false,
+          status: "failed",
+          evidence_record_ids: ["evidence-production-proof-wrong-workspace"],
+          blocked_by: expect.arrayContaining([`evidence_claim_scope_mismatch:${expectedClaim}`]),
+        }),
+      ]),
     }));
 
     const issued = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
