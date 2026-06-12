@@ -149,19 +149,29 @@ describe("Dojo hosted runtime gateway", () => {
     const audit = new MemoryAuditStore();
     const gateway = gatewayWith({ audit });
 
-    const blocked = await gateway.createSession({
-      tenant: tenant("tenant-a", "workspace-a"),
-      skill_id: "skill-a",
-      run_id: "run-a",
-      workspace_url: "http://127.0.0.1:3000/app",
-      origin_allowlist: ["http://127.0.0.1:3000"],
-      now: "2026-06-11T00:00:00.000Z",
-    });
+    for (const workspaceUrl of [
+      "http://127.0.0.1:3000/app",
+      "http://169.254.10.20/app",
+      "http://100.64.1.5/app",
+      "http://[fd00::1]/app",
+      "http://[fe80::1]/app",
+      "http://[::ffff:192.168.1.10]/app",
+      "http://device.local/app",
+    ]) {
+      const blocked = await gateway.createSession({
+        tenant: tenant("tenant-a", "workspace-a"),
+        skill_id: "skill-a",
+        run_id: "run-a",
+        workspace_url: workspaceUrl,
+        origin_allowlist: [workspaceUrl],
+        now: "2026-06-11T00:00:00.000Z",
+      });
 
-    expect(blocked).toEqual(expect.objectContaining({
-      ok: false,
-      blocked_by: ["runtime_local_network_blocked"],
-    }));
+      expect(blocked).toEqual(expect.objectContaining({
+        ok: false,
+        blocked_by: ["runtime_local_network_blocked"],
+      }));
+    }
     const allowed = await gateway.createSession({
       tenant: tenant("tenant-a", "workspace-a"),
       skill_id: "skill-a",

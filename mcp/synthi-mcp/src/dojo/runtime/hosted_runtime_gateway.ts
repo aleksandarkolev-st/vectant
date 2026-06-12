@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import type { DojoTenantContext } from "../mcp/execution_policy_gate.js";
 import type {
   DojoAuditEventRecord,
@@ -201,6 +202,7 @@ export interface InProcessDojoHostedRuntimeGatewayOptions {
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_CREDENTIAL_TTL_MS = 5 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
+type Ipv6Segments = [number, number, number, number, number, number, number, number];
 
 export function createInProcessDojoHostedRuntimeGateway(
   options: InProcessDojoHostedRuntimeGatewayOptions
@@ -646,16 +648,136 @@ function originForUrl(value: string | undefined): string | null {
 
 function isLocalNetworkUrl(value: string): boolean {
   try {
-    const host = new URL(value).hostname.toLowerCase();
-    if (host === "localhost" || host === "::1" || host === "[::1]" || host === "0.0.0.0" || host === "::" || host === "[::]") {
-      return true;
-    }
-    if (host.startsWith("127.") || host.startsWith("10.") || host.startsWith("192.168.")) return true;
-    const match = host.match(/^172\.(\d+)\./);
-    return Boolean(match && Number(match[1]) >= 16 && Number(match[1]) <= 31);
+    return isLocalNetworkHost(normalizeHostname(new URL(value).hostname));
   } catch {
     return false;
   }
+}
+
+function normalizeHostname(hostname: string): string {
+  const host = hostname.trim().toLowerCase().replace(/\.$/, "");
+  return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+}
+
+function isLocalNetworkHost(host: string): boolean {
+  if (!host) return false;
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
+
+  const mappedIpv4 = host.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/)?.[1];
+  if (mappedIpv4) return isLocalNetworkIpv4(mappedIpv4);
+
+  const ipKind = isIP(host);
+  if (ipKind === 4) return isLocalNetworkIpv4(host);
+  if (ipKind === 6) return isLocalNetworkIpv6(host);
+  return false;
+}
+
+function isLocalNetworkIpv4(host: string): boolean {
+  const octets = parseIpv4Octets(host);
+  if (!octets) return false;
+  const [first, second] = octets;
+  if (first === 0) return true;
+  if (first === 10) return true;
+  if (first === 100 && second >= 64 && second <= 127) return true;
+  if (first === 127) return true;
+  if (first === 169 && second === 254) return true;
+  if (first === 172 && second >= 16 && second <= 31) return true;
+  if (first === 192 && second === 168) return true;
+  return false;
+}
+
+function isLocalNetworkIpv6(host: string): boolean {
+  const segments = expandIpv6Segments(host);
+  if (!segments) return false;
+
+  const allZero = segments.every((segment) => segment === 0);
+  const loopback = segments.slice(0, 7).every((segment) => segment === 0) && segments[7] === 1;
+  if (allZero || loopback) return true;
+
+  const first = segments[0];
+  if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 unique local.
+  if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link local.
+
+  const ipv4Mapped =
+    segments.slice(0, 5).every((segment) => segment === 0) &&
+    segments[5] === 0xffff;
+  const ipv4Compatible = segments.slice(0, 6).every((segment) => segment === 0);
+  if (ipv4Mapped || ipv4Compatible) {
+    return isLocalNetworkIpv4([
+      segments[6] >> 8,
+      segments[6] & 0xff,
+      segments[7] >> 8,
+      segments[7] & 0xff,
+    ].join("."));
+  }
+
+  return false;
+}
+
+function expandIpv6Segments(host: string): Ipv6Segments | null {
+  const normalized = host.split("%", 1)[0] ?? "";
+  const halves = normalized.split("::");
+  if (halves.length > 2) return null;
+
+  const left = parseIpv6SegmentList(halves[0] ?? "");
+  const right = halves.length === 2 ? parseIpv6SegmentList(halves[1] ?? "") : [];
+  if (!left || !right) return null;
+
+  if (halves.length === 1) {
+    return left.length === 8 ? asIpv6Segments(left) : null;
+  }
+
+  const missing = 8 - left.length - right.length;
+  if (missing < 1) return null;
+  return asIpv6Segments([...left, ...Array.from({ length: missing }, () => 0), ...right]);
+}
+
+function parseIpv6SegmentList(value: string): number[] | null {
+  if (!value) return [];
+  const segments: number[] = [];
+  for (const part of value.split(":")) {
+    if (!part) return null;
+    if (part.includes(".")) {
+      const ipv4Segments = ipv4ToIpv6Segments(part);
+      if (!ipv4Segments) return null;
+      segments.push(...ipv4Segments);
+      continue;
+    }
+    const segment = Number.parseInt(part, 16);
+    if (!Number.isInteger(segment) || segment < 0 || segment > 0xffff || segment.toString(16) !== part.replace(/^0+/, "").toLowerCase()) {
+      if (!(segment === 0 && /^0+$/.test(part))) return null;
+    }
+    segments.push(segment);
+  }
+  return segments;
+}
+
+function ipv4ToIpv6Segments(host: string): [number, number] | null {
+  const octets = parseIpv4Octets(host);
+  if (!octets) return null;
+  return [(octets[0] << 8) + octets[1], (octets[2] << 8) + octets[3]];
+}
+
+function parseIpv4Octets(host: string): [number, number, number, number] | null {
+  const octets = host.split(".").map((part) => Number(part));
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+    return null;
+  }
+  return [octets[0]!, octets[1]!, octets[2]!, octets[3]!];
+}
+
+function asIpv6Segments(segments: number[]): Ipv6Segments | null {
+  if (segments.length !== 8) return null;
+  return [
+    segments[0]!,
+    segments[1]!,
+    segments[2]!,
+    segments[3]!,
+    segments[4]!,
+    segments[5]!,
+    segments[6]!,
+    segments[7]!,
+  ];
 }
 
 function hashCredential(credentialId: string, credentialSecret: string): string {
