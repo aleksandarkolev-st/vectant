@@ -461,6 +461,19 @@ describe("Agent Dojo MCP tools", () => {
         }),
       }),
     }));
+
+    const metrics = await dispatchDojoTool("synthi_dojo_get_metrics", { skill_id: skillId });
+    expect(metrics?.isError).toBeUndefined();
+    expect(metrics?.structuredContent).toEqual(expect.objectContaining({
+      metrics: expect.objectContaining({
+        technical: expect.objectContaining({
+          recertification_due_count: 1,
+        }),
+        trust: expect.objectContaining({
+          stale_or_expired_license_count: 1,
+        }),
+      }),
+    }));
   });
 
   it("publishes a licensed skill before exposing the backing private workflow tool and validates proof-gated dry runs", async () => {

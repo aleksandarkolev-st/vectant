@@ -429,7 +429,12 @@ export function buildDojoUniverseMetrics(skills: DojoSkill[], options: { now?: s
   const riskyActions = list.flatMap((skill) => [...skill.permission_license.gated_actions, ...skill.permission_license.blocked_actions]);
   const mcpBacked = list.filter((skill) => skill.execution_substrates.includes("mcp") || skill.published_tools.length > 0).length;
   const sourcePatchCount = list.reduce((sum, skill) => sum + buildDojoSourceAffordancePrPlan(skill).patch_count, 0);
-  const expiredCount = list.filter((skill) => buildDojoLifecycleReport(skill, { now }).status === "expired").length;
+  const lifecycleReports = list.map((skill) => buildDojoLifecycleReport(skill, { now }));
+  const staleOrExpiredLicenseCount = lifecycleReports.filter((lifecycle) => (
+    lifecycle.status === "blocked" ||
+    lifecycle.status === "expired" ||
+    lifecycle.recertification.required
+  )).length;
   return {
     schema_version: "synthi.dojo.metrics.v1",
     generated_at: now,
@@ -441,7 +446,7 @@ export function buildDojoUniverseMetrics(skills: DojoSkill[], options: { now?: s
       node_graduation_to_mcp_percent: ratio(mcpBacked, count),
       false_allow_rate: avg(list.map((skill) => skill.false_allow_rate)),
       false_block_rate: avg(list.map((skill) => skill.false_block_rate)),
-      recertification_due_count: list.filter((skill) => buildDojoLifecycleReport(skill, { now }).recertification.required).length,
+      recertification_due_count: lifecycleReports.filter((lifecycle) => lifecycle.recertification.required).length,
     },
     business: {
       published_skill_count: list.filter((skill) => skill.published_tools.length > 0).length,
@@ -454,7 +459,7 @@ export function buildDojoUniverseMetrics(skills: DojoSkill[], options: { now?: s
       proof_required_percent: ratio(list.filter((skill) => skill.skill_passport.proof_required).length, count),
       risky_action_gate_percent: ratio(riskyActions.length, Math.max(riskyActions.length + list.flatMap((skill) => skill.permission_license.allowed_actions).length, 1)),
       skills_with_case_law_percent: ratio(list.filter((skill) => skill.case_law.length > 0).length, count),
-      stale_or_expired_license_count: expiredCount,
+      stale_or_expired_license_count: staleOrExpiredLicenseCount,
       high_risk_ui_fallback_count: list.filter((skill) => skill.preferred_substrate === "vision" && skill.permission_license.gated_actions.length > 0).length,
     },
   };
