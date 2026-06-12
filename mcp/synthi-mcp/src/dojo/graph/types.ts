@@ -141,6 +141,14 @@ export function validateDojoSkillGraph(graph: DojoSkillGraph): DojoGraphValidati
     if (edge.confidence < 0 || edge.confidence > 1) {
       issues.push(errorIssue("edge_confidence_invalid", "Edge confidence must be between 0 and 1.", undefined, edge.edge_id));
     }
+    if (edge.condition && !isParseableDojoGuardrailPredicate(edge.condition)) {
+      issues.push(errorIssue(
+        "edge_condition_parseable_required",
+        `Edge ${edge.edge_id} condition must use an executable predicate.`,
+        undefined,
+        edge.edge_id
+      ));
+    }
   }
 
   return {

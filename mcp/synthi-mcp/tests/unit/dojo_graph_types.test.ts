@@ -88,6 +88,27 @@ describe("Dojo Skill Graph IR", () => {
       expect.objectContaining({ issue_id: "edge_confidence_invalid", edge_id: "edge_bad" }),
     ]));
   });
+
+  it("validates executable edge conditions and rejects malformed branch predicates", () => {
+    const richConditionGraph = minimalGraph();
+    richConditionGraph.edges = richConditionGraph.edges.map((edge) => ({
+      ...edge,
+      condition: "amount <= 500",
+    }));
+    expect(validateDojoSkillGraph(richConditionGraph)).toEqual({ ok: true, issues: [] });
+
+    const malformedConditionGraph = minimalGraph();
+    malformedConditionGraph.edges = malformedConditionGraph.edges.map((edge) => ({
+      ...edge,
+      condition: "amount >== 500",
+    }));
+    expect(validateDojoSkillGraph(malformedConditionGraph).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issue_id: "edge_condition_parseable_required",
+        edge_id: "edge_trigger_action",
+      }),
+    ]));
+  });
 });
 
 function minimalGraph(): DojoSkillGraph {
