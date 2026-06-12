@@ -28,24 +28,26 @@ spec:
         app.kubernetes.io/part-of: synthi-ide
     spec:
       securityContext:
-        #runAsNonRoot: true
+        runAsUser: 0
+        runAsGroup: 0
       containers:
         - name: ai-engine
-          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-ai-engine:build-tag-required
+          image: europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-ai-engine:build-tag-required
           ports:
             - containerPort: 8000
               name: http
           env:
-            - name: GOOGLE_AI_API_KEY
+            - name: GEMINI_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: synthi-secrets
-                  key: GOOGLE_AI_API_KEY
+                  key: GEMINI_API_KEY
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: synthi-secrets
                   key: OPENAI_API_KEY
+                  optional: true
             - name: AI_BACKEND_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:

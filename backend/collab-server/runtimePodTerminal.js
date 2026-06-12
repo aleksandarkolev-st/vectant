@@ -96,6 +96,7 @@ async function createRuntimePodPty({
   const pod = await spawner.ensurePod(runtimeScope, actorUserId || filesystemUserId || runtimeScope, {
     workspaceSlug,
     runtimeKind: 'terminal',
+    filesystemUserId,
   });
   if (!pod?.podName) {
     throw new Error(`Runtime pod for ${runtimeScope} is not ready`);

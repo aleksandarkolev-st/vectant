@@ -36,9 +36,11 @@ const PROXY_HOST = process.env.PROXY_TARGET_HOST || '127.0.0.1';
 
 /**
  * Optional production target template for runtime-scoped previews.
- * Example: http://{runtimeId}.synthi.svc.cluster.local:{port}
+ * Example: http://{runtimeId}.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}
  */
 const PREVIEW_TARGET_TEMPLATE = process.env.SYNTHI_PREVIEW_TARGET_TEMPLATE || '';
+const PREVIEW_SIDECAR_PORT = String(process.env.SYNTHI_PREVIEW_SIDECAR_PORT || '18080');
+const PREVIEW_SIDECAR_PREFIX = normalizePathPrefix(process.env.SYNTHI_PREVIEW_SIDECAR_PREFIX || '/__synthi_preview') || '/__synthi_preview';
 
 /** Fallback ports to actively scan when socket discovery is unavailable. */
 const DEFAULT_SCAN_PORTS = [];
@@ -238,18 +240,44 @@ function inferMime(urlPath) {
  * @returns {{ port: number, downstream: string, runtimeScope: string|null } | null}
  */
 function parsePortUrl(urlString) {
-  let match = /^\/runtime\/([^/]+)\/port\/(\d+)(\/.*)?$/.exec(urlString);
+  let pathname = urlString || '/';
+  let search = '';
+  try {
+    const parsed = new URL(urlString || '/', 'http://proxy.local');
+    pathname = parsed.pathname;
+    search = parsed.search || '';
+  } catch (_) {
+    const q = pathname.indexOf('?');
+    if (q !== -1) {
+      search = pathname.slice(q);
+      pathname = pathname.slice(0, q);
+    }
+  }
+
+  let match = /^\/runtime\/([^/]+)\/port\/(\d+)(\/.*)?$/.exec(pathname);
   if (match) {
     const port = parseInt(match[2], 10);
-    const downstream = match[3] || '/';
+    const downstream = (match[3] || '/') + search;
     return { port, downstream, runtimeScope: decodeURIComponent(match[1]) };
   }
 
-  match = /^\/port\/(\d+)(\/.*)?$/.exec(urlString);
+  match = /^\/port\/(\d+)(\/.*)?$/.exec(pathname);
   if (!match) return null;
   const port = parseInt(match[1], 10);
-  const downstream = match[2] || '/';
+  const downstream = (match[2] || '/') + search;
   return { port, downstream, runtimeScope: null };
+}
+
+function normalizePathPrefix(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw === '/') return '';
+  return `/${raw.replace(/^\/+|\/+$/g, '')}`;
+}
+
+function joinTargetPath(pathPrefix, downstream) {
+  const prefix = normalizePathPrefix(pathPrefix);
+  const tail = downstream && downstream.startsWith('/') ? downstream : `/${downstream || ''}`;
+  return `${prefix}${tail}` || '/';
 }
 
 function previewTargetFor(port, runtimeScope) {
@@ -258,6 +286,8 @@ function previewTargetFor(port, runtimeScope) {
     const rendered = PREVIEW_TARGET_TEMPLATE
       .replaceAll('{runtimeId}', runtimeId)
       .replaceAll('{runtimeScope}', runtimeId)
+      .replaceAll('{sidecarPort}', PREVIEW_SIDECAR_PORT)
+      .replaceAll('{sidecarPrefix}', PREVIEW_SIDECAR_PREFIX)
       .replaceAll('{port}', String(port));
     try {
       const url = new URL(rendered);
@@ -265,6 +295,7 @@ function previewTargetFor(port, runtimeScope) {
         hostname: url.hostname,
         port: Number(url.port) || port,
         protocol: url.protocol,
+        pathPrefix: normalizePathPrefix(url.pathname),
       };
     } catch (err) {
       console.error('[Proxy] Invalid SYNTHI_PREVIEW_TARGET_TEMPLATE:', err.message);
@@ -274,6 +305,7 @@ function previewTargetFor(port, runtimeScope) {
     hostname: portHostMap.get(port) || PROXY_HOST,
     port,
     protocol: 'http:',
+    pathPrefix: '',
   };
 }
 
@@ -316,10 +348,11 @@ function proxyHttpRequest(clientReq, clientRes) {
 
   // Build the proxied request
   const target = previewTargetFor(port, runtimeScope);
+  const targetPath = joinTargetPath(target.pathPrefix, downstream);
   const options = {
     hostname: target.hostname,
     port: target.port,
-    path: downstream,
+    path: targetPath,
     method: clientReq.method,
     headers: {
       ...clientReq.headers,
@@ -427,7 +460,8 @@ function proxyWsUpgrade(clientReq, clientSocket, head) {
   const target = previewTargetFor(port, runtimeScope);
   const upstreamSocket = net.connect(target.port, target.hostname, () => {
     // Reconstruct the HTTP upgrade request for the upstream
-    const reqLine = `${clientReq.method} ${downstream} HTTP/1.1\r\n`;
+    const targetPath = joinTargetPath(target.pathPrefix, downstream);
+    const reqLine = `${clientReq.method} ${targetPath} HTTP/1.1\r\n`;
     const headers = Object.entries(clientReq.headers)
       .filter(([k]) => k.toLowerCase() !== 'host')
       .map(([k, v]) => `${k}: ${v}`)
@@ -505,7 +539,7 @@ function previewForPort(port, requestedRuntimeScope = null) {
     url: runtimeScope
       ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${port}/`
       : `/port/${port}/`,
-    target: `http://${target.hostname}:${target.port}/`,
+    target: `http://${target.hostname}:${target.port}${target.pathPrefix || '/'}`,
     workspace: processInfo?.workspaceSlug ?? null,
     runtimeScope,
     attributed: Boolean(processInfo?.workspaceSlug),

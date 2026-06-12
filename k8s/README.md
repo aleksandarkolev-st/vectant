@@ -106,6 +106,10 @@ Production deploys use `k8s/external-secrets.yaml`, which syncs the
 `synthi-secrets` Kubernetes Secret from GCP Secret Manager. Create the remote
 secrets named in that manifest before applying `k8s/`.
 
+Set `synthi-runtime-id-secret` once and keep it stable. It is used to derive
+opaque `rt-...` runtime pod/service names; rotating it changes those names and
+breaks existing preview routes until runtimes are recreated.
+
 For a local/manual deployment without External Secrets Operator, copy
 `k8s/secrets.yaml.example` to `k8s/secrets.yaml`, replace every placeholder with
 real base64-encoded values, and swap the foundation resource in
@@ -184,7 +188,58 @@ gcloud builds triggers create github \
   --project=overview-synti
 ```
 
+For the current beta production environment, use one of these paths instead of
+running `kubectl apply -k k8s/` directly:
+
+```bash
+# Local operator deploy from the current checkout.
+scripts/deploy-prod.sh
+
+# Push the current commit to cloud-deploy first, then deploy the same local snapshot.
+scripts/deploy-prod.sh --push
+
+# Use an explicit immutable image tag.
+scripts/deploy-prod.sh --tag prod-20260611-a1b2c3d4
+```
+
+`scripts/deploy-prod.sh` submits `cloudbuild.yaml` to Cloud Build with these
+production defaults:
+
+| Setting | Value |
+|---------|-------|
+| Project | `vectant-proj` |
+| Registry region | `europe-west10` |
+| Registry | `europe-west10-docker.pkg.dev/vectant-proj/synthi` |
+| Cluster | `synthi-beta-cluster` |
+| Cluster location | `europe-west10-a` |
+| Deploy branch | `cloud-deploy` |
+
+The script refuses dirty local deploys by default because Cloud Build uploads
+the local checkout snapshot. Use `--allow-dirty` only when you intentionally
+want to deploy uncommitted local files.
+
+The repo also includes `.github/workflows/deploy-prod.yml`. It submits the same
+Cloud Build pipeline on every push to `cloud-deploy`, and can also be run
+manually from GitHub Actions. Configure these repository secrets before using it:
+
+| Secret | Purpose |
+|--------|---------|
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | GitHub OIDC provider resource name |
+| `GCP_DEPLOY_SERVICE_ACCOUNT` | Service account email allowed to submit Cloud Builds |
+
+The GitHub deploy service account only needs to submit Cloud Builds. The Cloud
+Build service account still performs the image pushes and GKE rollout, so it
+must keep the Artifact Registry and GKE permissions listed above.
+
+Production deploys render Kustomize with the immutable image tag before applying
+manifests. This prevents the live cluster from briefly rolling Deployments to
+the placeholder `build-tag-required` image.
+
 ### Deploy
+
+Use this section for first-time cluster bootstrap or manual debugging. For
+repeat production rollouts, prefer `scripts/deploy-prod.sh` or the GitHub
+Actions workflow above.
 
 ```bash
 # Apply everything in dependency order
@@ -231,7 +286,10 @@ These are baked into the JavaScript bundle at **build time**, not runtime. You m
 The GCE Ingress default backend timeout is 30s, which kills WebSocket connections. The `BackendConfig` resources in `ingress.yaml` set a 1-hour timeout for WS services.
 
 ### Worker Scaling
-Static worker replicas are kept at `0`. The collab server creates a one-replica Deployment per active compiler session via `/api/spawner/ensure`, keeps it alive with `/api/spawner/touch`, and tears it down when the signaling session ends.
+Static worker replicas are kept at `0`. The collab server creates a one-replica Deployment per active runtime scope via `/api/spawner/ensure`, keeps it alive with `/api/spawner/touch`, and tears it down when the signaling session ends. Each runtime pod includes a preview sidecar on the configured internal sidecar port, so user dev servers can keep binding localhost-only app ports such as `3000` or `5173`.
+
+### Runtime Filesystem Storage
+Runtime pods and the collab server both mount `/data/repos`, so `collab-data-pvc` must use ReadWriteMany storage when pods can schedule on different node pools. The production manifest defaults to GKE Filestore CSI `enterprise-multishare-rwx`; override the StorageClass if your cluster uses another RWX Filestore or NFS class.
 
 ### WebSocket Health Checks
 For GKE Ingress, timeout settings alone are not enough. Each public WebSocket backend also needs a valid HTTP health target. In this deployment:

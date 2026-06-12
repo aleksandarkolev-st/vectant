@@ -15,7 +15,40 @@ metadata:
     app: collab-server
     app.kubernetes.io/part-of: synthi-ide
   annotations:
-    iam.gke.io/gcp-service-account: synthi-gcs-sa@overview-synti.iam.gserviceaccount.com
+    iam.gke.io/gcp-service-account: synthi-gcs-sa@vectant-proj.iam.gserviceaccount.com
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: frontend-sa
+  namespace: synthi
+  labels:
+    app: frontend
+    app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    iam.gke.io/gcp-service-account: synthi-gcs-sa@vectant-proj.iam.gserviceaccount.com
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: y-sweet-sa
+  namespace: synthi
+  labels:
+    app: y-sweet
+    app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    iam.gke.io/gcp-service-account: synthi-gcs-sa@vectant-proj.iam.gserviceaccount.com
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workspace-runtime-sa
+  namespace: synthi
+  labels:
+    app: workspace
+    app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    iam.gke.io/gcp-service-account: synthi-gcs-sa@vectant-proj.iam.gserviceaccount.com
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

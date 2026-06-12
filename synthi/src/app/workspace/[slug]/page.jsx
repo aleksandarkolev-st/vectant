@@ -1245,6 +1245,21 @@ export default function EditorPage({ params }) {
     // all connected clients stay in sync when any teammate mutates the tree.
     const authUserId = authSession?.user?.id || authSession?.user?.email || null;
     useEffect(() => {
+        if (!client || !slug) return;
+        client.setSlug(slug);
+        const desiredSessionId = client._getSignalingSessionId?.();
+        if (
+            desiredSessionId
+            && client._registeredSignalingSessionId
+            && client._registeredSignalingSessionId !== desiredSessionId
+        ) {
+            client.softReconnect?.().catch((err) => {
+                console.warn('[Workspace] Compiler reconnect after session scope change failed:', err?.message || err);
+            });
+        }
+    }, [client, slug, activeSessionId, collabHostId, authUserId]);
+
+    useEffect(() => {
         collabClient.setIdentity({ userId: authUserId, sessionId: activeSessionId, hostId: collabHostId });
     }, [authUserId, activeSessionId, collabHostId]);
 

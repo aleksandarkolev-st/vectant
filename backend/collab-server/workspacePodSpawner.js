@@ -33,8 +33,8 @@
  */
 
 const k8s = require('@kubernetes/client-node');
-const config = require('./config');
 const { runtimeResourceId, metadataHash, dnsLabelValue } = require('./runtimeIdentity');
+const { ensureRuntimeFilesystem, releaseRuntimeFilesystem } = require('./runtimeFilesystem');
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -52,11 +52,9 @@ const WORKSPACE_NODE_TAINT_EFFECT = (process.env.WORKSPACE_NODE_TAINT_EFFECT || 
 const WORKSPACE_DATA_PVC = (process.env.WORKSPACE_DATA_PVC || 'collab-data-pvc').trim();
 const WORKSPACE_DATA_MOUNT = (process.env.WORKSPACE_DATA_MOUNT || '/data').trim();
 const WORKSPACE_REPOS_PATH = (process.env.WORKSPACE_REPOS_PATH || `${WORKSPACE_DATA_MOUNT.replace(/\/+$/, '')}/repos`).trim();
-const WORKSPACE_PREVIEW_PORTS = parsePortList(
-  process.env.WORKSPACE_PREVIEW_PORTS ||
-  process.env.SYNTHI_PREVIEW_SCAN_PORTS ||
-  '',
-);
+const PREVIEW_SIDECAR_PORT = parseSinglePort(process.env.SYNTHI_PREVIEW_SIDECAR_PORT, 18080);
+const PREVIEW_SIDECAR_PREFIX = normalizePreviewPrefix(process.env.SYNTHI_PREVIEW_SIDECAR_PREFIX || '/__synthi_preview');
+const PREVIEW_SIDECAR_IMAGE = (process.env.SYNTHI_PREVIEW_SIDECAR_IMAGE || 'node:20-alpine').trim();
 
 // ── K8s client ─────────────────────────────────────────────────────────────
 
@@ -111,6 +109,7 @@ function runtimeAnnotations(sessionId, userId, metadata = {}) {
     ...(metadata.workspaceSlug ? { 'synthi/workspaceSlug': String(metadata.workspaceSlug) } : {}),
     ...(metadata.runtimeKind ? { 'synthi/runtimeKind': dnsLabelValue(metadata.runtimeKind) } : {}),
     ...(userId ? { 'synthi/userIdHash': metadataHash(userId) } : {}),
+    ...(metadata.filesystemUserId ? { 'synthi/filesystemUserIdHash': metadataHash(metadata.filesystemUserId) } : {}),
   };
 }
 
@@ -131,25 +130,104 @@ function buildWorkspaceScheduling() {
   return { nodeSelector, tolerations };
 }
 
-function parsePortList(value) {
-  const ports = new Set();
-  for (const rawPart of String(value || '').split(',')) {
-    const part = rawPart.trim();
-    if (!part) continue;
-    const range = part.match(/^(\d+)\s*-\s*(\d+)$/);
-    if (range) {
-      const start = Number(range[1]);
-      const end = Number(range[2]);
-      if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
-      for (let port = Math.max(1, Math.min(start, end)); port <= Math.min(65535, Math.max(start, end)); port += 1) {
-        ports.add(port);
-      }
-      continue;
-    }
-    const port = Number(part);
-    if (Number.isInteger(port) && port > 0 && port <= 65535) ports.add(port);
-  }
-  return [...ports].sort((a, b) => a - b);
+function parseSinglePort(value, fallback) {
+  const port = Number(value);
+  if (Number.isInteger(port) && port > 0 && port <= 65535) return port;
+  return fallback;
+}
+
+function normalizePreviewPrefix(value) {
+  const raw = String(value || '').trim() || '/__synthi_preview';
+  const withSlash = raw.startsWith('/') ? raw : `/${raw}`;
+  return withSlash.replace(/\/+$/, '') || '/__synthi_preview';
+}
+
+function safePathSegment(value) {
+  return String(value || '').replace(/[^a-zA-Z0-9_@.\-]/g, '_');
+}
+
+function workspaceDirForMetadata(metadata = {}) {
+  const slug = String(metadata.workspaceSlug || '').trim();
+  if (!slug) return WORKSPACE_REPOS_PATH;
+  const fsUser = safePathSegment(metadata.filesystemUserId || '');
+  return fsUser
+    ? `${WORKSPACE_REPOS_PATH.replace(/\/+$/, '')}/${slug}/${fsUser}`
+    : `${WORKSPACE_REPOS_PATH.replace(/\/+$/, '')}/${slug}`;
+}
+
+function previewSidecarScript() {
+  return [
+    "'use strict';",
+    "const http = require('http');",
+    "const net = require('net');",
+    "const { URL } = require('url');",
+    "const LISTEN_PORT = Number(process.env.SYNTHI_PREVIEW_SIDECAR_PORT || '18080');",
+    "const PREFIX = normalizePrefix(process.env.SYNTHI_PREVIEW_SIDECAR_PREFIX || '/__synthi_preview');",
+    "const TIMEOUT_MS = Number(process.env.SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS || '30000');",
+    "function normalizePrefix(value) { const raw = String(value || '').trim() || '/__synthi_preview'; const withSlash = raw.startsWith('/') ? raw : '/' + raw; return withSlash.replace(/\\/+$/, '') || '/__synthi_preview'; }",
+    "function sendJson(res, status, payload) { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)); }",
+    "function parsePreviewUrl(rawUrl) {",
+    "  const url = new URL(rawUrl || '/', 'http://preview.local');",
+    "  if (url.pathname === '/healthz') return { health: true };",
+    "  if (url.pathname !== PREFIX && !url.pathname.startsWith(PREFIX + '/')) return null;",
+    "  const suffix = url.pathname.slice(PREFIX.length);",
+    "  const match = /^\\/(\\d+)(\\/.*)?$/.exec(suffix);",
+    "  if (!match) return null;",
+    "  const port = Number(match[1]);",
+    "  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;",
+    "  return { port, path: (match[2] || '/') + url.search };",
+    "}",
+    "function upstreamHeaders(headers, port) {",
+    "  const next = { ...headers, host: 'localhost:' + port };",
+    "  delete next['proxy-connection'];",
+    "  return next;",
+    "}",
+    "function proxyHttp(req, res) {",
+    "  const parsed = parsePreviewUrl(req.url);",
+    "  if (parsed && parsed.health) { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('ok'); return; }",
+    "  if (!parsed) { sendJson(res, 404, { error: 'invalid_preview_path' }); return; }",
+    "  const upstream = http.request({",
+    "    hostname: 'localhost',",
+    "    port: parsed.port,",
+    "    path: parsed.path,",
+    "    method: req.method,",
+    "    headers: upstreamHeaders(req.headers, parsed.port),",
+    "    timeout: TIMEOUT_MS,",
+    "    autoSelectFamily: true,",
+    "  }, (upstreamRes) => {",
+    "    const headers = { ...upstreamRes.headers };",
+    "    headers['access-control-allow-origin'] = headers['access-control-allow-origin'] || '*';",
+    "    res.writeHead(upstreamRes.statusCode || 502, headers);",
+    "    upstreamRes.pipe(res, { end: true });",
+    "  });",
+    "  upstream.on('timeout', () => upstream.destroy(new Error('upstream_timeout')));",
+    "  upstream.on('error', (err) => {",
+    "    if (!res.headersSent) sendJson(res, 502, { error: 'upstream_unreachable', port: parsed.port, detail: err.message });",
+    "    else res.destroy(err);",
+    "  });",
+    "  req.pipe(upstream, { end: true });",
+    "}",
+    "function proxyWs(req, socket, head) {",
+    "  const parsed = parsePreviewUrl(req.url);",
+    "  if (!parsed || parsed.health) { socket.destroy(); return; }",
+    "  const upstream = net.connect({ host: 'localhost', port: parsed.port, autoSelectFamily: true }, () => {",
+    "    const reqLine = req.method + ' ' + parsed.path + ' HTTP/1.1\\r\\n';",
+    "    const headers = Object.entries(upstreamHeaders(req.headers, parsed.port))",
+    "      .map(([key, value]) => key + ': ' + (Array.isArray(value) ? value.join(', ') : value))",
+    "      .join('\\r\\n');",
+    "    upstream.write(reqLine + headers + '\\r\\n\\r\\n');",
+    "    if (head && head.length) upstream.write(head);",
+    "    upstream.pipe(socket);",
+    "    socket.pipe(upstream);",
+    "  });",
+    "  upstream.setTimeout(TIMEOUT_MS, () => { upstream.destroy(); socket.destroy(); });",
+    "  upstream.on('error', () => socket.destroy());",
+    "  socket.on('error', () => upstream.destroy());",
+    "}",
+    "const server = http.createServer(proxyHttp);",
+    "server.on('upgrade', proxyWs);",
+    "server.listen(LISTEN_PORT, '0.0.0.0', () => console.log('[PreviewSidecar] listening on :' + LISTEN_PORT + ' prefix=' + PREFIX));",
+  ].join('\n');
 }
 
 // ── Watch API: Wait for pod readiness ─────────────────────────────────────
@@ -267,14 +345,7 @@ async function ensureService(sessionId) {
         'synthi/runtime-id': runtimeResourceId(sessionId),
       },
       ports: [
-        { name: 'health', port: 8080, targetPort: 8080 },
-        ...WORKSPACE_PREVIEW_PORTS
-          .filter((port) => port !== 8080)
-          .map((port) => ({
-            name: `p-${port}`,
-            port,
-            targetPort: port,
-          })),
+        { name: 'preview-proxy', port: PREVIEW_SIDECAR_PORT, targetPort: PREVIEW_SIDECAR_PORT },
       ],
     },
   };
@@ -349,10 +420,22 @@ async function ensurePod(sessionId, userId, metadata = {}) {
   const workspaceScheduling = buildWorkspaceScheduling();
   const labels = runtimeLabels(sessionId, userId);
   const annotations = runtimeAnnotations(sessionId, userId, metadata);
+  const filesystemUserId = metadata.filesystemUserId || metadata.filesystem_user_id || userId;
+  const hydrateAndPinRuntimeFs = async () => {
+    if (!metadata.workspaceSlug) return null;
+    return ensureRuntimeFilesystem({
+      workspaceSlug: metadata.workspaceSlug,
+      filesystemUserId,
+      runtimeScope: sessionId,
+      pin: true,
+      reason: 'workspace_pod',
+    });
+  };
 
   // 1. Check if it already exists — fast path.
   try {
     const { body: existing } = await appsApi.readNamespacedDeployment(name, NAMESPACE);
+    await hydrateAndPinRuntimeFs();
     // Bump activity timestamp.
     existing.metadata.annotations = existing.metadata.annotations || {};
     existing.metadata.annotations['synthi/lastActive'] = String(Date.now());
@@ -360,9 +443,15 @@ async function ensurePod(sessionId, userId, metadata = {}) {
       headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
     });
     activeSessions.add(sessionId);
-    const readyPod = await getReadyPodForSession(sessionId);
-    if (readyPod.podName) return { name, created: false, ...readyPod };
-    return { name, created: false, ...(await waitForPodRunning(sessionId)) };
+    try {
+      const readyPod = await getReadyPodForSession(sessionId);
+      if (readyPod.podName) return { name, created: false, ...readyPod };
+      return { name, created: false, ...(await waitForPodRunning(sessionId)) };
+    } catch (readyErr) {
+      activeSessions.delete(sessionId);
+      releaseRuntimeFilesystem(sessionId);
+      throw readyErr;
+    }
   } catch (err) {
     if (err.response && err.response.statusCode === 404) {
       // Doesn't exist yet — fall through to creation.
@@ -377,7 +466,10 @@ async function ensurePod(sessionId, userId, metadata = {}) {
     throw new Error(`Workspace limit reached (${MAX_WORKSPACE_PODS}). Try again later.`);
   }
 
+  await hydrateAndPinRuntimeFs();
+
   // 3. Create the Deployment.
+  const workspaceDir = workspaceDirForMetadata({ ...metadata, filesystemUserId });
   const deployment = {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -403,12 +495,10 @@ async function ensurePod(sessionId, userId, metadata = {}) {
         spec: {
           terminationGracePeriodSeconds: 15,
           securityContext: {
-            runAsNonRoot: true,
-            runAsUser: 1000,
-            runAsGroup: 1000,
             fsGroup: 1000,
             seccompProfile: { type: 'RuntimeDefault' },
           },
+          serviceAccountName: 'workspace-runtime-sa',
           ...(workspaceScheduling.nodeSelector ? { nodeSelector: workspaceScheduling.nodeSelector } : {}),
           ...(workspaceScheduling.tolerations.length ? { tolerations: workspaceScheduling.tolerations } : {}),
           containers: [
@@ -416,8 +506,9 @@ async function ensurePod(sessionId, userId, metadata = {}) {
               name: 'worker',
               image: WORKER_IMAGE,
               securityContext: {
-                allowPrivilegeEscalation: false,
-                capabilities: { drop: ['ALL'] },
+                runAsUser: 0,
+                runAsGroup: 0,
+                allowPrivilegeEscalation: true,
               },
               command: ['/bin/bash', '-c'],
               args: [
@@ -426,9 +517,13 @@ exec worker`,
               ],
               env: [
                 { name: 'SESSION_ID', value: sessionId },
+                { name: 'SYNTHI_RUNTIME_SCOPE', value: sessionId },
                 { name: 'RUNTIME_RESOURCE_ID', value: runtimeResourceId(sessionId) },
                 { name: 'USER_ID', value: userId },
                 { name: 'USER_ID_HASH', value: metadataHash(userId) },
+                { name: 'SYNTHI_WORKSPACE_SLUG', value: String(metadata.workspaceSlug || '') },
+                { name: 'SYNTHI_RUNTIME_KIND', value: String(metadata.runtimeKind || '') },
+                { name: 'SYNTHI_RUNTIME_FS_USER_ID', value: String(filesystemUserId || '') },
                 {
                   name: 'SIGNALING_URL',
                   valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'SIGNALING_URL' } },
@@ -466,10 +561,11 @@ exec worker`,
                 { name: 'WORKSPACE_ROOT', value: WORKSPACE_REPOS_PATH },
                 { name: 'REPOS_DIR', value: WORKSPACE_REPOS_PATH },
                 { name: 'SYNTHI_REPOS_PATH', value: WORKSPACE_REPOS_PATH },
+                { name: 'WORKSPACE_DIR', value: workspaceDir },
               ],
               resources: {
-                requests: { cpu: '500m', memory: '1Gi' },
-                limits: { cpu: '2', memory: '4Gi' },
+                requests: { cpu: '2', memory: '4Gi' },
+                limits: { cpu: '6', memory: '12Gi' },
               },
               livenessProbe: {
                 exec: { command: ['pgrep', '-f', 'worker'] },
@@ -481,6 +577,37 @@ exec worker`,
                 { name: 'tmp', mountPath: '/tmp' },
                 ...(WORKSPACE_DATA_PVC ? [{ name: 'workspace-data', mountPath: WORKSPACE_DATA_MOUNT }] : []),
               ],
+            },
+            {
+              name: 'preview-proxy',
+              image: PREVIEW_SIDECAR_IMAGE,
+              securityContext: {
+                runAsUser: 0,
+                runAsGroup: 0,
+                allowPrivilegeEscalation: true,
+              },
+              command: ['node', '-e', previewSidecarScript()],
+              env: [
+                { name: 'SYNTHI_PREVIEW_SIDECAR_PORT', value: String(PREVIEW_SIDECAR_PORT) },
+                { name: 'SYNTHI_PREVIEW_SIDECAR_PREFIX', value: PREVIEW_SIDECAR_PREFIX },
+              ],
+              ports: [
+                { name: 'preview-proxy', containerPort: PREVIEW_SIDECAR_PORT },
+              ],
+              resources: {
+                requests: { cpu: '25m', memory: '64Mi' },
+                limits: { cpu: '250m', memory: '256Mi' },
+              },
+              readinessProbe: {
+                httpGet: { path: '/healthz', port: PREVIEW_SIDECAR_PORT },
+                initialDelaySeconds: 1,
+                periodSeconds: 5,
+              },
+              livenessProbe: {
+                httpGet: { path: '/healthz', port: PREVIEW_SIDECAR_PORT },
+                initialDelaySeconds: 5,
+                periodSeconds: 10,
+              },
             },
           ],
           volumes: [
@@ -503,6 +630,7 @@ exec worker`,
       console.log(`[Spawner] Deployment ${name} already exists (conflict), treating as success.`);
       activeSessions.add(sessionId);
     } else {
+      releaseRuntimeFilesystem(sessionId);
       throw err;
     }
   }
@@ -556,10 +684,12 @@ async function touch(sessionId) {
 async function teardown(sessionId) {
   if (process.env.SPAWNER_MODE === 'local') {
     activeSessions.delete(sessionId);
+    releaseRuntimeFilesystem(sessionId);
     return;
   }
   const name = deploymentName(sessionId);
   activeSessions.delete(sessionId);
+  releaseRuntimeFilesystem(sessionId);
 
   // Delete Service first (non-fatal).
   await deleteService(sessionId);
@@ -602,6 +732,7 @@ async function cullIdleWorkspaces() {
         // Delete the associated Service.
         await deleteService(sid);
         activeSessions.delete(sid);
+        releaseRuntimeFilesystem(sid);
 
         try {
           await appsApi.deleteNamespacedDeployment(depName, NAMESPACE);

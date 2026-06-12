@@ -38,14 +38,15 @@ spec:
         app.kubernetes.io/part-of: synthi-ide
     spec:
       securityContext:
-        #runAsNonRoot: true
+        runAsUser: 0
+        runAsGroup: 0
         fsGroup: 1001
       nodeSelector:
-        cloud.google.com/gke-nodepool: core-pool
+        cloud.google.com/gke-nodepool: default-pool
       serviceAccountName: collab-server-sa
       containers:
         - name: collab
-          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-collab-server:workspacepoolfix-20260402112432
+          image: europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-collab-server:build-tag-required
           ports:
             - containerPort: 1235
               name: app
@@ -68,11 +69,21 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_PREVIEW_TARGET_TEMPLATE
-            - name: WORKSPACE_PREVIEW_PORTS
+            - name: SYNTHI_PREVIEW_SIDECAR_PORT
               valueFrom:
                 configMapKeyRef:
                   name: synthi-config
-                  key: WORKSPACE_PREVIEW_PORTS
+                  key: SYNTHI_PREVIEW_SIDECAR_PORT
+            - name: SYNTHI_PREVIEW_SIDECAR_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SIDECAR_PREFIX
+            - name: SYNTHI_PREVIEW_SIDECAR_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SIDECAR_IMAGE
             - name: SYNTHI_PREVIEW_SCAN_PORTS
               valueFrom:
                 configMapKeyRef:
@@ -88,6 +99,11 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_TERMINAL_BACKEND
+            - name: SYNTHI_NO_JAIL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_NO_JAIL
             - name: SYNTHI_TERMINAL_SCOPE_PORTS
               valueFrom:
                 configMapKeyRef:
@@ -128,6 +144,16 @@ spec:
                 secretKeyRef:
                   name: synthi-secrets
                   key: AI_BACKEND_AUTH_TOKEN
+            - name: SYNTHI_RUNTIME_ID_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: SYNTHI_RUNTIME_ID_SECRET
+            - name: SYNTHI_TOKEN_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: SYNTHI_TOKEN_ENCRYPTION_KEY
             # ── Y-Sweet CRDT server ──────────────────────────────────────
             - name: YSWEET_URL
               valueFrom:
@@ -161,16 +187,6 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: GCS_WORKSPACE_PREFIX
-            - name: GCP_CLIENT_EMAIL
-              valueFrom:
-                secretKeyRef:
-                  name: synthi-secrets
-                  key: GCP_CLIENT_EMAIL
-            - name: GCP_PRIVATE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: synthi-secrets
-                  key: GCP_PRIVATE_KEY
             # ── Feature flags ───────────────────────────────────────────────
             - name: GCS_SYNC_ON_FLUSH
               valueFrom:
@@ -237,13 +253,15 @@ spec:
                   name: synthi-config
                   key: WORKSPACE_NODE_TAINT_EFFECT
             - name: IDLE_TIMEOUT_MS
-              value: "180000"   # 3 min
+              value: "600000"   # 10 min
             - name: MAX_WORKSPACE_PODS
-              value: "50"
+              value: "10"
             - name: POD_READY_TIMEOUT_MS
               value: "120000"   # 2 min
             - name: SPAWNER_CLEANUP_ON_SHUTDOWN
               value: "false"
+            - name: REDIS_URL
+              value: redis://redis.synthi.svc.cluster.local:6379
           volumeMounts:
             - name: collab-data
               mountPath: /data
@@ -320,30 +338,6 @@ spec:
               port: 1234
             initialDelaySeconds: 5
             periodSeconds: 10
-        # ── Cloud SQL Auth Proxy sidecar ───────────────────────────────────
-        # Available for future workspace/user metadata queries against the
-        # shared PostgreSQL database.  The collab server can connect to
-        # 127.0.0.1:5432 when DB access is needed.
-        - name: cloud-sql-proxy
-          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1@sha256:5cf206e6b9609aaa666db20c6c6632521985a5412ebbe4835e83d39bc76501e9
-          args:
-            - "--port=5432"
-            - "$(CLOUD_SQL_INSTANCE)"
-          env:
-            - name: CLOUD_SQL_INSTANCE
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: CLOUD_SQL_INSTANCE
-          securityContext:
-            #runAsNonRoot: true
-          resources:
-            requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
-              cpu: 200m
-              memory: 128Mi
       volumes:
         - name: collab-data
           persistentVolumeClaim:
@@ -358,10 +352,15 @@ metadata:
     app: collab-server
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  accessModes: ["ReadWriteOnce"]
+  # Runtime pods and the collab server both mount /data/repos. In GKE this
+  # must be RWX storage when pods can schedule on different node pools.
+  # Closed beta uses standard-rwx because this project has no enterprise
+  # multishare quota in europe-west10.
+  storageClassName: standard-rwx
+  accessModes: ["ReadWriteMany"]
   resources:
     requests:
-      storage: 10Gi    # repo cache only — LevelDB no longer used
+      storage: 100Gi    # shared runtime filesystem pool for closed beta
 ---
 apiVersion: v1
 kind: Service
@@ -372,8 +371,10 @@ metadata:
     app: collab-server
     app.kubernetes.io/part-of: synthi-ide
   annotations:
-    cloud.google.com/neg: '{"exposed_ports":{"1234":{"name":"collab-server-alb-neg"}}}'
+    cloud.google.com/backend-config: '{"ports":{"1234":"collab-backend-config"}}'
+    cloud.google.com/neg: '{"ingress": true}'
 spec:
+  type: NodePort
   selector:
     app: collab-server
   ports:

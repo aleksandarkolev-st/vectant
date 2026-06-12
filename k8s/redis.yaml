@@ -29,8 +29,11 @@ spec:
         app.kubernetes.io/managed-by: kustomize
         app.kubernetes.io/part-of: synthi-ide
     spec:
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
       nodeSelector:
-        cloud.google.com/gke-nodepool: core-pool
+        cloud.google.com/gke-nodepool: default-pool
       containers:
         - name: redis
           image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99

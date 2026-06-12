@@ -192,6 +192,7 @@ export class CompilerClient {
                 user_id: runtimeIdentity?.actorUserId || this._getCompilerUserId() || sessionId,
                 workspaceSlug: this.slug || '',
                 runtimeKind: runtimeIdentity?.runtimeKind || '',
+                filesystemUserId: runtimeIdentity?.filesystemUserId || '',
             }),
         });
 

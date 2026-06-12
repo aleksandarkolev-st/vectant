@@ -28,9 +28,6 @@ namespace: synthi
 resources:
   # 1. Foundation
   - namespace.yaml
-  - external-secrets.yaml    # Production default: GCP Secret Manager via ESO
-  # For local/manual deploys without ESO, copy secrets.yaml.example to
-  # secrets.yaml and swap this resource to secrets.yaml.
   - configmap.yaml
   - spawner-rbac.yaml
 
@@ -50,6 +47,7 @@ resources:
   - worker.yaml
 
   # 5. Production hardening
+  - ingress.yaml
   - network-policies.yaml
   - pod-disruption-budgets.yaml
 

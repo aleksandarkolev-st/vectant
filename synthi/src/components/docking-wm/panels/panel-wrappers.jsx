@@ -14,6 +14,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { getSession } from 'next-auth/react';
 import { useWorkspacePanelContext } from '../context/workspace-panel-context';
 import { useAppSelector } from '@/redux/hooks';
 import { selectFocusedEditorPaneId } from '../state/layout-slice';
@@ -28,6 +29,7 @@ import {
   resolveAgentWorkflowBridgeUrl,
 } from '@/services/agentWorkflowClient';
 import { gitClient } from '@/services/gitClient';
+import { buildWorkspaceRuntimeScope } from '@/services/runtimeScope';
 
 const WORKSPACE_PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
 
@@ -91,9 +93,22 @@ async function discoverWorkspacePreviewUrl(workspaceSlug) {
     }
   };
   try {
-    const query = typeof workspaceSlug === 'string' && workspaceSlug.trim()
-      ? `?workspace=${encodeURIComponent(workspaceSlug.trim())}`
-      : '';
+    const params = new URLSearchParams();
+    let runtimeScope = '';
+    if (typeof workspaceSlug === 'string' && workspaceSlug.trim()) {
+      const slug = workspaceSlug.trim();
+      params.set('workspace', slug);
+      try {
+        const session = await getSession();
+        const userId = session?.user?.id || session?.user?.email || null;
+        runtimeScope = buildWorkspaceRuntimeScope(slug, { userId });
+        if (runtimeScope) params.set('runtimeScope', runtimeScope);
+      } catch (_) {
+        runtimeScope = buildWorkspaceRuntimeScope(slug);
+        if (runtimeScope) params.set('runtimeScope', runtimeScope);
+      }
+    }
+    const query = params.toString() ? `?${params.toString()}` : '';
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), WORKSPACE_PREVIEW_DISCOVERY_TIMEOUT_MS);
     const res = await fetch(`${base}/ports${query}`, {
@@ -125,7 +140,9 @@ async function discoverWorkspacePreviewUrl(workspaceSlug) {
         .sort((a, b) => a - b)
       : [];
     const port = ports[0];
-    return port ? resolvePreviewUrl(`/port/${port}/`) : null;
+    return port
+      ? resolvePreviewUrl(runtimeScope ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${port}/` : `/port/${port}/`)
+      : null;
   } catch {
     return null;
   }

@@ -39,6 +39,7 @@ const net = require('net');
 const WebSocket = require('ws');
 const { watchWorkspace } = require('./fsWatcherService');
 const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimePodTerminal');
+const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 
 // node-pty is a native add-on. Fail fast with a clear message if missing.
 let pty;
@@ -224,7 +225,7 @@ function buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemU
   if (actorUserId) env.SYNTHI_ACTOR_USER_ID = actorUserId;
   if (filesystemUserId) env.SYNTHI_RUNTIME_FS_USER_ID = filesystemUserId;
 
-  const bindHost = process.env.SYNTHI_PREVIEW_BIND_HOST || '127.0.0.1';
+  const bindHost = process.env.SYNTHI_PREVIEW_BIND_HOST;
   if (bindHost) {
     env.HOST = bindHost;
     env.VITE_HOST = bindHost;
@@ -1281,6 +1282,12 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   // pod/runtime-scope plumbing nor the program's declared env is lost.
   const extraEnv = options.env && typeof options.env === 'object' ? options.env : {};
   const shellType = options.shellType || null;
+  await ensureRuntimeFilesystem({
+    workspaceSlug: slug,
+    filesystemUserId,
+    runtimeScope,
+    reason: 'headless_terminal',
+  });
   const cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
   const runtimeLaunch = await buildRuntimeLaunch({
     runtimeScope,
@@ -1548,7 +1555,21 @@ function createTerminalWSS({ enableContainerRuntime = false, workspaceRuntime = 
 
     // ── Generate session ID ─────────────────────────────────────────────
     const sessionId = requestedSessionId || crypto.randomUUID();
-    const cwd = await resolveWorkspaceCwd(workspaceSlug, requestedFilesystemUserId);
+    let cwd;
+    try {
+      await ensureRuntimeFilesystem({
+        workspaceSlug,
+        filesystemUserId: requestedFilesystemUserId,
+        runtimeScope,
+        reason: 'interactive_terminal',
+      });
+      cwd = await resolveWorkspaceCwd(workspaceSlug, requestedFilesystemUserId);
+    } catch (err) {
+      console.error(`[Terminal] Failed to prepare filesystem for session ${sessionId}:`, err.message);
+      ws.send(JSON.stringify({ type: 'error', message: 'Failed to prepare workspace filesystem: ' + err.message }));
+      ws.close(1011, 'Workspace filesystem preparation failed');
+      return;
+    }
 
     console.log(`[Terminal] New session ${sessionId} | runtimeScope=${runtimeScope || 'legacy'} | workspace=${workspaceSlug} | userId=${requestedUserId} | fsUser=${requestedFilesystemUserId || 'none'} | cwd=${cwd} | shell=${requestedShellType || 'default'}`);
 

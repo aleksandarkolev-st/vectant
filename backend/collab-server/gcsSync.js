@@ -37,10 +37,10 @@ let bucket = null;
 function getStorage() {
     if (!storage) {
         try {
-            storage = new Storage({
-                projectId: GCS_CONFIG.projectId,
-                credentials: GCS_CONFIG.credentials,
-            });
+            const options = {};
+            if (GCS_CONFIG.projectId) options.projectId = GCS_CONFIG.projectId;
+            if (GCS_CONFIG.credentials) options.credentials = GCS_CONFIG.credentials;
+            storage = new Storage(options);
             bucket = storage.bucket(GCS_CONFIG.bucketName);
             console.log('[GCS] Initialized GCS client for bucket:', GCS_CONFIG.bucketName);
         } catch (e) {
@@ -55,7 +55,7 @@ function getStorage() {
  * Check if GCS is properly configured
  */
 function isGcsConfigured() {
-    return !!(GCS_CONFIG.credentials.private_key && GCS_CONFIG.credentials.client_email);
+    return !!(GCS_CONFIG.projectId && GCS_CONFIG.bucketName);
 }
 
 /**
