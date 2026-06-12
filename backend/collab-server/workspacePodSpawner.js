@@ -268,12 +268,24 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
         limits: { cpu: '2', memory: '2Gi' },
       },
       readinessProbe: {
-        httpGet: { path: '/json/version', port: HOSTED_BROWSER_CDP_PORT },
+        exec: {
+          command: [
+            'node',
+            '-e',
+            `fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
+          ],
+        },
         initialDelaySeconds: 3,
         periodSeconds: 5,
       },
       livenessProbe: {
-        httpGet: { path: '/json/version', port: HOSTED_BROWSER_CDP_PORT },
+        exec: {
+          command: [
+            'node',
+            '-e',
+            `fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
+          ],
+        },
         initialDelaySeconds: 15,
         periodSeconds: 20,
       },
