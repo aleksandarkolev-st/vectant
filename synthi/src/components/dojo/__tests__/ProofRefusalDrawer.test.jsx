@@ -57,9 +57,11 @@ function refusalFixture() {
     status: 'blocked',
     requestedAction: 'submit_invoice',
     refusal: 'Submit invoice is blocked until the workspace and client identity are verified.',
+    rule: 'Require stable ID before invoice submission.',
     blockedBy: ['proof_capsule_missing', 'client_id_verified == true'],
     errorCodes: ['proof_capsule_missing'],
-    caseLawRefs: [{ id: 'CASE-001', title: 'Duplicate client guardrail', status: 'approved' }],
+    evidenceRefs: ['ev-case-001'],
+    caseLawRefs: [{ id: 'CASE-001', title: 'Duplicate client guardrail', status: 'approved', rule: 'Require stable ID before invoice submission.', evidenceRefs: ['ev-case-001'] }],
     requiredSteps: ['Issue a fresh proof capsule', 'Ask a reviewer to resolve duplicate client identity'],
   };
 }
@@ -81,7 +83,9 @@ describe('Proof and refusal drawers', () => {
     const text = view.querySelector('[data-testid="refusal-explainer-drawer"]')?.textContent || '';
     expect(text).toContain('Submit invoice is blocked');
     expect(text).toContain('proof_capsule_missing');
+    expect(text).toContain('Require stable ID before invoice submission.');
     expect(text).toContain('CASE-001');
+    expect(text).toContain('ev-case-001');
     expect(text).toContain('Issue a fresh proof capsule');
   });
 
@@ -108,6 +112,21 @@ describe('Proof and refusal drawers', () => {
           status: 'blocked',
           requestedAction: 'submit_invoice',
           refusal: 'Submit invoice is blocked until the workspace is verified.',
+          refusal_explanation: {
+            blocked_action: 'submit_invoice',
+            blocked_by: ['proof_capsule_missing'],
+            rule: 'Provide a valid proof capsule.',
+            smallest_allowed_next_step: 'Issue proof before submit_invoice.',
+            evidence_refs: ['ev-proof-001'],
+            case_law_citations: [
+              {
+                case_id: 'CASE-001',
+                title: 'Duplicate client guardrail',
+                rule_created: 'Require stable ID before mutation.',
+                evidence_refs: ['ev-case-001'],
+              },
+            ],
+          },
           validation: { blocked_by: ['proof_capsule_missing'], error_codes: ['proof_capsule_missing'] },
           relevant_case_law: [{ case_id: 'CASE-001', title: 'Duplicate client guardrail' }],
         },
@@ -130,5 +149,8 @@ describe('Proof and refusal drawers', () => {
     expect(view.textContent).toContain('workspace_verified');
     expect(view.textContent).toContain('Submit invoice is blocked');
     expect(view.textContent).toContain('CASE-001');
+    expect(view.textContent).toContain('Provide a valid proof capsule.');
+    expect(view.textContent).toContain('ev-proof-001');
+    expect(view.textContent).toContain('Issue proof before submit_invoice.');
   });
 });

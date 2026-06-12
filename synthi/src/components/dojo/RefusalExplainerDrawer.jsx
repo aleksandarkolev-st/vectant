@@ -39,6 +39,13 @@ export default function RefusalExplainerDrawer({ refusal }) {
         </p>
       ) : null}
 
+      {refusal.rule ? (
+        <section className="mt-4 rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+          <h3 className="text-xs font-semibold">Blocking Rule</h3>
+          <p className="mt-2 text-sm leading-6" style={{ color: 'var(--text-secondary)' }}>{refusal.rule}</p>
+        </section>
+      ) : null}
+
       <section className="mt-4 grid gap-4 md:grid-cols-2">
         <List title="Blocked By" items={refusal.blockedBy} />
         <List title="Error Codes" items={refusal.errorCodes} />
@@ -58,6 +65,10 @@ export default function RefusalExplainerDrawer({ refusal }) {
                   <div className="mt-1" style={{ color: 'var(--text-muted)' }}>{item.title}</div>
                 ) : null}
                 {item.status ? <div className="mt-1" style={{ color: 'var(--text-muted)' }}>{item.status}</div> : null}
+                {item.rule ? <div className="mt-1" style={{ color: 'var(--text-muted)' }}>{item.rule}</div> : null}
+                {item.evidenceRefs?.length ? (
+                  <div className="mt-1 truncate" style={{ color: 'var(--text-muted)' }}>{item.evidenceRefs.join(', ')}</div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -65,6 +76,12 @@ export default function RefusalExplainerDrawer({ refusal }) {
           <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No case-law citation recorded</p>
         )}
       </section>
+
+      {refusal.evidenceRefs?.length ? (
+        <section className="mt-4">
+          <List title="Evidence" items={refusal.evidenceRefs} />
+        </section>
+      ) : null}
 
       {refusal.requiredSteps?.length || refusal.nextStep ? (
         <section className="mt-4">

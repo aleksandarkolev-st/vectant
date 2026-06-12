@@ -272,6 +272,8 @@ function normalizeCaseLawRefs(values) {
         id: item?.case_id || item?.caseId || item?.id || item?.title || '',
         title: item?.title || item?.finding || item?.case_id || item?.caseId || '',
         status: item?.status || '',
+        rule: item?.rule_created || item?.ruleCreated || '',
+        evidenceRefs: compactStrings(item?.evidence_refs || item?.evidenceRefs),
       };
     })
     .filter((item) => item.id || item.title);
@@ -280,23 +282,40 @@ function normalizeCaseLawRefs(values) {
 function normalizeRefusal(dojo, skill) {
   const block = dojo.blockExplanation || dojo.block_explanation || {};
   const validation = block.validation || {};
+  const structured = block.refusal_explanation || block.refusalExplanation || validation.refusal_explanation || validation.refusalExplanation || {};
   const upgrade = dojo.permissionUpgrade || dojo.permission_upgrade || {};
   const refusalText = block.refusal || block.message || validation.refusal || '';
-  const blockedBy = compactStrings(block.blocked_by || block.blockedBy || validation.blocked_by || validation.blockedBy);
+  const blockedBy = compactStrings(structured.blocked_by || structured.blockedBy || block.blocked_by || block.blockedBy || validation.blocked_by || validation.blockedBy);
   const errorCodes = compactStrings(block.error_codes || block.errorCodes || validation.error_codes || validation.errorCodes);
-  const caseLawRefs = normalizeCaseLawRefs(block.relevant_case_law || block.relevantCaseLaw || block.caseLawRefs || block.case_law_refs)
+  const caseLawRefs = normalizeCaseLawRefs(structured.case_law_citations || structured.caseLawCitations)
+    .concat(normalizeCaseLawRefs(block.relevant_case_law || block.relevantCaseLaw || block.caseLawRefs || block.case_law_refs))
     .concat(normalizeCaseLawRefs(skill.caseLawRefs));
-  if (!refusalText && !blockedBy.length && !errorCodes.length && !caseLawRefs.length) return null;
+  const nextStep = structured.smallest_allowed_next_step || structured.smallestAllowedNextStep || block.nextStep || block.next_step || '';
+  const rule = structured.rule || block.rule || '';
+  const evidenceRefs = compactStrings(structured.evidence_refs || structured.evidenceRefs);
+  if (!refusalText && !blockedBy.length && !errorCodes.length && !caseLawRefs.length && !rule && !nextStep) return null;
   return {
     status: block.status || validation.status || 'blocked',
-    requestedAction: block.requestedAction || block.requested_action || validation.requested_action || '',
+    requestedAction: structured.blocked_action || structured.blockedAction || block.requestedAction || block.requested_action || validation.requested_action || '',
     refusal: refusalText,
+    rule,
     blockedBy,
     errorCodes,
-    caseLawRefs,
+    caseLawRefs: dedupeCaseLawRefs(caseLawRefs),
+    evidenceRefs,
     requiredSteps: compactStrings(upgrade.requiredSteps || upgrade.required_steps),
-    nextStep: block.nextStep || block.next_step || '',
+    nextStep,
   };
+}
+
+function dedupeCaseLawRefs(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = `${item.id}:${item.title}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function normalizeLicenseHealthItem(item, fallbackSkill) {
