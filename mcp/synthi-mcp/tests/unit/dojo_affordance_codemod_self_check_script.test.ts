@@ -16,6 +16,13 @@ describe("Dojo affordance codemod self-check script", () => {
         modified_files: [{ path: "/tmp/fixture/src/InvoiceForm.jsx" }],
         generated_tests: [{ path: "/tmp/fixture/src/__tests__/InvoiceForm.dojo-affordance.test.ts" }],
       },
+      source_patch_write_result: {
+        ok: true,
+        written_files: [
+          { kind: "source", path: "src/InvoiceForm.jsx" },
+          { kind: "contract_test", path: "src/__tests__/InvoiceForm.dojo-affordance.test.ts" },
+        ],
+      },
       before_vitest: { ok: false },
       wrong_target_vitest: { ok: false },
       after_vitest: { ok: true },
@@ -44,6 +51,8 @@ describe("Dojo affordance codemod self-check script", () => {
       patch_bundle_ok: true,
       patch_bundle_modified_file_count: 1,
       patch_bundle_generated_test_count: 1,
+      patch_write_ok: true,
+      patch_write_file_count: 2,
       operation_ids: ["patch_stable_locator_invoice_save", "patch_proof_hook_invoice_save"],
       target_matchers: [
         {
@@ -64,6 +73,7 @@ describe("Dojo affordance codemod self-check script", () => {
         wrong_target_contract: { ok: false },
         after_contract: { ok: true },
         source_patch_bundle: { ok: true, modified_files: [], generated_tests: [] },
+        source_patch_write_result: { ok: true, written_files: [] },
         before_vitest: { ok: false },
         wrong_target_vitest: { ok: false },
         after_vitest: { ok: true },

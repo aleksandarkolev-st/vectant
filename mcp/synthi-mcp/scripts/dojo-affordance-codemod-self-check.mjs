@@ -36,11 +36,7 @@ async function main() {
 export async function runAffordanceCodemodSelfCheck({ outDir }) {
   const modules = await importBuiltSourceModules();
   const fixtureDir = path.join(outDir, "fixture");
-  const sourcePath = path.join(fixtureDir, "src", "InvoiceForm.jsx");
-  const testPath = path.join(fixtureDir, "src", "__tests__", "InvoiceForm.dojo-affordance.test.ts");
   const vitestConfigPath = path.join(fixtureDir, "vitest.config.mjs");
-  await mkdir(path.dirname(sourcePath), { recursive: true });
-  await mkdir(path.dirname(testPath), { recursive: true });
 
   const stableOperation = modules.stableLocatorPatchOperation({
     file_path: "src/InvoiceForm.jsx",
@@ -74,17 +70,11 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
   assert.equal(sourcePatchBundle.modified_files.length, 1, "source patch bundle should include one modified fixture file");
   assert.equal(sourcePatchBundle.generated_tests.length, 1, "source patch bundle should include one generated contract test");
 
-  const generatedTest = modules.generateReactAffordanceVitestContractTest({
-    source_file_path: "src/InvoiceForm.jsx",
-    test_file_path: "src/__tests__/InvoiceForm.dojo-affordance.test.ts",
-    component_name: "InvoiceForm",
-    operations,
-  });
-  assert.equal(
-    sourcePatchBundle.generated_tests[0]?.source,
-    generatedTest.source,
-    "source patch bundle should emit the same generated contract test artifact"
-  );
+  const sourcePath = path.join(fixtureDir, sourcePatchBundle.modified_files[0].path);
+  const testPath = path.join(fixtureDir, sourcePatchBundle.generated_tests[0].path);
+  const generatedTest = sourcePatchBundle.generated_tests[0];
+  await mkdir(path.dirname(sourcePath), { recursive: true });
+  await mkdir(path.dirname(testPath), { recursive: true });
 
   await writeFile(sourcePath, originalSource);
   await writeFile(testPath, generatedTest.source);
@@ -101,10 +91,12 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
   const wrongTargetRun = await runGeneratedVitest({ testPath, fixtureDir, configPath: vitestConfigPath });
   assert.equal(wrongTargetRun.ok, false, "generated Vitest contract should fail when affordances are on the wrong target");
 
-  await writeFile(sourcePath, originalSource);
-  const patched = modules.applyReactAffordanceCodemodPlan(await readFile(sourcePath, "utf8"), operations);
-  assert.equal(patched.changed, true, "codemod should patch the fixture once");
-  await writeFile(sourcePath, patched.source);
+  const patchWriteResult = await modules.writeDojoGeneratedSourcePatchBundle({
+    bundle: sourcePatchBundle,
+    workspace_root: fixtureDir,
+  });
+  assert.equal(patchWriteResult.ok, true, "source patch writer should write the generated bundle");
+  assert.equal(patchWriteResult.written_files.length, 2, "source patch writer should write source and generated test artifacts");
 
   const afterContract = modules.evaluateReactAffordanceContract(await readFile(sourcePath, "utf8"), operations);
   assert.equal(afterContract.ok, true, "generated affordance contract should pass after patch");
@@ -122,11 +114,12 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
     wrong_target_contract: wrongTargetContract,
     after_contract: afterContract,
     source_patch_bundle: summarizeSourcePatchBundle(sourcePatchBundle),
+    source_patch_write_result: summarizeSourcePatchWriteResult(patchWriteResult),
     before_vitest: summarizeVitestRun(beforeRun),
     wrong_target_vitest: summarizeVitestRun(wrongTargetRun),
     after_vitest: summarizeVitestRun(afterRun),
-    applied_operations: patched.applied_operations,
-    skipped_operations: patched.skipped_operations,
+    applied_operations: sourcePatchBundle.modified_files.flatMap((file) => file.applied_operations),
+    skipped_operations: sourcePatchBundle.modified_files.flatMap((file) => file.skipped_operations),
     target_matchers: operations.map((operation) => ({
       operation_id: operation.operation_id,
       target_component: operation.target_component,
@@ -154,6 +147,10 @@ export function buildAffordanceCodemodEvidenceManifest({ report, reportPath, ser
       : 0,
     patch_bundle_generated_test_count: Array.isArray(report?.source_patch_bundle?.generated_tests)
       ? report.source_patch_bundle.generated_tests.length
+      : 0,
+    patch_write_ok: report?.source_patch_write_result?.ok === true,
+    patch_write_file_count: Array.isArray(report?.source_patch_write_result?.written_files)
+      ? report.source_patch_write_result.written_files.length
       : 0,
     operation_ids: Array.isArray(report?.operation_ids) ? report.operation_ids : report?.operation_id ? [report.operation_id] : [],
     generated_test_path: report?.generated_test_path ?? null,
@@ -185,9 +182,10 @@ async function importBuiltSourceModules() {
   const affordancePlanModule = path.join(MCP_ROOT, "dist", "dojo", "source", "affordance_pr_plan.js");
   const codemodModule = path.join(MCP_ROOT, "dist", "dojo", "source", "codemod.js");
   try {
-    const [plan, codemod] = await Promise.all([
+    const [plan, codemod, patchWriter] = await Promise.all([
       import(pathToFileURL(affordancePlanModule).href),
       import(pathToFileURL(codemodModule).href),
+      import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "source", "patch_writer.js")).href),
     ]);
     return {
       stableLocatorPatchOperation: plan.stableLocatorPatchOperation,
@@ -196,6 +194,7 @@ async function importBuiltSourceModules() {
       evaluateReactAffordanceContract: codemod.evaluateReactAffordanceContract,
       generateReactAffordanceVitestContractTest: codemod.generateReactAffordanceVitestContractTest,
       buildDojoGeneratedSourcePatchBundle: (await import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "source", "patch_bundle.js")).href)).buildDojoGeneratedSourcePatchBundle,
+      writeDojoGeneratedSourcePatchBundle: patchWriter.writeDojoGeneratedSourcePatchBundle,
     };
   } catch (err) {
     throw new Error(`dojo_affordance_codemod_dist_missing: run npm --prefix mcp/synthi-mcp run build first (${err instanceof Error ? err.message : String(err)})`);
@@ -265,6 +264,23 @@ function summarizeSourcePatchBundle(bundle) {
     generated_tests: bundle.generated_tests.map((test) => ({
       path: test.path,
       required_operations: test.required_operations,
+    })),
+  };
+}
+
+function summarizeSourcePatchWriteResult(result) {
+  return {
+    schema_version: result.schema_version,
+    plan_id: result.plan_id,
+    workspace_root: result.workspace_root,
+    ok: result.ok,
+    issue_count: result.issues.length,
+    written_files: result.written_files.map((file) => ({
+      kind: file.kind,
+      path: file.path,
+      sha256: file.sha256,
+      bytes: file.bytes,
+      written: file.written,
     })),
   };
 }
