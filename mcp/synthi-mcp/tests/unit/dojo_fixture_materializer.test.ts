@@ -50,6 +50,40 @@ describe("Dojo synthetic fixture materializer", () => {
     expect(threshold.threshold_breaches).toEqual([{ field: "amount", value: 501, threshold: 500 }]);
   });
 
+  it("materializes prompt injection document fixtures as quarantined synthetic tissue", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "prompt_injection",
+      risk_tags: ["prompt_injection", "untrusted_document"],
+    }));
+    const fixture = materializeDojoSyntheticFixture(definition, { seed: "prompt-seed" });
+    const second = materializeDojoSyntheticFixture(definition, { seed: "prompt-seed" });
+
+    expect(fixture.synthetic_data_only).toBe(true);
+    expect(fixture.document_state.prompt_injection_present).toBe(true);
+    expect(fixture.document_state.instruction_quarantined).toBe(true);
+    expect(fixture.document_state.documents.some((document) => document.prompt_injection_present)).toBe(true);
+    expect(fixture.document_state.documents.every((document) => document.file_name.startsWith("synthetic_"))).toBe(true);
+    expect(definition.fixture_requirements.some((fixtureRequirement) => fixtureRequirement.kind === "fake_documents")).toBe(true);
+    expect(definition.mutation_scopes).toContain("document");
+    expect(definition.oracle.observed_evidence_required).toContain("document_instruction_quarantine");
+    expect(second).toEqual(fixture);
+  });
+
+  it("materializes missing and corrupted document tissue states", () => {
+    const missingDocumentField = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "missing_document_field",
+      risk_tags: ["document_validation"],
+    })));
+    expect(missingDocumentField.document_state.missing_fields).toEqual(["amount"]);
+
+    const corruptedDocument = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "corrupted_document",
+      risk_tags: ["document_validation"],
+    })));
+    expect(corruptedDocument.document_state.corrupted_document_count).toBe(1);
+    expect(corruptedDocument.document_state.documents[0]?.corrupted).toBe(true);
+  });
+
   it("is deterministic for the same scenario and seed", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "duplicate_entity",

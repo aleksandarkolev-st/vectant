@@ -10,14 +10,33 @@ import {
 
 const VITEST_REPORT = {
   success: true,
-  numTotalTestSuites: 2,
-  numPassedTestSuites: 2,
+  numTotalTestSuites: 3,
+  numPassedTestSuites: 3,
   numFailedTestSuites: 0,
-  numTotalTests: 4,
-  numPassedTests: 4,
+  numTotalTests: 7,
+  numPassedTests: 7,
   numFailedTests: 0,
   numPendingTests: 0,
   testResults: [
+    {
+      name: "tests/unit/dojo_fixture_materializer.test.ts",
+      startTime: 800,
+      endTime: 900,
+      assertionResults: [
+        {
+          fullName: "Dojo synthetic fixture materializer creates duplicate entity fixtures with same display name and different stable IDs",
+          title: "creates duplicate entity fixtures with same display name and different stable IDs",
+          status: "passed",
+          duration: 35,
+        },
+        {
+          fullName: "Dojo synthetic fixture materializer materializes prompt injection document fixtures as quarantined synthetic tissue",
+          title: "materializes prompt injection document fixtures as quarantined synthetic tissue",
+          status: "passed",
+          duration: 25,
+        },
+      ],
+    },
     {
       name: "tests/integration/dojo_api_fault_server.test.ts",
       startTime: 1000,
@@ -34,6 +53,12 @@ const VITEST_REPORT = {
           title: "leaves an oracle-detectable partial write",
           status: "passed",
           duration: 20,
+        },
+        {
+          fullName: "Dojo API fault server supports success, validation error, timeout, and downstream failure behaviors",
+          title: "supports success, validation error, timeout, and downstream failure behaviors",
+          status: "passed",
+          duration: 40,
         },
       ],
     },
@@ -62,6 +87,7 @@ const VITEST_REPORT = {
 describe("Dojo chaos performance self-check script", () => {
   it("defines executable integration tests for T8 preflight coverage", () => {
     expect(DOJO_CHAOS_PERFORMANCE_TEST_FILES).toEqual([
+      "tests/unit/dojo_fixture_materializer.test.ts",
       "tests/integration/dojo_api_fault_server.test.ts",
       "tests/integration/dojo_vivarium_runner.test.ts",
       "tests/integration/dojo_checkride_runner.test.ts",
@@ -99,19 +125,21 @@ describe("Dojo chaos performance self-check script", () => {
       duration_ms: 2345.679,
       configured_scenario_count: DOJO_CHAOS_SCENARIOS.length,
       test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
-      reported_test_file_count: 2,
+      reported_test_file_count: 3,
       json_report_path: "tmp/vitest.json",
-      scenario_coverage_complete: false,
-      missing_chaos_scenarios: expect.arrayContaining(["prompt_injection_fixture"]),
+      scenario_coverage_complete: true,
+      missing_chaos_scenarios: [],
       tested_chaos_scenarios: expect.arrayContaining([
+        "duplicate_entity_fixture",
+        "prompt_injection_fixture",
         "partial_write",
         "fake_success_ui",
         "runtime_oracle_classification",
         "evil_twin_attack_hardening",
       ]),
       test_summary: expect.objectContaining({
-        total_tests: 4,
-        passed_tests: 4,
+        total_tests: 7,
+        passed_tests: 7,
         failed_tests: 0,
         assertion_duration_p95_ms: 60,
         test_file_duration_p95_ms: 130,
@@ -126,6 +154,7 @@ describe("Dojo chaos performance self-check script", () => {
         checks: expect.objectContaining({
           no_failed_tests: true,
           all_reported_tests_passed: true,
+          scenario_coverage_complete: true,
         }),
       }),
       budget: expect.objectContaining({
@@ -140,8 +169,8 @@ describe("Dojo chaos performance self-check script", () => {
     const summary = summarizeVitestJsonReport(VITEST_REPORT);
     expect(summary).toEqual(expect.objectContaining({
       success: true,
-      total_tests: 4,
-      passed_tests: 4,
+      total_tests: 7,
+      passed_tests: 7,
       failed_tests: 0,
       assertion_duration_p95_ms: 60,
       test_file_duration_p95_ms: 130,
@@ -161,8 +190,10 @@ describe("Dojo chaos performance self-check script", () => {
       }),
       expect.objectContaining({
         scenario: "prompt_injection_fixture",
-        covered: false,
-        evidence_titles: [],
+        covered: true,
+        evidence_titles: expect.arrayContaining([
+          "Dojo synthetic fixture materializer materializes prompt injection document fixtures as quarantined synthetic tissue",
+        ]),
       }),
     ]);
   });

@@ -180,6 +180,10 @@ function fixtureKindsFor(mutationKind: string): DojoScenarioFixtureKind[] {
     case "input_omission":
     case "hidden_required_field":
       return ["synthetic_dom_snapshot", "fake_validation_errors"];
+    case "prompt_injection":
+    case "missing_document_field":
+    case "corrupted_document":
+      return ["fake_documents", "synthetic_dom_snapshot"];
     case "duplicate_entity":
     case "stale_entity":
     case "reordered_rows":
@@ -229,6 +233,10 @@ function mutationScopesFor(mutationKind: string): DojoScenarioMutationScope[] {
     case "input_omission":
     case "hidden_required_field":
       return ["ui", "data"];
+    case "prompt_injection":
+    case "missing_document_field":
+    case "corrupted_document":
+      return ["document", "ui"];
     default:
       return ["ui"];
   }
@@ -256,6 +264,8 @@ function observedEvidenceFor(scenario: DojoScenario): string[] {
   if (scenario.risk_tags.includes("evidence_required")) evidence.push("durable_state_evidence");
   if (scenario.mutation_kind === "auth_expiry" || scenario.mutation_kind === "permission_change") evidence.push("identity_policy_state");
   if (scenario.mutation_kind === "duplicate_entity" || scenario.mutation_kind === "stale_entity") evidence.push("stable_entity_identity");
+  if (scenario.mutation_kind === "prompt_injection") evidence.push("document_instruction_quarantine");
+  if (scenario.mutation_kind === "missing_document_field" || scenario.mutation_kind === "corrupted_document") evidence.push("document_tissue_state");
   return evidence;
 }
 

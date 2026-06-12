@@ -20,6 +20,7 @@ const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 
 export const DOJO_CHAOS_PERFORMANCE_TEST_FILES = [
+  "tests/unit/dojo_fixture_materializer.test.ts",
   "tests/integration/dojo_api_fault_server.test.ts",
   "tests/integration/dojo_vivarium_runner.test.ts",
   "tests/integration/dojo_checkride_runner.test.ts",
@@ -159,6 +160,7 @@ export function buildDojoChaosPerformanceEvidenceManifest({
   const scenarioCoverage = buildScenarioCoverage({ scenarios, jsonReport });
   const performanceMetrics = buildPerformanceMetrics({ durationMs, testSummary });
   const budgetEvaluation = buildBudgetEvaluation({
+    scenarioCoverage,
     performanceMetrics,
     testSummary,
     timeoutMs,
@@ -251,11 +253,12 @@ function buildPerformanceMetrics({ durationMs, testSummary }) {
   };
 }
 
-function buildBudgetEvaluation({ performanceMetrics, testSummary, timeoutMs, error }) {
+function buildBudgetEvaluation({ scenarioCoverage, performanceMetrics, testSummary, timeoutMs, error }) {
   const checks = {
     no_spawn_error: !error,
     no_failed_tests: testSummary.failed_tests === 0,
     all_reported_tests_passed: testSummary.total_tests > 0 && testSummary.passed_tests === testSummary.total_tests,
+    scenario_coverage_complete: scenarioCoverage.every((item) => item.covered),
     self_check_within_timeout: performanceMetrics.self_check_duration_ms <= timeoutMs,
     test_case_p95_recorded: Number.isFinite(performanceMetrics.test_case_duration_p95_ms),
     test_file_p95_recorded: Number.isFinite(performanceMetrics.test_file_duration_p95_ms),
