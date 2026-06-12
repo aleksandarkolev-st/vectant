@@ -3186,8 +3186,20 @@ function evidenceClaimsForProofIssue(
   }
 
   const recordIds = [...new Set(results.flatMap((result) => result.evidence_record_ids))].sort();
-  const ledgerCheckpointHash = input.ledger_checkpoint_hash
-    ?? latestLedgerHeadForEvidenceRecords(records, recordIds);
+  const evidenceLedgerCheckpointHash = latestLedgerHeadForEvidenceRecords(records, recordIds);
+  if (input.ledger_checkpoint_hash && input.ledger_checkpoint_hash !== evidenceLedgerCheckpointHash) {
+    throw new DojoProofEvidenceClaimError([
+      {
+        claim_id: "ledger_checkpoint_matches_evidence",
+        ok: false,
+        status: "failed",
+        evidence_record_ids: recordIds.length > 0 ? recordIds : records.map((record) => record.record_id),
+        checked_at: checkedAt,
+        blocked_by: ["evidence_ledger_checkpoint_mismatch"],
+      },
+    ]);
+  }
+  const ledgerCheckpointHash = input.ledger_checkpoint_hash ?? evidenceLedgerCheckpointHash;
   return {
     claims: results.map((result) => ({
       claim: result.claim_id,

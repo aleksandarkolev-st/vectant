@@ -50,6 +50,38 @@ describe("Dojo proof issuance evidence claims", () => {
     })).toThrow(/dojo_proof_evidence_claim_unverified:/);
   });
 
+  it("blocks strict proof issuance when the supplied ledger checkpoint does not match verified evidence", () => {
+    const skill = skillFixture();
+    const record = evidenceRecord(
+      "evidence-checkpoint",
+      skill.skill_id,
+      skill.permission_license.proof_requirements.required_evidence_claims,
+      "2026-06-11T00:00:00.000Z"
+    );
+
+    const error = captureProofIssueError(() => issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: [record],
+      ledger_checkpoint_hash: "f".repeat(64),
+      require_verified_evidence: true,
+      now: "2026-06-11T00:05:00.000Z",
+    }));
+
+    expect(error).toBeInstanceOf(DojoProofEvidenceClaimError);
+    expect(error).toEqual(expect.objectContaining({
+      code: "dojo_proof_evidence_claim_unverified",
+      failed_results: [
+        expect.objectContaining({
+          claim_id: "ledger_checkpoint_matches_evidence",
+          ok: false,
+          status: "failed",
+          evidence_record_ids: ["evidence-checkpoint"],
+          blocked_by: ["evidence_ledger_checkpoint_mismatch"],
+        }),
+      ],
+    }));
+  });
+
   it("blocks strict proof issuance when backing evidence is stale", () => {
     const skill = skillFixture();
     const record = evidenceRecord("evidence-old", skill.skill_id, skill.permission_license.proof_requirements.required_evidence_claims, "2026-06-10T00:00:00.000Z");
