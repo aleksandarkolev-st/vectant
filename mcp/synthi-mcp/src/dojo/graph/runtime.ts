@@ -612,7 +612,9 @@ async function proofBlockedByForNode(
   inputs: Record<string, unknown>
 ): Promise<string[]> {
   if (!nodeRequiresProductionProofValidation(node, mode)) return [];
-  if (input.allow_self_attested_proof === true && inputs["proof_capsule_valid"] === true) return [];
+  if (input.allow_self_attested_proof === true && inputs["proof_capsule_valid"] === true) {
+    return ["proof_self_attestation_not_allowed_in_production"];
+  }
   if (!input.proof_capsule) return ["proof_capsule_missing"];
   if (!input.proof_validator) return ["proof_validator_missing"];
   const result = await input.proof_validator({

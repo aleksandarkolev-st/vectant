@@ -218,6 +218,33 @@ describe("Dojo graph runtime skeleton", () => {
     }));
   });
 
+  it("rejects self-attested proof for production proof-required actions", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        proof_capsule_valid: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      allow_self_attested_proof: true,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["proof_self_attestation_not_allowed_in_production"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["proof_self_attestation_not_allowed_in_production"],
+        }),
+      ]),
+    }));
+  });
+
   it("blocks an explicitly expired node before proof or substrate execution", async () => {
     const runtime = new DojoSkillGraphRuntime();
 

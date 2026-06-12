@@ -53,6 +53,7 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     reason === "proof_capsule_expires_at_not_after_issued_at" ||
     reason === "proof_validation_time_invalid" ||
     reason === "proof_capsule_expired" ||
+    reason === "proof_self_attestation_not_allowed_in_production" ||
     reason === "dojo_proof_capsule_invalid"
   ) {
     return "proof_capsule_invalid";

@@ -30,6 +30,7 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("approval_constraint:human_confirmation_required")).toBe("approval_required");
     expect(normalizeDojoProofErrorCode("approval_not_granted")).toBe("approval_required");
     expect(normalizeDojoProofErrorCode("license_expiry_invalid")).toBe("license_expired");
+    expect(normalizeDojoProofErrorCode("proof_self_attestation_not_allowed_in_production")).toBe("proof_capsule_invalid");
     expect(normalizeDojoProofErrorCode("unexpected-low-level-detail")).toBe("unknown");
   });
 
