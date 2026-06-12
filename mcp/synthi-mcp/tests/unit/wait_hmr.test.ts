@@ -648,6 +648,8 @@ describe("synthi_wait_hmr", () => {
 
   it("treats a valid full runtime proof as terminal-equivalent when applied is missing", async () => {
     const ledger = passingProofLedger();
+    let terminalResolved = false;
+    let terminalTimer: ReturnType<typeof setTimeout> | undefined;
     const fake = installFakeAttached(async () =>
       new Promise((resolve) => {
         setTimeout(
@@ -661,36 +663,42 @@ describe("synthi_wait_hmr", () => {
             }),
           25
         );
-        setTimeout(
-          () => resolve({ status: "applied", source: "hmr_status", elapsedMs: 250 }),
+        terminalTimer = setTimeout(
+          () => {
+            terminalResolved = true;
+            resolve({ status: "applied", source: "hmr_status", elapsedMs: 250 });
+          },
           250
         );
       })
     );
 
-    const started = Date.now();
-    const res = await waitHmrTool({
-      timeoutMs: 500,
-      module: "device",
-      requireGpuFullRuntimeProof: true,
-    });
+    try {
+      const res = await waitHmrTool({
+        timeoutMs: 500,
+        module: "device",
+        requireGpuFullRuntimeProof: true,
+      });
 
-    expect(Date.now() - started).toBeLessThan(200);
-    expect(res.isError).toBeUndefined();
-    const body = res.structuredContent as {
-      status?: string;
-      source?: string;
-      detail?: { terminal_equivalent?: string };
-      gpu_proof_validation?: {
-        satisfied?: boolean;
-        runtimeProofArtifactValidation?: { accepted?: boolean };
+      expect(terminalResolved).toBe(false);
+      expect(res.isError).toBeUndefined();
+      const body = res.structuredContent as {
+        status?: string;
+        source?: string;
+        detail?: { terminal_equivalent?: string };
+        gpu_proof_validation?: {
+          satisfied?: boolean;
+          runtimeProofArtifactValidation?: { accepted?: boolean };
+        };
       };
-    };
-    expect(body.status).toBe("applied");
-    expect(body.source).toBe("gpu_proof");
-    expect(body.detail?.terminal_equivalent).toBe("gpu_hmr_full_runtime_proof");
-    expect(body.gpu_proof_validation?.satisfied).toBe(true);
-    expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.accepted).toBe(true);
+      expect(body.status).toBe("applied");
+      expect(body.source).toBe("gpu_proof");
+      expect(body.detail?.terminal_equivalent).toBe("gpu_hmr_full_runtime_proof");
+      expect(body.gpu_proof_validation?.satisfied).toBe(true);
+      expect(body.gpu_proof_validation?.runtimeProofArtifactValidation?.accepted).toBe(true);
+    } finally {
+      if (terminalTimer) clearTimeout(terminalTimer);
+    }
   });
 
   it("rejects full runtime proof telemetry without proof ledger", async () => {
