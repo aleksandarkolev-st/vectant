@@ -197,8 +197,10 @@ describe("auth checkpoint manager", () => {
     });
 
     expect(finished.ok).toBe(true);
-    const fileMode = (await stat(filePath)).mode & 0o777;
-    expect(fileMode).toBe(0o600);
+    if (process.platform !== "win32") {
+      const fileMode = (await stat(filePath)).mode & 0o777;
+      expect(fileMode).toBe(0o600);
+    }
     expect((await readdir(directory)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
     const persisted = await readFile(filePath, "utf8");
     expect(persisted).toContain("synthi_auth_checkpoint_store_envelope_v1");
