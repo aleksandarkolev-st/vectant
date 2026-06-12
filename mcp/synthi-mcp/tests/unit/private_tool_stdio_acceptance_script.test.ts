@@ -1,4 +1,5 @@
 // @ts-nocheck
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildStdioMcpEnv,
@@ -13,7 +14,7 @@ import {
   selectCdpTargetsToClose,
   strictHostValidateToolArgs,
   stdioAcceptanceAttachEvidence,
-} from "../../scripts/private-tool-stdio-acceptance.mjs";
+} from "../../scripts/lib/private-tool-stdio-acceptance-helpers.mjs";
 
 describe("private-tool stdio acceptance harness", () => {
   it("configures the spawned MCP process through hosted runtime env only", () => {
@@ -54,7 +55,7 @@ describe("private-tool stdio acceptance harness", () => {
     expect(spec).toEqual({
       command: "/usr/bin/node",
       args: ["/repo/mcp/synthi-mcp/dist/index.js"],
-      cwd: "/repo/mcp/synthi-mcp",
+      cwd: path.resolve("/repo/mcp/synthi-mcp"),
       default_repo_dist: true,
     });
   });
@@ -75,7 +76,7 @@ describe("private-tool stdio acceptance harness", () => {
     expect(spec).toEqual({
       command: "synthi-mcp",
       args: ["--stdio", "--profile", "prod"],
-      cwd: "/srv/synthi",
+      cwd: path.resolve("/srv/synthi"),
       default_repo_dist: false,
     });
   });
@@ -130,7 +131,7 @@ describe("private-tool stdio acceptance harness", () => {
       defaultKey: "default-key",
       defaultScope: "default-scope",
     })).toEqual({
-      file: "/tmp/default-private-tools.enc.json",
+      file: path.resolve("/tmp/default-private-tools.enc.json"),
       key: "default-key",
       scope: "default-scope",
       external: false,
@@ -147,7 +148,7 @@ describe("private-tool stdio acceptance harness", () => {
       defaultKey: "default-key",
       defaultScope: "default-scope",
     })).toEqual({
-      file: "/srv/synthi/private-tools.enc.json",
+      file: path.resolve("/srv/synthi/private-tools.enc.json"),
       key: "external-key",
       scope: "workspace-scope",
       external: true,
@@ -165,7 +166,7 @@ describe("private-tool stdio acceptance harness", () => {
   it("can require deployed-host conformance to use an existing private workflow store", () => {
     expect(privateToolStoreConformance({
       storeSpec: {
-        file: "/tmp/default-private-tools.enc.json",
+      file: path.resolve("/tmp/default-private-tools.enc.json"),
         key: "default-key",
         scope: "default-scope",
         external: false,
@@ -191,7 +192,7 @@ describe("private-tool stdio acceptance harness", () => {
     });
     expect(privateToolStoreConformance({
       storeSpec: {
-        file: "/srv/synthi/private-tools.enc.json",
+      file: path.resolve("/srv/synthi/private-tools.enc.json"),
         key: "external-key",
         scope: "workspace-scope",
         external: true,

@@ -1,4 +1,5 @@
 // @ts-nocheck
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   CODEX_ACCEPTANCE_DISABLED_FEATURES,
@@ -17,7 +18,7 @@ import {
   runtimeEndpointConformance,
   selectCdpTargetsToClose,
   visualProofScreenshotOptions,
-} from "../../scripts/private-tool-codex-acceptance.mjs";
+} from "../../scripts/lib/private-tool-codex-acceptance-helpers.mjs";
 
 describe("private-tool Codex acceptance harness", () => {
   it("defaults Codex acceptance to the 5.3-codex-spark model", () => {
@@ -106,7 +107,7 @@ describe("private-tool Codex acceptance harness", () => {
       defaultKey: "default-key",
       defaultScope: "default-scope",
     })).toEqual({
-      file: "/srv/synthi/private-tools.enc.json",
+      file: path.resolve("/srv/synthi/private-tools.enc.json"),
       key: "external-key",
       scope: "workspace-scope",
       external: true,
@@ -120,7 +121,7 @@ describe("private-tool Codex acceptance harness", () => {
   it("can require deployed Codex acceptance to use an existing private workflow store", () => {
     expect(privateToolStoreConformance({
       storeSpec: {
-        file: "/tmp/default-private-tools.enc.json",
+        file: path.resolve("/tmp/default-private-tools.enc.json"),
         key: "default-key",
         scope: "default-scope",
         external: false,
@@ -133,7 +134,7 @@ describe("private-tool Codex acceptance harness", () => {
     });
     expect(privateToolStoreConformance({
       storeSpec: {
-        file: "/srv/synthi/private-tools.enc.json",
+        file: path.resolve("/srv/synthi/private-tools.enc.json"),
         key: "external-key",
         scope: "workspace-scope",
         external: true,
