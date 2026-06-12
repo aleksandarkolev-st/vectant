@@ -163,6 +163,28 @@ describe("Dojo proof issuance evidence claims", () => {
     );
   });
 
+  it("blocks proof issuance with malformed or non-forward timestamp windows", () => {
+    const skill = skillFixture();
+
+    expect(() => issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      now: "not-a-date",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    })).toThrow("proof_capsule_issued_at_invalid");
+
+    expect(() => issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "not-a-date",
+    })).toThrow("proof_capsule_expires_at_invalid");
+
+    expect(() => issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:15:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    })).toThrow("proof_capsule_expires_at_not_after_issued_at");
+  });
+
   it("blocks proof issuance with a malformed caller-supplied ledger checkpoint", () => {
     const skill = skillFixture();
 

@@ -1281,7 +1281,12 @@ export function issueDojoProofCapsule(
   } = {}
 ): DojoProofCarryingSkillCapsule {
   const now = input.now ?? new Date().toISOString();
-  const expiresAt = input.expires_at ?? new Date(Date.parse(now) + 15 * 60_000).toISOString();
+  const issuedAtMs = parseDojoProofTimestamp(now);
+  if (issuedAtMs === undefined) throw new Error("proof_capsule_issued_at_invalid");
+  const expiresAt = input.expires_at ?? new Date(issuedAtMs + 15 * 60_000).toISOString();
+  const expiresAtMs = parseDojoProofTimestamp(expiresAt);
+  if (expiresAtMs === undefined) throw new Error("proof_capsule_expires_at_invalid");
+  if (expiresAtMs <= issuedAtMs) throw new Error("proof_capsule_expires_at_not_after_issued_at");
   const evidence = evidenceClaimsForProofIssue(skill, input, now);
   const signer = dojoProofSigner();
   const capsuleWithoutSignature = {
@@ -1335,7 +1340,18 @@ export function validateDojoProofCapsule(
   if (capsule.ledger_checkpoint_hash && !isSha256Hex(capsule.ledger_checkpoint_hash)) {
     blockedBy.push("proof_capsule_ledger_checkpoint_invalid");
   }
-  if (Date.parse(capsule.expires_at) <= Date.parse(now)) blockedBy.push("proof_capsule_expired");
+  const issuedAtMs = parseDojoProofTimestamp(capsule.issued_at);
+  const expiresAtMs = parseDojoProofTimestamp(capsule.expires_at);
+  const validationTimeMs = parseDojoProofTimestamp(now);
+  if (issuedAtMs === undefined) blockedBy.push("proof_capsule_issued_at_invalid");
+  if (expiresAtMs === undefined) blockedBy.push("proof_capsule_expires_at_invalid");
+  if (validationTimeMs === undefined) blockedBy.push("proof_validation_time_invalid");
+  if (issuedAtMs !== undefined && expiresAtMs !== undefined && expiresAtMs <= issuedAtMs) {
+    blockedBy.push("proof_capsule_expires_at_not_after_issued_at");
+  }
+  if (expiresAtMs !== undefined && validationTimeMs !== undefined && expiresAtMs <= validationTimeMs) {
+    blockedBy.push("proof_capsule_expired");
+  }
   if (!verifyCapsuleSignature(capsule)) blockedBy.push("proof_capsule_signature_invalid");
 
   const blockedAction = license.blocked_actions.find((action) => action.action === requestedAction);
@@ -3237,6 +3253,11 @@ function latestLedgerHeadForEvidenceRecords(records: DojoEvidenceLedgerRecord[],
 
 function isSha256Hex(value: string): boolean {
   return /^[a-f0-9]{64}$/i.test(value);
+}
+
+function parseDojoProofTimestamp(value: string): number | undefined {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function signatureForCapsule(capsule: Omit<DojoProofCarryingSkillCapsule, "signature">, signer: DojoProofSigner = dojoProofSigner()): string {

@@ -98,6 +98,40 @@ describe("Dojo Ed25519 proof capsules", () => {
     );
   });
 
+  it("blocks correctly signed capsules with malformed timestamps", () => {
+    const keyPair = configureEd25519ProofSigning();
+    const skill = skillFixture();
+    const base = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    const signer = createEd25519DojoProofSigner({
+      key_id: keyPair.key_id,
+      private_key_pem: keyPair.private_key_pem,
+    });
+
+    const malformedIssuedAt = signCapsulePatch(base, { issued_at: "not-a-date" }, signer);
+    expect(validateDojoProofCapsule(skill, malformedIssuedAt, "run_workflow", "2026-06-11T00:01:00.000Z")).toEqual(
+      expect.objectContaining({
+        ok: false,
+        status: "blocked",
+        blocked_by: ["proof_capsule_issued_at_invalid"],
+        error_codes: ["proof_capsule_invalid"],
+      })
+    );
+
+    const malformedExpiresAt = signCapsulePatch(base, { expires_at: "not-a-date" }, signer);
+    expect(validateDojoProofCapsule(skill, malformedExpiresAt, "run_workflow", "2026-06-11T00:01:00.000Z")).toEqual(
+      expect.objectContaining({
+        ok: false,
+        status: "blocked",
+        blocked_by: ["proof_capsule_expires_at_invalid"],
+        error_codes: ["proof_capsule_invalid"],
+      })
+    );
+  });
+
   it("issues and validates Ed25519 proof capsules when explicitly configured", () => {
     const keyPair = configureEd25519ProofSigning();
     const skill = skillFixture();
@@ -179,6 +213,19 @@ function configureExternalCommandProofSigning() {
   process.env[DOJO_PROOF_SIGNING_COMMAND_ENV] = process.execPath;
   process.env[DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV] = JSON.stringify(["-e", externalSignerCommandSource()]);
   return keyPair;
+}
+
+function signCapsulePatch(
+  capsule: DojoProofCarryingSkillCapsule,
+  patch: Partial<DojoProofCarryingSkillCapsule>,
+  signer: ReturnType<typeof createEd25519DojoProofSigner>
+): DojoProofCarryingSkillCapsule {
+  const unsigned = { ...capsule, ...patch };
+  delete (unsigned as Partial<DojoProofCarryingSkillCapsule>).signature;
+  return {
+    ...unsigned,
+    signature: encodeDojoProofSignatureEnvelope(signer.sign(canonicalDojoProofPayload(unsigned))),
+  };
 }
 
 function skillFixture() {

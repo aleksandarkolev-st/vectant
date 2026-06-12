@@ -1974,6 +1974,20 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
         message,
       });
     }
+    if (message.startsWith("proof_capsule_") || message === "proof_validation_time_invalid") {
+      const blockedBy = [message];
+      return errorResponse("dojo_proof_capsule_invalid", {
+        ok: false,
+        skill_id: skill.skill.skill_id,
+        requested_action: requestedAction,
+        enforcement_mode: enforcement.enforcement_mode,
+        require_verified_evidence: requireVerifiedEvidence,
+        evidence_record_count: evidenceLedgerRecords.length,
+        blocked_by: blockedBy,
+        error_codes: normalizeDojoProofErrorCodes(blockedBy),
+        message,
+      });
+    }
     throw err;
   }
   const proofRecord = dojoSkillRegistry.recordProofCapsule(capsule, { tenant_id: stringOpt(a["tenant_id"]) });

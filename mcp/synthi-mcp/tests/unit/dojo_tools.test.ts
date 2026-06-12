@@ -408,6 +408,31 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("returns structured proof errors when proof issuance receives invalid timestamps", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", { workspace_id: "workspace-a" });
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+
+    const invalidExpiry = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "not-a-date",
+    });
+
+    expect(invalidExpiry?.isError).toBe(true);
+    expect(invalidExpiry?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_invalid",
+      ok: false,
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      blocked_by: ["proof_capsule_expires_at_invalid"],
+      error_codes: ["proof_capsule_invalid"],
+    }));
+  });
+
   it("publishes a licensed skill before exposing the backing private workflow tool and validates proof-gated dry runs", async () => {
     const url = "https://app.example.test/settings";
     browserBroker.requestConsent(url);
