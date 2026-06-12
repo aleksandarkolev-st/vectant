@@ -13,7 +13,17 @@ import { WebsocketProvider } from 'y-websocket';
 
 // ── State ───────────────────────────────────────────────────────────────────
 const docs = new Map(); // key → Entry { doc, provider, ytext, applyingLocal }
-let serverUrl = 'ws://localhost:1234';
+function defaultCollabWsUrl() {
+  try {
+    const origin = self.location?.origin || new URL(self.location?.href || '').origin;
+    if (origin && !origin.includes('localhost') && !origin.includes('127.0.0.1')) {
+      return origin.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:') + '/collab';
+    }
+  } catch (_) { /* fall through to local dev default */ }
+  return 'ws://localhost:1234';
+}
+
+let serverUrl = defaultCollabWsUrl();
 
 // Tunables for the WebsocketProvider.
 //   MAX_BACKOFF_MS — cap for the provider's internal reconnect delay.  The

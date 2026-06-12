@@ -110,6 +110,14 @@ steps:
       - --dockerfile=synthi/Dockerfile
       - --context=dir:///workspace/synthi
       - --destination=${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}
+      - --build-arg=NEXT_PUBLIC_COLLAB_SERVER_URL=${_NEXT_PUBLIC_COLLAB_SERVER_URL}
+      - --build-arg=NEXT_PUBLIC_YSWEET_URL=${_NEXT_PUBLIC_YSWEET_URL}
+      - --build-arg=NEXT_PUBLIC_COLLAB_PORT=${_NEXT_PUBLIC_COLLAB_PORT}
+      - --build-arg=NEXT_PUBLIC_COMPILE_SIGNAL_URL=${_NEXT_PUBLIC_COMPILE_SIGNAL_URL}
+      - --build-arg=NEXT_PUBLIC_GATEWAY_WS_URL=${_NEXT_PUBLIC_GATEWAY_WS_URL}
+      - --build-arg=NEXT_PUBLIC_CODE_INTEL_URL=${_NEXT_PUBLIC_CODE_INTEL_URL}
+      - --build-arg=NEXT_PUBLIC_AI_ENGINE_URL=${_NEXT_PUBLIC_AI_ENGINE_URL}
+      - --build-arg=NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=${_NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER}
       - --cache=true
       - --cache-ttl=168h
 

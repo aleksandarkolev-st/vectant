@@ -14,6 +14,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { resolveCollabHttpUrl } from '@/lib/collab-url';
 import { getSession } from 'next-auth/react';
 import { useWorkspacePanelContext } from '../context/workspace-panel-context';
 import { useAppSelector } from '@/redux/hooks';
@@ -74,11 +75,7 @@ const ProblemsPanel = dynamic(
 );
 
 function resolveCollabServerUrl() {
-  const configured = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL;
-  if (configured && configured.trim()) return configured.replace(/\/$/, '');
-  if (typeof window === 'undefined') return 'http://localhost:1234';
-  const { protocol, hostname } = window.location;
-  return `${protocol}//${hostname}:1234`;
+  return resolveCollabHttpUrl();
 }
 
 async function discoverWorkspacePreviewUrl(workspaceSlug) {

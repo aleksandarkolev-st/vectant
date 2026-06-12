@@ -10,6 +10,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
+import { resolveCollabHttpUrl } from '@/lib/collab-url';
 
 /**
  * Shell icons mapped by shell key. Colors read from CSS variables
@@ -41,7 +42,7 @@ const FALLBACK_SHELLS = [
  * ShellSelector — shadcn DropdownMenu that lets users choose which shell to open.
  * Has a flipping chevron animation matching the AI chat selectors.
  */
-export default function ShellSelector({ onSelect, onSetDefault, currentDefault, collabServerUrl = 'http://localhost:1234', className = '' }) {
+export default function ShellSelector({ onSelect, onSetDefault, currentDefault, collabServerUrl = resolveCollabHttpUrl(), className = '' }) {
   const [shells, setShells] = useState([]);
   const [defaultShell, setDefaultShell] = useState(null);
   const [loading, setLoading] = useState(true);

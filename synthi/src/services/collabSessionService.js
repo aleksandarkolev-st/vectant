@@ -10,12 +10,9 @@
  * Consumed by React hooks (`useCollabSession`, `useSessionPermissions`).
  */
 
-const COLLAB_URL = (
-  process.env.NEXT_PUBLIC_COLLAB_SERVER_URL ||
-  process.env.NEXT_PUBLIC_COLLAB_URL ||
-  process.env.NEXT_PUBLIC_YJS_URL ||
-  'ws://localhost:1234'
-).replace(/^ws/, 'http'); // HTTP version of the WS URL for REST calls
+import { resolveCollabHttpUrl } from '@/lib/collab-url';
+
+const COLLAB_URL = resolveCollabHttpUrl(); // HTTP version of the WS URL for REST calls
 
 // Wrap fetch() with an AbortController so network hangs never deadlock the
 // join flow.  Callers still need to handle AbortError + other rejections.

@@ -15,6 +15,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import bridge from './crdtWorkerBridge';
+import { resolveCollabWsUrl } from '@/lib/collab-url';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MonacoTextBinding — Bridges the CRDT worker with the Monaco editor model.
@@ -496,15 +497,8 @@ class CollabClient {
     // Derive WebSocket URL for the collab server (notifications, sessions, REST).
     if (serverUrl) {
       this.serverUrl = serverUrl;
-    } else if (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_COLLAB_SERVER_URL) {
-      this.serverUrl = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
-        .replace(/^http:/, 'ws:')
-        .replace(/^https:/, 'wss:');
     } else if (typeof window !== 'undefined') {
-      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const host = window.location.hostname;
-      const port = process.env.NEXT_PUBLIC_COLLAB_PORT || '1234';
-      this.serverUrl = `${proto}://${host}:${port}`;
+      this.serverUrl = resolveCollabWsUrl();
     } else {
       this.serverUrl = 'ws://localhost:1234';
     }
