@@ -74,6 +74,7 @@ describe('DojoShell', () => {
     expect(view.textContent).toContain('SRL 7');
     expect(view.textContent).toContain('80%');
     expect(view.textContent).toContain('synthi_app_save_invoice');
+    expect(view.textContent).toContain('Debugger');
   });
 
   it('loads summary through the provided client', async () => {

@@ -47,6 +47,7 @@ export default function DojoShell({
     ['Passport', selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/passport` : baseHref],
     ['Cortex', selectedSkillHref ? `${baseHref}/skills/${selectedSkillHref}/cortex` : baseHref],
     ['Practice', `${baseHref}/practice`],
+    ['Debugger', `${baseHref}/debug/time-machine`],
     ['Governance', `${baseHref}/governance`],
   ];
   const scopeRows = useMemo(() => {

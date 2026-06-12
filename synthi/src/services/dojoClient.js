@@ -51,6 +51,10 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
         blockedScenarios: 0,
       },
     },
+    debug: {
+      timeMachine: null,
+      ghostRun: null,
+    },
     bridgeStatus: 'unknown',
   };
 }
@@ -508,6 +512,72 @@ function normalizePracticeState(state, dojo, skill) {
   };
 }
 
+function normalizeTimeMachineReport(dojo) {
+  const raw = dojo.timeMachineDebugger || dojo.time_machine_debugger || dojo.timeMachine || dojo.time_machine || {};
+  if (!raw.debug_id && !raw.debugId && !raw.question && !raw.counterfactual && !raw.baseline) return null;
+  const baseline = raw.baseline || {};
+  const counterfactual = raw.counterfactual || {};
+  return {
+    schemaVersion: raw.schema_version || raw.schemaVersion || '',
+    debugId: raw.debug_id || raw.debugId || '',
+    question: raw.question || '',
+    baseline: {
+      scenarioId: baseline.scenario_id || baseline.scenarioId || '',
+      mutationKind: baseline.mutation_kind || baseline.mutationKind || '',
+      status: baseline.status || 'not_recorded',
+      finding: baseline.finding || '',
+    },
+    counterfactual: {
+      changedVariable: counterfactual.changed_variable || counterfactual.changedVariable || '',
+      expectedStatusAfterChange: counterfactual.expected_status_after_change || counterfactual.expectedStatusAfterChange || '',
+      causalFinding: counterfactual.causal_finding || counterfactual.causalFinding || '',
+      licenseImpact: counterfactual.license_impact || counterfactual.licenseImpact || '',
+    },
+    guardrails: asArray(raw.guardrails).map((guardrail) => ({
+      id: guardrail?.guardrail_id || guardrail?.guardrailId || guardrail?.id || guardrail?.title || '',
+      title: guardrail?.title || guardrail?.label || guardrail?.id || '',
+      rule: guardrail?.rule || guardrail?.predicate || '',
+      severity: guardrail?.severity || '',
+    })).filter((guardrail) => guardrail.id || guardrail.title || guardrail.rule),
+    replayPlan: asArray(raw.replay_plan || raw.replayPlan).map((step) => ({
+      step: step?.step || step?.label || '',
+      simulatorTier: step?.simulator_tier ?? step?.simulatorTier ?? '',
+      expectedEvidence: compactStrings(step?.expected_evidence || step?.expectedEvidence),
+    })).filter((step) => step.step),
+  };
+}
+
+function actionLabel(action) {
+  if (!action || typeof action !== 'object') return '';
+  return String(action.label || action.name || action.selector || action.text || action.action || action.kind || '').trim();
+}
+
+function normalizeGhostRun(dojo) {
+  const raw = dojo.ghostRun || dojo.ghost_run || dojo.ghostMode?.ghost_run || dojo.ghost_mode?.ghost_run || dojo.ghostMode || dojo.ghost_mode || {};
+  if (!raw.run_id && !raw.runId && !raw.status && !raw.observed_human_action && !raw.agent_planned_action) return null;
+  const observedAction = raw.observed_human_action || raw.observedHumanAction || {};
+  const plannedAction = raw.agent_planned_action || raw.agentPlannedAction || {};
+  return {
+    runId: raw.run_id || raw.runId || '',
+    status: raw.status || 'not_recorded',
+    wouldExecute: Boolean(raw.would_execute ?? raw.wouldExecute),
+    licenseStatus: raw.license_status || raw.licenseStatus || '',
+    explanation: raw.explanation || '',
+    observedAction,
+    plannedAction,
+    observedLabel: actionLabel(observedAction),
+    plannedLabel: actionLabel(plannedAction),
+    guardrailsTriggered: compactStrings(raw.guardrails_triggered || raw.guardrailsTriggered),
+  };
+}
+
+function normalizeDebugState(dojo) {
+  return {
+    timeMachine: normalizeTimeMachineReport(dojo),
+    ghostRun: normalizeGhostRun(dojo),
+  };
+}
+
 export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   const state = input?.state || input || {};
   const dojo = state.dojo || state.skillCredential || state.skill_credential || {};
@@ -518,6 +588,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
       ...empty,
       governance: normalizeGovernanceState(state, null, workspaceSlug),
       practice: normalizePracticeState(state, dojo, null),
+      debug: normalizeDebugState(dojo),
       bridgeStatus: state.runtime?.status || state.status || 'ready',
     };
   }
@@ -552,6 +623,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
   skill.proofCapsule = normalizeProofCapsule(dojo);
   skill.refusal = normalizeRefusal(dojo, skill);
   skill.practice = normalizePracticeState(state, dojo, skill);
+  skill.debug = normalizeDebugState(dojo);
 
   return {
     ...empty,
@@ -567,6 +639,7 @@ export function normalizeDojoWorkspaceSummary(input = {}, workspaceSlug = '') {
     },
     governance: normalizeGovernanceState(state, skill, workspaceSlug),
     practice: skill.practice,
+    debug: skill.debug,
     bridgeStatus: state.runtime?.status || state.status || 'ready',
   };
 }
