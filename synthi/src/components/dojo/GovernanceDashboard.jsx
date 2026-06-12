@@ -4,8 +4,13 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft, Landmark } from 'lucide-react';
 import { createEmptyDojoSummary, getDojoWorkspaceSummary } from '@/services/dojoClient';
 import ApprovalQueue from './ApprovalQueue';
+import AuditExportPanel from './AuditExportPanel';
+import ComplianceEvidencePack from './ComplianceEvidencePack';
 import GovernanceOverview from './GovernanceOverview';
 import LicenseHealthBoard from './LicenseHealthBoard';
+import PolicyGateTable from './PolicyGateTable';
+import RecertificationQueue from './RecertificationQueue';
+import SkillRegistryTable from './SkillRegistryTable';
 
 const panelStyle = {
   borderColor: 'var(--border-subtle)',
@@ -74,9 +79,16 @@ export default function GovernanceDashboard({
 
         <GovernanceOverview metrics={governance.metrics} />
 
+        <SkillRegistryTable items={governance.skillRegistry} />
+
         <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
           <LicenseHealthBoard items={governance.licenseHealth} />
           <ApprovalQueue items={governance.approvalQueue} />
+        </section>
+
+        <section className="grid gap-4 lg:grid-cols-2">
+          <PolicyGateTable items={governance.policyGates} />
+          <RecertificationQueue items={governance.recertificationQueue} />
         </section>
 
         <section className="rounded-md border p-4" style={panelStyle} data-testid="case-law-review-queue">
@@ -102,6 +114,11 @@ export default function GovernanceDashboard({
           ) : (
             <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No proposed case law requires review.</p>
           )}
+        </section>
+
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
+          <ComplianceEvidencePack pack={governance.complianceEvidencePack} />
+          <AuditExportPanel items={governance.auditExports} />
         </section>
       </div>
     </main>

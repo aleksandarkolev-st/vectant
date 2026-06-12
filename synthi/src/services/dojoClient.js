@@ -26,6 +26,17 @@ export function createEmptyDojoSummary(workspaceSlug = '') {
       licenseHealth: [],
       approvalQueue: [],
       caseLawReviewQueue: [],
+      skillRegistry: [],
+      policyGates: [],
+      recertificationQueue: [],
+      auditExports: [],
+      complianceEvidencePack: {
+        packId: '',
+        generatedAt: '',
+        artifacts: [],
+        missingArtifacts: [],
+        retentionClass: '',
+      },
     },
     practice: {
       scenarios: [],
@@ -437,6 +448,82 @@ function normalizeCaseLawReviewItem(item) {
   };
 }
 
+function normalizeSkillRegistryItem(item, fallbackSkill) {
+  return {
+    skillId: item.skill_id || item.skillId || fallbackSkill?.skillId || '',
+    title: item.title || item.skill_name || item.skillName || item.name || fallbackSkill?.title || '',
+    workspaceId: item.workspace_id || item.workspaceId || '',
+    status: item.status || fallbackSkill?.status || 'draft',
+    licenseStatus: item.license_status || item.licenseStatus || fallbackSkill?.licenseStatus || '',
+    entrustmentLevel: item.entrustment_level || item.entrustmentLevel || fallbackSkill?.entrustmentLevel || 'E0',
+    readinessLevel: Number(item.readiness_level ?? item.readinessLevel ?? fallbackSkill?.readinessLevel ?? 0),
+    owner: item.owner || item.owner_id || item.ownerId || '',
+    publishedToolName: item.published_tool_name || item.publishedToolName || fallbackSkill?.publishedToolName || '',
+    updatedAt: item.updated_at || item.updatedAt || item.last_trained_at || item.lastTrainedAt || '',
+  };
+}
+
+function normalizePolicyGateItem(item, index = 0) {
+  return {
+    gateId: item.gate_id || item.gateId || item.id || `policy-gate-${index + 1}`,
+    name: item.name || item.title || item.rule || `Policy gate ${index + 1}`,
+    status: item.status || item.result || 'unknown',
+    severity: item.severity || item.risk || '',
+    owner: item.owner || item.owner_id || item.ownerId || '',
+    scope: item.scope || item.binding_scope || item.bindingScope || '',
+    blocks: compactStrings(item.blocks || item.blocked_actions || item.blockedActions),
+    evidenceRefs: compactStrings(item.evidence_refs || item.evidenceRefs),
+    nextStep: item.next_step || item.nextStep || '',
+  };
+}
+
+function normalizeRecertificationItem(item, index = 0) {
+  return {
+    queueId: item.queue_id || item.queueId || item.id || `recertification-${index + 1}`,
+    skillId: item.skill_id || item.skillId || '',
+    skillName: item.skill_name || item.skillName || item.title || '',
+    reason: item.reason || item.trigger || '',
+    dueAt: item.due_at || item.dueAt || item.expires_at || item.expiresAt || '',
+    status: item.status || 'queued',
+    priority: item.priority || item.severity || '',
+    evidenceRefs: compactStrings(item.evidence_refs || item.evidenceRefs),
+  };
+}
+
+function normalizeAuditExportItem(item, index = 0) {
+  return {
+    exportId: item.export_id || item.exportId || item.id || `audit-export-${index + 1}`,
+    title: item.title || item.name || item.kind || `Audit export ${index + 1}`,
+    status: item.status || 'available',
+    generatedAt: item.generated_at || item.generatedAt || item.created_at || item.createdAt || '',
+    format: item.format || item.content_type || item.contentType || '',
+    recordCount: Number(item.record_count ?? item.recordCount ?? 0),
+    digest: item.digest || item.sha256 || item.artifact_sha256 || item.artifactSha256 || '',
+  };
+}
+
+function normalizeComplianceEvidencePack(raw) {
+  const source = raw || {};
+  return {
+    packId: source.pack_id || source.packId || source.export_id || source.exportId || '',
+    generatedAt: source.generated_at || source.generatedAt || source.created_at || source.createdAt || '',
+    artifacts: asArray(source.artifacts || source.required_artifacts || source.requiredArtifacts)
+      .map((artifact, index) => {
+        if (typeof artifact === 'string') return { artifactId: artifact, title: artifact, status: 'available' };
+        return {
+          artifactId: artifact.artifact_id || artifact.artifactId || artifact.id || `compliance-artifact-${index + 1}`,
+          title: artifact.title || artifact.name || artifact.kind || artifact.path || `Compliance artifact ${index + 1}`,
+          status: artifact.status || 'available',
+          digest: artifact.digest || artifact.sha256 || artifact.artifact_sha256 || artifact.artifactSha256 || '',
+          evidenceRefs: compactStrings(artifact.evidence_refs || artifact.evidenceRefs),
+        };
+      })
+      .filter((artifact) => artifact.artifactId || artifact.title),
+    missingArtifacts: compactStrings(source.missing_artifacts || source.missingArtifacts),
+    retentionClass: source.retention_class || source.retentionClass || '',
+  };
+}
+
 function normalizeGovernanceState(state, skill, workspaceSlug) {
   const raw = state.governanceService || state.governance_service || state.governance || {};
   const rawMetrics = raw.metrics || {};
@@ -447,6 +534,19 @@ function normalizeGovernanceState(state, skill, workspaceSlug) {
   const licenseHealth = asArray(raw.license_health || raw.licenseHealth)
     .map((item) => normalizeLicenseHealthItem(item, skill))
     .filter((item) => item.skillId || item.licenseId);
+  const skillRegistry = asArray(raw.skill_registry || raw.skillRegistry || raw.registry?.skills || raw.skills)
+    .map((item) => normalizeSkillRegistryItem(item, skill))
+    .filter((item) => item.skillId || item.title);
+  const policyGates = asArray(raw.policy_gates || raw.policyGates || raw.policy_gate_table || raw.policyGateTable)
+    .map(normalizePolicyGateItem)
+    .filter((item) => item.gateId || item.name);
+  const recertificationQueue = asArray(raw.recertification_queue || raw.recertificationQueue || raw.recertifications)
+    .map(normalizeRecertificationItem)
+    .filter((item) => item.queueId || item.skillId);
+  const auditExports = asArray(raw.audit_exports || raw.auditExports || raw.audit_export_panel || raw.auditExportPanel)
+    .map(normalizeAuditExportItem)
+    .filter((item) => item.exportId || item.title);
+  const complianceEvidencePack = normalizeComplianceEvidencePack(raw.compliance_evidence_pack || raw.complianceEvidencePack || raw.compliance_export || raw.complianceExport);
   const fallbackLicenseHealth = licenseHealth.length || !skill
     ? licenseHealth
     : [normalizeLicenseHealthItem({
@@ -468,10 +568,18 @@ function normalizeGovernanceState(state, skill, workspaceSlug) {
       expiredLicenseCount: Number(rawMetrics.expired_license_count ?? rawMetrics.expiredLicenseCount ?? fallbackLicenseHealth.filter((item) => ['expired', 'revoked'].includes(item.status)).length),
       pendingApprovalCount: Number(rawMetrics.pending_approval_count ?? rawMetrics.pendingApprovalCount ?? raw.approvalCount ?? approvalQueue.length),
       caseLawReviewCount: Number(rawMetrics.case_law_review_count ?? rawMetrics.caseLawReviewCount ?? caseLawReviewQueue.length),
+      policyGateCount: Number(rawMetrics.policy_gate_count ?? rawMetrics.policyGateCount ?? policyGates.length),
+      recertificationCount: Number(rawMetrics.recertification_count ?? rawMetrics.recertificationCount ?? recertificationQueue.length),
+      complianceArtifactCount: Number(rawMetrics.compliance_artifact_count ?? rawMetrics.complianceArtifactCount ?? complianceEvidencePack.artifacts.length),
     },
     licenseHealth: fallbackLicenseHealth,
     approvalQueue,
     caseLawReviewQueue,
+    skillRegistry: skillRegistry.length || !skill ? skillRegistry : [normalizeSkillRegistryItem({}, skill)],
+    policyGates,
+    recertificationQueue,
+    auditExports,
+    complianceEvidencePack,
   };
 }
 
