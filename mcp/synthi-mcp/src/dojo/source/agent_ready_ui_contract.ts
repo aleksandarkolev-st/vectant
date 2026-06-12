@@ -91,7 +91,10 @@ function lintAction(
   if (action.risk === "dangerous" && action.blocked_contexts.length === 0) {
     issues.push(errorIssue("ui_blocked_contexts_required_for_dangerous_action", "Dangerous actions require explicit blocked contexts.", action.affordance_id));
   }
-  if (action.proof_required !== (action.risk !== "safe" || action.approval_policy !== "none")) {
+  const proofRequiredByPolicy = action.risk !== "safe" || action.approval_policy !== "none";
+  if (proofRequiredByPolicy && !action.proof_required) {
+    issues.push(errorIssue("ui_proof_required_for_risky_action", "Risky or approval-gated actions must require proof.", action.affordance_id));
+  } else if (!proofRequiredByPolicy && action.proof_required) {
     issues.push(warnIssue("ui_proof_requirement_review_recommended", "Proof requirement should match risk and approval policy.", action.affordance_id));
   }
 }

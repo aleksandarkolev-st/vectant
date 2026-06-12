@@ -25,6 +25,27 @@ describe("Dojo Agent-Ready UI Contract linter", () => {
     }));
   });
 
+  it("fails risky actions that provide a proof hook but opt out of proof", () => {
+    const contract = contractFixture({
+      actions: [{
+        ...actionFixture(),
+        proof_required: false,
+        proof_hook: "assertDojoProof",
+      }],
+    });
+
+    expect(validateAgentReadyUiContract(contract)).toEqual(expect.objectContaining({
+      ok: false,
+      issues: expect.arrayContaining([
+        expect.objectContaining({
+          severity: "error",
+          issue_id: "ui_proof_required_for_risky_action",
+          affordance_id: "invoice.save",
+        }),
+      ]),
+    }));
+  });
+
   it("fails missing stable locator, success hook, accessibility label, and blocked contexts", () => {
     const contract = contractFixture({
       actions: [{
