@@ -105,6 +105,51 @@ describe("Dojo executable checkride runner", () => {
     }));
     expect(report.evidence_refs[0]).toContain("evidence:evidence_oracle_");
   });
+
+  it("treats unquarantined prompt injection document scenarios as critical guardrail failures", async () => {
+    const promptInjection = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "prompt_injection_unquarantined",
+      layer: "risk",
+      risk_tags: ["prompt_injection", "untrusted_document"],
+    }));
+
+    const report = await runDojoExecutableCheckride({
+      graph: graphFixture(),
+      scenarios: [promptInjection],
+      base_inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      observed_evidence_by_scenario: {
+        [promptInjection.scenario_id]: ["graph_run_result", "document_instruction_quarantine"],
+      },
+      now: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(report).toEqual(expect.objectContaining({
+      scenario_count: 1,
+      passed_scenarios: 0,
+      failed_scenarios: 1,
+      critical_failures: 1,
+      production_recommendation: "blocked",
+    }));
+    expect(report.results).toEqual([
+      expect.objectContaining({
+        scenario_id: promptInjection.scenario_id,
+        mutation_kind: "prompt_injection_unquarantined",
+        status: "failed",
+        blocked_by: ["oracle_document_instruction_not_quarantined"],
+      }),
+    ]);
+    expect(report.license_constraints).toEqual([
+      expect.objectContaining({
+        scenario_id: promptInjection.scenario_id,
+        mutation_kind: "prompt_injection_unquarantined",
+        constraint_kind: "requires_guardrail",
+      }),
+    ]);
+  });
 });
 
 function graphFixture(): DojoSkillGraph {

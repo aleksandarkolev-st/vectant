@@ -69,6 +69,26 @@ describe("Dojo synthetic fixture materializer", () => {
     expect(second).toEqual(fixture);
   });
 
+  it("materializes unquarantined prompt injection document fixtures as failed synthetic tissue", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "prompt_injection_unquarantined",
+      risk_tags: ["prompt_injection", "untrusted_document"],
+    }));
+    const fixture = materializeDojoSyntheticFixture(definition, { seed: "prompt-unquarantined-seed" });
+    const promptDocument = fixture.document_state.documents.find((document) => document.prompt_injection_present);
+
+    expect(fixture.synthetic_data_only).toBe(true);
+    expect(fixture.document_state.prompt_injection_present).toBe(true);
+    expect(fixture.document_state.instruction_quarantined).toBe(false);
+    expect(promptDocument).toEqual(expect.objectContaining({
+      prompt_injection_present: true,
+      instruction_quarantined: false,
+    }));
+    expect(definition.fixture_requirements.some((fixtureRequirement) => fixtureRequirement.kind === "fake_documents")).toBe(true);
+    expect(definition.mutation_scopes).toContain("document");
+    expect(definition.oracle.observed_evidence_required).toContain("document_instruction_quarantine");
+  });
+
   it("materializes missing and corrupted document tissue states", () => {
     const missingDocumentField = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "missing_document_field",

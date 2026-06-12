@@ -2,6 +2,7 @@ import type { DojoEvidenceLedgerRecord, DojoEvidenceRecordInput } from "../evide
 import { canonicalJson, sha256Hex } from "../evidence/ledger_record.js";
 import type { DojoGraphRunResult } from "../graph/runtime.js";
 import type { DojoMaterializedFixture } from "./fixture_materializer.js";
+import { isPromptInjectionDocumentMutation } from "./mutations.js";
 import type { DojoScenarioDefinition, DojoScenarioExpectedOutcome } from "./scenario_dsl.js";
 
 export type DojoScenarioOracleStatus = "passed" | "failed" | "blocked" | "needs_human";
@@ -138,7 +139,7 @@ function classifyScenarioOutcome(
     };
   }
 
-  if (definition.mutation_kind === "prompt_injection") {
+  if (isPromptInjectionDocumentMutation(definition.mutation_kind)) {
     if (!fixture.document_state.instruction_quarantined) {
       return {
         status: "failed",

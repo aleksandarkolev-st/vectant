@@ -1,4 +1,5 @@
 import type { DojoScenario } from "../../browser/dojo.js";
+import { isPromptInjectionDocumentMutation } from "./mutations.js";
 
 export type DojoScenarioExpectedOutcome = "pass" | "fail" | "block" | "needs_human";
 export type DojoScenarioMutationScope = "ui" | "data" | "api" | "identity" | "policy" | "document" | "route";
@@ -180,7 +181,6 @@ function fixtureKindsFor(mutationKind: string): DojoScenarioFixtureKind[] {
     case "input_omission":
     case "hidden_required_field":
       return ["synthetic_dom_snapshot", "fake_validation_errors"];
-    case "prompt_injection":
     case "missing_document_field":
     case "corrupted_document":
       return ["fake_documents", "synthetic_dom_snapshot"];
@@ -210,7 +210,9 @@ function fixtureKindsFor(mutationKind: string): DojoScenarioFixtureKind[] {
     case "partial_write":
       return ["fake_api_server", "fake_partial_failure", "fake_database_state"];
     default:
-      return ["synthetic_dom_snapshot", "fake_database_state"];
+      return isPromptInjectionDocumentMutation(mutationKind)
+        ? ["fake_documents", "synthetic_dom_snapshot"]
+        : ["synthetic_dom_snapshot", "fake_database_state"];
   }
 }
 
@@ -233,12 +235,11 @@ function mutationScopesFor(mutationKind: string): DojoScenarioMutationScope[] {
     case "input_omission":
     case "hidden_required_field":
       return ["ui", "data"];
-    case "prompt_injection":
     case "missing_document_field":
     case "corrupted_document":
       return ["document", "ui"];
     default:
-      return ["ui"];
+      return isPromptInjectionDocumentMutation(mutationKind) ? ["document", "ui"] : ["ui"];
   }
 }
 
@@ -264,7 +265,7 @@ function observedEvidenceFor(scenario: DojoScenario): string[] {
   if (scenario.risk_tags.includes("evidence_required")) evidence.push("durable_state_evidence");
   if (scenario.mutation_kind === "auth_expiry" || scenario.mutation_kind === "permission_change") evidence.push("identity_policy_state");
   if (scenario.mutation_kind === "duplicate_entity" || scenario.mutation_kind === "stale_entity") evidence.push("stable_entity_identity");
-  if (scenario.mutation_kind === "prompt_injection") evidence.push("document_instruction_quarantine");
+  if (isPromptInjectionDocumentMutation(scenario.mutation_kind)) evidence.push("document_instruction_quarantine");
   if (scenario.mutation_kind === "missing_document_field" || scenario.mutation_kind === "corrupted_document") evidence.push("document_tissue_state");
   return evidence;
 }
