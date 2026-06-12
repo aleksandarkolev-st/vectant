@@ -195,7 +195,7 @@ running `kubectl apply -k k8s/` directly:
 # Local operator deploy from the current checkout.
 scripts/deploy-prod.sh
 
-# Push the current commit to cloud-deploy first, then deploy the same local snapshot.
+# Push the current commit to main first, then deploy the same local snapshot.
 scripts/deploy-prod.sh --push
 
 # Use an explicit immutable image tag.
@@ -212,14 +212,14 @@ production defaults:
 | Registry | `europe-west10-docker.pkg.dev/vectant-proj/synthi` |
 | Cluster | `synthi-beta-cluster` |
 | Cluster location | `europe-west10-a` |
-| Deploy branch | `cloud-deploy` |
+| Deploy branch | `main` |
 
 The script refuses dirty local deploys by default because Cloud Build uploads
 the local checkout snapshot. Use `--allow-dirty` only when you intentionally
 want to deploy uncommitted local files.
 
 The repo also includes `.github/workflows/deploy-prod.yml`. It submits the same
-Cloud Build pipeline on every push to `cloud-deploy`, and can also be run
+Cloud Build pipeline on every push to `main`, and can also be run
 manually from GitHub Actions. Configure these repository secrets before using it:
 
 | Secret | Purpose |

@@ -3,7 +3,7 @@ name: Deploy Production
 on:
   push:
     branches:
-      - cloud-deploy
+      - main
   workflow_dispatch:
     inputs:
       image_tag:
