@@ -15,6 +15,7 @@ describe("Dojo graph runtime skeleton", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
+        license_allowed_substrates: ["dom"],
         assertion_results: { assert_submission_state: true },
       },
       proof_capsule: { capsule_id: "capsule-a" },
@@ -40,6 +41,7 @@ describe("Dojo graph runtime skeleton", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
+        license_allowed_substrates: ["dom"],
         assertion_results: { assert_submission_state: true },
       },
       proof_capsule: { capsule_id: "capsule-a" },
@@ -63,6 +65,7 @@ describe("Dojo graph runtime skeleton", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
+        license_allowed_substrates: ["dom"],
         assertion_results: { assert_submission_state: true },
       },
       proof_capsule: { capsule_id: "capsule-a" },

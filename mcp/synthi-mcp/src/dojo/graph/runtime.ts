@@ -245,7 +245,7 @@ export class DojoSkillGraphRuntime {
       }
 
       if (node.kind === "Action") {
-        const substrateResult = await substrateExecutor.execute({ node, inputs });
+        const substrateResult = await substrateExecutor.execute({ node, mode, inputs });
         if (!substrateResult.ok) {
           const substrateNodeResult: DojoGraphNodeRunResult = {
             ...result,

@@ -15,6 +15,7 @@ describe("Dojo substrate executor", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
+        license_allowed_substrates: ["api"],
         assertion_results: { assert_submission_state: true },
       },
       proof_capsule: { capsule_id: "capsule-a" },
@@ -24,6 +25,26 @@ describe("Dojo substrate executor", () => {
       ok: false,
       status: "blocked",
       blocked_by: ["api_candidate_not_approved"],
+    }));
+  });
+
+  it("rejects production substrate execution without an explicit license substrate policy", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["dom"] }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["license_substrate_policy_missing"],
     }));
   });
 
@@ -58,6 +79,7 @@ describe("Dojo substrate executor", () => {
         workspace_verified: true,
         client_id_verified: true,
         approved_api_candidates: ["api-a"],
+        license_allowed_substrates: ["api"],
         assertion_results: { assert_submission_state: true },
       },
       proof_capsule: { capsule_id: "capsule-a" },
@@ -86,6 +108,7 @@ describe("Dojo substrate executor", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
+        license_allowed_substrates: ["api"],
         compiled_api_tool: tool,
         api_tool_args: {
           proof_capsule: proofCapsuleFixture(),
@@ -121,6 +144,7 @@ describe("Dojo substrate executor", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
+        license_allowed_substrates: ["api"],
         compiled_api_tool: tool,
         api_tool_args: {
           proof_capsule: proofCapsuleFixture(),
@@ -150,6 +174,7 @@ describe("Dojo substrate executor", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
+        license_allowed_substrates: ["api"],
         compiled_api_tool: tool,
         api_tool_args: {
           proof_capsule: { ...proofCapsuleFixture(), requested_action: "delete_invoice" },
@@ -179,6 +204,7 @@ describe("Dojo substrate executor", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
+        license_allowed_substrates: ["api"],
         compiled_api_tool: tool,
         api_tool_args: {
           proof_capsule: proofCapsuleFixture(),

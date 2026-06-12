@@ -1,4 +1,4 @@
-import type { DojoGraphNode } from "./types.js";
+import type { DojoGraphMode, DojoGraphNode } from "./types.js";
 import {
   validateDojoApiBackedToolInvocation,
   type DojoApiBackedMcpTool,
@@ -9,6 +9,7 @@ export type DojoExecutionSubstrate = "vision" | "dom" | "source" | "api" | "mcp"
 
 export interface DojoSubstrateExecutionRequest {
   node: DojoGraphNode;
+  mode?: DojoGraphMode;
   inputs: Record<string, unknown>;
 }
 
@@ -26,10 +27,11 @@ export interface DojoSubstrateExecutor {
 
 export class FakeDojoSubstrateExecutor implements DojoSubstrateExecutor {
   async execute(request: DojoSubstrateExecutionRequest): Promise<DojoSubstrateExecutionResult> {
-    const substrate = selectSubstrate(request.node, request.inputs);
-    if (!substrate) {
-      return blocked(["substrate_not_allowed"]);
+    const selection = selectSubstrate(request.node, request.inputs, request.mode ?? "practice");
+    if (!selection.ok) {
+      return blocked(selection.blocked_by);
     }
+    const substrate = selection.substrate;
     if (substrate === "api") {
       const apiValidation = apiSubstrateApproved(request.node, request.inputs);
       if (!apiValidation.ok) return blocked(apiValidation.blocked_by, substrate);
@@ -48,22 +50,35 @@ export function createFakeDojoSubstrateExecutor(): DojoSubstrateExecutor {
   return new FakeDojoSubstrateExecutor();
 }
 
-function selectSubstrate(node: DojoGraphNode, inputs: Record<string, unknown>): DojoExecutionSubstrate | null {
+type DojoSubstrateSelection =
+  | { ok: true; substrate: DojoExecutionSubstrate }
+  | { ok: false; blocked_by: string[] };
+
+function selectSubstrate(
+  node: DojoGraphNode,
+  inputs: Record<string, unknown>,
+  mode: DojoGraphMode
+): DojoSubstrateSelection {
   const nodeSubstrates = node.substrate_options.filter(isExecutionSubstrate);
-  if (nodeSubstrates.length === 0) return null;
-  const allowed = allowedSubstrates(inputs);
+  if (nodeSubstrates.length === 0) return { ok: false, blocked_by: ["substrate_not_allowed"] };
+  const allowed = allowedSubstrates(inputs, mode);
+  if (!allowed) return { ok: false, blocked_by: ["license_substrate_policy_missing"] };
   const requested = requestedSubstrate(inputs);
   if (requested) {
-    return nodeSubstrates.includes(requested) && allowed.includes(requested) ? requested : null;
+    return nodeSubstrates.includes(requested) && allowed.includes(requested)
+      ? { ok: true, substrate: requested }
+      : { ok: false, blocked_by: ["substrate_not_allowed"] };
   }
-  return nodeSubstrates.find((substrate) => allowed.includes(substrate)) ?? null;
+  const selected = nodeSubstrates.find((substrate) => allowed.includes(substrate));
+  return selected ? { ok: true, substrate: selected } : { ok: false, blocked_by: ["substrate_not_allowed"] };
 }
 
-function allowedSubstrates(inputs: Record<string, unknown>): DojoExecutionSubstrate[] {
+function allowedSubstrates(inputs: Record<string, unknown>, mode: DojoGraphMode): DojoExecutionSubstrate[] | null {
   const value = inputs["license_allowed_substrates"];
   if (Array.isArray(value)) {
     return value.filter(isExecutionSubstrate);
   }
+  if (mode === "production") return null;
   return ["vision", "dom", "source", "api", "mcp"];
 }
 
