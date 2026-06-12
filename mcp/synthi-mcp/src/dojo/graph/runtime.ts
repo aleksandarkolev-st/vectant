@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   type DojoGraphEdge,
   type DojoGraphNode,
@@ -36,8 +37,10 @@ export interface DojoGraphRunResult {
   ok: boolean;
   status: DojoGraphRunStatus;
   mode: DojoGraphMode;
+  run_id: string;
   node_results: DojoGraphNodeRunResult[];
   blocked_by: string[];
+  evidence_refs: string[];
   resume_state?: DojoGraphResumeState;
 }
 
@@ -68,8 +71,29 @@ export interface DojoGraphResumeState {
   completed_node_ids: string[];
 }
 
+export interface DojoGraphEvidenceEvent {
+  schema_version: "synthi.dojo.graphEvidenceEvent.v1";
+  run_id: string;
+  graph_id: string;
+  skill_id: string;
+  graph_version: string;
+  node_id: string;
+  node_kind: DojoGraphNode["kind"];
+  status: DojoGraphNodeRunStatus;
+  blocked_by: string[];
+  evidence_policy: string[];
+  assertion_ids: string[];
+  substrate_status?: DojoSubstrateExecutionResult["status"];
+  created_at: string;
+}
+
+export type DojoGraphEvidenceWriter = (
+  event: DojoGraphEvidenceEvent
+) => string | void | Promise<string | void>;
+
 export interface DojoSkillGraphRuntimeInput {
   graph: DojoSkillGraph;
+  run_id?: string;
   mode?: DojoGraphMode;
   inputs?: Record<string, unknown>;
   expiry_state?: DojoGraphExpiryState;
@@ -79,6 +103,7 @@ export interface DojoSkillGraphRuntimeInput {
   proof_validator?: DojoGraphProofValidator;
   allow_self_attested_proof?: boolean;
   substrate_executor?: DojoSubstrateExecutor;
+  evidence_writer?: DojoGraphEvidenceWriter;
 }
 
 export class DojoSkillGraphRuntime {
@@ -89,25 +114,29 @@ export class DojoSkillGraphRuntime {
   async execute(input: DojoSkillGraphRuntimeInput): Promise<DojoGraphRunResult> {
     const mode = input.mode ?? input.graph.mode;
     const graph = { ...input.graph, mode };
+    const runId = input.run_id ?? createGraphRunId(graph);
     const validation = validateDojoSkillGraph(graph);
     if (!validation.ok) {
       return {
         ok: false,
         status: "blocked",
         mode,
+        run_id: runId,
         node_results: [],
         blocked_by: validation.issues.filter((issue) => issue.severity === "error").map((issue) => issue.issue_id),
+        evidence_refs: [],
       };
     }
 
     const inputs = input.inputs ?? {};
     const substrateExecutor = input.substrate_executor ?? createFakeDojoSubstrateExecutor();
     const nodeResults: DojoGraphNodeRunResult[] = [];
+    const evidenceRefs: string[] = [];
     const skippedNodes = new Map<string, string[]>();
     const resumeCompletedNodeIds = new Set(input.resume_state?.completed_node_ids ?? []);
     for (const node of graph.nodes) {
       if (resumeCompletedNodeIds.has(node.node_id)) {
-        nodeResults.push({
+        const skippedResult: DojoGraphNodeRunResult = {
           node_id: node.node_id,
           kind: node.kind,
           status: "skipped",
@@ -115,13 +144,15 @@ export class DojoSkillGraphRuntime {
           assertion_results: [],
           rollback_decision: noRollbackRequired(),
           control_flow: { skipped_by: ["resume_already_completed"] },
-        });
+        };
+        nodeResults.push(skippedResult);
+        evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, skippedResult));
         continue;
       }
 
       const skippedBy = skippedNodes.get(node.node_id);
       if (skippedBy) {
-        nodeResults.push({
+        const skippedResult: DojoGraphNodeRunResult = {
           node_id: node.node_id,
           kind: node.kind,
           status: "skipped",
@@ -129,7 +160,9 @@ export class DojoSkillGraphRuntime {
           assertion_results: [],
           rollback_decision: noRollbackRequired(),
           control_flow: { skipped_by: skippedBy },
-        });
+        };
+        nodeResults.push(skippedResult);
+        evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, skippedResult));
         continue;
       }
 
@@ -148,12 +181,15 @@ export class DojoSkillGraphRuntime {
       };
       nodeResults.push(result);
       if (blockedBy.length > 0) {
+        evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, result));
         return {
           ok: false,
           status: "blocked",
           mode,
+          run_id: runId,
           node_results: nodeResults,
           blocked_by: blockedBy,
+          evidence_refs: evidenceRefs,
         };
       }
 
@@ -166,12 +202,15 @@ export class DojoSkillGraphRuntime {
             blocked_by: humanDecision.blocked_by,
           };
           nodeResults[nodeResults.length - 1] = pausedResult;
+          evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, pausedResult));
           return {
             ok: false,
             status: "paused",
             mode,
+            run_id: runId,
             node_results: nodeResults,
             blocked_by: humanDecision.blocked_by,
+            evidence_refs: evidenceRefs,
             resume_state: {
               paused_node_id: node.node_id,
               decision_key: humanDecision.decision_key,
@@ -186,12 +225,15 @@ export class DojoSkillGraphRuntime {
             blocked_by: humanDecision.blocked_by,
           };
           nodeResults[nodeResults.length - 1] = blockedResult;
+          evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, blockedResult));
           return {
             ok: false,
             status: "blocked",
             mode,
+            run_id: runId,
             node_results: nodeResults,
             blocked_by: humanDecision.blocked_by,
+            evidence_refs: evidenceRefs,
           };
         }
       }
@@ -206,12 +248,15 @@ export class DojoSkillGraphRuntime {
             substrate_result: substrateResult,
           };
           nodeResults[nodeResults.length - 1] = substrateNodeResult;
+          evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, substrateNodeResult));
           return {
             ok: false,
             status: "blocked",
             mode,
+            run_id: runId,
             node_results: nodeResults,
             blocked_by: substrateResult.blocked_by,
+            evidence_refs: evidenceRefs,
           };
         }
         nodeResults[nodeResults.length - 1] = {
@@ -229,12 +274,15 @@ export class DojoSkillGraphRuntime {
             blocked_by: branchDecision.blocked_by,
           };
           nodeResults[nodeResults.length - 1] = branchResult;
+          evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, branchResult));
           return {
             ok: false,
             status: "blocked",
             mode,
+            run_id: runId,
             node_results: nodeResults,
             blocked_by: branchDecision.blocked_by,
+            evidence_refs: evidenceRefs,
           };
         }
         for (const [nodeId, reasons] of branchDecision.skipped_nodes) {
@@ -264,12 +312,15 @@ export class DojoSkillGraphRuntime {
           rollback_decision: rollbackDecision,
         };
         nodeResults[nodeResults.length - 1] = assertionResult;
+        evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, assertionResult));
         return {
           ok: false,
           status: "blocked",
           mode,
+          run_id: runId,
           node_results: nodeResults,
           blocked_by: blockedWithRollback,
+          evidence_refs: evidenceRefs,
         };
       }
 
@@ -277,16 +328,49 @@ export class DojoSkillGraphRuntime {
         ...nodeResults[nodeResults.length - 1]!,
         assertion_results: assertionResults,
       };
+      evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, nodeResults[nodeResults.length - 1]!));
     }
 
     return {
       ok: true,
       status: "completed",
       mode,
+      run_id: runId,
       node_results: nodeResults,
       blocked_by: [],
+      evidence_refs: evidenceRefs,
     };
   }
+}
+
+async function emitGraphNodeEvidence(
+  input: DojoSkillGraphRuntimeInput,
+  graph: DojoSkillGraph,
+  runId: string,
+  node: DojoGraphNode,
+  result: DojoGraphNodeRunResult
+): Promise<string> {
+  const fallbackRef = `dojo-graph://${runId}/${node.node_id}`;
+  const emittedRef = await input.evidence_writer?.({
+    schema_version: "synthi.dojo.graphEvidenceEvent.v1",
+    run_id: runId,
+    graph_id: graph.graph_id,
+    skill_id: graph.skill_id,
+    graph_version: graph.graph_version,
+    node_id: node.node_id,
+    node_kind: node.kind,
+    status: result.status,
+    blocked_by: result.blocked_by,
+    evidence_policy: [...node.evidence_policy],
+    assertion_ids: result.assertion_results.map((assertion) => assertion.assertion_id),
+    ...(result.substrate_result ? { substrate_status: result.substrate_result.status } : {}),
+    created_at: new Date().toISOString(),
+  });
+  return typeof emittedRef === "string" && emittedRef.trim() ? emittedRef : fallbackRef;
+}
+
+function createGraphRunId(graph: DojoSkillGraph): string {
+  return `dojo_run_${graph.skill_id}_${randomUUID()}`;
 }
 
 function blockedByForNode(

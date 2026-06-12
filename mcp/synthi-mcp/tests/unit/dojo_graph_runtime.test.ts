@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { DojoSkillGraphRuntime, evaluateStaticCondition } from "../../src/dojo/graph/runtime.js";
+import {
+  DojoSkillGraphRuntime,
+  evaluateStaticCondition,
+  type DojoGraphEvidenceEvent,
+} from "../../src/dojo/graph/runtime.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
 
 describe("Dojo graph runtime skeleton", () => {
@@ -24,6 +28,52 @@ describe("Dojo graph runtime skeleton", () => {
       ]),
       blocked_by: [],
     }));
+  });
+
+  it("emits graph run evidence events with stable run and node refs", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const events: DojoGraphEvidenceEvent[] = [];
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      run_id: "graph-run-1",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      evidence_writer: (event) => {
+        events.push(event);
+        return `ledger://${event.run_id}/${event.node_id}`;
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      run_id: "graph-run-1",
+      evidence_refs: [
+        "ledger://graph-run-1/trigger",
+        "ledger://graph-run-1/action_submit",
+      ],
+    }));
+    expect(events).toEqual([
+      expect.objectContaining({
+        schema_version: "synthi.dojo.graphEvidenceEvent.v1",
+        run_id: "graph-run-1",
+        graph_id: "graph-a",
+        skill_id: "skill-a",
+        node_id: "trigger",
+        status: "completed",
+      }),
+      expect.objectContaining({
+        run_id: "graph-run-1",
+        node_id: "action_submit",
+        status: "completed",
+        substrate_status: "executed",
+        assertion_ids: ["assert_submission_state"],
+        evidence_policy: ["append_action_trace"],
+      }),
+    ]);
   });
 
   it("blocks a node when static preconditions fail", async () => {
