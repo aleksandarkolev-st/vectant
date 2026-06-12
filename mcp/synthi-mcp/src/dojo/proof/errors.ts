@@ -47,6 +47,7 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     reason === "proof_capsule_issuer_mismatch" ||
     reason === "proof_capsule_key_mismatch" ||
     reason === "proof_capsule_nonce_missing" ||
+    reason === "proof_capsule_ledger_checkpoint_invalid" ||
     reason === "proof_capsule_expired" ||
     reason === "dojo_proof_capsule_invalid"
   ) {

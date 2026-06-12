@@ -1332,6 +1332,9 @@ export function validateDojoProofCapsule(
     blockedBy.push("proof_capsule_signature_algorithm_mismatch");
   }
   if (!capsule.nonce) blockedBy.push("proof_capsule_nonce_missing");
+  if (capsule.ledger_checkpoint_hash && !isSha256Hex(capsule.ledger_checkpoint_hash)) {
+    blockedBy.push("proof_capsule_ledger_checkpoint_invalid");
+  }
   if (Date.parse(capsule.expires_at) <= Date.parse(now)) blockedBy.push("proof_capsule_expired");
   if (!verifyCapsuleSignature(capsule)) blockedBy.push("proof_capsule_signature_invalid");
 

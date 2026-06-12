@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildDojoSkill,
+  type DojoProofCarryingSkillCapsule,
   issueDojoProofCapsule,
   validateDojoProofCapsule,
 } from "../../src/browser/dojo.js";
@@ -14,7 +15,12 @@ import {
   DOJO_PROOF_SIGNING_PROVIDER_ENV,
   DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
 } from "../../src/dojo/config/enforcement.js";
-import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
+import {
+  canonicalDojoProofPayload,
+  createEd25519DojoProofSigner,
+  encodeDojoProofSignatureEnvelope,
+  generateEd25519DojoProofKeyPair,
+} from "../../src/dojo/proof/signing.js";
 
 const ENV_KEYS = [
   DOJO_PROOF_SIGNING_PROVIDER_ENV,
@@ -57,6 +63,38 @@ describe("Dojo Ed25519 proof capsules", () => {
     expect(capsule.signature).toMatch(/^hmac-sha256:/);
     expect(validateDojoProofCapsule(skill, capsule, "run_workflow", "2026-06-11T00:01:00.000Z")).toEqual(
       expect.objectContaining({ ok: true, status: "allowed" })
+    );
+  });
+
+  it("blocks correctly signed capsules with malformed ledger checkpoint hashes", () => {
+    const keyPair = configureEd25519ProofSigning();
+    const skill = skillFixture();
+    const base = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    const signer = createEd25519DojoProofSigner({
+      key_id: keyPair.key_id,
+      private_key_pem: keyPair.private_key_pem,
+    });
+    const unsigned = {
+      ...base,
+      ledger_checkpoint_hash: "not-a-sha256-ledger-head",
+    };
+    delete (unsigned as Partial<DojoProofCarryingSkillCapsule>).signature;
+    const capsule: DojoProofCarryingSkillCapsule = {
+      ...unsigned,
+      signature: encodeDojoProofSignatureEnvelope(signer.sign(canonicalDojoProofPayload(unsigned))),
+    };
+
+    expect(validateDojoProofCapsule(skill, capsule, "run_workflow", "2026-06-11T00:01:00.000Z")).toEqual(
+      expect.objectContaining({
+        ok: false,
+        status: "blocked",
+        blocked_by: ["proof_capsule_ledger_checkpoint_invalid"],
+        error_codes: ["proof_capsule_invalid"],
+      })
     );
   });
 
