@@ -30,6 +30,7 @@ describe("Dojo redacted evidence export", () => {
         artifact_id: "trace-a",
         artifact_kind: "trace",
         content,
+        artifact_uri: "https://evidence.example.test/trace?access_token=secret-token&snapshot=kept",
         evidence_record: record,
       }],
     });
@@ -38,6 +39,8 @@ describe("Dojo redacted evidence export", () => {
     expect(serialized).not.toContain("secret-token");
     expect(serialized).not.toContain("person@example.test");
     expect(serialized).not.toContain("polek");
+    expect(serialized).toContain("access_token=[REDACTED]");
+    expect(serialized).toContain("snapshot=kept");
     expect(manifest).toEqual(expect.objectContaining({
       schema_version: "synthi.dojo.redactedEvidenceExport.v1",
       tenant_id: "tenant-a",
@@ -49,6 +52,7 @@ describe("Dojo redacted evidence export", () => {
       artifact_id: "trace-a",
       artifact_kind: "trace",
       evidence_record_id: "evidence-a",
+      artifact_uri: "https://evidence.example.test/trace?access_token=[REDACTED]&snapshot=kept",
       original_artifact_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       redacted_artifact_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       redaction_manifest_sha256: record.redaction_manifest_sha256,

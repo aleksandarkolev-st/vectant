@@ -100,7 +100,7 @@ function buildExportItem(input: {
     artifact_id: artifactId,
     artifact_kind: input.artifact.artifact_kind,
     evidence_record_id: input.artifact.evidence_record?.record_id ?? null,
-    artifact_uri: input.artifact.artifact_uri ?? input.artifact.evidence_record?.artifact_uri ?? null,
+    artifact_uri: redactedArtifactUri(input.artifact.artifact_uri ?? input.artifact.evidence_record?.artifact_uri ?? null, input.generated_at),
     original_artifact_sha256: originalArtifactSha256,
     redacted_artifact_sha256: redactedArtifactSha256,
     redaction_manifest_sha256: redactionManifestSha256,
@@ -109,6 +109,16 @@ function buildExportItem(input: {
     rules_applied: redaction.manifest.rules_applied,
     source_refs: [...new Set(input.artifact.source_refs ?? input.artifact.evidence_record?.source_refs ?? [])].sort(),
   };
+}
+
+function redactedArtifactUri(value: string | null, generatedAt: string): string | null {
+  if (!value) return null;
+  const redaction = redactDojoEvidenceArtifact({
+    artifact_kind: "file_name",
+    content: value,
+    created_at: generatedAt,
+  });
+  return typeof redaction.redacted_content === "string" ? redaction.redacted_content : value;
 }
 
 function validateEvidenceRecordBinding(input: {

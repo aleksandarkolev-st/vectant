@@ -112,6 +112,13 @@ function redactValue(value: unknown, counts: RedactionCounts, keyHint = ""): unk
 function redactString(value: string, counts: RedactionCounts): string {
   let next = replaceWithCount(value, /\bBearer\s+[A-Za-z0-9._~+/=-]+\b/g, "Bearer [REDACTED_TOKEN]", counts, "bearer_token");
   next = replaceWithCount(next, /\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "[REDACTED_TOKEN]", counts, "jwt_token");
+  next = replaceWithCount(
+    next,
+    /([?&](?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|token|secret|password|session|sid|code)=)[^&#\s"'<>)]*/gi,
+    (_match, prefix: string) => `${prefix}[REDACTED]`,
+    counts,
+    "sensitive_url_param"
+  );
   next = replaceWithCount(next, /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]", counts, "email_address");
   next = replaceWithCount(next, /([A-Za-z]:\\Users\\)[^\\\s]+/g, (_match, prefix: string) => `${prefix}[REDACTED_USER]`, counts, "local_file_path");
   next = replaceWithCount(next, /(\/Users\/)[^/\s]+/g, (_match, prefix: string) => `${prefix}[REDACTED_USER]`, counts, "local_file_path");

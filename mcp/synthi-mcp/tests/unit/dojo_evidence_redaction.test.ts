@@ -64,6 +64,8 @@ describe("Dojo evidence redaction", () => {
       content: [
         "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
         "JWT aaaaaaaaaaaaaaaa.bbbbbbbb.cccccccc",
+        "Callback https://app.example.test/oauth/callback?access_token=secret-access-token&state=kept",
+        "Image /pixel.gif?sid=session-secret&size=small",
         "Email finance@example.test",
         "Path /Users/polek/Downloads/report.pdf",
       ].join("\n"),
@@ -71,9 +73,17 @@ describe("Dojo evidence redaction", () => {
 
     expect(result.redacted_content).toContain("Bearer [REDACTED_TOKEN]");
     expect(result.redacted_content).toContain("JWT [REDACTED_TOKEN]");
+    expect(result.redacted_content).toContain("access_token=[REDACTED]");
+    expect(result.redacted_content).toContain("sid=[REDACTED]");
+    expect(result.redacted_content).toContain("state=kept");
+    expect(result.redacted_content).not.toContain("secret-access-token");
+    expect(result.redacted_content).not.toContain("session-secret");
     expect(result.redacted_content).toContain("[REDACTED_EMAIL]");
     expect(result.redacted_content).toContain("/Users/[REDACTED_USER]/Downloads/report.pdf");
-    expect(result.manifest.redaction_count).toBeGreaterThanOrEqual(4);
+    expect(result.manifest.rules_applied).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rule_id: "sensitive_url_param", count: 2 }),
+    ]));
+    expect(result.manifest.redaction_count).toBeGreaterThanOrEqual(6);
   });
 
   it("detects redacted content or manifest tampering", () => {
