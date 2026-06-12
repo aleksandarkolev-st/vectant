@@ -14,8 +14,8 @@ import {
   type DojoSubstrateExecutor,
 } from "./substrate_executor.js";
 
-export type DojoGraphNodeRunStatus = "completed" | "blocked" | "skipped";
-export type DojoGraphRunStatus = "completed" | "blocked" | "failed";
+export type DojoGraphNodeRunStatus = "completed" | "blocked" | "skipped" | "paused";
+export type DojoGraphRunStatus = "completed" | "blocked" | "failed" | "paused";
 
 export interface DojoGraphNodeRunResult {
   node_id: string;
@@ -38,6 +38,7 @@ export interface DojoGraphRunResult {
   mode: DojoGraphMode;
   node_results: DojoGraphNodeRunResult[];
   blocked_by: string[];
+  resume_state?: DojoGraphResumeState;
 }
 
 export interface DojoGraphProofValidationResult {
@@ -59,11 +60,21 @@ export interface DojoGraphExpiryState {
   expired_triggers?: string[];
 }
 
+export type DojoHumanDecision = "approved" | "denied";
+
+export interface DojoGraphResumeState {
+  paused_node_id: string;
+  decision_key: string;
+  completed_node_ids: string[];
+}
+
 export interface DojoSkillGraphRuntimeInput {
   graph: DojoSkillGraph;
   mode?: DojoGraphMode;
   inputs?: Record<string, unknown>;
   expiry_state?: DojoGraphExpiryState;
+  human_decisions?: Record<string, DojoHumanDecision>;
+  resume_state?: DojoGraphResumeState;
   proof_capsule?: unknown;
   proof_validator?: DojoGraphProofValidator;
   allow_self_attested_proof?: boolean;
@@ -93,7 +104,21 @@ export class DojoSkillGraphRuntime {
     const substrateExecutor = input.substrate_executor ?? createFakeDojoSubstrateExecutor();
     const nodeResults: DojoGraphNodeRunResult[] = [];
     const skippedNodes = new Map<string, string[]>();
+    const resumeCompletedNodeIds = new Set(input.resume_state?.completed_node_ids ?? []);
     for (const node of graph.nodes) {
+      if (resumeCompletedNodeIds.has(node.node_id)) {
+        nodeResults.push({
+          node_id: node.node_id,
+          kind: node.kind,
+          status: "skipped",
+          blocked_by: [],
+          assertion_results: [],
+          rollback_decision: noRollbackRequired(),
+          control_flow: { skipped_by: ["resume_already_completed"] },
+        });
+        continue;
+      }
+
       const skippedBy = skippedNodes.get(node.node_id);
       if (skippedBy) {
         nodeResults.push({
@@ -130,6 +155,45 @@ export class DojoSkillGraphRuntime {
           node_results: nodeResults,
           blocked_by: blockedBy,
         };
+      }
+
+      if (node.kind === "Human") {
+        const humanDecision = humanDecisionForNode(node, input.human_decisions);
+        if (humanDecision.status === "paused") {
+          const pausedResult: DojoGraphNodeRunResult = {
+            ...result,
+            status: "paused",
+            blocked_by: humanDecision.blocked_by,
+          };
+          nodeResults[nodeResults.length - 1] = pausedResult;
+          return {
+            ok: false,
+            status: "paused",
+            mode,
+            node_results: nodeResults,
+            blocked_by: humanDecision.blocked_by,
+            resume_state: {
+              paused_node_id: node.node_id,
+              decision_key: humanDecision.decision_key,
+              completed_node_ids: completedNodeIdsForResume(nodeResults),
+            },
+          };
+        }
+        if (humanDecision.status === "blocked") {
+          const blockedResult: DojoGraphNodeRunResult = {
+            ...result,
+            status: "blocked",
+            blocked_by: humanDecision.blocked_by,
+          };
+          nodeResults[nodeResults.length - 1] = blockedResult;
+          return {
+            ok: false,
+            status: "blocked",
+            mode,
+            node_results: nodeResults,
+            blocked_by: humanDecision.blocked_by,
+          };
+        }
       }
 
       if (node.kind === "Action") {
@@ -260,6 +324,47 @@ function expiryBlockedByForNode(node: DojoGraphNode, expiryState?: DojoGraphExpi
   const expiredTriggers = new Set(expiryState.expired_triggers ?? []);
   const activeTrigger = node.expiry_triggers.find((trigger) => expiredTriggers.has(trigger));
   return activeTrigger ? [`expiry_trigger_active:${activeTrigger}`] : [];
+}
+
+type DojoHumanNodeDecision =
+  | {
+      status: "approved";
+      decision_key: string;
+      blocked_by: [];
+    }
+  | {
+      status: "paused" | "blocked";
+      decision_key: string;
+      blocked_by: string[];
+    };
+
+function humanDecisionForNode(
+  node: DojoGraphNode,
+  humanDecisions?: Record<string, DojoHumanDecision>
+): DojoHumanNodeDecision {
+  const decisionKey = stringMetadata(node, "decision_key") ?? node.node_id;
+  const decision = humanDecisions?.[decisionKey];
+  if (decision === "approved") {
+    return { status: "approved", decision_key: decisionKey, blocked_by: [] };
+  }
+  if (decision === "denied") {
+    return {
+      status: "blocked",
+      decision_key: decisionKey,
+      blocked_by: [`human_decision_denied:${decisionKey}`],
+    };
+  }
+  return {
+    status: "paused",
+    decision_key: decisionKey,
+    blocked_by: [`human_decision_required:${decisionKey}`],
+  };
+}
+
+function completedNodeIdsForResume(nodeResults: DojoGraphNodeRunResult[]): string[] {
+  return nodeResults
+    .filter((result) => result.status === "completed")
+    .map((result) => result.node_id);
 }
 
 function retryBlockedByForNode(node: DojoGraphNode, inputs: Record<string, unknown>): string[] {

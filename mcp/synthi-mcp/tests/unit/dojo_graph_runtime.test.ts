@@ -289,6 +289,80 @@ describe("Dojo graph runtime skeleton", () => {
     }));
   });
 
+  it("pauses at a human node and returns resume state when approval is missing", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: humanGraphFixture(),
+      mode: "practice",
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "paused",
+      blocked_by: ["human_decision_required:supervisor_approval"],
+      resume_state: {
+        paused_node_id: "human_approval",
+        decision_key: "supervisor_approval",
+        completed_node_ids: ["trigger"],
+      },
+      node_results: expect.arrayContaining([
+        expect.objectContaining({ node_id: "trigger", status: "completed" }),
+        expect.objectContaining({
+          node_id: "human_approval",
+          status: "paused",
+          blocked_by: ["human_decision_required:supervisor_approval"],
+        }),
+      ]),
+    }));
+  });
+
+  it("resumes after human approval without rerunning completed nodes", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: humanGraphFixture(),
+      mode: "practice",
+      resume_state: {
+        paused_node_id: "human_approval",
+        decision_key: "supervisor_approval",
+        completed_node_ids: ["trigger"],
+      },
+      human_decisions: { supervisor_approval: "approved" },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "trigger",
+          status: "skipped",
+          control_flow: expect.objectContaining({ skipped_by: ["resume_already_completed"] }),
+        }),
+        expect.objectContaining({ node_id: "human_approval", status: "completed" }),
+        expect.objectContaining({ node_id: "action_after_approval", status: "completed" }),
+      ]),
+    }));
+  });
+
+  it("blocks when a human decision is denied", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: humanGraphFixture(),
+      mode: "practice",
+      human_decisions: { supervisor_approval: "denied" },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["human_decision_denied:supervisor_approval"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "human_approval",
+          status: "blocked",
+          blocked_by: ["human_decision_denied:supervisor_approval"],
+        }),
+      ]),
+    }));
+  });
+
   it("blocks execution when graph validation fails", async () => {
     const runtime = new DojoSkillGraphRuntime();
     const invalid = graphFixture();
@@ -381,6 +455,42 @@ function graphFixture(): DojoSkillGraph {
         edge_id: "edge_trigger_action",
         from_node_id: "trigger",
         to_node_id: "action_submit",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function humanGraphFixture(): DojoSkillGraph {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-human",
+    skill_id: "skill-human",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "practice",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      safeNode("trigger", "Trigger", "Skill invocation"),
+      {
+        ...safeNode("human_approval", "Human", "Request supervisor approval"),
+        metadata: { decision_key: "supervisor_approval" },
+      },
+      safeNode("action_after_approval", "Action", "Submit after approval"),
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_human",
+        from_node_id: "trigger",
+        to_node_id: "human_approval",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_human_action",
+        from_node_id: "human_approval",
+        to_node_id: "action_after_approval",
         confidence: 1,
         observed_variants: [],
       },
