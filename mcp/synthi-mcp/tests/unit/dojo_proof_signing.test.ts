@@ -4,7 +4,9 @@ import {
   createEd25519DojoProofSigner,
   createEd25519DojoProofVerifier,
   createLocalHmacDojoProofSigner,
+  encodeDojoProofSignatureEnvelope,
   generateEd25519DojoProofKeyPair,
+  parseDojoProofSignatureEnvelope,
 } from "../../src/dojo/proof/signing.js";
 
 describe("Dojo proof signing", () => {
@@ -54,6 +56,34 @@ describe("Dojo proof signing", () => {
     });
 
     expect(verifier.verify(payload(), signer.sign(payload()))).toBe(false);
+  });
+
+  it("encodes and parses signature envelopes without breaking legacy HMAC signatures", () => {
+    const hmacSigner = createLocalHmacDojoProofSigner({ key: "unit-test-key", key_id: "hmac-key-a" });
+    const hmacSignature = hmacSigner.sign(payload());
+    const hmacEncoded = encodeDojoProofSignatureEnvelope(hmacSignature);
+
+    expect(hmacEncoded).toMatch(/^hmac-sha256:/);
+    expect(parseDojoProofSignatureEnvelope({
+      algorithm: "hmac-sha256",
+      key_id: "hmac-key-a",
+      signature: hmacEncoded,
+    })).toEqual(hmacSignature);
+
+    const keyPair = generateEd25519DojoProofKeyPair("ed-key-a");
+    const edSigner = createEd25519DojoProofSigner({
+      key_id: keyPair.key_id,
+      private_key_pem: keyPair.private_key_pem,
+    });
+    const edSignature = edSigner.sign(payload());
+    const edEncoded = encodeDojoProofSignatureEnvelope(edSignature);
+
+    expect(edEncoded).toMatch(/^ed25519:ed-key-a:/);
+    expect(parseDojoProofSignatureEnvelope({
+      algorithm: "ed25519",
+      key_id: "fallback-key",
+      signature: edEncoded,
+    })).toEqual(edSignature);
   });
 
   it("rejects local/default signers for production use", () => {

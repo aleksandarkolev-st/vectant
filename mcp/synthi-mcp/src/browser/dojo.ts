@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { PrivateWorkflowToolManifestV7 } from "./private_tool_manifest.js";
 import type { WorkflowContractV7, WorkflowLimitationV7, WorkflowStepContractV7 } from "./workflow.js";
 import {
@@ -25,6 +25,11 @@ import {
   buildDojoRedactedEvidenceExportManifest,
   type DojoRedactedEvidenceExportManifest,
 } from "../dojo/evidence/export.js";
+import {
+  createLocalHmacDojoProofSigner,
+  encodeDojoProofSignatureEnvelope,
+  parseDojoProofSignatureEnvelope,
+} from "../dojo/proof/signing.js";
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 import { toDojoScenarioDefinitions } from "../dojo/vivarium/scenario_dsl.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
@@ -1250,7 +1255,7 @@ export function validateDojoProofCapsule(
   if (capsule.signature_algorithm !== "hmac-sha256") blockedBy.push("proof_capsule_signature_algorithm_mismatch");
   if (!capsule.nonce) blockedBy.push("proof_capsule_nonce_missing");
   if (Date.parse(capsule.expires_at) <= Date.parse(now)) blockedBy.push("proof_capsule_expired");
-  if (capsule.signature !== signatureForCapsule(unsignedCapsule(capsule))) blockedBy.push("proof_capsule_signature_invalid");
+  if (!verifyCapsuleSignature(capsule)) blockedBy.push("proof_capsule_signature_invalid");
 
   const blockedAction = license.blocked_actions.find((action) => action.action === requestedAction);
   if (blockedAction) blockedBy.push(`blocked_action:${blockedAction.action}`);
@@ -3122,7 +3127,22 @@ function latestLedgerHeadForEvidenceRecords(records: DojoEvidenceLedgerRecord[],
 }
 
 function signatureForCapsule(capsule: Omit<DojoProofCarryingSkillCapsule, "signature">): string {
-  return `hmac-sha256:${createHmac("sha256", dojoProofSigningKey()).update(stableStringify(capsule)).digest("hex")}`;
+  return encodeDojoProofSignatureEnvelope(dojoProofSigner().sign(stableStringify(capsule)));
+}
+
+function verifyCapsuleSignature(capsule: DojoProofCarryingSkillCapsule): boolean {
+  try {
+    return dojoProofSigner().verify(
+      stableStringify(unsignedCapsule(capsule)),
+      parseDojoProofSignatureEnvelope({
+        algorithm: capsule.signature_algorithm,
+        key_id: capsule.key_id,
+        signature: capsule.signature,
+      })
+    );
+  } catch {
+    return false;
+  }
 }
 
 function unsignedCapsule(capsule: DojoProofCarryingSkillCapsule): Omit<DojoProofCarryingSkillCapsule, "signature"> {
@@ -3140,6 +3160,13 @@ function dojoProofSigningKey(): string {
 
 function dojoProofKeyId(): string {
   return `dojo-key-${createHash("sha256").update(dojoProofSigningKey()).digest("hex").slice(0, 12)}`;
+}
+
+function dojoProofSigner(): ReturnType<typeof createLocalHmacDojoProofSigner> {
+  return createLocalHmacDojoProofSigner({
+    key: dojoProofSigningKey(),
+    key_id: dojoProofKeyId(),
+  });
 }
 
 function workflowWorkspaceId(contract: WorkflowContractV7): string {

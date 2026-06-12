@@ -105,6 +105,48 @@ export function createEd25519DojoProofVerifier(input: {
   };
 }
 
+export function encodeDojoProofSignatureEnvelope(envelope: DojoProofSignatureEnvelope): string {
+  if (envelope.algorithm === "hmac-sha256") return envelope.signature;
+  const signatureValue = envelope.signature.startsWith(`${envelope.algorithm}:`)
+    ? envelope.signature.slice(`${envelope.algorithm}:`.length)
+    : envelope.signature;
+  return `${envelope.algorithm}:${envelope.key_id}:${signatureValue}`;
+}
+
+export function parseDojoProofSignatureEnvelope(input: {
+  signature: string;
+  algorithm: DojoProofSigningAlgorithm;
+  key_id: string;
+}): DojoProofSignatureEnvelope {
+  if (input.algorithm === "hmac-sha256") {
+    if (!input.signature.startsWith("hmac-sha256:")) throw new Error("dojo_proof_signature_envelope_invalid");
+    return {
+      algorithm: "hmac-sha256",
+      key_id: input.key_id,
+      signature: input.signature,
+    };
+  }
+  const prefix = "ed25519:";
+  if (!input.signature.startsWith(prefix)) throw new Error("dojo_proof_signature_envelope_invalid");
+  const rest = input.signature.slice(prefix.length);
+  const separatorIndex = rest.indexOf(":");
+  if (separatorIndex < 1) {
+    return {
+      algorithm: "ed25519",
+      key_id: input.key_id,
+      signature: input.signature,
+    };
+  }
+  const keyId = rest.slice(0, separatorIndex);
+  const rawSignature = rest.slice(separatorIndex + 1);
+  if (!keyId || !rawSignature) throw new Error("dojo_proof_signature_envelope_invalid");
+  return {
+    algorithm: "ed25519",
+    key_id: keyId,
+    signature: `${prefix}${rawSignature}`,
+  };
+}
+
 export function assertProductionDojoProofSigner(signer: DojoProofSigner): void {
   if (signer.local_development_only || signer.algorithm === "hmac-sha256") {
     throw new Error("dojo_proof_signer_not_production_ready");
