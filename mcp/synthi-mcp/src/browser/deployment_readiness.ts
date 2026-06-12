@@ -8,7 +8,9 @@ import {
   DOJO_PRODUCTION_ENFORCEMENT_ENV,
   DOJO_PROOF_SIGNING_KEY_ENV,
   DOJO_PROOF_SIGNING_KEY_ID_ENV,
+  DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
   DOJO_PROOF_SIGNING_PROVIDER_ENV,
+  DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
   DOJO_REQUIRE_DURABLE_STORE_ENV,
   DOJO_REQUIRE_EVIDENCE_LEDGER_ENV,
   DOJO_REQUIRE_EXTERNAL_SIGNING_ENV,
@@ -209,13 +211,21 @@ function checkDojoExternalSigning(
     DOJO_PROOF_SIGNING_PROVIDER_ENV,
     DOJO_PROOF_SIGNING_KEY_ID_ENV,
     DOJO_PROOF_SIGNING_KEY_ENV,
+    DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
+    DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
   ];
   const configured = [
     ...(config.require_external_signing ? [DOJO_REQUIRE_EXTERNAL_SIGNING_ENV] : []),
     ...configuredDojoExternalSigningEnv(env),
   ];
-  const hasExternalSigner = nonEmpty(env[DOJO_PROOF_SIGNING_PROVIDER_ENV]) && nonEmpty(env[DOJO_PROOF_SIGNING_KEY_ID_ENV]);
-  if (config.require_external_signing && hasExternalSigner && !isDojoDefaultLocalProofSigningKey(env)) {
+  const provider = nonEmpty(env[DOJO_PROOF_SIGNING_PROVIDER_ENV]);
+  const keyId = nonEmpty(env[DOJO_PROOF_SIGNING_KEY_ID_ENV]);
+  const hasExternalSigner = provider && keyId && !isDojoDefaultLocalProofSigningKey(env);
+  const hasEd25519Signer = provider === "ed25519-local"
+    && keyId
+    && nonEmpty(env[DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV])
+    && nonEmpty(env[DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV]);
+  if (config.require_external_signing && (hasExternalSigner || hasEd25519Signer)) {
     return pass("dojo_external_signing", "Dojo proof signing is configured without the default local signing key.", required, configured);
   }
   return {
