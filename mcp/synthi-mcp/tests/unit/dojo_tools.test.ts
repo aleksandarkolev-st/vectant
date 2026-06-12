@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { browserBroker } from "../../src/browser/broker.js";
@@ -21,8 +21,12 @@ import { createSynthiServer } from "../../src/server.js";
 import { validateDojoMcpSkillManifest, type DojoMcpSkillManifestV1 } from "../../src/dojo/mcp/manifest_signing.js";
 import { dispatchBrowserTool } from "../../src/tools/browser.js";
 import { dispatchDojoTool } from "../../src/tools/dojo.js";
+import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_record.js";
+
+const originalEnv = { ...process.env };
 
 beforeEach(() => {
+  process.env = { ...originalEnv };
   browserBroker.resetForTests();
   sourceIdentityRegistry.resetForTests();
   privateWorkflowToolRegistry.useStoreForTests(new InMemoryPrivateWorkflowToolStore());
@@ -30,6 +34,10 @@ beforeEach(() => {
   dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
   dojoSkillRegistry.resetForTests();
   vi.restoreAllMocks();
+});
+
+afterEach(() => {
+  process.env = { ...originalEnv };
 });
 
 describe("Agent Dojo core", () => {
@@ -270,6 +278,76 @@ describe("Agent Dojo MCP tools", () => {
       await client.close();
       await server.close();
     }
+  });
+
+  it("requires ledger-backed evidence before issuing proof capsules in production enforcement", async () => {
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
+
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", { workspace_id: "workspace-a" });
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+
+    const missingEvidence = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:05:00.000Z",
+    });
+    expect(missingEvidence?.isError).toBe(true);
+    expect(missingEvidence?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_evidence_claim_unverified",
+      ok: false,
+      enforcement_mode: "production",
+      require_verified_evidence: true,
+      evidence_record_count: 0,
+      failed_evidence_claims: expect.arrayContaining(["checkride_passed", "success_assertions_defined", "guardrails_active"]),
+      error_codes: ["proof_evidence_claim_unverified"],
+    }));
+
+    const storedSkill = dojoSkillRegistry.get(skillId);
+    expect(storedSkill).toBeTruthy();
+    const evidenceRecord = buildDojoEvidenceLedgerRecord({
+      record_id: "evidence-production-proof-001",
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      skill_id: skillId,
+      run_id: "checkride-run-a",
+      kind: "checkride",
+      artifact_uri: "dojo-artifact://proof/checkride.report.md",
+      artifact_sha256: "a".repeat(64),
+      redaction_manifest_sha256: "b".repeat(64),
+      claim_ids: storedSkill?.permission_license.proof_requirements.required_evidence_claims ?? [],
+      previous_hash: "0".repeat(64),
+      created_at: "2026-06-11T00:00:00.000Z",
+      created_by: "dojo-tool-production-test",
+      retention_class: "standard",
+    });
+
+    const issued = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: [evidenceRecord],
+      now: "2026-06-11T00:05:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(issued?.isError).toBeUndefined();
+    expect(issued?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      enforcement_mode: "production",
+      require_verified_evidence: true,
+      proof_capsule: expect.objectContaining({
+        evidence_record_ids: ["evidence-production-proof-001"],
+        ledger_checkpoint_hash: evidenceRecord.ledger_head_hash,
+        evidence_claims: storedSkill?.permission_license.proof_requirements.required_evidence_claims.map((claim) => ({
+          claim,
+          satisfied: true,
+          evidence_refs: ["evidence:evidence-production-proof-001"],
+        })),
+      }),
+    }));
   });
 
   it("publishes a licensed skill before exposing the backing private workflow tool and validates proof-gated dry runs", async () => {
@@ -1104,6 +1182,25 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 });
+
+function recordOpenDetailsWorkflowForDojoToolTest(): void {
+  const url = "https://app.example.test/settings";
+  browserBroker.requestConsent(url);
+  browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+  browserBroker.selectTab("tab-a");
+  expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+  registerSourceToken("details.open");
+  browserBroker.recordHumanAction({
+    tab_id: "tab-a",
+    url,
+    origin: "https://app.example.test",
+    action: "click",
+    element: { role: "button", name: "Open details", source_id: "details.open" },
+    locator_candidates: [
+      { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
+    ],
+  });
+}
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {
   return {

@@ -43,6 +43,8 @@ import {
   contextKeyForDojoGuardrailPredicate,
   normalizeDojoGuardrailPredicate,
 } from "../dojo/graph/guardrail_predicates.js";
+import { resolveDojoEnforcementConfig } from "../dojo/config/enforcement.js";
+import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
 import { toDojoScenarioDefinitions, validateDojoScenarioDefinition } from "../dojo/vivarium/scenario_dsl.js";
 import type { DojoPermissionUpgradeRequestRecord } from "../dojo/store/interfaces.js";
@@ -594,7 +596,12 @@ export const DOJO_TOOLS = [
         requested_action: { type: "string", default: "run_workflow" },
         context_claims: { type: "object" },
         evidence_claims: { type: "array", items: { type: "object" } },
+        evidence_ledger_records: { type: "array", items: { type: "object" } },
+        evidence_max_age_ms: { type: "number" },
+        ledger_checkpoint_hash: { type: "string" },
+        require_verified_evidence: { type: "boolean" },
         substrate_claim: { type: "string", enum: ["vision", "dom", "source", "api", "mcp"] },
+        now: { type: "string" },
         expires_at: { type: "string" },
       },
       required: [],
@@ -1841,18 +1848,50 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
-  const capsule = issueDojoProofCapsule(skill.skill, requestedAction, {
-    context_claims: objectOpt(a["context_claims"]) ?? { workspace_verified: true },
-    evidence_claims: evidenceClaimsOpt(a["evidence_claims"]),
-    substrate_claim: substrateOpt(a["substrate_claim"]),
-    expires_at: stringOpt(a["expires_at"]),
-  });
+  const enforcement = resolveDojoEnforcementConfig();
+  const evidenceLedgerRecords = evidenceLedgerRecordsOpt(a["evidence_ledger_records"]);
+  const requireVerifiedEvidence = boolOpt(a["require_verified_evidence"])
+    || enforcement.production_enforcement
+    || enforcement.require_evidence_ledger;
+  let capsule: DojoProofCarryingSkillCapsule;
+  try {
+    capsule = issueDojoProofCapsule(skill.skill, requestedAction, {
+      context_claims: objectOpt(a["context_claims"]) ?? { workspace_verified: true },
+      evidence_claims: evidenceClaimsOpt(a["evidence_claims"]),
+      evidence_ledger_records: evidenceLedgerRecords,
+      evidence_max_age_ms: numberOpt(a["evidence_max_age_ms"]),
+      ledger_checkpoint_hash: stringOpt(a["ledger_checkpoint_hash"]),
+      require_verified_evidence: requireVerifiedEvidence,
+      substrate_claim: substrateOpt(a["substrate_claim"]),
+      now: stringOpt(a["now"]),
+      expires_at: stringOpt(a["expires_at"]),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.startsWith("dojo_proof_evidence_claim_unverified:")) {
+      const failedClaims = message.slice("dojo_proof_evidence_claim_unverified:".length).split(",").filter(Boolean);
+      return errorResponse("dojo_proof_evidence_claim_unverified", {
+        ok: false,
+        skill_id: skill.skill.skill_id,
+        requested_action: requestedAction,
+        enforcement_mode: enforcement.enforcement_mode,
+        require_verified_evidence: requireVerifiedEvidence,
+        evidence_record_count: evidenceLedgerRecords.length,
+        failed_evidence_claims: failedClaims,
+        error_codes: ["proof_evidence_claim_unverified"],
+        message,
+      });
+    }
+    throw err;
+  }
   const proofRecord = dojoSkillRegistry.recordProofCapsule(capsule);
-  const validation = validateDojoProofCapsule(skill.skill, capsule, requestedAction);
+  const validation = validateDojoProofCapsule(skill.skill, capsule, requestedAction, stringOpt(a["now"]));
   return jsonResponse({
     ok: validation.ok,
     skill_id: skill.skill.skill_id,
     requested_action: requestedAction,
+    enforcement_mode: enforcement.enforcement_mode,
+    require_verified_evidence: requireVerifiedEvidence,
     proof_capsule: capsule,
     proof_record: proofRecord,
     validation,
@@ -2410,6 +2449,55 @@ function evidenceClaimsOpt(value: unknown): DojoEvidenceClaim[] | undefined {
     return typeof record["claim"] === "string" && typeof record["satisfied"] === "boolean";
   });
   return claims.length > 0 ? claims : undefined;
+}
+
+function evidenceLedgerRecordsOpt(value: unknown): DojoEvidenceLedgerRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => objectOpt(item))
+    .filter((record): record is Record<string, unknown> => Boolean(record))
+    .map((record) => ({
+      schema_version: "synthi.dojo.evidenceRecord.v1" as const,
+      record_id: stringOpt(record["record_id"]) ?? stringOpt(record["recordId"]) ?? "",
+      tenant_id: stringOpt(record["tenant_id"]) ?? stringOpt(record["tenantId"]) ?? "",
+      workspace_id: stringOpt(record["workspace_id"]) ?? stringOpt(record["workspaceId"]) ?? "",
+      skill_id: stringOpt(record["skill_id"]) ?? stringOpt(record["skillId"]) ?? "",
+      run_id: stringOpt(record["run_id"]) ?? stringOpt(record["runId"]) ?? "",
+      kind: evidenceArtifactKindOpt(record["kind"]),
+      artifact_uri: stringOpt(record["artifact_uri"]) ?? stringOpt(record["artifactUri"]) ?? "",
+      artifact_sha256: stringOpt(record["artifact_sha256"]) ?? stringOpt(record["artifactSha256"]) ?? "",
+      redaction_manifest_sha256: stringOpt(record["redaction_manifest_sha256"]) ?? stringOpt(record["redactionManifestSha256"]) ?? null,
+      claim_ids: stringArrayOpt(record["claim_ids"] ?? record["claimIds"]),
+      previous_hash: stringOpt(record["previous_hash"]) ?? stringOpt(record["previousHash"]) ?? "",
+      signer_key_id: stringOpt(record["signer_key_id"]) ?? stringOpt(record["signerKeyId"]) ?? null,
+      created_at: stringOpt(record["created_at"]) ?? stringOpt(record["createdAt"]) ?? "",
+      created_by: stringOpt(record["created_by"]) ?? stringOpt(record["createdBy"]) ?? "",
+      retention_class: evidenceRetentionClassOpt(record["retention_class"] ?? record["retentionClass"]),
+      source_refs: stringArrayOpt(record["source_refs"] ?? record["sourceRefs"]),
+      legal_hold: boolOpt(record["legal_hold"] ?? record["legalHold"]),
+      record_hash: stringOpt(record["record_hash"]) ?? stringOpt(record["recordHash"]) ?? "",
+      ledger_head_hash: stringOpt(record["ledger_head_hash"]) ?? stringOpt(record["ledgerHeadHash"]) ?? "",
+      signature: stringOpt(record["signature"]) ?? null,
+    }))
+    .filter((record) => record.record_id && record.created_at && record.claim_ids.length > 0);
+}
+
+function evidenceArtifactKindOpt(value: unknown): DojoEvidenceLedgerRecord["kind"] {
+  return value === "trace"
+    || value === "scenario"
+    || value === "checkride"
+    || value === "case_law"
+    || value === "guardrail"
+    || value === "license"
+    || value === "proof"
+    || value === "artifact"
+    || value === "audit"
+    ? value
+    : "artifact";
+}
+
+function evidenceRetentionClassOpt(value: unknown): DojoEvidenceLedgerRecord["retention_class"] {
+  return value === "ephemeral" || value === "regulated" || value === "legal_hold" ? value : "standard";
 }
 
 function substrateOpt(value: unknown): DojoExecutionSubstrate | undefined {
