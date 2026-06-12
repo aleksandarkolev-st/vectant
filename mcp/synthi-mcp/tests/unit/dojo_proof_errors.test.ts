@@ -29,6 +29,7 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("guardrail_not_active:guard_1")).toBe("guardrail_failed");
     expect(normalizeDojoProofErrorCode("approval_constraint:human_confirmation_required")).toBe("approval_required");
     expect(normalizeDojoProofErrorCode("approval_not_granted")).toBe("approval_required");
+    expect(normalizeDojoProofErrorCode("approval_evidence_required")).toBe("approval_required");
     expect(normalizeDojoProofErrorCode("license_expiry_invalid")).toBe("license_expired");
     expect(normalizeDojoProofErrorCode("proof_self_attestation_not_allowed_in_production")).toBe("proof_capsule_invalid");
     expect(normalizeDojoProofErrorCode("unexpected-low-level-detail")).toBe("unknown");
@@ -222,7 +223,30 @@ describe("Dojo proof error taxonomy", () => {
         "approval_not_granted",
         "approval_actor_required",
         "approval_actor_type_required",
+        "approval_evidence_required",
       ]),
+    }));
+
+    const booleanOnlyApproval = evaluateDojoLicenseKernel({
+      skill: gatedSkill,
+      registry: dojoSkillRegistry,
+      proof_capsule: capsule,
+      requested_action: "run_workflow",
+      tool_args: {
+        approval_id: "approval-a",
+        approval_granted: true,
+        approval_evidence_ref: "evidence:approval-a",
+        actor_id: "reviewer-a",
+        actor_type: "human",
+      },
+      now: "2026-06-11T00:01:30.000Z",
+    });
+
+    expect(booleanOnlyApproval).toEqual(expect.objectContaining({
+      ok: false,
+      status: "approval_required",
+      blocked_by: expect.arrayContaining(["approval_not_granted"]),
+      error_codes: ["approval_required"],
     }));
 
     const approved = evaluateDojoLicenseKernel({
@@ -235,6 +259,7 @@ describe("Dojo proof error taxonomy", () => {
         approval_status: "approved",
         actor_id: "reviewer-a",
         actor_type: "human",
+        approval_evidence_ref: "evidence:approval-a",
       },
       now: "2026-06-11T00:01:00.000Z",
     });
@@ -248,6 +273,7 @@ describe("Dojo proof error taxonomy", () => {
         actor_id: "reviewer-a",
         actor_type: "human",
         approval_id: "approval-a",
+        approval_evidence_ref: "evidence:approval-a",
       }),
     }));
     expect(approved.validation).toEqual(expect.objectContaining({

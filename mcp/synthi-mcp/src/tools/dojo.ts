@@ -655,8 +655,7 @@ export const DOJO_TOOLS = [
         tool_args: { type: "object" },
         approval_id: { type: "string" },
         approval_status: { type: "string", enum: ["approved", "denied", "pending"] },
-        approval_granted: { type: "boolean" },
-        approved: { type: "boolean" },
+        approval_evidence_ref: { type: "string" },
         now: { type: "string" },
       },
       required: ["proof_capsule"],
@@ -699,8 +698,7 @@ export const DOJO_TOOLS = [
         tool_args: { type: "object" },
         approval_id: { type: "string" },
         approval_status: { type: "string", enum: ["approved", "denied", "pending"] },
-        approval_granted: { type: "boolean" },
-        approved: { type: "boolean" },
+        approval_evidence_ref: { type: "string" },
         dry_run: { type: "boolean" },
         run_id: { type: "string" },
         now: { type: "string" },
@@ -2714,8 +2712,7 @@ function dojoLicenseKernelToolArgsFromArgs(
   setMissingString(merged, "correlation_id", stringOpt(a["correlation_id"]) ?? tenant.correlation_id);
   setMissingString(merged, "approval_id", stringOpt(a["approval_id"]));
   setMissingString(merged, "approval_status", approvalStatusInputOpt(a["approval_status"]));
-  setMissingBoolean(merged, "approval_granted", a["approval_granted"]);
-  setMissingBoolean(merged, "approved", a["approved"]);
+  setMissingString(merged, "approval_evidence_ref", stringOpt(a["approval_evidence_ref"]));
   if (!Object.prototype.hasOwnProperty.call(merged, "roles") && tenant.roles.length > 0) {
     merged["roles"] = [...tenant.roles];
   }
@@ -2724,10 +2721,6 @@ function dojoLicenseKernelToolArgsFromArgs(
 
 function setMissingString(target: Record<string, unknown>, key: string, value: string | undefined): void {
   if (!Object.prototype.hasOwnProperty.call(target, key) && value) target[key] = value;
-}
-
-function setMissingBoolean(target: Record<string, unknown>, key: string, value: unknown): void {
-  if (!Object.prototype.hasOwnProperty.call(target, key) && typeof value === "boolean") target[key] = value;
 }
 
 function actorTypeOpt(value: unknown): DojoTenantContext["actor_type"] {

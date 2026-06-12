@@ -1480,6 +1480,7 @@ describe("Agent Dojo MCP tools", () => {
           "approval_constraint:human_confirmation_required",
           "approval_required",
           "approval_not_granted",
+          "approval_evidence_required",
         ]),
       }),
     }));
@@ -1491,6 +1492,7 @@ describe("Agent Dojo MCP tools", () => {
       tool_args: workflowArgs,
       approval_id: "approval-a",
       approval_status: "approved",
+      approval_evidence_ref: "evidence:approval-a",
       actor_id: "reviewer-a",
       actor_type: "human",
       dry_run: true,
@@ -1507,6 +1509,7 @@ describe("Agent Dojo MCP tools", () => {
           actor_id: "reviewer-a",
           actor_type: "human",
           approval_id: "approval-a",
+          approval_evidence_ref: "evidence:approval-a",
         }),
       }),
       skill_bus: expect.objectContaining({
@@ -1523,6 +1526,7 @@ describe("Agent Dojo MCP tools", () => {
       tool_args: workflowArgs,
       approval_id: "approval-a",
       approval_status: "approved",
+      approval_evidence_ref: "evidence:approval-a",
       actor_id: "reviewer-a",
       actor_type: "human",
       now: "2026-06-11T00:03:00.000Z",
@@ -1537,6 +1541,7 @@ describe("Agent Dojo MCP tools", () => {
           actor_id: "reviewer-a",
           actor_type: "human",
           approval_id: "approval-a",
+          approval_evidence_ref: "evidence:approval-a",
         }),
       }),
       proof_record: expect.objectContaining({

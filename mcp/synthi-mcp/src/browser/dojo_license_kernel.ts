@@ -23,6 +23,7 @@ export interface DojoLicenseKernelDecision {
     actor_id?: string;
     actor_type?: "human" | "agent" | "service";
     approval_id?: string;
+    approval_evidence_ref?: string;
   };
 }
 
@@ -116,6 +117,7 @@ export function evaluateDojoLicenseKernel(input: {
       ...(approval.actor_id ? { actor_id: approval.actor_id } : {}),
       ...(approval.actor_type ? { actor_type: approval.actor_type } : {}),
       ...(approval.approval_id ? { approval_id: approval.approval_id } : {}),
+      ...(approval.approval_evidence_ref ? { approval_evidence_ref: approval.approval_evidence_ref } : {}),
     },
   };
 }
@@ -132,6 +134,7 @@ function evaluateApprovalContext(
   actor_id?: string;
   actor_type?: "human" | "agent" | "service";
   approval_id?: string;
+  approval_evidence_ref?: string;
 } {
   const required = validation.status === "approval_required"
     || skill.permission_license.approval_requirements.includes(requestedAction)
@@ -139,6 +142,7 @@ function evaluateApprovalContext(
   const actorId = stringOpt(toolArgs["actor_id"]) ?? stringOpt(toolArgs["actor"]);
   const actorType = actorTypeOpt(toolArgs["actor_type"]);
   const approvalId = stringOpt(toolArgs["approval_id"]);
+  const approvalEvidenceRef = stringOpt(toolArgs["approval_evidence_ref"]);
   const approvalStatus = approvalStatusOpt(toolArgs);
   const blockedBy: string[] = [];
 
@@ -150,6 +154,7 @@ function evaluateApprovalContext(
       ...(actorId ? { actor_id: actorId } : {}),
       ...(actorType ? { actor_type: actorType } : {}),
       ...(approvalId ? { approval_id: approvalId } : {}),
+      ...(approvalEvidenceRef ? { approval_evidence_ref: approvalEvidenceRef } : {}),
     };
   }
 
@@ -157,6 +162,7 @@ function evaluateApprovalContext(
   if (approvalStatus !== "approved") blockedBy.push("approval_not_granted");
   if (!actorId) blockedBy.push("approval_actor_required");
   if (!actorType) blockedBy.push("approval_actor_type_required");
+  if (!approvalEvidenceRef) blockedBy.push("approval_evidence_required");
 
   return {
     required: true,
@@ -165,6 +171,7 @@ function evaluateApprovalContext(
     ...(actorId ? { actor_id: actorId } : {}),
     ...(actorType ? { actor_type: actorType } : {}),
     ...(approvalId ? { approval_id: approvalId } : {}),
+    ...(approvalEvidenceRef ? { approval_evidence_ref: approvalEvidenceRef } : {}),
   };
 }
 
@@ -256,8 +263,6 @@ function actorTypeOpt(value: unknown): "human" | "agent" | "service" | undefined
 function approvalStatusOpt(toolArgs: Record<string, unknown>): "approved" | "denied" | "pending" | undefined {
   const status = stringOpt(toolArgs["approval_status"]);
   if (status === "approved" || status === "denied" || status === "pending") return status;
-  if (toolArgs["approval_granted"] === true || toolArgs["approved"] === true) return "approved";
-  if (toolArgs["approval_granted"] === false || toolArgs["approved"] === false) return "denied";
   return undefined;
 }
 
