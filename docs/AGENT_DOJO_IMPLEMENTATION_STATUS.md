@@ -29,7 +29,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - materialized synthetic Vivarium fixtures and oracle-backed scenario runs
 - runtime-backed Wind Tunnel and checkride runner foundations
 - durable proof replay repository and append-only evidence ledger store modules
-- license and proof capsule issuance/validation with strict evidence-claim mode and Ed25519 signing support
+- license and proof capsule issuance/validation with strict evidence-claim mode, Ed25519 signing support, and an external command signer adapter
 - proof-gated backing private workflow tool and raw workflow boundary checks
 - case-law records that can bind guardrail predicates
 - source/API contract, linter, candidate, substrate, and React codemod foundations
@@ -39,7 +39,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 
 It does not yet prove the full mature Vivarium Cortex universe in production:
 
-- no default external KMS/HSM-backed proof signer adapter
+- no managed KMS/HSM proof signer configured by default or proven in deployed-host release gates
 - no externally deployed tenant-aware control plane proven against a production database
 - no live non-loopback MCP host conformance proof in the current validation bundle
 - no broad arbitrary-app source/API promotion guarantee
@@ -130,6 +130,6 @@ Unsafe current claim:
 
 ```text
 Agent Dojo has completed production deployment proof for non-loopback hosted MCP,
-external KMS/HSM signing, broad arbitrary-app source/API graduation, complete governance
+managed KMS/HSM signing deployment, broad arbitrary-app source/API graduation, complete governance
 operator workflows, and chaos/soak/performance/compliance release gates.
 ```

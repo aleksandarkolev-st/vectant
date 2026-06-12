@@ -93,8 +93,8 @@ describe("Dojo implementation status registry", () => {
       expect.objectContaining({
         implementation_status: "executable",
         runtime_enforced: true,
-        summary: expect.stringContaining("Ed25519 signing is supported"),
-        maturity_blockers: expect.arrayContaining(["external_kms_hsm_adapter_not_configured_by_default"]),
+        summary: expect.stringContaining("external command signing"),
+        maturity_blockers: expect.arrayContaining(["managed_kms_hsm_provider_not_configured_by_default"]),
       })
     );
   });

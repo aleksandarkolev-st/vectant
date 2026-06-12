@@ -76,7 +76,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_revoke_license: executable("Mutates the stored license into a revoked/blocked state."),
   synthi_dojo_record_case_law: executable("Records a binding case-law entry and guardrail into the current skill store."),
   synthi_dojo_export_artifacts: executable("Exports repo artifacts from the current stored skill."),
-  synthi_dojo_issue_proof_capsule: proofExecutable("Issues and stores a proof capsule using current context and evidence-claim checks; Ed25519 signing is supported when configured."),
+  synthi_dojo_issue_proof_capsule: proofExecutable("Issues and stores a proof capsule using current context and evidence-claim checks; Ed25519 local and external command signing are supported when configured."),
   synthi_dojo_validate_proof_capsule: executable("Validates proof capsule signature, registry status, action scope, expiry, and replay state."),
   synthi_dojo_revoke_proof_capsule: executable("Revokes a stored proof capsule record."),
   synthi_dojo_run_with_proof_capsule: executable("Runs the proof-gated Dojo dispatch path and blocks replay through current proof records."),
@@ -93,7 +93,7 @@ export const DOJO_REPORT_IMPLEMENTATION_STATUS: Record<string, DojoImplementatio
   case_law: governanceReport("Case law can be generated, recorded, approved/deprecated, and bound into runtime guardrail predicates."),
   guardrails: graphProjection("Guardrails include generated and case-law-bound predicates executable by the graph guardrail runtime."),
   permission_license: executable("Permission license is stored and checked by the current proof-gated path."),
-  proof_capsule: proofExecutable("Proof capsules support evidence claim verification, replay checks, Ed25519 signing when configured, and public verification."),
+  proof_capsule: proofExecutable("Proof capsules support evidence claim verification, replay checks, Ed25519 local or external command signing when configured, and public verification."),
   evidence_ledger: ledgerReport("Evidence ledger report surfaces are projections; the Postgres ledger store has append-only hash-chain semantics for runtime evidence records."),
   source_affordance_pr_plan: sourceProjection("Source-affordance plans are typed and can drive the controlled React codemod plus generated contract tests."),
   mcp_manifest: executable("Published private tool manifest exists and direct private tool calls are proof-gated."),
@@ -241,7 +241,7 @@ function proofExecutable(summary: string): DojoImplementationMetadata {
     simulation_backing: "none",
     summary,
     maturity_blockers: [
-      "external_kms_hsm_adapter_not_configured_by_default",
+      "managed_kms_hsm_provider_not_configured_by_default",
       "not_yet_proven_in_deployed_non_loopback_host",
     ],
   };
