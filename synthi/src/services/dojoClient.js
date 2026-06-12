@@ -441,6 +441,7 @@ function normalizeCaseLawReviewItem(item) {
     caseId: item.case_id || item.caseId || item.id || '',
     title: item.title || '',
     skillId: item.skill_id || item.skillId || '',
+    workflowId: item.workflow_id || item.workflowId || '',
     workspaceId: item.workspace_id || item.workspaceId || '',
     finding: item.finding || '',
     impact: item.impact || '',
@@ -448,6 +449,8 @@ function normalizeCaseLawReviewItem(item) {
     status: item.status || 'proposed',
     evidenceRefs: compactStrings(item.evidence_refs || item.evidenceRefs),
     bindingScope: item.binding_scope || item.bindingScope || '',
+    bindingScopeId: item.binding_scope_id || item.bindingScopeId || '',
+    appliesTo: compactStrings(item.applies_to || item.appliesTo),
     createdAt: item.created_at || item.createdAt || '',
   };
 }
@@ -1288,6 +1291,47 @@ export async function reviewDojoPermissionUpgrade({
     result: body.result,
     summary: summaryFromToolBody(body, workspaceSlug),
     message: `Permission ${decision}: ${item?.action || requestId}`,
+  };
+}
+
+export async function reviewDojoCaseLaw({
+  item,
+  decision,
+  workspaceSlug = '',
+  reason = '',
+  evidenceRefs = [],
+  reviewerActorId,
+  reviewerActorType = 'human',
+  signal,
+  url,
+  token,
+} = {}) {
+  const caseId = item?.caseId || item?.case_id || item?.id || '';
+  if (!caseId) throw new Error('dojo_case_law_case_id_required');
+  if (decision !== 'approved' && decision !== 'deprecated') throw new Error('dojo_case_law_review_decision_required');
+  const reviewer = resolveGovernanceActor({ actorId: reviewerActorId, actorType: reviewerActorType });
+  const body = await callAgentWorkflowTool({
+    url,
+    token,
+    signal,
+    tool: 'synthi_dojo_review_case_law',
+    arguments: {
+      case_id: caseId,
+      decision,
+      ...(item?.skillId || item?.skill_id ? { skill_id: item.skillId || item.skill_id } : {}),
+      ...(item?.workflowId || item?.workflow_id ? { workflow_id: item.workflowId || item.workflow_id } : {}),
+      reviewer_actor_id: reviewer.actorId,
+      reviewer_actor_type: reviewer.actorType,
+      ...(reason ? { reason } : {}),
+      evidence_refs: compactStrings(evidenceRefs),
+    },
+  });
+  assertBridgeToolActionOk(body, 'dojo_case_law_review_failed');
+  return {
+    body,
+    result: body.result,
+    summary: summaryFromToolBody(body, workspaceSlug),
+    message: `Case law ${decision}: ${item?.title || caseId}`,
   };
 }
 

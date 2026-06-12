@@ -238,17 +238,23 @@ describe('GovernanceDashboard', () => {
     expect(view.querySelector('[data-testid="case-law-review-queue"]')?.textContent).toContain('CASE-001');
     expect(view.querySelector('[data-testid="approval-approval-001-approve"]')?.disabled).toBe(true);
     expect(view.querySelector('[data-testid="license-license-001-revoke"]')?.disabled).toBe(true);
+    expect(view.querySelector('[data-testid="case-law-CASE-001-approve"]')?.disabled).toBe(true);
+    expect(view.querySelector('[data-testid="case-law-CASE-001-deprecate"]')?.disabled).toBe(true);
   });
 
   it('invokes governance approval and revocation actions with operator feedback', async () => {
     const approve = vi.fn().mockResolvedValue({ message: 'approval approved in test' });
     const deny = vi.fn().mockResolvedValue({ message: 'approval denied in test' });
+    const approveCaseLaw = vi.fn().mockResolvedValue({ message: 'case law approved in test' });
+    const deprecateCaseLaw = vi.fn().mockResolvedValue({ message: 'case law deprecated in test' });
     const revoke = vi.fn().mockResolvedValue({ message: 'license revoked in test' });
     const view = renderDashboard({
       workspaceSlug: 'workspace-a',
       initialSummary: buildGovernanceSummary(),
       onApproveApproval: approve,
       onDenyApproval: deny,
+      onApproveCaseLaw: approveCaseLaw,
+      onDeprecateCaseLaw: deprecateCaseLaw,
       onRevokeLicense: revoke,
     });
 
@@ -269,6 +275,24 @@ describe('GovernanceDashboard', () => {
       action: 'send_invoice',
     }));
     expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('approval denied in test');
+
+    await act(async () => {
+      view.querySelector('[data-testid="case-law-CASE-001-approve"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(approveCaseLaw).toHaveBeenCalledWith(expect.objectContaining({
+      caseId: 'CASE-001',
+      skillId: 'skill-save-invoice',
+    }));
+    expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('case law approved in test');
+
+    await act(async () => {
+      view.querySelector('[data-testid="case-law-CASE-001-deprecate"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(deprecateCaseLaw).toHaveBeenCalledWith(expect.objectContaining({
+      caseId: 'CASE-001',
+      skillId: 'skill-save-invoice',
+    }));
+    expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('case law deprecated in test');
 
     await act(async () => {
       view.querySelector('[data-testid="license-license-001-revoke"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -323,6 +347,16 @@ describe('GovernanceDashboard', () => {
                 status: 'active',
               },
             ],
+            case_law_review_queue: [
+              {
+                case_id: 'CASE-001',
+                title: 'Duplicate client guardrail',
+                skill_id: 'skill-save-invoice',
+                finding: 'Duplicate client display name can select the wrong account.',
+                rule_created: 'Require stable client ID before submit.',
+                status: 'proposed',
+              },
+            ],
           },
         },
       }),
@@ -352,6 +386,23 @@ describe('GovernanceDashboard', () => {
         },
       });
       expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Permission approved: send_invoice');
+
+      await act(async () => {
+        view.querySelector('[data-testid="case-law-CASE-001-approve"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      const caseLawCall = global.fetch.mock.calls.at(-1);
+      expect(JSON.parse(caseLawCall?.[1]?.body || '{}')).toEqual({
+        tool: 'synthi_dojo_review_case_law',
+        arguments: {
+          case_id: 'CASE-001',
+          decision: 'approved',
+          skill_id: 'skill-save-invoice',
+          reviewer_actor_id: 'governance-operator',
+          reviewer_actor_type: 'human',
+          evidence_refs: [],
+        },
+      });
+      expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Case law approved: Duplicate client guardrail');
 
       await act(async () => {
         view.querySelector('[data-testid="license-license-001-revoke"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));

@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Landmark } from 'lucide-react';
+import { ArchiveX, ArrowLeft, CheckCircle2, Landmark } from 'lucide-react';
 import {
   createEmptyDojoSummary,
   getDojoWorkspaceSummary,
+  reviewDojoCaseLaw,
   reviewDojoPermissionUpgrade,
   revokeDojoLicense,
 } from '@/services/dojoClient';
@@ -29,6 +30,8 @@ export default function GovernanceDashboard({
   autoLoad = true,
   onApproveApproval,
   onDenyApproval,
+  onApproveCaseLaw,
+  onDeprecateCaseLaw,
   onRevokeLicense,
   enableBridgeActions = true,
 }) {
@@ -63,6 +66,10 @@ export default function GovernanceDashboard({
     ?? (enableBridgeActions ? (item) => reviewDojoPermissionUpgrade({ item, decision: 'approved', workspaceSlug }) : undefined);
   const denyApprovalHandler = onDenyApproval
     ?? (enableBridgeActions ? (item) => reviewDojoPermissionUpgrade({ item, decision: 'denied', workspaceSlug }) : undefined);
+  const approveCaseLawHandler = onApproveCaseLaw
+    ?? (enableBridgeActions ? (item) => reviewDojoCaseLaw({ item, decision: 'approved', workspaceSlug }) : undefined);
+  const deprecateCaseLawHandler = onDeprecateCaseLaw
+    ?? (enableBridgeActions ? (item) => reviewDojoCaseLaw({ item, decision: 'deprecated', workspaceSlug }) : undefined);
   const revokeLicenseHandler = onRevokeLicense
     ?? (enableBridgeActions ? (item) => revokeDojoLicense({ item, workspaceSlug }) : undefined);
 
@@ -165,30 +172,22 @@ export default function GovernanceDashboard({
           <RecertificationQueue items={governance.recertificationQueue} />
         </section>
 
-        <section className="rounded-md border p-4" style={panelStyle} data-testid="case-law-review-queue">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold">Case-Law Review</h2>
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{governance.caseLawReviewQueue.length} proposed</span>
-          </div>
-          {governance.caseLawReviewQueue.length ? (
-            <div className="grid gap-2">
-              {governance.caseLawReviewQueue.map((item) => (
-                <article key={item.caseId || item.title} className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <h3 className="truncate text-sm font-semibold">{item.title || item.caseId}</h3>
-                      <p className="mt-1 truncate text-xs" style={{ color: 'var(--text-muted)' }}>{item.caseId}</p>
-                    </div>
-                    <span className="rounded-md border px-2 py-1 text-xs" style={panelStyle}>{item.status}</span>
-                  </div>
-                  <p className="mt-3 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>{item.finding || item.ruleCreated}</p>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No proposed case law requires review.</p>
-          )}
-        </section>
+        <CaseLawReviewQueue
+          items={governance.caseLawReviewQueue}
+          busyCaseId={actionState.busyKey.startsWith('case-law:') ? actionState.busyKey.slice('case-law:'.length) : ''}
+          onApprove={approveCaseLawHandler ? (item) => invokeGovernanceAction({
+            busyKey: `case-law:${item.caseId}`,
+            successLabel: `Case law approved: ${item.title || item.caseId}`,
+            item,
+            handler: approveCaseLawHandler,
+          }) : undefined}
+          onDeprecate={deprecateCaseLawHandler ? (item) => invokeGovernanceAction({
+            busyKey: `case-law:${item.caseId}`,
+            successLabel: `Case law deprecated: ${item.title || item.caseId}`,
+            item,
+            handler: deprecateCaseLawHandler,
+          }) : undefined}
+        />
 
         <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
           <ComplianceEvidencePack pack={governance.complianceEvidencePack} />
@@ -196,5 +195,67 @@ export default function GovernanceDashboard({
         </section>
       </div>
     </main>
+  );
+}
+
+function CaseLawReviewQueue({ items = [], busyCaseId = '', onApprove, onDeprecate }) {
+  return (
+    <section className="rounded-md border p-4" style={panelStyle} data-testid="case-law-review-queue">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold">Case-Law Review</h2>
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{items.length} proposed</span>
+      </div>
+      {items.length ? (
+        <div className="grid gap-2">
+          {items.map((item) => (
+            <article key={item.caseId || item.title} className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="truncate text-sm font-semibold">{item.title || item.caseId}</h3>
+                  <p className="mt-1 truncate text-xs" style={{ color: 'var(--text-muted)' }}>{item.caseId}</p>
+                </div>
+                <span className="rounded-md border px-2 py-1 text-xs" style={panelStyle}>{item.status}</span>
+              </div>
+              <p className="mt-3 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>{item.finding || item.ruleCreated}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <CaseLawActionButton
+                  icon={CheckCircle2}
+                  label="Approve"
+                  disabled={!onApprove || busyCaseId === item.caseId}
+                  testId={`case-law-${item.caseId}-approve`}
+                  onClick={() => onApprove?.(item)}
+                />
+                <CaseLawActionButton
+                  icon={ArchiveX}
+                  label="Deprecate"
+                  disabled={!onDeprecate || busyCaseId === item.caseId}
+                  testId={`case-law-${item.caseId}-deprecate`}
+                  onClick={() => onDeprecate?.(item)}
+                />
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No proposed case law requires review.</p>
+      )}
+    </section>
+  );
+}
+
+function CaseLawActionButton({ icon: Icon, label, disabled, testId, onClick }) {
+  return (
+    <button
+      type="button"
+      className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs disabled:cursor-not-allowed disabled:opacity-45"
+      style={panelStyle}
+      disabled={disabled}
+      data-testid={testId}
+      onClick={onClick}
+      title={disabled ? 'Action handler unavailable' : label}
+    >
+      <Icon size={13} aria-hidden="true" />
+      {label}
+    </button>
   );
 }

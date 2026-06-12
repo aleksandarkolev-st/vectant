@@ -649,6 +649,23 @@ function updateBridgeState(
     const caseLaw = payload["case_law"] as Record<string, unknown> | undefined;
     pushBridgeHistory(state, now, "Case law recorded", stringOpt(caseLaw?.["title"]) ?? "Binding guardrail", "passed", "Case law", "warn");
   }
+  if (ok && toolName === "synthi_dojo_review_case_law") {
+    state.latestDojoCaseLawRecord = payload;
+    state.latestDojoGovernance = payload;
+    const record = recordAt(payload, "case_law_record");
+    const review = recordAt(payload, "review");
+    const status = stringOpt(record?.["status"]) ?? stringOpt(review?.["decision"]) ?? "reviewed";
+    const title = stringOpt(record?.["title"]) ?? stringOpt(record?.["case_id"]) ?? "Case law";
+    pushBridgeHistory(
+      state,
+      now,
+      status === "deprecated" ? "Case law deprecated" : "Case law reviewed",
+      title,
+      status === "deprecated" ? "blocked" : "passed",
+      status === "deprecated" ? "Deprecated" : "Reviewed",
+      status === "deprecated" ? "warn" : "ok"
+    );
+  }
   if (ok && toolName === "synthi_dojo_revoke_license") {
     state.latestDojoLicenseRevocation = payload;
     state.latestDojoLicenseHealth = payload;
@@ -1304,7 +1321,7 @@ function licenseHealthPanelState(payload: Record<string, unknown> | undefined, l
 }
 
 function caseLawRecordPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
-  const caseLaw = recordAt(payload, "case_law");
+  const caseLaw = recordAt(payload, "case_law") ?? recordAt(payload, "case_law_record");
   const guardrail = recordAt(payload, "guardrail");
   if (!caseLaw && !guardrail) return null;
   return {
