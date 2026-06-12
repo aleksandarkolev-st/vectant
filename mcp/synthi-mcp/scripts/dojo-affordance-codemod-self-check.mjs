@@ -56,14 +56,36 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
     hook_name: "assertDojoProof",
   });
   const operations = [stableOperation, proofOperation];
+  const sourcePatchPlan = {
+    schema_version: "synthi.dojo.affordancePrPlan.v1",
+    plan_id: "affordance_codemod_self_check",
+    app_origin: "https://app.example.test",
+    app_version: "self-check",
+    operations,
+    required_tests: ["generated_vitest_contract"],
+    review_gates: ["code_owner"],
+  };
+  const originalSource = invoiceFormSource();
+  const sourcePatchBundle = modules.buildDojoGeneratedSourcePatchBundle({
+    plan: sourcePatchPlan,
+    files: [{ path: "src/InvoiceForm.jsx", source: originalSource }],
+  });
+  assert.equal(sourcePatchBundle.ok, true, "source patch bundle should be generated without errors");
+  assert.equal(sourcePatchBundle.modified_files.length, 1, "source patch bundle should include one modified fixture file");
+  assert.equal(sourcePatchBundle.generated_tests.length, 1, "source patch bundle should include one generated contract test");
+
   const generatedTest = modules.generateReactAffordanceVitestContractTest({
     source_file_path: "src/InvoiceForm.jsx",
     test_file_path: "src/__tests__/InvoiceForm.dojo-affordance.test.ts",
     component_name: "InvoiceForm",
     operations,
   });
+  assert.equal(
+    sourcePatchBundle.generated_tests[0]?.source,
+    generatedTest.source,
+    "source patch bundle should emit the same generated contract test artifact"
+  );
 
-  const originalSource = invoiceFormSource();
   await writeFile(sourcePath, originalSource);
   await writeFile(testPath, generatedTest.source);
   await writeFile(vitestConfigPath, fixtureVitestConfigSource());
@@ -99,6 +121,7 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
     before_contract: beforeContract,
     wrong_target_contract: wrongTargetContract,
     after_contract: afterContract,
+    source_patch_bundle: summarizeSourcePatchBundle(sourcePatchBundle),
     before_vitest: summarizeVitestRun(beforeRun),
     wrong_target_vitest: summarizeVitestRun(wrongTargetRun),
     after_vitest: summarizeVitestRun(afterRun),
@@ -125,6 +148,13 @@ export function buildAffordanceCodemodEvidenceManifest({ report, reportPath, ser
     before_failed: report?.before_contract?.ok === false && report?.before_vitest?.ok === false,
     target_aware_contract: report?.wrong_target_contract?.ok === false && report?.wrong_target_vitest?.ok === false,
     after_passed: report?.after_contract?.ok === true && report?.after_vitest?.ok === true,
+    patch_bundle_ok: report?.source_patch_bundle?.ok === true,
+    patch_bundle_modified_file_count: Array.isArray(report?.source_patch_bundle?.modified_files)
+      ? report.source_patch_bundle.modified_files.length
+      : 0,
+    patch_bundle_generated_test_count: Array.isArray(report?.source_patch_bundle?.generated_tests)
+      ? report.source_patch_bundle.generated_tests.length
+      : 0,
     operation_ids: Array.isArray(report?.operation_ids) ? report.operation_ids : report?.operation_id ? [report.operation_id] : [],
     generated_test_path: report?.generated_test_path ?? null,
     patched_source_path: report?.patched_source_path ?? null,
@@ -165,6 +195,7 @@ async function importBuiltSourceModules() {
       applyReactAffordanceCodemodPlan: codemod.applyReactAffordanceCodemodPlan,
       evaluateReactAffordanceContract: codemod.evaluateReactAffordanceContract,
       generateReactAffordanceVitestContractTest: codemod.generateReactAffordanceVitestContractTest,
+      buildDojoGeneratedSourcePatchBundle: (await import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "source", "patch_bundle.js")).href)).buildDojoGeneratedSourcePatchBundle,
     };
   } catch (err) {
     throw new Error(`dojo_affordance_codemod_dist_missing: run npm --prefix mcp/synthi-mcp run build first (${err instanceof Error ? err.message : String(err)})`);
@@ -214,6 +245,27 @@ function summarizeVitestRun(run) {
     signal: run.signal,
     stdout_tail: tail(run.stdout),
     stderr_tail: tail(run.stderr),
+  };
+}
+
+function summarizeSourcePatchBundle(bundle) {
+  return {
+    schema_version: bundle.schema_version,
+    plan_id: bundle.plan_id,
+    ok: bundle.ok,
+    issue_count: bundle.issues.length,
+    modified_files: bundle.modified_files.map((file) => ({
+      path: file.path,
+      before_sha256: file.before_sha256,
+      after_sha256: file.after_sha256,
+      changed: file.changed,
+      applied_operations: file.applied_operations,
+      skipped_operations: file.skipped_operations,
+    })),
+    generated_tests: bundle.generated_tests.map((test) => ({
+      path: test.path,
+      required_operations: test.required_operations,
+    })),
   };
 }
 
