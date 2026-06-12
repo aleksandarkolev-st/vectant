@@ -83,10 +83,10 @@ export function evaluateReactAffordanceContract(
   source: string,
   operations: DojoAffordancePatchOperation[]
 ): DojoReactAffordanceContractResult {
-  parseReactSourceOrThrow(source);
+  const sourceFile = parseReactSourceOrThrow(source);
   const required = operations.filter((operation) => operation.kind === "stable_locator" || operation.kind === "proof_hook");
   const missing = required
-    .filter((operation) => !source.includes(contractExpectationForOperation(operation)))
+    .filter((operation) => !operationExpectationSatisfied({ source, sourceFile, operation }))
     .map((operation) => ({
       operation_id: operation.operation_id,
       expected: contractExpectationForOperation(operation),
@@ -113,6 +113,7 @@ export function generateReactAffordanceVitestContractTest(input: {
     operation_id: operation.operation_id,
     affordance_id: operation.affordance_id,
     expected: contractExpectationForOperation(operation),
+    target_match: operation.target_match ?? null,
   }));
   const source = `import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -126,10 +127,24 @@ describe("Dojo affordance contract: ${escapeForDoubleQuotedString(input.componen
   it("exposes reviewed stable agent affordances", () => {
     const source = readFileSync(sourcePath, "utf8");
     for (const expectation of expectations) {
-      expect(source, expectation.operation_id).toContain(expectation.expected);
+      expect(containsExpectedAffordance(source, expectation), expectation.operation_id).toBe(true);
     }
   });
 });
+
+function containsExpectedAffordance(source, expectation) {
+  if (!expectation?.target_match?.text) return source.includes(expectation.expected);
+  const targetText = String(expectation.target_match.text);
+  let cursor = 0;
+  while (cursor <= source.length) {
+    const textIndex = source.indexOf(targetText, cursor);
+    if (textIndex < 0) return false;
+    const openingStart = source.lastIndexOf("<", textIndex);
+    if (openingStart >= 0 && source.slice(openingStart, textIndex).includes(expectation.expected)) return true;
+    cursor = textIndex + targetText.length;
+  }
+  return false;
+}
 `;
   parseReactSourceOrThrow(source);
   return {
@@ -320,6 +335,21 @@ function hasJsxAttribute(node: ts.JsxOpeningLikeElement, name: string, value: st
     if (!ts.isJsxAttribute(property) || property.name.getText() !== name) return false;
     return attributeInitializerText(property) === value;
   });
+}
+
+function operationExpectationSatisfied(input: {
+  source: string;
+  sourceFile: ts.SourceFile;
+  operation: DojoAffordancePatchOperation;
+}): boolean {
+  const expected = contractExpectationForOperation(input.operation);
+  if (!input.operation.target_match) return input.source.includes(expected);
+  try {
+    const target = findTargetElement(input.sourceFile, input.operation.target_component, input.operation.target_match);
+    return Boolean(target?.getText(input.sourceFile).includes(expected));
+  } catch {
+    return false;
+  }
 }
 
 function contractExpectationForOperation(operation: DojoAffordancePatchOperation): string {

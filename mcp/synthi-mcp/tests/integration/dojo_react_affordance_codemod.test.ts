@@ -120,6 +120,39 @@ describe("Dojo React affordance codemod", () => {
       .toThrow(/dojo_react_codemod_target_ambiguous/);
   });
 
+  it("evaluates generated contracts against the matched target instead of any matching text in the file", () => {
+    const operation = stableLocatorPatchOperation({
+      file_path: "src/InvoiceForm.jsx",
+      target_component: "InvoiceForm",
+      target_match: { role: "button", text: "Delete invoice" },
+      affordance_id: "invoice.delete",
+    });
+
+    const wrongTarget = evaluateReactAffordanceContract(wrongTargetLocatorSource(), [operation]);
+    const patched = applyReactAffordanceCodemodPlan(multiActionInvoiceFormSource(), [operation]);
+    const rightTarget = evaluateReactAffordanceContract(patched.source, [operation]);
+    const generatedTest = generateReactAffordanceVitestContractTest({
+      source_file_path: "src/InvoiceForm.jsx",
+      test_file_path: "src/__tests__/InvoiceForm.dojo-affordance.test.ts",
+      component_name: "InvoiceForm",
+      operations: [operation],
+    });
+
+    expect(wrongTarget).toEqual({
+      ok: false,
+      checked_operations: [operation.operation_id],
+      missing_operations: [{ operation_id: operation.operation_id, expected: "data-agent-action=\"invoice.delete\"" }],
+    });
+    expect(rightTarget).toEqual({
+      ok: true,
+      checked_operations: [operation.operation_id],
+      missing_operations: [],
+    });
+    expect(generatedTest.source).toContain("containsExpectedAffordance");
+    expect(generatedTest.source).toContain("\"target_match\"");
+    expect(generatedTest.source).toContain("Delete invoice");
+  });
+
   it("generates contract tests that fail before the patch and pass after it", () => {
     const stableOperation = stableLocatorPatchOperation({
       file_path: "src/InvoiceForm.jsx",
@@ -268,6 +301,19 @@ export function InvoiceForm({ onSubmitPrimary, onSubmitSecondary }) {
     <form>
       <button type="button" onClick={onSubmitPrimary}>Submit</button>
       <button type="button" onClick={onSubmitSecondary}>Submit</button>
+    </form>
+  );
+}
+`;
+}
+
+function wrongTargetLocatorSource(): string {
+  return `
+export function InvoiceForm({ onSave, onDelete }) {
+  return (
+    <form>
+      <button type="button" data-agent-action="invoice.delete" onClick={onSave}>Save invoice</button>
+      <button type="button" onClick={onDelete}>Delete invoice</button>
     </form>
   );
 }
