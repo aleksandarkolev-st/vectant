@@ -1273,6 +1273,7 @@ export async function reviewDojoPermissionUpgrade({
   if (!requestId) throw new Error('dojo_permission_upgrade_request_id_required');
   if (decision !== 'approved' && decision !== 'denied') throw new Error('dojo_permission_upgrade_decision_required');
   const reviewer = resolveGovernanceActor({ actorId: reviewerActorId, actorType: reviewerActorType });
+  if (!reviewer.actorId) throw new Error('dojo_governance_actor_required');
   const body = await callAgentWorkflowTool({
     url,
     token,
@@ -1312,6 +1313,7 @@ export async function reviewDojoCaseLaw({
   if (!caseId) throw new Error('dojo_case_law_case_id_required');
   if (decision !== 'approved' && decision !== 'deprecated') throw new Error('dojo_case_law_review_decision_required');
   const reviewer = resolveGovernanceActor({ actorId: reviewerActorId, actorType: reviewerActorType });
+  if (!reviewer.actorId) throw new Error('dojo_governance_actor_required');
   const body = await callAgentWorkflowTool({
     url,
     token,
@@ -1351,6 +1353,7 @@ export async function recertifyDojoSkill({
   const skillId = item?.skillId || item?.skill_id || '';
   if (!skillId) throw new Error('dojo_recertification_skill_id_required');
   const actor = resolveGovernanceActor({ actorId, actorType });
+  if (!actor.actorId) throw new Error('dojo_governance_actor_required');
   const resolvedEvidenceRefs = Array.isArray(evidenceRefs)
     ? compactStrings(evidenceRefs)
     : compactStrings(item?.evidenceRefs || item?.evidence_refs);

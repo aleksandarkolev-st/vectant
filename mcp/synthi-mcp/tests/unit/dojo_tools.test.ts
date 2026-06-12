@@ -560,10 +560,29 @@ describe("Agent Dojo MCP tools", () => {
         }),
       }),
     }));
+    const upgradeMissingActor = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
+      skill_id: published.skill.skill_id,
+      requested_action: "commit_mutation",
+      actor_type: "agent",
+    });
+    expect(upgradeMissingActor?.isError).toBe(true);
+    expect(upgradeMissingActor?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_permission_upgrade_actor_required",
+    }));
+    const upgradeMissingActorType = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
+      skill_id: published.skill.skill_id,
+      requested_action: "commit_mutation",
+      actor_id: "reviewer-a",
+    });
+    expect(upgradeMissingActorType?.isError).toBe(true);
+    expect(upgradeMissingActorType?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_permission_upgrade_actor_type_required",
+    }));
     const upgradeRequest = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
       skill_id: published.skill.skill_id,
       requested_action: "commit_mutation",
       actor_id: "reviewer-a",
+      actor_type: "agent",
       request_id: "upgrade-test-request",
       correlation_id: "upgrade-test-correlation",
       now: "2026-06-11T00:03:00.000Z",
@@ -600,6 +619,24 @@ describe("Agent Dojo MCP tools", () => {
         ]),
       }),
     }));
+    const reviewMissingReviewer = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      request_id: "upgrade-test-request",
+      decision: "approved",
+      reviewer_actor_type: "human",
+    });
+    expect(reviewMissingReviewer?.isError).toBe(true);
+    expect(reviewMissingReviewer?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_permission_upgrade_reviewer_required",
+    }));
+    const reviewMissingReviewerType = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      request_id: "upgrade-test-request",
+      decision: "approved",
+      reviewer_actor_id: "reviewer-b",
+    });
+    expect(reviewMissingReviewerType?.isError).toBe(true);
+    expect(reviewMissingReviewerType?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_permission_upgrade_reviewer_actor_type_required",
+    }));
     const reviewedUpgrade = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
       request_id: "upgrade-test-request",
       decision: "approved",
@@ -633,6 +670,7 @@ describe("Agent Dojo MCP tools", () => {
       request_id: "upgrade-test-request",
       decision: "denied",
       reviewer_actor_id: "reviewer-c",
+      reviewer_actor_type: "human",
     });
     expect(reviewedAgain?.isError).toBe(true);
     expect(reviewedAgain?.structuredContent).toEqual(expect.objectContaining({
@@ -722,11 +760,22 @@ describe("Agent Dojo MCP tools", () => {
         expect.objectContaining({ case_id: recordedCaseId, status: "approved" }),
       ]),
     }));
+    const reviewedCaseMissingActorType = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      case_id: recordedCaseId,
+      skill_id: published.skill.skill_id,
+      decision: "approved",
+      reviewer_actor_id: "case-reviewer-a",
+    });
+    expect(reviewedCaseMissingActorType?.isError).toBe(true);
+    expect(reviewedCaseMissingActorType?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_case_law_reviewer_actor_type_required",
+    }));
     const reviewedCaseAgain = await dispatchDojoTool("synthi_dojo_review_case_law", {
       case_id: recordedCaseId,
       skill_id: published.skill.skill_id,
       decision: "approved",
       reviewer_actor_id: "case-reviewer-a",
+      reviewer_actor_type: "human",
     });
     expect(reviewedCaseAgain?.isError).toBe(true);
     expect(reviewedCaseAgain?.structuredContent).toEqual(expect.objectContaining({

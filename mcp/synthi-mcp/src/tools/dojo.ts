@@ -123,7 +123,7 @@ export const DOJO_TOOLS = [
         request_id: { type: "string" },
         correlation_id: { type: "string" },
       },
-      required: [],
+      required: ["actor_id", "actor_type"],
     },
   },
   {
@@ -406,7 +406,7 @@ export const DOJO_TOOLS = [
         evidence_refs: { type: "array", items: { type: "string" } },
         decided_at: { type: "string" },
       },
-      required: ["request_id", "decision"],
+      required: ["request_id", "decision", "reviewer_actor_id", "reviewer_actor_type"],
     },
   },
   {
@@ -427,7 +427,7 @@ export const DOJO_TOOLS = [
         superseded_by: { type: "string" },
         decided_at: { type: "string" },
       },
-      required: ["case_id", "decision"],
+      required: ["case_id", "decision", "reviewer_actor_id", "reviewer_actor_type"],
     },
   },
   {
@@ -1201,6 +1201,10 @@ function dojoPermissionUpgradeTool(args: unknown): ToolResponse {
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
+  const actorId = stringOpt(a["actor_id"]);
+  if (!actorId) return errorResponse("dojo_permission_upgrade_actor_required");
+  const actorType = actorTypeInputOpt(a["actor_type"]);
+  if (!actorType) return errorResponse("dojo_permission_upgrade_actor_type_required");
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const requiredSteps = permissionUpgradeSteps(skill.skill, requestedAction);
   const requestId = stringOpt(a["request_id"])
@@ -1221,8 +1225,8 @@ function dojoPermissionUpgradeTool(args: unknown): ToolResponse {
     evidence_refs: evidenceRefs,
     requested_at: now,
     requested_by: {
-      actor_id: stringOpt(a["actor_id"]) ?? "anonymous-agent",
-      actor_type: actorTypeOpt(a["actor_type"]),
+      actor_id: actorId,
+      actor_type: actorType,
     },
     request_context: {
       request_id: requestId,
@@ -1256,13 +1260,17 @@ function dojoReviewPermissionUpgradeTool(args: unknown): ToolResponse {
   });
   const storedRequest = dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestId, limit: 1 })[0];
   if (!storedRequest) return errorResponse("dojo_permission_upgrade_request_not_found", { request_id: requestId });
+  const reviewerActorId = stringOpt(a["reviewer_actor_id"]) ?? stringOpt(a["actor_id"]);
+  if (!reviewerActorId) return errorResponse("dojo_permission_upgrade_reviewer_required");
+  const reviewerActorType = actorTypeInputOpt(a["reviewer_actor_type"] ?? a["actor_type"]);
+  if (!reviewerActorType) return errorResponse("dojo_permission_upgrade_reviewer_actor_type_required");
 
   const review = decideDojoPermissionUpgradeRequest({
     request: storedRequest,
     decision,
     decided_by: {
-      actor_id: stringOpt(a["reviewer_actor_id"]) ?? stringOpt(a["actor_id"]) ?? "anonymous-reviewer",
-      actor_type: actorTypeOpt(a["reviewer_actor_type"] ?? a["actor_type"]),
+      actor_id: reviewerActorId,
+      actor_type: reviewerActorType,
     },
     decided_at: stringOpt(a["decided_at"]) ?? stringOpt(a["now"]),
     reason: stringOpt(a["reason"]),
@@ -1302,6 +1310,8 @@ function dojoReviewCaseLawTool(args: unknown): ToolResponse {
   });
   const reviewerActorId = stringOpt(a["reviewer_actor_id"]) ?? stringOpt(a["actor_id"]);
   if (!reviewerActorId) return errorResponse("dojo_case_law_reviewer_required");
+  const reviewerActorType = actorTypeInputOpt(a["reviewer_actor_type"] ?? a["actor_type"]);
+  if (!reviewerActorType) return errorResponse("dojo_case_law_reviewer_actor_type_required");
 
   const selectedSkill = skillByArgs(args);
   const storedRecord = dojoSkillRegistry.getCaseLawRecord(caseId);
@@ -1316,7 +1326,7 @@ function dojoReviewCaseLawTool(args: unknown): ToolResponse {
     decision,
     decided_by: {
       actor_id: reviewerActorId,
-      actor_type: actorTypeOpt(a["reviewer_actor_type"] ?? a["actor_type"]),
+      actor_type: reviewerActorType,
     },
     decided_at: stringOpt(a["decided_at"]) ?? stringOpt(a["now"]),
     reason: stringOpt(a["reason"]),
