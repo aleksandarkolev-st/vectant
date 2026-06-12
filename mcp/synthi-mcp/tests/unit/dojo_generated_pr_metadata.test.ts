@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildDojoGeneratedPrBranchPlan,
   buildDojoGeneratedPrMetadata,
   validateDojoGeneratedPrMetadata,
 } from "../../src/dojo/source/pr_generator.js";
+import { buildDojoGeneratedSourcePatchBundle } from "../../src/dojo/source/patch_bundle.js";
 import {
   proofHookPatchOperation,
   stableLocatorPatchOperation,
@@ -124,6 +126,76 @@ describe("Dojo generated PR metadata", () => {
       ],
     });
   });
+
+  it("builds a reviewable branch plan from metadata and patch bundle outputs", () => {
+    const plan = planFixture();
+    const metadata = buildDojoGeneratedPrMetadata({
+      plan,
+      code_owner_rules: [{ path_prefix: "src/invoices/", owners: ["@billing-team"] }],
+    });
+    const bundle = buildDojoGeneratedSourcePatchBundle({
+      plan,
+      files: [{ path: "src/invoices/InvoiceForm.jsx", source: invoiceFormSource() }],
+    });
+
+    const branchPlan = buildDojoGeneratedPrBranchPlan({
+      metadata,
+      patch_bundle: bundle,
+      base_ref: "main",
+    });
+
+    expect(branchPlan).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.generatedSourcePrBranchPlan.v1",
+      plan_id: plan.plan_id,
+      branch_name: metadata.branch_name,
+      base_ref: "main",
+      checkout_strategy: "create_branch_from_base_ref",
+      ready_to_apply: true,
+      promotion_blockers: [],
+      required_tests: plan.required_tests,
+    }));
+    expect(branchPlan.file_writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "source",
+        path: "src/invoices/InvoiceForm.jsx",
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        bytes: expect.any(Number),
+        operation_ids: ["patch_stable_locator_invoice_save", "patch_proof_hook_invoice_save"],
+      }),
+      expect.objectContaining({
+        kind: "contract_test",
+        path: "src/invoices/__tests__/invoiceform.dojo-affordance.test.ts",
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        bytes: expect.any(Number),
+        operation_ids: ["patch_stable_locator_invoice_save", "patch_proof_hook_invoice_save"],
+      }),
+    ]));
+    expect(branchPlan.review_requirements.find((requirement) => requirement.gate === "code_owner")?.owners).toEqual(["@billing-team"]);
+  });
+
+  it("keeps branch plans blocked when metadata or bundle validation fails", () => {
+    const plan = planFixture();
+    const metadata = buildDojoGeneratedPrMetadata({
+      plan,
+      branch_name: "../unsafe branch",
+      code_owner_rules: [],
+    });
+    const bundle = buildDojoGeneratedSourcePatchBundle({
+      plan,
+      files: [],
+    });
+
+    const branchPlan = buildDojoGeneratedPrBranchPlan({ metadata, patch_bundle: bundle });
+
+    expect(branchPlan.ready_to_apply).toBe(false);
+    expect(branchPlan.file_writes).toEqual([]);
+    expect(branchPlan.promotion_blockers).toEqual(expect.arrayContaining([
+      "generated_pr_code_owner_unresolved:src/invoices/InvoiceForm.jsx",
+      "generated_pr_metadata:generated_pr_branch_name_invalid",
+      "source_patch_bundle:source_patch_file_missing:src/invoices/InvoiceForm.jsx",
+      "generated_pr_branch_plan_no_file_writes",
+    ]));
+  });
 });
 
 function planFixture(): DojoAffordancePrPlan {
@@ -157,4 +229,20 @@ function planFixture(): DojoAffordancePrPlan {
       "dojo_checkride_after_source_patch",
     ],
   };
+}
+
+function invoiceFormSource(): string {
+  return `function assertDojoProof(affordanceId) {
+  return affordanceId;
+}
+
+export function InvoiceForm({ onSave }) {
+  return (
+    <form>
+      <button type="button" onClick={() => undefined}>Preview invoice</button>
+      <button type="button" onClick={onSave}>Save invoice</button>
+    </form>
+  );
+}
+`;
 }

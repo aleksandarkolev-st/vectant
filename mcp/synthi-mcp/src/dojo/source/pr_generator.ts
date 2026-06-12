@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { DojoGeneratedSourcePatchBundle } from "./patch_bundle.js";
 import {
   validateDojoAffordancePrPlan,
   type DojoAffordancePatchOperation,
@@ -75,6 +76,28 @@ export interface DojoGeneratedPrMetadataValidation {
   issues: DojoGeneratedPrMetadataIssue[];
 }
 
+export interface DojoGeneratedPrBranchFileWrite {
+  kind: "source" | "contract_test";
+  path: string;
+  sha256: string;
+  bytes: number;
+  operation_ids: string[];
+}
+
+export interface DojoGeneratedPrBranchPlan {
+  schema_version: "synthi.dojo.generatedSourcePrBranchPlan.v1";
+  plan_id: string;
+  branch_name: string;
+  base_ref?: string;
+  checkout_strategy: "create_branch_from_current_head" | "create_branch_from_base_ref";
+  file_writes: DojoGeneratedPrBranchFileWrite[];
+  required_tests: string[];
+  review_requirements: DojoGeneratedPrReviewRequirement[];
+  artifact_refs: DojoGeneratedPrArtifactRef[];
+  promotion_blockers: string[];
+  ready_to_apply: boolean;
+}
+
 export function buildDojoGeneratedPrMetadata(input: {
   plan: DojoAffordancePrPlan;
   skill_id?: string;
@@ -134,6 +157,60 @@ export function buildDojoGeneratedPrMetadata(input: {
     promotion_blockers: promotionBlockers,
   };
   return metadata;
+}
+
+export function buildDojoGeneratedPrBranchPlan(input: {
+  metadata: DojoGeneratedPrMetadata;
+  patch_bundle: DojoGeneratedSourcePatchBundle;
+  base_ref?: string;
+}): DojoGeneratedPrBranchPlan {
+  const metadataValidation = validateDojoGeneratedPrMetadata(input.metadata);
+  const branchBlockers = metadataValidation.issues
+    .filter((issue) => issue.severity === "error")
+    .map((issue) => `generated_pr_metadata:${issue.issue_id}`);
+  const bundleBlockers = input.patch_bundle.issues
+    .filter((issue) => issue.severity === "error")
+    .map((issue) => `source_patch_bundle:${issue.issue_id}${issue.file_path ? `:${issue.file_path}` : ""}`);
+  const fileWrites: DojoGeneratedPrBranchFileWrite[] = [
+    ...input.patch_bundle.modified_files.map((file) => ({
+      kind: "source" as const,
+      path: file.path,
+      sha256: file.after_sha256,
+      bytes: Buffer.byteLength(file.source, "utf8"),
+      operation_ids: file.applied_operations.slice(),
+    })),
+    ...input.patch_bundle.generated_tests.map((file) => ({
+      kind: "contract_test" as const,
+      path: file.path,
+      sha256: hashFull(file.source),
+      bytes: Buffer.byteLength(file.source, "utf8"),
+      operation_ids: file.required_operations.slice(),
+    })),
+  ];
+  const promotionBlockers = unique([
+    ...input.metadata.promotion_blockers,
+    ...branchBlockers,
+    ...bundleBlockers,
+    ...(fileWrites.length === 0 ? ["generated_pr_branch_plan_no_file_writes"] : []),
+  ]);
+  return {
+    schema_version: "synthi.dojo.generatedSourcePrBranchPlan.v1",
+    plan_id: input.metadata.plan_id,
+    branch_name: input.metadata.branch_name,
+    ...(input.base_ref ? { base_ref: input.base_ref } : {}),
+    checkout_strategy: input.base_ref ? "create_branch_from_base_ref" : "create_branch_from_current_head",
+    file_writes: fileWrites,
+    required_tests: input.metadata.required_tests.slice(),
+    review_requirements: input.metadata.review_requirements.map((requirement) => ({
+      ...requirement,
+      owners: requirement.owners.slice(),
+      paths: requirement.paths.slice(),
+      operation_ids: requirement.operation_ids.slice(),
+    })),
+    artifact_refs: input.metadata.artifact_refs.map((artifact) => ({ ...artifact })),
+    promotion_blockers: promotionBlockers,
+    ready_to_apply: input.patch_bundle.ok && metadataValidation.ok && promotionBlockers.length === 0,
+  };
 }
 
 export function validateDojoGeneratedPrMetadata(metadata: DojoGeneratedPrMetadata): DojoGeneratedPrMetadataValidation {
@@ -353,6 +430,10 @@ function slug(value: string): string {
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function hashFull(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function escapeRegExp(value: string): string {
