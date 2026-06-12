@@ -644,6 +644,22 @@ function updateBridgeState(
     const health = payload["license_health"] as Record<string, unknown> | undefined;
     pushBridgeHistory(state, now, "License health", stringOpt(health?.["status"]) ?? "Health report", "passed", "Health", "ok");
   }
+  if (ok && toolName === "synthi_dojo_recertify_skill") {
+    state.latestCheckride = payload;
+    state.latestDojoLicenseHealth = payload;
+    state.latestDojoGovernance = payload;
+    const skill = recordAt(payload, "skill");
+    const recertification = recordAt(payload, "recertification");
+    pushBridgeHistory(
+      state,
+      now,
+      "Dojo recertified",
+      stringOpt(skill?.["name"]) ?? stringOpt(skill?.["skill_id"]) ?? stringOpt(recertification?.["skill_id"]) ?? "Checkride complete",
+      "passed",
+      "Recertified",
+      "ok"
+    );
+  }
   if (ok && toolName === "synthi_dojo_record_case_law") {
     state.latestDojoCaseLawRecord = payload;
     const caseLaw = payload["case_law"] as Record<string, unknown> | undefined;

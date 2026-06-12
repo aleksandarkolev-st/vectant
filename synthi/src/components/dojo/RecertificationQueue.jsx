@@ -1,13 +1,13 @@
 'use client';
 
-import { TimerReset } from 'lucide-react';
+import { RotateCw, TimerReset } from 'lucide-react';
 
 const panelStyle = {
   borderColor: 'var(--border-subtle)',
   background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
 };
 
-export default function RecertificationQueue({ items = [] }) {
+export default function RecertificationQueue({ items = [], onRecertify, busyQueueId = '' }) {
   return (
     <section className="rounded-md border p-4" style={panelStyle} data-testid="recertification-queue">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -33,6 +33,18 @@ export default function RecertificationQueue({ items = [] }) {
                 <Info label="Priority" value={item.priority || 'normal'} />
                 <Info label="Evidence" value={item.evidenceRefs?.join(', ') || 'Not recorded'} />
               </dl>
+              <button
+                type="button"
+                className="mt-3 inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs disabled:cursor-not-allowed disabled:opacity-45"
+                style={panelStyle}
+                disabled={!onRecertify || busyQueueId === item.queueId}
+                data-testid={`recertification-${item.queueId}-run`}
+                onClick={() => onRecertify?.(item)}
+                title={!onRecertify ? 'Action handler unavailable' : 'Run recertification'}
+              >
+                <RotateCw size={13} aria-hidden="true" />
+                Recertify
+              </button>
             </article>
           ))}
         </div>

@@ -5,6 +5,7 @@ import { ArchiveX, ArrowLeft, CheckCircle2, Landmark } from 'lucide-react';
 import {
   createEmptyDojoSummary,
   getDojoWorkspaceSummary,
+  recertifyDojoSkill,
   reviewDojoCaseLaw,
   reviewDojoPermissionUpgrade,
   revokeDojoLicense,
@@ -32,6 +33,7 @@ export default function GovernanceDashboard({
   onDenyApproval,
   onApproveCaseLaw,
   onDeprecateCaseLaw,
+  onRecertifySkill,
   onRevokeLicense,
   enableBridgeActions = true,
 }) {
@@ -70,6 +72,8 @@ export default function GovernanceDashboard({
     ?? (enableBridgeActions ? (item) => reviewDojoCaseLaw({ item, decision: 'approved', workspaceSlug }) : undefined);
   const deprecateCaseLawHandler = onDeprecateCaseLaw
     ?? (enableBridgeActions ? (item) => reviewDojoCaseLaw({ item, decision: 'deprecated', workspaceSlug }) : undefined);
+  const recertifySkillHandler = onRecertifySkill
+    ?? (enableBridgeActions ? (item) => recertifyDojoSkill({ item, workspaceSlug }) : undefined);
   const revokeLicenseHandler = onRevokeLicense
     ?? (enableBridgeActions ? (item) => revokeDojoLicense({ item, workspaceSlug }) : undefined);
 
@@ -169,7 +173,16 @@ export default function GovernanceDashboard({
 
         <section className="grid gap-4 lg:grid-cols-2">
           <PolicyGateTable items={governance.policyGates} />
-          <RecertificationQueue items={governance.recertificationQueue} />
+          <RecertificationQueue
+            items={governance.recertificationQueue}
+            busyQueueId={actionState.busyKey.startsWith('recertification:') ? actionState.busyKey.slice('recertification:'.length) : ''}
+            onRecertify={recertifySkillHandler ? (item) => invokeGovernanceAction({
+              busyKey: `recertification:${item.queueId}`,
+              successLabel: `Skill recertified: ${item.skillName || item.skillId}`,
+              item,
+              handler: recertifySkillHandler,
+            }) : undefined}
+          />
         </section>
 
         <CaseLawReviewQueue

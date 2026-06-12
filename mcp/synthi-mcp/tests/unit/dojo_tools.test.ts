@@ -671,6 +671,36 @@ describe("Agent Dojo MCP tools", () => {
         proof_records: expect.objectContaining({ used: 1, revoked: 1 }),
       }),
     }));
+    const recertified = await dispatchDojoTool("synthi_dojo_recertify_skill", {
+      skill_id: published.skill.skill_id,
+      actor_id: "recertifier-a",
+      actor_type: "human",
+      reason: "unit_test_recertification",
+      evidence_refs: ["evidence:recertification"],
+      now: "2026-06-11T00:04:30.000Z",
+    });
+    expect(recertified?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill: expect.objectContaining({ skill_id: published.skill.skill_id }),
+      recertification: expect.objectContaining({
+        ok: true,
+        status: "applied",
+        skill_id: published.skill.skill_id,
+        reason: "unit_test_recertification",
+        evidence_refs: ["evidence:recertification"],
+        audit_event: expect.objectContaining({
+          event_type: "checkride_run_completed",
+          actor: { actor_id: "recertifier-a", actor_type: "human" },
+          evidence_refs: ["evidence:recertification"],
+        }),
+      }),
+      license_health: expect.objectContaining({ schema_version: "synthi.dojo.licenseHealth.v1" }),
+      governance_service: expect.objectContaining({
+        skill_registry: expect.arrayContaining([
+          expect.objectContaining({ skill_id: published.skill.skill_id }),
+        ]),
+      }),
+    }));
     const recordedCase = await dispatchDojoTool("synthi_dojo_record_case_law", {
       skill_id: published.skill.skill_id,
       finding: "A unit test discovered an unsafe action boundary",

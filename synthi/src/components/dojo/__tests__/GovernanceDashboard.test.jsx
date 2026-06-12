@@ -240,6 +240,7 @@ describe('GovernanceDashboard', () => {
     expect(view.querySelector('[data-testid="license-license-001-revoke"]')?.disabled).toBe(true);
     expect(view.querySelector('[data-testid="case-law-CASE-001-approve"]')?.disabled).toBe(true);
     expect(view.querySelector('[data-testid="case-law-CASE-001-deprecate"]')?.disabled).toBe(true);
+    expect(view.querySelector('[data-testid="recertification-recert-001-run"]')?.disabled).toBe(true);
   });
 
   it('invokes governance approval and revocation actions with operator feedback', async () => {
@@ -247,6 +248,7 @@ describe('GovernanceDashboard', () => {
     const deny = vi.fn().mockResolvedValue({ message: 'approval denied in test' });
     const approveCaseLaw = vi.fn().mockResolvedValue({ message: 'case law approved in test' });
     const deprecateCaseLaw = vi.fn().mockResolvedValue({ message: 'case law deprecated in test' });
+    const recertify = vi.fn().mockResolvedValue({ message: 'skill recertified in test' });
     const revoke = vi.fn().mockResolvedValue({ message: 'license revoked in test' });
     const view = renderDashboard({
       workspaceSlug: 'workspace-a',
@@ -255,6 +257,7 @@ describe('GovernanceDashboard', () => {
       onDenyApproval: deny,
       onApproveCaseLaw: approveCaseLaw,
       onDeprecateCaseLaw: deprecateCaseLaw,
+      onRecertifySkill: recertify,
       onRevokeLicense: revoke,
     });
 
@@ -293,6 +296,16 @@ describe('GovernanceDashboard', () => {
       skillId: 'skill-save-invoice',
     }));
     expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('case law deprecated in test');
+
+    await act(async () => {
+      view.querySelector('[data-testid="recertification-recert-001-run"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(recertify).toHaveBeenCalledWith(expect.objectContaining({
+      queueId: 'recert-001',
+      skillId: 'skill-stale',
+      reason: 'source_drift',
+    }));
+    expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('skill recertified in test');
 
     await act(async () => {
       view.querySelector('[data-testid="license-license-001-revoke"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -357,6 +370,16 @@ describe('GovernanceDashboard', () => {
                 status: 'proposed',
               },
             ],
+            recertification_queue: [
+              {
+                queue_id: 'recert-001',
+                skill_id: 'skill-stale',
+                skill_name: 'Stale approval skill',
+                reason: 'source_drift',
+                status: 'queued',
+                evidence_refs: ['evidence-drift-001'],
+              },
+            ],
           },
         },
       }),
@@ -369,6 +392,23 @@ describe('GovernanceDashboard', () => {
         initialSummary: summary,
         enableBridgeActions: true,
       });
+
+      await act(async () => {
+        view.querySelector('[data-testid="recertification-recert-001-run"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      const recertifyCall = global.fetch.mock.calls.at(-1);
+      expect(recertifyCall?.[0]).toContain('/browser-workflows/tool');
+      expect(JSON.parse(recertifyCall?.[1]?.body || '{}')).toEqual({
+        tool: 'synthi_dojo_recertify_skill',
+        arguments: {
+          skill_id: 'skill-stale',
+          reason: 'source_drift',
+          actor_id: 'governance-operator',
+          actor_type: 'human',
+          evidence_refs: ['evidence-drift-001'],
+        },
+      });
+      expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Skill recertified: Stale approval skill');
 
       await act(async () => {
         view.querySelector('[data-testid="approval-permission-upgrade-001-approve"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));

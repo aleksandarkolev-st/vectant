@@ -504,6 +504,11 @@ export const DOJO_TOOLS = [
         skill_id: { type: "string" },
         workflow_id: { type: "string" },
         workspace_id: { type: "string" },
+        reason: { type: "string" },
+        actor_id: { type: "string" },
+        actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        evidence_refs: { type: "array", items: { type: "string" } },
+        now: { type: "string" },
       },
       required: [],
     },
@@ -1532,23 +1537,61 @@ function dojoPublishSkillTool(args: unknown): ToolResponse {
 
 function dojoRecertifySkillTool(args: unknown): ToolResponse {
   const existing = skillByArgs(args);
-  const workflowId = existing?.workflow_id ?? stringOpt(obj(args)["workflow_id"]);
+  const a = obj(args);
+  const workflowId = existing?.workflow_id ?? stringOpt(a["workflow_id"]);
   const artifact = requiredWorkflowArtifact({ workflow_id: workflowId });
   if (!artifact.ok) return artifact.error;
-  const workspaceId = stringOpt(obj(args)["workspace_id"]) ?? existing?.workspace_id;
+  const workspaceId = stringOpt(a["workspace_id"]) ?? existing?.workspace_id;
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
+  const reason = stringOpt(a["reason"]);
+  const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
+  const actorId = stringOpt(a["actor_id"]);
+  const previousLicenseVersion = existing?.permission_license.license_version ?? null;
   const manifest = generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract);
   const publishedToolName = existing?.published_tool_name;
   const recertified = dojoSkillRegistry.publish(buildDojoSkill(artifact.artifact.workflow.contract, {
     workspace_id: workspaceId,
+    now,
     private_tool_manifest: manifest,
     ...(publishedToolName ? { published_tool_name: publishedToolName } : {}),
   }));
+  const auditEvent = actorId ? {
+    event_type: "checkride_run_completed" as const,
+    actor: {
+      actor_id: actorId,
+      actor_type: actorTypeOpt(a["actor_type"]),
+    },
+    occurred_at: now,
+    workspace_id: recertified.workspace_id,
+    skill_id: recertified.skill_id,
+    license_id: recertified.permission_license.license_id,
+    reason,
+    evidence_refs: evidenceRefs,
+  } : undefined;
   return jsonResponse({
     ok: true,
     skill: skillListItem(recertified),
     mcp_skill_manifest: buildDojoMcpSkillManifest(recertified),
+    recertification: {
+      ok: true,
+      status: "applied",
+      skill_id: recertified.skill_id,
+      workflow_id: recertified.workflow_id,
+      reason: reason ?? null,
+      evidence_refs: evidenceRefs,
+      previous_license_version: previousLicenseVersion,
+      license_version: recertified.permission_license.license_version,
+      audit_event: auditEvent,
+    },
     checkride: recertified.checkride,
     license: recertified.permission_license,
+    license_health: licenseHealthFor(recertified),
+    governance_service: buildDojoGovernanceServiceView({
+      skills: dojoSkillRegistry.list(),
+      case_law_records: dojoSkillRegistry.listCaseLawRecords(),
+      permission_upgrade_requests: dojoSkillRegistry.listPermissionUpgradeRequests(),
+      now,
+    }),
     assurance_case: recertified.assurance_case,
     repo_artifacts: artifactSummary(exportDojoRepoArtifacts(recertified)),
   });

@@ -489,6 +489,7 @@ function normalizeRecertificationItem(item, index = 0) {
     queueId: item.queue_id || item.queueId || item.id || `recertification-${index + 1}`,
     skillId: item.skill_id || item.skillId || '',
     skillName: item.skill_name || item.skillName || item.title || '',
+    workflowId: item.workflow_id || item.workflowId || '',
     reason: item.reason || item.trigger || '',
     dueAt: item.due_at || item.dueAt || item.expires_at || item.expiresAt || '',
     status: item.status || 'queued',
@@ -1332,6 +1333,47 @@ export async function reviewDojoCaseLaw({
     result: body.result,
     summary: summaryFromToolBody(body, workspaceSlug),
     message: `Case law ${decision}: ${item?.title || caseId}`,
+  };
+}
+
+export async function recertifyDojoSkill({
+  item,
+  workspaceSlug = '',
+  reason = '',
+  evidenceRefs,
+  actorId,
+  actorType = 'human',
+  signal,
+  url,
+  token,
+} = {}) {
+  const skillId = item?.skillId || item?.skill_id || '';
+  if (!skillId) throw new Error('dojo_recertification_skill_id_required');
+  const actor = resolveGovernanceActor({ actorId, actorType });
+  const resolvedEvidenceRefs = Array.isArray(evidenceRefs)
+    ? compactStrings(evidenceRefs)
+    : compactStrings(item?.evidenceRefs || item?.evidence_refs);
+  const resolvedReason = reason || item?.reason || item?.trigger || '';
+  const body = await callAgentWorkflowTool({
+    url,
+    token,
+    signal,
+    tool: 'synthi_dojo_recertify_skill',
+    arguments: {
+      skill_id: skillId,
+      ...(item?.workflowId || item?.workflow_id ? { workflow_id: item.workflowId || item.workflow_id } : {}),
+      ...(resolvedReason ? { reason: resolvedReason } : {}),
+      actor_id: actor.actorId,
+      actor_type: actor.actorType,
+      evidence_refs: resolvedEvidenceRefs,
+    },
+  });
+  assertBridgeToolActionOk(body, 'dojo_recertification_failed');
+  return {
+    body,
+    result: body.result,
+    summary: summaryFromToolBody(body, workspaceSlug),
+    message: `Skill recertified: ${item?.skillName || item?.skillId || skillId}`,
   };
 }
 
