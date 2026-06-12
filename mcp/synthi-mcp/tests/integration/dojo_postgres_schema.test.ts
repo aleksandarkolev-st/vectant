@@ -75,6 +75,24 @@ describe("Dojo Postgres schema migration", () => {
     expect(checkpoints).toContain("check (record_count >= 0)");
   });
 
+  it("defines hosted runtime session custody with tenant, skill, credential, and status constraints", () => {
+    const runtimeSessions = normalizedStatements()["dojo_runtime_sessions"];
+
+    expect(runtimeSessions).toContain("primary key (tenant_id, workspace_id, session_id)");
+    expect(runtimeSessions).toContain(
+      "foreign key (tenant_id, workspace_id) references dojo_workspaces(tenant_id, workspace_id) on delete restrict"
+    );
+    expect(runtimeSessions).toContain(
+      "foreign key (tenant_id, skill_id) references dojo_skills(tenant_id, skill_id) on delete restrict"
+    );
+    expect(runtimeSessions).toContain("origin_allowlist text[] not null default array[]::text[]");
+    expect(runtimeSessions).toContain("credential_sha256 text not null");
+    expect(runtimeSessions).toContain("check (credential_sha256 ~ '^[a-fa-f0-9]{64}$')");
+    expect(runtimeSessions).toContain("check (status in ('active', 'revoked', 'expired'))");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_runtime_sessions_skill_idx");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_runtime_sessions_run_idx");
+  });
+
   it("rejects duplicate migration identifiers before SQL generation", () => {
     expect(() => assertUniqueMigrationIds([
       DOJO_POSTGRES_MIGRATIONS[0],
