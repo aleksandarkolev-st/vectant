@@ -1,13 +1,13 @@
 'use client';
 
-import { ShieldAlert } from 'lucide-react';
+import { ShieldAlert, ShieldOff } from 'lucide-react';
 
 const panelStyle = {
   borderColor: 'var(--border-subtle)',
   background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
 };
 
-export default function LicenseHealthBoard({ items = [] }) {
+export default function LicenseHealthBoard({ items = [], onRevoke, busyLicenseId = '' }) {
   return (
     <section className="rounded-md border p-4" style={panelStyle} data-testid="license-health-board">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -38,6 +38,20 @@ export default function LicenseHealthBoard({ items = [] }) {
                 <Info label="Proof" value={item.proofRequired ? 'Required' : 'Optional'} />
                 <Info label="Actions" value={`${item.allowedActionCount}/${item.gatedActionCount}/${item.blockedActionCount}`} />
               </dl>
+              <div className="mt-3">
+                <button
+                  type="button"
+                  className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs disabled:cursor-not-allowed disabled:opacity-45"
+                  style={panelStyle}
+                  disabled={!onRevoke || busyLicenseId === item.licenseId || item.status === 'revoked'}
+                  data-testid={`license-${item.licenseId}-revoke`}
+                  onClick={() => onRevoke?.(item)}
+                  title={!onRevoke ? 'Action handler unavailable' : 'Revoke license'}
+                >
+                  <ShieldOff size={13} aria-hidden="true" />
+                  Revoke license
+                </button>
+              </div>
             </article>
           ))}
         </div>

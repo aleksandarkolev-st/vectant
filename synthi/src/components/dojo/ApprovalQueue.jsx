@@ -1,13 +1,13 @@
 'use client';
 
-import { ClipboardCheck } from 'lucide-react';
+import { CheckCircle2, ClipboardCheck, XCircle } from 'lucide-react';
 
 const panelStyle = {
   borderColor: 'var(--border-subtle)',
   background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
 };
 
-export default function ApprovalQueue({ items = [] }) {
+export default function ApprovalQueue({ items = [], onApprove, onDeny, busyQueueId = '' }) {
   return (
     <section className="rounded-md border p-4" style={panelStyle} data-testid="approval-queue">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -38,6 +38,22 @@ export default function ApprovalQueue({ items = [] }) {
                   ))}
                 </ul>
               ) : null}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <ActionButton
+                  icon={CheckCircle2}
+                  label="Approve"
+                  disabled={!onApprove || busyQueueId === item.queueId}
+                  testId={`approval-${item.queueId}-approve`}
+                  onClick={() => onApprove?.(item)}
+                />
+                <ActionButton
+                  icon={XCircle}
+                  label="Deny"
+                  disabled={!onDeny || busyQueueId === item.queueId}
+                  testId={`approval-${item.queueId}-deny`}
+                  onClick={() => onDeny?.(item)}
+                />
+              </div>
             </article>
           ))}
         </div>
@@ -45,5 +61,22 @@ export default function ApprovalQueue({ items = [] }) {
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No approval work is currently queued.</p>
       )}
     </section>
+  );
+}
+
+function ActionButton({ icon: Icon, label, disabled, testId, onClick }) {
+  return (
+    <button
+      type="button"
+      className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs disabled:cursor-not-allowed disabled:opacity-45"
+      style={panelStyle}
+      disabled={disabled}
+      data-testid={testId}
+      onClick={onClick}
+      title={disabled ? 'Action handler unavailable' : label}
+    >
+      <Icon size={13} aria-hidden="true" />
+      {label}
+    </button>
   );
 }

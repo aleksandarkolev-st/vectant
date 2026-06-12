@@ -235,6 +235,48 @@ describe('GovernanceDashboard', () => {
     expect(view.querySelector('[data-testid="compliance-evidence-pack"]')?.textContent).toContain('deployed_host_conformance');
     expect(view.querySelector('[data-testid="audit-export-panel"]')?.textContent).toContain('License and proof audit');
     expect(view.querySelector('[data-testid="case-law-review-queue"]')?.textContent).toContain('CASE-001');
+    expect(view.querySelector('[data-testid="approval-approval-001-approve"]')?.disabled).toBe(true);
+    expect(view.querySelector('[data-testid="license-license-001-revoke"]')?.disabled).toBe(true);
+  });
+
+  it('invokes governance approval and revocation actions with operator feedback', async () => {
+    const approve = vi.fn().mockResolvedValue({ message: 'approval approved in test' });
+    const deny = vi.fn().mockResolvedValue({ message: 'approval denied in test' });
+    const revoke = vi.fn().mockResolvedValue({ message: 'license revoked in test' });
+    const view = renderDashboard({
+      workspaceSlug: 'workspace-a',
+      initialSummary: buildGovernanceSummary(),
+      onApproveApproval: approve,
+      onDenyApproval: deny,
+      onRevokeLicense: revoke,
+    });
+
+    await act(async () => {
+      view.querySelector('[data-testid="approval-approval-001-approve"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(approve).toHaveBeenCalledWith(expect.objectContaining({
+      queueId: 'approval-001',
+      action: 'send_invoice',
+    }));
+    expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('approval approved in test');
+
+    await act(async () => {
+      view.querySelector('[data-testid="approval-approval-001-deny"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(deny).toHaveBeenCalledWith(expect.objectContaining({
+      queueId: 'approval-001',
+      action: 'send_invoice',
+    }));
+    expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('approval denied in test');
+
+    await act(async () => {
+      view.querySelector('[data-testid="license-license-001-revoke"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(revoke).toHaveBeenCalledWith(expect.objectContaining({
+      skillId: 'skill-save-invoice',
+      licenseId: 'license-001',
+    }));
+    expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('license revoked in test');
   });
 
   it('loads governance summary through the provided client', async () => {

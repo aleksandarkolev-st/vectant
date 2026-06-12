@@ -22,10 +22,14 @@ export default function GovernanceDashboard({
   initialSummary,
   loadSummary = getDojoWorkspaceSummary,
   autoLoad = true,
+  onApproveApproval,
+  onDenyApproval,
+  onRevokeLicense,
 }) {
   const [summary, setSummary] = useState(initialSummary || createEmptyDojoSummary(workspaceSlug));
   const [loading, setLoading] = useState(autoLoad && !initialSummary);
   const [error, setError] = useState('');
+  const [actionState, setActionState] = useState({ busyKey: '', message: '', error: '' });
 
   useEffect(() => {
     if (!autoLoad) return undefined;
@@ -48,6 +52,26 @@ export default function GovernanceDashboard({
 
   const governance = summary.governance || createEmptyDojoSummary(workspaceSlug).governance;
   const backHref = `/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`;
+
+  const invokeGovernanceAction = async ({ busyKey, successLabel, item, handler }) => {
+    if (!handler) return;
+    setActionState({ busyKey, message: '', error: '' });
+    try {
+      const result = await handler(item);
+      if (result?.summary) setSummary(result.summary);
+      setActionState({
+        busyKey: '',
+        message: result?.message || successLabel,
+        error: '',
+      });
+    } catch (err) {
+      setActionState({
+        busyKey: '',
+        message: '',
+        error: err?.message || 'dojo_governance_action_failed',
+      });
+    }
+  };
 
   return (
     <main
@@ -77,13 +101,48 @@ export default function GovernanceDashboard({
           </section>
         ) : null}
 
+        {actionState.message || actionState.error ? (
+          <section
+            className="rounded-md border p-3 text-xs"
+            style={{ ...panelStyle, color: actionState.error ? 'var(--accent-danger, #ef4444)' : 'var(--accent-success, #22c55e)' }}
+            role="status"
+            data-testid="governance-action-status"
+          >
+            {actionState.error || actionState.message}
+          </section>
+        ) : null}
+
         <GovernanceOverview metrics={governance.metrics} />
 
         <SkillRegistryTable items={governance.skillRegistry} />
 
         <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
-          <LicenseHealthBoard items={governance.licenseHealth} />
-          <ApprovalQueue items={governance.approvalQueue} />
+          <LicenseHealthBoard
+            items={governance.licenseHealth}
+            busyLicenseId={actionState.busyKey.startsWith('license:') ? actionState.busyKey.slice('license:'.length) : ''}
+            onRevoke={onRevokeLicense ? (item) => invokeGovernanceAction({
+              busyKey: `license:${item.licenseId}`,
+              successLabel: `License revoked: ${item.skillName || item.skillId}`,
+              item,
+              handler: onRevokeLicense,
+            }) : undefined}
+          />
+          <ApprovalQueue
+            items={governance.approvalQueue}
+            busyQueueId={actionState.busyKey.startsWith('approval:') ? actionState.busyKey.slice('approval:'.length) : ''}
+            onApprove={onApproveApproval ? (item) => invokeGovernanceAction({
+              busyKey: `approval:${item.queueId}`,
+              successLabel: `Approval approved: ${item.action || item.queueId}`,
+              item,
+              handler: onApproveApproval,
+            }) : undefined}
+            onDeny={onDenyApproval ? (item) => invokeGovernanceAction({
+              busyKey: `approval:${item.queueId}`,
+              successLabel: `Approval denied: ${item.action || item.queueId}`,
+              item,
+              handler: onDenyApproval,
+            }) : undefined}
+          />
         </section>
 
         <section className="grid gap-4 lg:grid-cols-2">
