@@ -6,6 +6,11 @@ import net from "node:net";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  analyzeScreenshotVisualEvidence,
+  collectRouteLayoutMetrics,
+  evaluateVisualProofCapture,
+} from "./dojo-visual-proof-utils.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,6 +19,7 @@ const REPO_ROOT = path.resolve(SYNTHI_ROOT, "..");
 const MCP_ROOT = path.join(REPO_ROOT, "mcp", "synthi-mcp");
 const requireFromMcp = createRequire(path.join(MCP_ROOT, "package.json"));
 const { chromium } = requireFromMcp("playwright");
+const sharp = requireFromMcp("sharp");
 
 const args = parseArgs(process.argv.slice(2));
 const OUT_DIR = path.resolve(args["out-dir"] || path.join(SYNTHI_ROOT, "tmp", "dojo-visual-proof"));
@@ -152,19 +158,32 @@ async function captureRoute({ browser, port, route, viewport }) {
     await page.addStyleTag({ content: DEV_OVERLAY_CSS });
     await page.waitForSelector(route.selector, { timeout: 20_000 });
     const text = await page.locator(route.selector).innerText({ timeout: 10_000 });
+    const layoutMetrics = await collectRouteLayoutMetrics(page, route.selector);
     const checks = Object.fromEntries(
       route.requiredText.map((required) => [`text:${required}`, text.includes(required)])
     );
     const screenshotPath = path.join(OUT_DIR, `${route.id}-${viewport.name}.png`);
     await page.screenshot({ path: screenshotPath, fullPage: true });
     const stats = await stat(screenshotPath);
+    const imageMetrics = await analyzeScreenshotVisualEvidence({ sharp, screenshotPath });
+    const visualDecision = evaluateVisualProofCapture({
+      checks,
+      screenshotBytes: stats.size,
+      imageMetrics,
+      layoutMetrics,
+      viewport,
+    });
     return {
       route_id: route.id,
       viewport: viewport.name,
-      ok: Object.values(checks).every(Boolean) && stats.size > 10_000,
+      ok: visualDecision.ok,
       url: `http://${HOST}:${port}${route.path}`,
       selector: route.selector,
       checks,
+      failed_visual_gates: visualDecision.failed_visual_gates,
+      visual_thresholds: visualDecision.thresholds,
+      image_metrics: imageMetrics,
+      layout_metrics: layoutMetrics,
       screenshot_path: screenshotPath,
       bytes: stats.size,
     };
