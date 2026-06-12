@@ -1,4 +1,5 @@
 import type { DojoSkill } from "../../browser/dojo.js";
+import type { DojoCaseLawBindingScope, DojoCaseLawRecord, DojoCaseLawStatus } from "../case_law/registry.js";
 import type { DojoPublishedWorkflowBinding } from "./published_workflow_index.js";
 
 export type MaybePromise<T> = T | Promise<T>;
@@ -71,6 +72,14 @@ export interface DojoPermissionUpgradeRequestFilter {
   limit?: number;
 }
 
+export interface DojoCaseLawRecordFilter {
+  case_id?: string;
+  status?: DojoCaseLawStatus;
+  binding_scope?: DojoCaseLawBindingScope;
+  applies_to?: string;
+  limit?: number;
+}
+
 export interface DojoSkillStore {
   saveSkill(skill: DojoSkill): void;
   getSkill(skillId: string): DojoSkill | null;
@@ -88,7 +97,7 @@ export interface DojoProofStore {
   revokeProofCapsule(capsuleId: string, reason: string, now?: string): DojoProofCapsuleRecord | null;
 }
 
-export interface DojoControlPlaneStore extends DojoSkillStore, DojoProofStore, DojoApprovalStore, DojoTransactionalStore {
+export interface DojoControlPlaneStore extends DojoSkillStore, DojoProofStore, DojoApprovalStore, DojoCaseLawStore, DojoTransactionalStore {
   clear(): void;
 }
 
@@ -181,7 +190,9 @@ export interface DojoAuditStore {
 }
 
 export interface DojoCaseLawStore {
-  readonly store_contract_kind?: "case_law";
+  saveCaseLawRecord(record: DojoCaseLawRecord): void;
+  getCaseLawRecord(caseId: string): DojoCaseLawRecord | null;
+  listCaseLawRecords(filter?: DojoCaseLawRecordFilter): DojoCaseLawRecord[];
 }
 
 export interface DojoSourceContractStore {

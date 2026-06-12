@@ -4,8 +4,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildDojoSkill, issueDojoProofCapsule } from "../../src/browser/dojo.js";
 import { EncryptedFileDojoSkillStore, InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
+import { createDojoCaseLawFromFailure } from "../../src/dojo/case_law/registry.js";
 import type {
   DojoApprovalStore,
+  DojoCaseLawStore,
   DojoControlPlaneStore,
   DojoPermissionUpgradeRequestRecord,
   DojoProofCapsuleRecord,
@@ -37,12 +39,54 @@ describe("Dojo store interface split", () => {
       scope_id: "workspace-a",
     }));
   });
+
+  it("persists case-law records across encrypted file store reloads", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "dojo-store-case-law-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "dojo-store.enc.json");
+    const key = "unit-test-dojo-case-law-store-key";
+    const initial = new EncryptedFileDojoSkillStore({
+      file_path: filePath,
+      key,
+      scope_id: "workspace-a",
+    });
+    const caseLaw = createDojoCaseLawFromFailure({
+      source_skill_id: "skill-case-law",
+      source_run_id: "run-case-law",
+      scenario_id: "scenario-case-law",
+      mutation_kind: "fake_success",
+      finding: "Success UI appeared while persisted state did not change.",
+      impact: "The agent could falsely report completion.",
+      rule_created: "Require backend state assertion after success UI.",
+      applies_to: ["submit_invoice"],
+      binding_scope: { kind: "workspace", id: "workspace-a" },
+      evidence_refs: ["evidence:fake-success-oracle"],
+      now: "2026-06-11T00:04:00.000Z",
+    });
+
+    initial.saveCaseLawRecord(caseLaw);
+    const reloaded = new EncryptedFileDojoSkillStore({
+      file_path: filePath,
+      key,
+      scope_id: "workspace-a",
+    });
+
+    expect(reloaded.getCaseLawRecord(caseLaw.case_id)).toEqual(expect.objectContaining({
+      case_id: caseLaw.case_id,
+      status: "proposed",
+      evidence_refs: ["evidence:fake-success-oracle"],
+    }));
+    expect(reloaded.listCaseLawRecords({ applies_to: "submit_invoice" })).toEqual([
+      expect.objectContaining({ case_id: caseLaw.case_id }),
+    ]);
+  });
 });
 
 function assertControlPlaneStore(store: DojoControlPlaneStore): void {
   const skillStore: DojoSkillStore = store;
   const proofStore: DojoProofStore = store;
   const approvalStore: DojoApprovalStore = store;
+  const caseLawStore: DojoCaseLawStore = store;
   const skill = buildDojoSkill(compileWorkflowContract([
     event({
       event_id: "open",
@@ -90,10 +134,31 @@ function assertControlPlaneStore(store: DojoControlPlaneStore): void {
       correlation_id: "upgrade-unit-test-correlation",
     },
   };
+  const caseLaw = createDojoCaseLawFromFailure({
+    source_skill_id: skill.skill_id,
+    source_run_id: skill.checkride.checkride_id,
+    scenario_id: "scenario-duplicate-client",
+    mutation_kind: "duplicate_entity",
+    finding: "Duplicate client display name can select the wrong account.",
+    impact: "A mutation may be applied to the wrong account when labels collide.",
+    rule_created: "Require stable client ID verification before account mutation.",
+    applies_to: ["commit_mutation", "run_workflow"],
+    binding_scope: { kind: "workspace", id: skill.workspace_id },
+    evidence_refs: [`skill:${skill.skill_id}`, `checkride:${skill.checkride.checkride_id}`],
+    now: "2026-06-11T00:02:00.000Z",
+  });
+  const approvedCaseLaw = {
+    ...caseLaw,
+    status: "approved" as const,
+    reviewer: "case-law-reviewer",
+    updated_at: "2026-06-11T00:03:00.000Z",
+  };
 
   skillStore.saveSkill(skill);
   proofStore.saveProofRecord(proofRecord);
   approvalStore.savePermissionUpgradeRequest(upgradeRequest);
+  caseLawStore.saveCaseLawRecord(caseLaw);
+  caseLawStore.saveCaseLawRecord(approvedCaseLaw);
 
   expect(skillStore.getSkill(skill.skill_id)).toEqual(expect.objectContaining({ skill_id: skill.skill_id }));
   expect(skillStore.getSkillByWorkflowId(skill.workflow_id)).toEqual(expect.objectContaining({ skill_id: skill.skill_id }));
@@ -114,6 +179,23 @@ function assertControlPlaneStore(store: DojoControlPlaneStore): void {
   ]);
   expect(approvalStore.listPermissionUpgradeRequests({ request_id: "missing-upgrade" })).toEqual([]);
   expect(approvalStore.listPermissionUpgradeRequests({ status: "approved" })).toEqual([]);
+  expect(caseLawStore.getCaseLawRecord(caseLaw.case_id)).toEqual(expect.objectContaining({
+    case_id: caseLaw.case_id,
+    status: "approved",
+    reviewer: "case-law-reviewer",
+  }));
+  expect(caseLawStore.listCaseLawRecords({ status: "approved" })).toEqual([
+    expect.objectContaining({ case_id: caseLaw.case_id, status: "approved" }),
+  ]);
+  expect(caseLawStore.listCaseLawRecords({
+    binding_scope: { kind: "workspace", id: skill.workspace_id },
+    applies_to: "commit_mutation",
+  })).toEqual([
+    expect.objectContaining({ case_id: caseLaw.case_id }),
+  ]);
+  expect(caseLawStore.listCaseLawRecords({
+    binding_scope: { kind: "workspace", id: "other-workspace" },
+  })).toEqual([]);
   expect(store.clear).toEqual(expect.any(Function));
   expect(store.withTransaction).toBeUndefined();
 }

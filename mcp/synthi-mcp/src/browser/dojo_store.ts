@@ -2,8 +2,10 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { DojoSkill } from "./dojo.js";
+import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
 import { publishedToolNamesForSkill, publishedWorkflowBindingForSkill, type DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
 import type {
+  DojoCaseLawRecordFilter,
   DojoControlPlaneStore,
   DojoPermissionUpgradeRequestFilter,
   DojoPermissionUpgradeRequestRecord,
@@ -35,6 +37,7 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
   private readonly toolIndex = new Map<string, string>();
   private readonly proofRecords = new Map<string, DojoProofCapsuleRecord>();
   private readonly permissionUpgradeRequests = new Map<string, DojoPermissionUpgradeRequestRecord>();
+  private readonly caseLawRecords = new Map<string, DojoCaseLawRecord>();
 
   saveSkill(skill: DojoSkill): void {
     const clone = cloneJson(skill);
@@ -96,6 +99,19 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
     return filterPermissionUpgradeRequests([...this.permissionUpgradeRequests.values()], filter).map(cloneJson);
   }
 
+  saveCaseLawRecord(record: DojoCaseLawRecord): void {
+    this.caseLawRecords.set(record.case_id, cloneJson(record));
+  }
+
+  getCaseLawRecord(caseId: string): DojoCaseLawRecord | null {
+    const record = this.caseLawRecords.get(caseId);
+    return record ? cloneJson(record) : null;
+  }
+
+  listCaseLawRecords(filter: DojoCaseLawRecordFilter = {}): DojoCaseLawRecord[] {
+    return filterCaseLawRecords([...this.caseLawRecords.values()], filter).map(cloneJson);
+  }
+
   revokeProofCapsule(capsuleId: string, reason: string, now: string = new Date().toISOString()): DojoProofCapsuleRecord | null {
     const record = this.proofRecords.get(capsuleId);
     if (!record) return null;
@@ -115,6 +131,7 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
     this.toolIndex.clear();
     this.proofRecords.clear();
     this.permissionUpgradeRequests.clear();
+    this.caseLawRecords.clear();
   }
 
   private removeToolIndexesForSkill(skillId: string): void {
@@ -136,6 +153,7 @@ interface PersistedDojoScope {
   published_tool_index: Record<string, string>;
   proof_records: Record<string, DojoProofCapsuleRecord>;
   permission_upgrade_requests: Record<string, DojoPermissionUpgradeRequestRecord>;
+  case_law_records: Record<string, DojoCaseLawRecord>;
 }
 
 interface EncryptedDojoStoreDocument {
@@ -234,6 +252,21 @@ export class EncryptedFileDojoSkillStore implements DojoControlPlaneStore {
 
   listPermissionUpgradeRequests(filter: DojoPermissionUpgradeRequestFilter = {}): DojoPermissionUpgradeRequestRecord[] {
     return filterPermissionUpgradeRequests(Object.values(this.scope().permission_upgrade_requests), filter).map(cloneJson);
+  }
+
+  saveCaseLawRecord(record: DojoCaseLawRecord): void {
+    this.updateScope((scope) => {
+      scope.case_law_records[record.case_id] = cloneJson(record);
+    });
+  }
+
+  getCaseLawRecord(caseId: string): DojoCaseLawRecord | null {
+    const record = this.scope().case_law_records[caseId];
+    return record ? cloneJson(record) : null;
+  }
+
+  listCaseLawRecords(filter: DojoCaseLawRecordFilter = {}): DojoCaseLawRecord[] {
+    return filterCaseLawRecords(Object.values(this.scope().case_law_records), filter).map(cloneJson);
   }
 
   revokeProofCapsule(capsuleId: string, reason: string, now: string = new Date().toISOString()): DojoProofCapsuleRecord | null {
@@ -358,6 +391,7 @@ function emptyScope(): PersistedDojoScope {
     published_tool_index: {},
     proof_records: {},
     permission_upgrade_requests: {},
+    case_law_records: {},
   };
 }
 
@@ -369,6 +403,9 @@ function cloneScope(scope: PersistedDojoScope): PersistedDojoScope {
     proof_records: Object.fromEntries(Object.entries(scope.proof_records ?? {}).map(([key, value]) => [key, cloneJson(value)])),
     permission_upgrade_requests: Object.fromEntries(
       Object.entries(scope.permission_upgrade_requests ?? {}).map(([key, value]) => [key, cloneJson(value)])
+    ),
+    case_law_records: Object.fromEntries(
+      Object.entries(scope.case_law_records ?? {}).map(([key, value]) => [key, cloneJson(value)])
     ),
   };
 }
@@ -412,5 +449,26 @@ function filterPermissionUpgradeRequests(
     .filter((record) => !filter.requested_action || record.requested_action === filter.requested_action)
     .filter((record) => !filter.status || record.status === filter.status)
     .sort((left, right) => right.requested_at.localeCompare(left.requested_at) || left.request_id.localeCompare(right.request_id));
+  return typeof limit === "number" ? filtered.slice(0, limit) : filtered;
+}
+
+function filterCaseLawRecords(
+  records: DojoCaseLawRecord[],
+  filter: DojoCaseLawRecordFilter
+): DojoCaseLawRecord[] {
+  const limit = Number.isFinite(filter.limit) && typeof filter.limit === "number" && filter.limit > 0
+    ? Math.floor(filter.limit)
+    : undefined;
+  const filtered = records
+    .filter((record) => !filter.case_id || record.case_id === filter.case_id)
+    .filter((record) => !filter.status || record.status === filter.status)
+    .filter((record) =>
+      !filter.binding_scope
+        || (record.binding_scope.kind === filter.binding_scope.kind && record.binding_scope.id === filter.binding_scope.id)
+    )
+    .filter((record) => !filter.applies_to || record.applies_to.includes(filter.applies_to))
+    .sort((left, right) => left.binding_scope.kind.localeCompare(right.binding_scope.kind)
+      || left.binding_scope.id.localeCompare(right.binding_scope.id)
+      || left.case_id.localeCompare(right.case_id));
   return typeof limit === "number" ? filtered.slice(0, limit) : filtered;
 }
