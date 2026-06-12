@@ -12,15 +12,14 @@ describe("Dojo Skill Graph IR", () => {
       node.node_id === "action_submit" ? { ...node, guardrails: [] } : node
     );
 
-    expect(validateDojoSkillGraph(graph)).toEqual({
-      ok: false,
-      issues: [
+    const validation = validateDojoSkillGraph(graph);
+    expect(validation.ok).toBe(false);
+    expect(validation.issues).toEqual(expect.arrayContaining([
         expect.objectContaining({
           issue_id: "dangerous_action_guardrail_required",
           node_id: "action_submit",
         }),
-      ],
-    });
+    ]));
   });
 
   it("rejects production actions without explicit proof requirements", () => {
@@ -32,6 +31,50 @@ describe("Dojo Skill Graph IR", () => {
     expect(validateDojoSkillGraph(graph).issues).toEqual(expect.arrayContaining([
       expect.objectContaining({
         issue_id: "production_action_proof_required",
+        node_id: "action_submit",
+      }),
+    ]));
+  });
+
+  it("rejects production proof requirements without required claims", () => {
+    const graph = minimalGraph();
+    graph.nodes = graph.nodes.map((node) =>
+      node.node_id === "action_submit" && node.proof
+        ? { ...node, proof: { ...node.proof, required_claims: [] } }
+        : node
+    );
+
+    expect(validateDojoSkillGraph(graph).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issue_id: "production_proof_claims_required",
+        node_id: "action_submit",
+      }),
+    ]));
+  });
+
+  it("rejects dangerous production action proof that is not bound to blocking guardrails", () => {
+    const graph = minimalGraph();
+    graph.nodes = graph.nodes.map((node) =>
+      node.node_id === "action_submit" && node.proof
+        ? { ...node, proof: { ...node.proof, required_guardrails: ["guard_not_on_node"] } }
+        : node
+    );
+
+    expect(validateDojoSkillGraph(graph).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issue_id: "production_action_proof_guardrail_not_bound",
+        node_id: "action_submit",
+      }),
+    ]));
+
+    graph.nodes = graph.nodes.map((node) =>
+      node.node_id === "action_submit" && node.proof
+        ? { ...node, proof: { ...node.proof, required_guardrails: [] } }
+        : node
+    );
+    expect(validateDojoSkillGraph(graph).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issue_id: "production_action_proof_guardrails_required",
         node_id: "action_submit",
       }),
     ]));

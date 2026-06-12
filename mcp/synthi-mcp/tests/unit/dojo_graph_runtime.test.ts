@@ -492,7 +492,7 @@ describe("Dojo graph runtime skeleton", () => {
       ok: false,
       status: "blocked",
       node_results: [],
-      blocked_by: ["dangerous_action_guardrail_required"],
+      blocked_by: expect.arrayContaining(["dangerous_action_guardrail_required"]),
     }));
   });
 

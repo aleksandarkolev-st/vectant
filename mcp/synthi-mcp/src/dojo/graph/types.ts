@@ -120,6 +120,34 @@ export function validateDojoSkillGraph(graph: DojoSkillGraph): DojoGraphValidati
     if (graph.mode === "production" && node.kind === "Action" && node.proof?.required !== true) {
       issues.push(errorIssue("production_action_proof_required", "Production action nodes require an explicit proof requirement.", node.node_id));
     }
+    if (graph.mode === "production" && (node.kind === "Action" || node.kind === "Proof") && node.proof?.required === true) {
+      if (node.proof.required_claims.length === 0) {
+        issues.push(errorIssue("production_proof_claims_required", "Production proof requirements must include at least one required claim.", node.node_id));
+      }
+    }
+    if (graph.mode === "production" && node.kind === "Action" && node.risk === "dangerous" && node.proof?.required === true) {
+      const blockingGuardrailIds = new Set(
+        node.guardrails
+          .filter((guardrail) => guardrail.severity === "block")
+          .map((guardrail) => guardrail.guardrail_id)
+      );
+      if (node.proof.required_guardrails.length === 0) {
+        issues.push(errorIssue(
+          "production_action_proof_guardrails_required",
+          "Dangerous production action proof must require the blocking guardrails that protect the action.",
+          node.node_id
+        ));
+      }
+      for (const guardrailId of node.proof.required_guardrails) {
+        if (!blockingGuardrailIds.has(guardrailId)) {
+          issues.push(errorIssue(
+            "production_action_proof_guardrail_not_bound",
+            `Production proof requires guardrail ${guardrailId}, but it is not a blocking guardrail on node ${node.node_id}.`,
+            node.node_id
+          ));
+        }
+      }
+    }
     for (const precondition of node.preconditions) {
       if (!isParseableDojoGuardrailPredicate(precondition)) {
         issues.push(errorIssue(
