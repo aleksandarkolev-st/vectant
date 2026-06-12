@@ -48,6 +48,14 @@ function safeName(value, prefix = 'prep') {
   return `${prefix}-${normalized}`.slice(0, 52);
 }
 
+function safeLabelValue(value, fallback = 'unknown') {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]/g, '-')
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');
+  return (normalized || fallback).slice(0, 63);
+}
+
 function buildWorkspaceScheduling() {
   const nodeSelector = WORKSPACE_NODE_SELECTOR_KEY && WORKSPACE_NODE_SELECTOR_VALUE
     ? { [WORKSPACE_NODE_SELECTOR_KEY]: WORKSPACE_NODE_SELECTOR_VALUE }
@@ -551,6 +559,9 @@ async function runK8sJobTask(task, runtime, shellCommand, timeoutMs, scope) {
   const start = Date.now();
   const scheduling = buildWorkspaceScheduling();
   const jobName = safeName(`${scope.slug}-${crypto.createHash('sha1').update(`${scope.userId || 'shared'}:${task.id}:${Date.now()}`).digest('hex').slice(0, 8)}`, 'prep');
+  const workspaceLabel = safeLabelValue(scope.slug, 'workspace');
+  const userLabel = safeLabelValue(scope.userId || 'shared', 'shared');
+  const taskLabel = safeLabelValue(task.id, 'task');
 
   const job = {
     apiVersion: 'batch/v1',
@@ -561,9 +572,14 @@ async function runK8sJobTask(task, runtime, shellCommand, timeoutMs, scope) {
       labels: {
         app: 'workspace-prep',
         'app.kubernetes.io/managed-by': 'workspace-prep',
-        'synthi/workspace': scope.slug,
-        'synthi/user': String(scope.userId || ''),
-        'synthi/task': task.id,
+        'synthi/workspace': workspaceLabel,
+        'synthi/user': userLabel,
+        'synthi/task': taskLabel,
+      },
+      annotations: {
+        'synthi/workspaceSlug': String(scope.slug || ''),
+        'synthi/userId': String(scope.userId || ''),
+        'synthi/taskId': String(task.id || ''),
       },
     },
     spec: {
@@ -573,8 +589,13 @@ async function runK8sJobTask(task, runtime, shellCommand, timeoutMs, scope) {
         metadata: {
           labels: {
             app: 'workspace-prep',
-            'synthi/workspace': scope.slug,
-            'synthi/task': task.id,
+            'synthi/workspace': workspaceLabel,
+            'synthi/task': taskLabel,
+          },
+          annotations: {
+            'synthi/workspaceSlug': String(scope.slug || ''),
+            'synthi/userId': String(scope.userId || ''),
+            'synthi/taskId': String(task.id || ''),
           },
         },
         spec: {
