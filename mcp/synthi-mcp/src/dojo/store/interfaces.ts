@@ -122,7 +122,12 @@ export type DojoAuditEventType =
   | "skill_expired"
   | "permission_upgrade_requested"
   | "approval_granted"
-  | "approval_denied";
+  | "approval_denied"
+  | "runtime_session_created"
+  | "runtime_session_rejected"
+  | "runtime_session_revoked"
+  | "runtime_action_authorized"
+  | "runtime_action_blocked";
 
 export interface DojoAuditActor {
   actor_id: string;
