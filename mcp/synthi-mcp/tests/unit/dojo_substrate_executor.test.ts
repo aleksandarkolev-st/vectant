@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { compileDojoApiBackedMcpTool } from "../../src/dojo/api/api_tool_compiler.js";
+import { inferDojoApiEndpointCandidateFromTrace } from "../../src/dojo/api/endpoint_inference.js";
 import { createFakeDojoSubstrateExecutor } from "../../src/dojo/graph/substrate_executor.js";
 import { DojoSkillGraphRuntime } from "../../src/dojo/graph/runtime.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
@@ -70,6 +72,71 @@ describe("Dojo substrate executor", () => {
       ]),
     }));
   });
+
+  it("executes API substrate only when a compiled API tool invocation passes proof and license preflight", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const tool = compiledApiTool();
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: tool.candidate_id } }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        proof_capsule_valid: true,
+        compiled_api_tool: tool,
+        api_tool_args: {
+          proof_capsule: { capsule_id: "capsule-a" },
+          request: { amount: 42 },
+          idempotency_key: "idem-a",
+        },
+        license_context: {
+          skill_id: "skill-a",
+          license_id: "license-a",
+          license_version: "1.0.0",
+          action: "run_workflow",
+        },
+        assertion_results: { assert_submission_state: true },
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          substrate_result: expect.objectContaining({
+            ok: true,
+            substrate: "api",
+          }),
+        }),
+      ]),
+    }));
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: tool.candidate_id } }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        proof_capsule_valid: true,
+        compiled_api_tool: tool,
+        api_tool_args: {
+          proof_capsule: { capsule_id: "capsule-a" },
+          request: { amount: 42 },
+          idempotency_key: "idem-a",
+        },
+        license_context: {
+          skill_id: "skill-a",
+          license_id: "wrong-license",
+          license_version: "1.0.0",
+          action: "run_workflow",
+        },
+        assertion_results: { assert_submission_state: true },
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_license_mismatch"],
+    }));
+  });
 });
 
 function graphFixture(input: { substrate_options: string[]; metadata?: Record<string, unknown> }): DojoSkillGraph {
@@ -118,4 +185,31 @@ function graphFixture(input: { substrate_options: string[]; metadata?: Record<st
     ],
     edges: [],
   };
+}
+
+function compiledApiTool() {
+  const candidate = {
+    ...inferDojoApiEndpointCandidateFromTrace({
+      method: "POST",
+      url: "/api/invoices",
+      request_body: { amount: 42 },
+      response_body: { invoice_id: "invoice-a", status: "saved" },
+    }),
+    auth_scope: "invoice:write",
+    idempotency_key_location: "header" as const,
+    rollback_strategy: "compensating_call" as const,
+    postcondition: "invoice.status == 'saved'",
+    proof_claim_mapping: { workspace_verified: "tenant.workspace_id" },
+    review_status: "approved" as const,
+  };
+  const compiled = compileDojoApiBackedMcpTool({
+    candidate,
+    skill_id: "skill-a",
+    license_id: "license-a",
+    license_version: "1.0.0",
+    action: "run_workflow",
+    tool_name: "synthi_api_save_invoice",
+  });
+  if (!compiled.tool) throw new Error("compiled_api_tool_fixture_failed");
+  return compiled.tool;
 }

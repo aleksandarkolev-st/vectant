@@ -1,4 +1,8 @@
 import type { DojoGraphNode } from "./types.js";
+import {
+  validateDojoApiBackedToolInvocation,
+  type DojoApiBackedMcpTool,
+} from "../api/api_tool_compiler.js";
 
 export type DojoExecutionSubstrate = "vision" | "dom" | "source" | "api" | "mcp";
 
@@ -25,8 +29,9 @@ export class FakeDojoSubstrateExecutor implements DojoSubstrateExecutor {
     if (!substrate) {
       return blocked(["substrate_not_allowed"]);
     }
-    if (substrate === "api" && !apiCandidateApproved(request.node, request.inputs)) {
-      return blocked(["api_candidate_not_approved"], substrate);
+    if (substrate === "api") {
+      const apiValidation = apiSubstrateApproved(request.node, request.inputs);
+      if (!apiValidation.ok) return blocked(apiValidation.blocked_by, substrate);
     }
     return {
       ok: true,
@@ -66,6 +71,30 @@ function requestedSubstrate(inputs: Record<string, unknown>): DojoExecutionSubst
   return typeof value === "string" && isExecutionSubstrate(value) ? value : null;
 }
 
+function apiSubstrateApproved(node: DojoGraphNode, inputs: Record<string, unknown>): { ok: boolean; blocked_by: string[] } {
+  const compiledTool = objectOpt(inputs["compiled_api_tool"]);
+  if (compiledTool) return compiledApiToolApproved(node, inputs, compiledTool as unknown as DojoApiBackedMcpTool);
+  return apiCandidateApproved(node, inputs)
+    ? { ok: true, blocked_by: [] }
+    : { ok: false, blocked_by: ["api_candidate_not_approved"] };
+}
+
+function compiledApiToolApproved(
+  node: DojoGraphNode,
+  inputs: Record<string, unknown>,
+  tool: DojoApiBackedMcpTool
+): { ok: boolean; blocked_by: string[] } {
+  const candidateId = typeof node.metadata?.["api_candidate_id"] === "string" ? node.metadata["api_candidate_id"] : undefined;
+  if (candidateId && tool.candidate_id !== candidateId) return { ok: false, blocked_by: ["api_tool_candidate_mismatch"] };
+  const licenseContext = licenseContextOpt(inputs["license_context"]);
+  if (!licenseContext) return { ok: false, blocked_by: ["api_tool_license_context_required"] };
+  return validateDojoApiBackedToolInvocation({
+    tool,
+    args: objectOpt(inputs["api_tool_args"]) ?? {},
+    license_context: licenseContext,
+  });
+}
+
 function apiCandidateApproved(node: DojoGraphNode, inputs: Record<string, unknown>): boolean {
   if (inputs["approved_api_candidate"] === true) return true;
   const candidateId = node.metadata?.["api_candidate_id"];
@@ -73,6 +102,26 @@ function apiCandidateApproved(node: DojoGraphNode, inputs: Record<string, unknow
   return typeof candidateId === "string"
     && Array.isArray(approvedCandidates)
     && approvedCandidates.includes(candidateId);
+}
+
+function licenseContextOpt(value: unknown): { skill_id: string; license_id: string; license_version: string; action: string } | null {
+  const record = objectOpt(value);
+  if (!record) return null;
+  const skillId = stringOpt(record["skill_id"]);
+  const licenseId = stringOpt(record["license_id"]);
+  const licenseVersion = stringOpt(record["license_version"]);
+  const action = stringOpt(record["action"]);
+  return skillId && licenseId && licenseVersion && action
+    ? { skill_id: skillId, license_id: licenseId, license_version: licenseVersion, action }
+    : null;
+}
+
+function objectOpt(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function stringOpt(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function isExecutionSubstrate(value: unknown): value is DojoExecutionSubstrate {
