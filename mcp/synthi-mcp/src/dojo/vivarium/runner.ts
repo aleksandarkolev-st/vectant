@@ -17,6 +17,7 @@ export interface DojoScenarioRunResult {
   schema_version: "synthi.dojo.scenarioRunResult.v1";
   run_id: string;
   scenario_id: string;
+  mutation_kind: string;
   materialized_id: string;
   fixture_materialization_hash: string;
   status: DojoScenarioOracleStatus;
@@ -104,6 +105,7 @@ export class DojoVivariumRunner {
       schema_version: "synthi.dojo.scenarioRunResult.v1",
       run_id: runId,
       scenario_id: input.materialized.definition.scenario_id,
+      mutation_kind: input.materialized.definition.mutation_kind,
       materialized_id: input.materialized.materialized_id,
       fixture_materialization_hash: input.materialized.fixture.materialization_hash,
       status: oracleResult.status,
