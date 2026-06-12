@@ -153,6 +153,27 @@ describe("Agent Dojo core", () => {
       ".synthi/dojo/mcp/save_invoice.manifest.json",
     ]));
     expect(JSON.stringify(artifacts)).not.toMatch(/password|token-value/i);
+    const compatibilityEvidenceManifest = JSON.parse(artifacts.find((artifact) =>
+      artifact.path === ".synthi/dojo/skills/save_invoice/evidence-manifest.json"
+    )?.content ?? "null") as { schema_version?: string };
+    const redactedEvidenceManifest = JSON.parse(artifacts.find((artifact) =>
+      artifact.path === ".synthi/dojo/evidence/save_invoice.redacted-evidence-manifest.json"
+    )?.content ?? "null") as {
+      schema_version?: string;
+      artifact_count?: number;
+      artifacts?: Array<{ redaction_manifest_sha256?: string; original_artifact_sha256?: string }>;
+      excluded?: string[];
+    };
+    expect(compatibilityEvidenceManifest.schema_version).toBe("synthi.dojo.evidenceManifest.v1");
+    expect(redactedEvidenceManifest).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.redactedEvidenceExport.v1",
+      artifact_count: expect.any(Number),
+      excluded: expect.arrayContaining(["raw_artifact_content", "secrets", "tokens"]),
+    }));
+    expect(redactedEvidenceManifest.artifacts?.[0]).toEqual(expect.objectContaining({
+      original_artifact_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      redaction_manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }));
   });
 
   it("validates proof capsules against action scope, context claims, evidence claims, guardrails, and signature", () => {

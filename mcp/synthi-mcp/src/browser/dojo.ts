@@ -21,6 +21,10 @@ import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/p
 import type { DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
 import { resolveDojoEvidenceClaims } from "../dojo/evidence/verifier.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
+import {
+  buildDojoRedactedEvidenceExportManifest,
+  type DojoRedactedEvidenceExportManifest,
+} from "../dojo/evidence/export.js";
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 import { toDojoScenarioDefinitions } from "../dojo/vivarium/scenario_dsl.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
@@ -1538,7 +1542,7 @@ export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
       path: `.synthi/dojo/evidence/${segment}.redacted-evidence-manifest.json`,
       content_type: "application/json",
       sensitive: false,
-      content: json(evidenceManifestFor(skill)),
+      content: json(redactedEvidenceExportManifestFor(skill)),
     },
     {
       path: `.synthi/dojo/evidence/${segment}.ledger.json`,
@@ -2937,6 +2941,74 @@ function evidenceManifestFor(skill: DojoSkill): Record<string, unknown> {
     ],
     excluded: ["raw_screenshots", "secrets", "production_payloads", "unredacted_input_values"],
   };
+}
+
+function redactedEvidenceExportManifestFor(skill: DojoSkill): DojoRedactedEvidenceExportManifest {
+  const segment = skillPathSegment(skill);
+  const artifactUri = (path: string): string => `dojo-artifact://${segment}/${path}`;
+  return buildDojoRedactedEvidenceExportManifest({
+    tenant_id: "legacy-local-tenant",
+    workspace_id: skill.workspace_id,
+    generated_at: skill.generated_at,
+    artifacts: [
+      {
+        artifact_id: `seed:${skill.skill_seed.seed_id}`,
+        artifact_kind: "trace",
+        artifact_uri: artifactUri("seed.json"),
+        content: skill.skill_seed,
+        source_refs: [`workflow:${skill.workflow_id}`],
+      },
+      {
+        artifact_id: `graph:${skill.workflow_graph_id}`,
+        artifact_kind: "trace",
+        artifact_uri: artifactUri("skill.graph.json"),
+        content: skillGraphArtifact(skill),
+        source_refs: [`workflow:${skill.workflow_id}`],
+      },
+      {
+        artifact_id: `organoid:${skill.vivarium_id}`,
+        artifact_kind: "trace",
+        artifact_uri: artifactUri("vivarium.manifest.json"),
+        content: vivariumArtifact(skill),
+        source_refs: [`workspace:${skill.workspace_id}`],
+      },
+      {
+        artifact_id: `checkride:${skill.checkride.checkride_id}`,
+        artifact_kind: "document_text",
+        artifact_uri: artifactUri("checkride.report.md"),
+        content: checkrideMarkdown(skill),
+        source_refs: [`checkride:${skill.checkride.checkride_id}`],
+      },
+      {
+        artifact_id: `wind_tunnel:${skill.wind_tunnel.wind_tunnel_id}`,
+        artifact_kind: "trace",
+        artifact_uri: artifactUri("wind-tunnel.report.json"),
+        content: skill.wind_tunnel,
+        source_refs: skill.training_runs.map((run) => `run:${run.run_id}`),
+      },
+      {
+        artifact_id: `license:${skill.permission_license.license_id}`,
+        artifact_kind: "document_text",
+        artifact_uri: artifactUri("license.json"),
+        content: skill.permission_license,
+        source_refs: [`license:${skill.permission_license.license_id}`],
+      },
+      {
+        artifact_id: `assurance:${skill.assurance_case.assurance_case_id}`,
+        artifact_kind: "document_text",
+        artifact_uri: artifactUri("assurance.case.md"),
+        content: assuranceMarkdown(skill),
+        source_refs: skill.assurance_case.evidence_refs,
+      },
+      {
+        artifact_id: `mcp_manifest:${skill.skill_id}`,
+        artifact_kind: "document_text",
+        artifact_uri: artifactUri("mcp.manifest.json"),
+        content: buildDojoMcpSkillManifest(skill),
+        source_refs: skill.published_tools.map((tool) => `tool:${tool}`),
+      },
+    ],
+  });
 }
 
 function playwrightSpecFor(skill: DojoSkill): string {
