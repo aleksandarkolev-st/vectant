@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyReactAffordanceCodemodPlan, parseReactSourceOrThrow } from "../../src/dojo/source/codemod.js";
+import {
+  applyReactAffordanceCodemodPlan,
+  evaluateReactAffordanceContract,
+  generateReactAffordanceVitestContractTest,
+  parseReactSourceOrThrow,
+} from "../../src/dojo/source/codemod.js";
 import { stableLocatorPatchOperation } from "../../src/dojo/source/affordance_pr_plan.js";
 
 describe("Dojo React affordance codemod", () => {
@@ -38,6 +43,45 @@ describe("Dojo React affordance codemod", () => {
       skipped_operations: [operation.operation_id],
       source: first.source,
     }));
+  });
+
+  it("generates contract tests that fail before the patch and pass after it", () => {
+    const operation = stableLocatorPatchOperation({
+      file_path: "src/InvoiceForm.jsx",
+      target_component: "InvoiceForm",
+      affordance_id: "invoice.save",
+    });
+
+    const before = evaluateReactAffordanceContract(invoiceFormSource(), [operation]);
+    const patched = applyReactAffordanceCodemodPlan(invoiceFormSource(), [operation]);
+    const after = evaluateReactAffordanceContract(patched.source, [operation]);
+    const generatedTest = generateReactAffordanceVitestContractTest({
+      source_file_path: "src/InvoiceForm.jsx",
+      test_file_path: "src/__tests__/InvoiceForm.dojo-affordance.test.ts",
+      component_name: "InvoiceForm",
+      operations: [operation],
+    });
+
+    expect(before).toEqual({
+      ok: false,
+      checked_operations: [operation.operation_id],
+      missing_operations: [{
+        operation_id: operation.operation_id,
+        expected: "data-agent-action=\"invoice.save\"",
+      }],
+    });
+    expect(after).toEqual({
+      ok: true,
+      checked_operations: [operation.operation_id],
+      missing_operations: [],
+    });
+    expect(generatedTest).toEqual(expect.objectContaining({
+      path: "src/__tests__/InvoiceForm.dojo-affordance.test.ts",
+      required_operations: [operation.operation_id],
+    }));
+    expect(generatedTest.source).toContain("../InvoiceForm.jsx");
+    expect(generatedTest.source).toContain("data-agent-action=\\\"invoice.save\\\"");
+    expect(() => parseReactSourceOrThrow(generatedTest.source)).not.toThrow();
   });
 
   it("fails when the target component cannot be found", () => {

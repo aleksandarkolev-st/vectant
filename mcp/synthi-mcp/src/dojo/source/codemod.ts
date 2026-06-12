@@ -8,6 +8,21 @@ export interface DojoReactCodemodResult {
   skipped_operations: string[];
 }
 
+export interface DojoReactAffordanceContractResult {
+  ok: boolean;
+  checked_operations: string[];
+  missing_operations: Array<{
+    operation_id: string;
+    expected: string;
+  }>;
+}
+
+export interface DojoGeneratedReactAffordanceTest {
+  path: string;
+  source: string;
+  required_operations: string[];
+}
+
 export function applyReactAffordanceCodemodPlan(
   source: string,
   operations: DojoAffordancePatchOperation[]
@@ -58,6 +73,66 @@ export function applyReactAffordanceOperation(
     source: nextSource,
     applied_operations: [operation.operation_id],
     skipped_operations: [],
+  };
+}
+
+export function evaluateReactAffordanceContract(
+  source: string,
+  operations: DojoAffordancePatchOperation[]
+): DojoReactAffordanceContractResult {
+  parseReactSourceOrThrow(source);
+  const required = operations.filter((operation) => operation.kind === "stable_locator");
+  const missing = required
+    .filter((operation) => !source.includes(operation.after))
+    .map((operation) => ({
+      operation_id: operation.operation_id,
+      expected: operation.after,
+    }));
+  return {
+    ok: missing.length === 0,
+    checked_operations: required.map((operation) => operation.operation_id),
+    missing_operations: missing,
+  };
+}
+
+export function generateReactAffordanceVitestContractTest(input: {
+  source_file_path: string;
+  test_file_path: string;
+  component_name: string;
+  operations: DojoAffordancePatchOperation[];
+}): DojoGeneratedReactAffordanceTest {
+  const required = input.operations.filter((operation) => operation.kind === "stable_locator");
+  if (required.length === 0) {
+    throw new Error("dojo_react_affordance_contract_test_requires_stable_locator");
+  }
+  const relativeSourcePath = relativePathForGeneratedTest(input.test_file_path, input.source_file_path);
+  const expectations = required.map((operation) => ({
+    operation_id: operation.operation_id,
+    affordance_id: operation.affordance_id,
+    expected: operation.after,
+  }));
+  const source = `import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+const sourcePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ${JSON.stringify(relativeSourcePath)});
+const expectations = ${JSON.stringify(expectations, null, 2)};
+
+describe("Dojo affordance contract: ${escapeForDoubleQuotedString(input.component_name)}", () => {
+  it("exposes reviewed stable agent affordances", () => {
+    const source = readFileSync(sourcePath, "utf8");
+    for (const expectation of expectations) {
+      expect(source, expectation.operation_id).toContain(expectation.expected);
+    }
+  });
+});
+`;
+  parseReactSourceOrThrow(source);
+  return {
+    path: input.test_file_path,
+    source,
+    required_operations: required.map((operation) => operation.operation_id),
   };
 }
 
@@ -116,4 +191,20 @@ function parseJsxAttribute(value: string): { name: string; value: string } {
   const match = value.match(/^([a-zA-Z0-9_:-]+)="([^"]+)"$/);
   if (!match?.[1] || match[2] === undefined) throw new Error("dojo_react_codemod_attribute_invalid");
   return { name: match[1], value: match[2] };
+}
+
+function relativePathForGeneratedTest(testFilePath: string, sourceFilePath: string): string {
+  const testDir = testFilePath.split(/[\\/]/).slice(0, -1).join("/") || ".";
+  const sourceParts = sourceFilePath.split(/[\\/]/);
+  const testParts = testDir === "." ? [] : testDir.split("/");
+  while (sourceParts.length && testParts.length && sourceParts[0] === testParts[0]) {
+    sourceParts.shift();
+    testParts.shift();
+  }
+  const upward = testParts.map(() => "..");
+  return [...upward, ...sourceParts].join("/") || ".";
+}
+
+function escapeForDoubleQuotedString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
 }
