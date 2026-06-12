@@ -2,7 +2,7 @@ import { authCheckpointManager, type AuthBrowserStorageState, type AuthReadiness
 import { browserBroker } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { browserWorkflowDeploymentReadiness } from "../browser/deployment_readiness.js";
-import { dojoSkillRegistry } from "../browser/dojo.js";
+import { buildDojoSkill, dojoSkillRegistry } from "../browser/dojo.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { generatePrivateWorkflowToolManifest, type PrivateWorkflowToolManifestV7 } from "../browser/private_tool_manifest.js";
 import {
@@ -1289,7 +1289,8 @@ function browserGeneratePrivateToolManifestTool(args: unknown): ToolResponse {
 }
 
 function browserPublishPrivateToolTool(args: unknown): ToolResponse {
-  const workflowId = stringOpt(obj(args)["workflow_id"]);
+  const a = obj(args);
+  const workflowId = stringOpt(a["workflow_id"]);
   const artifact = browserBroker.workflowArtifact(workflowId);
   if (!artifact.ok) return errorResponse(artifact.error, artifact.workflow_id ? { workflow_id: artifact.workflow_id } : undefined);
   const manifest = manifestWithLiveAuthReadiness(generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract), artifact.artifact.workflow.contract);
@@ -1304,6 +1305,11 @@ function browserPublishPrivateToolTool(args: unknown): ToolResponse {
       manifest,
     });
   }
+  const dojoSkill = dojoSkillRegistry.publish(buildDojoSkill(artifact.artifact.workflow.contract, {
+    workspace_id: stringOpt(a["workspace_id"]),
+    private_tool_manifest: published.registration.manifest,
+    published_tool_name: published.registration.tool_name,
+  }));
   return jsonResponse({
     ok: true,
     workflow_id: artifact.artifact.workflow_id,
@@ -1311,6 +1317,13 @@ function browserPublishPrivateToolTool(args: unknown): ToolResponse {
     registered_at: published.registration.registered_at,
     manifest,
     tool: privateWorkflowToolDefinition(published.registration),
+    dojo_skill: {
+      skill_id: dojoSkill.skill_id,
+      workflow_id: dojoSkill.workflow_id,
+      published_tool_name: dojoSkill.published_tool_name ?? null,
+      license_id: dojoSkill.permission_license.license_id,
+      proof_required: dojoSkill.skill_passport.proof_required,
+    },
   });
 }
 
@@ -2111,7 +2124,7 @@ function browserDirectPrivateToolRequiresDojoProof(
     required_tool: "synthi_dojo_run_with_proof_capsule",
     issue_capsule_tool: "synthi_dojo_issue_proof_capsule",
     requested_action: "run_workflow",
-    blocked_by: decision?.blocked_by ?? ["direct_private_workflow_tool_call"],
+    blocked_by: decision?.blocked_by?.length ? decision.blocked_by : ["direct_private_workflow_tool_call"],
     dojo_execution_policy: decision ?? null,
     product_path: "agent_to_dojo_license_kernel_to_proof_validator_to_private_workflow_tool",
     notes: [

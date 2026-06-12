@@ -7,6 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { authCheckpointManager } from "../../src/browser/auth.js";
 import { browserBroker } from "../../src/browser/broker.js";
+import { dojoSkillRegistry } from "../../src/browser/dojo.js";
 import { generatePrivateWorkflowToolManifest } from "../../src/browser/private_tool_manifest.js";
 import {
   EncryptedFilePrivateWorkflowToolStore,
@@ -27,6 +28,7 @@ beforeEach(() => {
   browserBroker.resetForTests();
   authCheckpointManager.resetForTests();
   privateWorkflowToolRegistry.resetForTests();
+  dojoSkillRegistry.resetForTests();
   sourceIdentityRegistry.resetForTests();
   vi.restoreAllMocks();
 });
