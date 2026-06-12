@@ -480,6 +480,40 @@ describe("Agent Dojo MCP tools", () => {
         counterfactual: expect.any(Object),
       }),
     }));
+    const ghostMode = await dispatchDojoTool("synthi_dojo_run_ghost_mode", {
+      skill_id: published.skill.skill_id,
+      observed_human_action: { label: "Open details", action: "click" },
+      agent_planned_action: { label: "Delete details", action: "click" },
+      now: "2026-06-11T00:02:00.000Z",
+    });
+    expect(ghostMode?.structuredContent).toEqual(expect.objectContaining({
+      implementation_status: "report_only",
+      ghost_run: expect.objectContaining({
+        mode: "ghost",
+        status: "mismatch",
+        would_execute: false,
+        production_mutations_executed: false,
+        shadow_evidence_id: expect.stringMatching(/^ghost_evidence_/),
+        evidence_refs: expect.arrayContaining([
+          `skill:${published.skill.skill_id}`,
+          expect.stringMatching(/^ghost:ghost_/),
+        ]),
+        entrustment_impact: expect.objectContaining({
+          upgrade_allowed: false,
+          recommended_entrustment: "EX",
+        }),
+      }),
+      shadow_evidence: expect.objectContaining({
+        schema_version: "synthi.dojo.ghostShadowEvidence.v1",
+        production_mutations_executed: false,
+        action_matches: false,
+        observed_label: "open details",
+        planned_label: "delete details",
+        entrustment_impact: expect.objectContaining({
+          reason: expect.stringContaining("prevents entrustment upgrade"),
+        }),
+      }),
+    }));
     const scenarioRun = await dispatchDojoTool("synthi_dojo_run_vivarium_scenario", {
       skill_id: published.skill.skill_id,
       mutation_kind: "duplicate_entity",

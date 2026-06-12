@@ -733,13 +733,25 @@ function normalizeGhostRun(dojo) {
     runId: raw.run_id || raw.runId || '',
     status: raw.status || 'not_recorded',
     wouldExecute: Boolean(raw.would_execute ?? raw.wouldExecute),
+    productionMutationsExecuted: Boolean(raw.production_mutations_executed ?? raw.productionMutationsExecuted),
     licenseStatus: raw.license_status || raw.licenseStatus || '',
+    shadowEvidenceId: raw.shadow_evidence_id || raw.shadowEvidenceId || raw.shadow_evidence?.evidence_id || raw.shadowEvidence?.evidenceId || '',
+    evidenceRefs: compactStrings(raw.evidence_refs || raw.evidenceRefs || raw.shadow_evidence?.evidence_refs || raw.shadowEvidence?.evidenceRefs),
     explanation: raw.explanation || '',
+    entrustmentImpact: normalizeGhostEntrustmentImpact(raw.entrustment_impact || raw.entrustmentImpact || raw.shadow_evidence?.entrustment_impact || raw.shadowEvidence?.entrustmentImpact),
     observedAction,
     plannedAction,
     observedLabel: actionLabel(observedAction),
     plannedLabel: actionLabel(plannedAction),
     guardrailsTriggered: compactStrings(raw.guardrails_triggered || raw.guardrailsTriggered),
+  };
+}
+
+function normalizeGhostEntrustmentImpact(raw = {}) {
+  return {
+    upgradeAllowed: Boolean(raw.upgrade_allowed ?? raw.upgradeAllowed),
+    recommendedEntrustment: raw.recommended_entrustment || raw.recommendedEntrustment || '',
+    reason: raw.reason || '',
   };
 }
 

@@ -352,6 +352,7 @@ export const DOJO_TOOLS = [
         workflow_id: { type: "string" },
         observed_human_action: { type: "object" },
         agent_planned_action: { type: "object" },
+        now: { type: "string" },
       },
       required: [],
     },
@@ -1027,11 +1028,48 @@ function dojoRunGhostModeTool(args: unknown): ToolResponse {
   const observedLabel = ghostActionLabel(observed);
   const plannedLabel = ghostActionLabel(planned);
   const actionMatches = observedLabel.length > 0 && plannedLabel.length > 0 && observedLabel === plannedLabel;
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
+  const runId = `ghost_${hashId(`${skill.skill.skill_id}:${observedLabel}:${plannedLabel}:${now}`)}`;
   const guardrailsTriggered = actionMatches
     ? []
     : skill.skill.guardrails.filter((guardrail) => guardrail.blocks_actions.includes("run_workflow")).slice(0, 3);
+  const licenseStatus = skill.skill.permission_license.allowed_actions.some((action) => action.action === "run_workflow") ? "licensed" : "blocked";
+  const evidenceRefs = [
+    `skill:${skill.skill.skill_id}`,
+    `license:${skill.skill.permission_license.license_id}`,
+    `ghost:${runId}`,
+    ...guardrailsTriggered.map((guardrail) => `guardrail:${guardrail.guardrail_id}`),
+  ];
+  const entrustmentImpact = actionMatches
+    ? {
+      upgrade_allowed: true,
+      recommended_entrustment: skill.skill.entrustment_level,
+      reason: "Ghost Mode matched the human action label and wrote shadow evidence without production mutation.",
+    }
+    : {
+      upgrade_allowed: false,
+      recommended_entrustment: "EX",
+      reason: "Ghost Mode mismatch prevents entrustment upgrade until the planned action is retrained or recertified.",
+    };
+  const shadowEvidence = {
+    schema_version: "synthi.dojo.ghostShadowEvidence.v1",
+    evidence_id: `ghost_evidence_${hashId(`${runId}:${evidenceRefs.join("|")}`)}`,
+    run_id: runId,
+    skill_id: skill.skill.skill_id,
+    workflow_id: skill.skill.workflow_id,
+    evidence_kind: "shadow",
+    production_mutations_executed: false,
+    action_matches: actionMatches,
+    observed_label: observedLabel,
+    planned_label: plannedLabel,
+    license_status: licenseStatus,
+    guardrail_refs: guardrailsTriggered.map((guardrail) => guardrail.guardrail_id),
+    evidence_refs: evidenceRefs,
+    entrustment_impact: entrustmentImpact,
+    created_at: now,
+  };
   const run = {
-    run_id: `ghost_${Date.now()}`,
+    run_id: runId,
     skill_id: skill.skill.skill_id,
     workflow_id: skill.skill.workflow_id,
     mode: "ghost",
@@ -1039,8 +1077,12 @@ function dojoRunGhostModeTool(args: unknown): ToolResponse {
     agent_planned_action: planned,
     status: actionMatches ? "matched" : "mismatch",
     would_execute: false,
-    license_status: skill.skill.permission_license.allowed_actions.some((action) => action.action === "run_workflow") ? "licensed" : "blocked",
+    license_status: licenseStatus,
     guardrails_triggered: guardrailsTriggered.map((guardrail) => guardrail.guardrail_id),
+    production_mutations_executed: false,
+    shadow_evidence_id: shadowEvidence.evidence_id,
+    evidence_refs: evidenceRefs,
+    entrustment_impact: entrustmentImpact,
     explanation: actionMatches
       ? "Ghost mode matched the demonstrated action label and did not execute production mutations."
       : "Ghost mode found a mismatch or incomplete planned action, so production execution remains blocked.",
@@ -1049,6 +1091,7 @@ function dojoRunGhostModeTool(args: unknown): ToolResponse {
     ok: true,
     skill_id: skill.skill.skill_id,
     ghost_run: run,
+    shadow_evidence: shadowEvidence,
     guardrails: guardrailsTriggered,
   });
 }

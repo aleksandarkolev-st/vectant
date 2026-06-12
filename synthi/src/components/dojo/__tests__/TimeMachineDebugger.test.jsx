@@ -66,7 +66,15 @@ function buildDebugSummary() {
         run_id: 'ghost-001',
         status: 'mismatch',
         would_execute: false,
+        production_mutations_executed: false,
         license_status: 'blocked',
+        shadow_evidence_id: 'ghost-evidence-001',
+        evidence_refs: ['skill:dojo-save-invoice', 'ghost:ghost-001', 'guardrail:guard-stable-id'],
+        entrustment_impact: {
+          upgrade_allowed: false,
+          recommended_entrustment: 'EX',
+          reason: 'Ghost Mode mismatch prevents entrustment upgrade until the planned action is recertified.',
+        },
         observed_human_action: { action: 'click', label: 'Save invoice', selector: 'button[name=Save]' },
         agent_planned_action: { action: 'click', label: 'Submit invoice', selector: 'button[name=Submit]' },
         guardrails_triggered: ['guard-stable-id'],
@@ -109,6 +117,9 @@ describe('TimeMachineDebugger', () => {
     expect(text).toContain('Ghost mode found a mismatch');
     expect(text).toContain('Save invoice');
     expect(text).toContain('Submit invoice');
+    expect(text).toContain('Shadow only');
+    expect(text).toContain('ghost-evidence-001');
+    expect(text).toContain('Ghost Mode mismatch prevents entrustment upgrade');
   });
 
   it('renders an empty Ghost Mode panel state', () => {
