@@ -273,6 +273,15 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     evidence_kind: "test_report",
   },
   {
+    id: "dojo_chaos_performance_self_check",
+    tier: "T8",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:chaos-performance:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:chaos-performance:self-check",
+    required_for: ["nightly", "enterprise_release"],
+    evidence_kind: "metrics",
+  },
+  {
     id: "soak_performance",
     tier: "T8",
     working_directory: "mcp/synthi-mcp",
@@ -461,6 +470,7 @@ export async function runSelfCheck({ outDir }) {
   assert(manifest.milestone_gate_ids.includes("dojo_full_visual_proof"));
   assert(manifest.release_gate_ids.includes("dojo_mcp_host_conformance"));
   assert(manifest.release_gate_ids.includes("security_abuse_suite"));
+  assert(manifest.gates.some((gate) => gate.id === "dojo_chaos_performance_self_check" && gate.tier === "T8"));
   assert(manifest.gates.some((gate) => gate.tier === "T8"));
   return writeDojoReleaseGateArtifacts({ outDir, manifest });
 }
