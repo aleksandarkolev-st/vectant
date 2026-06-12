@@ -13,6 +13,10 @@ import {
   type DojoAffordancePatchOperation,
   type DojoAffordancePrPlan,
 } from "../dojo/source/affordance_pr_plan.js";
+import {
+  buildDojoGeneratedPrMetadata,
+  type DojoGeneratedPrMetadata,
+} from "../dojo/source/pr_generator.js";
 
 export interface DojoLifecycleReport {
   schema_version: "synthi.dojo.lifecycleReport.v1";
@@ -134,6 +138,7 @@ export interface DojoSourceAffordancePrPlan {
     }>;
   }>;
   typed_patch_plan: DojoAffordancePrPlan;
+  generated_pr_metadata: DojoGeneratedPrMetadata;
   generated_tests: Array<{ path: string; purpose: string }>;
   review_checklist: string[];
 }
@@ -552,6 +557,26 @@ export function buildDojoSourceAffordancePrPlan(skill: DojoSkill): DojoSourceAff
     ],
   };
   const typedPatchPlanValidation = validateDojoAffordancePrPlan(typedPatchPlan);
+  const generatedTests = [
+    { path: `.synthi/dojo/playwright/${slug(skill.name)}.spec.ts`, purpose: "Verify agent-visible affordances remain reachable." },
+    { path: `.synthi/dojo/reports/${slug(skill.name)}.training-report.md`, purpose: "Review post-affordance checkride evidence." },
+  ];
+  const typedPatchPlanWithValidation: DojoAffordancePrPlan = {
+    ...typedPatchPlan,
+    review_gates: typedPatchPlanValidation.ok
+      ? typedPatchPlan.review_gates
+      : [...typedPatchPlan.review_gates, ...typedPatchPlanValidation.issues.map((issue) => `fix_${issue.issue_id}`)],
+  };
+  const generatedPrMetadata = buildDojoGeneratedPrMetadata({
+    plan: typedPatchPlanWithValidation,
+    skill_id: skill.skill_id,
+    license_id: skill.permission_license.license_id,
+    artifact_refs: [
+      { kind: "patch_plan", path: `.synthi/dojo/source/${slug(skill.name)}.affordance-pr-plan.json` },
+      { kind: "contract_test", path: `.synthi/dojo/playwright/${slug(skill.name)}.spec.ts` },
+      { kind: "training_report", path: `.synthi/dojo/reports/${slug(skill.name)}.training-report.md` },
+    ],
+  });
   return {
     schema_version: "synthi.dojo.sourceAffordancePrPlan.v1",
     plan_id: `source_pr_${hash(`${skill.skill_id}:${patchCount}:${skill.source_links.length}`)}`,
@@ -560,16 +585,9 @@ export function buildDojoSourceAffordancePrPlan(skill: DojoSkill): DojoSourceAff
     readiness: patchCount === 0 ? "not_applicable" : skill.source_links.length > 0 ? "ready_for_review" : "source_mapping_needed",
     patch_count: patchCount,
     files: [...files.values()].sort((a, b) => a.file_path.localeCompare(b.file_path)),
-    typed_patch_plan: {
-      ...typedPatchPlan,
-      review_gates: typedPatchPlanValidation.ok
-        ? typedPatchPlan.review_gates
-        : [...typedPatchPlan.review_gates, ...typedPatchPlanValidation.issues.map((issue) => `fix_${issue.issue_id}`)],
-    },
-    generated_tests: [
-      { path: `.synthi/dojo/playwright/${slug(skill.name)}.spec.ts`, purpose: "Verify agent-visible affordances remain reachable." },
-      { path: `.synthi/dojo/reports/${slug(skill.name)}.training-report.md`, purpose: "Review post-affordance checkride evidence." },
-    ],
+    typed_patch_plan: typedPatchPlanWithValidation,
+    generated_pr_metadata: generatedPrMetadata,
+    generated_tests: generatedTests,
     review_checklist: [
       "Confirm no raw secrets or production data are embedded in affordance metadata.",
       "Confirm every risky action has a proof or approval hook.",

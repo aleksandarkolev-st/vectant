@@ -537,6 +537,28 @@ describe("Agent Dojo MCP tools", () => {
             "npm --prefix mcp/synthi-mcp run proof:dojo:affordance-codemod:self-check",
           ]),
         }),
+        generated_pr_metadata: expect.objectContaining({
+          schema_version: "synthi.dojo.generatedSourcePrMetadata.v1",
+          branch_name: expect.stringMatching(/^dojo\/source-affordance\/typed-source-pr-[a-z0-9-]+-[a-f0-9]{12}$/),
+          review_requirements: expect.arrayContaining([
+            expect.objectContaining({
+              gate: "code_owner",
+              status: "pending",
+              owners: [],
+              paths: expect.arrayContaining([expect.stringMatching(/^src\//)]),
+            }),
+            expect.objectContaining({
+              gate: "security_for_risky_action",
+              operation_ids: expect.arrayContaining([expect.stringMatching(/^patch_proof_hook_/)]),
+            }),
+          ]),
+          promotion_blockers: expect.arrayContaining([expect.stringMatching(/^generated_pr_code_owner_unresolved:/)]),
+          artifact_refs: expect.arrayContaining([
+            expect.objectContaining({ kind: "patch_plan" }),
+            expect.objectContaining({ kind: "contract_test" }),
+            expect.objectContaining({ kind: "training_report" }),
+          ]),
+        }),
       }),
     }));
     const registry = await dispatchDojoTool("synthi_dojo_get_registry", {});
