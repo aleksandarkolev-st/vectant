@@ -71,6 +71,36 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("passes prompt injection scenarios only when document instructions are quarantined", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "prompt_injection",
+      layer: "risk",
+      risk_tags: ["prompt_injection", "untrusted_document"],
+    }));
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "prompt-injection-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-prompt-injection",
+    });
+
+    expect(materialized.fixture.document_state.prompt_injection_present).toBe(true);
+    expect(result).toEqual(expect.objectContaining({
+      status: "passed",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining(["document_instruction_quarantine"]),
+      oracle_result: expect.objectContaining({
+        blocked_by: [],
+      }),
+    }));
+  });
+
   it("proves fixture reset is deterministic for the materialized scenario seed", () => {
     const runner = new DojoVivariumRunner();
     const materialized = runner.materialize({

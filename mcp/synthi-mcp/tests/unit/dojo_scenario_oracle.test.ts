@@ -76,6 +76,36 @@ describe("Dojo scenario oracle", () => {
     }));
   });
 
+  it("requires quarantine evidence for prompt injection document scenarios", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "prompt_injection",
+      risk_tags: ["prompt_injection", "untrusted_document"],
+    }));
+    const fixture = materializeDojoSyntheticFixture(definition);
+
+    expect(evaluateDojoScenarioOracle({
+      definition,
+      fixture,
+      graph_result: graphResult({ status: "completed" }),
+      observed_evidence: ["graph_run_result"],
+    })).toEqual(expect.objectContaining({
+      status: "failed",
+      blocked_by: ["oracle_document_instruction_quarantine_missing"],
+      expectation_met: false,
+    }));
+
+    expect(evaluateDojoScenarioOracle({
+      definition,
+      fixture,
+      graph_result: graphResult({ status: "completed" }),
+      observed_evidence: ["graph_run_result", "document_instruction_quarantine"],
+    })).toEqual(expect.objectContaining({
+      status: "passed",
+      expectation_met: true,
+      blocked_by: [],
+    }));
+  });
+
   it("builds and appends ledger-ready oracle evidence records", async () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "baseline", layer: "skill", risk_tags: ["baseline"] }));
     const fixture = materializeDojoSyntheticFixture(definition);
