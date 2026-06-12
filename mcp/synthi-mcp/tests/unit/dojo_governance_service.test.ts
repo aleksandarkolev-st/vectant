@@ -5,6 +5,7 @@ import type { DojoPermissionUpgradeRequestRecord } from "../../src/dojo/store/in
 import {
   buildDojoGovernanceServiceView,
   buildDojoComplianceEvidencePack,
+  decideDojoCaseLawReview,
   decideDojoPermissionUpgradeRequest,
   queryDojoApprovalQueue,
   queryDojoAuditExports,
@@ -123,6 +124,80 @@ describe("Dojo governance service", () => {
       error: "permission_upgrade_request_not_pending",
       blocked_by: ["request_status:approved"],
       request: expect.objectContaining({ status: "approved" }),
+    }));
+  });
+
+  it("records case-law approval and deprecation decisions with review evidence", () => {
+    const proposed = externalCaseFixture();
+    const approved = decideDojoCaseLawReview({
+      case_law: proposed,
+      decision: "approved",
+      decided_by: { actor_id: "case-reviewer-a", actor_type: "human" },
+      decided_at: "2026-06-11T00:06:00.000Z",
+      reason: "Evidence reviewed.",
+      evidence_refs: ["evidence-case-review"],
+    });
+    const deprecated = decideDojoCaseLawReview({
+      case_law: approved.case_law,
+      decision: "deprecated",
+      decided_by: { actor_id: "case-reviewer-b", actor_type: "human" },
+      decided_at: "2026-06-11T00:07:00.000Z",
+      reason: "Superseded by narrower rule.",
+      evidence_refs: ["evidence-superseded"],
+      superseded_by: "case-narrower-rule",
+    });
+
+    expect(approved).toEqual(expect.objectContaining({
+      ok: true,
+      status: "applied",
+      blocked_by: [],
+      audit_event: expect.objectContaining({
+        event_type: "case_law_approved",
+        actor: { actor_id: "case-reviewer-a", actor_type: "human" },
+        reason: "Evidence reviewed.",
+        evidence_refs: ["evidence-case-review"],
+      }),
+      case_law: expect.objectContaining({
+        case_id: "case-external",
+        status: "approved",
+        reviewer: "case-reviewer-a",
+        updated_at: "2026-06-11T00:06:00.000Z",
+        evidence_refs: ["evidence-external", "evidence-case-review"],
+      }),
+    }));
+    expect(deprecated).toEqual(expect.objectContaining({
+      ok: true,
+      audit_event: expect.objectContaining({
+        event_type: "case_law_deprecated",
+        actor: { actor_id: "case-reviewer-b", actor_type: "human" },
+        reason: "Superseded by narrower rule.",
+      }),
+      case_law: expect.objectContaining({
+        status: "deprecated",
+        reviewer: "case-reviewer-b",
+        superseded_by: "case-narrower-rule",
+        evidence_refs: ["evidence-external", "evidence-case-review", "evidence-superseded"],
+      }),
+    }));
+  });
+
+  it("rejects case-law approval when the record is no longer proposed", () => {
+    const record = externalCaseFixture();
+    record.status = "approved";
+
+    const result = decideDojoCaseLawReview({
+      case_law: record,
+      decision: "approved",
+      decided_by: { actor_id: "case-reviewer-a", actor_type: "human" },
+      decided_at: "2026-06-11T00:08:00.000Z",
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      status: "rejected",
+      error: "case_law_review_not_pending",
+      blocked_by: ["case_law_status:approved"],
+      case_law: expect.objectContaining({ status: "approved" }),
     }));
   });
 

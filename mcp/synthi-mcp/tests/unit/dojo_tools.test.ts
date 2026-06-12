@@ -258,6 +258,7 @@ describe("Agent Dojo MCP tools", () => {
         expect.objectContaining({ name: "synthi_dojo_explain_failure" }),
         expect.objectContaining({ name: "synthi_dojo_publish_skill" }),
         expect.objectContaining({ name: "synthi_dojo_review_permission_upgrade" }),
+        expect.objectContaining({ name: "synthi_dojo_review_case_law" }),
         expect.objectContaining({ name: "synthi_dojo_get_license_health" }),
         expect.objectContaining({ name: "synthi_dojo_record_case_law" }),
         expect.objectContaining({ name: "synthi_dojo_revoke_license" }),
@@ -678,7 +679,67 @@ describe("Agent Dojo MCP tools", () => {
     });
     expect(recordedCase?.structuredContent).toEqual(expect.objectContaining({
       case_law: expect.objectContaining({ status: "binding" }),
+      case_law_record: expect.objectContaining({ status: "approved" }),
       guardrail: expect.objectContaining({ blocks_actions: ["run_workflow"] }),
+    }));
+    const recordedCaseId = (recordedCase?.structuredContent as {
+      case_law_record: { case_id: string };
+    }).case_law_record.case_id;
+    const listedCaseLaw = await dispatchDojoTool("synthi_dojo_get_case_law", { skill_id: published.skill.skill_id });
+    expect(listedCaseLaw?.structuredContent).toEqual(expect.objectContaining({
+      case_law_records: expect.arrayContaining([
+        expect.objectContaining({ case_id: recordedCaseId, status: "approved" }),
+      ]),
+    }));
+    const reviewedCaseAgain = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      case_id: recordedCaseId,
+      skill_id: published.skill.skill_id,
+      decision: "approved",
+      reviewer_actor_id: "case-reviewer-a",
+    });
+    expect(reviewedCaseAgain?.isError).toBe(true);
+    expect(reviewedCaseAgain?.structuredContent).toEqual(expect.objectContaining({
+      error: "case_law_review_not_pending",
+      review: expect.objectContaining({
+        ok: false,
+        blocked_by: ["case_law_status:approved"],
+      }),
+    }));
+    const deprecatedCase = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      case_id: recordedCaseId,
+      skill_id: published.skill.skill_id,
+      decision: "deprecated",
+      reviewer_actor_id: "case-reviewer-b",
+      reviewer_actor_type: "human",
+      reason: "Superseded by narrower rule.",
+      evidence_refs: ["evidence:case-review"],
+      superseded_by: "case-narrower",
+      decided_at: "2026-06-11T00:05:00.000Z",
+    });
+    expect(deprecatedCase?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      case_law_record: expect.objectContaining({
+        case_id: recordedCaseId,
+        status: "deprecated",
+        reviewer: "case-reviewer-b",
+        superseded_by: "case-narrower",
+        evidence_refs: expect.arrayContaining(["evidence:case-review"]),
+      }),
+      review: expect.objectContaining({
+        audit_event: expect.objectContaining({ event_type: "case_law_deprecated" }),
+      }),
+      governance_service: expect.objectContaining({
+        case_law_review_queue: [],
+      }),
+    }));
+    const listedAfterDeprecation = await dispatchDojoTool("synthi_dojo_get_case_law", { skill_id: published.skill.skill_id });
+    expect(listedAfterDeprecation?.structuredContent).toEqual(expect.objectContaining({
+      case_law: expect.arrayContaining([
+        expect.objectContaining({ case_id: recordedCaseId, status: "deprecated" }),
+      ]),
+      case_law_records: expect.arrayContaining([
+        expect.objectContaining({ case_id: recordedCaseId, status: "deprecated" }),
+      ]),
     }));
 
     const listed = await dispatchDojoTool("synthi_dojo_list_competencies", {});

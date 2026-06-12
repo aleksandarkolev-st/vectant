@@ -70,6 +70,10 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
     "Records approval or denial review state for a stored permission-upgrade request without promoting the production license by itself.",
     ["license_promotion_still_requires_checkride_and_evidence_policy"]
   ),
+  synthi_dojo_review_case_law: controlPlaneWrite(
+    "Records approval or deprecation review state for a stored case-law record and exposes the result through governance views.",
+    ["case_law_review_requires_durable_enterprise_audit_for_production"]
+  ),
   synthi_dojo_generate_vivarium_scenarios: deterministic("Generates scenario catalog data from a Skill Seed."),
   synthi_dojo_run_vivarium_scenario: syntheticRuntime("Materializes a synthetic fixture, runs the Skill Graph in checkride mode, and evaluates the oracle from observed evidence."),
   synthi_dojo_run_wind_tunnel: syntheticRuntime("Runs a budgeted set of materialized Vivarium scenarios through the graph runtime and oracle evaluator."),

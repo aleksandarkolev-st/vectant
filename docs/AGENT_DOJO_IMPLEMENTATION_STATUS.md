@@ -81,6 +81,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_run_ghost_mode` | `report_only` |
 | `synthi_dojo_request_permission_upgrade` | `executable` |
 | `synthi_dojo_review_permission_upgrade` | `executable` |
+| `synthi_dojo_review_case_law` | `executable` |
 | `synthi_dojo_generate_vivarium_scenarios` | `deterministic_projection` |
 | `synthi_dojo_run_vivarium_scenario` | `executable` |
 | `synthi_dojo_run_wind_tunnel` | `executable` |

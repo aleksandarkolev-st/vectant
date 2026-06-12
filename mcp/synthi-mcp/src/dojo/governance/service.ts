@@ -13,6 +13,7 @@ export type DojoGovernanceLicenseStatus = "active" | "expiring" | "expired" | "r
 export type DojoGovernanceApprovalStatus = "pending" | "approved" | "denied";
 export type DojoGovernanceActionStatus = "applied" | "rejected";
 export type DojoPermissionUpgradeDecision = "approved" | "denied";
+export type DojoCaseLawReviewDecision = "approved" | "deprecated";
 
 export interface DojoGovernanceActionAuditSummary {
   event_type: DojoAuditEventType;
@@ -43,6 +44,15 @@ export interface DojoSkillLicenseRevocationResult {
   revoked_license_version: string;
   blocked_actions: string[];
   audit_event?: DojoGovernanceActionAuditSummary;
+}
+
+export interface DojoCaseLawReviewDecisionResult {
+  ok: boolean;
+  status: DojoGovernanceActionStatus;
+  case_law: DojoCaseLawRecord;
+  audit_event?: DojoGovernanceActionAuditSummary;
+  error?: "case_law_review_not_pending" | "case_law_already_deprecated";
+  blocked_by: string[];
 }
 
 export interface DojoGovernanceLicenseHealth {
@@ -325,6 +335,64 @@ export function revokeDojoSkillLicense(input: {
       reason,
       evidence_refs: evidenceRefs,
     } : undefined,
+  };
+}
+
+export function decideDojoCaseLawReview(input: {
+  case_law: DojoCaseLawRecord;
+  decision: DojoCaseLawReviewDecision;
+  decided_by: DojoAuditActor;
+  decided_at?: string;
+  reason?: string;
+  evidence_refs?: string[];
+  superseded_by?: string;
+}): DojoCaseLawReviewDecisionResult {
+  const record = cloneJson(input.case_law);
+  const decidedAt = input.decided_at ?? new Date().toISOString();
+  const decisionEvidenceRefs = uniqueStrings(input.evidence_refs ?? []);
+  const reason = normalizedReason(input.reason, "");
+
+  if (input.decision === "approved" && record.status !== "proposed") {
+    return {
+      ok: false,
+      status: "rejected",
+      case_law: record,
+      error: "case_law_review_not_pending",
+      blocked_by: [`case_law_status:${record.status}`],
+    };
+  }
+  if (input.decision === "deprecated" && record.status === "deprecated") {
+    return {
+      ok: false,
+      status: "rejected",
+      case_law: record,
+      error: "case_law_already_deprecated",
+      blocked_by: ["case_law_status:deprecated"],
+    };
+  }
+
+  record.status = input.decision;
+  record.reviewer = input.decided_by.actor_id;
+  record.updated_at = decidedAt;
+  if (input.superseded_by?.trim()) record.superseded_by = input.superseded_by.trim();
+  if (decisionEvidenceRefs.length > 0) {
+    record.evidence_refs = uniqueStrings([...record.evidence_refs, ...decisionEvidenceRefs]);
+  }
+
+  return {
+    ok: true,
+    status: "applied",
+    case_law: record,
+    audit_event: {
+      event_type: input.decision === "approved" ? "case_law_approved" : "case_law_deprecated",
+      actor: cloneJson(input.decided_by),
+      occurred_at: decidedAt,
+      workspace_id: record.binding_scope.kind === "workspace" ? record.binding_scope.id : "",
+      skill_id: record.binding_scope.kind === "skill" ? record.binding_scope.id : "",
+      reason,
+      evidence_refs: decisionEvidenceRefs,
+    },
+    blocked_by: [],
   };
 }
 

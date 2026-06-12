@@ -131,6 +131,7 @@ export type DojoAuditEventType =
   | "proof_revoked"
   | "case_law_proposed"
   | "case_law_approved"
+  | "case_law_deprecated"
   | "guardrail_activated"
   | "source_contract_changed"
   | "skill_expired"

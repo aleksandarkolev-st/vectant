@@ -14,11 +14,13 @@ import {
 import {
   createDefaultDojoSkillStore,
   InMemoryDojoSkillStore,
+  type DojoCaseLawRecordFilter,
   type DojoControlPlaneStore,
   type DojoPermissionUpgradeRequestFilter,
   type DojoPermissionUpgradeRequestRecord,
   type DojoProofCapsuleRecord,
 } from "./dojo_store.js";
+import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
 import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/proof/errors.js";
 import type { DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
 import { resolveDojoEvidenceClaims } from "../dojo/evidence/verifier.js";
@@ -793,6 +795,19 @@ export class DojoSkillRegistry {
 
   listPermissionUpgradeRequests(filter?: DojoPermissionUpgradeRequestFilter): DojoPermissionUpgradeRequestRecord[] {
     return this.store.listPermissionUpgradeRequests(filter);
+  }
+
+  recordCaseLawRecord(record: DojoCaseLawRecord): DojoCaseLawRecord {
+    this.store.saveCaseLawRecord(record);
+    return cloneJson(record);
+  }
+
+  getCaseLawRecord(caseId: string): DojoCaseLawRecord | null {
+    return this.store.getCaseLawRecord(caseId);
+  }
+
+  listCaseLawRecords(filter?: DojoCaseLawRecordFilter): DojoCaseLawRecord[] {
+    return this.store.listCaseLawRecords(filter);
   }
 
   useStoreForTests(store: DojoControlPlaneStore = new InMemoryDojoSkillStore()): void {

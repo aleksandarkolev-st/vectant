@@ -32,6 +32,7 @@ import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
 import { runDojoExecutableCheckride } from "../dojo/checkride/runner.js";
 import {
   buildDojoGovernanceServiceView,
+  decideDojoCaseLawReview,
   decideDojoPermissionUpgradeRequest,
   revokeDojoSkillLicense,
 } from "../dojo/governance/service.js";
@@ -87,6 +88,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_run_ghost_mode",
   "synthi_dojo_request_permission_upgrade",
   "synthi_dojo_review_permission_upgrade",
+  "synthi_dojo_review_case_law",
   "synthi_dojo_generate_vivarium_scenarios",
   "synthi_dojo_run_vivarium_scenario",
   "synthi_dojo_run_wind_tunnel",
@@ -407,6 +409,27 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_review_case_law",
+    description:
+      "Approve or deprecate a stored Dojo case-law record with reviewer metadata and evidence references. Approved case law can bind runtime guardrail predicates; deprecated case law is removed from binding lookup.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        case_id: { type: "string" },
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        decision: { type: "string", enum: ["approved", "deprecated"] },
+        reviewer_actor_id: { type: "string" },
+        reviewer_actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        reason: { type: "string" },
+        evidence_refs: { type: "array", items: { type: "string" } },
+        superseded_by: { type: "string" },
+        decided_at: { type: "string" },
+      },
+      required: ["case_id", "decision"],
+    },
+  },
+  {
     name: "synthi_dojo_generate_vivarium_scenarios",
     description:
       "Extract a Skill Seed from the current or saved workflow contract and generate a task-specific synthetic Workspace Organoid scenario set.",
@@ -696,6 +719,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
       case "synthi_dojo_review_permission_upgrade":
         response = dojoReviewPermissionUpgradeTool(args);
         break;
+      case "synthi_dojo_review_case_law":
+        response = dojoReviewCaseLawTool(args);
+        break;
       case "synthi_dojo_generate_vivarium_scenarios":
         response = dojoGenerateVivariumScenariosTool(args);
         break;
@@ -887,6 +913,7 @@ function dojoGetGovernanceReportTool(args: unknown): ToolResponse {
     governance_report: buildDojoGovernanceReport(skill.skill),
     governance_service: buildDojoGovernanceServiceView({
       skills: dojoSkillRegistry.list(),
+      case_law_records: dojoSkillRegistry.listCaseLawRecords(),
       permission_upgrade_requests: dojoSkillRegistry.listPermissionUpgradeRequests(),
       now: new Date().toISOString(),
     }),
@@ -916,6 +943,7 @@ function dojoGetRegistryTool(): ToolResponse {
     registry: buildDojoOrganizationRegistry(skills),
     governance_service: buildDojoGovernanceServiceView({
       skills,
+      case_law_records: dojoSkillRegistry.listCaseLawRecords(),
       permission_upgrade_requests: dojoSkillRegistry.listPermissionUpgradeRequests(),
       now: new Date().toISOString(),
     }),
@@ -956,7 +984,12 @@ function dojoGetGuardrailsTool(args: unknown): ToolResponse {
 function dojoGetCaseLawTool(args: unknown): ToolResponse {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, case_law: skill.skill.case_law });
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    case_law: skill.skill.case_law,
+    case_law_records: storedCaseLawRecordsForSkill(skill.skill),
+  });
 }
 
 function dojoExplainBlockTool(args: unknown): ToolResponse {
@@ -1179,6 +1212,7 @@ function dojoPermissionUpgradeTool(args: unknown): ToolResponse {
     permission_upgrade_request: storedRequest,
     matching_approval_queue: buildDojoGovernanceServiceView({
       skills: [skill.skill],
+      case_law_records: dojoSkillRegistry.listCaseLawRecords(),
       permission_upgrade_requests: [storedRequest],
       now,
     }).approval_queue.filter((item) => item.request_id === storedRequest.request_id),
@@ -1224,8 +1258,70 @@ function dojoReviewPermissionUpgradeTool(args: unknown): ToolResponse {
     review,
     governance_service: buildDojoGovernanceServiceView({
       skills: skill ? [skill] : [],
+      case_law_records: dojoSkillRegistry.listCaseLawRecords(),
       permission_upgrade_requests: [updatedRequest],
       now: updatedRequest.reviewed_at,
+    }),
+  });
+}
+
+function dojoReviewCaseLawTool(args: unknown): ToolResponse {
+  const a = obj(args);
+  const caseId = stringOpt(a["case_id"]);
+  if (!caseId) return errorResponse("dojo_case_law_case_id_required");
+  const decision = caseLawReviewDecisionOpt(a["decision"]);
+  if (!decision) return errorResponse("dojo_case_law_decision_required", {
+    allowed_decisions: ["approved", "deprecated"],
+  });
+  const reviewerActorId = stringOpt(a["reviewer_actor_id"]) ?? stringOpt(a["actor_id"]);
+  if (!reviewerActorId) return errorResponse("dojo_case_law_reviewer_required");
+
+  const selectedSkill = skillByArgs(args);
+  const storedRecord = dojoSkillRegistry.getCaseLawRecord(caseId);
+  const skillLocalRecord = !storedRecord && selectedSkill
+    ? caseLawRecordsForSkill(selectedSkill).find((record) => record.case_id === caseId)
+    : undefined;
+  const record = storedRecord ?? (skillLocalRecord ? dojoSkillRegistry.recordCaseLawRecord(skillLocalRecord) : null);
+  if (!record) return errorResponse("dojo_case_law_not_found", { case_id: caseId });
+
+  const review = decideDojoCaseLawReview({
+    case_law: record,
+    decision,
+    decided_by: {
+      actor_id: reviewerActorId,
+      actor_type: actorTypeOpt(a["reviewer_actor_type"] ?? a["actor_type"]),
+    },
+    decided_at: stringOpt(a["decided_at"]) ?? stringOpt(a["now"]),
+    reason: stringOpt(a["reason"]),
+    evidence_refs: stringArrayOpt(a["evidence_refs"]),
+    superseded_by: stringOpt(a["superseded_by"]),
+  });
+  if (!review.ok) {
+    return errorResponse(review.error ?? "dojo_case_law_review_rejected", {
+      case_id: caseId,
+      review,
+    });
+  }
+
+  const updatedRecord = dojoSkillRegistry.recordCaseLawRecord(review.case_law);
+  const scopedSkill = selectedSkill
+    ?? (updatedRecord.binding_scope.kind === "skill" ? dojoSkillRegistry.get(updatedRecord.binding_scope.id) : null);
+  const updatedSkill = scopedSkill?.case_law.some((item) => item.case_id === updatedRecord.case_id)
+    ? dojoSkillRegistry.publish(applyCaseLawReviewToSkill(scopedSkill, updatedRecord))
+    : scopedSkill;
+  const governanceSkills = updatedSkill ? [updatedSkill] : dojoSkillRegistry.list();
+  return jsonResponse({
+    ok: true,
+    case_id: caseId,
+    decision,
+    case_law_record: updatedRecord,
+    review,
+    ...(updatedSkill ? { skill_id: updatedSkill.skill_id, skill: skillListItem(updatedSkill) } : {}),
+    governance_service: buildDojoGovernanceServiceView({
+      skills: governanceSkills,
+      case_law_records: dojoSkillRegistry.listCaseLawRecords(),
+      permission_upgrade_requests: dojoSkillRegistry.listPermissionUpgradeRequests(),
+      now: updatedRecord.updated_at,
     }),
   });
 }
@@ -1573,10 +1669,12 @@ function dojoRecordCaseLawTool(args: unknown): ToolResponse {
   };
   updated.last_trained_at = now;
   const saved = dojoSkillRegistry.publish(updated);
+  const caseLawRecord = dojoSkillRegistry.recordCaseLawRecord(caseLawRecordForSkillCase(saved, caseLaw));
   return jsonResponse({
     ok: true,
     skill_id: saved.skill_id,
     case_law: caseLaw,
+    case_law_record: caseLawRecord,
     guardrail,
     antibody,
     license: saved.permission_license,
@@ -1906,7 +2004,11 @@ function refusalExplanationFor(skill: DojoSkill, requestedAction: string, blocke
 }
 
 function caseLawRecordsForSkill(skill: DojoSkill): DojoCaseLawRecord[] {
-  return skill.case_law.map((item) => ({
+  return skill.case_law.map((item) => caseLawRecordForSkillCase(skill, item));
+}
+
+function caseLawRecordForSkillCase(skill: DojoSkill, item: DojoSkill["case_law"][number]): DojoCaseLawRecord {
+  return {
     schema_version: "synthi.dojo.caseLaw.v1",
     case_id: item.case_id,
     title: item.title,
@@ -1923,7 +2025,71 @@ function caseLawRecordsForSkill(skill: DojoSkill): DojoCaseLawRecord[] {
     appeal_status: "none",
     created_at: item.date,
     updated_at: item.date,
-  }));
+  };
+}
+
+function storedCaseLawRecordsForSkill(skill: DojoSkill): DojoCaseLawRecord[] {
+  return dojoSkillRegistry.listCaseLawRecords()
+    .filter((record) => {
+      if (record.binding_scope.kind === "skill") return record.binding_scope.id === skill.skill_id;
+      if (record.binding_scope.kind === "workspace") return record.binding_scope.id === skill.workspace_id;
+      if (record.binding_scope.kind === "organization") return record.binding_scope.id === `organization:${skill.workspace_id}`;
+      return false;
+    })
+    .sort((left, right) => left.case_id.localeCompare(right.case_id));
+}
+
+function applyCaseLawReviewToSkill(skill: DojoSkill, record: DojoCaseLawRecord): DojoSkill {
+  const updated = cloneJson(skill);
+  const status: DojoSkill["case_law"][number]["status"] = record.status === "approved" ? "binding" : record.status;
+  updated.case_law = updated.case_law.map((item) => item.case_id === record.case_id
+    ? {
+        ...item,
+        title: record.title,
+        finding: record.finding,
+        impact: record.impact,
+        rule_created: record.rule_created,
+        applies_to: [...record.applies_to],
+        binding_scope: skillCaseBindingScopeFromRecord(record),
+        status,
+        evidence_refs: [...record.evidence_refs],
+      }
+    : item
+  );
+  if (record.status === "approved") {
+    updated.case_law_refs = [...new Set([...updated.case_law_refs, record.case_id])];
+  }
+  if (record.status === "deprecated") {
+    updated.case_law_refs = updated.case_law_refs.filter((caseId) => caseId !== record.case_id);
+    const deprecatedGuardrailIds = new Set(updated.guardrails
+      .filter((guardrail) => guardrail.source_case_id === record.case_id)
+      .map((guardrail) => guardrail.guardrail_id));
+    updated.guardrails = updated.guardrails.filter((guardrail) => guardrail.source_case_id !== record.case_id);
+    updated.permission_license = {
+      ...updated.permission_license,
+      proof_requirements: {
+        ...updated.permission_license.proof_requirements,
+        required_guardrails: updated.permission_license.proof_requirements.required_guardrails
+          .filter((guardrailId) => !deprecatedGuardrailIds.has(guardrailId)),
+      },
+    };
+  }
+  updated.training_report = {
+    ...updated.training_report,
+    summary: {
+      ...updated.training_report.summary,
+      guardrail_count: updated.guardrails.length,
+    },
+    evidence_refs: [...new Set([...updated.training_report.evidence_refs, ...record.evidence_refs])],
+    readiness_decision: `Case law ${record.case_id} ${record.status}; governance review recorded.`,
+  };
+  updated.last_trained_at = record.updated_at;
+  return updated;
+}
+
+function skillCaseBindingScopeFromRecord(record: DojoCaseLawRecord): DojoSkill["case_law"][number]["binding_scope"] {
+  if (record.binding_scope.kind === "skill" || record.binding_scope.kind === "workspace") return record.binding_scope.kind;
+  return "organization";
 }
 
 function bindingScopeIdForSkillCase(skill: DojoSkill, bindingScope: DojoSkill["case_law"][number]["binding_scope"]): string {
@@ -2070,6 +2236,10 @@ function actorTypeOpt(value: unknown): DojoTenantContext["actor_type"] {
 
 function permissionUpgradeDecisionOpt(value: unknown): "approved" | "denied" | undefined {
   return value === "approved" || value === "denied" ? value : undefined;
+}
+
+function caseLawReviewDecisionOpt(value: unknown): "approved" | "deprecated" | undefined {
+  return value === "approved" || value === "deprecated" ? value : undefined;
 }
 
 function persistDojoRuns(

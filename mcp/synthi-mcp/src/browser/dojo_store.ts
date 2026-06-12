@@ -15,6 +15,7 @@ import type {
 export type {
   DojoApprovalStore,
   DojoAuditStore,
+  DojoCaseLawRecordFilter,
   DojoCaseLawStore,
   DojoControlPlaneStore,
   DojoEvidenceStore,
