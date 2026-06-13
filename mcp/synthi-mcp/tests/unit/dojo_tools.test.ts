@@ -274,6 +274,14 @@ describe("Agent Dojo MCP tools", () => {
         expect.objectContaining({ name: "synthi_dojo_export_compliance_pack" }),
         expect.objectContaining({ name: "synthi_dojo_run_with_proof_capsule" }),
       ]));
+      const reviewPermissionUpgrade = listed.tools.find((tool) => tool.name === "synthi_dojo_review_permission_upgrade");
+      const reviewCaseLaw = listed.tools.find((tool) => tool.name === "synthi_dojo_review_case_law");
+      expect(reviewPermissionUpgrade?.inputSchema).toEqual(expect.objectContaining({
+        required: expect.arrayContaining(["evidence_refs"]),
+      }));
+      expect(reviewCaseLaw?.inputSchema).toEqual(expect.objectContaining({
+        required: expect.arrayContaining(["evidence_refs"]),
+      }));
     } finally {
       await client.close();
       await server.close();

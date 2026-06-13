@@ -350,6 +350,7 @@ describe('GovernanceDashboard', () => {
       queueId: 'permission-upgrade-001',
       requestId: 'upgrade-001',
       source: 'permission_upgrade_request',
+      evidenceRefs: ['evidence-upgrade-review-001'],
     }];
     global.fetch = vi.fn(async () => ({
       ok: true,
@@ -375,6 +376,7 @@ describe('GovernanceDashboard', () => {
                 action: 'send_invoice',
                 status: 'pending',
                 source: 'permission_upgrade_request',
+                evidence_refs: ['evidence-upgrade-review-001'],
               },
             ],
             license_health: [
@@ -393,6 +395,7 @@ describe('GovernanceDashboard', () => {
                 finding: 'Duplicate client display name can select the wrong account.',
                 rule_created: 'Require stable client ID before submit.',
                 status: 'proposed',
+                evidence_refs: ['evidence-case-review-001'],
               },
             ],
             recertification_queue: [
@@ -459,7 +462,7 @@ describe('GovernanceDashboard', () => {
           decision: 'approved',
           reviewer_actor_id: 'governance-operator',
           reviewer_actor_type: 'human',
-          evidence_refs: [],
+          evidence_refs: ['evidence-upgrade-review-001'],
         },
       });
       expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Permission approved: send_invoice');
@@ -476,7 +479,7 @@ describe('GovernanceDashboard', () => {
           skill_id: 'skill-save-invoice',
           reviewer_actor_id: 'governance-operator',
           reviewer_actor_type: 'human',
-          evidence_refs: [],
+          evidence_refs: ['evidence-case-review-001'],
         },
       });
       expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Case law approved: Duplicate client guardrail');

@@ -420,7 +420,7 @@ export const DOJO_TOOLS = [
         evidence_refs: { type: "array", items: { type: "string" } },
         decided_at: { type: "string" },
       },
-      required: ["request_id", "decision", "reviewer_actor_id", "reviewer_actor_type"],
+      required: ["request_id", "decision", "reviewer_actor_id", "reviewer_actor_type", "evidence_refs"],
     },
   },
   {
@@ -441,7 +441,7 @@ export const DOJO_TOOLS = [
         superseded_by: { type: "string" },
         decided_at: { type: "string" },
       },
-      required: ["case_id", "decision", "reviewer_actor_id", "reviewer_actor_type"],
+      required: ["case_id", "decision", "reviewer_actor_id", "reviewer_actor_type", "evidence_refs"],
     },
   },
   {

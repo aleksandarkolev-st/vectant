@@ -381,6 +381,16 @@ function proofAuditEvidenceRefs(proof, explicitEvidenceRefs = []) {
   return [...new Set(refs)];
 }
 
+function governanceReviewEvidenceRefs(item, explicitEvidenceRefs = []) {
+  return [...new Set([
+    ...compactStrings(explicitEvidenceRefs),
+    ...compactStrings(item?.evidenceRefs || item?.evidence_refs),
+    ...compactStrings(item?.decisionEvidenceRefs || item?.decision_evidence_refs),
+    ...compactStrings(item?.reviewEvidenceRefs || item?.review_evidence_refs),
+    ...compactStrings(item?.auditEventRefs || item?.audit_event_refs),
+  ])];
+}
+
 function normalizeCaseLawRefs(values) {
   return asArray(values)
     .map((item) => {
@@ -1311,6 +1321,8 @@ export async function reviewDojoPermissionUpgrade({
   if (decision !== 'approved' && decision !== 'denied') throw new Error('dojo_permission_upgrade_decision_required');
   const reviewer = resolveGovernanceActor({ actorId: reviewerActorId, actorType: reviewerActorType });
   if (!reviewer.actorId) throw new Error('dojo_governance_actor_required');
+  const resolvedEvidenceRefs = governanceReviewEvidenceRefs(item, evidenceRefs);
+  if (!resolvedEvidenceRefs.length) throw new Error('dojo_permission_upgrade_review_evidence_required');
   const body = await callAgentWorkflowTool({
     url,
     token,
@@ -1322,7 +1334,7 @@ export async function reviewDojoPermissionUpgrade({
       reviewer_actor_id: reviewer.actorId,
       reviewer_actor_type: reviewer.actorType,
       ...(reason ? { reason } : {}),
-      evidence_refs: compactStrings(evidenceRefs),
+      evidence_refs: resolvedEvidenceRefs,
     },
   });
   assertBridgeToolActionOk(body, 'dojo_permission_upgrade_review_failed');
@@ -1351,6 +1363,8 @@ export async function reviewDojoCaseLaw({
   if (decision !== 'approved' && decision !== 'deprecated') throw new Error('dojo_case_law_review_decision_required');
   const reviewer = resolveGovernanceActor({ actorId: reviewerActorId, actorType: reviewerActorType });
   if (!reviewer.actorId) throw new Error('dojo_governance_actor_required');
+  const resolvedEvidenceRefs = governanceReviewEvidenceRefs(item, evidenceRefs);
+  if (!resolvedEvidenceRefs.length) throw new Error('dojo_case_law_review_evidence_required');
   const body = await callAgentWorkflowTool({
     url,
     token,
@@ -1364,7 +1378,7 @@ export async function reviewDojoCaseLaw({
       reviewer_actor_id: reviewer.actorId,
       reviewer_actor_type: reviewer.actorType,
       ...(reason ? { reason } : {}),
-      evidence_refs: compactStrings(evidenceRefs),
+      evidence_refs: resolvedEvidenceRefs,
     },
   });
   assertBridgeToolActionOk(body, 'dojo_case_law_review_failed');
