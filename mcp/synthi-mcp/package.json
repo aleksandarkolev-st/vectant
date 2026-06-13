@@ -22,6 +22,10 @@
       "types": "./dist/dojo/proof/public_verifier.d.ts",
       "import": "./dist/dojo/proof/public_verifier.js"
     },
+    "./dojo/proof/public-verification-export": {
+      "types": "./dist/dojo/proof/public_verification_export.d.ts",
+      "import": "./dist/dojo/proof/public_verification_export.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

@@ -21,6 +21,10 @@ describe("package exports", () => {
         import: "./dist/dojo/proof/public_verifier.js",
         types: "./dist/dojo/proof/public_verifier.d.ts",
       }),
+      "./dojo/proof/public-verification-export": expect.objectContaining({
+        import: "./dist/dojo/proof/public_verification_export.js",
+        types: "./dist/dojo/proof/public_verification_export.d.ts",
+      }),
     }));
   });
 });
