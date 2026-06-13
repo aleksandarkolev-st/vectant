@@ -18,6 +18,10 @@
       "types": "./dist/browser/source_identity.d.ts",
       "import": "./dist/browser/source_identity.js"
     },
+    "./dojo/proof/public-verifier": {
+      "types": "./dist/dojo/proof/public_verifier.d.ts",
+      "import": "./dist/dojo/proof/public_verifier.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

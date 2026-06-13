@@ -17,6 +17,10 @@ describe("package exports", () => {
         import: "./dist/browser/source_identity.js",
         types: "./dist/browser/source_identity.d.ts",
       }),
+      "./dojo/proof/public-verifier": expect.objectContaining({
+        import: "./dist/dojo/proof/public_verifier.js",
+        types: "./dist/dojo/proof/public_verifier.d.ts",
+      }),
     }));
   });
 });
