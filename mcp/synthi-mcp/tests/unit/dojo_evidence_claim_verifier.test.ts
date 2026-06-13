@@ -148,6 +148,27 @@ describe("Dojo evidence claim verifier", () => {
     ]);
   });
 
+  it("fails claims backed only by records with the wrong evidence kind", () => {
+    expect(resolveDojoEvidenceClaims({
+      claim_ids: ["checkride_passed"],
+      records: [
+        evidenceRecord("record-license", ["checkride_passed"], "2026-06-11T00:00:00.000Z", {
+          kind: "license",
+        }),
+      ],
+      checked_at: "2026-06-11T00:05:00.000Z",
+    })).toEqual([
+      {
+        claim_id: "checkride_passed",
+        ok: false,
+        status: "failed",
+        evidence_record_ids: ["record-license"],
+        checked_at: "2026-06-11T00:05:00.000Z",
+        blocked_by: ["evidence_claim_record_kind_mismatch:checkride_passed"],
+      },
+    ]);
+  });
+
   it("treats evidence_fresh as a freshness claim over any evidence record", () => {
     expect(resolveDojoEvidenceClaims({
       claim_ids: ["evidence_fresh"],

@@ -1,4 +1,5 @@
 import type { DojoEvidenceLedgerRecord } from "./types.js";
+import { allowedEvidenceKindsForClaim } from "./claims.js";
 import type { DojoEvidenceClaimId, DojoEvidenceClaimResult } from "./claims.js";
 
 const DEFAULT_EVIDENCE_FRESH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -80,25 +81,39 @@ function resolveClaim(input: {
     };
   }
 
-  const checkedAtMs = parseTimestamp(input.checked_at);
-  if (checkedAtMs === undefined) {
+  const kindAllowedRecords = input.claim_id === "evidence_fresh"
+    ? scopedRecords
+    : scopedRecords.filter((record) => evidenceRecordKindSupportsClaim(input.claim_id, record));
+  if (kindAllowedRecords.length === 0) {
     return {
       claim_id: input.claim_id,
       ok: false,
       status: "failed",
       evidence_record_ids: scopedRecords.map((record) => record.record_id),
       checked_at: input.checked_at,
+      blocked_by: [`evidence_claim_record_kind_mismatch:${input.claim_id}`],
+    };
+  }
+
+  const checkedAtMs = parseTimestamp(input.checked_at);
+  if (checkedAtMs === undefined) {
+    return {
+      claim_id: input.claim_id,
+      ok: false,
+      status: "failed",
+      evidence_record_ids: kindAllowedRecords.map((record) => record.record_id),
+      checked_at: input.checked_at,
       blocked_by: [`evidence_claim_checked_at_invalid:${input.claim_id}`],
     };
   }
 
-  const timestampedRecords = scopedRecords.filter((record) => parseTimestamp(record.created_at) !== undefined);
+  const timestampedRecords = kindAllowedRecords.filter((record) => parseTimestamp(record.created_at) !== undefined);
   if (timestampedRecords.length === 0) {
     return {
       claim_id: input.claim_id,
       ok: false,
       status: "failed",
-      evidence_record_ids: scopedRecords.map((record) => record.record_id),
+      evidence_record_ids: kindAllowedRecords.map((record) => record.record_id),
       checked_at: input.checked_at,
       blocked_by: [`evidence_record_timestamp_invalid:${input.claim_id}`],
     };
@@ -168,4 +183,9 @@ function evidenceRecordMatchesScope(record: DojoEvidenceLedgerRecord, scope: Doj
   if (scope.skill_id && record.skill_id !== scope.skill_id) return false;
   if (scope.run_id && record.run_id !== scope.run_id) return false;
   return true;
+}
+
+function evidenceRecordKindSupportsClaim(claimId: DojoEvidenceClaimId, record: DojoEvidenceLedgerRecord): boolean {
+  const allowedKinds = allowedEvidenceKindsForClaim(claimId);
+  return !allowedKinds || allowedKinds.includes(record.kind);
 }
