@@ -286,7 +286,6 @@ export class DojoSkillGraphRuntime {
       if (node.kind === "Action") {
         const actionSubstrateExecutor = substrateExecutor;
         const actionPreflightBlockedBy = productionActionEvidenceBlockedBy(node, mode, input);
-        if (!actionSubstrateExecutor) actionPreflightBlockedBy.push("substrate_executor_required");
         if (actionPreflightBlockedBy.length > 0) {
           const substrateNodeResult: DojoGraphNodeRunResult = {
             ...result,
@@ -306,9 +305,44 @@ export class DojoSkillGraphRuntime {
           };
         }
         if (!actionSubstrateExecutor) {
-          throw new Error("dojo_graph_action_substrate_executor_missing_after_preflight");
+          const substrateNodeResult: DojoGraphNodeRunResult = {
+            ...result,
+            status: "blocked",
+            blocked_by: ["substrate_executor_required"],
+          };
+          nodeResults[nodeResults.length - 1] = substrateNodeResult;
+          evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, substrateNodeResult));
+          return {
+            ok: false,
+            status: "blocked",
+            mode,
+            run_id: runId,
+            node_results: nodeResults,
+            blocked_by: ["substrate_executor_required"],
+            evidence_refs: evidenceRefs,
+          };
         }
-        const substrateResult = await actionSubstrateExecutor.execute({ node, mode, inputs, proof_capsule: input.proof_capsule });
+        let substrateResult: DojoSubstrateExecutionResult;
+        try {
+          substrateResult = await actionSubstrateExecutor.execute({ node, mode, inputs, proof_capsule: input.proof_capsule });
+        } catch {
+          const substrateNodeResult: DojoGraphNodeRunResult = {
+            ...result,
+            status: "blocked",
+            blocked_by: ["substrate_executor_failed"],
+          };
+          nodeResults[nodeResults.length - 1] = substrateNodeResult;
+          evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, substrateNodeResult));
+          return {
+            ok: false,
+            status: "blocked",
+            mode,
+            run_id: runId,
+            node_results: nodeResults,
+            blocked_by: ["substrate_executor_failed"],
+            evidence_refs: evidenceRefs,
+          };
+        }
         if (!substrateResult.ok) {
           const substrateNodeResult: DojoGraphNodeRunResult = {
             ...result,
@@ -806,13 +840,18 @@ async function proofBlockedByForNode(
   }
   if (!input.proof_capsule) return ["proof_capsule_missing"];
   if (!input.proof_validator) return ["proof_validator_missing"];
-  const result = await input.proof_validator({
-    graph,
-    node,
-    mode,
-    proof_capsule: input.proof_capsule,
-    inputs,
-  });
+  let result: DojoGraphProofValidationResult;
+  try {
+    result = await input.proof_validator({
+      graph,
+      node,
+      mode,
+      proof_capsule: input.proof_capsule,
+      inputs,
+    });
+  } catch {
+    return ["proof_validator_failed"];
+  }
   if (!result.ok) return result.blocked_by.length > 0 ? result.blocked_by : ["proof_capsule_invalid"];
   return [];
 }
