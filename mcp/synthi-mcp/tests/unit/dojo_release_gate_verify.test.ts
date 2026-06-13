@@ -20,6 +20,7 @@ import {
   validateDojoPrivateToolCodexHostConformanceForRelease,
   validateDojoPrivateToolStdioAcceptanceForRelease,
   validateDojoPrivateToolStdioHostConformanceForRelease,
+  validateDojoPostgresControlPlaneEvidenceForMilestone,
   validateDojoWorkflowPipelineE2EForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
   validateDojoSecurityAbuseEvidenceForRelease,
@@ -30,6 +31,7 @@ import {
   verifyDojoPrivateToolCodexHostConformanceArtifact,
   verifyDojoPrivateToolStdioAcceptanceArtifact,
   verifyDojoPrivateToolStdioHostConformanceArtifact,
+  verifyDojoPostgresControlPlaneEvidenceArtifact,
   verifyDojoProofSelfCheckArtifacts,
   verifyDojoReleaseGateArtifactsFromArgs,
   verifyDojoReleaseGateManifestArtifacts,
@@ -139,6 +141,47 @@ describe("Dojo release gate artifact verifier", () => {
       "dojo_self_check_evidence_proof_not_consumed",
       "dojo_self_check_evidence_replay_not_blocked",
       "dojo_self_check_runtime_screenshot_privacy_missing",
+    ]));
+  });
+
+  it("verifies Postgres control-plane evidence and rejects skipped capability coverage", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-postgres-control-plane-verify-"));
+    const evidencePath = await writePostgresControlPlaneEvidenceFixture({ dir });
+    const evidence = await readJson(evidencePath);
+
+    expect(validateDojoPostgresControlPlaneEvidenceForMilestone(evidence)).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoPostgresControlPlaneEvidenceArtifact({ evidencePath })).toEqual(expect.objectContaining({
+      id: "dojo_postgres_control_plane_self_check",
+      ok: true,
+      errors: [],
+      evidence_path: evidencePath,
+    }));
+
+    const rejectedPath = await writePostgresControlPlaneEvidenceFixture({
+      dir,
+      basename: "dojo-postgres-control-plane-rejected",
+      evidence: postgresControlPlaneEvidenceFixture({
+        ok: false,
+        capability_coverage_complete: false,
+        missing_capabilities: ["atomic_proof_consume"],
+        budget_evaluation: { ok: false },
+        test_summary: {
+          ...postgresControlPlaneEvidenceFixture().test_summary,
+          pending_tests: 1,
+        },
+      }),
+    });
+    const rejected = await verifyDojoPostgresControlPlaneEvidenceArtifact({ evidencePath: rejectedPath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "postgres_control_plane_not_ok",
+      "postgres_control_plane_capability_coverage_incomplete",
+      "postgres_control_plane_missing_capabilities:atomic_proof_consume",
+      "postgres_control_plane_budget_not_ok",
+      "postgres_control_plane_pending_tests:1",
     ]));
   });
 
@@ -292,6 +335,7 @@ describe("Dojo release gate artifact verifier", () => {
   it("includes manifest-declared Dojo proof self-check artifacts in release candidate verification", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-candidate-self-check-"));
     const selfCheck = await writeProofSelfCheckFixture({ dir });
+    const postgresEvidencePath = await writePostgresControlPlaneEvidenceFixture({ dir });
     const conformanceReportPath = path.join(dir, "dojo-mcp-host-conformance.json");
     const conformanceEvidencePath = path.join(dir, "dojo-mcp-host-conformance.evidence.json");
     await writeConformancePair({
@@ -338,6 +382,7 @@ describe("Dojo release gate artifact verifier", () => {
     const selfCheckGate = manifest.gates.find((gate) => gate.id === "dojo_self_check");
     selfCheckGate.default_report_path = selfCheck.summaryPath;
     selfCheckGate.default_evidence_path = selfCheck.productionEvidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_postgres_control_plane_self_check").default_evidence_path = postgresEvidencePath;
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
     manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioAcceptance.transcriptPath;
     manifest.gates.find((gate) => gate.id === "private_tool_codex_acceptance").default_report_path = codexAcceptance.transcriptPath;
@@ -374,6 +419,13 @@ describe("Dojo release gate artifact verifier", () => {
         ok: true,
         artifact_path: selfCheck.summaryPath,
         evidence_path: selfCheck.productionEvidencePath,
+      }),
+    ]);
+    expect(verified.postgres_control_plane).toEqual([
+      expect.objectContaining({
+        id: "dojo_postgres_control_plane_self_check",
+        ok: true,
+        evidence_path: postgresEvidencePath,
       }),
     ]);
     expect(verified.visual_reports).toHaveLength(2);
@@ -1054,6 +1106,101 @@ function withoutFixtureOnlyOverrides(overrides) {
   const cleaned = { ...overrides };
   delete cleaned.screenshotPath;
   return cleaned;
+}
+
+async function writePostgresControlPlaneEvidenceFixture({
+  dir,
+  basename = "dojo-postgres-control-plane",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "postgres control-plane suite passed\n";
+  const stderr = "";
+  const jsonReport = postgresControlPlaneJsonReportFixtureText();
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? postgresControlPlaneEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  const withLogDefaults = {
+    ...body,
+    stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
+    stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
+    json_report_path: body.json_report_path && body.json_report_path !== "vitest.json" ? body.json_report_path : jsonReportPath,
+    json_report_sha256: body.json_report_sha256 && body.json_report_sha256 !== "json-report-sha256" ? body.json_report_sha256 : sha256(jsonReport),
+    json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
+      ? body.json_report_bytes
+      : Buffer.byteLength(jsonReport),
+  };
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
+  return evidencePath;
+}
+
+function postgresControlPlaneEvidenceFixture(overrides = {}) {
+  const stdout = "postgres control-plane suite passed\n";
+  const stderr = "";
+  return {
+    schema_version: "synthi.dojo.postgresControlPlaneEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    postgres_url_configured: true,
+    postgres_connection: {
+      configured: true,
+      parseable: true,
+      protocol: "postgres",
+      host_class: "loopback",
+      port_configured: true,
+      database_configured: true,
+      username_configured: true,
+      password_configured: true,
+      password_redacted: true,
+    },
+    capability_coverage_complete: true,
+    missing_capabilities: [],
+    budget_evaluation: { ok: true },
+    test_file_count: 4,
+    reported_test_file_count: 4,
+    test_summary: {
+      total_tests: 13,
+      passed_tests: 13,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: "stdout.log",
+    stderr_path: "stderr.log",
+    json_report_path: "vitest.json",
+    json_report_sha256: "json-report-sha256",
+    json_report_bytes: undefined,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+}
+
+function postgresControlPlaneJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: 13,
+    numPassedTests: 13,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: 4,
+    numPassedTestSuites: 4,
+    numFailedTestSuites: 0,
+    testResults: [],
+  }, null, 2);
 }
 
 async function writeSecurityEvidenceFixture({

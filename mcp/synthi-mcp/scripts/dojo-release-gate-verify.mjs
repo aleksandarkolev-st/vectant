@@ -36,6 +36,7 @@ const DEFAULT_PRIVATE_TOOL_CODEX_ACCEPTANCE_DIR = path.join(REPO_ROOT, "tmp", "p
 const DEFAULT_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-host-conformance");
 const DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-stdio-host-conformance");
 const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-host-conformance");
+const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-postgres-control-plane");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_CHAOS_PERFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-chaos-performance");
 const DEFAULT_SOAK_DIR = path.join(MCP_ROOT, ".soak");
@@ -110,6 +111,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       manifest,
       gateId: request.gateId,
       reportPath: resolveRepoPath(request.reportPath),
+    }));
+  }
+
+  const postgresControlPlaneResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-postgres-control-plane"]) || args["postgres-control-plane-evidence"]) {
+    const postgresGate = findGate(manifest, "dojo_postgres_control_plane_self_check") || {};
+    postgresControlPlaneResults.push(await verifyDojoPostgresControlPlaneEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["postgres-control-plane-evidence"]
+        || postgresGate.default_evidence_path
+        || path.join(DEFAULT_POSTGRES_CONTROL_PLANE_DIR, "dojo-postgres-control-plane.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
     }));
   }
 
@@ -195,7 +207,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...liveHostedRuntimeResults, ...conformanceResults, ...securityResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...liveHostedRuntimeResults, ...conformanceResults, ...securityResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -205,6 +217,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     manifest: summarizeSection(manifestResult),
     dojo_self_check: proofSelfCheckResults.map(summarizeSection),
     visual_reports: visualResults.map(summarizeSection),
+    postgres_control_plane: postgresControlPlaneResults.map(summarizeSection),
     live_hosted_runtime: liveHostedRuntimeResults.map(summarizeSection),
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
@@ -322,6 +335,54 @@ export function validateDojoProofSelfCheckForRelease(summary, productionEvidence
   }
   if (JSON.stringify(productionEvidence ?? {}).includes("credential_secret")) {
     errors.push("dojo_self_check_runtime_credential_secret_leaked");
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoPostgresControlPlaneEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoPostgresControlPlaneEvidenceForMilestone(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_postgres_control_plane_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+    result_count: Number(evidence?.test_summary?.total_tests || 0),
+  };
+}
+
+export function validateDojoPostgresControlPlaneEvidenceForMilestone(evidence) {
+  const errors = [];
+  if (evidence?.schema_version !== "synthi.dojo.postgresControlPlaneEvidence.v1") {
+    errors.push(`postgres_control_plane_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("postgres_control_plane_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`postgres_control_plane_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.postgres_url_configured !== true) errors.push("postgres_control_plane_url_missing");
+  if (evidence?.postgres_connection?.password_redacted !== true) errors.push("postgres_control_plane_password_not_redacted");
+  if (JSON.stringify(evidence ?? {}).includes("SYNTHI_DOJO_POSTGRES_TEST_URL=")) {
+    errors.push("postgres_control_plane_raw_env_leaked");
+  }
+  if (evidence?.capability_coverage_complete !== true) errors.push("postgres_control_plane_capability_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`postgres_control_plane_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("postgres_control_plane_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`postgres_control_plane_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`postgres_control_plane_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("postgres_control_plane_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`postgres_control_plane_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
   }
   return {
     ok: errors.length === 0,
@@ -1104,6 +1165,29 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedProofSelfCheck.errors.includes("dojo_self_check_production_proof_not_consumed"));
   assert(rejectedProofSelfCheck.errors.includes("dojo_self_check_evidence_proof_not_consumed"));
 
+  const postgresDir = path.join(outDir, "postgres-control-plane");
+  await mkdir(postgresDir, { recursive: true });
+  const postgresArtifacts = await writePostgresControlPlaneEvidenceForSelfCheck({ outDir: postgresDir });
+  const postgresControlPlaneResult = await verifyDojoPostgresControlPlaneEvidenceArtifact({
+    evidencePath: postgresArtifacts.evidence_path,
+  });
+  assert.equal(postgresControlPlaneResult.ok, true, postgresControlPlaneResult.errors.join(";"));
+  const rejectedPostgresArtifacts = await writePostgresControlPlaneEvidenceForSelfCheck({
+    outDir: postgresDir,
+    basename: "dojo-postgres-control-plane-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["atomic_proof_consume"],
+      budget_evaluation: { ok: false },
+    },
+  });
+  const rejectedPostgres = await verifyDojoPostgresControlPlaneEvidenceArtifact({
+    evidencePath: rejectedPostgresArtifacts.evidence_path,
+  });
+  assert(rejectedPostgres.errors.includes("postgres_control_plane_capability_coverage_incomplete"));
+  assert(rejectedPostgres.errors.includes("postgres_control_plane_missing_capabilities:atomic_proof_consume"));
+
   const liveHostedDir = path.join(outDir, "live-hosted-runtime");
   await mkdir(liveHostedDir, { recursive: true });
   const liveHostedArtifacts = await writeLiveHostedRuntimeArtifactsForSelfCheck({ outDir: liveHostedDir });
@@ -1341,6 +1425,7 @@ async function runSelfCheck({ outDir }) {
     ok: true,
     verified_sections: [
       summarizeSection(manifestResult),
+      summarizeSection(postgresControlPlaneResult),
       summarizeSection(workflowE2EResult),
       summarizeSection(stdioAcceptanceResult),
       summarizeSection(codexAcceptanceResult),
@@ -1354,6 +1439,7 @@ async function runSelfCheck({ outDir }) {
     ],
     rejected_controls: [
       summarizeSection(rejectedSelfCheck),
+      summarizeSection(rejectedPostgres),
       summarizeSection(rejectedCodexAcceptance),
       summarizeSection(rejectedDryRun),
       summarizeSection(rejectedStdioHost),
@@ -1727,6 +1813,115 @@ async function writeProofSelfCheckArtifactsForSelfCheck({
     summary_path: summaryPath,
     production_evidence_path: productionEvidencePath,
   };
+}
+
+async function writePostgresControlPlaneEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-postgres-control-plane",
+  overrides = {},
+}) {
+  const stdout = "postgres control-plane suite passed\n";
+  const stderr = "";
+  const jsonReport = postgresControlPlaneJsonReportFixtureText();
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.postgresControlPlaneEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    signal: null,
+    duration_ms: 1200,
+    postgres_url_configured: true,
+    postgres_connection: {
+      configured: true,
+      parseable: true,
+      protocol: "postgres",
+      host_class: "loopback",
+      port_configured: true,
+      database_configured: true,
+      username_configured: true,
+      password_configured: true,
+      password_redacted: true,
+    },
+    env_requirements: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
+    configured_capabilities: [
+      "durable_proof_store",
+      "atomic_proof_consume",
+      "concurrent_replay_prevention",
+      "tenant_isolation",
+      "evidence_ledger_append_verify",
+      "evidence_tamper_detection",
+      "audit_event_repository",
+      "postgres_evidence_proof_issuance",
+    ],
+    tested_capabilities: [
+      "durable_proof_store",
+      "atomic_proof_consume",
+      "concurrent_replay_prevention",
+      "tenant_isolation",
+      "evidence_ledger_append_verify",
+      "evidence_tamper_detection",
+      "audit_event_repository",
+      "postgres_evidence_proof_issuance",
+    ],
+    missing_capabilities: [],
+    capability_coverage_complete: true,
+    test_files: [
+      "tests/integration/dojo_postgres_proof_store.test.ts",
+      "tests/integration/dojo_evidence_ledger_store.test.ts",
+      "tests/integration/dojo_audit_store.test.ts",
+      "tests/integration/dojo_proof_ledger_tool.test.ts",
+    ],
+    test_file_count: 4,
+    reported_test_file_count: 4,
+    test_summary: {
+      success: true,
+      total_tests: 13,
+      passed_tests: 13,
+      failed_tests: 0,
+      pending_tests: 0,
+      total_suites: 4,
+      passed_suites: 4,
+      failed_suites: 0,
+      reported_test_file_count: 4,
+    },
+    budget_evaluation: { ok: true },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+function postgresControlPlaneJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: 13,
+    numPassedTests: 13,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: 4,
+    numPassedTestSuites: 4,
+    numFailedTestSuites: 0,
+    testResults: [],
+  }, null, 2);
 }
 
 async function writeSelfCheckVisualReport({ outDir }) {

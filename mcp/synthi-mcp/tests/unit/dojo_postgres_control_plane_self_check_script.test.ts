@@ -1,0 +1,116 @@
+// @ts-nocheck
+import { describe, expect, it } from "vitest";
+import {
+  buildControlPlaneCapabilityCoverage,
+  buildDojoPostgresControlPlaneEvidenceManifest,
+  DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
+  DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
+} from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
+
+describe("Dojo Postgres control-plane self-check script", () => {
+  it("maps Vitest assertion titles to every durable control-plane capability", () => {
+    const coverage = buildControlPlaneCapabilityCoverage({
+      capabilities: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
+      jsonReport: postgresVitestReportFixture(),
+    });
+
+    expect(coverage).toHaveLength(DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES.length);
+    expect(coverage.every((item) => item.covered)).toBe(true);
+    expect(coverage.map((item) => item.capability)).toEqual(DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES);
+  });
+
+  it("builds redacted evidence and fails closed when the Postgres URL is missing", () => {
+    const evidence = buildDojoPostgresControlPlaneEvidenceManifest({
+      now: "2026-06-11T00:00:00.000Z",
+      exitCode: null,
+      signal: null,
+      durationMs: 0,
+      basicRunDurationMs: null,
+      testFiles: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
+      stdout: "",
+      stderr: "SYNTHI_DOJO_POSTGRES_TEST_URL is required\n",
+      stdoutPath: "/tmp/dojo-postgres-control-plane.stdout.log",
+      stderrPath: "/tmp/dojo-postgres-control-plane.stderr.log",
+      jsonReport: null,
+      jsonReportPath: "/tmp/dojo-postgres-control-plane.vitest.json",
+      jsonReportText: "",
+      postgresUrl: "",
+      error: "postgres_test_url_missing",
+    });
+
+    expect(evidence.ok).toBe(false);
+    expect(evidence.postgres_url_configured).toBe(false);
+    expect(evidence.postgres_connection).toEqual({ configured: false, parseable: false });
+    expect(evidence.budget_evaluation.checks.postgres_url_configured).toBe(false);
+    expect(JSON.stringify(evidence)).not.toContain("password");
+  });
+
+  it("redacts password-bearing Postgres URLs from evidence", () => {
+    const evidence = buildDojoPostgresControlPlaneEvidenceManifest({
+      now: "2026-06-11T00:00:00.000Z",
+      exitCode: 0,
+      signal: null,
+      durationMs: 100,
+      basicRunDurationMs: 50,
+      testFiles: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
+      stdout: "ok\n",
+      stderr: "",
+      stdoutPath: "/tmp/stdout.log",
+      stderrPath: "/tmp/stderr.log",
+      jsonReport: postgresVitestReportFixture(),
+      jsonReportPath: "/tmp/report.json",
+      jsonReportText: JSON.stringify(postgresVitestReportFixture()),
+      postgresUrl: "postgres://user:super-secret@127.0.0.1:15432/synthi",
+    });
+
+    expect(evidence.ok).toBe(true);
+    expect(evidence.postgres_connection).toEqual(expect.objectContaining({
+      configured: true,
+      parseable: true,
+      host_class: "loopback",
+      password_configured: true,
+      password_redacted: true,
+    }));
+    expect(JSON.stringify(evidence)).not.toContain("super-secret");
+    expect(JSON.stringify(evidence)).not.toContain("127.0.0.1:15432");
+  });
+});
+
+function postgresVitestReportFixture() {
+  const fileTitles = [
+    [
+      "PostgresDojoProofStore persists, reads, lists, and revokes proof records by tenant scope",
+      "PostgresDojoProofStore atomically consumes an issued proof exactly once",
+      "PostgresDojoProofStore allows only one winner during concurrent proof consume",
+      "PostgresDojoProofStore prevents cross-tenant proof reads",
+    ],
+    [
+      "PostgresDojoEvidenceLedgerStore appends evidence records, advances checkpoints, and verifies the chain",
+      "PostgresDojoEvidenceLedgerStore detects tampered evidence records",
+    ],
+    [
+      "PostgresDojoAuditStore persists audit actor, request, correlation, entity, and details",
+    ],
+    [
+      "Dojo proof issuance from Postgres evidence ledger issues a production proof capsule from evidence record IDs resolved through Postgres",
+    ],
+  ];
+  const titles = fileTitles.flat();
+  return {
+    success: true,
+    numTotalTests: titles.length,
+    numPassedTests: titles.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    testResults: fileTitles.map((assertionTitles, fileIndex) => ({
+        startTime: 1000 + fileIndex * 100,
+        endTime: 1100 + fileIndex * 100,
+        assertionResults: assertionTitles.map((fullName, index) => ({
+          fullName,
+          title: fullName,
+          status: "passed",
+          duration: index + 1,
+        })),
+      })),
+  };
+}

@@ -156,6 +156,26 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     evidence_kind: "test_report",
   },
   {
+    id: "dojo_postgres_control_plane_self_check",
+    tier: "T2",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:postgres-control-plane:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:postgres-control-plane:self-check",
+    required_for: ["milestone", "release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.postgresControlPlaneEvidence.v1",
+    default_evidence_path: "tmp/dojo-postgres-control-plane/dojo-postgres-control-plane.evidence.json",
+    artifact_requirements: {
+      require_postgres_url: true,
+      require_all_control_plane_capabilities_covered: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+    requires_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
+  },
+  {
     id: "dojo_self_check",
     tier: "T2",
     working_directory: "mcp/synthi-mcp",
@@ -459,6 +479,7 @@ export const DOJO_MINIMAL_PR_GATE_IDS = [
 export const DOJO_MILESTONE_GATE_IDS = [
   ...DOJO_MINIMAL_PR_GATE_IDS,
   "mcp_integration_tests",
+  "dojo_postgres_control_plane_self_check",
   "dojo_self_check",
   "dojo_mcp_host_conformance_self_check",
   "dojo_affordance_codemod_self_check",
@@ -601,6 +622,26 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!dojoSelfCheckGate.artifact_requirements?.require_visual_pixel_metrics) {
       errors.push("dojo_self_check_missing_visual_pixel_requirement");
+    }
+  }
+  const postgresControlPlaneGate = gates.find((gate) => gate.id === "dojo_postgres_control_plane_self_check");
+  if (postgresControlPlaneGate) {
+    if (postgresControlPlaneGate.evidence_schema_version !== "synthi.dojo.postgresControlPlaneEvidence.v1") {
+      errors.push("postgres_control_plane_missing_evidence_schema");
+    }
+    if (!postgresControlPlaneGate.default_evidence_path) errors.push("postgres_control_plane_missing_default_evidence_path");
+    if (!postgresControlPlaneGate.artifact_requirements?.require_postgres_url) {
+      errors.push("postgres_control_plane_missing_postgres_requirement");
+    }
+    if (!postgresControlPlaneGate.artifact_requirements?.require_all_control_plane_capabilities_covered) {
+      errors.push("postgres_control_plane_missing_capability_requirement");
+    }
+    if (!postgresControlPlaneGate.artifact_requirements?.require_json_report_digest_match) {
+      errors.push("postgres_control_plane_missing_json_report_digest_requirement");
+    }
+    if (!Array.isArray(postgresControlPlaneGate.requires_env)
+      || !postgresControlPlaneGate.requires_env.includes("SYNTHI_DOJO_POSTGRES_TEST_URL")) {
+      errors.push("postgres_control_plane_missing_postgres_env");
     }
   }
   const mcpHostConformanceGate = gates.find((gate) => gate.id === "dojo_mcp_host_conformance");
@@ -809,6 +850,7 @@ export async function runSelfCheck({ outDir }) {
   assert.equal(manifest.tiers.length, 9);
   assert(manifest.minimal_pr_gate_ids.length > 0);
   assert(manifest.milestone_gate_ids.includes("dojo_self_check"));
+  assert(manifest.milestone_gate_ids.includes("dojo_postgres_control_plane_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_affordance_codemod_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_full_visual_proof"));
   assert(manifest.release_gate_ids.includes("dojo_mcp_host_conformance"));
