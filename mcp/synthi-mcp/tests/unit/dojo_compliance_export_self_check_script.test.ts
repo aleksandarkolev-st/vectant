@@ -5,6 +5,7 @@ import {
   buildComplianceCapabilityCoverage,
   buildDojoComplianceExportEvidenceManifest,
   DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
+  DOJO_COMPLIANCE_EXPORT_TEST_FILES,
 } from "../../scripts/dojo-compliance-export-self-check.mjs";
 
 describe("Dojo compliance export self-check script", () => {
@@ -30,7 +31,7 @@ describe("Dojo compliance export self-check script", () => {
       signal: null,
       durationMs: 500,
       basicRunDurationMs: 250,
-      testFiles: ["tests/unit/dojo_tools.test.ts"],
+      testFiles: DOJO_COMPLIANCE_EXPORT_TEST_FILES,
       stdout,
       stderr,
       stdoutPath: "tmp/stdout.log",
@@ -49,6 +50,7 @@ describe("Dojo compliance export self-check script", () => {
       stdout_sha256: sha256(stdout),
       stderr_sha256: sha256(stderr),
     }));
+    expect(evidence.reported_test_file_count).toBe(DOJO_COMPLIANCE_EXPORT_TEST_FILES.length);
   });
 
   it("fails budget when a required compliance capability lacks evidence", () => {
@@ -64,7 +66,7 @@ describe("Dojo compliance export self-check script", () => {
       signal: null,
       durationMs: 500,
       basicRunDurationMs: 250,
-      testFiles: ["tests/unit/dojo_tools.test.ts"],
+      testFiles: DOJO_COMPLIANCE_EXPORT_TEST_FILES,
       stdout: "",
       stderr: "",
       stdoutPath: "tmp/stdout.log",
@@ -84,6 +86,32 @@ describe("Dojo compliance export self-check script", () => {
     ]));
     expect(evidence.budget_evaluation.failed_checks).toEqual(["capability_coverage_complete"]);
   });
+
+  it("fails budget when the Vitest report omits a configured compliance test file", () => {
+    const reportedTestFiles = DOJO_COMPLIANCE_EXPORT_TEST_FILES.slice(0, -1);
+    const report = complianceVitestReportFixture({ testFiles: reportedTestFiles });
+    const evidence = buildDojoComplianceExportEvidenceManifest({
+      now: "2026-06-11T00:00:00.000Z",
+      exitCode: 0,
+      signal: null,
+      durationMs: 500,
+      basicRunDurationMs: 250,
+      testFiles: DOJO_COMPLIANCE_EXPORT_TEST_FILES,
+      stdout: "",
+      stderr: "",
+      stdoutPath: "tmp/stdout.log",
+      stderrPath: "tmp/stderr.log",
+      jsonReport: report,
+      jsonReportPath: "tmp/report.json",
+      jsonReportText: JSON.stringify(report),
+      timeoutMs: 1000,
+    });
+
+    expect(evidence.ok).toBe(false);
+    expect(evidence.reported_test_file_count).toBe(reportedTestFiles.length);
+    expect(evidence.budget_evaluation.checks.all_test_files_reported).toBe(false);
+    expect(evidence.budget_evaluation.failed_checks).toContain("all_test_files_reported");
+  });
 });
 
 function complianceVitestReportFixture({
@@ -96,26 +124,32 @@ function complianceVitestReportFixture({
     "Dojo redacted evidence export allows local generated artifacts while redacting source refs",
   ],
   totalTests = assertionTitles.length,
+  testFiles = DOJO_COMPLIANCE_EXPORT_TEST_FILES,
 } = {}) {
+  const titleBuckets = testFiles.map(() => []);
+  assertionTitles.forEach((title, index) => {
+    titleBuckets[index % titleBuckets.length].push(title);
+  });
   return {
     success: true,
     numTotalTests: totalTests,
     numPassedTests: totalTests,
     numFailedTests: 0,
     numPendingTests: 0,
-    numTotalTestSuites: 3,
-    numPassedTestSuites: 3,
+    numTotalTestSuites: testFiles.length,
+    numPassedTestSuites: testFiles.length,
     numFailedTestSuites: 0,
-    testResults: [{
-      startTime: 0,
-      endTime: 10,
-      assertionResults: assertionTitles.map((fullName, index) => ({
-        fullName,
-        title: fullName,
-        status: "passed",
-        duration: index + 1,
-      })),
-    }],
+    testResults: testFiles.map((file, fileIndex) => ({
+      name: file,
+      startTime: fileIndex * 10,
+      endTime: fileIndex * 10 + 10,
+      assertionResults: titleBuckets[fileIndex].map((fullName, index) => ({
+          fullName,
+          title: fullName,
+          status: "passed",
+          duration: index + 1,
+        })),
+    })),
   };
 }
 

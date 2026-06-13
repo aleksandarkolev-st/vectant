@@ -10,11 +10,11 @@ import {
 
 const VITEST_REPORT = {
   success: true,
-  numTotalTestSuites: 3,
-  numPassedTestSuites: 3,
+  numTotalTestSuites: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
+  numPassedTestSuites: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
   numFailedTestSuites: 0,
-  numTotalTests: 7,
-  numPassedTests: 7,
+  numTotalTests: 9,
+  numPassedTests: 9,
   numFailedTests: 0,
   numPendingTests: 0,
   testResults: [
@@ -63,9 +63,35 @@ const VITEST_REPORT = {
       ],
     },
     {
+      name: "tests/integration/dojo_vivarium_runner.test.ts",
+      startTime: 1140,
+      endTime: 1230,
+      assertionResults: [
+        {
+          fullName: "Dojo Vivarium runner executes scenario against materialized synthetic fixtures and records observed evidence",
+          title: "executes scenario against materialized synthetic fixtures and records observed evidence",
+          status: "passed",
+          duration: 15,
+        },
+      ],
+    },
+    {
+      name: "tests/integration/dojo_checkride_runner.test.ts",
+      startTime: 1240,
+      endTime: 1320,
+      assertionResults: [
+        {
+          fullName: "Dojo executable checkride runner derives entrustment from evidence-backed results",
+          title: "derives entrustment from evidence-backed results",
+          status: "passed",
+          duration: 14,
+        },
+      ],
+    },
+    {
       name: "tests/integration/dojo_evil_twin_runner.test.ts",
-      startTime: 1200,
-      endTime: 1260,
+      startTime: 1330,
+      endTime: 1390,
       assertionResults: [
         {
           fullName: "Dojo Evil Twin runtime reruns attacks after guardrail hardening and reduces attack success rate",
@@ -125,7 +151,7 @@ describe("Dojo chaos performance self-check script", () => {
       duration_ms: 2345.679,
       configured_scenario_count: DOJO_CHAOS_SCENARIOS.length,
       test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
-      reported_test_file_count: 3,
+      reported_test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
       json_report_path: "tmp/vitest.json",
       scenario_coverage_complete: true,
       missing_chaos_scenarios: [],
@@ -138,8 +164,8 @@ describe("Dojo chaos performance self-check script", () => {
         "evil_twin_attack_hardening",
       ]),
       test_summary: expect.objectContaining({
-        total_tests: 7,
-        passed_tests: 7,
+        total_tests: 9,
+        passed_tests: 9,
         failed_tests: 0,
         assertion_duration_p95_ms: 60,
         test_file_duration_p95_ms: 130,
@@ -167,12 +193,43 @@ describe("Dojo chaos performance self-check script", () => {
     expect(evidence.json_report_bytes).toBeGreaterThan(0);
   });
 
+  it("fails metrics evidence when the Vitest report omits a configured chaos test file", () => {
+    const partialReport = {
+      ...VITEST_REPORT,
+      numTotalTestSuites: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length - 1,
+      numPassedTestSuites: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length - 1,
+      testResults: VITEST_REPORT.testResults.filter((result) => result.name !== "tests/integration/dojo_checkride_runner.test.ts"),
+    };
+    const reportedAssertions = partialReport.testResults.flatMap((result) => result.assertionResults);
+    partialReport.numTotalTests = reportedAssertions.length;
+    partialReport.numPassedTests = reportedAssertions.length;
+    const evidence = buildDojoChaosPerformanceEvidenceManifest({
+      now: "2026-06-11T00:00:00.000Z",
+      exitCode: 0,
+      signal: null,
+      durationMs: 2345.6789,
+      testFiles: DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+      scenarios: DOJO_CHAOS_SCENARIOS,
+      stdout: "chaos integration tests passed",
+      stderr: "",
+      stdoutPath: "tmp/stdout.log",
+      stderrPath: "tmp/stderr.log",
+      jsonReport: partialReport,
+      jsonReportPath: "tmp/vitest.json",
+      timeoutMs: 120000,
+    });
+
+    expect(evidence.ok).toBe(false);
+    expect(evidence.reported_test_file_count).toBe(DOJO_CHAOS_PERFORMANCE_TEST_FILES.length - 1);
+    expect(evidence.budget_evaluation.checks.all_test_files_reported).toBe(false);
+  });
+
   it("summarizes Vitest JSON and reports scenario coverage gaps honestly", () => {
     const summary = summarizeVitestJsonReport(VITEST_REPORT);
     expect(summary).toEqual(expect.objectContaining({
       success: true,
-      total_tests: 7,
-      passed_tests: 7,
+      total_tests: 9,
+      passed_tests: 9,
       failed_tests: 0,
       assertion_duration_p95_ms: 60,
       test_file_duration_p95_ms: 130,

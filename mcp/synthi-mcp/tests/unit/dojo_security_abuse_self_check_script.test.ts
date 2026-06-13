@@ -69,7 +69,7 @@ describe("Dojo security abuse self-check script", () => {
       ok: true,
       exit_code: 0,
       test_file_count: DOJO_SECURITY_ABUSE_TEST_FILES.length,
-      reported_test_file_count: 1,
+      reported_test_file_count: DOJO_SECURITY_ABUSE_TEST_FILES.length,
       abuse_class_coverage_complete: true,
       tested_abuse_classes: expect.arrayContaining([
         "proof_signature_tampering",
@@ -144,6 +144,28 @@ describe("Dojo security abuse self-check script", () => {
     expect(evidence.budget_evaluation.checks.no_skipped_tests).toBe(false);
     expect(evidence.budget_evaluation.failed_checks).toContain("no_skipped_tests");
   });
+
+  it("fails closed when the Vitest report omits a configured security test file", () => {
+    const reportedTestFiles = DOJO_SECURITY_ABUSE_TEST_FILES.slice(0, -1);
+    const evidence = buildDojoSecurityAbuseEvidenceManifest({
+      now: "2026-06-11T00:00:00.000Z",
+      exitCode: 0,
+      signal: null,
+      durationMs: 1234,
+      testFiles: DOJO_SECURITY_ABUSE_TEST_FILES,
+      stdout: "all tests passed",
+      stderr: "",
+      stdoutPath: "tmp/stdout.log",
+      stderrPath: "tmp/stderr.log",
+      jsonReport: vitestJsonReportFixture({ testFiles: reportedTestFiles }),
+      jsonReportPath: "tmp/dojo-security-abuse.vitest.json",
+    });
+
+    expect(evidence.ok).toBe(false);
+    expect(evidence.reported_test_file_count).toBe(reportedTestFiles.length);
+    expect(evidence.budget_evaluation.checks.all_test_files_reported).toBe(false);
+    expect(evidence.budget_evaluation.failed_checks).toContain("all_test_files_reported");
+  });
 });
 
 function vitestJsonReportFixture(input = {}) {
@@ -172,26 +194,32 @@ function vitestJsonReportFixture(input = {}) {
     "Dojo scenario oracle fails prompt injection document scenarios when instructions are not quarantined",
   ];
   const pending = input.pending ?? 0;
+  const testFiles = input.testFiles ?? DOJO_SECURITY_ABUSE_TEST_FILES;
+  const titleBuckets = testFiles.map(() => []);
+  titles.forEach((title, index) => {
+    titleBuckets[index % titleBuckets.length].push(title);
+  });
   return {
     success: true,
     numTotalTests: titles.length + pending,
     numPassedTests: titles.length,
     numFailedTests: 0,
     numPendingTests: pending,
-    numTotalTestSuites: 1,
-    numPassedTestSuites: 1,
+    numTotalTestSuites: testFiles.length,
+    numPassedTestSuites: testFiles.length,
     numFailedTestSuites: 0,
-    testResults: [
+    testResults: testFiles.map((file, fileIndex) => (
       {
+        name: file,
         startTime: 0,
-        endTime: 100,
-        assertionResults: titles.map((title, index) => ({
+        endTime: 100 + fileIndex,
+        assertionResults: titleBuckets[fileIndex].map((title, index) => ({
           fullName: title,
           title,
           status: "passed",
           duration: index + 1,
         })),
-      },
-    ],
+      }
+    )),
   };
 }

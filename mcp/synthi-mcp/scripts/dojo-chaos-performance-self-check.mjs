@@ -166,6 +166,7 @@ export function buildDojoChaosPerformanceEvidenceManifest({
     scenarioCoverage,
     performanceMetrics,
     testSummary,
+    testFiles,
     timeoutMs,
     error,
   });
@@ -258,11 +259,12 @@ function buildPerformanceMetrics({ durationMs, testSummary }) {
   };
 }
 
-function buildBudgetEvaluation({ scenarioCoverage, performanceMetrics, testSummary, timeoutMs, error }) {
+function buildBudgetEvaluation({ scenarioCoverage, performanceMetrics, testSummary, testFiles, timeoutMs, error }) {
   const checks = {
     no_spawn_error: !error,
     no_failed_tests: testSummary.failed_tests === 0,
     all_reported_tests_passed: testSummary.total_tests > 0 && testSummary.passed_tests === testSummary.total_tests,
+    all_test_files_reported: testSummary.reported_test_file_count === testFiles.length,
     scenario_coverage_complete: scenarioCoverage.every((item) => item.covered),
     self_check_within_timeout: performanceMetrics.self_check_duration_ms <= timeoutMs,
     test_case_p95_recorded: Number.isFinite(performanceMetrics.test_case_duration_p95_ms),

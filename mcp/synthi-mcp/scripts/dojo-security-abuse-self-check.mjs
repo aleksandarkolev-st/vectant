@@ -186,6 +186,7 @@ export function buildDojoSecurityAbuseEvidenceManifest({
   const budgetEvaluation = buildSecurityAbuseBudgetEvaluation({
     abuseCoverage,
     testSummary,
+    testFiles,
     durationMs,
     timeoutMs,
     error,
@@ -239,12 +240,13 @@ export function buildAbuseClassCoverage({ abuseClasses, jsonReport }) {
   });
 }
 
-function buildSecurityAbuseBudgetEvaluation({ abuseCoverage, testSummary, durationMs, timeoutMs, error }) {
+function buildSecurityAbuseBudgetEvaluation({ abuseCoverage, testSummary, testFiles, durationMs, timeoutMs, error }) {
   const checks = {
     no_spawn_error: !error,
     no_failed_tests: testSummary.failed_tests === 0,
     no_skipped_tests: testSummary.pending_tests === 0,
     all_reported_tests_passed: testSummary.total_tests > 0 && testSummary.passed_tests === testSummary.total_tests,
+    all_test_files_reported: testSummary.reported_test_file_count === testFiles.length,
     abuse_class_coverage_complete: abuseCoverage.every((item) => item.covered),
     self_check_within_timeout: durationMs <= timeoutMs,
   };
