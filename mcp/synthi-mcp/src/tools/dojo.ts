@@ -920,7 +920,7 @@ function dojoGetSkillTool(args: unknown): ToolResponse {
 }
 
 function dojoGetSkillCortexTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const caseLawRecords = storedCaseLawRecordsForSkill(skill.skill);
   const compiledGraph = compileDojoSkillGraphForSkill(skill.skill);
@@ -937,19 +937,19 @@ function dojoGetSkillCortexTool(args: unknown): ToolResponse {
 }
 
 function dojoGetWorkspaceOrganoidTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, workspace_organoid: skill.skill.workspace_organoid });
 }
 
 function dojoGetWindTunnelReportTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, wind_tunnel: skill.skill.wind_tunnel });
 }
 
 function dojoGetCounterfactualTwinTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const filters = scenarioFilters(args);
   const variants = filterByScenario(skill.skill.counterfactual_twin.variants, filters);
@@ -964,49 +964,49 @@ function dojoGetCounterfactualTwinTool(args: unknown): ToolResponse {
 }
 
 function dojoGetEvilTwinReportTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, evil_twin: skill.skill.evil_twin });
 }
 
 function dojoGetTrainingReportTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, training_report: skill.skill.training_report });
 }
 
 function dojoGetSkillPassportTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, skill_passport: skill.skill.skill_passport });
 }
 
 function dojoGetSkillGenomeTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, skill_genome: skill.skill.skill_genome });
 }
 
 function dojoGetAntibodiesTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, antibodies: skill.skill.antibodies });
 }
 
 function dojoGetAgentReadyUiContractTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, agent_ready_ui_contract: skill.skill.agent_ready_ui_contract });
 }
 
 function dojoGetCostPolicyTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, cost_control_policy: skill.skill.cost_control_policy });
 }
 
 function dojoGetUniverseDossierTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const a = obj(args);
   return jsonResponse({
@@ -1020,13 +1020,13 @@ function dojoGetUniverseDossierTool(args: unknown): ToolResponse {
 }
 
 function dojoGetLifecycleTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, lifecycle: buildDojoLifecycleReport(skill.skill) });
 }
 
 function dojoGetGovernanceReportTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({
     ok: true,
@@ -1048,7 +1048,7 @@ function dojoGetMetricsTool(args: unknown): ToolResponse {
 }
 
 function dojoGetSourceAffordancePrPlanTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({
     ok: true,
@@ -1072,13 +1072,13 @@ function dojoGetRegistryTool(): ToolResponse {
 }
 
 function dojoGetAssuranceCaseTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, assurance_case: skill.skill.assurance_case });
 }
 
 function dojoGetEntrustmentLevelTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({
     ok: true,
@@ -1091,19 +1091,19 @@ function dojoGetEntrustmentLevelTool(args: unknown): ToolResponse {
 }
 
 function dojoGetLicenseTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, license: skill.skill.permission_license });
 }
 
 function dojoGetGuardrailsTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, guardrails: skill.skill.guardrails });
 }
 
 function dojoGetCaseLawTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({
     ok: true,
@@ -1116,7 +1116,7 @@ function dojoGetCaseLawTool(args: unknown): ToolResponse {
 function dojoExplainBlockTool(args: unknown): ToolResponse {
   const a = obj(args);
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const capsule = proofCapsuleOpt(a["proof_capsule"]);
   const validation = capsule
@@ -1144,7 +1144,7 @@ function dojoExplainBlockTool(args: unknown): ToolResponse {
 }
 
 function dojoExplainFailureTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const filters = scenarioFilters(args);
   const guardrailId = stringOpt(obj(args)["guardrail_id"]);
@@ -1176,7 +1176,7 @@ function dojoExplainFailureTool(args: unknown): ToolResponse {
 }
 
 function dojoDebugCounterfactualTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const filters = scenarioFilters(args);
   const variants = filterByScenario(skill.skill.counterfactual_twin.variants, filters);
@@ -1199,7 +1199,7 @@ function dojoDebugCounterfactualTool(args: unknown): ToolResponse {
 }
 
 function dojoRunTimeMachineDebuggerTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const a = obj(args);
   return jsonResponse({
@@ -1214,7 +1214,7 @@ function dojoRunTimeMachineDebuggerTool(args: unknown): ToolResponse {
 }
 
 function dojoRunGhostModeTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const a = obj(args);
   const observed = objectOpt(a["observed_human_action"]) ?? {};

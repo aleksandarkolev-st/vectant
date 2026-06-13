@@ -345,6 +345,60 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("requires tenant authorization for production skill report surfaces", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const skillReportTools = [
+      "synthi_dojo_get_skill_cortex",
+      "synthi_dojo_get_workspace_organoid",
+      "synthi_dojo_get_wind_tunnel_report",
+      "synthi_dojo_get_counterfactual_twin",
+      "synthi_dojo_get_evil_twin_report",
+      "synthi_dojo_get_training_report",
+      "synthi_dojo_get_skill_passport",
+      "synthi_dojo_get_skill_genome",
+      "synthi_dojo_get_antibodies",
+      "synthi_dojo_get_agent_ready_ui_contract",
+      "synthi_dojo_get_cost_policy",
+      "synthi_dojo_get_universe_dossier",
+      "synthi_dojo_get_lifecycle",
+      "synthi_dojo_get_governance_report",
+      "synthi_dojo_get_source_affordance_pr_plan",
+      "synthi_dojo_get_skill_assurance_case",
+      "synthi_dojo_get_entrustment_level",
+      "synthi_dojo_get_license",
+      "synthi_dojo_get_guardrails",
+      "synthi_dojo_get_case_law",
+      "synthi_dojo_explain_block",
+      "synthi_dojo_explain_failure",
+      "synthi_dojo_debug_counterfactual",
+      "synthi_dojo_run_time_machine_debugger",
+      "synthi_dojo_run_ghost_mode",
+    ];
+
+    for (const toolName of skillReportTools) {
+      const missingContext = await dispatchDojoTool(toolName, { skill_id: skillId });
+      expect(missingContext?.isError, toolName).toBe(true);
+      expect(missingContext?.structuredContent, toolName).toEqual(expect.objectContaining({
+        error: "dojo_tenant_context_required",
+        blocked_by: expect.arrayContaining(["tenant_context_workspace_id_missing"]),
+      }));
+
+      const authorized = await dispatchDojoTool(toolName, {
+        skill_id: skillId,
+        ...productionTenantContextArgs({ request_id: `req-production-${toolName}` }),
+      });
+      expect(authorized?.isError, toolName).toBeUndefined();
+      expect(authorized?.structuredContent, toolName).not.toEqual(expect.objectContaining({
+        error: "dojo_tenant_context_required",
+      }));
+    }
+  });
+
   it("advertises the static Dojo tool surface to strict MCP clients", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createSynthiServer({ defaultSignalingUrl: "ws://localhost:9000" });
