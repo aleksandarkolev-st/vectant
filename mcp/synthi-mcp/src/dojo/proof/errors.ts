@@ -32,7 +32,13 @@ export type DojoProofRefusalCategory =
   | "unknown";
 
 export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode {
-  if (reason === "proof_capsule_missing" || reason === "dojo_proof_capsule_required") return "proof_capsule_missing";
+  if (
+    reason === "proof_capsule_missing" ||
+    reason === "dojo_proof_capsule_required" ||
+    reason === "api_tool_proof_capsule_required"
+  ) {
+    return "proof_capsule_missing";
+  }
   if (reason === "proof_capsule_revoked") return "proof_capsule_revoked";
   if (reason === "proof_capsule_replay_detected") return "proof_capsule_replay_detected";
   if (reason === "proof_capsule_not_issued_by_registry" || reason === "proof_capsule_not_issued") return "proof_capsule_not_issued";
@@ -54,6 +60,19 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     reason === "proof_validation_time_invalid" ||
     reason === "proof_capsule_expired" ||
     reason === "proof_self_attestation_not_allowed_in_production" ||
+    reason === "proof_validator_missing" ||
+    reason === "api_tool_proof_validator_required" ||
+    reason === "api_tool_proof_validation_failed" ||
+    reason === "api_tool_proof_capsule_id_required" ||
+    reason === "api_tool_proof_nonce_required" ||
+    reason === "api_tool_proof_skill_required" ||
+    reason === "api_tool_proof_skill_mismatch" ||
+    reason === "api_tool_proof_license_required" ||
+    reason === "api_tool_proof_license_mismatch" ||
+    reason === "api_tool_proof_license_version_required" ||
+    reason === "api_tool_proof_license_version_mismatch" ||
+    reason === "api_tool_proof_action_required" ||
+    reason === "api_tool_proof_action_mismatch" ||
     reason === "dojo_proof_capsule_invalid"
   ) {
     return "proof_capsule_invalid";
@@ -70,18 +89,33 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     reason.startsWith("evidence_claim_ref_invalid:") ||
     reason.startsWith("evidence_claim_ref_record_missing:") ||
     reason.startsWith("evidence_claim_ledger_checkpoint_missing:") ||
+    reason.startsWith("api_tool_proof_evidence_claim_missing:") ||
+    reason.startsWith("api_tool_proof_evidence_claim_unverified:") ||
+    reason.startsWith("api_tool_proof_evidence_claim_refs_required:") ||
     reason === "evidence_ledger_checkpoint_without_records" ||
     reason === "proof_capsule_ledger_checkpoint_missing" ||
     reason === "proof_capsule_evidence_records_missing" ||
     reason === "proof_capsule_evidence_record_ids_invalid" ||
+    reason === "api_tool_proof_evidence_records_required" ||
+    reason === "api_tool_proof_ledger_checkpoint_required" ||
     reason === "proof_evidence_claim_unverified"
   ) {
     return "proof_evidence_claim_unverified";
   }
   if (reason === "license_expired" || reason === "license_expiry_invalid") return "license_expired";
   if (reason === "license_revoked") return "license_revoked";
-  if (reason.startsWith("blocked_action:") || reason.startsWith("action_not_licensed:")) return "action_not_licensed";
-  if (reason.startsWith("substrate_not_allowed:")) return "substrate_not_allowed";
+  if (
+    reason.startsWith("blocked_action:") ||
+    reason.startsWith("action_not_licensed:") ||
+    reason === "api_tool_skill_mismatch" ||
+    reason === "api_tool_license_mismatch" ||
+    reason === "api_tool_license_version_mismatch" ||
+    reason === "api_tool_action_mismatch" ||
+    reason === "api_tool_auth_scope_missing"
+  ) {
+    return "action_not_licensed";
+  }
+  if (reason.startsWith("substrate_not_allowed:") || reason === "substrate_not_allowed") return "substrate_not_allowed";
   if (reason === "workspace_mismatch") return "workspace_mismatch";
   if (reason === "app_origin_mismatch" || reason === "app_origin_unparseable" || reason === "origin_mismatch") return "origin_mismatch";
   if (
@@ -96,7 +130,17 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     return "approval_required";
   }
   if (reason.startsWith("guardrail_not_active:") || reason === "guardrail_failed") return "guardrail_failed";
-  if (reason === "dojo_execution_policy_blocked" || reason === "published_skill_mapping_unknown") return "dojo_execution_policy_blocked";
+  if (
+    reason === "dojo_execution_policy_blocked" ||
+    reason === "published_skill_mapping_unknown" ||
+    reason === "api_tool_idempotency_key_required" ||
+    reason === "api_tool_request_required" ||
+    reason === "api_tool_transport_failed" ||
+    reason === "api_tool_evidence_write_failed" ||
+    reason === "api_tool_evidence_record_id_required"
+  ) {
+    return "dojo_execution_policy_blocked";
+  }
   return "unknown";
 }
 

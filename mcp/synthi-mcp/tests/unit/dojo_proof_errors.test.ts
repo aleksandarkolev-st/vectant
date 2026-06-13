@@ -40,6 +40,14 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("approval_evidence_required")).toBe("approval_required");
     expect(normalizeDojoProofErrorCode("license_expiry_invalid")).toBe("license_expired");
     expect(normalizeDojoProofErrorCode("proof_self_attestation_not_allowed_in_production")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("proof_validator_missing")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("api_tool_proof_capsule_required")).toBe("proof_capsule_missing");
+    expect(normalizeDojoProofErrorCode("api_tool_proof_validator_required")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("api_tool_proof_evidence_claim_unverified:checkride_passed")).toBe("proof_evidence_claim_unverified");
+    expect(normalizeDojoProofErrorCode("api_tool_proof_evidence_records_required")).toBe("proof_evidence_claim_unverified");
+    expect(normalizeDojoProofErrorCode("api_tool_auth_scope_missing")).toBe("action_not_licensed");
+    expect(normalizeDojoProofErrorCode("api_tool_evidence_write_failed")).toBe("dojo_execution_policy_blocked");
+    expect(normalizeDojoProofErrorCode("substrate_not_allowed")).toBe("substrate_not_allowed");
     expect(normalizeDojoProofErrorCode("unexpected-low-level-detail")).toBe("unknown");
   });
 
