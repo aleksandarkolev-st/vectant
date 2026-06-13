@@ -1057,8 +1057,13 @@ async function getTurnCredentials() {
 }
 
 const server = http.createServer(async (req, res) => {
-  // Strip /collab or /collab/ prefix if passed by ingress
-  req.url = req.url.replace(/^\/collab/, '');
+  // Strip /collab or /collab/ prefix if passed by ingress, but preserve the
+  // public mount prefix so preview HTML can rewrite absolute asset URLs back
+  // through the externally visible proxy route.
+  const originalUrl = req.url || '/';
+  const collabMountMatch = originalUrl.match(/^\/collab(?=\/|$)/);
+  req._synthiExternalMountPrefix = collabMountMatch ? '/collab' : '';
+  req.url = originalUrl.replace(/^\/collab(?=\/|$)/, '');
   if (!req.url.startsWith('/')) req.url = '/' + req.url;
 
   // CORS headers — must echo the exact Origin (not '*') when credentials are included
@@ -4103,8 +4108,12 @@ function sendToSessionUser(sessionId, targetUserId, eventType, payload) {
 
 
 server.on('upgrade', (request, socket, head) => {
-  // Use replace to safely strip the prefix
-  request.url = request.url.replace(/^\/collab/, '');
+  // Use replace to safely strip the prefix while retaining the public mount
+  // prefix for runtime preview WebSocket URL reconstruction.
+  const originalUrl = request.url || '/';
+  const collabMountMatch = originalUrl.match(/^\/collab(?=\/|$)/);
+  request._synthiExternalMountPrefix = collabMountMatch ? '/collab' : '';
+  request.url = originalUrl.replace(/^\/collab(?=\/|$)/, '');
   if (!request.url.startsWith('/')) request.url = '/' + request.url;
   if (request.url.startsWith('/port/') || request.url.startsWith('/runtime/')) {
     if (!proxyService.proxyWsUpgrade(request, socket, head)) {

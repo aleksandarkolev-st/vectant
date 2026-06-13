@@ -41,6 +41,7 @@ const PROXY_HOST = process.env.PROXY_TARGET_HOST || '127.0.0.1';
 const PREVIEW_TARGET_TEMPLATE = process.env.SYNTHI_PREVIEW_TARGET_TEMPLATE || '';
 const PREVIEW_SIDECAR_PORT = String(process.env.SYNTHI_PREVIEW_SIDECAR_PORT || '18080');
 const PREVIEW_SIDECAR_PREFIX = normalizePathPrefix(process.env.SYNTHI_PREVIEW_SIDECAR_PREFIX || '/__synthi_preview') || '/__synthi_preview';
+const PREVIEW_PUBLIC_PREFIX = normalizePathPrefix(process.env.SYNTHI_PREVIEW_PUBLIC_PREFIX || '');
 
 /** Fallback ports to actively scan when socket discovery is unavailable. */
 const DEFAULT_SCAN_PORTS = [];
@@ -280,6 +281,23 @@ function joinTargetPath(pathPrefix, downstream) {
   return `${prefix}${tail}` || '/';
 }
 
+function publicMountPrefixFromReq(req) {
+  const explicit = normalizePathPrefix(req?._synthiExternalMountPrefix || '');
+  if (explicit) return explicit;
+  const forwarded = Array.isArray(req?.headers?.['x-forwarded-prefix'])
+    ? req.headers['x-forwarded-prefix'][0]
+    : req?.headers?.['x-forwarded-prefix'];
+  return normalizePathPrefix(forwarded || PREVIEW_PUBLIC_PREFIX);
+}
+
+function previewRoutePrefix(port, runtimeScope = null, publicMountPrefix = '') {
+  const mount = normalizePathPrefix(publicMountPrefix);
+  const route = runtimeScope
+    ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${port}`
+    : `/port/${port}`;
+  return `${mount}${route}`;
+}
+
 function previewTargetFor(port, runtimeScope) {
   if (runtimeScope && PREVIEW_TARGET_TEMPLATE) {
     const runtimeId = runtimeResourceId(runtimeScope);
@@ -333,6 +351,7 @@ function proxyHttpRequest(clientReq, clientRes) {
   }
 
   const { port, downstream, runtimeScope } = parsed;
+  const publicMountPrefix = publicMountPrefixFromReq(clientReq);
 
   if (!usesRemoteRuntimeTarget(runtimeScope) && !activePorts.has(port)) {
     clientRes.writeHead(502, { 'Content-Type': 'application/json' });
@@ -373,13 +392,14 @@ function proxyHttpRequest(clientReq, clientRes) {
     headers['access-control-allow-origin'] = '*';
     headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
     headers['access-control-allow-headers'] = '*';
+    rewriteProxyHeaders(headers, port, runtimeScope, publicMountPrefix);
 
     if (shouldRewriteBody(headers)) {
       const chunks = [];
       proxyRes.on('data', (chunk) => chunks.push(chunk));
       proxyRes.on('end', () => {
         const body = Buffer.concat(chunks).toString('utf8');
-        const rewritten = rewriteRootAbsoluteUrls(body, port, runtimeScope);
+        const rewritten = rewriteRootAbsoluteUrls(body, port, runtimeScope, publicMountPrefix);
         delete headers['content-length'];
         delete headers['content-encoding'];
         clientRes.writeHead(proxyRes.statusCode, headers);
@@ -422,13 +442,65 @@ function shouldRewriteBody(headers) {
   );
 }
 
-function rewriteRootAbsoluteUrls(body, port, runtimeScope = null) {
-  const prefix = runtimeScope
-    ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${port}`
-    : `/port/${port}`;
+function rewriteProxyHeaders(headers, port, runtimeScope = null, publicMountPrefix = '') {
+  const prefix = previewRoutePrefix(port, runtimeScope, publicMountPrefix);
+  if (headers.location) {
+    headers.location = rewriteHeaderRootUrls(headers.location, prefix, publicMountPrefix);
+  }
+  if (headers.link) {
+    headers.link = rewriteHeaderRootUrls(headers.link, prefix, publicMountPrefix);
+  }
+  if (headers['set-cookie']) {
+    headers['set-cookie'] = rewriteCookiePaths(headers['set-cookie'], prefix, publicMountPrefix);
+  }
+}
+
+function rewriteHeaderRootUrls(value, prefix, publicMountPrefix = '') {
+  const rewriteOne = (part) => {
+    const text = String(part);
+    if (text.startsWith('/')) return rewriteRootPath(text, prefix, publicMountPrefix);
+    try {
+      const parsed = new URL(text, 'http://preview.local');
+      if (!parsed.origin || parsed.origin === 'http://preview.local') {
+        return rewriteRootPath(`${parsed.pathname}${parsed.search}${parsed.hash}`, prefix, publicMountPrefix);
+      }
+    } catch (_) {}
+    return text;
+  };
+  if (Array.isArray(value)) return value.map(rewriteOne);
+  const text = String(value);
+  const linked = text.replace(/<([^>]+)>/g, (_, url) => `<${rewriteOne(url)}>`);
+  return linked === text ? rewriteOne(text) : linked;
+}
+
+function rewriteCookiePaths(value, prefix, publicMountPrefix = '') {
+  const rewriteOne = (cookie) => String(cookie).replace(/;\s*Path=\/(?=;|$)/i, `; Path=${rootPathPrefix(prefix, publicMountPrefix)}/`);
+  return Array.isArray(value) ? value.map(rewriteOne) : rewriteOne(value);
+}
+
+function rewriteRootPath(pathValue, prefix, publicMountPrefix = '') {
+  if (!pathValue || pathValue[0] !== '/') return pathValue;
+  if (pathValue.startsWith('//')) return pathValue;
+  const mount = normalizePathPrefix(publicMountPrefix);
+  const rootPrefix = rootPathPrefix(prefix, mount);
+  if (pathValue === rootPrefix || pathValue.startsWith(`${rootPrefix}/`)) return pathValue;
+  if (pathValue.startsWith('/port/') || pathValue.startsWith('/runtime/')) return mount ? `${mount}${pathValue}` : pathValue;
+  if (mount && (pathValue === mount || pathValue.startsWith(`${mount}/`))) return pathValue;
+  return `${prefix}${pathValue}`;
+}
+
+function rootPathPrefix(prefix, publicMountPrefix = '') {
+  const mount = normalizePathPrefix(publicMountPrefix);
+  const normalizedPrefix = normalizePathPrefix(prefix);
+  if (mount && normalizedPrefix.startsWith(`${mount}/`)) return normalizedPrefix;
+  return normalizedPrefix || mount || '';
+}
+
+function rewriteRootAbsoluteUrls(body, port, runtimeScope = null, publicMountPrefix = '') {
+  const prefix = previewRoutePrefix(port, runtimeScope, publicMountPrefix);
   return body
-    .replace(/(["'`])\/(?!\/|port\/|runtime\/)/g, `$1${prefix}/`)
-    .replace(/(url\(\s*["']?)\/(?!\/|port\/|runtime\/)/g, `$1${prefix}/`);
+    .replace(/(["'`])\/(?!\/)([^"'`\s<>)]*)/g, (_match, quote, rest) => `${quote}${rewriteRootPath(`/${rest}`, prefix, publicMountPrefix)}`)
+    .replace(/(url\(\s*["']?)\/(?!\/)([^"')\s]+)(["']?\s*\))/g, (_match, lead, rest, tail) => `${lead}${rewriteRootPath(`/${rest}`, prefix, publicMountPrefix)}${tail}`);
 }
 
 // ─── WebSocket Reverse Proxy ────────────────────────────────────────────────
@@ -445,6 +517,7 @@ function proxyWsUpgrade(clientReq, clientSocket, head) {
   }
 
   const { port, downstream, runtimeScope } = parsed;
+  const publicMountPrefix = publicMountPrefixFromReq(clientReq);
 
   if (!usesRemoteRuntimeTarget(runtimeScope) && !activePorts.has(port)) {
     clientSocket.destroy();
@@ -464,6 +537,14 @@ function proxyWsUpgrade(clientReq, clientSocket, head) {
     const reqLine = `${clientReq.method} ${targetPath} HTTP/1.1\r\n`;
     const headers = Object.entries(clientReq.headers)
       .filter(([k]) => k.toLowerCase() !== 'host')
+      .map(([k, v]) => {
+        if (k.toLowerCase() === 'origin') return [k, v];
+        if (k.toLowerCase() === 'referer') {
+          const prefix = previewRoutePrefix(port, runtimeScope, publicMountPrefix);
+          return [k, rewriteHeaderRootUrls(v, prefix, publicMountPrefix)];
+        }
+        return [k, v];
+      })
       .map(([k, v]) => `${k}: ${v}`)
       .concat([`Host: localhost:${port}`])
       .join('\r\n');
@@ -537,8 +618,8 @@ function previewForPort(port, requestedRuntimeScope = null) {
   return {
     port,
     url: runtimeScope
-      ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${port}/`
-      : `/port/${port}/`,
+      ? `${PREVIEW_PUBLIC_PREFIX}/runtime/${encodeURIComponent(runtimeScope)}/port/${port}/`
+      : `${PREVIEW_PUBLIC_PREFIX}/port/${port}/`,
     target: `http://${target.hostname}:${target.port}${target.pathPrefix || '/'}`,
     workspace: processInfo?.workspaceSlug ?? null,
     runtimeScope,
@@ -742,4 +823,7 @@ module.exports = {
   proxyWsUpgrade,
   handlePortsStatus,
   parsePortUrl,
+  rewriteRootAbsoluteUrls,
+  rewriteHeaderRootUrls,
+  previewRoutePrefix,
 };
