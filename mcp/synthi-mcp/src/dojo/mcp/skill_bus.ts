@@ -1,6 +1,7 @@
+import { randomUUID } from "node:crypto";
 import type { DojoProofCarryingSkillCapsule, DojoSkill } from "../../browser/dojo.js";
 import type { DojoProofCapsuleService } from "../proof/capsule_service.js";
-import type { DojoAuditStore } from "../store/interfaces.js";
+import type { DojoAuditStore, DojoProofConsumeResult } from "../store/interfaces.js";
 import type { DojoTenantContext } from "./execution_policy_gate.js";
 import {
   buildDojoMcpSkillManifest,
@@ -49,6 +50,7 @@ export interface DojoToolDispatchResult {
   resolution?: DojoToolResolution;
   validation?: DojoSkillBusProofValidation;
   rate_limit?: DojoMcpSkillBusRateLimitDecision;
+  proof_consume?: DojoProofConsumeResult;
   audit_event_id?: string;
   result?: unknown;
 }
@@ -180,6 +182,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
   private readonly env: NodeJS.ProcessEnv;
   private readonly listSkillsFn: InProcessDojoMcpSkillBusOptions["listSkills"];
   private readonly validateProof?: InProcessDojoMcpSkillBusOptions["validateProof"];
+  private readonly proofService?: DojoProofCapsuleService;
   private readonly executeTool?: InProcessDojoMcpSkillBusOptions["executeTool"];
   private readonly rateLimiter?: DojoMcpSkillBusRateLimiter;
   private readonly auditStore?: DojoAuditStore;
@@ -188,6 +191,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
   constructor(options: InProcessDojoMcpSkillBusOptions) {
     this.env = options.env ?? process.env;
     this.listSkillsFn = options.listSkills;
+    this.proofService = options.proofService;
     this.validateProof = options.validateProof ?? proofServiceValidator(options.proofService, options.now);
     this.executeTool = options.executeTool;
     this.rateLimiter = options.rateLimiter;
@@ -367,6 +371,17 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     if (!this.executeTool) {
       return this.auditDispatch(input, blockedDispatch(input, resolution, ["dojo_mcp_skill_executor_unconfigured"], validation));
     }
+    const proofConsume = await this.consumeDispatchProof({
+      tenant: input.tenant,
+      capsule_id: input.proof_capsule.capsule_id,
+      skill_id: resolution.skill.skill_id,
+    });
+    if (proofConsume && !proofConsume.ok) {
+      return this.auditDispatch(input, {
+        ...blockedDispatch(input, resolution, proofConsume.blocked_by.length > 0 ? proofConsume.blocked_by : ["proof_capsule_replay_detected"], validation),
+        proof_consume: proofConsume,
+      });
+    }
 
     const result = await this.executeTool({
       tenant: input.tenant,
@@ -376,10 +391,16 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       proof_capsule: input.proof_capsule,
     });
     if (isDojoMcpSkillBusExecutionBlock(result)) {
-      return this.auditDispatch(input, blockedDispatch(input, resolution, result.blocked_by, result.validation ?? validation));
+      return this.auditDispatch(input, {
+        ...blockedDispatch(input, resolution, result.blocked_by, result.validation ?? validation),
+        ...(proofConsume ? { proof_consume: proofConsume } : {}),
+      });
     }
     if (result === null || typeof result === "undefined") {
-      return this.auditDispatch(input, blockedDispatch(input, resolution, ["dojo_mcp_skill_executor_unavailable"], validation));
+      return this.auditDispatch(input, {
+        ...blockedDispatch(input, resolution, ["dojo_mcp_skill_executor_unavailable"], validation),
+        ...(proofConsume ? { proof_consume: proofConsume } : {}),
+      });
     }
     return this.auditDispatch(input, {
       ok: true,
@@ -390,6 +411,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       tool_name: resolution.tool_name,
       resolution: summarizeResolution(resolution),
       validation,
+      ...(proofConsume ? { proof_consume: proofConsume } : {}),
       result,
     });
   }
@@ -448,6 +470,20 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       ...result,
       audit_event_id: audit.audit_event_id,
     };
+  }
+
+  private async consumeDispatchProof(input: {
+    tenant: DojoTenantContext;
+    capsule_id: string;
+    skill_id: string;
+  }): Promise<DojoProofConsumeResult | undefined> {
+    if (!this.proofService) return undefined;
+    return this.proofService.consume({
+      tenant: input.tenant,
+      capsule_id: input.capsule_id,
+      run_id: `dojo_mcp_dispatch_${input.skill_id}_${randomUUID()}`,
+      now: this.nowFn().toISOString(),
+    });
   }
 }
 

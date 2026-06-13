@@ -225,6 +225,80 @@ describe("Dojo MCP skill bus", () => {
     expect(executions).toEqual([]);
   });
 
+  it("consumes proof before non-dry dispatch through the reusable proof capsule service", async () => {
+    const skill = skillFixture("workspace-a", "Open details");
+    const caller = tenant("workspace-a");
+    const proofStore = new InMemoryDojoSkillStore();
+    const proofService = createDojoProofCapsuleService({ proof_store: proofStore });
+    const issued = await proofService.issue({
+      tenant: caller,
+      skill,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill, { tenant_id: caller.tenant_id }),
+      substrate_claim: "mcp",
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(issued.ok).toBe(true);
+    const executions: string[] = [];
+    const bus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skill],
+      env: manifestEnv(),
+      proofService,
+      now: () => new Date("2026-06-11T00:02:00.000Z"),
+      executeTool: ({ tool_name }) => {
+        executions.push(tool_name);
+        return { ok: true, tool_name };
+      },
+    });
+
+    const dryRun = await bus.dispatch({
+      tenant: caller,
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: issued.proof_capsule,
+      dry_run: true,
+    });
+    expect(dryRun).toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: true,
+    }));
+    expect("proof_consume" in dryRun).toBe(false);
+    expect(proofStore.getProofRecord(issued.proof_capsule!.capsule_id)?.status).toBe("issued");
+
+    await expect(bus.dispatch({
+      tenant: caller,
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: issued.proof_capsule,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: false,
+      proof_consume: expect.objectContaining({ ok: true, status: "used" }),
+      result: expect.objectContaining({ ok: true, tool_name: skill.published_tool_name }),
+    }));
+    expect(proofStore.getProofRecord(issued.proof_capsule!.capsule_id)?.status).toBe("used");
+
+    await expect(bus.dispatch({
+      tenant: caller,
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: issued.proof_capsule,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["proof_capsule_replay_detected"],
+      validation: expect.objectContaining({
+        ok: false,
+        error_codes: ["proof_capsule_replay_detected"],
+      }),
+    }));
+    expect(executions).toEqual([skill.published_tool_name]);
+  });
+
   it("requires proof from full manifest constraints even when passport metadata is stale", async () => {
     const baseSkill = skillFixture("workspace-a", "Open details");
     const skill = {

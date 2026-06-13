@@ -185,6 +185,7 @@ function vitestJsonReportFixture(input = {}) {
     "Dojo proof capsule service issues verified capsules, validates without consuming on dry run, and consumes exactly once",
     "Dojo execution policy gate requires proof for production skill bus calls to published skills",
     "Dojo MCP skill bus can validate dispatch proofs through the reusable proof capsule service",
+    "Dojo MCP skill bus consumes proof before non-dry dispatch through the reusable proof capsule service",
     "browser private tool gate blocks a Dojo-published backing private tool direct call in production",
     "browser workflow gate blocks raw replay for Dojo-published workflows in production",
     "Dojo proof claims blocks strict proof issuance when supplied evidence record material is tampered",

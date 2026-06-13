@@ -277,7 +277,7 @@ function abuseClassMatchers(abuseClass) {
   const aliases = {
     proof_signature_tampering: ["tampered", "signature", "wrong ed25519 key"],
     proof_context_tampering: ["context mismatched", "context-mismatched", "context claim"],
-    proof_replay_or_missing_capsule: ["requires proof", "missing capsule", "without validated dojo dispatcher context", "proof capsule not issued", "consumes exactly once", "reusable proof capsule service"],
+    proof_replay_or_missing_capsule: ["requires proof", "missing capsule", "without validated dojo dispatcher context", "proof capsule not issued", "consumes exactly once", "reusable proof capsule service", "consumes proof before non dry dispatch"],
     raw_private_tool_bypass: ["backing private tool direct call", "private tool direct call"],
     raw_browser_workflow_bypass: ["raw replay", "raw workflow replay"],
     evidence_record_tampering: ["evidence record material is tampered"],
