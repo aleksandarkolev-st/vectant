@@ -215,6 +215,7 @@ export type DojoAuditEventType =
   | "runtime_session_revoked"
   | "runtime_action_authorized"
   | "runtime_action_blocked"
+  | "mcp_host_conformance_recorded"
   | "mcp_tool_invocation_allowed"
   | "mcp_tool_invocation_blocked"
   | "ghost_shadow_evidence_recorded";
@@ -399,5 +400,30 @@ export interface DojoMcpToolInvocationFilter {
   actor_id?: string;
   requested_action?: string;
   status?: DojoMcpToolInvocationStatus;
+  limit?: number;
+}
+
+export type DojoMcpHostConformanceStatus = "passed" | "failed" | "skipped";
+export type DojoMcpHostKind = "local_loopback" | "deployed_non_loopback";
+
+export interface DojoMcpHostConformanceResultRecord {
+  tenant_id: string;
+  workspace_id: string;
+  conformance_result_id: string;
+  host_url: string;
+  host_kind: DojoMcpHostKind;
+  status: DojoMcpHostConformanceStatus;
+  report_sha256: string;
+  report_json: Record<string, unknown>;
+  created_at: string;
+  created_by: string;
+}
+
+export interface DojoMcpHostConformanceResultFilter {
+  conformance_result_id?: string;
+  host_url?: string;
+  host_kind?: DojoMcpHostKind;
+  status?: DojoMcpHostConformanceStatus;
+  created_by?: string;
   limit?: number;
 }

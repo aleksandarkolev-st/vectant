@@ -116,6 +116,10 @@ function postgresVitestReportFixture() {
       "PostgresDojoGraphRunStore persists executable checkride reports and scenario runs from observed runtime evidence",
     ],
     [
+      "PostgresDojoMcpHostConformanceStore persists conformance reports with digest custody and audit events",
+      "PostgresDojoMcpHostConformanceStore filters conformance reports by host kind and status",
+    ],
+    [
       "Dojo proof issuance from Postgres evidence ledger issues a production proof capsule from evidence record IDs resolved through Postgres",
     ],
   ];
