@@ -384,7 +384,13 @@ function capabilityMatchers(capability) {
       "postgresdojomcphostconformancestore filters conformance reports by host kind and status",
     ],
     evidence_ledger_append_verify: ["appends evidence records advances checkpoints and verifies the chain"],
-    evidence_tamper_detection: ["detects tampered evidence records", "detects tampered ledger checkpoint"],
+    evidence_tamper_detection: [
+      "detects tampered evidence records",
+      "detects tampered ledger checkpoint",
+      "rejects evidence record updates and deletes at the database layer",
+      "rejects ledger checkpoint updates at the database layer",
+      "signs appended records and detects invalid signatures when required",
+    ],
     audit_event_repository: ["persists audit actor request correlation entity and details", "records proof issue use rejection and revoke events"],
     skill_repository: [
       "postgresdojoskillstore persists skills and published workflow bindings by tenant scope",

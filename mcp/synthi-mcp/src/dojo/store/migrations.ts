@@ -680,14 +680,34 @@ export const DOJO_POSTGRES_MIGRATIONS: DojoPostgresMigration[] = [
         RAISE EXCEPTION 'dojo_evidence_ledger_append_only';
       END;
       $$`,
-      "DROP TRIGGER IF EXISTS dojo_evidence_records_append_only ON dojo_evidence_records",
-      `CREATE TRIGGER dojo_evidence_records_append_only
-      BEFORE UPDATE OR DELETE ON dojo_evidence_records
-      FOR EACH ROW EXECUTE FUNCTION dojo_reject_evidence_ledger_mutation()`,
-      "DROP TRIGGER IF EXISTS dojo_ledger_checkpoints_append_only ON dojo_ledger_checkpoints",
-      `CREATE TRIGGER dojo_ledger_checkpoints_append_only
-      BEFORE UPDATE OR DELETE ON dojo_ledger_checkpoints
-      FOR EACH ROW EXECUTE FUNCTION dojo_reject_evidence_ledger_mutation()`,
+      `DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_trigger
+          WHERE tgname = 'dojo_evidence_records_append_only'
+            AND tgrelid = 'dojo_evidence_records'::regclass
+        ) THEN
+          CREATE TRIGGER dojo_evidence_records_append_only
+          BEFORE UPDATE OR DELETE ON dojo_evidence_records
+          FOR EACH ROW EXECUTE FUNCTION dojo_reject_evidence_ledger_mutation();
+        END IF;
+      END;
+      $$`,
+      `DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_trigger
+          WHERE tgname = 'dojo_ledger_checkpoints_append_only'
+            AND tgrelid = 'dojo_ledger_checkpoints'::regclass
+        ) THEN
+          CREATE TRIGGER dojo_ledger_checkpoints_append_only
+          BEFORE UPDATE OR DELETE ON dojo_ledger_checkpoints
+          FOR EACH ROW EXECUTE FUNCTION dojo_reject_evidence_ledger_mutation();
+        END IF;
+      END;
+      $$`,
     ],
   },
 ];
