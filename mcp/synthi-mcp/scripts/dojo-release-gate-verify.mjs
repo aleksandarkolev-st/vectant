@@ -37,6 +37,7 @@ const DEFAULT_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-host-confo
 const DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-stdio-host-conformance");
 const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-host-conformance");
 const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-postgres-control-plane");
+const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-integration");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_CHAOS_PERFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-chaos-performance");
 const DEFAULT_SOAK_DIR = path.join(MCP_ROOT, ".soak");
@@ -125,6 +126,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
+  const dockerIntegrationResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-docker-integration"]) || args["docker-integration-evidence"]) {
+    const dockerGate = findGate(manifest, "docker_integration") || {};
+    dockerIntegrationResults.push(await verifyDojoDockerIntegrationEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["docker-integration-evidence"]
+        || dockerGate.default_evidence_path
+        || path.join(DEFAULT_DOCKER_INTEGRATION_DIR, "dojo-docker-integration.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
   const liveHostedRuntimeResults = [];
   const shouldVerifyLiveHostedRuntime = truthy(args["release-candidate"])
     || args["workflow-e2e-summary"]
@@ -207,7 +219,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...liveHostedRuntimeResults, ...conformanceResults, ...securityResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceResults, ...securityResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -218,6 +230,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     dojo_self_check: proofSelfCheckResults.map(summarizeSection),
     visual_reports: visualResults.map(summarizeSection),
     postgres_control_plane: postgresControlPlaneResults.map(summarizeSection),
+    docker_integration: dockerIntegrationResults.map(summarizeSection),
     live_hosted_runtime: liveHostedRuntimeResults.map(summarizeSection),
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
@@ -383,6 +396,71 @@ export function validateDojoPostgresControlPlaneEvidenceForMilestone(evidence) {
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("postgres_control_plane_no_reported_tests");
   if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
     errors.push(`postgres_control_plane_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoDockerIntegrationEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoDockerIntegrationEvidenceForMilestone(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "docker_integration",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+    service_count: Number(evidence?.required_service_count || 0),
+    endpoint_count: Number(evidence?.endpoint_count || 0),
+  };
+}
+
+export function validateDojoDockerIntegrationEvidenceForMilestone(evidence) {
+  const errors = [];
+  if (evidence?.schema_version !== "synthi.dojo.dockerIntegrationEvidence.v1") {
+    errors.push(`docker_integration_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("docker_integration_not_ok");
+  if (evidence?.docker_compose_up_ran !== true) errors.push("docker_integration_compose_up_not_run");
+  if (evidence?.docker_compose_up_skipped === true) errors.push("docker_integration_compose_up_skipped");
+  if (evidence?.command_evaluation?.compose_up_exit_code !== 0) {
+    errors.push(`docker_integration_compose_up_exit_code:${evidence?.command_evaluation?.compose_up_exit_code ?? "missing"}`);
+  }
+  if (evidence?.command_evaluation?.compose_ps_exit_code !== 0) {
+    errors.push(`docker_integration_compose_ps_exit_code:${evidence?.command_evaluation?.compose_ps_exit_code ?? "missing"}`);
+  }
+  if (evidence?.command_evaluation?.compose_config_exit_code !== 0) {
+    errors.push(`docker_integration_compose_config_exit_code:${evidence?.command_evaluation?.compose_config_exit_code ?? "missing"}`);
+  }
+  if (Number(evidence?.required_service_count || 0) <= 0) errors.push("docker_integration_no_required_services");
+  if (Array.isArray(evidence?.missing_services) && evidence.missing_services.length > 0) {
+    errors.push(`docker_integration_missing_services:${evidence.missing_services.join(",")}`);
+  }
+  if (Array.isArray(evidence?.service_evaluation?.stopped_services) && evidence.service_evaluation.stopped_services.length > 0) {
+    errors.push(`docker_integration_stopped_services:${evidence.service_evaluation.stopped_services.join(",")}`);
+  }
+  if (Array.isArray(evidence?.unhealthy_services) && evidence.unhealthy_services.length > 0) {
+    errors.push(`docker_integration_unhealthy_services:${evidence.unhealthy_services.join(",")}`);
+  }
+  if (Number(evidence?.running_services?.length || 0) !== Number(evidence?.required_service_count || 0)) {
+    errors.push(`docker_integration_running_service_count_mismatch:${evidence?.running_services?.length ?? "missing"}:${evidence?.required_service_count ?? "missing"}`);
+  }
+  if (Number(evidence?.endpoint_count || 0) <= 0) errors.push("docker_integration_no_endpoint_checks");
+  if (Number(evidence?.endpoint_ok_count || 0) !== Number(evidence?.endpoint_count || 0)) {
+    errors.push(`docker_integration_endpoint_count_mismatch:${evidence?.endpoint_ok_count ?? "missing"}:${evidence?.endpoint_count ?? "missing"}`);
+  }
+  for (const check of Array.isArray(evidence?.endpoint_checks) ? evidence.endpoint_checks : []) {
+    if (check?.ok !== true) {
+      errors.push(`docker_integration_endpoint_failed:${check?.id || "unknown"}:${check?.status ?? check?.error ?? "unknown"}`);
+    }
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("docker_integration_budget_not_ok");
+  if (Array.isArray(evidence?.budget_evaluation?.failed_checks) && evidence.budget_evaluation.failed_checks.length > 0) {
+    errors.push(`docker_integration_failed_checks:${evidence.budget_evaluation.failed_checks.join(",")}`);
   }
   return {
     ok: errors.length === 0,
@@ -1188,6 +1266,45 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedPostgres.errors.includes("postgres_control_plane_capability_coverage_incomplete"));
   assert(rejectedPostgres.errors.includes("postgres_control_plane_missing_capabilities:atomic_proof_consume"));
 
+  const dockerDir = path.join(outDir, "docker-integration");
+  await mkdir(dockerDir, { recursive: true });
+  const dockerArtifacts = await writeDockerIntegrationEvidenceForSelfCheck({ outDir: dockerDir });
+  const dockerIntegrationResult = await verifyDojoDockerIntegrationEvidenceArtifact({
+    evidencePath: dockerArtifacts.evidence_path,
+  });
+  assert.equal(dockerIntegrationResult.ok, true, dockerIntegrationResult.errors.join(";"));
+  const rejectedDockerArtifacts = await writeDockerIntegrationEvidenceForSelfCheck({
+    outDir: dockerDir,
+    basename: "dojo-docker-integration-rejected",
+    overrides: {
+      ok: false,
+      docker_compose_up_ran: false,
+      docker_compose_up_skipped: true,
+      missing_services: ["mcp"],
+      running_services: ["frontend"],
+      endpoint_ok_count: 1,
+      endpoint_checks: [
+        dockerEndpointFixture({ id: "frontend_workspace" }),
+        dockerEndpointFixture({ id: "collab_ports", ok: false, status: 503 }),
+      ],
+      service_evaluation: {
+        ...dockerServiceEvaluationFixture(),
+        missing_services: ["mcp"],
+        stopped_services: ["worker"],
+      },
+      budget_evaluation: {
+        ok: false,
+        failed_checks: ["compose_up_ran_or_explicitly_skipped", "all_required_services_present"],
+      },
+    },
+  });
+  const rejectedDocker = await verifyDojoDockerIntegrationEvidenceArtifact({
+    evidencePath: rejectedDockerArtifacts.evidence_path,
+  });
+  assert(rejectedDocker.errors.includes("docker_integration_compose_up_not_run"));
+  assert(rejectedDocker.errors.includes("docker_integration_missing_services:mcp"));
+  assert(rejectedDocker.errors.includes("docker_integration_endpoint_count_mismatch:1:2"));
+
   const liveHostedDir = path.join(outDir, "live-hosted-runtime");
   await mkdir(liveHostedDir, { recursive: true });
   const liveHostedArtifacts = await writeLiveHostedRuntimeArtifactsForSelfCheck({ outDir: liveHostedDir });
@@ -1426,6 +1543,7 @@ async function runSelfCheck({ outDir }) {
     verified_sections: [
       summarizeSection(manifestResult),
       summarizeSection(postgresControlPlaneResult),
+      summarizeSection(dockerIntegrationResult),
       summarizeSection(workflowE2EResult),
       summarizeSection(stdioAcceptanceResult),
       summarizeSection(codexAcceptanceResult),
@@ -1440,6 +1558,7 @@ async function runSelfCheck({ outDir }) {
     rejected_controls: [
       summarizeSection(rejectedSelfCheck),
       summarizeSection(rejectedPostgres),
+      summarizeSection(rejectedDocker),
       summarizeSection(rejectedCodexAcceptance),
       summarizeSection(rejectedDryRun),
       summarizeSection(rejectedStdioHost),
@@ -1922,6 +2041,171 @@ function postgresControlPlaneJsonReportFixtureText() {
     numFailedTestSuites: 0,
     testResults: [],
   }, null, 2);
+}
+
+async function writeDockerIntegrationEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-docker-integration",
+  overrides = {},
+}) {
+  const stdout = "docker compose stack healthy\n";
+  const stderr = "";
+  const report = dockerIntegrationReportFixture();
+  const reportText = `${JSON.stringify(report, null, 2)}\n`;
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const reportPath = path.join(outDir, `${basename}.report.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(reportPath, reportText, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.dockerIntegrationEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    duration_ms: 1500,
+    docker_compose_up_ran: true,
+    docker_compose_up_skipped: false,
+    required_services: dockerRequiredServicesFixture(),
+    required_service_count: dockerRequiredServicesFixture().length,
+    running_services: dockerRequiredServicesFixture(),
+    missing_services: [],
+    unhealthy_services: [],
+    healthy_services_required: ["postgres", "redis", "y-sweet"],
+    endpoint_checks: [
+      dockerEndpointFixture({ id: "frontend_workspace" }),
+      dockerEndpointFixture({ id: "collab_ports" }),
+    ],
+    endpoint_count: 2,
+    endpoint_ok_count: 2,
+    command_evaluation: {
+      compose_up_ran: true,
+      compose_up_exit_code: 0,
+      compose_ps_exit_code: 0,
+      compose_config_exit_code: 0,
+      compose_up_error: null,
+      compose_ps_error: null,
+      compose_config_error: null,
+    },
+    service_evaluation: dockerServiceEvaluationFixture(),
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        compose_up_ran_or_explicitly_skipped: true,
+        compose_up_succeeded: true,
+        compose_ps_succeeded: true,
+        compose_config_succeeded: true,
+        all_required_services_present: true,
+        all_required_services_running: true,
+        required_healthchecks_healthy: true,
+        required_endpoints_ok: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    report_path: reportPath,
+    report_sha256: sha256(reportText),
+    report_bytes: Buffer.byteLength(reportText),
+    json_report_path: reportPath,
+    json_report_sha256: sha256(reportText),
+    json_report_bytes: Buffer.byteLength(reportText),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    budget: {
+      self_check_timeout_ms: 600000,
+      endpoint_timeout_ms: 30000,
+      intended_gate: "full_local_docker_integration",
+    },
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+function dockerIntegrationReportFixture() {
+  const services = dockerRequiredServicesFixture();
+  return {
+    schema_version: "synthi.dojo.dockerIntegrationReport.v1",
+    generated_at: new Date().toISOString(),
+    compose_file: "docker-compose.yml",
+    command_evaluation: {
+      compose_up_ran: true,
+      compose_up_exit_code: 0,
+      compose_ps_exit_code: 0,
+      compose_config_exit_code: 0,
+    },
+    configured_services: services,
+    service_rows: services.map((service) => ({
+      Service: service,
+      State: "running",
+      Health: ["postgres", "redis", "y-sweet"].includes(service) ? "healthy" : "",
+      Status: ["postgres", "redis", "y-sweet"].includes(service) ? "running (healthy)" : "running",
+    })),
+    service_evaluation: dockerServiceEvaluationFixture(),
+    endpoint_checks: [
+      dockerEndpointFixture({ id: "frontend_workspace" }),
+      dockerEndpointFixture({ id: "collab_ports" }),
+    ],
+  };
+}
+
+function dockerRequiredServicesFixture() {
+  return [
+    "frontend",
+    "collab-server",
+    "mcp",
+    "worker",
+    "signaling-server",
+    "ai-gateway",
+    "ai-engine",
+    "y-sweet",
+    "postgres",
+    "redis",
+    "coturn",
+  ];
+}
+
+function dockerServiceEvaluationFixture() {
+  const services = dockerRequiredServicesFixture();
+  return {
+    ok: true,
+    configured_services: services,
+    required_services: services,
+    running_services: services,
+    missing_services: [],
+    stopped_services: [],
+    unhealthy_services: [],
+    unknown_configured_services: [],
+    service_states: services.map((service) => ({
+      service,
+      state: "running",
+      health: ["postgres", "redis", "y-sweet"].includes(service) ? "healthy" : "",
+      status: ["postgres", "redis", "y-sweet"].includes(service) ? "running (healthy)" : "running",
+    })),
+  };
+}
+
+function dockerEndpointFixture({
+  id,
+  ok = true,
+  status = 200,
+} = {}) {
+  return {
+    id,
+    url: id === "collab_ports" ? "http://127.0.0.1:1234/ports" : "http://127.0.0.1:3000/workspace",
+    expected_status: 200,
+    status,
+    ok,
+    duration_ms: 25,
+    error: ok ? null : "unexpected_status",
+  };
 }
 
 async function writeSelfCheckVisualReport({ outDir }) {

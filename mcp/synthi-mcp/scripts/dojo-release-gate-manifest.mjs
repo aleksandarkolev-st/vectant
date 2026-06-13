@@ -251,9 +251,20 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     id: "docker_integration",
     tier: "T3",
     working_directory: ".",
-    command: "docker compose up -d --build --force-recreate && docker compose ps",
+    package_script: "proof:dojo:docker-integration:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:docker-integration:self-check",
     required_for: ["milestone", "release"],
-    evidence_kind: "service_health",
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.dockerIntegrationEvidence.v1",
+    default_evidence_path: "tmp/dojo-docker-integration/dojo-docker-integration.evidence.json",
+    artifact_requirements: {
+      require_compose_up_ran: true,
+      require_all_required_services_running: true,
+      require_required_healthchecks_healthy: true,
+      require_required_endpoints_ok: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
     requires_env: [
       "NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS",
       "AI_ENGINE_HOST_PORT",
@@ -642,6 +653,39 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!Array.isArray(postgresControlPlaneGate.requires_env)
       || !postgresControlPlaneGate.requires_env.includes("SYNTHI_DOJO_POSTGRES_TEST_URL")) {
       errors.push("postgres_control_plane_missing_postgres_env");
+    }
+  }
+  const dockerIntegrationGate = gates.find((gate) => gate.id === "docker_integration");
+  if (dockerIntegrationGate) {
+    if (dockerIntegrationGate.evidence_kind !== "proof_artifact") {
+      errors.push("docker_integration_missing_proof_artifact_contract");
+    }
+    if (dockerIntegrationGate.evidence_schema_version !== "synthi.dojo.dockerIntegrationEvidence.v1") {
+      errors.push("docker_integration_missing_evidence_schema");
+    }
+    if (dockerIntegrationGate.package_script !== "proof:dojo:docker-integration:self-check") {
+      errors.push("docker_integration_missing_package_script");
+    }
+    if (!dockerIntegrationGate.default_evidence_path) errors.push("docker_integration_missing_default_evidence_path");
+    if (!dockerIntegrationGate.artifact_requirements?.require_compose_up_ran) {
+      errors.push("docker_integration_missing_compose_up_requirement");
+    }
+    if (!dockerIntegrationGate.artifact_requirements?.require_all_required_services_running) {
+      errors.push("docker_integration_missing_service_requirement");
+    }
+    if (!dockerIntegrationGate.artifact_requirements?.require_required_healthchecks_healthy) {
+      errors.push("docker_integration_missing_healthcheck_requirement");
+    }
+    if (!dockerIntegrationGate.artifact_requirements?.require_required_endpoints_ok) {
+      errors.push("docker_integration_missing_endpoint_requirement");
+    }
+    if (!dockerIntegrationGate.artifact_requirements?.require_json_report_digest_match) {
+      errors.push("docker_integration_missing_json_report_digest_requirement");
+    }
+    for (const requiredEnv of ["NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS", "AI_ENGINE_HOST_PORT", "POSTGRES_HOST_PORT"]) {
+      if (!Array.isArray(dockerIntegrationGate.requires_env) || !dockerIntegrationGate.requires_env.includes(requiredEnv)) {
+        errors.push(`docker_integration_missing_env:${requiredEnv}`);
+      }
     }
   }
   const mcpHostConformanceGate = gates.find((gate) => gate.id === "dojo_mcp_host_conformance");

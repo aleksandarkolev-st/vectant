@@ -20,12 +20,14 @@ import {
   validateDojoPrivateToolCodexHostConformanceForRelease,
   validateDojoPrivateToolStdioAcceptanceForRelease,
   validateDojoPrivateToolStdioHostConformanceForRelease,
+  validateDojoDockerIntegrationEvidenceForMilestone,
   validateDojoPostgresControlPlaneEvidenceForMilestone,
   validateDojoWorkflowPipelineE2EForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
   validateDojoSecurityAbuseEvidenceForRelease,
   validateDojoSoakPerformanceSummary,
   verifyDojoChaosPerformanceEvidenceArtifact,
+  verifyDojoDockerIntegrationEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoPrivateToolCodexAcceptanceArtifact,
   verifyDojoPrivateToolCodexHostConformanceArtifact,
@@ -185,6 +187,67 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("verifies Docker integration evidence and rejects skipped compose or unhealthy stack state", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-docker-integration-verify-"));
+    const evidencePath = await writeDockerIntegrationEvidenceFixture({ dir });
+    const evidence = await readJson(evidencePath);
+
+    expect(validateDojoDockerIntegrationEvidenceForMilestone(evidence)).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoDockerIntegrationEvidenceArtifact({ evidencePath })).toEqual(expect.objectContaining({
+      id: "docker_integration",
+      ok: true,
+      errors: [],
+      evidence_path: evidencePath,
+      service_count: 11,
+      endpoint_count: 2,
+    }));
+
+    const rejectedPath = await writeDockerIntegrationEvidenceFixture({
+      dir,
+      basename: "dojo-docker-integration-rejected",
+      evidence: dockerIntegrationEvidenceFixture({
+        ok: false,
+        docker_compose_up_ran: false,
+        docker_compose_up_skipped: true,
+        running_services: ["frontend"],
+        missing_services: ["mcp"],
+        unhealthy_services: ["postgres"],
+        endpoint_ok_count: 1,
+        endpoint_checks: [
+          dockerEndpointFixture({ id: "frontend_workspace" }),
+          dockerEndpointFixture({ id: "collab_ports", ok: false, status: 503 }),
+        ],
+        service_evaluation: {
+          ...dockerServiceEvaluationFixture(),
+          missing_services: ["mcp"],
+          stopped_services: ["worker"],
+        },
+        budget_evaluation: {
+          ok: false,
+          failed_checks: ["all_required_services_present", "required_endpoints_ok"],
+        },
+      }),
+    });
+    const rejected = await verifyDojoDockerIntegrationEvidenceArtifact({ evidencePath: rejectedPath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "docker_integration_not_ok",
+      "docker_integration_compose_up_not_run",
+      "docker_integration_compose_up_skipped",
+      "docker_integration_missing_services:mcp",
+      "docker_integration_stopped_services:worker",
+      "docker_integration_unhealthy_services:postgres",
+      "docker_integration_running_service_count_mismatch:1:11",
+      "docker_integration_endpoint_count_mismatch:1:2",
+      "docker_integration_endpoint_failed:collab_ports:503",
+      "docker_integration_budget_not_ok",
+      "docker_integration_failed_checks:all_required_services_present,required_endpoints_ok",
+    ]));
+  });
+
   it("verifies live hosted runtime acceptance artifacts for release candidates", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-live-hosted-runtime-verify-"));
     const workflow = await writeWorkflowE2EFixture({ dir });
@@ -336,6 +399,7 @@ describe("Dojo release gate artifact verifier", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-candidate-self-check-"));
     const selfCheck = await writeProofSelfCheckFixture({ dir });
     const postgresEvidencePath = await writePostgresControlPlaneEvidenceFixture({ dir });
+    const dockerEvidencePath = await writeDockerIntegrationEvidenceFixture({ dir });
     const conformanceReportPath = path.join(dir, "dojo-mcp-host-conformance.json");
     const conformanceEvidencePath = path.join(dir, "dojo-mcp-host-conformance.evidence.json");
     await writeConformancePair({
@@ -383,6 +447,7 @@ describe("Dojo release gate artifact verifier", () => {
     selfCheckGate.default_report_path = selfCheck.summaryPath;
     selfCheckGate.default_evidence_path = selfCheck.productionEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_postgres_control_plane_self_check").default_evidence_path = postgresEvidencePath;
+    manifest.gates.find((gate) => gate.id === "docker_integration").default_evidence_path = dockerEvidencePath;
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
     manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioAcceptance.transcriptPath;
     manifest.gates.find((gate) => gate.id === "private_tool_codex_acceptance").default_report_path = codexAcceptance.transcriptPath;
@@ -426,6 +491,13 @@ describe("Dojo release gate artifact verifier", () => {
         id: "dojo_postgres_control_plane_self_check",
         ok: true,
         evidence_path: postgresEvidencePath,
+      }),
+    ]);
+    expect(verified.docker_integration).toEqual([
+      expect.objectContaining({
+        id: "docker_integration",
+        ok: true,
+        evidence_path: dockerEvidencePath,
       }),
     ]);
     expect(verified.visual_reports).toHaveLength(2);
@@ -1201,6 +1273,175 @@ function postgresControlPlaneJsonReportFixtureText() {
     numFailedTestSuites: 0,
     testResults: [],
   }, null, 2);
+}
+
+async function writeDockerIntegrationEvidenceFixture({
+  dir,
+  basename = "dojo-docker-integration",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "docker compose stack healthy\n";
+  const stderr = "";
+  const jsonReport = dockerIntegrationJsonReportFixtureText();
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.report.json`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? dockerIntegrationEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  const withLogDefaults = {
+    ...body,
+    stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
+    stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
+    json_report_path: body.json_report_path && body.json_report_path !== "docker-report.json" ? body.json_report_path : jsonReportPath,
+    json_report_sha256: body.json_report_sha256 && body.json_report_sha256 !== "json-report-sha256" ? body.json_report_sha256 : sha256(jsonReport),
+    json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
+      ? body.json_report_bytes
+      : Buffer.byteLength(jsonReport),
+  };
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
+  return evidencePath;
+}
+
+function dockerIntegrationEvidenceFixture(overrides = {}) {
+  const stdout = "docker compose stack healthy\n";
+  const stderr = "";
+  return {
+    schema_version: "synthi.dojo.dockerIntegrationEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    duration_ms: 1500,
+    docker_compose_up_ran: true,
+    docker_compose_up_skipped: false,
+    required_services: dockerRequiredServicesFixture(),
+    required_service_count: dockerRequiredServicesFixture().length,
+    running_services: dockerRequiredServicesFixture(),
+    missing_services: [],
+    unhealthy_services: [],
+    healthy_services_required: ["postgres", "redis", "y-sweet"],
+    endpoint_checks: [
+      dockerEndpointFixture({ id: "frontend_workspace" }),
+      dockerEndpointFixture({ id: "collab_ports" }),
+    ],
+    endpoint_count: 2,
+    endpoint_ok_count: 2,
+    command_evaluation: {
+      compose_up_ran: true,
+      compose_up_exit_code: 0,
+      compose_ps_exit_code: 0,
+      compose_config_exit_code: 0,
+      compose_up_error: null,
+      compose_ps_error: null,
+      compose_config_error: null,
+    },
+    service_evaluation: dockerServiceEvaluationFixture(),
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        compose_up_ran_or_explicitly_skipped: true,
+        compose_up_succeeded: true,
+        compose_ps_succeeded: true,
+        compose_config_succeeded: true,
+        all_required_services_present: true,
+        all_required_services_running: true,
+        required_healthchecks_healthy: true,
+        required_endpoints_ok: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    stdout_path: "stdout.log",
+    stderr_path: "stderr.log",
+    json_report_path: "docker-report.json",
+    json_report_sha256: "json-report-sha256",
+    json_report_bytes: undefined,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+}
+
+function dockerIntegrationJsonReportFixtureText() {
+  return JSON.stringify({
+    schema_version: "synthi.dojo.dockerIntegrationReport.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    compose_file: "docker-compose.yml",
+    command_evaluation: {
+      compose_up_ran: true,
+      compose_up_exit_code: 0,
+      compose_ps_exit_code: 0,
+      compose_config_exit_code: 0,
+    },
+    configured_services: dockerRequiredServicesFixture(),
+    service_evaluation: dockerServiceEvaluationFixture(),
+    endpoint_checks: [
+      dockerEndpointFixture({ id: "frontend_workspace" }),
+      dockerEndpointFixture({ id: "collab_ports" }),
+    ],
+  }, null, 2);
+}
+
+function dockerRequiredServicesFixture() {
+  return [
+    "frontend",
+    "collab-server",
+    "mcp",
+    "worker",
+    "signaling-server",
+    "ai-gateway",
+    "ai-engine",
+    "y-sweet",
+    "postgres",
+    "redis",
+    "coturn",
+  ];
+}
+
+function dockerServiceEvaluationFixture() {
+  const services = dockerRequiredServicesFixture();
+  return {
+    ok: true,
+    configured_services: services,
+    required_services: services,
+    running_services: services,
+    missing_services: [],
+    stopped_services: [],
+    unhealthy_services: [],
+    unknown_configured_services: [],
+    service_states: services.map((service) => ({
+      service,
+      state: "running",
+      health: ["postgres", "redis", "y-sweet"].includes(service) ? "healthy" : "",
+      status: "running",
+    })),
+  };
+}
+
+function dockerEndpointFixture({
+  id,
+  ok = true,
+  status = 200,
+} = {}) {
+  return {
+    id,
+    url: id === "collab_ports" ? "http://127.0.0.1:1234/ports" : "http://127.0.0.1:3000/workspace",
+    expected_status: 200,
+    status,
+    ok,
+    duration_ms: 25,
+    error: ok ? null : "unexpected_status",
+  };
 }
 
 async function writeSecurityEvidenceFixture({
