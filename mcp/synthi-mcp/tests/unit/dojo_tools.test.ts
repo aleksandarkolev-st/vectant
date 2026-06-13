@@ -400,26 +400,7 @@ describe("Agent Dojo MCP tools", () => {
   });
 
   it("filters production aggregate reads by tenant context", async () => {
-    recordOpenDetailsWorkflowForDojoToolTest();
-    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
-    expect(publish?.isError).toBeUndefined();
-    const visibleSkillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
-    const hiddenWorkflow = compileWorkflowContract([
-      event({
-        event_id: "archive-record",
-        event_seq: 1,
-        action: "click",
-        detail: { element: { role: "button", name: "Archive record" } },
-        locator_candidates: [
-          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Archive record\" })", confidence: 0.97, reason: "role" },
-        ],
-      }),
-    ]);
-    const hiddenSkill = dojoSkillRegistry.publish(buildDojoSkill(hiddenWorkflow.contract, {
-      workspace_id: "workspace-b",
-      now: "2026-06-11T00:00:00.000Z",
-    }));
-    expect(hiddenSkill.skill_id).not.toBe(visibleSkillId);
+    const { visibleSkillId, hiddenSkill } = await publishTwoWorkspaceSkillsForDojoToolTest();
 
     const visibleUpgrade = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
       skill_id: visibleSkillId,
@@ -535,6 +516,140 @@ describe("Agent Dojo MCP tools", () => {
     expect(governanceService.approval_queue).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ request_id: "hidden-upgrade-request" }),
     ]));
+  });
+
+  it("requires tenant authorization for production skill operations and exports", async () => {
+    const { visibleSkillId, hiddenSkill } = await publishTwoWorkspaceSkillsForDojoToolTest();
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const protectedToolCalls = [
+      {
+        tool_name: "synthi_dojo_run_vivarium_scenario",
+        args: { skill_id: hiddenSkill.skill_id, mutation_kind: "duplicate_entity" },
+      },
+      {
+        tool_name: "synthi_dojo_run_wind_tunnel",
+        args: { skill_id: hiddenSkill.skill_id, max_scenarios: 1 },
+      },
+      {
+        tool_name: "synthi_dojo_get_license_health",
+        args: { skill_id: hiddenSkill.skill_id },
+      },
+      {
+        tool_name: "synthi_dojo_revoke_license",
+        args: {
+          skill_id: hiddenSkill.skill_id,
+          reason: "production cross-workspace test",
+          actor_id: "unit-reviewer",
+          actor_type: "human",
+          evidence_refs: ["evidence:cross-workspace"],
+        },
+      },
+      {
+        tool_name: "synthi_dojo_record_case_law",
+        args: {
+          skill_id: hiddenSkill.skill_id,
+          finding: "Cross-workspace case law mutation attempt",
+          rule: "Only authorized workspace actors may propose binding runtime rules.",
+          evidence_refs: ["evidence:cross-workspace"],
+        },
+      },
+      {
+        tool_name: "synthi_dojo_export_artifacts",
+        args: { skill_id: hiddenSkill.skill_id },
+      },
+      {
+        tool_name: "synthi_dojo_export_compliance_pack",
+        args: { skill_id: hiddenSkill.skill_id },
+      },
+      {
+        tool_name: "synthi_dojo_request_permission_upgrade",
+        args: {
+          skill_id: hiddenSkill.skill_id,
+          requested_action: "commit_mutation",
+          actor_id: "unit-reviewer",
+          actor_type: "agent",
+        },
+      },
+      {
+        tool_name: "synthi_dojo_recertify_skill",
+        args: {
+          skill_id: hiddenSkill.skill_id,
+          reason: "production cross-workspace test",
+          actor_id: "unit-reviewer",
+          actor_type: "human",
+          evidence_refs: ["evidence:cross-workspace"],
+        },
+      },
+    ];
+
+    for (const call of protectedToolCalls) {
+      const blocked = await dispatchDojoTool(call.tool_name, {
+        ...call.args,
+        ...productionTenantContextArgs({ request_id: `req-${call.tool_name}-cross-workspace` }),
+      });
+      expect(blocked?.isError, call.tool_name).toBe(true);
+      expect(blocked?.structuredContent, call.tool_name).toEqual(expect.objectContaining({
+        error: "dojo_skill_not_authorized",
+        skill_id: hiddenSkill.skill_id,
+        workspace_id: "workspace-b",
+        tenant_workspace_id: "workspace-a",
+      }));
+    }
+
+    const missingComplianceContext = await dispatchDojoTool("synthi_dojo_export_compliance_pack", {});
+    expect(missingComplianceContext?.isError).toBe(true);
+    expect(missingComplianceContext?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_tenant_context_required",
+      blocked_by: expect.arrayContaining(["tenant_context_workspace_id_missing"]),
+    }));
+
+    const visibleHealth = await dispatchDojoTool("synthi_dojo_get_license_health", {
+      skill_id: visibleSkillId,
+      ...productionTenantContextArgs({ request_id: "req-production-visible-health" }),
+    });
+    expect(visibleHealth?.isError).toBeUndefined();
+    expect(visibleHealth?.structuredContent).toEqual(expect.objectContaining({
+      license_health: expect.objectContaining({
+        skill_id: visibleSkillId,
+        governance: expect.objectContaining({ workspace_id: "workspace-a" }),
+      }),
+    }));
+
+    const visibleArtifacts = await dispatchDojoTool("synthi_dojo_export_artifacts", {
+      skill_id: visibleSkillId,
+      ...productionTenantContextArgs({ request_id: "req-production-visible-artifacts" }),
+    });
+    expect(visibleArtifacts?.isError).toBeUndefined();
+    expect(visibleArtifacts?.structuredContent).toEqual(expect.objectContaining({
+      skill_id: visibleSkillId,
+      artifact_count: expect.any(Number),
+    }));
+
+    const visibleVivarium = await dispatchDojoTool("synthi_dojo_run_vivarium_scenario", {
+      skill_id: visibleSkillId,
+      mutation_kind: "duplicate_entity",
+      ...productionTenantContextArgs({ request_id: "req-production-visible-vivarium" }),
+    });
+    expect(visibleVivarium?.isError).toBeUndefined();
+    expect(visibleVivarium?.structuredContent).toEqual(expect.objectContaining({
+      skill_id: visibleSkillId,
+      vivarium_run: expect.objectContaining({
+        schema_version: "synthi.dojo.vivariumScenarioRun.v1",
+        tenant_context: expect.objectContaining({ workspace_id: "workspace-a" }),
+      }),
+    }));
+
+    const visibleCompliance = await dispatchDojoTool("synthi_dojo_export_compliance_pack", productionTenantContextArgs({
+      request_id: "req-production-visible-compliance",
+    }));
+    expect(visibleCompliance?.isError).toBeUndefined();
+    expect(visibleCompliance?.structuredContent).toEqual(expect.objectContaining({
+      pack: expect.objectContaining({
+        skill_ids: [visibleSkillId],
+        workspace_ids: ["workspace-a"],
+      }),
+    }));
   });
 
   it("advertises the static Dojo tool surface to strict MCP clients", async () => {
@@ -2203,6 +2318,33 @@ function recordOpenDetailsWorkflowForDojoToolTest(): void {
       { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
     ],
   });
+}
+
+async function publishTwoWorkspaceSkillsForDojoToolTest(): Promise<{
+  visibleSkillId: string;
+  hiddenSkill: ReturnType<typeof buildDojoSkill>;
+}> {
+  recordOpenDetailsWorkflowForDojoToolTest();
+  const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+  expect(publish?.isError).toBeUndefined();
+  const visibleSkillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+  const hiddenWorkflow = compileWorkflowContract([
+    event({
+      event_id: "archive-record",
+      event_seq: 1,
+      action: "click",
+      detail: { element: { role: "button", name: "Archive record" } },
+      locator_candidates: [
+        { kind: "role", locator: "page.getByRole(\"button\", { name: \"Archive record\" })", confidence: 0.97, reason: "role" },
+      ],
+    }),
+  ]);
+  const hiddenSkill = dojoSkillRegistry.publish(buildDojoSkill(hiddenWorkflow.contract, {
+    workspace_id: "workspace-b",
+    now: "2026-06-11T00:00:00.000Z",
+  }));
+  expect(hiddenSkill.skill_id).not.toBe(visibleSkillId);
+  return { visibleSkillId, hiddenSkill };
 }
 
 function publishArgsForDojoToolTest(overrides: Record<string, unknown> = {}): Record<string, unknown> {

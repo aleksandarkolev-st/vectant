@@ -1319,7 +1319,7 @@ function dojoRunGhostModeTool(args: unknown): ToolResponse {
 function dojoPermissionUpgradeTool(args: unknown): ToolResponse {
   const a = obj(args);
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const actorId = stringOpt(a["actor_id"]);
   if (!actorId) return errorResponse("dojo_permission_upgrade_actor_required");
@@ -1521,17 +1521,14 @@ function dojoGenerateVivariumScenariosTool(args: unknown): ToolResponse {
 }
 
 async function dojoRunVivariumScenarioTool(args: unknown): Promise<ToolResponse> {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const a = obj(args);
   const scenarioRun = await runDojoVivariumScenario(skill.skill, {
     scenario_id: stringOpt(a["scenario_id"]),
     mutation_kind: stringOpt(a["mutation_kind"]),
     now: stringOpt(a["now"]),
-    tenant_context: dojoTenantContextFromArgs({
-      ...a,
-      workspace_id: stringOpt(a["workspace_id"]) ?? skill.skill.workspace_id,
-    }),
+    tenant_context: skill.tenant,
   });
   const updated = persistDojoRuns(skill.skill, [scenarioRun.run]);
   return jsonResponse({
@@ -1544,16 +1541,13 @@ async function dojoRunVivariumScenarioTool(args: unknown): Promise<ToolResponse>
 }
 
 async function dojoRunWindTunnelTool(args: unknown): Promise<ToolResponse> {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const a = obj(args);
   const tunnel = await runDojoWindTunnel(skill.skill, {
     max_scenarios: numberOpt(a["max_scenarios"]),
     now: stringOpt(a["now"]),
-    tenant_context: dojoTenantContextFromArgs({
-      ...a,
-      workspace_id: stringOpt(a["workspace_id"]) ?? skill.skill.workspace_id,
-    }),
+    tenant_context: skill.tenant,
   });
   const updated = persistDojoRuns(skill.skill, tunnel.runs.map((run) => run.run), tunnel);
   return jsonResponse({
@@ -1732,10 +1726,23 @@ function dojoPublishSkillTool(args: unknown): ToolResponse {
 function dojoRecertifySkillTool(args: unknown): ToolResponse {
   const existing = skillByArgs(args);
   const a = obj(args);
+  let tenant: DojoTenantContext | null = null;
+  if (existing) {
+    const authorization = authorizeTenantForDojoSkill(args, existing);
+    if (!authorization.ok) return authorization.error;
+    tenant = authorization.tenant;
+  }
   const workflowId = existing?.workflow_id ?? stringOpt(a["workflow_id"]);
   const artifact = requiredWorkflowArtifact({ workflow_id: workflowId });
   if (!artifact.ok) return artifact.error;
   const workspaceId = stringOpt(a["workspace_id"]) ?? existing?.workspace_id;
+  if (!tenant) {
+    const tenantContext = dojoTenantContextResultFromArgs(args, {
+      development_defaults: workspaceId ? { workspace_id: workspaceId } : undefined,
+    });
+    if (!tenantContext.ok) return tenantContext.error;
+    tenant = tenantContext.tenant;
+  }
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const reason = stringOpt(a["reason"]);
   if (!reason) return errorResponse("dojo_recertification_reason_required");
@@ -1785,19 +1792,14 @@ function dojoRecertifySkillTool(args: unknown): ToolResponse {
     checkride: recertified.checkride,
     license: recertified.permission_license,
     license_health: licenseHealthFor(recertified),
-    governance_service: buildDojoGovernanceServiceView({
-      skills: dojoSkillRegistry.list(),
-      case_law_records: dojoSkillRegistry.listCaseLawRecords(),
-      permission_upgrade_requests: dojoSkillRegistry.listPermissionUpgradeRequests(),
-      now,
-    }),
+    governance_service: governanceServiceViewForTenant(tenant, now),
     assurance_case: recertified.assurance_case,
     repo_artifacts: artifactSummary(exportDojoRepoArtifacts(recertified)),
   });
 }
 
 function dojoGetLicenseHealthTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({
     ok: true,
@@ -1807,7 +1809,7 @@ function dojoGetLicenseHealthTool(args: unknown): ToolResponse {
 }
 
 function dojoRevokeLicenseTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const a = obj(args);
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
@@ -1842,7 +1844,7 @@ function dojoRevokeLicenseTool(args: unknown): ToolResponse {
 }
 
 function dojoRecordCaseLawTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const a = obj(args);
   const finding = stringOpt(a["finding"]);
@@ -1916,7 +1918,7 @@ function dojoRecordCaseLawTool(args: unknown): ToolResponse {
 }
 
 function dojoExportArtifactsTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const artifacts = exportDojoRepoArtifacts(skill.skill);
   return jsonResponse({
@@ -1928,14 +1930,27 @@ function dojoExportArtifactsTool(args: unknown): ToolResponse {
 }
 
 function dojoExportCompliancePackTool(args: unknown): ToolResponse {
-  const explicitSkill = skillByArgs(args);
-  const skills = explicitSkill ? [explicitSkill] : dojoSkillRegistry.list();
+  const a = obj(args);
+  const hasExplicitSkillSelection = Boolean(stringOpt(a["skill_id"]) || stringOpt(a["workflow_id"]));
+  let tenant: DojoTenantContext;
+  let skills: DojoSkill[];
+  if (hasExplicitSkillSelection) {
+    const skill = requiredAuthorizedSkill(args);
+    if (!skill.ok) return skill.error;
+    tenant = skill.tenant;
+    skills = [skill.skill];
+  } else {
+    const tenantContext = dojoTenantContextResultFromArgs(args);
+    if (!tenantContext.ok) return tenantContext.error;
+    tenant = tenantContext.tenant;
+    skills = visibleDojoSkillsForTenant(tenant);
+  }
   if (skills.length === 0) return errorResponse("dojo_skill_required");
-  const now = stringOpt(obj(args)["now"]) ?? new Date().toISOString();
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const governanceService = buildDojoGovernanceServiceView({
     skills,
-    case_law_records: dojoSkillRegistry.listCaseLawRecords(),
-    permission_upgrade_requests: dojoSkillRegistry.listPermissionUpgradeRequests(),
+    case_law_records: visibleDojoCaseLawRecordsForTenant(tenant, skills),
+    permission_upgrade_requests: visibleDojoPermissionUpgradeRequestsForSkills(skills),
     now,
   });
   const exportedArtifacts = skills.flatMap((skill) => exportDojoRepoArtifacts(skill));
@@ -2396,18 +2411,27 @@ function requiredAuthorizedSkill(
 ): { ok: true; skill: DojoSkill; tenant: DojoTenantContext } | { ok: false; error: ToolResponse } {
   const skill = requiredSkill(args);
   if (!skill.ok) return skill;
+  const authorization = authorizeTenantForDojoSkill(args, skill.skill);
+  if (!authorization.ok) return authorization;
+  return { ok: true, skill: skill.skill, tenant: authorization.tenant };
+}
+
+function authorizeTenantForDojoSkill(
+  args: unknown,
+  skill: DojoSkill
+): { ok: true; tenant: DojoTenantContext } | { ok: false; error: ToolResponse } {
   const tenantContext = dojoTenantContextResultFromArgs(args, {
-    development_defaults: { workspace_id: skill.skill.workspace_id },
+    development_defaults: { workspace_id: skill.workspace_id },
   });
   if (!tenantContext.ok) return tenantContext;
   const tenant = tenantContext.tenant;
-  if (!isTenantAuthorizedForDojoSkill(tenant, skill.skill)) {
+  if (!isTenantAuthorizedForDojoSkill(tenant, skill)) {
     return {
       ok: false,
       error: errorResponse("dojo_skill_not_authorized", {
         ok: false,
-        skill_id: skill.skill.skill_id,
-        workspace_id: skill.skill.workspace_id,
+        skill_id: skill.skill_id,
+        workspace_id: skill.workspace_id,
         tenant_workspace_id: tenant.workspace_id,
         actor_id: tenant.actor_id,
         blocked_by: ["dojo_skill_workspace_mismatch"],
@@ -2415,7 +2439,7 @@ function requiredAuthorizedSkill(
       }),
     };
   }
-  return { ok: true, skill: skill.skill, tenant };
+  return { ok: true, tenant };
 }
 
 function isTenantAuthorizedForDojoSkill(tenant: DojoTenantContext, skill: DojoSkill): boolean {
