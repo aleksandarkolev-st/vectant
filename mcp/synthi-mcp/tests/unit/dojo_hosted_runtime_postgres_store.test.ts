@@ -75,6 +75,24 @@ describe("PostgresDojoHostedRuntimeSessionStore", () => {
     await expect(store.saveSession(runtimeSession({ tenant_id: "tenant-b" }))).rejects.toThrow("dojo_runtime_session_tenant_mismatch");
     await expect(store.updateSession(runtimeSession({ workspace_id: "workspace-b" }))).rejects.toThrow("dojo_runtime_session_workspace_mismatch");
   });
+
+  it("rejects malformed runtime session records before persistence", async () => {
+    const store = new PostgresDojoHostedRuntimeSessionStore({
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      queryable: new RuntimeSessionQueryableFake(),
+    });
+
+    await expect(store.saveSession(runtimeSession({
+      schema_version: "invalid" as any,
+    }))).rejects.toThrow("dojo_runtime_session_schema_version_invalid");
+    await expect(store.saveSession(runtimeSession({
+      credential_sha256: "not-a-digest",
+    }))).rejects.toThrow("dojo_runtime_session_credential_sha256_invalid");
+    await expect(store.saveSession(runtimeSession({
+      origin_allowlist: [],
+    }))).rejects.toThrow("dojo_runtime_session_origin_allowlist_required");
+  });
 });
 
 class RuntimeSessionQueryableFake implements DojoPostgresQueryable {

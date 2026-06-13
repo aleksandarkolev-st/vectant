@@ -57,11 +57,13 @@ export class PostgresDojoHostedRuntimeSessionStore implements DojoHostedRuntimeS
 
   async saveSession(record: DojoHostedRuntimeSessionRecord): Promise<DojoHostedRuntimeSessionRecord> {
     this.assertScope(record);
+    assertSessionShape(record);
     return this.upsert(record);
   }
 
   async updateSession(record: DojoHostedRuntimeSessionRecord): Promise<DojoHostedRuntimeSessionRecord> {
     this.assertScope(record);
+    assertSessionShape(record);
     return this.upsert(record);
   }
 
@@ -244,8 +246,43 @@ function iso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
+function assertSessionShape(record: DojoHostedRuntimeSessionRecord): void {
+  if (record.schema_version !== "synthi.dojo.hostedRuntimeSession.v1") {
+    throw new Error("dojo_runtime_session_schema_version_invalid");
+  }
+  requiredId(record.session_id, "session_id");
+  requiredId(record.runtime_id, "runtime_id");
+  requiredId(record.organization_id, "organization_id");
+  requiredId(record.skill_id, "skill_id");
+  requiredId(record.run_id, "run_id");
+  requiredId(record.actor_id, "actor_id");
+  requiredId(record.workspace_url, "workspace_url");
+  requiredId(record.workspace_origin, "workspace_origin");
+  requiredId(record.credential_id, "credential_id");
+  if (!["human", "agent", "service"].includes(record.actor_type)) {
+    throw new Error(`dojo_runtime_session_actor_type_invalid:${String(record.actor_type)}`);
+  }
+  if (!["active", "revoked", "expired"].includes(record.status)) {
+    throw new Error(`dojo_runtime_session_status_invalid:${String(record.status)}`);
+  }
+  if (!/^[a-f0-9]{64}$/i.test(record.credential_sha256)) {
+    throw new Error("dojo_runtime_session_credential_sha256_invalid");
+  }
+  for (const field of ["created_at", "expires_at", "credential_expires_at"] as const) {
+    if (Number.isNaN(Date.parse(record[field]))) {
+      throw new Error(`dojo_runtime_session_${field}_invalid`);
+    }
+  }
+  if (record.revoked_at && Number.isNaN(Date.parse(record.revoked_at))) {
+    throw new Error("dojo_runtime_session_revoked_at_invalid");
+  }
+  if (!Array.isArray(record.origin_allowlist) || record.origin_allowlist.length === 0) {
+    throw new Error("dojo_runtime_session_origin_allowlist_required");
+  }
+}
+
 function requiredId(value: string, field: string): string {
-  const trimmed = value.trim();
+  const trimmed = String(value || "").trim();
   if (!trimmed) throw new Error(`dojo_runtime_session_${field}_required`);
   return trimmed;
 }

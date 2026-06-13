@@ -124,6 +124,10 @@ function postgresVitestReportFixture() {
       "PostgresDojoGraphRunStore persists executable checkride reports and scenario runs from observed runtime evidence",
     ],
     [
+      "PostgresDojoHostedRuntimeSessionStore integration persists gateway-created hosted runtime sessions and revocation updates",
+      "PostgresDojoHostedRuntimeSessionStore integration authorizes actions through a Postgres-backed hosted runtime session and persists evidence refs",
+    ],
+    [
       "PostgresDojoMcpHostConformanceStore persists conformance reports with digest custody and audit events",
       "PostgresDojoMcpHostConformanceStore filters conformance reports by host kind and status",
     ],
