@@ -46,6 +46,9 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("api_tool_proof_evidence_claim_unverified:checkride_passed")).toBe("proof_evidence_claim_unverified");
     expect(normalizeDojoProofErrorCode("api_tool_proof_evidence_records_required")).toBe("proof_evidence_claim_unverified");
     expect(normalizeDojoProofErrorCode("api_tool_auth_scope_missing")).toBe("action_not_licensed");
+    expect(normalizeDojoProofErrorCode("api_tool_compiled_tool_required")).toBe("dojo_execution_policy_blocked");
+    expect(normalizeDojoProofErrorCode("api_tool_transport_required")).toBe("dojo_execution_policy_blocked");
+    expect(normalizeDojoProofErrorCode("api_tool_evidence_writer_required")).toBe("dojo_execution_policy_blocked");
     expect(normalizeDojoProofErrorCode("api_tool_evidence_write_failed")).toBe("dojo_execution_policy_blocked");
     expect(normalizeDojoProofErrorCode("substrate_not_allowed")).toBe("substrate_not_allowed");
     expect(normalizeDojoProofErrorCode("unexpected-low-level-detail")).toBe("unknown");

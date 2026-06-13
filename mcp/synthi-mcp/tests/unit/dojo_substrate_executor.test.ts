@@ -6,12 +6,12 @@ import { DojoSkillGraphRuntime } from "../../src/dojo/graph/runtime.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
 
 describe("Dojo substrate executor", () => {
-  it("rejects API substrate actions without approved candidate", async () => {
+  it("rejects checkride API substrate actions without approved candidate", async () => {
     const runtime = new DojoSkillGraphRuntime();
 
     await expect(runtime.execute({
       graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: "api-a" } }),
-      mode: "production",
+      mode: "checkride",
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -69,12 +69,12 @@ describe("Dojo substrate executor", () => {
     }));
   });
 
-  it("executes approved API substrate and records substrate evidence", async () => {
+  it("validates approved API candidate substrate in checkride mode without production transport", async () => {
     const runtime = new DojoSkillGraphRuntime();
 
     await expect(runtime.execute({
       graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: "api-a" } }),
-      mode: "production",
+      mode: "checkride",
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -95,6 +95,29 @@ describe("Dojo substrate executor", () => {
           }),
         }),
       ]),
+    }));
+  });
+
+  it("rejects production API candidate-only execution without a compiled API tool", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: "api-a" } }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        approved_api_candidates: ["api-a"],
+        license_allowed_substrates: ["api"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_compiled_tool_required"],
     }));
   });
 
@@ -155,7 +178,7 @@ describe("Dojo substrate executor", () => {
 
     await expect(runtime.execute({
       graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: "api-a" } }),
-      mode: "production",
+      mode: "checkride",
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -173,13 +196,13 @@ describe("Dojo substrate executor", () => {
     }));
   });
 
-  it("executes API substrate only when a compiled API tool invocation passes proof and license preflight", async () => {
+  it("validates compiled API substrate preflight in checkride mode", async () => {
     const runtime = new DojoSkillGraphRuntime();
     const tool = compiledApiTool();
 
     await expect(runtime.execute({
       graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: tool.candidate_id } }),
-      mode: "production",
+      mode: "checkride",
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -215,7 +238,7 @@ describe("Dojo substrate executor", () => {
 
     await expect(runtime.execute({
       graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: tool.candidate_id } }),
-      mode: "production",
+      mode: "checkride",
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -245,7 +268,7 @@ describe("Dojo substrate executor", () => {
 
     await expect(runtime.execute({
       graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: tool.candidate_id } }),
-      mode: "production",
+      mode: "checkride",
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -275,7 +298,7 @@ describe("Dojo substrate executor", () => {
 
     await expect(runtime.execute({
       graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: tool.candidate_id } }),
-      mode: "production",
+      mode: "checkride",
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -301,6 +324,46 @@ describe("Dojo substrate executor", () => {
       ok: false,
       status: "blocked",
       blocked_by: ["api_tool_auth_scope_missing"],
+    }));
+  });
+
+  it("rejects compiled API production execution without transport, evidence writer, and proof validator callbacks", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const tool = compiledApiTool();
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: tool.candidate_id } }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["api"],
+        compiled_api_tool: tool,
+        api_tool_args: {
+          proof_capsule: proofCapsuleFixture(),
+          request: { amount: 42 },
+          idempotency_key: "idem-a",
+        },
+        license_context: {
+          skill_id: "skill-a",
+          license_id: "license-a",
+          license_version: "1.0.0",
+          action: "run_workflow",
+          auth_scopes: ["invoice:write"],
+        },
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: [
+        "api_tool_proof_validator_required",
+        "api_tool_transport_required",
+        "api_tool_evidence_writer_required",
+      ],
     }));
   });
 

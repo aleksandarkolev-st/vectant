@@ -49,7 +49,7 @@ export class FakeDojoSubstrateExecutor implements DojoSubstrateExecutor {
     }
     const substrate = selection.substrate;
     if (substrate === "api") {
-      const apiValidation = await apiSubstrateApproved(request.node, request.inputs, this.options);
+      const apiValidation = await apiSubstrateApproved(request.node, request.inputs, request.mode ?? "practice", this.options);
       if (!apiValidation.ok) {
         return {
           ok: false,
@@ -127,10 +127,12 @@ function requestedSubstrate(inputs: Record<string, unknown>): DojoExecutionSubst
 async function apiSubstrateApproved(
   node: DojoGraphNode,
   inputs: Record<string, unknown>,
+  mode: DojoGraphMode,
   options: DojoSubstrateExecutorOptions
 ): Promise<{ ok: boolean; blocked_by: string[]; execution?: DojoApiToolExecutionResult }> {
   const compiledTool = objectOpt(inputs["compiled_api_tool"]);
-  if (compiledTool) return compiledApiToolApproved(node, inputs, compiledTool as unknown as DojoApiBackedMcpTool, options);
+  if (compiledTool) return compiledApiToolApproved(node, inputs, compiledTool as unknown as DojoApiBackedMcpTool, mode, options);
+  if (mode === "production") return { ok: false, blocked_by: ["api_tool_compiled_tool_required"] };
   return apiCandidateApproved(node, inputs)
     ? { ok: true, blocked_by: [] }
     : { ok: false, blocked_by: ["api_candidate_not_approved"] };
@@ -140,12 +142,21 @@ function compiledApiToolApproved(
   node: DojoGraphNode,
   inputs: Record<string, unknown>,
   tool: DojoApiBackedMcpTool,
+  mode: DojoGraphMode,
   options: DojoSubstrateExecutorOptions
 ): { ok: boolean; blocked_by: string[] } | Promise<{ ok: boolean; blocked_by: string[]; execution?: DojoApiToolExecutionResult }> {
   const candidateId = typeof node.metadata?.["api_candidate_id"] === "string" ? node.metadata["api_candidate_id"] : undefined;
   if (candidateId && tool.candidate_id !== candidateId) return { ok: false, blocked_by: ["api_tool_candidate_mismatch"] };
   const licenseContext = licenseContextOpt(inputs["license_context"]);
   if (!licenseContext) return { ok: false, blocked_by: ["api_tool_license_context_required"] };
+  if (mode === "production") {
+    const blockedBy = [
+      ...(options.validate_api_proof ? [] : ["api_tool_proof_validator_required"]),
+      ...(options.api_transport ? [] : ["api_tool_transport_required"]),
+      ...(options.write_api_evidence ? [] : ["api_tool_evidence_writer_required"]),
+    ];
+    if (blockedBy.length > 0) return { ok: false, blocked_by: blockedBy };
+  }
   if (options.api_transport && options.write_api_evidence) {
     return executeDojoApiBackedToolInvocation({
       tool,
