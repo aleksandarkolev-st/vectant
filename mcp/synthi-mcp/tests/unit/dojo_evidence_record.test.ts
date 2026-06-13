@@ -3,6 +3,8 @@ import {
   buildDojoEvidenceLedgerRecord,
   buildDojoLedgerCheckpoint,
   canonicalJson,
+  createHmacDojoEvidenceRecordSigner,
+  verifyDojoEvidenceLedgerRecordSignature,
 } from "../../src/dojo/evidence/ledger_record.js";
 import type { DojoEvidenceRecordInput } from "../../src/dojo/evidence/types.js";
 
@@ -55,6 +57,71 @@ describe("Dojo evidence ledger record schema", () => {
 
     expect(record.redaction_manifest_sha256).toBeNull();
     expect(record.legal_hold).toBe(true);
+  });
+
+  it("signs evidence records with a verifier-compatible payload", () => {
+    const signer = createHmacDojoEvidenceRecordSigner({
+      signer_key_id: "ledger-key-a",
+      secret: "ledger-secret-a",
+    });
+    const record = buildDojoEvidenceLedgerRecord(
+      {
+        ...baseInput(),
+        signer_key_id: undefined,
+      },
+      { signer, require_signature: true }
+    );
+
+    expect(record.signer_key_id).toBe("ledger-key-a");
+    expect(record.signature).toMatch(/^hmac-sha256:[a-f0-9]{64}$/);
+    expect(verifyDojoEvidenceLedgerRecordSignature(record, [signer])).toEqual({
+      ok: true,
+      signer_key_id: "ledger-key-a",
+      blocked_by: [],
+    });
+  });
+
+  it("fails closed when a required evidence signature is unavailable", () => {
+    expect(() => buildDojoEvidenceLedgerRecord(baseInput(), { require_signature: true })).toThrow(
+      "dojo_evidence_signature_required"
+    );
+  });
+
+  it("rejects mismatched signer keys before hashing", () => {
+    const signer = createHmacDojoEvidenceRecordSigner({
+      signer_key_id: "ledger-key-b",
+      secret: "ledger-secret-b",
+    });
+
+    expect(() => buildDojoEvidenceLedgerRecord(baseInput(), { signer })).toThrow("dojo_evidence_signer_key_mismatch");
+  });
+
+  it("detects tampered or untrusted evidence record signatures", () => {
+    const signer = createHmacDojoEvidenceRecordSigner({
+      signer_key_id: "key-a",
+      secret: "ledger-secret-a",
+    });
+    const wrongSigner = createHmacDojoEvidenceRecordSigner({
+      signer_key_id: "key-a",
+      secret: "other-secret",
+    });
+    const record = buildDojoEvidenceLedgerRecord(baseInput(), { signer, require_signature: true });
+
+    expect(verifyDojoEvidenceLedgerRecordSignature(record, [wrongSigner])).toEqual({
+      ok: false,
+      signer_key_id: "key-a",
+      blocked_by: ["dojo_evidence_signature_invalid"],
+    });
+    expect(verifyDojoEvidenceLedgerRecordSignature({ ...record, signer_key_id: "missing-key" }, [signer])).toEqual({
+      ok: false,
+      signer_key_id: "missing-key",
+      blocked_by: ["dojo_evidence_signature_key_unknown"],
+    });
+    expect(verifyDojoEvidenceLedgerRecordSignature({ ...record, signature: "not-a-signature" }, [signer])).toEqual({
+      ok: false,
+      signer_key_id: "key-a",
+      blocked_by: ["dojo_evidence_signature_invalid"],
+    });
   });
 
   it("validates SHA-256 digests and required identifiers", () => {

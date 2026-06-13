@@ -1,20 +1,61 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { DojoEvidenceLedgerRecord, DojoEvidenceRecordInput, DojoLedgerCheckpoint } from "./types.js";
 
 const ZERO_HASH = "0".repeat(64);
+const HMAC_SHA256_PREFIX = "hmac-sha256:";
 
-export function buildDojoEvidenceLedgerRecord(input: DojoEvidenceRecordInput): DojoEvidenceLedgerRecord {
-  const normalized = normalizeEvidenceRecordInput(input);
+export interface DojoEvidenceRecordSigner {
+  signer_key_id: string;
+  sign(payload: string): string;
+}
+
+export interface DojoEvidenceRecordSignatureVerifier {
+  signer_key_id: string;
+  verify(payload: string, signature: string): boolean;
+}
+
+export interface DojoEvidenceRecordBuildOptions {
+  signer?: DojoEvidenceRecordSigner;
+  require_signature?: boolean;
+}
+
+export interface DojoEvidenceRecordSignatureVerification {
+  ok: boolean;
+  signer_key_id: string | null;
+  blocked_by: string[];
+}
+
+export function buildDojoEvidenceLedgerRecord(
+  input: DojoEvidenceRecordInput,
+  options: DojoEvidenceRecordBuildOptions = {}
+): DojoEvidenceLedgerRecord {
+  if (options.require_signature && !options.signer) {
+    throw new Error("dojo_evidence_signature_required");
+  }
+  if (options.signer && input.signer_key_id !== undefined && input.signer_key_id !== options.signer.signer_key_id) {
+    throw new Error("dojo_evidence_signer_key_mismatch");
+  }
+  const normalized = normalizeEvidenceRecordInput({
+    ...input,
+    signer_key_id: options.signer?.signer_key_id ?? input.signer_key_id,
+  });
   const material = {
     schema_version: "synthi.dojo.evidenceRecord.v1",
     ...normalized,
   } satisfies Omit<DojoEvidenceLedgerRecord, "record_hash" | "ledger_head_hash" | "signature">;
   const recordHash = sha256Hex(canonicalJson(evidenceRecordHashPayload(material)));
-  return {
+  const unsignedRecord = {
     ...material,
     record_hash: recordHash,
     ledger_head_hash: recordHash,
-    signature: null,
+  };
+  const signature = options.signer ? options.signer.sign(canonicalJson(evidenceRecordSignaturePayload(unsignedRecord))) : null;
+  if (options.require_signature && !signature) {
+    throw new Error("dojo_evidence_signature_required");
+  }
+  return {
+    ...unsignedRecord,
+    signature,
   };
 }
 
@@ -65,6 +106,70 @@ export function evidenceRecordHashPayload(record: Omit<DojoEvidenceLedgerRecord,
   };
 }
 
+export function evidenceRecordSignaturePayload(record: Omit<DojoEvidenceLedgerRecord, "signature">): Record<string, unknown> {
+  return {
+    schema_version: "synthi.dojo.evidenceRecordSignature.v1",
+    record_id: record.record_id,
+    tenant_id: record.tenant_id,
+    workspace_id: record.workspace_id,
+    record_hash: record.record_hash,
+    ledger_head_hash: record.ledger_head_hash,
+    signer_key_id: record.signer_key_id,
+  };
+}
+
+export function createHmacDojoEvidenceRecordSigner(input: {
+  signer_key_id: string;
+  secret: string;
+}): DojoEvidenceRecordSigner & DojoEvidenceRecordSignatureVerifier {
+  const signerKeyId = requireNonEmpty(input.signer_key_id, "signer_key_id");
+  const secret = requireNonEmpty(input.secret, "signature_secret");
+  return {
+    signer_key_id: signerKeyId,
+    sign(payload: string): string {
+      return `${HMAC_SHA256_PREFIX}${createHmac("sha256", secret).update(payload, "utf8").digest("hex")}`;
+    },
+    verify(payload: string, signature: string): boolean {
+      const expected = `${HMAC_SHA256_PREFIX}${createHmac("sha256", secret).update(payload, "utf8").digest("hex")}`;
+      return safeEqual(signature, expected);
+    },
+  };
+}
+
+export function verifyDojoEvidenceLedgerRecordSignature(
+  record: DojoEvidenceLedgerRecord,
+  verifiers: readonly DojoEvidenceRecordSignatureVerifier[]
+): DojoEvidenceRecordSignatureVerification {
+  if (!record.signer_key_id || !record.signature) {
+    return {
+      ok: false,
+      signer_key_id: record.signer_key_id,
+      blocked_by: ["dojo_evidence_signature_missing"],
+    };
+  }
+  if (!record.signature.startsWith(HMAC_SHA256_PREFIX) || !/^[a-f0-9]{64}$/i.test(record.signature.slice(HMAC_SHA256_PREFIX.length))) {
+    return {
+      ok: false,
+      signer_key_id: record.signer_key_id,
+      blocked_by: ["dojo_evidence_signature_invalid"],
+    };
+  }
+  const verifier = verifiers.find((candidate) => candidate.signer_key_id === record.signer_key_id);
+  if (!verifier) {
+    return {
+      ok: false,
+      signer_key_id: record.signer_key_id,
+      blocked_by: ["dojo_evidence_signature_key_unknown"],
+    };
+  }
+  const ok = verifier.verify(canonicalJson(evidenceRecordSignaturePayload(record)), record.signature);
+  return {
+    ok,
+    signer_key_id: record.signer_key_id,
+    blocked_by: ok ? [] : ["dojo_evidence_signature_invalid"],
+  };
+}
+
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(sortForCanonicalJson(value));
 }
@@ -84,6 +189,7 @@ function normalizeEvidenceRecordInput(input: DojoEvidenceRecordInput): Omit<Dojo
   requireSha256(input.artifact_sha256, "artifact_sha256");
   if (input.redaction_manifest_sha256 !== undefined) requireSha256(input.redaction_manifest_sha256, "redaction_manifest_sha256");
   if (input.previous_hash !== undefined) requireSha256(input.previous_hash, "previous_hash");
+  if (input.signer_key_id !== undefined) requireNonEmpty(input.signer_key_id, "signer_key_id");
   requireIsoTimestamp(input.created_at, "created_at");
   requireNonEmpty(input.created_by, "created_by");
   return {
@@ -97,8 +203,15 @@ function normalizeEvidenceRecordInput(input: DojoEvidenceRecordInput): Omit<Dojo
   };
 }
 
-function requireNonEmpty(value: string, field: string): void {
+function requireNonEmpty(value: string, field: string): string {
   if (!value.trim()) throw new Error(`dojo_evidence_${field}_required`);
+  return value.trim();
+}
+
+function safeEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, "utf8");
+  const rightBuffer = Buffer.from(right, "utf8");
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function requireSha256(value: string, field: string): void {
