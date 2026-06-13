@@ -50,11 +50,13 @@ import {
   validateDojoWorkflowPipelineE2EForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
   validateDojoComplianceExportEvidenceForRelease,
+  validateDojoAffordanceCodemodEvidenceForRelease,
   validateDojoPrivacyRedactionEvidenceForRelease,
   validateDojoSecurityAbuseEvidenceForRelease,
   validateDojoSoakPerformanceSummary,
   verifyDojoChaosPerformanceEvidenceArtifact,
   verifyDojoComplianceExportEvidenceArtifact,
+  verifyDojoAffordanceCodemodEvidenceArtifact,
   verifyDojoDockerIntegrationEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoPrivateToolCodexAcceptanceArtifact,
@@ -386,6 +388,54 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("verifies affordance codemod report evidence before source/API promotion", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-affordance-codemod-verify-"));
+    const { report, reportPath, evidencePath } = await writeAffordanceCodemodFixture({ dir });
+
+    expect(validateDojoAffordanceCodemodEvidenceForRelease(report, report.evidence)).toEqual({ ok: true, errors: [] });
+    expect(await verifyDojoAffordanceCodemodEvidenceArtifact({
+      reportPath,
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const rejected = await writeAffordanceCodemodFixture({
+      dir,
+      basename: "dojo-affordance-codemod-rejected",
+      report: affordanceCodemodReportFixture({
+        before_contract: { ok: true },
+        before_vitest: { ok: true },
+      }),
+    });
+    const rejectedResult = await verifyDojoAffordanceCodemodEvidenceArtifact({
+      reportPath: rejected.reportPath,
+      evidencePath: rejected.evidencePath,
+      releaseCandidate: true,
+    });
+    expect(rejectedResult.ok).toBe(false);
+    expect(rejectedResult.errors).toEqual(expect.arrayContaining([
+      "affordance_codemod_before_did_not_fail",
+    ]));
+
+    const driftedEvidencePath = path.join(dir, "dojo-affordance-codemod-drifted.evidence.json");
+    await writeFile(driftedEvidencePath, JSON.stringify({
+      ...report.evidence,
+      report_sha256: sha256("tampered-affordance-report"),
+    }, null, 2), "utf8");
+    const drifted = await verifyDojoAffordanceCodemodEvidenceArtifact({
+      reportPath,
+      evidencePath: driftedEvidencePath,
+      releaseCandidate: true,
+    });
+    expect(drifted.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^report_sha256_mismatch:/),
+    ]));
+  });
+
   it("verifies live hosted runtime acceptance artifacts for release candidates", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-live-hosted-runtime-verify-"));
     const workflow = await writeWorkflowE2EFixture({ dir });
@@ -640,6 +690,7 @@ describe("Dojo release gate artifact verifier", () => {
     const selfCheck = await writeProofSelfCheckFixture({ dir });
     const postgresEvidencePath = await writePostgresControlPlaneEvidenceFixture({ dir });
     const dockerEvidencePath = await writeDockerIntegrationEvidenceFixture({ dir });
+    const affordanceCodemod = await writeAffordanceCodemodFixture({ dir });
     const conformanceReportPath = path.join(dir, "dojo-mcp-host-conformance.json");
     const conformanceEvidencePath = path.join(dir, "dojo-mcp-host-conformance.evidence.json");
     await writeConformancePair({
@@ -690,6 +741,9 @@ describe("Dojo release gate artifact verifier", () => {
     selfCheckGate.default_evidence_path = selfCheck.productionEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_postgres_control_plane_self_check").default_evidence_path = postgresEvidencePath;
     manifest.gates.find((gate) => gate.id === "docker_integration").default_evidence_path = dockerEvidencePath;
+    const affordanceGate = manifest.gates.find((gate) => gate.id === "dojo_affordance_codemod_self_check");
+    affordanceGate.default_report_path = affordanceCodemod.reportPath;
+    affordanceGate.default_evidence_path = affordanceCodemod.evidencePath;
     manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
     manifest.gates.find((gate) => gate.id === "privacy_redaction_suite").default_evidence_path = privacyEvidencePath;
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
@@ -742,6 +796,14 @@ describe("Dojo release gate artifact verifier", () => {
         id: "docker_integration",
         ok: true,
         evidence_path: dockerEvidencePath,
+      }),
+    ]);
+    expect(verified.source_api).toEqual([
+      expect.objectContaining({
+        id: "dojo_affordance_codemod_self_check",
+        ok: true,
+        artifact_path: affordanceCodemod.reportPath,
+        evidence_path: affordanceCodemod.evidencePath,
       }),
     ]);
     expect(verified.visual_reports).toHaveLength(2);
@@ -2054,6 +2116,126 @@ function dockerEndpointFixture({
     ok,
     duration_ms: 25,
     error: ok ? null : "unexpected_status",
+  };
+}
+
+async function writeAffordanceCodemodFixture({
+  dir,
+  basename = "dojo-affordance-codemod-self-check",
+  report = affordanceCodemodReportFixture(),
+}) {
+  const reportPath = path.join(dir, `${basename}.json`);
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  const serialized = JSON.stringify(report, null, 2);
+  const evidence = affordanceCodemodEvidenceFixture({ report, reportPath, serialized });
+  await writeFile(reportPath, serialized, "utf8");
+  await writeFile(evidencePath, JSON.stringify(evidence, null, 2), "utf8");
+  return {
+    report: { ...report, evidence },
+    reportPath,
+    evidencePath,
+  };
+}
+
+function affordanceCodemodReportFixture(overrides = {}) {
+  const sourceFile = "src/InvoiceForm.jsx";
+  const testFile = "src/__tests__/InvoiceForm.dojo-affordance.test.ts";
+  const operationIds = ["patch_stable_locator_invoice_save", "patch_proof_hook_invoice_save"];
+  const fileRefs = [
+    { kind: "source", path: sourceFile },
+    { kind: "contract_test", path: testFile },
+  ];
+  return {
+    schema_version: "synthi.dojo.affordanceCodemodSelfCheck.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    operation_ids: operationIds,
+    generated_test_path: testFile,
+    patched_source_path: sourceFile,
+    before_contract: { ok: false },
+    wrong_target_contract: { ok: false },
+    after_contract: { ok: true },
+    source_patch_bundle: {
+      ok: true,
+      modified_files: [{ path: sourceFile, applied_operations: operationIds }],
+      generated_tests: [{ path: testFile }],
+    },
+    generated_pr_metadata: {
+      review_requirements: [
+        { gate: "code_owner", required: true },
+        { gate: "security_for_risky_action", required: true },
+      ],
+    },
+    generated_pr_branch_plan: {
+      ready_to_apply: true,
+      file_writes: fileRefs,
+    },
+    generated_pr_stale_apply_result: {
+      ok: false,
+      issues: [{ issue_id: "source_patch_writer:source_patch_stale_source" }],
+      applied_files: [],
+    },
+    generated_pr_branch_apply_result: {
+      ok: true,
+      applied_files: fileRefs,
+    },
+    generated_pr_git_branch_result: {
+      ok: true,
+      commands: [
+        { command: "git", args: ["switch", "--create", "dojo/source-affordance/self-check"] },
+        { command: "git", args: ["status", "--short"] },
+      ],
+      applied_files: fileRefs,
+    },
+    source_patch_write_result: {
+      ok: true,
+      written_files: fileRefs,
+    },
+    before_vitest: { ok: false },
+    wrong_target_vitest: { ok: false },
+    after_vitest: { ok: true },
+    git_branch_vitest: { ok: true },
+    target_matchers: [
+      {
+        operation_id: operationIds[0],
+        target_component: "InvoiceForm",
+        target_match: { role: "button", text: "Save invoice" },
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function affordanceCodemodEvidenceFixture({ report, reportPath, serialized }) {
+  return {
+    schema_version: "synthi.dojo.affordanceCodemodEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    report_path: reportPath,
+    report_sha256: sha256(serialized),
+    report_bytes: Buffer.byteLength(serialized),
+    before_failed: report.before_contract?.ok === false && report.before_vitest?.ok === false,
+    target_aware_contract: report.wrong_target_contract?.ok === false && report.wrong_target_vitest?.ok === false,
+    after_passed: report.after_contract?.ok === true && report.after_vitest?.ok === true,
+    patch_bundle_ok: report.source_patch_bundle?.ok === true,
+    patch_bundle_modified_file_count: report.source_patch_bundle?.modified_files?.length || 0,
+    patch_bundle_generated_test_count: report.source_patch_bundle?.generated_tests?.length || 0,
+    patch_write_ok: report.source_patch_write_result?.ok === true,
+    patch_write_file_count: report.source_patch_write_result?.written_files?.length || 0,
+    generated_pr_branch_plan_ready: report.generated_pr_branch_plan?.ready_to_apply === true,
+    generated_pr_branch_plan_file_count: report.generated_pr_branch_plan?.file_writes?.length || 0,
+    generated_pr_stale_apply_rejected: report.generated_pr_stale_apply_result?.ok === false
+      && Array.isArray(report.generated_pr_stale_apply_result?.issues)
+      && report.generated_pr_stale_apply_result.issues.some((issue) => issue.issue_id === "source_patch_writer:source_patch_stale_source"),
+    generated_pr_branch_apply_ok: report.generated_pr_branch_apply_result?.ok === true,
+    generated_pr_branch_apply_file_count: report.generated_pr_branch_apply_result?.applied_files?.length || 0,
+    generated_pr_git_branch_ok: report.generated_pr_git_branch_result?.ok === true,
+    generated_pr_git_branch_command_count: report.generated_pr_git_branch_result?.commands?.length || 0,
+    generated_pr_git_branch_applied_file_count: report.generated_pr_git_branch_result?.applied_files?.length || 0,
+    git_branch_generated_test_passed: report.git_branch_vitest?.ok === true,
+    generated_pr_review_gate_count: report.generated_pr_metadata?.review_requirements?.length || 0,
+    operation_ids: report.operation_ids,
+    generated_test_path: report.generated_test_path,
+    patched_source_path: report.patched_source_path,
+    target_matchers: report.target_matchers,
   };
 }
 

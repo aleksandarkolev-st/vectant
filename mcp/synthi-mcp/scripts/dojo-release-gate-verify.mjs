@@ -63,6 +63,7 @@ const DEFAULT_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-host-confo
 const DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-stdio-host-conformance");
 const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-host-conformance");
 const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-postgres-control-plane");
+const DEFAULT_AFFORDANCE_CODEMOD_DIR = path.join(REPO_ROOT, "tmp", "dojo-affordance-codemod-self-check");
 const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-integration");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_COMPLIANCE_EXPORT_DIR = path.join(REPO_ROOT, "tmp", "dojo-compliance-export");
@@ -161,6 +162,20 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       evidencePath: resolveRepoPath(args["docker-integration-evidence"]
         || dockerGate.default_evidence_path
         || path.join(DEFAULT_DOCKER_INTEGRATION_DIR, "dojo-docker-integration.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
+  const sourceApiResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-affordance-codemod"]) || args["affordance-codemod-report"] || args["affordance-codemod-evidence"]) {
+    const affordanceGate = findGate(manifest, "dojo_affordance_codemod_self_check") || {};
+    sourceApiResults.push(await verifyDojoAffordanceCodemodEvidenceArtifact({
+      reportPath: resolveRepoPath(args["affordance-codemod-report"]
+        || affordanceGate.default_report_path
+        || path.join(DEFAULT_AFFORDANCE_CODEMOD_DIR, "dojo-affordance-codemod-self-check.json")),
+      evidencePath: resolveRepoPath(args["affordance-codemod-evidence"]
+        || affordanceGate.default_evidence_path
+        || path.join(DEFAULT_AFFORDANCE_CODEMOD_DIR, "dojo-affordance-codemod-self-check.evidence.json")),
       releaseCandidate: truthy(args["release-candidate"]),
     }));
   }
@@ -269,7 +284,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...liveHostedRuntimeResults, ...conformanceResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -281,6 +296,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     visual_reports: visualResults.map(summarizeSection),
     postgres_control_plane: postgresControlPlaneResults.map(summarizeSection),
     docker_integration: dockerIntegrationResults.map(summarizeSection),
+    source_api: sourceApiResults.map(summarizeSection),
     live_hosted_runtime: liveHostedRuntimeResults.map(summarizeSection),
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
@@ -702,6 +718,71 @@ export function validateDojoDockerIntegrationEvidenceForMilestone(evidence) {
   if (evidence?.budget_evaluation?.ok !== true) errors.push("docker_integration_budget_not_ok");
   if (Array.isArray(evidence?.budget_evaluation?.failed_checks) && evidence.budget_evaluation.failed_checks.length > 0) {
     errors.push(`docker_integration_failed_checks:${evidence.budget_evaluation.failed_checks.join(",")}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoAffordanceCodemodEvidenceArtifact({ reportPath, evidencePath, releaseCandidate = false }) {
+  const { artifact: report, evidence, digest } = await readDigestCheckedJsonPair({
+    id: "dojo_affordance_codemod_self_check",
+    artifactPath: reportPath,
+    evidencePath,
+    evidenceSchema: "synthi.dojo.affordanceCodemodEvidence.v1",
+    digestField: "report_sha256",
+    bytesField: "report_bytes",
+    pathField: "report_path",
+  });
+  const errors = [
+    ...digest.errors,
+    ...validateDojoAffordanceCodemodEvidenceForRelease(report, evidence).errors,
+  ];
+  return {
+    id: "dojo_affordance_codemod_self_check",
+    ok: errors.length === 0,
+    errors,
+    artifact_path: reportPath,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: report?.schema_version ?? null,
+    evidence_schema_version: evidence?.schema_version ?? null,
+    operation_count: Array.isArray(evidence?.operation_ids) ? evidence.operation_ids.length : 0,
+  };
+}
+
+export function validateDojoAffordanceCodemodEvidenceForRelease(report, evidence) {
+  const errors = [];
+  if (report?.schema_version !== "synthi.dojo.affordanceCodemodSelfCheck.v1") {
+    errors.push(`affordance_codemod_report_schema_mismatch:${report?.schema_version || "missing"}`);
+  }
+  if (evidence?.schema_version !== "synthi.dojo.affordanceCodemodEvidence.v1") {
+    errors.push(`affordance_codemod_evidence_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.before_failed !== true) errors.push("affordance_codemod_before_did_not_fail");
+  if (evidence?.target_aware_contract !== true) errors.push("affordance_codemod_wrong_target_not_rejected");
+  if (evidence?.after_passed !== true) errors.push("affordance_codemod_after_did_not_pass");
+  if (evidence?.patch_bundle_ok !== true) errors.push("affordance_codemod_patch_bundle_not_ok");
+  if (Number(evidence?.patch_bundle_modified_file_count || 0) <= 0) errors.push("affordance_codemod_no_modified_files");
+  if (Number(evidence?.patch_bundle_generated_test_count || 0) <= 0) errors.push("affordance_codemod_no_generated_tests");
+  if (evidence?.patch_write_ok !== true) errors.push("affordance_codemod_patch_write_not_ok");
+  if (Number(evidence?.patch_write_file_count || 0) < 2) errors.push("affordance_codemod_patch_write_file_count_low");
+  if (evidence?.generated_pr_branch_plan_ready !== true) errors.push("affordance_codemod_generated_pr_branch_plan_not_ready");
+  if (Number(evidence?.generated_pr_branch_plan_file_count || 0) < 2) errors.push("affordance_codemod_generated_pr_branch_plan_file_count_low");
+  if (evidence?.generated_pr_stale_apply_rejected !== true) errors.push("affordance_codemod_stale_source_not_rejected");
+  if (evidence?.generated_pr_branch_apply_ok !== true) errors.push("affordance_codemod_branch_apply_not_ok");
+  if (Number(evidence?.generated_pr_branch_apply_file_count || 0) < 2) errors.push("affordance_codemod_branch_apply_file_count_low");
+  if (evidence?.generated_pr_git_branch_ok !== true) errors.push("affordance_codemod_git_branch_not_ok");
+  if (Number(evidence?.generated_pr_git_branch_applied_file_count || 0) < 2) errors.push("affordance_codemod_git_branch_file_count_low");
+  if (evidence?.git_branch_generated_test_passed !== true) errors.push("affordance_codemod_git_branch_test_not_passed");
+  if (Number(evidence?.generated_pr_review_gate_count || 0) < 1) errors.push("affordance_codemod_review_gate_count_low");
+  if (!Array.isArray(evidence?.operation_ids) || evidence.operation_ids.length < 2) errors.push("affordance_codemod_operation_ids_missing");
+  if (typeof evidence?.generated_test_path !== "string" || evidence.generated_test_path.length === 0) errors.push("affordance_codemod_generated_test_path_missing");
+  if (typeof evidence?.patched_source_path !== "string" || evidence.patched_source_path.length === 0) errors.push("affordance_codemod_patched_source_path_missing");
+  const targetMatchers = Array.isArray(evidence?.target_matchers) ? evidence.target_matchers : [];
+  if (!targetMatchers.some((matcher) => matcher?.target_match && typeof matcher.target_match === "object")) {
+    errors.push("affordance_codemod_target_matchers_missing");
   }
   return {
     ok: errors.length === 0,
@@ -1821,6 +1902,30 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedDocker.errors.includes("docker_integration_missing_services:mcp"));
   assert(rejectedDocker.errors.includes("docker_integration_endpoint_count_mismatch:1:2"));
 
+  const affordanceDir = path.join(outDir, "affordance-codemod");
+  await mkdir(affordanceDir, { recursive: true });
+  const affordanceArtifacts = await writeAffordanceCodemodArtifactsForSelfCheck({ outDir: affordanceDir });
+  const affordanceCodemodResult = await verifyDojoAffordanceCodemodEvidenceArtifact({
+    reportPath: affordanceArtifacts.report_path,
+    evidencePath: affordanceArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(affordanceCodemodResult.ok, true, affordanceCodemodResult.errors.join(";"));
+  const rejectedAffordanceArtifacts = await writeAffordanceCodemodArtifactsForSelfCheck({
+    outDir: affordanceDir,
+    basename: "dojo-affordance-codemod-self-check-rejected",
+    reportOverrides: {
+      before_contract: { ok: true },
+      before_vitest: { ok: true },
+    },
+  });
+  const rejectedAffordanceCodemod = await verifyDojoAffordanceCodemodEvidenceArtifact({
+    reportPath: rejectedAffordanceArtifacts.report_path,
+    evidencePath: rejectedAffordanceArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedAffordanceCodemod.errors.includes("affordance_codemod_before_did_not_fail"));
+
   const liveHostedDir = path.join(outDir, "live-hosted-runtime");
   await mkdir(liveHostedDir, { recursive: true });
   const liveHostedArtifacts = await writeLiveHostedRuntimeArtifactsForSelfCheck({ outDir: liveHostedDir });
@@ -2284,6 +2389,121 @@ async function writeWorkflowE2ESummaryForSelfCheck({ outDir, basename = "workflo
   const summaryPath = path.join(outDir, `${basename}.json`);
   await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
   return summaryPath;
+}
+
+async function writeAffordanceCodemodArtifactsForSelfCheck({ outDir, basename = "dojo-affordance-codemod-self-check", reportOverrides = {} }) {
+  const reportPath = path.join(outDir, `${basename}.json`);
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  const report = buildAffordanceCodemodReportForSelfCheck(reportOverrides);
+  const serialized = JSON.stringify(report, null, 2);
+  const evidence = {
+    schema_version: "synthi.dojo.affordanceCodemodEvidence.v1",
+    generated_at: new Date().toISOString(),
+    report_path: reportPath,
+    report_sha256: sha256(serialized),
+    report_bytes: Buffer.byteLength(serialized),
+    before_failed: report.before_contract?.ok === false && report.before_vitest?.ok === false,
+    target_aware_contract: report.wrong_target_contract?.ok === false && report.wrong_target_vitest?.ok === false,
+    after_passed: report.after_contract?.ok === true && report.after_vitest?.ok === true,
+    patch_bundle_ok: report.source_patch_bundle?.ok === true,
+    patch_bundle_modified_file_count: report.source_patch_bundle?.modified_files?.length || 0,
+    patch_bundle_generated_test_count: report.source_patch_bundle?.generated_tests?.length || 0,
+    patch_write_ok: report.source_patch_write_result?.ok === true,
+    patch_write_file_count: report.source_patch_write_result?.written_files?.length || 0,
+    generated_pr_branch_plan_ready: report.generated_pr_branch_plan?.ready_to_apply === true,
+    generated_pr_branch_plan_file_count: report.generated_pr_branch_plan?.file_writes?.length || 0,
+    generated_pr_stale_apply_rejected: report.generated_pr_stale_apply_result?.ok === false
+      && Array.isArray(report.generated_pr_stale_apply_result?.issues)
+      && report.generated_pr_stale_apply_result.issues.some((issue) => issue.issue_id === "source_patch_writer:source_patch_stale_source"),
+    generated_pr_branch_apply_ok: report.generated_pr_branch_apply_result?.ok === true,
+    generated_pr_branch_apply_file_count: report.generated_pr_branch_apply_result?.applied_files?.length || 0,
+    generated_pr_git_branch_ok: report.generated_pr_git_branch_result?.ok === true,
+    generated_pr_git_branch_command_count: report.generated_pr_git_branch_result?.commands?.length || 0,
+    generated_pr_git_branch_applied_file_count: report.generated_pr_git_branch_result?.applied_files?.length || 0,
+    git_branch_generated_test_passed: report.git_branch_vitest?.ok === true,
+    generated_pr_review_gate_count: report.generated_pr_metadata?.review_requirements?.length || 0,
+    operation_ids: report.operation_ids,
+    generated_test_path: report.generated_test_path,
+    patched_source_path: report.patched_source_path,
+    target_matchers: report.target_matchers,
+  };
+  await writeFile(reportPath, serialized, "utf8");
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    report_path: reportPath,
+    evidence_path: evidencePath,
+  };
+}
+
+function buildAffordanceCodemodReportForSelfCheck(overrides = {}) {
+  const sourceFile = "src/InvoiceForm.jsx";
+  const testFile = "src/__tests__/InvoiceForm.dojo-affordance.test.ts";
+  const operationIds = ["patch_stable_locator_invoice_save", "patch_proof_hook_invoice_save"];
+  const fileRefs = [
+    { kind: "source", path: sourceFile },
+    { kind: "contract_test", path: testFile },
+  ];
+  const base = {
+    schema_version: "synthi.dojo.affordanceCodemodSelfCheck.v1",
+    generated_at: new Date().toISOString(),
+    operation_ids: operationIds,
+    generated_test_path: testFile,
+    patched_source_path: sourceFile,
+    before_contract: { ok: false },
+    wrong_target_contract: { ok: false },
+    after_contract: { ok: true },
+    source_patch_bundle: {
+      ok: true,
+      modified_files: [{ path: sourceFile, applied_operations: operationIds }],
+      generated_tests: [{ path: testFile }],
+    },
+    generated_pr_metadata: {
+      review_requirements: [
+        { gate: "code_owner", required: true },
+        { gate: "security_for_risky_action", required: true },
+      ],
+    },
+    generated_pr_branch_plan: {
+      ready_to_apply: true,
+      file_writes: fileRefs,
+    },
+    generated_pr_stale_apply_result: {
+      ok: false,
+      issues: [{ issue_id: "source_patch_writer:source_patch_stale_source" }],
+      applied_files: [],
+    },
+    generated_pr_branch_apply_result: {
+      ok: true,
+      applied_files: fileRefs,
+    },
+    generated_pr_git_branch_result: {
+      ok: true,
+      commands: [
+        { command: "git", args: ["switch", "--create", "dojo/source-affordance/self-check"] },
+        { command: "git", args: ["status", "--short"] },
+      ],
+      applied_files: fileRefs,
+    },
+    source_patch_write_result: {
+      ok: true,
+      written_files: fileRefs,
+    },
+    before_vitest: { ok: false },
+    wrong_target_vitest: { ok: false },
+    after_vitest: { ok: true },
+    git_branch_vitest: { ok: true },
+    target_matchers: [
+      {
+        operation_id: operationIds[0],
+        target_component: "InvoiceForm",
+        target_match: { role: "button", text: "Save invoice" },
+      },
+    ],
+  };
+  return {
+    ...base,
+    ...overrides,
+  };
 }
 
 async function writeStdioAcceptanceTranscriptForSelfCheck({ outDir, basename = "mcp-stdio-private-tool-acceptance", overrides = {} }) {
