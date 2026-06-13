@@ -222,8 +222,23 @@ describe("Dojo hosted runtime gateway", () => {
       expect.objectContaining({
         action_kind: "graph_action",
         url_origin: "https://workspace.example.test",
+        details: expect.objectContaining({
+          graph_node_id: "node-submit",
+          custody: {
+            runtime_id: "dojo_runtime_runtime-id",
+            session_id: "dojo_runtime_session_session-id",
+            skill_id: "skill-a",
+            run_id: "run-a",
+            workspace_origin: "https://workspace.example.test",
+            origin_allowlist: ["https://workspace.example.test"],
+            egress_policy: { local_network_allowed: false },
+            redaction_policy: { screenshots: true },
+            credential_expires_at: "2026-06-11T00:01:00.000Z",
+          },
+        }),
       }),
     ]);
+    expect(JSON.stringify(evidence.records)).not.toContain(created.credentials.credential_secret);
     expect(audit.events.map((event) => event.event_type)).toEqual([
       "runtime_session_created",
       "runtime_action_authorized",
@@ -471,6 +486,7 @@ class MemoryRuntimeEvidenceWriter implements DojoHostedRuntimeEvidenceWriter {
     action_kind: string;
     url_origin: string;
     session_id: string;
+    details?: Record<string, unknown>;
   }> = [];
 
   appendRuntimeActionEvidence(input: Parameters<DojoHostedRuntimeEvidenceWriter["appendRuntimeActionEvidence"]>[0]) {
@@ -479,6 +495,7 @@ class MemoryRuntimeEvidenceWriter implements DojoHostedRuntimeEvidenceWriter {
       action_kind: input.action_kind,
       url_origin: input.url_origin,
       session_id: input.session.session_id,
+      details: input.details,
     });
     return { record_id: recordId };
   }

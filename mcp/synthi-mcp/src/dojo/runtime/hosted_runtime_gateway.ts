@@ -412,6 +412,7 @@ class InProcessDojoHostedRuntimeGateway implements DojoHostedRuntimeGateway {
 
     let evidenceId: string;
     try {
+      const evidenceDetails = runtimeActionEvidenceDetails(session, input.details);
       const evidence = await this.evidenceWriter.appendRuntimeActionEvidence({
         tenant,
         session,
@@ -419,7 +420,7 @@ class InProcessDojoHostedRuntimeGateway implements DojoHostedRuntimeGateway {
         url: input.url,
         url_origin: actionOrigin,
         created_at: now.toISOString(),
-        details: input.details,
+        details: evidenceDetails,
       });
       evidenceId = evidence.evidence_ref ?? evidence.record_id;
     } catch {
@@ -437,6 +438,9 @@ class InProcessDojoHostedRuntimeGateway implements DojoHostedRuntimeGateway {
         run_id: session.run_id,
         action_kind: input.action_kind,
         url_origin: actionOrigin,
+        runtime_id: session.runtime_id,
+        redaction_policy: { ...session.redaction_policy },
+        egress_policy: { ...session.egress_policy },
         evidence_refs: [evidenceId],
       },
     });
@@ -782,6 +786,26 @@ function asIpv6Segments(segments: number[]): Ipv6Segments | null {
 
 function hashCredential(credentialId: string, credentialSecret: string): string {
   return createHash("sha256").update(`${credentialId}:${credentialSecret}`).digest("hex");
+}
+
+function runtimeActionEvidenceDetails(
+  session: DojoHostedRuntimeSessionRecord,
+  callerDetails: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  return {
+    ...(callerDetails ?? {}),
+    custody: {
+      runtime_id: session.runtime_id,
+      session_id: session.session_id,
+      skill_id: session.skill_id,
+      run_id: session.run_id,
+      workspace_origin: session.workspace_origin,
+      origin_allowlist: [...session.origin_allowlist],
+      egress_policy: { ...session.egress_policy },
+      redaction_policy: { ...session.redaction_policy },
+      credential_expires_at: session.credential_expires_at,
+    },
+  };
 }
 
 function requiredString(value: string, field: string): string {
