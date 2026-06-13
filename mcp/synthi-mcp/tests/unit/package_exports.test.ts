@@ -33,6 +33,10 @@ describe("package exports", () => {
         import: "./dist/dojo/license/kernel.js",
         types: "./dist/dojo/license/kernel.d.ts",
       }),
+      "./dojo/mcp/skill-bus": expect.objectContaining({
+        import: "./dist/dojo/mcp/skill_bus.js",
+        types: "./dist/dojo/mcp/skill_bus.d.ts",
+      }),
     }));
   });
 });

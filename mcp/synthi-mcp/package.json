@@ -34,6 +34,10 @@
       "types": "./dist/dojo/license/kernel.d.ts",
       "import": "./dist/dojo/license/kernel.js"
     },
+    "./dojo/mcp/skill-bus": {
+      "types": "./dist/dojo/mcp/skill_bus.d.ts",
+      "import": "./dist/dojo/mcp/skill_bus.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
