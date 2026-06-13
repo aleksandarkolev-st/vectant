@@ -6,7 +6,12 @@ import type {
   DojoSkillCase,
   DojoSkillReadinessLevel,
 } from "../../browser/dojo.js";
-import type { DojoAuditActor, DojoAuditEventType, DojoPermissionUpgradeRequestRecord } from "../store/interfaces.js";
+import type {
+  DojoAuditActor,
+  DojoAuditEventRecord,
+  DojoAuditEventType,
+  DojoPermissionUpgradeRequestRecord,
+} from "../store/interfaces.js";
 import type { DojoCaseLawRecord } from "../case_law/registry.js";
 
 const LICENSE_EXPIRY_INVALID_TRIGGER = "license_expiry_invalid";
@@ -166,6 +171,8 @@ export interface DojoGovernanceAuditExportItem {
   format: "json" | "zip";
   record_count: number;
   digest: string;
+  audit_event_refs?: string[];
+  event_type_counts?: Record<string, number>;
 }
 
 export interface DojoGovernanceComplianceArtifact {
@@ -484,6 +491,7 @@ export function buildDojoGovernanceServiceView(input: {
   skills: DojoSkill[];
   case_law_records?: DojoCaseLawRecord[];
   permission_upgrade_requests?: DojoPermissionUpgradeRequestRecord[];
+  audit_events?: DojoAuditEventRecord[];
   now?: string;
   expiry_warning_days?: number;
 }): DojoGovernanceServiceView {
@@ -516,6 +524,7 @@ export function buildDojoGovernanceServiceView(input: {
   const auditExports = queryDojoAuditExports({
     skills: input.skills,
     case_law_review_queue: caseLawReviewQueue,
+    audit_events: input.audit_events ?? [],
     generated_at: now,
   });
   const complianceEvidencePack = buildDojoComplianceEvidencePack({
@@ -785,12 +794,17 @@ export function queryDojoRecertificationQueue(input: {
 export function queryDojoAuditExports(input: {
   skills: DojoSkill[];
   case_law_review_queue: DojoGovernanceCaseLawReviewItem[];
+  audit_events?: DojoAuditEventRecord[];
   generated_at: string;
 }): DojoGovernanceAuditExportItem[] {
   const skillCount = input.skills.length;
   const caseLawRecordCount = input.skills.reduce((count, skill) => count + skill.case_law.length, 0)
     + input.case_law_review_queue.length;
-  return [
+  const auditEvents = (input.audit_events ?? [])
+    .map(cloneJson)
+    .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.audit_event_id.localeCompare(right.audit_event_id));
+  const auditEventRefs = auditEvents.map((event) => `audit:${event.audit_event_id}`);
+  const exports: DojoGovernanceAuditExportItem[] = [
     {
       export_id: "skill_assurance_case",
       title: "Skill Assurance Case",
@@ -823,6 +837,23 @@ export function queryDojoAuditExports(input: {
       ]),
     },
   ];
+  if (auditEvents.length > 0) {
+    exports.push({
+      export_id: "control_plane_audit",
+      title: "Control Plane Audit Trail",
+      status: "available",
+      generated_at: input.generated_at,
+      format: "json",
+      record_count: auditEvents.length,
+      digest: digestFor([
+        "control_plane_audit",
+        ...auditEvents.map((event) => `${event.audit_event_id}:${event.event_type}:${event.created_at}`),
+      ]),
+      audit_event_refs: auditEventRefs,
+      event_type_counts: countAuditEventTypes(auditEvents),
+    });
+  }
+  return exports;
 }
 
 export function buildDojoComplianceEvidencePack(input: {
@@ -832,6 +863,7 @@ export function buildDojoComplianceEvidencePack(input: {
   generated_at: string;
 }): DojoGovernanceComplianceEvidencePack {
   const skillCaseLaw = input.skills.flatMap((skill) => skill.case_law);
+  const controlPlaneAuditExport = input.audit_exports.find((item) => item.export_id === "control_plane_audit");
   const caseLawEvidenceRefs = [
     ...skillCaseLaw.flatMap((item) => item.evidence_refs),
     ...input.case_law_review_queue.flatMap((item) => item.evidence_refs),
@@ -853,6 +885,13 @@ export function buildDojoComplianceEvidencePack(input: {
       digest: digestFor(["compliance", "license_and_proof_audit", ...input.skills.map((skill) => skill.permission_license.license_id)]),
       evidence_refs: [],
     },
+    ...(controlPlaneAuditExport ? [{
+      artifact_id: "control_plane_audit",
+      title: "Control Plane Audit Trail",
+      status: controlPlaneAuditExport.status,
+      digest: controlPlaneAuditExport.digest,
+      evidence_refs: [...(controlPlaneAuditExport.audit_event_refs ?? [])],
+    }] : []),
     {
       artifact_id: "case_law_registry",
       title: "Case Law Registry",
@@ -873,6 +912,13 @@ export function buildDojoComplianceEvidencePack(input: {
     missing_artifacts: artifacts.filter((item) => item.status === "missing").map((item) => item.artifact_id),
     retention_class: artifacts.some((item) => item.status === "available") ? "standard" : "regulated",
   };
+}
+
+function countAuditEventTypes(events: DojoAuditEventRecord[]): Record<string, number> {
+  return events.reduce<Record<string, number>>((counts, event) => {
+    counts[event.event_type] = (counts[event.event_type] ?? 0) + 1;
+    return counts;
+  }, {});
 }
 
 function licenseStatusFor(

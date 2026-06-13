@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DojoSkill } from "../../src/browser/dojo.js";
 import type { DojoCaseLawRecord } from "../../src/dojo/case_law/registry.js";
-import type { DojoPermissionUpgradeRequestRecord } from "../../src/dojo/store/interfaces.js";
+import type { DojoAuditEventRecord, DojoPermissionUpgradeRequestRecord } from "../../src/dojo/store/interfaces.js";
 import {
   buildDojoGovernanceServiceView,
   buildDojoComplianceEvidencePack,
@@ -531,6 +531,50 @@ describe("Dojo governance service", () => {
         expect.objectContaining({ artifact_id: "case_law_registry", status: "available" }),
       ]),
     }));
+  });
+
+  it("includes stored control-plane audit events in audit exports and compliance pack", () => {
+    const skill = skillFixture({ skillId: "skill-audited" });
+    const auditEvent: DojoAuditEventRecord = {
+      tenant_id: "tenant-a",
+      workspace_id: skill.workspace_id,
+      audit_event_id: "audit-control-plane-001",
+      actor: { actor_id: "dojo-agent", actor_type: "agent" },
+      event_type: "ghost_shadow_evidence_recorded",
+      request_id: "request-control-plane-001",
+      correlation_id: "correlation-control-plane-001",
+      entity_kind: "ghost_shadow_evidence",
+      entity_id: "ghost-evidence-control-plane-001",
+      details: {
+        skill_id: skill.skill_id,
+        run_id: "ghost-run-control-plane-001",
+        production_mutations_executed: false,
+      },
+      created_at: "2026-06-11T00:06:00.000Z",
+    };
+    const view = buildDojoGovernanceServiceView({
+      skills: [skill],
+      audit_events: [auditEvent],
+      now: "2026-06-11T00:07:00.000Z",
+    });
+
+    expect(view.audit_exports).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        export_id: "control_plane_audit",
+        status: "available",
+        record_count: 1,
+        audit_event_refs: ["audit:audit-control-plane-001"],
+        event_type_counts: { ghost_shadow_evidence_recorded: 1 },
+      }),
+    ]));
+    expect(view.compliance_evidence_pack.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        artifact_id: "control_plane_audit",
+        status: "available",
+        evidence_refs: ["audit:audit-control-plane-001"],
+      }),
+    ]));
+    expect(view.compliance_evidence_pack.missing_artifacts).not.toContain("control_plane_audit");
   });
 
   it("surfaces malformed license expiry in governance metrics and recertification queue", () => {

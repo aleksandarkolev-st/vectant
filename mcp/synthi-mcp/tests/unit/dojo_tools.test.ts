@@ -1891,6 +1891,39 @@ describe("Agent Dojo MCP tools", () => {
         }),
       }),
     ]);
+    const complianceAfterGhost = await dispatchDojoTool("synthi_dojo_export_compliance_pack", {
+      skill_id: published.skill.skill_id,
+      now: "2026-06-11T00:02:30.000Z",
+    });
+    expect(complianceAfterGhost?.structuredContent).toEqual(expect.objectContaining({
+      pack: expect.objectContaining({
+        audit_exports: expect.arrayContaining([
+          expect.objectContaining({
+            export_id: "control_plane_audit",
+            status: "available",
+            record_count: 1,
+            audit_event_refs: [expect.stringMatching(/^audit:audit_/)],
+            event_type_counts: expect.objectContaining({
+              ghost_shadow_evidence_recorded: 1,
+            }),
+          }),
+        ]),
+        compliance_evidence_pack: expect.objectContaining({
+          artifacts: expect.arrayContaining([
+            expect.objectContaining({
+              artifact_id: "control_plane_audit",
+              status: "available",
+              evidence_refs: [expect.stringMatching(/^audit:audit_/)],
+            }),
+          ]),
+        }),
+      }),
+      governance_service: expect.objectContaining({
+        audit_exports: expect.arrayContaining([
+          expect.objectContaining({ export_id: "control_plane_audit", record_count: 1 }),
+        ]),
+      }),
+    }));
     const upgradeMissingActor = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
       skill_id: published.skill.skill_id,
       requested_action: "commit_mutation",
