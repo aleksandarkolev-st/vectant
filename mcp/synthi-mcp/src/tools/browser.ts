@@ -38,6 +38,8 @@ import {
   type DojoTenantContext,
 } from "../dojo/mcp/execution_policy_gate.js";
 import { resolveDojoEnforcementConfig } from "../dojo/config/enforcement.js";
+import { createDojoControlPlaneStoresFromEnv } from "../dojo/store/control_plane_resolver.js";
+import type { DojoPublishedWorkflowBinding } from "../dojo/store/published_workflow_index.js";
 import { eventLog } from "../events/index.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import { dispatchSafetyTool } from "./safety.js";
@@ -886,7 +888,7 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
       case "synthi_browser_compile_workflow":
         return jsonResponse({ ok: true, workflow: browserBroker.compiledWorkflow() });
       case "synthi_browser_generate_script":
-        return browserGenerateScriptTool(args);
+        return await browserGenerateScriptTool(args);
       case "synthi_browser_generate_private_tool_manifest":
         return browserGeneratePrivateToolManifestTool(args);
       case "synthi_browser_publish_private_tool":
@@ -940,7 +942,7 @@ async function browserDirectPrivateWorkflowTool(
   args: unknown,
   registration: PrivateWorkflowToolRegistration
 ): Promise<ToolResponse> {
-  const binding = dojoBindingForPrivateTool(toolName, registration.workflow_id);
+  const binding = await dojoBindingForPrivateTool(args, toolName, registration.workflow_id);
   const gate = createDojoExecutionPolicyGate({
     resolvePublishedSkill: () => binding ?? ({ status: "unpublished" }),
   });
@@ -952,7 +954,7 @@ async function browserDirectPrivateWorkflowTool(
     requested_action: "run_workflow",
   });
 
-  if (binding) return browserDirectPrivateToolRequiresDojoProof(toolName, registration.workflow_id, decision);
+  if (binding?.status === "published") return browserDirectPrivateToolRequiresDojoProof(toolName, registration.workflow_id, decision);
   if (!decision.ok) {
     return errorResponse("dojo_execution_policy_blocked", {
       tool_name: toolName,
@@ -1272,12 +1274,12 @@ function browserEndTeachTool(args: unknown): ToolResponse {
   });
 }
 
-function browserGenerateScriptTool(args: unknown): ToolResponse {
+async function browserGenerateScriptTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const mode = a["mode"] === undefined ? undefined : normalizeReplayMode(a["mode"]);
   const result = browserBroker.generatedScriptFor(stringOpt(a["workflow_id"]), mode);
   if (!result.ok) return errorResponse(result.error, result.workflow_id ? { workflow_id: result.workflow_id } : undefined);
-  const artifactExecutionPolicy = dojoArtifactExecutionPolicyForWorkflow(result.artifact.workflow_id);
+  const artifactExecutionPolicy = await dojoArtifactExecutionPolicyForWorkflow(args, result.artifact.workflow_id);
   const generated = artifactExecutionPolicy
     ? {
         ...result.generated,
@@ -2163,34 +2165,34 @@ function browserDirectPrivateToolRequiresDojoProof(
   });
 }
 
-function dojoBindingForPrivateTool(toolName: string, workflowId: string): DojoPublishedSkillBinding | null {
-  const binding =
-    dojoSkillRegistry.getPublishedWorkflowBindingByToolName(toolName) ??
-    dojoSkillRegistry.getPublishedWorkflowBindingByWorkflowId(workflowId);
-  if (!binding) return null;
-  return {
-    status: "published",
-    skill_id: binding.skill_id,
-    workflow_id: binding.workflow_id,
-    tool_name: toolName,
-  };
+async function dojoBindingForPrivateTool(
+  args: unknown,
+  toolName: string,
+  workflowId: string
+): Promise<DojoPublishedSkillBinding | null> {
+  const resolution = await resolveDojoPublishedWorkflowBinding(args, { workflow_id: workflowId, tool_name: toolName });
+  return policyBindingForResolution(resolution, toolName);
 }
 
-function dojoArtifactExecutionPolicyForWorkflow(workflowId: string): Record<string, unknown> | null {
+async function dojoArtifactExecutionPolicyForWorkflow(args: unknown, workflowId: string): Promise<Record<string, unknown> | null> {
   const enforcement = resolveDojoEnforcementConfig();
   if (!enforcement.production_enforcement) return null;
-  const binding = dojoSkillRegistry.getPublishedWorkflowBindingByWorkflowId(workflowId);
-  if (!binding) return null;
+  const resolution = await resolveDojoPublishedWorkflowBinding(args, { workflow_id: workflowId });
+  if (resolution.status === "unpublished") return null;
+  const binding = resolution.status === "published" ? resolution.binding : null;
   return {
     status: "practice_only",
     enforcement_mode: enforcement.enforcement_mode,
-    workflow_id: binding.workflow_id,
-    skill_id: binding.skill_id,
-    tool_names: binding.tool_names,
+    source: resolution.source,
+    workflow_id: binding?.workflow_id ?? workflowId,
+    skill_id: binding?.skill_id ?? null,
+    tool_names: binding?.tool_names ?? [],
     required_tool: "synthi_dojo_run_with_proof_capsule",
     execution_mode_env: DOJO_ARTIFACT_EXECUTION_MODE_ENV,
     allowed_execution_modes: [...DOJO_ARTIFACT_ALLOWED_EXECUTION_MODES],
-    blocked_by: ["dojo_published_workflow_artifact_not_for_production"],
+    blocked_by: resolution.status === "unknown"
+      ? ["dojo_published_workflow_mapping_unknown", ...resolution.blocked_by]
+      : ["dojo_published_workflow_artifact_not_for_production"],
   };
 }
 
@@ -2216,31 +2218,29 @@ function dojoTenantContext(args: unknown, workflowId: string): DojoTenantContext
     process.env["SYNTHI_WORKSPACE_ID"]?.trim() ??
     workflowId;
   const tenantId =
+    stringOpt(a["tenant_id"]) ??
     process.env["SYNTHI_TENANT_ID"]?.trim() ??
     workspaceId.split(":")[0] ??
     "default";
   return {
     tenant_id: tenantId,
-    organization_id: process.env["SYNTHI_ORGANIZATION_ID"]?.trim() ?? tenantId,
+    organization_id: stringOpt(a["organization_id"]) ?? process.env["SYNTHI_ORGANIZATION_ID"]?.trim() ?? tenantId,
     workspace_id: workspaceId,
-    actor_id: process.env["SYNTHI_AGENT_ID"]?.trim() ?? "private_workflow_tool_caller",
-    actor_type: "agent",
-    roles: ["agent"],
+    actor_id: stringOpt(a["actor_id"]) ?? process.env["SYNTHI_AGENT_ID"]?.trim() ?? "private_workflow_tool_caller",
+    actor_type: a["actor_type"] === "human" || a["actor_type"] === "service" ? a["actor_type"] : "agent",
+    roles: stringArrayOpt(a["roles"]) ?? ["agent"],
     request_id: stringOpt(a["request_id"]) ?? `req_${workflowId}`,
     correlation_id: stringOpt(a["correlation_id"]) ?? `corr_${workflowId}`,
+    ...(stringOpt(a["data_region"]) ? { data_region: stringOpt(a["data_region"]) } : {}),
   };
 }
 
 async function browserWorkflowReplayDojoGate(args: unknown, workflowId: string): Promise<ToolResponse | null> {
-  const binding = dojoSkillRegistry.getPublishedWorkflowBindingByWorkflowId(workflowId);
+  const resolution = await resolveDojoPublishedWorkflowBinding(args, { workflow_id: workflowId });
+  const binding = policyBindingForResolution(resolution);
   const gate = createDojoExecutionPolicyGate({
     resolvePublishedSkill: () => binding
-      ? {
-          status: "published",
-          skill_id: binding.skill_id,
-          workflow_id: binding.workflow_id,
-          tool_name: binding.tool_names[0],
-        }
+      ? binding
       : { status: "unpublished", workflow_id: workflowId },
   });
   const decision = await gate.evaluate({
@@ -2250,14 +2250,123 @@ async function browserWorkflowReplayDojoGate(args: unknown, workflowId: string):
     requested_action: "run_workflow",
   });
   if (decision.ok) return null;
-  return errorResponse(binding ? "dojo_proof_capsule_required" : "dojo_execution_policy_blocked", {
+  return errorResponse(binding?.status === "published" ? "dojo_proof_capsule_required" : "dojo_execution_policy_blocked", {
     workflow_id: workflowId,
     requested_action: "run_workflow",
     required_tool: "synthi_dojo_run_with_proof_capsule",
     issue_capsule_tool: "synthi_dojo_issue_proof_capsule",
     blocked_by: decision.blocked_by,
     dojo_execution_policy: decision,
+    dojo_binding_resolution: bindingResolutionSummary(resolution),
   });
+}
+
+type DojoPublishedWorkflowBindingResolution =
+  | {
+    status: "published";
+    source: "compatibility_registry" | "postgres";
+    binding: DojoPublishedWorkflowBinding;
+  }
+  | {
+    status: "unpublished";
+    source: "compatibility_registry" | "postgres";
+    workflow_id: string;
+  }
+  | {
+    status: "unknown";
+    source: "postgres";
+    workflow_id: string;
+    blocked_by: string[];
+  };
+
+async function resolveDojoPublishedWorkflowBinding(
+  args: unknown,
+  input: { workflow_id: string; tool_name?: string }
+): Promise<DojoPublishedWorkflowBindingResolution> {
+  const localBinding = input.tool_name
+    ? dojoSkillRegistry.getPublishedWorkflowBindingByToolName(input.tool_name) ??
+      dojoSkillRegistry.getPublishedWorkflowBindingByWorkflowId(input.workflow_id)
+    : dojoSkillRegistry.getPublishedWorkflowBindingByWorkflowId(input.workflow_id);
+  if (localBinding) {
+    return { status: "published", source: "compatibility_registry", binding: localBinding };
+  }
+
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_durable_store) {
+    return { status: "unpublished", source: "compatibility_registry", workflow_id: input.workflow_id };
+  }
+
+  const resolution = await createDojoControlPlaneStoresFromEnv({
+    tenant: dojoTenantContext(args, input.workflow_id),
+    apply_migrations: false,
+  });
+  if (!resolution.ok) {
+    return {
+      status: "unknown",
+      source: "postgres",
+      workflow_id: input.workflow_id,
+      blocked_by: ["dojo_control_plane_binding_store_unavailable", ...resolution.blocked_by],
+    };
+  }
+
+  try {
+    const durableBinding = input.tool_name
+      ? await resolution.skill_store.getPublishedWorkflowBindingByToolName(input.tool_name) ??
+        await resolution.skill_store.getPublishedWorkflowBindingByWorkflowId(input.workflow_id)
+      : await resolution.skill_store.getPublishedWorkflowBindingByWorkflowId(input.workflow_id);
+    return durableBinding
+      ? { status: "published", source: "postgres", binding: durableBinding }
+      : { status: "unpublished", source: "postgres", workflow_id: input.workflow_id };
+  } catch (error) {
+    return {
+      status: "unknown",
+      source: "postgres",
+      workflow_id: input.workflow_id,
+      blocked_by: ["dojo_control_plane_binding_lookup_failed", error instanceof Error ? error.message : String(error)],
+    };
+  } finally {
+    await resolution.close?.().catch(() => undefined);
+  }
+}
+
+function policyBindingForResolution(
+  resolution: DojoPublishedWorkflowBindingResolution,
+  toolName?: string
+): DojoPublishedSkillBinding | null {
+  if (resolution.status === "published") {
+    return {
+      status: "published",
+      skill_id: resolution.binding.skill_id,
+      workflow_id: resolution.binding.workflow_id,
+      tool_name: toolName ?? resolution.binding.tool_names[0],
+    };
+  }
+  if (resolution.status === "unknown") {
+    return {
+      status: "unknown",
+      workflow_id: resolution.workflow_id,
+      tool_name: toolName,
+    };
+  }
+  return null;
+}
+
+function bindingResolutionSummary(resolution: DojoPublishedWorkflowBindingResolution): Record<string, unknown> {
+  if (resolution.status === "published") {
+    return {
+      status: resolution.status,
+      source: resolution.source,
+      skill_id: resolution.binding.skill_id,
+      workflow_id: resolution.binding.workflow_id,
+      tool_names: resolution.binding.tool_names,
+    };
+  }
+  return {
+    status: resolution.status,
+    source: resolution.source,
+    workflow_id: resolution.workflow_id,
+    ...(resolution.status === "unknown" ? { blocked_by: resolution.blocked_by } : {}),
+  };
 }
 
 function privateWorkflowHostedRuntimeGate(

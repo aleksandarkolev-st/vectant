@@ -20,6 +20,7 @@ import { PostgresDojoGovernanceStore } from "../../src/dojo/store/postgres_gover
 import { PostgresDojoGraphRunStore } from "../../src/dojo/store/postgres_graph_run_store.js";
 import { PostgresDojoProofKeyRegistry } from "../../src/dojo/store/postgres_proof_key_registry.js";
 import { PostgresDojoSkillStore } from "../../src/dojo/store/postgres_skill_store.js";
+import { dispatchBrowserTool } from "../../src/tools/browser.js";
 import { dispatchDojoTool } from "../../src/tools/dojo.js";
 
 const postgresUrl = process.env["SYNTHI_DOJO_POSTGRES_TEST_URL"];
@@ -138,6 +139,93 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
           workflow_id: publishContent.skill.workflow_id,
         }),
       ],
+    }));
+  });
+
+  it("blocks raw browser workflow replay using durable published bindings after local registry loss", async () => {
+    const tenantId = `tenant_raw_gate_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_raw_gate_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-raw-gate-publish",
+      correlation_id: "corr-postgres-raw-gate-publish",
+      actor_id: "postgres-raw-gate-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_raw_gate_publish",
+      evidence_refs: ["evidence:integration-postgres-raw-gate-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+    };
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.getPublishedWorkflowBindingByWorkflowId(published.skill.workflow_id)).toBeNull();
+
+    const lease = browserBroker.acquireLease("postgres-raw-gate-agent", 5000, "dojo-postgres-raw-workflow-gate");
+    const rawReplay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      ...tenant,
+      actor_id: "postgres-raw-gate-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-raw-gate-run",
+      correlation_id: "corr-postgres-raw-gate-run",
+      lease_id: lease.lease_id,
+      tab_id: "tab-a",
+      workflow_id: published.skill.workflow_id,
+      mode: "sameSession",
+    });
+    browserBroker.releaseLease(lease.lease_id, "dojo-postgres-raw-workflow-gate:complete");
+
+    expect(rawReplay?.isError).toBe(true);
+    expect(rawReplay?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_required",
+      workflow_id: published.skill.workflow_id,
+      blocked_by: ["direct_entrypoint_for_published_skill", "dojo_proof_capsule_required"],
+      dojo_execution_policy: expect.objectContaining({
+        ok: false,
+        enforcement_mode: "production",
+        entrypoint: "browser_workflow",
+        skill_id: published.skill.skill_id,
+      }),
+      dojo_binding_resolution: expect.objectContaining({
+        status: "published",
+        source: "postgres",
+        skill_id: published.skill.skill_id,
+        workflow_id: published.skill.workflow_id,
+      }),
+    }));
+
+    const generatedScript = await dispatchBrowserTool("synthi_browser_generate_script", {
+      ...tenant,
+      actor_id: "postgres-raw-gate-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-raw-gate-script",
+      correlation_id: "corr-postgres-raw-gate-script",
+      workflow_id: published.skill.workflow_id,
+    });
+    expect(generatedScript?.isError).toBeUndefined();
+    expect(generatedScript?.structuredContent).toEqual(expect.objectContaining({
+      artifact_execution_policy: expect.objectContaining({
+        source: "postgres",
+        status: "practice_only",
+        skill_id: published.skill.skill_id,
+        workflow_id: published.skill.workflow_id,
+      }),
     }));
   });
 
