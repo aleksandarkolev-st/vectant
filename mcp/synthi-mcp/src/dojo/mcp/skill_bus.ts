@@ -131,6 +131,7 @@ export interface InProcessDojoMcpSkillBusOptions {
     args: Record<string, unknown>;
   }) => DojoSkillBusProofValidation | Promise<DojoSkillBusProofValidation>;
   proofService?: DojoProofCapsuleService;
+  proofConsumptionMode?: "proof_service" | "external_executor";
   executeTool?: (input: {
     tenant: DojoTenantContext;
     skill: DojoSkill;
@@ -183,6 +184,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
   private readonly listSkillsFn: InProcessDojoMcpSkillBusOptions["listSkills"];
   private readonly validateProof?: InProcessDojoMcpSkillBusOptions["validateProof"];
   private readonly proofService?: DojoProofCapsuleService;
+  private readonly proofConsumptionMode?: "proof_service" | "external_executor";
   private readonly executeTool?: InProcessDojoMcpSkillBusOptions["executeTool"];
   private readonly rateLimiter?: DojoMcpSkillBusRateLimiter;
   private readonly auditStore?: DojoAuditStore;
@@ -192,6 +194,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     this.env = options.env ?? process.env;
     this.listSkillsFn = options.listSkills;
     this.proofService = options.proofService;
+    this.proofConsumptionMode = options.proofConsumptionMode ?? (options.proofService ? "proof_service" : undefined);
     this.validateProof = options.validateProof ?? proofServiceValidator(options.proofService, options.now);
     this.executeTool = options.executeTool;
     this.rateLimiter = options.rateLimiter;
@@ -368,6 +371,9 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     if (!input.proof_capsule) {
       return this.auditDispatch(input, blockedDispatch(input, resolution, ["dojo_proof_capsule_required"]));
     }
+    if (proofRequired && !this.hasProofConsumer()) {
+      return this.auditDispatch(input, blockedDispatch(input, resolution, ["dojo_mcp_skill_bus_proof_consumer_unconfigured"], validation));
+    }
     if (!this.executeTool) {
       return this.auditDispatch(input, blockedDispatch(input, resolution, ["dojo_mcp_skill_executor_unconfigured"], validation));
     }
@@ -486,6 +492,10 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       run_id: `dojo_mcp_dispatch_${input.skill_id}_${randomUUID()}`,
       now: this.nowFn().toISOString(),
     });
+  }
+
+  private hasProofConsumer(): boolean {
+    return Boolean(this.proofService) || this.proofConsumptionMode === "external_executor";
   }
 
   private async evaluateRateLimit(input: DojoMcpSkillBusRateLimitInput): Promise<DojoMcpSkillBusRateLimitDecision> {

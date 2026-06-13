@@ -107,6 +107,7 @@ describe("Dojo MCP skill bus", () => {
     const bus = createInProcessDojoMcpSkillBus({
       listSkills: () => [skill],
       env: manifestEnv(),
+      proofConsumptionMode: "external_executor",
       validateProof: ({ proof_capsule, requested_action }): DojoSkillBusProofValidation => {
         validations.push({ capsule_id: proof_capsule.capsule_id, requested_action });
         return { ok: true, status: "allowed", blocked_by: [] };
@@ -153,6 +154,53 @@ describe("Dojo MCP skill bus", () => {
       result: expect.objectContaining({ ok: true, tool_name: skill.published_tool_name }),
     }));
     expect(executions).toEqual([skill.published_tool_name]);
+  });
+
+  it("fails closed when live proof dispatch has validation but no proof consumer", async () => {
+    const skill = skillFixture("workspace-a", "Open details");
+    const proof = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
+      substrate_claim: "mcp",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const executions: string[] = [];
+    const bus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skill],
+      env: manifestEnv(),
+      validateProof: (): DojoSkillBusProofValidation => ({ ok: true, status: "allowed", blocked_by: [] }),
+      executeTool: ({ tool_name }) => {
+        executions.push(tool_name);
+        return { ok: true, tool_name };
+      },
+    });
+
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: proof,
+      dry_run: true,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: true,
+      validation: expect.objectContaining({ ok: true }),
+    }));
+
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: proof,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["dojo_mcp_skill_bus_proof_consumer_unconfigured"],
+      validation: expect.objectContaining({ ok: true }),
+    }));
+    expect(executions).toEqual([]);
   });
 
   it("can validate dispatch proofs through the reusable proof capsule service", async () => {
@@ -418,6 +466,7 @@ describe("Dojo MCP skill bus", () => {
     const bus = createInProcessDojoMcpSkillBus({
       listSkills: () => [skill],
       env: manifestEnv(),
+      proofConsumptionMode: "external_executor",
       validateProof: (): DojoSkillBusProofValidation => ({ ok: true, status: "allowed", blocked_by: [] }),
       executeTool: () => blockDojoMcpSkillBusExecution(["proof_capsule_replay_detected"], {
         ok: false,
@@ -504,6 +553,7 @@ describe("Dojo MCP skill bus", () => {
       listSkills: () => [skill],
       env: manifestEnv(),
       auditStore: memoryAuditStore(auditEvents),
+      proofConsumptionMode: "external_executor",
       validateProof: (): DojoSkillBusProofValidation => ({ ok: true, status: "allowed", blocked_by: [] }),
       executeTool: () => {
         throw new Error("executor unavailable");
@@ -554,6 +604,7 @@ describe("Dojo MCP skill bus", () => {
     const bus = createInProcessDojoMcpSkillBus({
       listSkills: () => [skill],
       env: manifestEnv(),
+      proofConsumptionMode: "external_executor",
       rateLimiter: createInMemoryDojoMcpSkillBusRateLimiter({
         now: () => now,
         rules: [{
@@ -614,6 +665,7 @@ describe("Dojo MCP skill bus", () => {
     const bus = createInProcessDojoMcpSkillBus({
       listSkills: () => [skill],
       env: manifestEnv(),
+      proofConsumptionMode: "external_executor",
       rateLimiter: createInMemoryDojoMcpSkillBusRateLimiter({
         now: () => now,
         rules: [{
@@ -677,6 +729,7 @@ describe("Dojo MCP skill bus", () => {
       env: manifestEnv(),
       auditStore: memoryAuditStore(auditEvents),
       now: () => new Date("2026-06-11T00:03:00.000Z"),
+      proofConsumptionMode: "external_executor",
       validateProof: (): DojoSkillBusProofValidation => ({ ok: true, status: "allowed", blocked_by: [] }),
       executeTool: ({ tool_name }) => ({ ok: true, tool_name }),
     });

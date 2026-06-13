@@ -3655,6 +3655,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       : [skill.skill, ...localSkillBusSkills];
     const skillBus = createInProcessDojoMcpSkillBus({
       listSkills: () => skillBusSkills,
+      proofConsumptionMode: "external_executor",
       validateProof: ({ skill: resolvedSkill, proof_capsule: proofCapsule, requested_action: action }) => {
         decision = evaluateDojoLicenseKernel({
           skill: resolvedSkill,
