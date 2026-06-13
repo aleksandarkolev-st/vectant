@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { DojoSkillGraphRuntime, type DojoGraphEvidenceEvent, type DojoGraphRunResult } from "../graph/runtime.js";
 import type { DojoSkillGraph } from "../graph/types.js";
 import type { DojoTenantContext } from "../mcp/execution_policy_gate.js";
@@ -84,10 +85,11 @@ export class DojoVivariumRunner {
     }
 
     const runtime = input.runtime ?? new DojoSkillGraphRuntime();
-    const runId = input.run_id ?? `scenario_run_${input.materialized.definition.scenario_id}_${Date.now().toString(36)}`;
     const tenantContext = input.tenant ?? input.materialized.tenant_context;
     const graphEvents: DojoGraphEvidenceEvent[] = [];
     const startedAt = input.now ?? new Date().toISOString();
+    const runId = input.run_id ?? createScenarioRunId(input.materialized, input.graph, startedAt);
+    const completedAt = input.now ?? new Date().toISOString();
     const graphResult = await runtime.execute({
       graph: input.graph,
       run_id: runId,
@@ -124,7 +126,7 @@ export class DojoVivariumRunner {
       observed_evidence: observedEvidence,
       evidence_refs: [...graphResult.evidence_refs, `dojo-oracle://${runId}/${oracleResult.oracle_id}`],
       started_at: startedAt,
-      completed_at: new Date().toISOString(),
+      completed_at: completedAt,
       budget,
     };
   }
@@ -199,4 +201,18 @@ function duplicateDisplayNameCount(fixture: DojoMaterializedFixture): number {
     counts.set(record.display_name, (counts.get(record.display_name) ?? 0) + 1);
   }
   return Math.max(0, ...counts.values());
+}
+
+function createScenarioRunId(materialized: DojoMaterializedScenario, graph: DojoSkillGraph, startedAt: string): string {
+  const digest = createHash("sha256")
+    .update([
+      materialized.materialized_id,
+      materialized.fixture.materialization_hash,
+      graph.graph_id,
+      graph.graph_version,
+      startedAt,
+    ].join("|"))
+    .digest("hex")
+    .slice(0, 12);
+  return `scenario_run_${materialized.definition.scenario_id}_${digest}`;
 }

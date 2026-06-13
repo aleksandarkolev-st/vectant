@@ -113,6 +113,37 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("generates deterministic run IDs and timestamps when a run clock is supplied", async () => {
+    const runner = new DojoVivariumRunner();
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: toDojoScenarioDefinition(scenarioFixture({
+        mutation_kind: "baseline",
+        layer: "skill",
+        risk_tags: ["baseline"],
+      })),
+      seed: "deterministic-run-seed",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const first = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      now: "2026-06-11T00:00:01.000Z",
+    });
+    const second = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      now: "2026-06-11T00:00:01.000Z",
+    });
+
+    expect(first.run_id).toBe(second.run_id);
+    expect(first.started_at).toBe("2026-06-11T00:00:01.000Z");
+    expect(first.completed_at).toBe("2026-06-11T00:00:01.000Z");
+    expect(first.evidence_refs).toEqual(expect.arrayContaining([
+      `dojo-oracle://${first.run_id}/${first.oracle_result.oracle_id}`,
+    ]));
+  });
+
   it("proves fixture reset is deterministic for the materialized scenario seed", () => {
     const runner = new DojoVivariumRunner();
     const materialized = runner.materialize({
