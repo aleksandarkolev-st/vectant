@@ -444,6 +444,102 @@ describe("Dojo MCP skill bus", () => {
     }));
   });
 
+  it("fails closed when dispatch extension points throw", async () => {
+    const skill = skillFixture("workspace-a", "Open details");
+    const proof = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
+      substrate_claim: "mcp",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const rateLimitBus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skill],
+      env: manifestEnv(),
+      rateLimiter: {
+        evaluate: () => {
+          throw new Error("rate limiter unavailable");
+        },
+      },
+      validateProof: (): DojoSkillBusProofValidation => ({ ok: true, status: "allowed", blocked_by: [] }),
+      executeTool: () => ({ ok: true }),
+    });
+    await expect(rateLimitBus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: proof,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["dojo_mcp_rate_limiter_failed"],
+    }));
+
+    const proofValidatorBus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skill],
+      env: manifestEnv(),
+      validateProof: () => {
+        throw new Error("proof validator unavailable");
+      },
+      executeTool: () => ({ ok: true }),
+    });
+    await expect(proofValidatorBus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: proof,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["dojo_mcp_skill_bus_proof_validator_failed"],
+      validation: expect.objectContaining({
+        ok: false,
+        error_codes: ["dojo_mcp_skill_bus_proof_validator_failed"],
+      }),
+    }));
+
+    const auditEvents: DojoAuditEventRecord[] = [];
+    const executorBus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skill],
+      env: manifestEnv(),
+      auditStore: memoryAuditStore(auditEvents),
+      validateProof: (): DojoSkillBusProofValidation => ({ ok: true, status: "allowed", blocked_by: [] }),
+      executeTool: () => {
+        throw new Error("executor unavailable");
+      },
+    });
+    await expect(executorBus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: proof,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["dojo_mcp_skill_executor_failed"],
+      validation: expect.objectContaining({
+        ok: false,
+        error_codes: ["dojo_mcp_skill_executor_failed"],
+      }),
+      audit_event_id: "audit-1",
+    }));
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        event_type: "mcp_tool_invocation_blocked",
+        details: expect.objectContaining({
+          blocked_by: ["dojo_mcp_skill_executor_failed"],
+          proof_capsule_id: proof.capsule_id,
+          proof_validation: expect.objectContaining({
+            ok: false,
+            error_codes: ["dojo_mcp_skill_executor_failed"],
+          }),
+        }),
+      }),
+    ]);
+  });
+
   it("rate-limits dispatch by configured scope before proof validation or execution", async () => {
     const skill = skillFixture("workspace-a", "Open details");
     const proof = issueDojoProofCapsule(skill, "run_workflow", {

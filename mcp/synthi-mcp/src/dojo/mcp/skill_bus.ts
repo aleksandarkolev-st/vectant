@@ -301,7 +301,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
 
     const requestedAction = input.requested_action ?? "run_workflow";
     if (this.rateLimiter) {
-      const rateLimit = await this.rateLimiter.evaluate({
+      const rateLimit = await this.evaluateRateLimit({
         tenant: input.tenant,
         skill: resolution.skill,
         tool_name: resolution.tool_name ?? input.tool_name,
@@ -340,7 +340,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     }
 
     if (input.proof_capsule && this.validateProof) {
-      validation = await this.validateProof({
+      validation = await this.validateDispatchProof({
         tenant: input.tenant,
         skill: resolution.skill,
         proof_capsule: input.proof_capsule,
@@ -383,7 +383,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       });
     }
 
-    const result = await this.executeTool({
+    const result = await this.executeSkillTool({
       tenant: input.tenant,
       skill: resolution.skill,
       tool_name: resolution.tool_name ?? input.tool_name,
@@ -486,6 +486,72 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       run_id: `dojo_mcp_dispatch_${input.skill_id}_${randomUUID()}`,
       now: this.nowFn().toISOString(),
     });
+  }
+
+  private async evaluateRateLimit(input: DojoMcpSkillBusRateLimitInput): Promise<DojoMcpSkillBusRateLimitDecision> {
+    if (!this.rateLimiter) {
+      return {
+        ok: true,
+        blocked_by: [],
+      };
+    }
+    try {
+      return await this.rateLimiter.evaluate(input);
+    } catch {
+      return {
+        ok: false,
+        blocked_by: ["dojo_mcp_rate_limiter_failed"],
+      };
+    }
+  }
+
+  private async validateDispatchProof(input: {
+    tenant: DojoTenantContext;
+    skill: DojoSkill;
+    proof_capsule: DojoProofCarryingSkillCapsule;
+    requested_action: string;
+    args: Record<string, unknown>;
+  }): Promise<DojoSkillBusProofValidation> {
+    if (!this.validateProof) {
+      return {
+        ok: false,
+        status: "blocked",
+        blocked_by: ["dojo_mcp_skill_bus_proof_validator_unconfigured"],
+        error_codes: ["dojo_mcp_skill_bus_proof_validator_unconfigured"],
+      };
+    }
+    try {
+      return await this.validateProof(input);
+    } catch {
+      return {
+        ok: false,
+        status: "blocked",
+        blocked_by: ["dojo_mcp_skill_bus_proof_validator_failed"],
+        error_codes: ["dojo_mcp_skill_bus_proof_validator_failed"],
+      };
+    }
+  }
+
+  private async executeSkillTool(input: {
+    tenant: DojoTenantContext;
+    skill: DojoSkill;
+    tool_name: string;
+    args: Record<string, unknown>;
+    proof_capsule: DojoProofCarryingSkillCapsule;
+  }): Promise<unknown | DojoMcpSkillBusExecutionBlock> {
+    if (!this.executeTool) {
+      return blockDojoMcpSkillBusExecution(["dojo_mcp_skill_executor_unconfigured"]);
+    }
+    try {
+      return await this.executeTool(input);
+    } catch {
+      return blockDojoMcpSkillBusExecution(["dojo_mcp_skill_executor_failed"], {
+        ok: false,
+        status: "blocked",
+        blocked_by: ["dojo_mcp_skill_executor_failed"],
+        error_codes: ["dojo_mcp_skill_executor_failed"],
+      });
+    }
   }
 }
 
