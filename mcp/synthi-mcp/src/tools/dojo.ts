@@ -1033,7 +1033,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoListCompetenciesTool(args);
         break;
       case "synthi_dojo_get_skill":
-        response = dojoGetSkillTool(args);
+        response = await dojoGetSkillTool(args);
         break;
       case "synthi_dojo_get_skill_cortex":
         response = dojoGetSkillCortexTool(args);
@@ -1219,10 +1219,15 @@ async function dojoListCompetenciesTool(args: unknown): Promise<ToolResponse> {
   });
 }
 
-function dojoGetSkillTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetSkillTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_skill");
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill: skill.skill, mcp_skill_manifest: buildDojoMcpSkillManifest(skill.skill) });
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill: skill.skill,
+    mcp_skill_manifest: buildDojoMcpSkillManifest(skill.skill),
+  });
 }
 
 function dojoGetSkillCortexTool(args: unknown): ToolResponse {
@@ -2357,7 +2362,7 @@ async function dojoExportCompliancePackTool(args: unknown): Promise<ToolResponse
 
 async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const skill = requiredAuthorizedSkill(args);
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_issue_proof_capsule");
   if (!skill.ok) return skill.error;
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
   const enforcement = resolveDojoEnforcementConfig();
@@ -2549,7 +2554,7 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
 
 async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const skill = requiredAuthorizedSkill(args);
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_validate_proof_capsule");
   if (!skill.ok) return skill.error;
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
   const capsule = proofCapsuleOpt(a["proof_capsule"]);
@@ -2681,7 +2686,7 @@ async function dojoRevokeProofCapsuleTool(args: unknown): Promise<ToolResponse> 
 
 async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const skill = requiredAuthorizedSkill(args);
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_create_hosted_runtime_session");
   if (!skill.ok) return skill.error;
   const runId = stringOpt(a["run_id"]);
   if (!runId) {
@@ -2740,6 +2745,7 @@ async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolRe
   return jsonResponse({
     ok: true,
     skill_id: skill.skill.skill_id,
+    control_plane_source: skill.control_plane_source,
     run_id: runId,
     runtime_session: hostedRuntimeSessionPublicView(session.session),
     credentials: session.credentials,
@@ -2749,7 +2755,7 @@ async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolRe
 
 async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const skill = requiredAuthorizedSkill(args);
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_run_with_proof_capsule");
   if (!skill.ok) return skill.error;
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
   const capsule = proofCapsuleOpt(a["proof_capsule"]);
@@ -2783,8 +2789,12 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
     const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, toolArgs);
     let decision: ReturnType<typeof evaluateDojoLicenseKernel> | undefined;
     let proofConsume: DojoProofConsumeResult | undefined;
+    const localSkillBusSkills = dojoSkillRegistry.list();
+    const skillBusSkills = localSkillBusSkills.some((registered) => registered.skill_id === skill.skill.skill_id)
+      ? localSkillBusSkills
+      : [skill.skill, ...localSkillBusSkills];
     const skillBus = createInProcessDojoMcpSkillBus({
-      listSkills: () => dojoSkillRegistry.list(),
+      listSkills: () => skillBusSkills,
       validateProof: ({ skill: resolvedSkill, proof_capsule: proofCapsule, requested_action: action }) => {
         decision = evaluateDojoLicenseKernel({
           skill: resolvedSkill,
@@ -3149,6 +3159,104 @@ function requiredAuthorizedSkill(
   const authorization = authorizeTenantForDojoSkill(args, skill.skill);
   if (!authorization.ok) return authorization;
   return { ok: true, skill: skill.skill, tenant: authorization.tenant };
+}
+
+async function requiredAuthorizedSkillForProductionRead(
+  args: unknown,
+  operation: string
+): Promise<
+  | { ok: true; skill: DojoSkill; tenant: DojoTenantContext; control_plane_source: "compatibility_registry" | "postgres" }
+  | { ok: false; error: ToolResponse }
+> {
+  const local = requiredAuthorizedSkill(args);
+  if (local.ok) {
+    return {
+      ...local,
+      control_plane_source: "compatibility_registry",
+    };
+  }
+
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_durable_store) return local;
+
+  const requested = obj(args);
+  const skillId = stringOpt(requested["skill_id"]);
+  const workflowId = stringOpt(requested["workflow_id"]);
+  if (!skillId && !workflowId) return local;
+
+  const tenantContext = dojoTenantContextResultFromArgs(args);
+  if (!tenantContext.ok) return tenantContext;
+
+  let resolution: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>>;
+  try {
+    resolution = await createDojoControlPlaneStoresFromEnv({
+      tenant: tenantContext.tenant,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_control_plane_skill_resolution_failed", {
+        ok: false,
+        operation,
+        skill_id: skillId ?? null,
+        workflow_id: workflowId ?? null,
+        enforcement_mode: enforcement.enforcement_mode,
+        control_plane_source: "postgres",
+        blocked_by: ["dojo_control_plane_store_resolution_failed"],
+        error_codes: ["dojo_control_plane_store_not_runtime_wired"],
+        message: err instanceof Error ? err.message : String(err),
+      }),
+    };
+  }
+  if (!resolution.ok) {
+    return {
+      ok: false,
+      error: controlPlaneResolutionError(operation, resolution),
+    };
+  }
+
+  try {
+    const skill = skillId
+      ? await resolution.skill_store.getSkill(skillId)
+      : await resolution.skill_store.getSkillByWorkflowId(workflowId!);
+    if (!skill) {
+      return {
+        ok: false,
+        error: errorResponse("dojo_skill_not_found", {
+          ok: false,
+          operation,
+          skill_id: skillId ?? null,
+          workflow_id: workflowId ?? null,
+          control_plane_source: "postgres",
+          required_tool: "synthi_dojo_publish_skill",
+        }),
+      };
+    }
+    if (!isTenantAuthorizedForDojoSkill(tenantContext.tenant, skill)) {
+      return {
+        ok: false,
+        error: errorResponse("dojo_skill_not_authorized", {
+          ok: false,
+          operation,
+          skill_id: skill.skill_id,
+          workspace_id: skill.workspace_id,
+          tenant_workspace_id: tenantContext.tenant.workspace_id,
+          actor_id: tenantContext.tenant.actor_id,
+          control_plane_source: "postgres",
+          blocked_by: ["dojo_skill_workspace_mismatch"],
+          required_roles: ["dojo:admin", "dojo:operator"],
+        }),
+      };
+    }
+    return {
+      ok: true,
+      skill,
+      tenant: tenantContext.tenant,
+      control_plane_source: "postgres",
+    };
+  } finally {
+    await resolution.close?.();
+  }
 }
 
 function requiredAuthorizedWorkflowArtifact(

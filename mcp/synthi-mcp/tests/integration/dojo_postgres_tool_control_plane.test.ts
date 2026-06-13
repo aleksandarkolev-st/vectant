@@ -135,7 +135,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     }));
   });
 
-  it("uses Postgres proof records for production validation, consumption, and replay after local proof loss", async () => {
+  it("uses Postgres skill and proof records for production validation, consumption, and replay after local process loss", async () => {
     const tenantId = `tenant_proof_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_proof_${Math.random().toString(16).slice(2)}`;
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
@@ -213,8 +213,28 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(savedSkill).toBeTruthy();
     dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
     dojoSkillRegistry.resetForTests();
-    dojoSkillRegistry.publish(savedSkill!);
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
     expect(dojoSkillRegistry.getProofRecord(issued.proof_capsule.capsule_id)).toBeNull();
+
+    const readSkill = await dispatchDojoTool("synthi_dojo_get_skill", {
+      skill_id: published.skill.skill_id,
+      ...tenant,
+      actor_id: "postgres-proof-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-skill-readthrough",
+      correlation_id: "corr-postgres-skill-readthrough",
+    });
+    expect(readSkill?.isError).toBeUndefined();
+    expect(readSkill?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      skill: expect.objectContaining({
+        skill_id: published.skill.skill_id,
+        workflow_id: published.skill.workflow_id,
+      }),
+    }));
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
 
     const validate = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
       skill_id: published.skill.skill_id,
@@ -256,6 +276,11 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       now: "2026-06-11T00:01:30.000Z",
     });
     expect(session?.isError).toBeUndefined();
+    expect(session?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      skill_id: published.skill.skill_id,
+    }));
     const sessionContent = session?.structuredContent as {
       runtime_session: { session_id: string; credential_id: string };
       credentials: { credential_id: string; credential_secret: string };

@@ -377,7 +377,7 @@ function capabilityMatchers(capability) {
       "dojo tool postgres control plane wiring persists production durable skill publication and lists competencies from postgres after local reset",
     ],
     tool_control_plane_proof_lifecycle_path: [
-      "dojo tool postgres control plane wiring uses postgres proof records for production validation, consumption, and replay after local proof loss",
+      "dojo tool postgres control plane wiring uses postgres skill and proof records for production validation consumption and replay after local process loss",
     ],
     postgres_evidence_proof_issuance: ["issues a production proof capsule from evidence record ids resolved through postgres"],
   };
