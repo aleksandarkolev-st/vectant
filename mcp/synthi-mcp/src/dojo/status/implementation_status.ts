@@ -7,6 +7,20 @@ export const DOJO_IMPLEMENTATION_STATUS_VALUES = [
 
 export type DojoImplementationStatus = (typeof DOJO_IMPLEMENTATION_STATUS_VALUES)[number];
 
+export const DOJO_RUNTIME_SCOPE_VALUES = [
+  "none",
+  "read_only_projection",
+  "report_only",
+  "registry_operation",
+  "control_plane_write",
+  "proof_validation",
+  "proof_gated_dispatch",
+  "synthetic_fixture_runtime",
+  "non_mutating_shadow",
+] as const;
+
+export type DojoRuntimeScope = (typeof DOJO_RUNTIME_SCOPE_VALUES)[number];
+
 export type DojoEvidenceBacking =
   | "none"
   | "caller_context"
@@ -26,6 +40,8 @@ export type DojoSimulationBacking =
 export interface DojoImplementationMetadata {
   implementation_status: DojoImplementationStatus;
   runtime_enforced: boolean;
+  runtime_scope: DojoRuntimeScope;
+  production_runtime: boolean;
   evidence_backing: DojoEvidenceBacking;
   simulation_backing: DojoSimulationBacking;
   summary: string;
@@ -88,7 +104,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_issue_proof_capsule: proofExecutable("Issues and stores a proof capsule using current context and evidence-claim checks; Ed25519 local and external command signing are supported when configured."),
   synthi_dojo_validate_proof_capsule: executable("Validates proof capsule signature, registry status, action scope, expiry, and replay state."),
   synthi_dojo_revoke_proof_capsule: executable("Revokes a stored proof capsule record."),
-  synthi_dojo_run_with_proof_capsule: executable("Runs the proof-gated Dojo dispatch path and blocks replay through current proof records."),
+  synthi_dojo_run_with_proof_capsule: proofGatedDispatch("Runs the proof-gated Dojo dispatch path and blocks replay through current proof records; hosted runtime gateway wiring is still required before this is mature production runtime execution."),
 };
 
 export const DOJO_REPORT_IMPLEMENTATION_STATUS: Record<string, DojoImplementationMetadata> = {
@@ -125,6 +141,8 @@ function executable(summary: string): DojoImplementationMetadata {
   return {
     implementation_status: "executable",
     runtime_enforced: true,
+    runtime_scope: "registry_operation",
+    production_runtime: false,
     evidence_backing: "runtime_validation",
     simulation_backing: "none",
     summary,
@@ -136,6 +154,8 @@ function deterministic(summary: string): DojoImplementationMetadata {
   return {
     implementation_status: "deterministic_projection",
     runtime_enforced: false,
+    runtime_scope: "read_only_projection",
+    production_runtime: false,
     evidence_backing: "generated_report",
     simulation_backing: "scenario_catalog",
     summary,
@@ -151,10 +171,13 @@ function syntheticRuntime(summary: string): DojoImplementationMetadata {
   return {
     implementation_status: "executable",
     runtime_enforced: true,
+    runtime_scope: "synthetic_fixture_runtime",
+    production_runtime: false,
     evidence_backing: "runtime_validation",
     simulation_backing: "materialized_synthetic_fixture",
     summary,
     maturity_blockers: [
+      "fixture_runtime_not_production_execution",
       "not_yet_proven_in_deployed_non_loopback_host",
       "chaos_soak_performance_gates_not_complete",
     ],
@@ -165,6 +188,8 @@ function graphProjection(summary: string): DojoImplementationMetadata {
   return {
     implementation_status: "deterministic_projection",
     runtime_enforced: false,
+    runtime_scope: "read_only_projection",
+    production_runtime: false,
     evidence_backing: "generated_report",
     simulation_backing: "scenario_catalog",
     summary,
@@ -179,6 +204,8 @@ function syntheticProjection(summary: string): DojoImplementationMetadata {
   return {
     implementation_status: "deterministic_projection",
     runtime_enforced: false,
+    runtime_scope: "read_only_projection",
+    production_runtime: false,
     evidence_backing: "generated_report",
     simulation_backing: "materialized_synthetic_fixture",
     summary,
@@ -193,6 +220,8 @@ function sourceProjection(summary: string): DojoImplementationMetadata {
   return {
     implementation_status: "deterministic_projection",
     runtime_enforced: false,
+    runtime_scope: "read_only_projection",
+    production_runtime: false,
     evidence_backing: "repo_local_artifact",
     simulation_backing: "none",
     summary,
@@ -207,6 +236,8 @@ function governanceReport(summary: string): DojoImplementationMetadata {
   return {
     implementation_status: "report_only",
     runtime_enforced: false,
+    runtime_scope: "report_only",
+    production_runtime: false,
     evidence_backing: "runtime_validation",
     simulation_backing: "none",
     summary,
@@ -221,6 +252,8 @@ function reportWithRuntimeEvidence(summary: string): DojoImplementationMetadata 
   return {
     implementation_status: "report_only",
     runtime_enforced: false,
+    runtime_scope: "report_only",
+    production_runtime: false,
     evidence_backing: "runtime_validation",
     simulation_backing: "none",
     summary,
@@ -235,10 +268,13 @@ function ghostRuntime(summary: string): DojoImplementationMetadata {
   return {
     implementation_status: "executable",
     runtime_enforced: true,
+    runtime_scope: "non_mutating_shadow",
+    production_runtime: false,
     evidence_backing: "runtime_validation",
     simulation_backing: "none",
     summary,
     maturity_blockers: [
+      "non_mutating_shadow_does_not_execute_production_actions",
       "shadow_evidence_store_is_repo_local_until_durable_control_plane_is_configured",
       "release_gate_visual_and_hosted_proof_required",
     ],
@@ -249,6 +285,8 @@ function controlPlaneWrite(summary: string, maturityBlockers: string[] = []): Do
   return {
     implementation_status: "executable",
     runtime_enforced: false,
+    runtime_scope: "control_plane_write",
+    production_runtime: false,
     evidence_backing: "caller_context",
     simulation_backing: "none",
     summary,
@@ -260,6 +298,8 @@ function proofExecutable(summary: string): DojoImplementationMetadata {
   return {
     implementation_status: "executable",
     runtime_enforced: true,
+    runtime_scope: "proof_validation",
+    production_runtime: false,
     evidence_backing: "runtime_validation",
     simulation_backing: "none",
     summary,
@@ -270,10 +310,29 @@ function proofExecutable(summary: string): DojoImplementationMetadata {
   };
 }
 
+function proofGatedDispatch(summary: string): DojoImplementationMetadata {
+  return {
+    implementation_status: "executable",
+    runtime_enforced: true,
+    runtime_scope: "proof_gated_dispatch",
+    production_runtime: false,
+    evidence_backing: "runtime_validation",
+    simulation_backing: "none",
+    summary,
+    maturity_blockers: [
+      "hosted_runtime_gateway_not_on_execution_path",
+      "deployed_mcp_host_conformance_required",
+      "not_yet_proven_in_deployed_non_loopback_host",
+    ],
+  };
+}
+
 function ledgerReport(summary: string): DojoImplementationMetadata {
   return {
     implementation_status: "report_only",
     runtime_enforced: false,
+    runtime_scope: "report_only",
+    production_runtime: false,
     evidence_backing: "durable_evidence_ledger",
     simulation_backing: "none",
     summary,
@@ -288,6 +347,8 @@ function report(summary: string): DojoImplementationMetadata {
   return {
     implementation_status: "report_only",
     runtime_enforced: false,
+    runtime_scope: "report_only",
+    production_runtime: false,
     evidence_backing: "generated_report",
     simulation_backing: "none",
     summary,
@@ -302,6 +363,8 @@ function planned(summary: string): DojoImplementationMetadata {
   return {
     implementation_status: "planned",
     runtime_enforced: false,
+    runtime_scope: "none",
+    production_runtime: false,
     evidence_backing: "none",
     simulation_backing: "none",
     summary,

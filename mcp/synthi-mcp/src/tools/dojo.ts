@@ -843,6 +843,8 @@ function withDojoImplementationMetadata(toolName: string, response: ToolResponse
     ...(response.structuredContent ?? {}),
     implementation_status: dojoImplementation.implementation_status,
     runtime_enforced: dojoImplementation.runtime_enforced,
+    runtime_scope: dojoImplementation.runtime_scope,
+    production_runtime: dojoImplementation.production_runtime,
     evidence_backing: dojoImplementation.evidence_backing,
     simulation_backing: dojoImplementation.simulation_backing,
     dojo_implementation: dojoImplementation,

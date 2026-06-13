@@ -7,6 +7,18 @@
     "report_only",
     "planned"
   ],
+  "runtime_scope_values": [
+    "none",
+    "read_only_projection",
+    "report_only",
+    "registry_operation",
+    "control_plane_write",
+    "proof_validation",
+    "proof_gated_dispatch",
+    "synthetic_fixture_runtime",
+    "non_mutating_shadow"
+  ],
+  "production_runtime_tool_claims": [],
   "tools": {
     "synthi_dojo_list_competencies": "executable",
     "synthi_dojo_get_skill": "deterministic_projection",

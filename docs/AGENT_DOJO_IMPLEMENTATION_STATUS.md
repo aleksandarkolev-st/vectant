@@ -25,6 +25,31 @@ The compact machine-readable maturity manifest lives in:
 | `report_only` | The current code returns a summary, dossier, plan, or view model. It is not an enforcement or execution subsystem. |
 | `planned` | The capability is described in the plan but does not have a current implementation entry. |
 
+## Runtime Scope Fields
+
+Every Dojo MCP response also carries:
+
+- `runtime_scope`
+- `production_runtime`
+
+These fields prevent the broad `executable` status from overclaiming maturity.
+
+Current runtime scopes:
+
+| Runtime Scope | Meaning |
+|---|---|
+| `read_only_projection` | Deterministic artifact or graph/report projection only. |
+| `report_only` | Read-only summary or dashboard view model. |
+| `registry_operation` | Local registry/store operation such as publish, export, revoke, or list. |
+| `control_plane_write` | Approval, review, or governance write that does not itself promote production execution. |
+| `proof_validation` | Proof issue/validate/revoke path with current signing and replay checks. |
+| `proof_gated_dispatch` | Proof-gated dispatch path exists, but hosted runtime gateway release proof is still required. |
+| `synthetic_fixture_runtime` | Executes against materialized synthetic fixtures, not production app/runtime execution. |
+| `non_mutating_shadow` | Writes shadow evidence and comparisons without production mutations. |
+| `none` | Planned or unknown capability. |
+
+At this baseline, `production_runtime` is `false` for every current Dojo tool. That is intentional. A tool can be executable today without being a mature deployed production runtime path.
+
 ## Current Honest Baseline
 
 Agent Dojo currently implements a repo-local proof-gated competency system with several mature foundations:

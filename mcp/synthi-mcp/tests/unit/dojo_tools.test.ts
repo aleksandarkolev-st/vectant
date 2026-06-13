@@ -233,11 +233,15 @@ describe("Agent Dojo MCP tools", () => {
     expect(listed?.structuredContent).toEqual(expect.objectContaining({
       implementation_status: "executable",
       runtime_enforced: true,
+      runtime_scope: "registry_operation",
+      production_runtime: false,
       evidence_backing: "runtime_validation",
       simulation_backing: "none",
       dojo_implementation: expect.objectContaining({
         implementation_status: "executable",
         runtime_enforced: true,
+        runtime_scope: "registry_operation",
+        production_runtime: false,
       }),
     }));
     expect(JSON.parse((listed?.content[0] as { type: "text"; text: string }).text)).toEqual(
@@ -1361,6 +1365,8 @@ describe("Agent Dojo MCP tools", () => {
     expect(checkrideRun?.structuredContent).toEqual(expect.objectContaining({
       implementation_status: "executable",
       runtime_enforced: true,
+      runtime_scope: "synthetic_fixture_runtime",
+      production_runtime: false,
       simulation_backing: "materialized_synthetic_fixture",
       checkride: expect.objectContaining({ schema_version: "synthi.dojo.checkrideReport.v1" }),
       executable_checkride: expect.objectContaining({
@@ -1547,6 +1553,8 @@ describe("Agent Dojo MCP tools", () => {
       requested_action: "run_workflow",
       implementation_status: "executable",
       runtime_enforced: true,
+      runtime_scope: "proof_gated_dispatch",
+      production_runtime: false,
       validation: expect.objectContaining({ ok: true, status: "allowed" }),
       skill_bus: expect.objectContaining({
         ok: true,
@@ -2073,6 +2081,8 @@ describe("Agent Dojo MCP tools", () => {
     expect(scenarioRun?.structuredContent).toEqual(expect.objectContaining({
       implementation_status: "executable",
       runtime_enforced: true,
+      runtime_scope: "synthetic_fixture_runtime",
+      production_runtime: false,
       simulation_backing: "materialized_synthetic_fixture",
       vivarium_run: expect.objectContaining({
         schema_version: "synthi.dojo.vivariumScenarioRun.v1",
