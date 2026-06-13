@@ -1,4 +1,5 @@
 import type { DojoProofCarryingSkillCapsule, DojoSkill } from "../../browser/dojo.js";
+import type { DojoAuditStore } from "../store/interfaces.js";
 import type { DojoTenantContext } from "./execution_policy_gate.js";
 import {
   buildDojoMcpSkillManifest,
@@ -47,6 +48,7 @@ export interface DojoToolDispatchResult {
   resolution?: DojoToolResolution;
   validation?: DojoSkillBusProofValidation;
   rate_limit?: DojoMcpSkillBusRateLimitDecision;
+  audit_event_id?: string;
   result?: unknown;
 }
 
@@ -133,6 +135,8 @@ export interface InProcessDojoMcpSkillBusOptions {
     proof_capsule: DojoProofCarryingSkillCapsule;
   }) => unknown | DojoMcpSkillBusExecutionBlock | Promise<unknown | DojoMcpSkillBusExecutionBlock>;
   rateLimiter?: DojoMcpSkillBusRateLimiter;
+  auditStore?: DojoAuditStore;
+  now?: () => Date;
 }
 
 export function createInProcessDojoMcpSkillBus(options: InProcessDojoMcpSkillBusOptions): DojoMcpSkillBus {
@@ -176,6 +180,8 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
   private readonly validateProof?: InProcessDojoMcpSkillBusOptions["validateProof"];
   private readonly executeTool?: InProcessDojoMcpSkillBusOptions["executeTool"];
   private readonly rateLimiter?: DojoMcpSkillBusRateLimiter;
+  private readonly auditStore?: DojoAuditStore;
+  private readonly nowFn: () => Date;
 
   constructor(options: InProcessDojoMcpSkillBusOptions) {
     this.env = options.env ?? process.env;
@@ -183,6 +189,8 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     this.validateProof = options.validateProof;
     this.executeTool = options.executeTool;
     this.rateLimiter = options.rateLimiter;
+    this.auditStore = options.auditStore;
+    this.nowFn = options.now ?? (() => new Date());
   }
 
   async listCompetencies(input: { tenant: DojoTenantContext }): Promise<DojoCompetencySummary[]> {
@@ -275,14 +283,14 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
   }): Promise<DojoToolDispatchResult> {
     const resolution = await this.resolveTool(input);
     if (!resolution.ok || !resolution.skill || !resolution.mcp_skill_manifest) {
-      return {
+      return this.auditDispatch(input, {
         ok: false,
         status: "blocked",
         dry_run: input.dry_run === true,
         blocked_by: resolution.blocked_by,
         tool_name: input.tool_name,
         resolution,
-      };
+      });
     }
 
     const requestedAction = input.requested_action ?? "run_workflow";
@@ -295,22 +303,22 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
         dry_run: input.dry_run === true,
       });
       if (!rateLimit.ok) {
-        return blockedDispatch(
+        return this.auditDispatch(input, blockedDispatch(
           input,
           resolution,
           rateLimit.blocked_by.length > 0 ? rateLimit.blocked_by : ["dojo_mcp_rate_limit_exceeded"],
           undefined,
           rateLimit
-        );
+        ));
       }
     }
 
     const proofRequired = dojoMcpManifestRequiresProof(resolution.mcp_skill_manifest);
     if (proofRequired && !input.proof_capsule) {
-      return blockedDispatch(input, resolution, ["dojo_proof_capsule_required"]);
+      return this.auditDispatch(input, blockedDispatch(input, resolution, ["dojo_proof_capsule_required"]));
     }
     if (proofRequired && !this.validateProof) {
-      return blockedDispatch(input, resolution, ["dojo_mcp_skill_bus_proof_validator_unconfigured"]);
+      return this.auditDispatch(input, blockedDispatch(input, resolution, ["dojo_mcp_skill_bus_proof_validator_unconfigured"]));
     }
 
     let validation: DojoSkillBusProofValidation | undefined;
@@ -321,7 +329,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
         requestedAction
       );
       if (bindingBlockedBy.length > 0) {
-        return blockedDispatch(input, resolution, bindingBlockedBy);
+        return this.auditDispatch(input, blockedDispatch(input, resolution, bindingBlockedBy));
       }
     }
 
@@ -334,12 +342,12 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
         args: input.args,
       });
       if (!validation.ok) {
-        return blockedDispatch(input, resolution, validation.blocked_by, validation);
+        return this.auditDispatch(input, blockedDispatch(input, resolution, validation.blocked_by, validation));
       }
     }
 
     if (input.dry_run) {
-      return {
+      return this.auditDispatch(input, {
         ok: true,
         status: "allowed",
         dry_run: true,
@@ -348,14 +356,14 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
         tool_name: resolution.tool_name,
         resolution: summarizeResolution(resolution),
         validation,
-      };
+      });
     }
 
     if (!input.proof_capsule) {
-      return blockedDispatch(input, resolution, ["dojo_proof_capsule_required"]);
+      return this.auditDispatch(input, blockedDispatch(input, resolution, ["dojo_proof_capsule_required"]));
     }
     if (!this.executeTool) {
-      return blockedDispatch(input, resolution, ["dojo_mcp_skill_executor_unconfigured"], validation);
+      return this.auditDispatch(input, blockedDispatch(input, resolution, ["dojo_mcp_skill_executor_unconfigured"], validation));
     }
 
     const result = await this.executeTool({
@@ -366,12 +374,12 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       proof_capsule: input.proof_capsule,
     });
     if (isDojoMcpSkillBusExecutionBlock(result)) {
-      return blockedDispatch(input, resolution, result.blocked_by, result.validation ?? validation);
+      return this.auditDispatch(input, blockedDispatch(input, resolution, result.blocked_by, result.validation ?? validation));
     }
     if (result === null || typeof result === "undefined") {
-      return blockedDispatch(input, resolution, ["dojo_mcp_skill_executor_unavailable"], validation);
+      return this.auditDispatch(input, blockedDispatch(input, resolution, ["dojo_mcp_skill_executor_unavailable"], validation));
     }
-    return {
+    return this.auditDispatch(input, {
       ok: true,
       status: "allowed",
       dry_run: false,
@@ -381,7 +389,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       resolution: summarizeResolution(resolution),
       validation,
       result,
-    };
+    });
   }
 
   private async listSkills(): Promise<DojoSkill[]> {
@@ -392,6 +400,52 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     if (tenant.roles.includes("dojo:legacy")) return true;
     if (tenant.roles.some((role) => role === "admin" || role === "dojo:admin" || role === "dojo:operator")) return true;
     return skill.workspace_id === tenant.workspace_id;
+  }
+
+  private async auditDispatch(
+    input: {
+      tenant: DojoTenantContext;
+      tool_name: string;
+      tool_version?: string;
+      requested_action?: string;
+      proof_capsule?: DojoProofCarryingSkillCapsule;
+      dry_run?: boolean;
+    },
+    result: DojoToolDispatchResult
+  ): Promise<DojoToolDispatchResult> {
+    if (!this.auditStore) return result;
+    const audit = await this.auditStore.appendAuditEvent({
+      tenant_id: input.tenant.tenant_id,
+      workspace_id: input.tenant.workspace_id,
+      actor: {
+        actor_id: input.tenant.actor_id,
+        actor_type: input.tenant.actor_type,
+      },
+      event_type: result.ok ? "mcp_tool_invocation_allowed" : "mcp_tool_invocation_blocked",
+      request_id: input.tenant.request_id,
+      correlation_id: input.tenant.correlation_id,
+      entity_kind: "mcp_tool_invocation",
+      entity_id: result.tool_name ?? input.tool_name,
+      details: {
+        organization_id: input.tenant.organization_id,
+        skill_id: result.skill_id ?? result.resolution?.skill_id,
+        workflow_id: result.resolution?.workflow_id,
+        tool_name: result.tool_name ?? input.tool_name,
+        tool_version: result.resolution?.tool_version ?? input.tool_version,
+        requested_action: input.requested_action ?? "run_workflow",
+        dry_run: input.dry_run === true,
+        status: result.status,
+        blocked_by: [...result.blocked_by],
+        proof_capsule_id: input.proof_capsule?.capsule_id,
+        manifest_id: result.resolution?.mcp_skill_manifest?.manifest_id,
+        rate_limit: result.rate_limit ? summarizeRateLimitDecision(result.rate_limit) : undefined,
+      },
+      created_at: this.nowFn().toISOString(),
+    });
+    return {
+      ...result,
+      audit_event_id: audit.audit_event_id,
+    };
   }
 }
 
@@ -567,6 +621,18 @@ function validateProofCapsuleBinding(
 function summarizeResolution(resolution: DojoToolResolution): DojoToolResolution {
   const { skill: _skill, ...summary } = resolution;
   return summary;
+}
+
+function summarizeRateLimitDecision(decision: DojoMcpSkillBusRateLimitDecision): DojoMcpSkillBusRateLimitDecision {
+  return {
+    ok: decision.ok,
+    blocked_by: [...decision.blocked_by],
+    ...(decision.rule_id ? { rule_id: decision.rule_id } : {}),
+    ...(decision.scope_key ? { scope_key: decision.scope_key } : {}),
+    ...(typeof decision.limit === "number" ? { limit: decision.limit } : {}),
+    ...(typeof decision.remaining === "number" ? { remaining: decision.remaining } : {}),
+    ...(typeof decision.retry_after_ms === "number" ? { retry_after_ms: decision.retry_after_ms } : {}),
+  };
 }
 
 function validateRateLimitRule(rule: DojoMcpSkillBusRateLimitRule): string[] {

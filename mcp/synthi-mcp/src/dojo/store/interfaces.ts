@@ -214,6 +214,8 @@ export type DojoAuditEventType =
   | "runtime_session_revoked"
   | "runtime_action_authorized"
   | "runtime_action_blocked"
+  | "mcp_tool_invocation_allowed"
+  | "mcp_tool_invocation_blocked"
   | "ghost_shadow_evidence_recorded";
 
 export interface DojoAuditActor {

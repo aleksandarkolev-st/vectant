@@ -12,6 +12,11 @@ import {
   type DojoSkillBusProofValidation,
 } from "../../src/dojo/mcp/skill_bus.js";
 import type { DojoTenantContext } from "../../src/dojo/mcp/execution_policy_gate.js";
+import type {
+  DojoAuditEventInput,
+  DojoAuditEventRecord,
+  DojoAuditStore,
+} from "../../src/dojo/store/interfaces.js";
 import { verifiedProofEvidenceInput } from "./dojo_test_fixtures.js";
 
 describe("Dojo MCP skill bus", () => {
@@ -375,6 +380,77 @@ describe("Dojo MCP skill bus", () => {
       result: expect.objectContaining({ actor_id: "agent-b" }),
     }));
   });
+
+  it("emits structured audit events for blocked and allowed MCP tool dispatches", async () => {
+    const skill = skillFixture("workspace-a", "Open details");
+    const proof = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
+      substrate_claim: "mcp",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const auditEvents: DojoAuditEventRecord[] = [];
+    const bus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skill],
+      env: manifestEnv(),
+      auditStore: memoryAuditStore(auditEvents),
+      now: () => new Date("2026-06-11T00:03:00.000Z"),
+      validateProof: (): DojoSkillBusProofValidation => ({ ok: true, status: "allowed", blocked_by: [] }),
+      executeTool: ({ tool_name }) => ({ ok: true, tool_name }),
+    });
+
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["dojo_proof_capsule_required"],
+      audit_event_id: "audit-1",
+    }));
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: proof,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      audit_event_id: "audit-2",
+    }));
+
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        audit_event_id: "audit-1",
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        actor: { actor_id: "agent-a", actor_type: "agent" },
+        event_type: "mcp_tool_invocation_blocked",
+        entity_kind: "mcp_tool_invocation",
+        entity_id: skill.published_tool_name,
+        details: expect.objectContaining({
+          skill_id: skill.skill_id,
+          workflow_id: skill.workflow_id,
+          tool_name: skill.published_tool_name,
+          requested_action: "run_workflow",
+          dry_run: false,
+          blocked_by: ["dojo_proof_capsule_required"],
+        }),
+      }),
+      expect.objectContaining({
+        audit_event_id: "audit-2",
+        event_type: "mcp_tool_invocation_allowed",
+        details: expect.objectContaining({
+          skill_id: skill.skill_id,
+          tool_name: skill.published_tool_name,
+          proof_capsule_id: proof.capsule_id,
+          manifest_id: expect.stringMatching(/^dojo_mcp_manifest_/),
+          blocked_by: [],
+        }),
+      }),
+    ]);
+  });
 });
 
 function skillFixture(workspaceId: string, label: string): DojoSkill {
@@ -491,5 +567,30 @@ function manifestEnv(): NodeJS.ProcessEnv {
     SYNTHI_DOJO_MCP_MANIFEST_ISSUER: "unit-test-skill-bus",
     SYNTHI_DOJO_MCP_MANIFEST_KEY_ID: "unit-test-key",
     SYNTHI_DOJO_MCP_MANIFEST_SIGNING_KEY: "unit-test-secret",
+  };
+}
+
+function memoryAuditStore(events: DojoAuditEventRecord[]): DojoAuditStore {
+  return {
+    appendAuditEvent(event: DojoAuditEventInput): DojoAuditEventRecord {
+      const record: DojoAuditEventRecord = {
+        tenant_id: event.tenant_id,
+        workspace_id: event.workspace_id,
+        audit_event_id: event.audit_event_id ?? `audit-${events.length + 1}`,
+        actor: { ...event.actor },
+        event_type: event.event_type,
+        request_id: event.request_id,
+        correlation_id: event.correlation_id,
+        entity_kind: event.entity_kind,
+        entity_id: event.entity_id,
+        details: { ...(event.details ?? {}) },
+        created_at: event.created_at ?? "2026-06-11T00:00:00.000Z",
+      };
+      events.push(record);
+      return record;
+    },
+    listAuditEvents(): DojoAuditEventRecord[] {
+      return [...events];
+    },
   };
 }
