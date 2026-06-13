@@ -140,6 +140,14 @@ export const DOJO_TOOLS = [
       properties: {
         skill_id: { type: "string" },
         workflow_id: { type: "string" },
+        tenant_id: { type: "string" },
+        organization_id: { type: "string" },
+        workspace_id: { type: "string" },
+        actor_id: { type: "string" },
+        actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        roles: { type: "array", items: { type: "string" } },
+        request_id: { type: "string" },
+        correlation_id: { type: "string" },
       },
       required: [],
     },
@@ -906,7 +914,7 @@ async function dojoListCompetenciesTool(args: unknown): Promise<ToolResponse> {
 }
 
 function dojoGetSkillTool(args: unknown): ToolResponse {
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   return jsonResponse({ ok: true, skill: skill.skill, mcp_skill_manifest: buildDojoMcpSkillManifest(skill.skill) });
 }
@@ -2355,6 +2363,40 @@ function requiredSkill(args: unknown): { ok: true; skill: DojoSkill } | { ok: fa
     };
   }
   return { ok: true, skill };
+}
+
+function requiredAuthorizedSkill(
+  args: unknown
+): { ok: true; skill: DojoSkill; tenant: DojoTenantContext } | { ok: false; error: ToolResponse } {
+  const skill = requiredSkill(args);
+  if (!skill.ok) return skill;
+  const tenantContext = dojoTenantContextResultFromArgs(args, {
+    development_defaults: { workspace_id: skill.skill.workspace_id },
+  });
+  if (!tenantContext.ok) return tenantContext;
+  const tenant = tenantContext.tenant;
+  if (!isTenantAuthorizedForDojoSkill(tenant, skill.skill)) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_skill_not_authorized", {
+        ok: false,
+        skill_id: skill.skill.skill_id,
+        workspace_id: skill.skill.workspace_id,
+        tenant_workspace_id: tenant.workspace_id,
+        actor_id: tenant.actor_id,
+        blocked_by: ["dojo_skill_workspace_mismatch"],
+        required_roles: ["dojo:admin", "dojo:operator"],
+      }),
+    };
+  }
+  return { ok: true, skill: skill.skill, tenant };
+}
+
+function isTenantAuthorizedForDojoSkill(tenant: DojoTenantContext, skill: DojoSkill): boolean {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement && tenant.roles.includes("dojo:legacy")) return true;
+  if (tenant.roles.some((role) => role === "admin" || role === "dojo:admin" || role === "dojo:operator")) return true;
+  return tenant.workspace_id === skill.workspace_id;
 }
 
 function skillByArgs(args: unknown): DojoSkill | null {

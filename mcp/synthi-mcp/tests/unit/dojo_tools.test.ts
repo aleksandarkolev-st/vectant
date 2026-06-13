@@ -289,6 +289,62 @@ describe("Agent Dojo MCP tools", () => {
     expect(competency.mcp_skill_manifest.manifest_digest).toMatch(/^sha256:/);
   });
 
+  it("authorizes production skill detail reads by tenant context", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const missingContext = await dispatchDojoTool("synthi_dojo_get_skill", { skill_id: skillId });
+    expect(missingContext?.isError).toBe(true);
+    expect(missingContext?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_tenant_context_required",
+      blocked_by: expect.arrayContaining(["tenant_context_workspace_id_missing"]),
+    }));
+
+    const crossWorkspace = await dispatchDojoTool("synthi_dojo_get_skill", {
+      skill_id: skillId,
+      ...productionTenantContextArgs({
+        workspace_id: "workspace-b",
+        request_id: "req-production-get-skill-cross-workspace",
+      }),
+    });
+    expect(crossWorkspace?.isError).toBe(true);
+    expect(crossWorkspace?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_skill_not_authorized",
+      ok: false,
+      skill_id: skillId,
+      workspace_id: "workspace-a",
+      tenant_workspace_id: "workspace-b",
+      blocked_by: ["dojo_skill_workspace_mismatch"],
+    }));
+
+    const sameWorkspace = await dispatchDojoTool("synthi_dojo_get_skill", {
+      skill_id: skillId,
+      ...productionTenantContextArgs({ request_id: "req-production-get-skill-same-workspace" }),
+    });
+    expect(sameWorkspace?.isError).toBeUndefined();
+    expect(sameWorkspace?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill: expect.objectContaining({ skill_id: skillId, workspace_id: "workspace-a" }),
+    }));
+
+    const adminRead = await dispatchDojoTool("synthi_dojo_get_skill", {
+      skill_id: skillId,
+      ...productionTenantContextArgs({
+        workspace_id: "workspace-b",
+        roles: ["dojo:admin"],
+        request_id: "req-production-get-skill-admin",
+      }),
+    });
+    expect(adminRead?.isError).toBeUndefined();
+    expect(adminRead?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill: expect.objectContaining({ skill_id: skillId, workspace_id: "workspace-a" }),
+    }));
+  });
+
   it("advertises the static Dojo tool surface to strict MCP clients", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createSynthiServer({ defaultSignalingUrl: "ws://localhost:9000" });
