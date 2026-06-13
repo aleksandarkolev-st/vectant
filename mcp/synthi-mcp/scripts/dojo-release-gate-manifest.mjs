@@ -12,16 +12,31 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "./dojo-compliance-export-self-check.mjs";
-import { DOJO_CHAOS_SCENARIOS } from "./dojo-chaos-performance-self-check.mjs";
+import {
+  DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
+  DOJO_COMPLIANCE_EXPORT_TEST_FILES,
+} from "./dojo-compliance-export-self-check.mjs";
+import {
+  DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+  DOJO_CHAOS_SCENARIOS,
+} from "./dojo-chaos-performance-self-check.mjs";
 import {
   DOJO_DOCKER_HEALTHY_SERVICES,
   DOJO_DOCKER_REQUIRED_ENDPOINTS,
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "./dojo-docker-integration-self-check.mjs";
-import { DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES } from "./dojo-postgres-control-plane-self-check.mjs";
-import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "./dojo-privacy-redaction-self-check.mjs";
-import { DOJO_SECURITY_ABUSE_CLASSES } from "./dojo-security-abuse-self-check.mjs";
+import {
+  DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
+  DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
+} from "./dojo-postgres-control-plane-self-check.mjs";
+import {
+  DOJO_PRIVACY_REDACTION_CAPABILITIES,
+  DOJO_PRIVACY_REDACTION_TEST_FILES,
+} from "./dojo-privacy-redaction-self-check.mjs";
+import {
+  DOJO_SECURITY_ABUSE_CLASSES,
+  DOJO_SECURITY_ABUSE_TEST_FILES,
+} from "./dojo-security-abuse-self-check.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -179,6 +194,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_postgres_url: true,
       require_all_control_plane_capabilities_covered: true,
       required_control_plane_capabilities: [...DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES],
+      required_test_files: [...DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES],
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -450,6 +466,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     release_artifact_requirements: {
       require_all_abuse_classes_covered: true,
       required_abuse_classes: [...DOJO_SECURITY_ABUSE_CLASSES],
+      required_test_files: [...DOJO_SECURITY_ABUSE_TEST_FILES],
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_budget_ok: true,
@@ -470,6 +487,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     release_artifact_requirements: {
       require_all_compliance_capabilities_covered: true,
       required_compliance_capabilities: [...DOJO_COMPLIANCE_EXPORT_CAPABILITIES],
+      required_test_files: [...DOJO_COMPLIANCE_EXPORT_TEST_FILES],
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -489,6 +507,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     release_artifact_requirements: {
       require_all_privacy_capabilities_covered: true,
       required_privacy_capabilities: [...DOJO_PRIVACY_REDACTION_CAPABILITIES],
+      required_test_files: [...DOJO_PRIVACY_REDACTION_TEST_FILES],
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -508,6 +527,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     enterprise_artifact_requirements: {
       require_all_scenarios_covered: true,
       required_chaos_scenarios: [...DOJO_CHAOS_SCENARIOS],
+      required_test_files: [...DOJO_CHAOS_PERFORMANCE_TEST_FILES],
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_budget_ok: true,
@@ -716,6 +736,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (missingPostgresCapabilities.length > 0) {
       errors.push(`postgres_control_plane_missing_required_capabilities:${missingPostgresCapabilities.join(",")}`);
     }
+    const missingPostgresTestFiles = missingRequiredEntries(
+      DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
+      postgresControlPlaneGate.artifact_requirements?.required_test_files,
+    );
+    if (missingPostgresTestFiles.length > 0) {
+      errors.push(`postgres_control_plane_missing_required_test_files:${missingPostgresTestFiles.join(",")}`);
+    }
     if (!postgresControlPlaneGate.artifact_requirements?.require_json_report_digest_match) {
       errors.push("postgres_control_plane_missing_json_report_digest_requirement");
     }
@@ -846,6 +873,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (missingAbuseClasses.length > 0) {
       errors.push(`security_abuse_missing_required_classes:${missingAbuseClasses.join(",")}`);
     }
+    const missingSecurityTestFiles = missingRequiredEntries(
+      DOJO_SECURITY_ABUSE_TEST_FILES,
+      securityAbuseGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingSecurityTestFiles.length > 0) {
+      errors.push(`security_abuse_missing_required_test_files:${missingSecurityTestFiles.join(",")}`);
+    }
     if (!securityAbuseGate.release_artifact_requirements?.require_no_skipped_tests) {
       errors.push("security_abuse_missing_no_skipped_requirement");
     }
@@ -876,6 +910,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (missingComplianceCapabilities.length > 0) {
       errors.push(`compliance_export_missing_required_capabilities:${missingComplianceCapabilities.join(",")}`);
     }
+    const missingComplianceTestFiles = missingRequiredEntries(
+      DOJO_COMPLIANCE_EXPORT_TEST_FILES,
+      complianceExportGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingComplianceTestFiles.length > 0) {
+      errors.push(`compliance_export_missing_required_test_files:${missingComplianceTestFiles.join(",")}`);
+    }
     if (!complianceExportGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
       errors.push("compliance_export_missing_digest_requirement");
     }
@@ -903,6 +944,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (missingPrivacyCapabilities.length > 0) {
       errors.push(`privacy_redaction_missing_required_capabilities:${missingPrivacyCapabilities.join(",")}`);
     }
+    const missingPrivacyTestFiles = missingRequiredEntries(
+      DOJO_PRIVACY_REDACTION_TEST_FILES,
+      privacyRedactionGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingPrivacyTestFiles.length > 0) {
+      errors.push(`privacy_redaction_missing_required_test_files:${missingPrivacyTestFiles.join(",")}`);
+    }
     if (!privacyRedactionGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
       errors.push("privacy_redaction_missing_digest_requirement");
     }
@@ -926,6 +974,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       .filter((scenario) => !requiredChaosScenarios.includes(scenario));
     if (missingChaosScenarios.length > 0) {
       errors.push(`chaos_performance_missing_required_scenarios:${missingChaosScenarios.join(",")}`);
+    }
+    const missingChaosTestFiles = missingRequiredEntries(
+      DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+      chaosPerformanceGate.enterprise_artifact_requirements?.required_test_files,
+    );
+    if (missingChaosTestFiles.length > 0) {
+      errors.push(`chaos_performance_missing_required_test_files:${missingChaosTestFiles.join(",")}`);
     }
     if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_no_skipped_tests) {
       errors.push("chaos_performance_missing_no_skipped_requirement");
@@ -960,6 +1015,11 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     tier_count: tierIds.size,
     gate_count: gates.length,
   };
+}
+
+function missingRequiredEntries(requiredEntries, declaredEntries) {
+  const declared = new Set(Array.isArray(declaredEntries) ? declaredEntries.map(String) : []);
+  return requiredEntries.filter((entry) => !declared.has(entry));
 }
 
 export function validateDojoVisualProofReport(report, {

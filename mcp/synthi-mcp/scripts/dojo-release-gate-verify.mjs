@@ -22,16 +22,31 @@ import {
   buildConformanceReleaseGateSummary,
   redactConformanceReport,
 } from "./dojo-mcp-host-conformance.mjs";
-import { DOJO_CHAOS_SCENARIOS } from "./dojo-chaos-performance-self-check.mjs";
-import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "./dojo-compliance-export-self-check.mjs";
+import {
+  DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+  DOJO_CHAOS_SCENARIOS,
+} from "./dojo-chaos-performance-self-check.mjs";
+import {
+  DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
+  DOJO_COMPLIANCE_EXPORT_TEST_FILES,
+} from "./dojo-compliance-export-self-check.mjs";
 import {
   DOJO_DOCKER_HEALTHY_SERVICES,
   DOJO_DOCKER_REQUIRED_ENDPOINTS,
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "./dojo-docker-integration-self-check.mjs";
-import { DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES } from "./dojo-postgres-control-plane-self-check.mjs";
-import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "./dojo-privacy-redaction-self-check.mjs";
-import { DOJO_SECURITY_ABUSE_CLASSES } from "./dojo-security-abuse-self-check.mjs";
+import {
+  DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
+  DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
+} from "./dojo-postgres-control-plane-self-check.mjs";
+import {
+  DOJO_PRIVACY_REDACTION_CAPABILITIES,
+  DOJO_PRIVACY_REDACTION_TEST_FILES,
+} from "./dojo-privacy-redaction-self-check.mjs";
+import {
+  DOJO_SECURITY_ABUSE_CLASSES,
+  DOJO_SECURITY_ABUSE_TEST_FILES,
+} from "./dojo-security-abuse-self-check.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -433,6 +448,11 @@ export function validateDojoPostgresControlPlaneEvidenceForMilestone(evidence) {
   if (missingConfiguredCapabilities.length > 0) {
     errors.push(`postgres_control_plane_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
   }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
+    prefix: "postgres_control_plane",
+  }));
   const untestedRequiredCapabilities = DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES
     .filter((capability) => !testedCapabilities.includes(capability));
   if (untestedRequiredCapabilities.length > 0) {
@@ -459,6 +479,19 @@ export function validateDojoPostgresControlPlaneEvidenceForMilestone(evidence) {
     ok: errors.length === 0,
     errors,
   };
+}
+
+function validateRequiredEvidenceTestFiles({ evidence, requiredTestFiles, prefix }) {
+  const errors = [];
+  const testFiles = Array.isArray(evidence?.test_files) ? evidence.test_files.map(String) : [];
+  const missingTestFiles = requiredTestFiles.filter((file) => !testFiles.includes(file));
+  if (missingTestFiles.length > 0) {
+    errors.push(`${prefix}_required_test_files_missing:${missingTestFiles.join(",")}`);
+  }
+  if (Number(evidence?.test_file_count || 0) !== testFiles.length) {
+    errors.push(`${prefix}_declared_test_file_count_mismatch:${evidence?.test_file_count ?? "missing"}:${testFiles.length}`);
+  }
+  return errors;
 }
 
 export async function verifyDojoDockerIntegrationEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
@@ -898,6 +931,11 @@ export function validateDojoSecurityAbuseEvidenceForRelease(evidence) {
   if (missingConfiguredClasses.length > 0) {
     errors.push(`security_abuse_required_classes_missing:${missingConfiguredClasses.join(",")}`);
   }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_SECURITY_ABUSE_TEST_FILES,
+    prefix: "security_abuse",
+  }));
   const untestedRequiredClasses = DOJO_SECURITY_ABUSE_CLASSES.filter((abuseClass) => !testedClasses.includes(abuseClass));
   if (untestedRequiredClasses.length > 0) {
     errors.push(`security_abuse_required_classes_untested:${untestedRequiredClasses.join(",")}`);
@@ -962,6 +1000,11 @@ export function validateDojoComplianceExportEvidenceForRelease(evidence) {
   if (missingConfiguredCapabilities.length > 0) {
     errors.push(`compliance_export_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
   }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_COMPLIANCE_EXPORT_TEST_FILES,
+    prefix: "compliance_export",
+  }));
   const untestedRequiredCapabilities = DOJO_COMPLIANCE_EXPORT_CAPABILITIES
     .filter((capability) => !testedCapabilities.includes(capability));
   if (untestedRequiredCapabilities.length > 0) {
@@ -1027,6 +1070,11 @@ export function validateDojoPrivacyRedactionEvidenceForRelease(evidence) {
   if (missingConfiguredCapabilities.length > 0) {
     errors.push(`privacy_redaction_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
   }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_PRIVACY_REDACTION_TEST_FILES,
+    prefix: "privacy_redaction",
+  }));
   const untestedRequiredCapabilities = DOJO_PRIVACY_REDACTION_CAPABILITIES
     .filter((capability) => !testedCapabilities.includes(capability));
   if (untestedRequiredCapabilities.length > 0) {
@@ -1091,6 +1139,11 @@ export function validateDojoChaosPerformanceEvidenceForEnterprise(evidence) {
   if (missingConfiguredScenarios.length > 0) {
     errors.push(`chaos_performance_required_scenarios_missing:${missingConfiguredScenarios.join(",")}`);
   }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+    prefix: "chaos_performance",
+  }));
   const untestedRequiredScenarios = DOJO_CHAOS_SCENARIOS
     .filter((scenario) => !testedScenarios.includes(scenario));
   if (untestedRequiredScenarios.length > 0) {
@@ -2310,24 +2363,19 @@ async function writePostgresControlPlaneEvidenceForSelfCheck({
     capability_count: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES.length,
     configured_capability_count: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES.length,
     capability_coverage_complete: true,
-    test_files: [
-      "tests/integration/dojo_postgres_proof_store.test.ts",
-      "tests/integration/dojo_evidence_ledger_store.test.ts",
-      "tests/integration/dojo_audit_store.test.ts",
-      "tests/integration/dojo_proof_ledger_tool.test.ts",
-    ],
-    test_file_count: 4,
-    reported_test_file_count: 4,
+    test_files: [...DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES],
+    test_file_count: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES.length,
+    reported_test_file_count: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES.length,
     test_summary: {
       success: true,
       total_tests: 13,
       passed_tests: 13,
       failed_tests: 0,
       pending_tests: 0,
-      total_suites: 4,
-      passed_suites: 4,
+      total_suites: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES.length,
+      passed_suites: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES.length,
       failed_suites: 0,
-      reported_test_file_count: 4,
+      reported_test_file_count: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES.length,
     },
     budget_evaluation: { ok: true },
     json_report_path: jsonReportPath,
@@ -2606,8 +2654,9 @@ async function writeSecurityEvidenceForSelfCheck({
     configured_abuse_class_count: DOJO_SECURITY_ABUSE_CLASSES.length,
     abuse_class_coverage_complete: true,
     missing_abuse_classes: [],
-    test_file_count: 1,
-    reported_test_file_count: 1,
+    test_files: [...DOJO_SECURITY_ABUSE_TEST_FILES],
+    test_file_count: DOJO_SECURITY_ABUSE_TEST_FILES.length,
+    reported_test_file_count: DOJO_SECURITY_ABUSE_TEST_FILES.length,
     budget_evaluation: {
       ok: true,
       checks: {
@@ -2670,8 +2719,9 @@ async function writeComplianceExportEvidenceForSelfCheck({
     capability_count: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.length,
     configured_capability_count: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.length,
     capability_coverage_complete: true,
-    test_file_count: 3,
-    reported_test_file_count: 3,
+    test_files: [...DOJO_COMPLIANCE_EXPORT_TEST_FILES],
+    test_file_count: DOJO_COMPLIANCE_EXPORT_TEST_FILES.length,
+    reported_test_file_count: DOJO_COMPLIANCE_EXPORT_TEST_FILES.length,
     budget_evaluation: {
       ok: true,
       checks: {
@@ -2734,8 +2784,9 @@ async function writePrivacyRedactionEvidenceForSelfCheck({
     capability_count: DOJO_PRIVACY_REDACTION_CAPABILITIES.length,
     configured_capability_count: DOJO_PRIVACY_REDACTION_CAPABILITIES.length,
     capability_coverage_complete: true,
-    test_file_count: 7,
-    reported_test_file_count: 7,
+    test_files: [...DOJO_PRIVACY_REDACTION_TEST_FILES],
+    test_file_count: DOJO_PRIVACY_REDACTION_TEST_FILES.length,
+    reported_test_file_count: DOJO_PRIVACY_REDACTION_TEST_FILES.length,
     budget_evaluation: {
       ok: true,
       checks: {
@@ -2823,6 +2874,9 @@ async function writeChaosEvidenceForSelfCheck({
       failed_test_count: 0,
       passed_test_count: 9,
     },
+    test_files: [...DOJO_CHAOS_PERFORMANCE_TEST_FILES],
+    test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
+    reported_test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
     json_report_path: jsonReportPath,
     json_report_sha256: sha256(jsonReport),
     json_report_bytes: Buffer.byteLength(jsonReport),

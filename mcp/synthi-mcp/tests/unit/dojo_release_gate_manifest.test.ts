@@ -10,16 +10,31 @@ import {
   validateDojoReleaseGateManifest,
   validateDojoVisualProofReport,
 } from "../../scripts/dojo-release-gate-manifest.mjs";
-import { DOJO_CHAOS_SCENARIOS } from "../../scripts/dojo-chaos-performance-self-check.mjs";
-import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "../../scripts/dojo-compliance-export-self-check.mjs";
+import {
+  DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+  DOJO_CHAOS_SCENARIOS,
+} from "../../scripts/dojo-chaos-performance-self-check.mjs";
+import {
+  DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
+  DOJO_COMPLIANCE_EXPORT_TEST_FILES,
+} from "../../scripts/dojo-compliance-export-self-check.mjs";
 import {
   DOJO_DOCKER_HEALTHY_SERVICES,
   DOJO_DOCKER_REQUIRED_ENDPOINTS,
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "../../scripts/dojo-docker-integration-self-check.mjs";
-import { DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES } from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
-import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "../../scripts/dojo-privacy-redaction-self-check.mjs";
-import { DOJO_SECURITY_ABUSE_CLASSES } from "../../scripts/dojo-security-abuse-self-check.mjs";
+import {
+  DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
+  DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
+} from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
+import {
+  DOJO_PRIVACY_REDACTION_CAPABILITIES,
+  DOJO_PRIVACY_REDACTION_TEST_FILES,
+} from "../../scripts/dojo-privacy-redaction-self-check.mjs";
+import {
+  DOJO_SECURITY_ABUSE_CLASSES,
+  DOJO_SECURITY_ABUSE_TEST_FILES,
+} from "../../scripts/dojo-security-abuse-self-check.mjs";
 
 const PACKAGE_SCRIPTS = {
   "mcp/synthi-mcp/package.json": {
@@ -111,6 +126,7 @@ describe("Dojo release gate manifest", () => {
           require_postgres_url: true,
           require_all_control_plane_capabilities_covered: true,
           required_control_plane_capabilities: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
+          required_test_files: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -241,6 +257,7 @@ describe("Dojo release gate manifest", () => {
         release_artifact_requirements: expect.objectContaining({
           require_all_abuse_classes_covered: true,
           required_abuse_classes: DOJO_SECURITY_ABUSE_CLASSES,
+          required_test_files: DOJO_SECURITY_ABUSE_TEST_FILES,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -257,6 +274,7 @@ describe("Dojo release gate manifest", () => {
         release_artifact_requirements: expect.objectContaining({
           require_all_compliance_capabilities_covered: true,
           required_compliance_capabilities: DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
+          required_test_files: DOJO_COMPLIANCE_EXPORT_TEST_FILES,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -273,6 +291,7 @@ describe("Dojo release gate manifest", () => {
         release_artifact_requirements: expect.objectContaining({
           require_all_privacy_capabilities_covered: true,
           required_privacy_capabilities: DOJO_PRIVACY_REDACTION_CAPABILITIES,
+          required_test_files: DOJO_PRIVACY_REDACTION_TEST_FILES,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -287,6 +306,7 @@ describe("Dojo release gate manifest", () => {
         enterprise_artifact_requirements: expect.objectContaining({
           require_all_scenarios_covered: true,
           required_chaos_scenarios: DOJO_CHAOS_SCENARIOS,
+          required_test_files: DOJO_CHAOS_PERFORMANCE_TEST_FILES,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_budget_ok: true,
@@ -329,10 +349,14 @@ describe("Dojo release gate manifest", () => {
 
     const brokenPostgres = JSON.parse(JSON.stringify(manifest));
     const postgresGate = brokenPostgres.gates.find((gate) => gate.id === "dojo_postgres_control_plane_self_check");
+    const missingPostgresTestFile = DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES[0];
     postgresGate.artifact_requirements.required_control_plane_capabilities = DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES
       .filter((capability) => capability !== "atomic_proof_consume");
+    postgresGate.artifact_requirements.required_test_files = DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES
+      .filter((file) => file !== missingPostgresTestFile);
     expect(validateDojoReleaseGateManifest(brokenPostgres, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "postgres_control_plane_missing_required_capabilities:atomic_proof_consume",
+      `postgres_control_plane_missing_required_test_files:${missingPostgresTestFile}`,
     ]));
 
     const brokenDocker = JSON.parse(JSON.stringify(manifest));
@@ -352,36 +376,52 @@ describe("Dojo release gate manifest", () => {
 
     const brokenSecurity = JSON.parse(JSON.stringify(manifest));
     const securityGate = brokenSecurity.gates.find((gate) => gate.id === "security_abuse_suite");
+    const missingSecurityTestFile = DOJO_SECURITY_ABUSE_TEST_FILES[0];
     securityGate.release_artifact_requirements.required_abuse_classes = DOJO_SECURITY_ABUSE_CLASSES.filter((abuseClass) => abuseClass !== "fake_success_oracle");
+    securityGate.release_artifact_requirements.required_test_files = DOJO_SECURITY_ABUSE_TEST_FILES
+      .filter((file) => file !== missingSecurityTestFile);
     securityGate.release_artifact_requirements.require_no_skipped_tests = false;
     expect(validateDojoReleaseGateManifest(brokenSecurity, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "security_abuse_missing_required_classes:fake_success_oracle",
+      `security_abuse_missing_required_test_files:${missingSecurityTestFile}`,
       "security_abuse_missing_no_skipped_requirement",
     ]));
 
     const brokenCompliance = JSON.parse(JSON.stringify(manifest));
     const complianceGate = brokenCompliance.gates.find((gate) => gate.id === "compliance_export_suite");
+    const missingComplianceTestFile = DOJO_COMPLIANCE_EXPORT_TEST_FILES[0];
     complianceGate.release_artifact_requirements.required_compliance_capabilities = DOJO_COMPLIANCE_EXPORT_CAPABILITIES
       .filter((capability) => capability !== "redacted_evidence_export");
+    complianceGate.release_artifact_requirements.required_test_files = DOJO_COMPLIANCE_EXPORT_TEST_FILES
+      .filter((file) => file !== missingComplianceTestFile);
     expect(validateDojoReleaseGateManifest(brokenCompliance, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "compliance_export_missing_required_capabilities:redacted_evidence_export",
+      `compliance_export_missing_required_test_files:${missingComplianceTestFile}`,
     ]));
 
     const brokenPrivacy = JSON.parse(JSON.stringify(manifest));
     const privacyGate = brokenPrivacy.gates.find((gate) => gate.id === "privacy_redaction_suite");
+    const missingPrivacyTestFile = DOJO_PRIVACY_REDACTION_TEST_FILES[0];
     privacyGate.release_artifact_requirements.required_privacy_capabilities = DOJO_PRIVACY_REDACTION_CAPABILITIES
       .filter((capability) => capability !== "browser_origin_privacy_boundary");
+    privacyGate.release_artifact_requirements.required_test_files = DOJO_PRIVACY_REDACTION_TEST_FILES
+      .filter((file) => file !== missingPrivacyTestFile);
     expect(validateDojoReleaseGateManifest(brokenPrivacy, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "privacy_redaction_missing_required_capabilities:browser_origin_privacy_boundary",
+      `privacy_redaction_missing_required_test_files:${missingPrivacyTestFile}`,
     ]));
 
     const brokenChaos = JSON.parse(JSON.stringify(manifest));
     const chaosGate = brokenChaos.gates.find((gate) => gate.id === "dojo_chaos_performance_self_check");
+    const missingChaosTestFile = DOJO_CHAOS_PERFORMANCE_TEST_FILES[0];
     chaosGate.enterprise_artifact_requirements.required_chaos_scenarios = DOJO_CHAOS_SCENARIOS
       .filter((scenario) => scenario !== "api_timeout");
+    chaosGate.enterprise_artifact_requirements.required_test_files = DOJO_CHAOS_PERFORMANCE_TEST_FILES
+      .filter((file) => file !== missingChaosTestFile);
     chaosGate.enterprise_artifact_requirements.require_no_skipped_tests = false;
     expect(validateDojoReleaseGateManifest(brokenChaos, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "chaos_performance_missing_required_scenarios:api_timeout",
+      `chaos_performance_missing_required_test_files:${missingChaosTestFile}`,
       "chaos_performance_missing_no_skipped_requirement",
     ]));
   });

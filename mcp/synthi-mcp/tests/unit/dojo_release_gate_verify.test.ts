@@ -13,16 +13,31 @@ import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
-import { DOJO_CHAOS_SCENARIOS } from "../../scripts/dojo-chaos-performance-self-check.mjs";
-import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "../../scripts/dojo-compliance-export-self-check.mjs";
+import {
+  DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+  DOJO_CHAOS_SCENARIOS,
+} from "../../scripts/dojo-chaos-performance-self-check.mjs";
+import {
+  DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
+  DOJO_COMPLIANCE_EXPORT_TEST_FILES,
+} from "../../scripts/dojo-compliance-export-self-check.mjs";
 import {
   DOJO_DOCKER_HEALTHY_SERVICES,
   DOJO_DOCKER_REQUIRED_ENDPOINTS,
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "../../scripts/dojo-docker-integration-self-check.mjs";
-import { DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES } from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
-import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "../../scripts/dojo-privacy-redaction-self-check.mjs";
-import { DOJO_SECURITY_ABUSE_CLASSES } from "../../scripts/dojo-security-abuse-self-check.mjs";
+import {
+  DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
+  DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
+} from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
+import {
+  DOJO_PRIVACY_REDACTION_CAPABILITIES,
+  DOJO_PRIVACY_REDACTION_TEST_FILES,
+} from "../../scripts/dojo-privacy-redaction-self-check.mjs";
+import {
+  DOJO_SECURITY_ABUSE_CLASSES,
+  DOJO_SECURITY_ABUSE_TEST_FILES,
+} from "../../scripts/dojo-security-abuse-self-check.mjs";
 import {
   validateDojoProofSelfCheckForRelease,
   validateDojoMcpHostConformanceReportForRelease,
@@ -204,6 +219,10 @@ describe("Dojo release gate artifact verifier", () => {
       dir,
       basename: "dojo-postgres-control-plane-drifted",
       evidence: postgresControlPlaneEvidenceFixture({
+        test_files: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES
+          .filter((file) => file !== DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES[0]),
+        test_file_count: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES.length - 1,
+        reported_test_file_count: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES.length - 1,
         configured_capabilities: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES
           .filter((capability) => capability !== "atomic_proof_consume"),
         tested_capabilities: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES
@@ -216,6 +235,7 @@ describe("Dojo release gate artifact verifier", () => {
     expect(drifted.errors).toEqual(expect.arrayContaining([
       "postgres_control_plane_required_capabilities_missing:atomic_proof_consume",
       "postgres_control_plane_required_capabilities_untested:atomic_proof_consume",
+      `postgres_control_plane_required_test_files_missing:${DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES[0]}`,
     ]));
   });
 
@@ -669,6 +689,21 @@ describe("Dojo release gate artifact verifier", () => {
       "security_abuse_pending_tests:1",
     ]));
 
+    const driftedSecurityTestFilePath = await writeSecurityEvidenceFixture({
+      dir,
+      basename: "drifted-security-test-file",
+      evidence: securityEvidenceFixture({
+        test_files: DOJO_SECURITY_ABUSE_TEST_FILES
+          .filter((file) => file !== DOJO_SECURITY_ABUSE_TEST_FILES[0]),
+        test_file_count: DOJO_SECURITY_ABUSE_TEST_FILES.length - 1,
+        reported_test_file_count: DOJO_SECURITY_ABUSE_TEST_FILES.length - 1,
+      }),
+    });
+    const driftedSecurityTestFile = await verifyDojoSecurityAbuseEvidenceArtifact({ evidencePath: driftedSecurityTestFilePath });
+    expect(driftedSecurityTestFile.errors).toEqual(expect.arrayContaining([
+      `security_abuse_required_test_files_missing:${DOJO_SECURITY_ABUSE_TEST_FILES[0]}`,
+    ]));
+
     const tamperedStdout = path.join(dir, "tampered-security.stdout.log");
     await writeFile(tamperedStdout, "tampered stdout", "utf8");
     const tamperedPath = await writeSecurityEvidenceFixture({
@@ -745,6 +780,10 @@ describe("Dojo release gate artifact verifier", () => {
       dir,
       basename: "drifted-compliance",
       evidence: complianceExportEvidenceFixture({
+        test_files: DOJO_COMPLIANCE_EXPORT_TEST_FILES
+          .filter((file) => file !== DOJO_COMPLIANCE_EXPORT_TEST_FILES[0]),
+        test_file_count: DOJO_COMPLIANCE_EXPORT_TEST_FILES.length - 1,
+        reported_test_file_count: DOJO_COMPLIANCE_EXPORT_TEST_FILES.length - 1,
         configured_capabilities: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.filter((capability) => capability !== "source_ref_redaction"),
         tested_capabilities: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.filter((capability) => capability !== "source_ref_redaction"),
         capability_count: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.length - 1,
@@ -754,6 +793,7 @@ describe("Dojo release gate artifact verifier", () => {
     expect((await verifyDojoComplianceExportEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
       "compliance_export_required_capabilities_missing:source_ref_redaction",
       "compliance_export_required_capabilities_untested:source_ref_redaction",
+      `compliance_export_required_test_files_missing:${DOJO_COMPLIANCE_EXPORT_TEST_FILES[0]}`,
     ]));
 
     const tamperedJson = path.join(dir, "tampered-compliance.vitest.json");
@@ -818,6 +858,10 @@ describe("Dojo release gate artifact verifier", () => {
       dir,
       basename: "drifted-privacy",
       evidence: privacyRedactionEvidenceFixture({
+        test_files: DOJO_PRIVACY_REDACTION_TEST_FILES
+          .filter((file) => file !== DOJO_PRIVACY_REDACTION_TEST_FILES[0]),
+        test_file_count: DOJO_PRIVACY_REDACTION_TEST_FILES.length - 1,
+        reported_test_file_count: DOJO_PRIVACY_REDACTION_TEST_FILES.length - 1,
         configured_capabilities: DOJO_PRIVACY_REDACTION_CAPABILITIES.filter((capability) => capability !== "broker_audit_redaction"),
         tested_capabilities: DOJO_PRIVACY_REDACTION_CAPABILITIES.filter((capability) => capability !== "broker_audit_redaction"),
         capability_count: DOJO_PRIVACY_REDACTION_CAPABILITIES.length - 1,
@@ -827,6 +871,7 @@ describe("Dojo release gate artifact verifier", () => {
     expect((await verifyDojoPrivacyRedactionEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
       "privacy_redaction_required_capabilities_missing:broker_audit_redaction",
       "privacy_redaction_required_capabilities_untested:broker_audit_redaction",
+      `privacy_redaction_required_test_files_missing:${DOJO_PRIVACY_REDACTION_TEST_FILES[0]}`,
     ]));
 
     const tamperedJson = path.join(dir, "tampered-privacy.vitest.json");
@@ -903,6 +948,10 @@ describe("Dojo release gate artifact verifier", () => {
       dir,
       basename: "drifted-chaos",
       evidence: chaosEvidenceFixture({
+        test_files: DOJO_CHAOS_PERFORMANCE_TEST_FILES
+          .filter((file) => file !== DOJO_CHAOS_PERFORMANCE_TEST_FILES[0]),
+        test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length - 1,
+        reported_test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length - 1,
         configured_chaos_scenarios: DOJO_CHAOS_SCENARIOS.filter((scenario) => scenario !== "api_timeout"),
         tested_chaos_scenarios: DOJO_CHAOS_SCENARIOS.filter((scenario) => scenario !== "api_timeout"),
         scenario_count: DOJO_CHAOS_SCENARIOS.length - 1,
@@ -913,6 +962,7 @@ describe("Dojo release gate artifact verifier", () => {
     expect(drifted.errors).toEqual(expect.arrayContaining([
       "chaos_performance_required_scenarios_missing:api_timeout",
       "chaos_performance_required_scenarios_untested:api_timeout",
+      `chaos_performance_required_test_files_missing:${DOJO_CHAOS_PERFORMANCE_TEST_FILES[0]}`,
     ]));
 
     const skippedPath = await writeChaosEvidenceFixture({
@@ -1512,9 +1562,10 @@ function postgresControlPlaneEvidenceFixture(overrides = {}) {
     configured_capability_count: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES.length,
     capability_coverage_complete: true,
     missing_capabilities: [],
+    test_files: [...DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES],
     budget_evaluation: { ok: true },
-    test_file_count: 4,
-    reported_test_file_count: 4,
+    test_file_count: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES.length,
+    reported_test_file_count: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES.length,
     test_summary: {
       total_tests: 13,
       passed_tests: 13,
@@ -1541,8 +1592,8 @@ function postgresControlPlaneJsonReportFixtureText() {
     numPassedTests: 13,
     numFailedTests: 0,
     numPendingTests: 0,
-    numTotalTestSuites: 4,
-    numPassedTestSuites: 4,
+    numTotalTestSuites: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES.length,
+    numPassedTestSuites: DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES.length,
     numFailedTestSuites: 0,
     testResults: [],
   }, null, 2);
@@ -1760,8 +1811,9 @@ function securityEvidenceFixture(overrides = {}) {
     configured_abuse_class_count: DOJO_SECURITY_ABUSE_CLASSES.length,
     abuse_class_coverage_complete: true,
     missing_abuse_classes: [],
-    test_file_count: 1,
-    reported_test_file_count: 1,
+    test_files: [...DOJO_SECURITY_ABUSE_TEST_FILES],
+    test_file_count: DOJO_SECURITY_ABUSE_TEST_FILES.length,
+    reported_test_file_count: DOJO_SECURITY_ABUSE_TEST_FILES.length,
     budget_evaluation: { ok: true },
     test_summary: {
       total_tests: DOJO_SECURITY_ABUSE_CLASSES.length,
@@ -1789,8 +1841,8 @@ function securityJsonReportFixtureText() {
     numPassedTests: DOJO_SECURITY_ABUSE_CLASSES.length,
     numFailedTests: 0,
     numPendingTests: 0,
-    numTotalTestSuites: 1,
-    numPassedTestSuites: 1,
+    numTotalTestSuites: DOJO_SECURITY_ABUSE_TEST_FILES.length,
+    numPassedTestSuites: DOJO_SECURITY_ABUSE_TEST_FILES.length,
     numFailedTestSuites: 0,
     testResults: [
       {
@@ -1857,8 +1909,9 @@ function complianceExportEvidenceFixture(overrides = {}) {
     capability_count: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.length,
     configured_capability_count: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.length,
     capability_coverage_complete: true,
-    test_file_count: 3,
-    reported_test_file_count: 3,
+    test_files: [...DOJO_COMPLIANCE_EXPORT_TEST_FILES],
+    test_file_count: DOJO_COMPLIANCE_EXPORT_TEST_FILES.length,
+    reported_test_file_count: DOJO_COMPLIANCE_EXPORT_TEST_FILES.length,
     budget_evaluation: { ok: true },
     test_summary: {
       total_tests: 12,
@@ -1940,8 +1993,9 @@ function privacyRedactionEvidenceFixture(overrides = {}) {
     capability_count: DOJO_PRIVACY_REDACTION_CAPABILITIES.length,
     configured_capability_count: DOJO_PRIVACY_REDACTION_CAPABILITIES.length,
     capability_coverage_complete: true,
-    test_file_count: 7,
-    reported_test_file_count: 7,
+    test_files: [...DOJO_PRIVACY_REDACTION_TEST_FILES],
+    test_file_count: DOJO_PRIVACY_REDACTION_TEST_FILES.length,
+    reported_test_file_count: DOJO_PRIVACY_REDACTION_TEST_FILES.length,
     budget_evaluation: { ok: true },
     test_summary: {
       total_tests: 16,
@@ -2017,6 +2071,9 @@ function chaosEvidenceFixture(overrides = {}) {
     configured_scenario_count: DOJO_CHAOS_SCENARIOS.length,
     scenario_coverage_complete: true,
     missing_chaos_scenarios: [],
+    test_files: [...DOJO_CHAOS_PERFORMANCE_TEST_FILES],
+    test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
+    reported_test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
     budget_evaluation: { ok: true },
     test_summary: {
       total_tests: 9,
