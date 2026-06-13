@@ -163,7 +163,7 @@ export interface DojoProofStore {
   ): DojoProofCapsuleRecord | null;
 }
 
-export interface DojoControlPlaneStore extends DojoSkillStore, DojoProofStore, DojoApprovalStore, DojoCaseLawStore, DojoGhostShadowEvidenceStore, DojoTransactionalStore {
+export interface DojoControlPlaneStore extends DojoSkillStore, DojoProofStore, DojoApprovalStore, DojoCaseLawStore, DojoGhostShadowEvidenceStore, DojoAuditStore, DojoTransactionalStore {
   clear(): void;
 }
 
@@ -213,7 +213,8 @@ export type DojoAuditEventType =
   | "runtime_session_rejected"
   | "runtime_session_revoked"
   | "runtime_action_authorized"
-  | "runtime_action_blocked";
+  | "runtime_action_blocked"
+  | "ghost_shadow_evidence_recorded";
 
 export interface DojoAuditActor {
   actor_id: string;

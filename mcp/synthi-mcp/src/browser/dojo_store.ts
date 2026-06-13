@@ -8,6 +8,9 @@ import type {
   DojoCaseLawRecordFilter,
   DojoControlPlaneStore,
   DojoAuditActor,
+  DojoAuditEventInput,
+  DojoAuditEventListFilter,
+  DojoAuditEventRecord,
   DojoGhostShadowEvidenceFilter,
   DojoGhostShadowEvidenceRecord,
   DojoPermissionUpgradeRequestFilter,
@@ -19,6 +22,9 @@ import type {
 export type {
   DojoApprovalStore,
   DojoAuditActor,
+  DojoAuditEventInput,
+  DojoAuditEventListFilter,
+  DojoAuditEventRecord,
   DojoAuditStore,
   DojoCaseLawRecordFilter,
   DojoCaseLawStore,
@@ -39,6 +45,7 @@ export type {
   DojoStoreTransaction,
   DojoStoreTransactionOptions,
   DojoTransactionalStore,
+  MaybePromise,
 } from "../dojo/store/interfaces.js";
 
 export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
@@ -49,6 +56,7 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
   private readonly permissionUpgradeRequests = new Map<string, DojoPermissionUpgradeRequestRecord>();
   private readonly caseLawRecords = new Map<string, DojoCaseLawRecord>();
   private readonly ghostShadowEvidence = new Map<string, DojoGhostShadowEvidenceRecord>();
+  private readonly auditEvents = new Map<string, DojoAuditEventRecord>();
 
   saveSkill(skill: DojoSkill): void {
     const clone = cloneJson(skill);
@@ -157,6 +165,17 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
     return filterGhostShadowEvidence([...this.ghostShadowEvidence.values()], filter).map(cloneJson);
   }
 
+  appendAuditEvent(event: DojoAuditEventInput): DojoAuditEventRecord {
+    const record = auditEventRecordFromInput(event);
+    if (this.auditEvents.has(record.audit_event_id)) throw new Error("dojo_audit_event_already_exists");
+    this.auditEvents.set(record.audit_event_id, cloneJson(record));
+    return cloneJson(record);
+  }
+
+  listAuditEvents(filter: DojoAuditEventListFilter = {}): DojoAuditEventRecord[] {
+    return filterAuditEvents([...this.auditEvents.values()], filter).map(cloneJson);
+  }
+
   revokeProofCapsule(
     capsuleId: string,
     reason: string,
@@ -187,6 +206,7 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
     this.permissionUpgradeRequests.clear();
     this.caseLawRecords.clear();
     this.ghostShadowEvidence.clear();
+    this.auditEvents.clear();
   }
 
   private removeToolIndexesForSkill(skillId: string): void {
@@ -210,6 +230,7 @@ interface PersistedDojoScope {
   permission_upgrade_requests: Record<string, DojoPermissionUpgradeRequestRecord>;
   case_law_records: Record<string, DojoCaseLawRecord>;
   ghost_shadow_evidence: Record<string, DojoGhostShadowEvidenceRecord>;
+  audit_events: Record<string, DojoAuditEventRecord>;
 }
 
 interface EncryptedDojoStoreDocument {
@@ -377,6 +398,19 @@ export class EncryptedFileDojoSkillStore implements DojoControlPlaneStore {
     return filterGhostShadowEvidence(Object.values(this.scope().ghost_shadow_evidence), filter).map(cloneJson);
   }
 
+  appendAuditEvent(event: DojoAuditEventInput): DojoAuditEventRecord {
+    const record = auditEventRecordFromInput(event);
+    this.updateScope((scope) => {
+      if (scope.audit_events[record.audit_event_id]) throw new Error("dojo_audit_event_already_exists");
+      scope.audit_events[record.audit_event_id] = cloneJson(record);
+    });
+    return cloneJson(record);
+  }
+
+  listAuditEvents(filter: DojoAuditEventListFilter = {}): DojoAuditEventRecord[] {
+    return filterAuditEvents(Object.values(this.scope().audit_events), filter).map(cloneJson);
+  }
+
   revokeProofCapsule(
     capsuleId: string,
     reason: string,
@@ -510,6 +544,7 @@ function emptyScope(): PersistedDojoScope {
     permission_upgrade_requests: {},
     case_law_records: {},
     ghost_shadow_evidence: {},
+    audit_events: {},
   };
 }
 
@@ -527,6 +562,9 @@ function cloneScope(scope: PersistedDojoScope): PersistedDojoScope {
     ),
     ghost_shadow_evidence: Object.fromEntries(
       Object.entries(scope.ghost_shadow_evidence ?? {}).map(([key, value]) => [key, cloneJson(value)])
+    ),
+    audit_events: Object.fromEntries(
+      Object.entries(scope.audit_events ?? {}).map(([key, value]) => [key, cloneJson(value)])
     ),
   };
 }
@@ -552,6 +590,23 @@ function cloneJson<T>(value: T): T {
 
 function compactUniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function auditEventRecordFromInput(event: DojoAuditEventInput): DojoAuditEventRecord {
+  const createdAt = event.created_at ?? new Date().toISOString();
+  return {
+    tenant_id: event.tenant_id,
+    workspace_id: event.workspace_id,
+    audit_event_id: event.audit_event_id ?? `audit_${randomBytes(16).toString("hex")}`,
+    actor: cloneJson(event.actor),
+    event_type: event.event_type,
+    request_id: event.request_id,
+    correlation_id: event.correlation_id,
+    ...(event.entity_kind ? { entity_kind: event.entity_kind } : {}),
+    ...(event.entity_id ? { entity_id: event.entity_id } : {}),
+    details: cloneJson(event.details ?? {}),
+    created_at: createdAt,
+  };
 }
 
 function proofConsumeBlocked(
@@ -625,5 +680,21 @@ function filterGhostShadowEvidence(
     .filter((record) => !filter.workflow_id || record.workflow_id === filter.workflow_id)
     .filter((record) => typeof filter.action_matches !== "boolean" || record.action_matches === filter.action_matches)
     .sort((left, right) => right.created_at.localeCompare(left.created_at) || left.evidence_id.localeCompare(right.evidence_id));
+  return typeof limit === "number" ? filtered.slice(0, limit) : filtered;
+}
+
+function filterAuditEvents(
+  records: DojoAuditEventRecord[],
+  filter: DojoAuditEventListFilter
+): DojoAuditEventRecord[] {
+  const limit = Number.isFinite(filter.limit) && typeof filter.limit === "number" && filter.limit > 0
+    ? Math.floor(filter.limit)
+    : undefined;
+  const filtered = records
+    .filter((record) => !filter.event_type || record.event_type === filter.event_type)
+    .filter((record) => !filter.entity_kind || record.entity_kind === filter.entity_kind)
+    .filter((record) => !filter.entity_id || record.entity_id === filter.entity_id)
+    .filter((record) => !filter.correlation_id || record.correlation_id === filter.correlation_id)
+    .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.audit_event_id.localeCompare(right.audit_event_id));
   return typeof limit === "number" ? filtered.slice(0, limit) : filtered;
 }

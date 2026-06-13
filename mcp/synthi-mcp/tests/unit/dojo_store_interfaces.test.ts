@@ -7,6 +7,7 @@ import { EncryptedFileDojoSkillStore, InMemoryDojoSkillStore } from "../../src/b
 import { createDojoCaseLawFromFailure } from "../../src/dojo/case_law/registry.js";
 import type {
   DojoApprovalStore,
+  DojoAuditStore,
   DojoCaseLawStore,
   DojoControlPlaneStore,
   DojoGhostShadowEvidenceStore,
@@ -87,6 +88,7 @@ function assertControlPlaneStore(store: DojoControlPlaneStore): void {
   const skillStore: DojoSkillStore = store;
   const proofStore: DojoProofStore = store;
   const approvalStore: DojoApprovalStore = store;
+  const auditStore: DojoAuditStore = store;
   const caseLawStore: DojoCaseLawStore = store;
   const ghostShadowEvidenceStore: DojoGhostShadowEvidenceStore = store;
   const skill = buildDojoSkill(compileWorkflowContract([
@@ -192,6 +194,23 @@ function assertControlPlaneStore(store: DojoControlPlaneStore): void {
       correlation_id: "ghost-unit-test-correlation",
     },
   });
+  const auditEvent = auditStore.appendAuditEvent({
+    tenant_id: "tenant-a",
+    workspace_id: skill.workspace_id,
+    audit_event_id: "audit-unit-test",
+    actor: { actor_id: "unit-test", actor_type: "agent" },
+    event_type: "ghost_shadow_evidence_recorded",
+    request_id: "audit-unit-test-request",
+    correlation_id: "audit-unit-test-correlation",
+    entity_kind: "ghost_shadow_evidence",
+    entity_id: "ghost-evidence-unit-test",
+    details: {
+      skill_id: skill.skill_id,
+      run_id: "ghost-run-unit-test",
+      production_mutations_executed: false,
+    },
+    created_at: "2026-06-11T00:05:00.000Z",
+  });
 
   expect(skillStore.getSkill(skill.skill_id)).toEqual(expect.objectContaining({ skill_id: skill.skill_id }));
   expect(skillStore.getSkillByWorkflowId(skill.workflow_id)).toEqual(expect.objectContaining({ skill_id: skill.skill_id }));
@@ -250,6 +269,33 @@ function assertControlPlaneStore(store: DojoControlPlaneStore): void {
     }),
   ]);
   expect(ghostShadowEvidenceStore.listGhostShadowEvidence({ action_matches: true })).toEqual([]);
+  expect(auditEvent).toEqual(expect.objectContaining({
+    audit_event_id: "audit-unit-test",
+    event_type: "ghost_shadow_evidence_recorded",
+    entity_kind: "ghost_shadow_evidence",
+    entity_id: "ghost-evidence-unit-test",
+  }));
+  expect(auditStore.listAuditEvents({ correlation_id: "audit-unit-test-correlation" })).toEqual([
+    expect.objectContaining({
+      audit_event_id: "audit-unit-test",
+      details: expect.objectContaining({
+        skill_id: skill.skill_id,
+        production_mutations_executed: false,
+      }),
+    }),
+  ]);
+  expect(auditStore.listAuditEvents({ entity_kind: "ghost_shadow_evidence", entity_id: "ghost-evidence-unit-test" })).toHaveLength(1);
+  expect(() => auditStore.appendAuditEvent({
+    tenant_id: "tenant-a",
+    workspace_id: skill.workspace_id,
+    audit_event_id: "audit-unit-test",
+    actor: { actor_id: "unit-test", actor_type: "agent" },
+    event_type: "ghost_shadow_evidence_recorded",
+    request_id: "audit-duplicate-request",
+    correlation_id: "audit-duplicate-correlation",
+    entity_kind: "ghost_shadow_evidence",
+    entity_id: "ghost-evidence-unit-test",
+  })).toThrow("dojo_audit_event_already_exists");
   expect(store.clear).toEqual(expect.any(Function));
   expect(store.withTransaction).toBeUndefined();
 }

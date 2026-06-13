@@ -15,6 +15,9 @@ import {
   createDefaultDojoSkillStore,
   InMemoryDojoSkillStore,
   type DojoAuditActor,
+  type DojoAuditEventInput,
+  type DojoAuditEventListFilter,
+  type DojoAuditEventRecord,
   type DojoCaseLawRecordFilter,
   type DojoControlPlaneStore,
   type DojoGhostShadowEvidenceFilter,
@@ -23,6 +26,7 @@ import {
   type DojoPermissionUpgradeRequestRecord,
   type DojoProofConsumeResult,
   type DojoProofCapsuleRecord,
+  type MaybePromise,
 } from "./dojo_store.js";
 import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
 import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/proof/errors.js";
@@ -861,6 +865,14 @@ export class DojoSkillRegistry {
 
   listGhostShadowEvidence(filter?: DojoGhostShadowEvidenceFilter): DojoGhostShadowEvidenceRecord[] {
     return this.store.listGhostShadowEvidence(filter);
+  }
+
+  recordAuditEvent(event: DojoAuditEventInput): MaybePromise<DojoAuditEventRecord> {
+    return this.store.appendAuditEvent(event);
+  }
+
+  listAuditEvents(filter?: DojoAuditEventListFilter): MaybePromise<DojoAuditEventRecord[]> {
+    return this.store.listAuditEvents(filter);
   }
 
   useStoreForTests(store: DojoControlPlaneStore = new InMemoryDojoSkillStore()): void {

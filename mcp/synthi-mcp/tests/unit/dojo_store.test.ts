@@ -101,6 +101,23 @@ describe("EncryptedFileDojoSkillStore", () => {
         correlation_id: "ghost-encrypted-store-correlation",
       },
     });
+    store.appendAuditEvent({
+      tenant_id: "tenant-a",
+      workspace_id: skill.workspace_id,
+      audit_event_id: "audit-encrypted-store",
+      actor: { actor_id: "unit-test", actor_type: "agent" },
+      event_type: "ghost_shadow_evidence_recorded",
+      request_id: "audit-encrypted-store",
+      correlation_id: "audit-encrypted-store-correlation",
+      entity_kind: "ghost_shadow_evidence",
+      entity_id: "ghost-evidence-encrypted-store",
+      details: {
+        skill_id: skill.skill_id,
+        run_id: "ghost-run-encrypted-store",
+        production_mutations_executed: false,
+      },
+      created_at: "2026-06-11T00:02:30.000Z",
+    });
 
     const rawStore = readFileSync(filePath, "utf8");
     expect(rawStore).toContain("synthi_dojo_store_envelope_v1");
@@ -108,6 +125,7 @@ describe("EncryptedFileDojoSkillStore", () => {
     expect(rawStore).not.toContain(skill.skill_seed.inferred_intent);
     expect(rawStore).not.toContain("upgrade-encrypted-store");
     expect(rawStore).not.toContain("ghost-evidence-encrypted-store");
+    expect(rawStore).not.toContain("audit-encrypted-store");
 
     const reopened = new EncryptedFileDojoSkillStore({
       file_path: filePath,
@@ -174,6 +192,18 @@ describe("EncryptedFileDojoSkillStore", () => {
         },
       }),
     ]);
+    expect(reopened.listAuditEvents({ correlation_id: "audit-encrypted-store-correlation" })).toEqual([
+      expect.objectContaining({
+        audit_event_id: "audit-encrypted-store",
+        event_type: "ghost_shadow_evidence_recorded",
+        entity_kind: "ghost_shadow_evidence",
+        entity_id: "ghost-evidence-encrypted-store",
+        details: expect.objectContaining({
+          skill_id: skill.skill_id,
+          production_mutations_executed: false,
+        }),
+      }),
+    ]);
 
     const revoked = reopened.revokeProofCapsule(
       capsule.capsule_id,
@@ -207,6 +237,7 @@ describe("EncryptedFileDojoSkillStore", () => {
     expect(otherScope.listProofRecords()).toEqual([]);
     expect(otherScope.listPermissionUpgradeRequests()).toEqual([]);
     expect(otherScope.listGhostShadowEvidence()).toEqual([]);
+    expect(otherScope.listAuditEvents()).toEqual([]);
   });
 });
 
