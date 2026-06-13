@@ -108,6 +108,10 @@ function postgresVitestReportFixture() {
       "PostgresDojoSourceRegistryStore rejects tampered or unverified source snapshots before writing registry rows",
     ],
     [
+      "PostgresDojoMcpSkillBusStore persists signed tool registrations and revocation state by tenant scope",
+      "PostgresDojoMcpSkillBusStore records MCP tool invocations with audit custody",
+    ],
+    [
       "Dojo proof issuance from Postgres evidence ledger issues a production proof capsule from evidence record IDs resolved through Postgres",
     ],
   ];

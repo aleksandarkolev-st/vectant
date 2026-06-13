@@ -341,3 +341,63 @@ export interface DojoSourceContractStore {
   getSourceToken(snapshotId: string, tokenId: string): MaybePromise<DojoStoredSourceTokenRecord | null>;
   listSourceTokens(filter?: DojoSourceTokenListFilter): MaybePromise<DojoStoredSourceTokenRecord[]>;
 }
+
+export type DojoMcpToolRegistrationStatus = "active" | "revoked" | "superseded";
+export type DojoMcpDirectCallPolicy = "blocked" | "dojo_dispatcher_only" | "practice_only";
+export type DojoMcpToolInvocationStatus = "allowed" | "blocked" | "failed" | "completed";
+
+export interface DojoMcpToolRegistrationRecord {
+  tenant_id: string;
+  workspace_id: string;
+  tool_registration_id: string;
+  tool_name: string;
+  tool_version: string;
+  skill_id: string;
+  license_id?: string;
+  manifest_digest: string;
+  signed_manifest: string;
+  proof_required: boolean;
+  direct_call_policy: DojoMcpDirectCallPolicy;
+  status: DojoMcpToolRegistrationStatus;
+  registered_at: string;
+  revoked_at?: string;
+  manifest_json: Record<string, unknown>;
+}
+
+export interface DojoMcpToolRegistrationFilter {
+  tool_registration_id?: string;
+  tool_name?: string;
+  tool_version?: string;
+  skill_id?: string;
+  license_id?: string;
+  status?: DojoMcpToolRegistrationStatus;
+  limit?: number;
+}
+
+export interface DojoMcpToolInvocationRecord {
+  tenant_id: string;
+  workspace_id: string;
+  invocation_id: string;
+  tool_registration_id?: string;
+  tool_name: string;
+  tool_version?: string;
+  skill_id?: string;
+  actor: DojoAuditActor;
+  requested_action: string;
+  status: DojoMcpToolInvocationStatus;
+  proof_capsule_id?: string;
+  audit_event_id?: string;
+  invocation_json: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface DojoMcpToolInvocationFilter {
+  invocation_id?: string;
+  tool_registration_id?: string;
+  tool_name?: string;
+  skill_id?: string;
+  actor_id?: string;
+  requested_action?: string;
+  status?: DojoMcpToolInvocationStatus;
+  limit?: number;
+}
