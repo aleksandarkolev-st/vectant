@@ -33,6 +33,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES = [
   "tests/integration/dojo_postgres_mcp_skill_bus_store.test.ts",
   "tests/integration/dojo_postgres_graph_run_store.test.ts",
   "tests/integration/dojo_postgres_hosted_runtime_store.test.ts",
+  "tests/integration/dojo_hosted_runtime_gateway_resolver.test.ts",
   "tests/integration/dojo_postgres_mcp_host_conformance_store.test.ts",
   "tests/integration/dojo_proof_ledger_tool.test.ts",
 ];
@@ -352,6 +353,7 @@ function capabilityMatchers(capability) {
     runtime_session_repository: [
       "postgresdojohostedruntimesessionstore integration persists gateway created hosted runtime sessions and revocation updates",
       "postgresdojohostedruntimesessionstore integration authorizes actions through a postgres backed hosted runtime session",
+      "dojo hosted runtime gateway resolver postgres integration selects the postgres backed hosted runtime gateway from control plane env",
     ],
     mcp_host_conformance_repository: [
       "postgresdojomcphostconformancestore persists conformance reports with digest custody",

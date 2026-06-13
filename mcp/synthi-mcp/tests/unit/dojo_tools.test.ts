@@ -2863,6 +2863,46 @@ describe("Agent Dojo MCP tools", () => {
     );
   });
 
+  it("blocks hosted runtime session creation when production requires a durable control plane but none is configured", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    delete process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE;
+    delete process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL;
+    delete process.env.SYNTHI_DOJO_STORE_FILE;
+    delete process.env.SYNTHI_DOJO_STORE_KEY;
+    delete process.env.SYNTHI_DOJO_STORE_SCOPE;
+
+    const response = await dispatchDojoTool("synthi_dojo_create_hosted_runtime_session", {
+      skill_id: skillId,
+      run_id: "hosted-runtime-run-requires-store",
+      workspace_url: "https://app.example.test/settings",
+      origin_allowlist: ["https://app.example.test"],
+      ...productionTenantContextArgs({
+        actor_id: "hosted-runtime-agent-a",
+        request_id: "req-hosted-runtime-missing-store",
+        correlation_id: "corr-hosted-runtime-missing-store",
+      }),
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_hosted_runtime_control_plane_store_required",
+      ok: false,
+      skill_id: skillId,
+      store_kind: "unconfigured",
+      production_capable: false,
+      blocked_by: expect.arrayContaining([
+        "hosted_runtime_control_plane_store_not_production_capable",
+        "control_plane_store_unconfigured",
+      ]),
+    }));
+  });
+
   it("uses top-level approval and actor context for license validation without duplicating workflow args", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());

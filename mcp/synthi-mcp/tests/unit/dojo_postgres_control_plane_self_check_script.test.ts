@@ -128,6 +128,9 @@ function postgresVitestReportFixture() {
       "PostgresDojoHostedRuntimeSessionStore integration authorizes actions through a Postgres-backed hosted runtime session and persists evidence refs",
     ],
     [
+      "Dojo hosted runtime gateway resolver Postgres integration selects the Postgres-backed hosted runtime gateway from control-plane env",
+    ],
+    [
       "PostgresDojoMcpHostConformanceStore persists conformance reports with digest custody and audit events",
       "PostgresDojoMcpHostConformanceStore filters conformance reports by host kind and status",
     ],

@@ -49,12 +49,14 @@ import { resolveDojoEvidenceLedgerRecords } from "../dojo/evidence/ledger_resolv
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { normalizeDojoProofErrorCodes } from "../dojo/proof/errors.js";
 import {
-  createInProcessDojoHostedRuntimeGateway,
-  InMemoryDojoHostedRuntimeSessionStore,
   type DojoHostedRuntimeActionDecision,
   type DojoHostedRuntimeEvidenceWriter,
   type DojoHostedRuntimeSessionRecord,
 } from "../dojo/runtime/hosted_runtime_gateway.js";
+import {
+  createDojoHostedRuntimeGatewayFromEnv,
+  type DojoHostedRuntimeGatewayResolution,
+} from "../dojo/runtime/hosted_runtime_gateway_resolver.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
 import { toDojoScenarioDefinitions, validateDojoScenarioDefinition } from "../dojo/vivarium/scenario_dsl.js";
 import type { DojoAuditEventRecord, DojoAuditStore, DojoGhostShadowEvidenceRecord, DojoPermissionUpgradeRequestRecord } from "../dojo/store/interfaces.js";
@@ -126,7 +128,6 @@ const dojoHostedRuntimeAuditStore: DojoAuditStore = {
   appendAuditEvent: (event) => dojoSkillRegistry.recordAuditEvent(event),
   listAuditEvents: (filter) => dojoSkillRegistry.listAuditEvents(filter),
 };
-const dojoHostedRuntimeSessionStore = new InMemoryDojoHostedRuntimeSessionStore();
 const dojoHostedRuntimeEvidenceWriter: DojoHostedRuntimeEvidenceWriter = {
   appendRuntimeActionEvidence(input) {
     const recordId = `dojo_runtime_action_evidence_${hashId(JSON.stringify({
@@ -146,11 +147,34 @@ const dojoHostedRuntimeEvidenceWriter: DojoHostedRuntimeEvidenceWriter = {
     };
   },
 };
-const dojoHostedRuntimeGateway = createInProcessDojoHostedRuntimeGateway({
-  audit_store: dojoHostedRuntimeAuditStore,
-  store: dojoHostedRuntimeSessionStore,
-  evidence_writer: dojoHostedRuntimeEvidenceWriter,
-});
+let dojoHostedRuntimeGatewayCache: {
+  key: string;
+  resolution: DojoHostedRuntimeGatewayResolution;
+} | null = null;
+
+async function dojoHostedRuntimeGatewayResolutionForTools(): Promise<DojoHostedRuntimeGatewayResolution> {
+  const key = dojoHostedRuntimeGatewayCacheKey(process.env);
+  if (dojoHostedRuntimeGatewayCache?.key === key) return dojoHostedRuntimeGatewayCache.resolution;
+  const previous = dojoHostedRuntimeGatewayCache?.resolution;
+  if (previous?.ok && previous.close) {
+    await previous.close().catch(() => undefined);
+  }
+  const resolution = await createDojoHostedRuntimeGatewayFromEnv({
+    audit_store: dojoHostedRuntimeAuditStore,
+    evidence_writer: dojoHostedRuntimeEvidenceWriter,
+  });
+  dojoHostedRuntimeGatewayCache = { key, resolution };
+  return resolution;
+}
+
+function dojoHostedRuntimeGatewayCacheKey(env: NodeJS.ProcessEnv): string {
+  return JSON.stringify({
+    production_enforcement: env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT ?? "",
+    require_durable_store: env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE ?? "",
+    control_plane_store: env.SYNTHI_DOJO_CONTROL_PLANE_STORE ?? "",
+    control_plane_postgres_url: env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL ?? "",
+  });
+}
 
 const DOJO_TENANT_CONTEXT_INPUT_PROPERTIES = {
   tenant_id: { type: "string" },
@@ -2298,7 +2322,19 @@ async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolRe
     });
   }
   const originAllowlist = stringArrayOpt(a["origin_allowlist"]);
-  const session = await dojoHostedRuntimeGateway.createSession({
+  const gatewayResolution = await dojoHostedRuntimeGatewayResolutionForTools();
+  if (!gatewayResolution.ok) {
+    return errorResponse("dojo_hosted_runtime_control_plane_store_required", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      run_id: runId,
+      store_kind: gatewayResolution.store_kind,
+      production_capable: gatewayResolution.production_capable,
+      configured_env: gatewayResolution.configured_env,
+      blocked_by: gatewayResolution.blocked_by,
+    });
+  }
+  const session = await gatewayResolution.gateway.createSession({
     tenant: skill.tenant,
     skill_id: skill.skill.skill_id,
     run_id: runId,
@@ -2533,7 +2569,52 @@ async function authorizeHostedRuntimeForProductionRun(input: {
   const enforcement = resolveDojoEnforcementConfig();
   if (!enforcement.production_enforcement) return { ok: true };
 
-  const decision = await dojoHostedRuntimeGateway.authorizeAction({
+  const gatewayResolution = await dojoHostedRuntimeGatewayResolutionForTools();
+  if (!gatewayResolution.ok) {
+    const blockedBy = [...input.license_decision.blocked_by, ...gatewayResolution.blocked_by];
+    const validation = {
+      ...input.license_decision.validation,
+      ok: false,
+      status: "blocked" as const,
+      error: "dojo_hosted_runtime_control_plane_store_required",
+      blocked_by: blockedBy,
+      error_codes: normalizeDojoProofErrorCodes(blockedBy),
+    };
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_control_plane_store_required", {
+        ok: false,
+        skill_id: input.skill.skill_id,
+        requested_action: input.requested_action,
+        run_id: input.run_id,
+        enforcement_mode: enforcement.enforcement_mode,
+        validation,
+        license_kernel: {
+          ...input.license_decision,
+          ok: false,
+          status: "blocked",
+          validation,
+          blocked_by: blockedBy,
+          error_codes: validation.error_codes,
+          proof_record: dojoSkillRegistry.getProofRecord(input.proof_capsule.capsule_id) ?? input.license_decision.proof_record ?? null,
+        },
+        runtime_authorization: {
+          ok: false,
+          status: "blocked",
+          session_id: stringOpt(input.args["runtime_session_id"]) ?? "",
+          action_kind: "proof_gated_tool",
+          blocked_by: gatewayResolution.blocked_by,
+          audit_event_id: "",
+          evidence_record_ids: [],
+        },
+        proof_not_consumed: true,
+        skill_bus: input.skill_bus_preflight,
+        refusal: refusalFor(input.skill, blockedBy),
+      }),
+    };
+  }
+
+  const decision = await gatewayResolution.gateway.authorizeAction({
     tenant: input.tenant,
     session_id: stringOpt(input.args["runtime_session_id"]) ?? "",
     skill_id: input.skill.skill_id,
