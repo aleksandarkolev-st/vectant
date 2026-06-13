@@ -146,6 +146,55 @@ describe("Dojo governance service", () => {
     }));
   });
 
+  it("rejects permission upgrade decisions without reviewer attribution, timestamp, and evidence", () => {
+    const request = permissionUpgradeRequestFixture(skillFixture({ skillId: "skill-review-required" }));
+
+    expect(decideDojoPermissionUpgradeRequest({
+      request,
+      decision: "approved",
+      decided_by: { actor_id: "", actor_type: "human" },
+      decided_at: "2026-06-11T00:04:00.000Z",
+      evidence_refs: ["evidence-review"],
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      error: "permission_upgrade_reviewer_required",
+      blocked_by: ["reviewer_actor_missing"],
+    }));
+    expect(decideDojoPermissionUpgradeRequest({
+      request,
+      decision: "approved",
+      decided_by: { actor_id: "reviewer-a", actor_type: undefined as never },
+      decided_at: "2026-06-11T00:04:00.000Z",
+      evidence_refs: ["evidence-review"],
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      error: "permission_upgrade_reviewer_actor_type_required",
+      blocked_by: ["reviewer_actor_type_invalid"],
+    }));
+    expect(decideDojoPermissionUpgradeRequest({
+      request,
+      decision: "approved",
+      decided_by: { actor_id: "reviewer-a", actor_type: "human" },
+      decided_at: "not-a-date",
+      evidence_refs: ["evidence-review"],
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      error: "permission_upgrade_review_timestamp_invalid",
+      blocked_by: ["review_timestamp_invalid"],
+    }));
+    expect(decideDojoPermissionUpgradeRequest({
+      request,
+      decision: "approved",
+      decided_by: { actor_id: "reviewer-a", actor_type: "human" },
+      decided_at: "2026-06-11T00:04:00.000Z",
+      evidence_refs: [],
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      error: "permission_upgrade_review_evidence_required",
+      blocked_by: ["review_evidence_missing"],
+    }));
+  });
+
   it("records case-law approval and deprecation decisions with review evidence", () => {
     const proposed = externalCaseFixture();
     const approved = decideDojoCaseLawReview({
@@ -217,6 +266,55 @@ describe("Dojo governance service", () => {
       error: "case_law_review_not_pending",
       blocked_by: ["case_law_status:approved"],
       case_law: expect.objectContaining({ status: "approved" }),
+    }));
+  });
+
+  it("rejects case-law review decisions without reviewer attribution, timestamp, and evidence", () => {
+    const record = externalCaseFixture();
+
+    expect(decideDojoCaseLawReview({
+      case_law: record,
+      decision: "approved",
+      decided_by: { actor_id: "", actor_type: "human" },
+      decided_at: "2026-06-11T00:08:00.000Z",
+      evidence_refs: ["evidence-case-review"],
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      error: "case_law_reviewer_required",
+      blocked_by: ["reviewer_actor_missing"],
+    }));
+    expect(decideDojoCaseLawReview({
+      case_law: record,
+      decision: "approved",
+      decided_by: { actor_id: "case-reviewer-a", actor_type: undefined as never },
+      decided_at: "2026-06-11T00:08:00.000Z",
+      evidence_refs: ["evidence-case-review"],
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      error: "case_law_reviewer_actor_type_required",
+      blocked_by: ["reviewer_actor_type_invalid"],
+    }));
+    expect(decideDojoCaseLawReview({
+      case_law: record,
+      decision: "approved",
+      decided_by: { actor_id: "case-reviewer-a", actor_type: "human" },
+      decided_at: "not-a-date",
+      evidence_refs: ["evidence-case-review"],
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      error: "case_law_review_timestamp_invalid",
+      blocked_by: ["review_timestamp_invalid"],
+    }));
+    expect(decideDojoCaseLawReview({
+      case_law: record,
+      decision: "approved",
+      decided_by: { actor_id: "case-reviewer-a", actor_type: "human" },
+      decided_at: "2026-06-11T00:08:00.000Z",
+      evidence_refs: [],
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      error: "case_law_review_evidence_required",
+      blocked_by: ["review_evidence_missing"],
     }));
   });
 

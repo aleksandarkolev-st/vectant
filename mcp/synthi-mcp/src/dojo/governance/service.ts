@@ -39,7 +39,12 @@ export interface DojoPermissionUpgradeDecisionResult {
   status: DojoGovernanceActionStatus;
   request: DojoPermissionUpgradeRequestRecord;
   audit_event?: DojoGovernanceActionAuditSummary;
-  error?: "permission_upgrade_request_not_pending";
+  error?:
+    | "permission_upgrade_request_not_pending"
+    | "permission_upgrade_reviewer_required"
+    | "permission_upgrade_reviewer_actor_type_required"
+    | "permission_upgrade_review_timestamp_invalid"
+    | "permission_upgrade_review_evidence_required";
   blocked_by: string[];
 }
 
@@ -58,7 +63,13 @@ export interface DojoCaseLawReviewDecisionResult {
   status: DojoGovernanceActionStatus;
   case_law: DojoCaseLawRecord;
   audit_event?: DojoGovernanceActionAuditSummary;
-  error?: "case_law_review_not_pending" | "case_law_already_deprecated";
+  error?:
+    | "case_law_review_not_pending"
+    | "case_law_already_deprecated"
+    | "case_law_reviewer_required"
+    | "case_law_reviewer_actor_type_required"
+    | "case_law_review_timestamp_invalid"
+    | "case_law_review_evidence_required";
   blocked_by: string[];
 }
 
@@ -215,10 +226,41 @@ export function decideDojoPermissionUpgradeRequest(input: {
       blocked_by: [`request_status:${request.status}`],
     };
   }
+  const actorValidation = validateReviewActor(input.decided_by, "permission_upgrade");
+  if (actorValidation) {
+    return {
+      ok: false,
+      status: "rejected",
+      request,
+      error: actorValidation.error as DojoPermissionUpgradeDecisionResult["error"],
+      blocked_by: actorValidation.blocked_by,
+    };
+  }
+  if (!isValidTimestamp(decidedAt)) {
+    return {
+      ok: false,
+      status: "rejected",
+      request,
+      error: "permission_upgrade_review_timestamp_invalid",
+      blocked_by: ["review_timestamp_invalid"],
+    };
+  }
+  if (decisionEvidenceRefs.length === 0) {
+    return {
+      ok: false,
+      status: "rejected",
+      request,
+      error: "permission_upgrade_review_evidence_required",
+      blocked_by: ["review_evidence_missing"],
+    };
+  }
 
   request.status = input.decision;
   request.reviewed_at = decidedAt;
-  request.reviewed_by = cloneJson(input.decided_by);
+  request.reviewed_by = cloneJson({
+    actor_id: input.decided_by.actor_id.trim(),
+    actor_type: input.decided_by.actor_type,
+  });
   const reason = normalizedReason(input.reason, "");
   if (reason) request.review_reason = reason;
   if (decisionEvidenceRefs.length > 0) {
@@ -382,9 +424,37 @@ export function decideDojoCaseLawReview(input: {
       blocked_by: ["case_law_status:deprecated"],
     };
   }
+  const actorValidation = validateReviewActor(input.decided_by, "case_law");
+  if (actorValidation) {
+    return {
+      ok: false,
+      status: "rejected",
+      case_law: record,
+      error: actorValidation.error as DojoCaseLawReviewDecisionResult["error"],
+      blocked_by: actorValidation.blocked_by,
+    };
+  }
+  if (!isValidTimestamp(decidedAt)) {
+    return {
+      ok: false,
+      status: "rejected",
+      case_law: record,
+      error: "case_law_review_timestamp_invalid",
+      blocked_by: ["review_timestamp_invalid"],
+    };
+  }
+  if (decisionEvidenceRefs.length === 0) {
+    return {
+      ok: false,
+      status: "rejected",
+      case_law: record,
+      error: "case_law_review_evidence_required",
+      blocked_by: ["review_evidence_missing"],
+    };
+  }
 
   record.status = input.decision;
-  record.reviewer = input.decided_by.actor_id;
+  record.reviewer = input.decided_by.actor_id.trim();
   record.updated_at = decidedAt;
   if (input.superseded_by?.trim()) record.superseded_by = input.superseded_by.trim();
   if (decisionEvidenceRefs.length > 0) {
@@ -846,6 +916,29 @@ function blockingHealthRecertificationTriggers(health: DojoGovernanceLicenseHeal
 
 function isBlockingHealthRecertificationTrigger(reason: string): boolean {
   return BLOCKING_HEALTH_RECERTIFICATION_TRIGGERS.has(reason);
+}
+
+function validateReviewActor(
+  actor: DojoAuditActor,
+  prefix: "permission_upgrade" | "case_law"
+): { error: string; blocked_by: string[] } | null {
+  if (!actor?.actor_id?.trim()) {
+    return {
+      error: `${prefix}_reviewer_required`,
+      blocked_by: ["reviewer_actor_missing"],
+    };
+  }
+  if (!["human", "agent", "service"].includes(actor.actor_type)) {
+    return {
+      error: `${prefix}_reviewer_actor_type_required`,
+      blocked_by: ["reviewer_actor_type_invalid"],
+    };
+  }
+  return null;
+}
+
+function isValidTimestamp(value: string): boolean {
+  return Number.isFinite(Date.parse(value));
 }
 
 function sortStatus(status: DojoGovernanceLicenseStatus): number {

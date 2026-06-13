@@ -1001,6 +1001,21 @@ describe("Agent Dojo MCP tools", () => {
     expect(reviewMissingReviewerType?.structuredContent).toEqual(expect.objectContaining({
       error: "dojo_permission_upgrade_reviewer_actor_type_required",
     }));
+    const reviewMissingEvidence = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      request_id: "upgrade-test-request",
+      decision: "approved",
+      reviewer_actor_id: "reviewer-b",
+      reviewer_actor_type: "human",
+      decided_at: "2026-06-11T00:04:00.000Z",
+    });
+    expect(reviewMissingEvidence?.isError).toBe(true);
+    expect(reviewMissingEvidence?.structuredContent).toEqual(expect.objectContaining({
+      error: "permission_upgrade_review_evidence_required",
+      review: expect.objectContaining({
+        ok: false,
+        blocked_by: ["review_evidence_missing"],
+      }),
+    }));
     const reviewedUpgrade = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
       request_id: "upgrade-test-request",
       decision: "approved",
@@ -1354,6 +1369,23 @@ describe("Agent Dojo MCP tools", () => {
     const runtimeCaseId = (proposedRuntimeCase?.structuredContent as { case_law_record?: { case_id?: string } } | undefined)
       ?.case_law_record?.case_id;
     expect(runtimeCaseId).toMatch(/^case_/);
+    const reviewedRuntimeCaseMissingEvidence = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      skill_id: published.skill.skill_id,
+      case_id: runtimeCaseId,
+      decision: "approved",
+      reviewer_actor_id: "case-reviewer-a",
+      reviewer_actor_type: "human",
+      reason: "Runtime guardrail binding reviewed.",
+      decided_at: "2026-06-11T00:06:00.000Z",
+    });
+    expect(reviewedRuntimeCaseMissingEvidence?.isError).toBe(true);
+    expect(reviewedRuntimeCaseMissingEvidence?.structuredContent).toEqual(expect.objectContaining({
+      error: "case_law_review_evidence_required",
+      review: expect.objectContaining({
+        ok: false,
+        blocked_by: ["review_evidence_missing"],
+      }),
+    }));
     const reviewedRuntimeCase = await dispatchDojoTool("synthi_dojo_review_case_law", {
       skill_id: published.skill.skill_id,
       case_id: runtimeCaseId,
