@@ -35,6 +35,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "../../scripts/dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_GENERATED_PR_CAPABILITIES,
+  DOJO_GENERATED_PR_TEST_FILES,
+} from "../../scripts/dojo-generated-pr-self-check.mjs";
+import {
   DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "../../scripts/dojo-governance-lifecycle-self-check.mjs";
@@ -84,6 +88,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:postgres-control-plane:self-check": "node scripts/dojo-postgres-control-plane-self-check.mjs",
     "proof:dojo:affordance-codemod:self-check": "node scripts/dojo-affordance-codemod-self-check.mjs",
     "proof:dojo:api-tool-compiler:self-check": "node scripts/dojo-api-tool-compiler-self-check.mjs",
+    "proof:dojo:generated-pr:self-check": "node scripts/dojo-generated-pr-self-check.mjs",
     "proof:dojo:source-drift:self-check": "node scripts/dojo-source-drift-self-check.mjs",
     "proof:dojo:managed-key-signing:self-check": "node scripts/dojo-managed-key-signing-self-check.mjs",
     "proof:dojo:governance-lifecycle:self-check": "node scripts/dojo-governance-lifecycle-self-check.mjs",
@@ -352,6 +357,43 @@ describe("Dojo release gate manifest", () => {
           require_agent_mcp_only: true,
           require_no_shell_commands: true,
           require_visual_proof: true,
+        }),
+      }),
+      expect.objectContaining({
+        id: "dojo_generated_pr_self_check",
+        tier: "T7",
+        package_script: "proof:dojo:generated-pr:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.generatedPrEvidence.v1",
+        default_evidence_path: "tmp/dojo-generated-pr/dojo-generated-pr.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          require_all_generated_pr_capabilities_covered: true,
+          required_generated_pr_capabilities: DOJO_GENERATED_PR_CAPABILITIES,
+          required_test_files: DOJO_GENERATED_PR_TEST_FILES,
+          require_reviewable_metadata: true,
+          require_caller_supplied_code_owner_rules: true,
+          require_proof_impact: true,
+          require_code_owner_glob_matching: true,
+          require_unsafe_branch_rejection: true,
+          require_branch_plan: true,
+          require_promotion_blocker: true,
+          require_source_patch_bundle: true,
+          require_missing_source_rejection: true,
+          require_generated_contract_tests: true,
+          require_patch_writer: true,
+          require_path_traversal_rejection: true,
+          require_duplicate_output_rejection: true,
+          require_dry_run: true,
+          require_stale_source_rejection: true,
+          require_idempotent_write: true,
+          require_branch_applier: true,
+          require_file_hash_verification: true,
+          require_unresolved_blocker_rejection: true,
+          require_git_branch_creation: true,
+          require_dirty_worktree_rejection: true,
+          require_existing_branch_rejection: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
         }),
       }),
       expect.objectContaining({
@@ -739,6 +781,22 @@ describe("Dojo release gate manifest", () => {
       "private_tool_host_conformance_missing_private_tool_call:private_tool_stdio_host_conformance",
     ]));
 
+    const brokenGeneratedPr = JSON.parse(JSON.stringify(manifest));
+    const generatedPrGate = brokenGeneratedPr.gates.find((gate) => gate.id === "dojo_generated_pr_self_check");
+    const missingGeneratedPrTestFile = DOJO_GENERATED_PR_TEST_FILES[0];
+    generatedPrGate.release_artifact_requirements.required_generated_pr_capabilities = DOJO_GENERATED_PR_CAPABILITIES
+      .filter((capability) => capability !== "generated_pr_git_branch_creates_branch_and_tests");
+    generatedPrGate.release_artifact_requirements.required_test_files = DOJO_GENERATED_PR_TEST_FILES
+      .filter((file) => file !== missingGeneratedPrTestFile);
+    generatedPrGate.release_artifact_requirements.require_git_branch_creation = false;
+    generatedPrGate.release_artifact_requirements.require_generated_contract_tests = false;
+    expect(validateDojoReleaseGateManifest(brokenGeneratedPr, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "generated_pr_missing_git_branch_requirement",
+      "generated_pr_missing_contract_tests_requirement",
+      "generated_pr_missing_required_capabilities:generated_pr_git_branch_creates_branch_and_tests",
+      `generated_pr_missing_required_test_files:${missingGeneratedPrTestFile}`,
+    ]));
+
     const brokenManagedKeySigning = JSON.parse(JSON.stringify(manifest));
     const managedKeySigningGate = brokenManagedKeySigning.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check");
     const missingManagedKeySigningTestFile = DOJO_MANAGED_KEY_SIGNING_TEST_FILES[0];
@@ -907,6 +965,7 @@ describe("Dojo release gate manifest", () => {
     expect(manifest.release_gate_ids).toEqual(expect.arrayContaining([
       "workflow_e2e_hosted",
       "dojo_mcp_host_conformance",
+      "dojo_generated_pr_self_check",
       "dojo_managed_key_signing_self_check",
       "dojo_governance_lifecycle_self_check",
       "dojo_graph_runtime_self_check",
@@ -943,7 +1002,7 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 21,
+      proof_artifact_gate_count: 22,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
@@ -953,6 +1012,7 @@ describe("Dojo release gate manifest", () => {
         "docker_integration",
         "workflow_e2e_hosted",
         "dojo_mcp_host_conformance",
+        "dojo_generated_pr_self_check",
         "dojo_managed_key_signing_self_check",
         "dojo_governance_lifecycle_self_check",
         "dojo_graph_runtime_self_check",

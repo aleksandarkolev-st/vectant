@@ -35,6 +35,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "../../scripts/dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_GENERATED_PR_CAPABILITIES,
+  DOJO_GENERATED_PR_TEST_FILES,
+} from "../../scripts/dojo-generated-pr-self-check.mjs";
+import {
   DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "../../scripts/dojo-governance-lifecycle-self-check.mjs";
@@ -80,6 +84,7 @@ import {
   validateDojoPrivateToolStdioAcceptanceForRelease,
   validateDojoPrivateToolStdioHostConformanceForRelease,
   validateDojoDockerIntegrationEvidenceForMilestone,
+  validateDojoGeneratedPrEvidenceForRelease,
   validateDojoGovernanceLifecycleEvidenceForRelease,
   validateDojoGraphRuntimeEvidenceForRelease,
   validateDojoHostedRuntimeGatewayEvidenceForRelease,
@@ -100,6 +105,7 @@ import {
   verifyDojoApiToolCompilerEvidenceArtifact,
   verifyDojoSourceDriftEvidenceArtifact,
   verifyDojoDockerIntegrationEvidenceArtifact,
+  verifyDojoGeneratedPrEvidenceArtifact,
   verifyDojoGovernanceLifecycleEvidenceArtifact,
   verifyDojoGraphRuntimeEvidenceArtifact,
   verifyDojoHostedRuntimeGatewayEvidenceArtifact,
@@ -571,6 +577,71 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("verifies generated PR evidence before source patch promotion", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-generated-pr-verify-"));
+    const evidencePath = await writeGeneratedPrEvidenceFixture({ dir });
+
+    expect(validateDojoGeneratedPrEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoGeneratedPrEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_generated_pr_self_check",
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = generatedPrEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["generated_pr_git_branch_creates_branch_and_tests"],
+      generated_pr_contract: {
+        ...generatedPrEvidenceFixture().generated_pr_contract,
+        git_branch_creation_required: false,
+        generated_contract_tests_required: false,
+      },
+    });
+    const incompletePath = await writeGeneratedPrEvidenceFixture({
+      dir,
+      basename: "incomplete-generated-pr",
+      evidence: incomplete,
+    });
+    const rejected = await verifyDojoGeneratedPrEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "generated_pr_not_ok",
+      "generated_pr_coverage_incomplete",
+      "generated_pr_missing_capabilities:generated_pr_git_branch_creates_branch_and_tests",
+      "generated_pr_git_branch_requirement_missing",
+      "generated_pr_contract_tests_requirement_missing",
+    ]));
+
+    const driftedPath = await writeGeneratedPrEvidenceFixture({
+      dir,
+      basename: "drifted-generated-pr",
+      evidence: generatedPrEvidenceFixture({
+        configured_capabilities: DOJO_GENERATED_PR_CAPABILITIES
+          .filter((capability) => capability !== "generated_pr_metadata_reviewable_with_code_owners_and_proof_impact"),
+        tested_capabilities: DOJO_GENERATED_PR_CAPABILITIES
+          .filter((capability) => capability !== "generated_pr_metadata_reviewable_with_code_owners_and_proof_impact"),
+        capability_count: DOJO_GENERATED_PR_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_GENERATED_PR_CAPABILITIES.length - 1,
+        test_files: [],
+        test_file_count: 0,
+        reported_test_file_count: 0,
+      }),
+    });
+    expect((await verifyDojoGeneratedPrEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "generated_pr_required_capabilities_missing:generated_pr_metadata_reviewable_with_code_owners_and_proof_impact",
+      "generated_pr_required_capabilities_untested:generated_pr_metadata_reviewable_with_code_owners_and_proof_impact",
+      `generated_pr_required_test_files_missing:${DOJO_GENERATED_PR_TEST_FILES.join(",")}`,
+    ]));
+  });
+
   it("verifies source drift evidence before source/API promotion", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-source-drift-verify-"));
     const evidencePath = await writeSourceDriftEvidenceFixture({ dir });
@@ -913,6 +984,7 @@ describe("Dojo release gate artifact verifier", () => {
     const affordanceCodemod = await writeAffordanceCodemodFixture({ dir });
     const sourceDriftEvidencePath = await writeSourceDriftEvidenceFixture({ dir });
     const apiToolCompilerEvidencePath = await writeApiToolCompilerEvidenceFixture({ dir });
+    const generatedPrEvidencePath = await writeGeneratedPrEvidenceFixture({ dir });
     const conformanceReportPath = path.join(dir, "dojo-mcp-host-conformance.json");
     const conformanceEvidencePath = path.join(dir, "dojo-mcp-host-conformance.evidence.json");
     await writeConformancePair({
@@ -974,6 +1046,7 @@ describe("Dojo release gate artifact verifier", () => {
     affordanceGate.default_evidence_path = affordanceCodemod.evidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_source_drift_self_check").default_evidence_path = sourceDriftEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_api_tool_compiler_self_check").default_evidence_path = apiToolCompilerEvidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_generated_pr_self_check").default_evidence_path = generatedPrEvidencePath;
     manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path = managedKeySigningEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check").default_evidence_path = governanceLifecycleEvidencePath;
@@ -1015,6 +1088,7 @@ describe("Dojo release gate artifact verifier", () => {
         "hosted-runtime-gateway-evidence": hostedRuntimeGatewayEvidencePath,
         "source-drift-evidence": sourceDriftEvidencePath,
         "api-tool-compiler-evidence": apiToolCompilerEvidencePath,
+        "generated-pr-evidence": generatedPrEvidencePath,
       },
     });
 
@@ -1058,6 +1132,13 @@ describe("Dojo release gate artifact verifier", () => {
         id: "dojo_api_tool_compiler_self_check",
         ok: true,
         evidence_path: apiToolCompilerEvidencePath,
+      }),
+    ]);
+    expect(verified.generated_pr).toEqual([
+      expect.objectContaining({
+        id: "dojo_generated_pr_self_check",
+        ok: true,
+        evidence_path: generatedPrEvidencePath,
       }),
     ]);
     expect(verified.visual_reports).toHaveLength(2);
@@ -2929,6 +3010,106 @@ function apiToolCompilerJsonReportFixtureText() {
     success: true,
     numTotalTests: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
     numPassedTests: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    testResults: [],
+  }, null, 2);
+}
+
+async function writeGeneratedPrEvidenceFixture({
+  dir,
+  basename = "dojo-generated-pr",
+  evidence,
+  writeLogs = true,
+}) {
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  const stdoutPath = path.join(dir, `${basename}.stdout.txt`);
+  const stderrPath = path.join(dir, `${basename}.stderr.txt`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  const stdout = "generated PR suite passed\n";
+  const stderr = "";
+  const jsonReport = generatedPrJsonReportFixtureText();
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? generatedPrEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  await writeFile(evidencePath, JSON.stringify(body, null, 2), "utf8");
+  return evidencePath;
+}
+
+function generatedPrEvidenceFixture(overrides = {}) {
+  const stdout = "generated PR suite passed\n";
+  const stderr = "";
+  const jsonReport = generatedPrJsonReportFixtureText();
+  return {
+    schema_version: "synthi.dojo.generatedPrEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_GENERATED_PR_CAPABILITIES],
+    tested_capabilities: [...DOJO_GENERATED_PR_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_GENERATED_PR_CAPABILITIES.length,
+    configured_capability_count: DOJO_GENERATED_PR_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    generated_pr_contract: {
+      reviewable_metadata_required: true,
+      caller_supplied_code_owner_rules_required: true,
+      proof_impact_required: true,
+      code_owner_glob_matching_required: true,
+      unsafe_branch_rejection_required: true,
+      branch_plan_required: true,
+      promotion_blocker_required: true,
+      source_patch_bundle_required: true,
+      missing_source_rejection_required: true,
+      generated_contract_tests_required: true,
+      patch_writer_required: true,
+      path_traversal_rejection_required: true,
+      duplicate_output_rejection_required: true,
+      dry_run_required: true,
+      stale_source_rejection_required: true,
+      idempotent_write_required: true,
+      branch_applier_required: true,
+      file_hash_verification_required: true,
+      unresolved_blocker_rejection_required: true,
+      git_branch_creation_required: true,
+      dirty_worktree_rejection_required: true,
+      existing_branch_rejection_required: true,
+    },
+    test_files: [...DOJO_GENERATED_PR_TEST_FILES],
+    test_file_count: DOJO_GENERATED_PR_TEST_FILES.length,
+    reported_test_file_count: DOJO_GENERATED_PR_TEST_FILES.length,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: DOJO_GENERATED_PR_CAPABILITIES.length,
+      passed_tests: DOJO_GENERATED_PR_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: path.join(tmpdir(), "dojo-generated-pr.stdout.txt"),
+    stdout_sha256: sha256(stdout),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_path: path.join(tmpdir(), "dojo-generated-pr.stderr.txt"),
+    stderr_sha256: sha256(stderr),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_path: path.join(tmpdir(), "dojo-generated-pr.vitest.json"),
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function generatedPrJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_GENERATED_PR_CAPABILITIES.length,
+    numPassedTests: DOJO_GENERATED_PR_CAPABILITIES.length,
     numFailedTests: 0,
     numPendingTests: 0,
     testResults: [],

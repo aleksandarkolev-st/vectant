@@ -45,6 +45,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "./dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_GENERATED_PR_CAPABILITIES,
+  DOJO_GENERATED_PR_TEST_FILES,
+} from "./dojo-generated-pr-self-check.mjs";
+import {
   DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "./dojo-governance-lifecycle-self-check.mjs";
@@ -98,6 +102,7 @@ const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-pos
 const DEFAULT_AFFORDANCE_CODEMOD_DIR = path.join(REPO_ROOT, "tmp", "dojo-affordance-codemod-self-check");
 const DEFAULT_SOURCE_DRIFT_DIR = path.join(REPO_ROOT, "tmp", "dojo-source-drift");
 const DEFAULT_API_TOOL_COMPILER_DIR = path.join(REPO_ROOT, "tmp", "dojo-api-tool-compiler");
+const DEFAULT_GENERATED_PR_DIR = path.join(REPO_ROOT, "tmp", "dojo-generated-pr");
 const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-integration");
 const DEFAULT_GOVERNANCE_LIFECYCLE_DIR = path.join(REPO_ROOT, "tmp", "dojo-governance-lifecycle");
 const DEFAULT_GRAPH_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-graph-runtime");
@@ -234,6 +239,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       evidencePath: resolveRepoPath(args["api-tool-compiler-evidence"]
         || apiToolCompilerGate.default_evidence_path
         || path.join(DEFAULT_API_TOOL_COMPILER_DIR, "dojo-api-tool-compiler.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
+  const generatedPrResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-generated-pr"]) || args["generated-pr-evidence"]) {
+    const generatedPrGate = findGate(manifest, "dojo_generated_pr_self_check") || {};
+    generatedPrResults.push(await verifyDojoGeneratedPrEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["generated-pr-evidence"]
+        || generatedPrGate.default_evidence_path
+        || path.join(DEFAULT_GENERATED_PR_DIR, "dojo-generated-pr.evidence.json")),
       releaseCandidate: truthy(args["release-candidate"]),
     }));
   }
@@ -408,7 +424,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...vivariumRuntimeResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...vivariumRuntimeResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -421,6 +437,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     postgres_control_plane: postgresControlPlaneResults.map(summarizeSection),
     docker_integration: dockerIntegrationResults.map(summarizeSection),
     source_api: sourceApiResults.map(summarizeSection),
+    generated_pr: generatedPrResults.map(summarizeSection),
     live_hosted_runtime: liveHostedRuntimeResults.map(summarizeSection),
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     managed_key_signing: managedKeySigningResults.map(summarizeSection),
@@ -1043,6 +1060,102 @@ export function validateDojoApiToolCompilerEvidenceForRelease(evidence) {
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("api_tool_compiler_no_reported_tests");
   if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
     errors.push(`api_tool_compiler_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoGeneratedPrEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoGeneratedPrEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_generated_pr_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoGeneratedPrEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.generatedPrEvidence.v1") {
+    errors.push(`generated_pr_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("generated_pr_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`generated_pr_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("generated_pr_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`generated_pr_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_GENERATED_PR_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`generated_pr_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_GENERATED_PR_TEST_FILES,
+    prefix: "generated_pr",
+  }));
+  const untestedRequiredCapabilities = DOJO_GENERATED_PR_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`generated_pr_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`generated_pr_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`generated_pr_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.generated_pr_contract || {};
+  for (const [field, errorCode] of [
+    ["reviewable_metadata_required", "generated_pr_reviewable_metadata_requirement_missing"],
+    ["caller_supplied_code_owner_rules_required", "generated_pr_code_owner_requirement_missing"],
+    ["proof_impact_required", "generated_pr_proof_impact_requirement_missing"],
+    ["code_owner_glob_matching_required", "generated_pr_code_owner_glob_requirement_missing"],
+    ["unsafe_branch_rejection_required", "generated_pr_unsafe_branch_requirement_missing"],
+    ["branch_plan_required", "generated_pr_branch_plan_requirement_missing"],
+    ["promotion_blocker_required", "generated_pr_promotion_blocker_requirement_missing"],
+    ["source_patch_bundle_required", "generated_pr_source_patch_bundle_requirement_missing"],
+    ["missing_source_rejection_required", "generated_pr_missing_source_requirement_missing"],
+    ["generated_contract_tests_required", "generated_pr_contract_tests_requirement_missing"],
+    ["patch_writer_required", "generated_pr_patch_writer_requirement_missing"],
+    ["path_traversal_rejection_required", "generated_pr_path_traversal_requirement_missing"],
+    ["duplicate_output_rejection_required", "generated_pr_duplicate_output_requirement_missing"],
+    ["dry_run_required", "generated_pr_dry_run_requirement_missing"],
+    ["stale_source_rejection_required", "generated_pr_stale_source_requirement_missing"],
+    ["idempotent_write_required", "generated_pr_idempotent_write_requirement_missing"],
+    ["branch_applier_required", "generated_pr_branch_applier_requirement_missing"],
+    ["file_hash_verification_required", "generated_pr_file_hash_requirement_missing"],
+    ["unresolved_blocker_rejection_required", "generated_pr_unresolved_blocker_requirement_missing"],
+    ["git_branch_creation_required", "generated_pr_git_branch_requirement_missing"],
+    ["dirty_worktree_rejection_required", "generated_pr_dirty_worktree_requirement_missing"],
+    ["existing_branch_rejection_required", "generated_pr_existing_branch_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("generated_pr_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`generated_pr_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`generated_pr_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("generated_pr_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`generated_pr_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
   }
   return {
     ok: errors.length === 0,
@@ -2831,6 +2944,37 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedApiToolCompiler.errors.includes("api_tool_compiler_proof_requirement_missing"));
   assert(rejectedApiToolCompiler.errors.includes("api_tool_compiler_candidate_only_production_allowed"));
 
+  const generatedPrDir = path.join(outDir, "generated-pr");
+  await mkdir(generatedPrDir, { recursive: true });
+  const generatedPrArtifacts = await writeGeneratedPrEvidenceForSelfCheck({ outDir: generatedPrDir });
+  const generatedPrResult = await verifyDojoGeneratedPrEvidenceArtifact({
+    evidencePath: generatedPrArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(generatedPrResult.ok, true, generatedPrResult.errors.join(";"));
+  const rejectedGeneratedPrArtifacts = await writeGeneratedPrEvidenceForSelfCheck({
+    outDir: generatedPrDir,
+    basename: "dojo-generated-pr-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["generated_pr_git_branch_creates_branch_and_tests"],
+      generated_pr_contract: {
+        ...generatedPrArtifacts.evidence.generated_pr_contract,
+        git_branch_creation_required: false,
+        generated_contract_tests_required: false,
+      },
+    },
+  });
+  const rejectedGeneratedPr = await verifyDojoGeneratedPrEvidenceArtifact({
+    evidencePath: rejectedGeneratedPrArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedGeneratedPr.errors.includes("generated_pr_coverage_incomplete"));
+  assert(rejectedGeneratedPr.errors.includes("generated_pr_missing_capabilities:generated_pr_git_branch_creates_branch_and_tests"));
+  assert(rejectedGeneratedPr.errors.includes("generated_pr_git_branch_requirement_missing"));
+  assert(rejectedGeneratedPr.errors.includes("generated_pr_contract_tests_requirement_missing"));
+
   const liveHostedDir = path.join(outDir, "live-hosted-runtime");
   await mkdir(liveHostedDir, { recursive: true });
   const liveHostedArtifacts = await writeLiveHostedRuntimeArtifactsForSelfCheck({ outDir: liveHostedDir });
@@ -3320,6 +3464,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(hostedRuntimeGatewayResult),
       summarizeSection(sourceDriftResult),
       summarizeSection(apiToolCompilerResult),
+      summarizeSection(generatedPrResult),
       summarizeSection(visualResult),
       summarizeSection(securityResult),
       summarizeSection(complianceResult),
@@ -3342,6 +3487,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedHostedRuntimeGateway),
       summarizeSection(rejectedSourceDrift),
       summarizeSection(rejectedApiToolCompiler),
+      summarizeSection(rejectedGeneratedPr),
       summarizeSection(rejectedSecurity),
       summarizeSection(rejectedCompliance),
       summarizeSection(rejectedPrivacy),
@@ -4865,6 +5011,117 @@ async function writeVivariumRuntimeEvidenceForSelfCheck({
     test_summary: {
       total_tests: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.length,
       passed_tests: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeGeneratedPrEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-generated-pr",
+  overrides = {},
+}) {
+  const stdout = "generated PR focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_GENERATED_PR_CAPABILITIES.length,
+    numPassedTests: DOJO_GENERATED_PR_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_GENERATED_PR_TEST_FILES.length,
+    numPassedTestSuites: DOJO_GENERATED_PR_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_GENERATED_PR_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.generatedPrEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_GENERATED_PR_CAPABILITIES],
+    tested_capabilities: [...DOJO_GENERATED_PR_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_GENERATED_PR_CAPABILITIES.length,
+    configured_capability_count: DOJO_GENERATED_PR_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    generated_pr_contract: {
+      reviewable_metadata_required: true,
+      caller_supplied_code_owner_rules_required: true,
+      proof_impact_required: true,
+      code_owner_glob_matching_required: true,
+      unsafe_branch_rejection_required: true,
+      branch_plan_required: true,
+      promotion_blocker_required: true,
+      source_patch_bundle_required: true,
+      missing_source_rejection_required: true,
+      generated_contract_tests_required: true,
+      patch_writer_required: true,
+      path_traversal_rejection_required: true,
+      duplicate_output_rejection_required: true,
+      dry_run_required: true,
+      stale_source_rejection_required: true,
+      idempotent_write_required: true,
+      branch_applier_required: true,
+      file_hash_verification_required: true,
+      unresolved_blocker_rejection_required: true,
+      git_branch_creation_required: true,
+      dirty_worktree_rejection_required: true,
+      existing_branch_rejection_required: true,
+    },
+    test_files: [...DOJO_GENERATED_PR_TEST_FILES],
+    test_file_count: DOJO_GENERATED_PR_TEST_FILES.length,
+    reported_test_file_count: DOJO_GENERATED_PR_TEST_FILES.length,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_report_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        all_test_files_reported: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: DOJO_GENERATED_PR_CAPABILITIES.length,
+      passed_tests: DOJO_GENERATED_PR_CAPABILITIES.length,
       failed_tests: 0,
       pending_tests: 0,
     },

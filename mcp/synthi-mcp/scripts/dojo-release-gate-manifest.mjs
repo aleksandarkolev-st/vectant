@@ -34,6 +34,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "./dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_GENERATED_PR_CAPABILITIES,
+  DOJO_GENERATED_PR_TEST_FILES,
+} from "./dojo-generated-pr-self-check.mjs";
+import {
   DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "./dojo-governance-lifecycle-self-check.mjs";
@@ -568,6 +572,48 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     ],
   },
   {
+    id: "dojo_generated_pr_self_check",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:generated-pr:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_generated_pr_metadata.test.ts tests/integration/dojo_generated_source_patch_bundle.test.ts tests/integration/dojo_source_patch_writer.test.ts tests/integration/dojo_generated_pr_branch_applier.test.ts tests/integration/dojo_generated_pr_git_branch.test.ts -- --reporter=json --outputFile ../../tmp/dojo-generated-pr/dojo-generated-pr.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:generated-pr:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.generatedPrEvidence.v1",
+    default_evidence_path: "tmp/dojo-generated-pr/dojo-generated-pr.evidence.json",
+    release_artifact_requirements: {
+      require_all_generated_pr_capabilities_covered: true,
+      required_generated_pr_capabilities: [...DOJO_GENERATED_PR_CAPABILITIES],
+      required_test_files: [...DOJO_GENERATED_PR_TEST_FILES],
+      require_reviewable_metadata: true,
+      require_caller_supplied_code_owner_rules: true,
+      require_proof_impact: true,
+      require_code_owner_glob_matching: true,
+      require_unsafe_branch_rejection: true,
+      require_branch_plan: true,
+      require_promotion_blocker: true,
+      require_source_patch_bundle: true,
+      require_missing_source_rejection: true,
+      require_generated_contract_tests: true,
+      require_patch_writer: true,
+      require_path_traversal_rejection: true,
+      require_duplicate_output_rejection: true,
+      require_dry_run: true,
+      require_stale_source_rejection: true,
+      require_idempotent_write: true,
+      require_branch_applier: true,
+      require_file_hash_verification: true,
+      require_unresolved_blocker_rejection: true,
+      require_git_branch_creation: true,
+      require_dirty_worktree_rejection: true,
+      require_existing_branch_rejection: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "dojo_managed_key_signing_self_check",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -903,6 +949,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "dojo_mcp_host_conformance",
   "private_tool_stdio_host_conformance",
   "private_tool_codex_host_conformance",
+  "dojo_generated_pr_self_check",
   "dojo_managed_key_signing_self_check",
   "dojo_governance_lifecycle_self_check",
   "dojo_graph_runtime_self_check",
@@ -1171,6 +1218,69 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!apiToolCompilerGate.artifact_requirements?.require_json_report_digest_match) {
       errors.push("api_tool_compiler_missing_json_report_digest_requirement");
+    }
+  }
+  const generatedPrGate = gates.find((gate) => gate.id === "dojo_generated_pr_self_check");
+  if (generatedPrGate) {
+    if (generatedPrGate.evidence_schema_version !== "synthi.dojo.generatedPrEvidence.v1") {
+      errors.push("generated_pr_missing_evidence_schema");
+    }
+    if (generatedPrGate.package_script !== "proof:dojo:generated-pr:self-check") {
+      errors.push("generated_pr_missing_package_script");
+    }
+    if (!generatedPrGate.default_evidence_path) errors.push("generated_pr_missing_default_evidence_path");
+    if (!generatedPrGate.release_artifact_requirements?.require_all_generated_pr_capabilities_covered) {
+      errors.push("generated_pr_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_reviewable_metadata", "generated_pr_missing_reviewable_metadata_requirement"],
+      ["require_caller_supplied_code_owner_rules", "generated_pr_missing_code_owner_requirement"],
+      ["require_proof_impact", "generated_pr_missing_proof_impact_requirement"],
+      ["require_code_owner_glob_matching", "generated_pr_missing_code_owner_glob_requirement"],
+      ["require_unsafe_branch_rejection", "generated_pr_missing_unsafe_branch_requirement"],
+      ["require_branch_plan", "generated_pr_missing_branch_plan_requirement"],
+      ["require_promotion_blocker", "generated_pr_missing_promotion_blocker_requirement"],
+      ["require_source_patch_bundle", "generated_pr_missing_source_patch_bundle_requirement"],
+      ["require_missing_source_rejection", "generated_pr_missing_missing_source_requirement"],
+      ["require_generated_contract_tests", "generated_pr_missing_contract_tests_requirement"],
+      ["require_patch_writer", "generated_pr_missing_patch_writer_requirement"],
+      ["require_path_traversal_rejection", "generated_pr_missing_path_traversal_requirement"],
+      ["require_duplicate_output_rejection", "generated_pr_missing_duplicate_output_requirement"],
+      ["require_dry_run", "generated_pr_missing_dry_run_requirement"],
+      ["require_stale_source_rejection", "generated_pr_missing_stale_source_requirement"],
+      ["require_idempotent_write", "generated_pr_missing_idempotent_write_requirement"],
+      ["require_branch_applier", "generated_pr_missing_branch_applier_requirement"],
+      ["require_file_hash_verification", "generated_pr_missing_file_hash_requirement"],
+      ["require_unresolved_blocker_rejection", "generated_pr_missing_unresolved_blocker_requirement"],
+      ["require_git_branch_creation", "generated_pr_missing_git_branch_requirement"],
+      ["require_dirty_worktree_rejection", "generated_pr_missing_dirty_worktree_requirement"],
+      ["require_existing_branch_rejection", "generated_pr_missing_existing_branch_requirement"],
+    ]) {
+      if (!generatedPrGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredGeneratedPrCapabilities = Array.isArray(generatedPrGate.release_artifact_requirements?.required_generated_pr_capabilities)
+      ? generatedPrGate.release_artifact_requirements.required_generated_pr_capabilities
+      : [];
+    const missingGeneratedPrCapabilities = DOJO_GENERATED_PR_CAPABILITIES
+      .filter((capability) => !requiredGeneratedPrCapabilities.includes(capability));
+    if (missingGeneratedPrCapabilities.length > 0) {
+      errors.push(`generated_pr_missing_required_capabilities:${missingGeneratedPrCapabilities.join(",")}`);
+    }
+    const missingGeneratedPrTestFiles = missingRequiredEntries(
+      DOJO_GENERATED_PR_TEST_FILES,
+      generatedPrGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingGeneratedPrTestFiles.length > 0) {
+      errors.push(`generated_pr_missing_required_test_files:${missingGeneratedPrTestFiles.join(",")}`);
+    }
+    if (!generatedPrGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("generated_pr_missing_no_skipped_requirement");
+    }
+    if (!generatedPrGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("generated_pr_missing_digest_requirement");
+    }
+    if (!generatedPrGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("generated_pr_missing_json_report_digest_requirement");
     }
   }
   const dockerIntegrationGate = gates.find((gate) => gate.id === "docker_integration");
