@@ -13,6 +13,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "./dojo-compliance-export-self-check.mjs";
+import { DOJO_CHAOS_SCENARIOS } from "./dojo-chaos-performance-self-check.mjs";
 import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "./dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "./dojo-security-abuse-self-check.mjs";
 
@@ -493,7 +494,9 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     default_evidence_path: "tmp/dojo-chaos-performance/dojo-chaos-performance.evidence.json",
     enterprise_artifact_requirements: {
       require_all_scenarios_covered: true,
+      required_chaos_scenarios: [...DOJO_CHAOS_SCENARIOS],
       require_no_failed_tests: true,
+      require_no_skipped_tests: true,
       require_budget_ok: true,
       require_performance_metrics: true,
       require_stdout_stderr_digest_match: true,
@@ -861,6 +864,17 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!chaosPerformanceGate.default_evidence_path) errors.push("chaos_performance_missing_default_evidence_path");
     if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_all_scenarios_covered) {
       errors.push("chaos_performance_missing_scenario_requirement");
+    }
+    const requiredChaosScenarios = Array.isArray(chaosPerformanceGate.enterprise_artifact_requirements?.required_chaos_scenarios)
+      ? chaosPerformanceGate.enterprise_artifact_requirements.required_chaos_scenarios
+      : [];
+    const missingChaosScenarios = DOJO_CHAOS_SCENARIOS
+      .filter((scenario) => !requiredChaosScenarios.includes(scenario));
+    if (missingChaosScenarios.length > 0) {
+      errors.push(`chaos_performance_missing_required_scenarios:${missingChaosScenarios.join(",")}`);
+    }
+    if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("chaos_performance_missing_no_skipped_requirement");
     }
     if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_performance_metrics) {
       errors.push("chaos_performance_missing_metrics_requirement");

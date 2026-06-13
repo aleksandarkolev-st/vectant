@@ -10,6 +10,7 @@ import {
   validateDojoReleaseGateManifest,
   validateDojoVisualProofReport,
 } from "../../scripts/dojo-release-gate-manifest.mjs";
+import { DOJO_CHAOS_SCENARIOS } from "../../scripts/dojo-chaos-performance-self-check.mjs";
 import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "../../scripts/dojo-compliance-export-self-check.mjs";
 import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "../../scripts/dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "../../scripts/dojo-security-abuse-self-check.mjs";
@@ -271,6 +272,12 @@ describe("Dojo release gate manifest", () => {
         package_script: "proof:dojo:chaos-performance:self-check",
         script_exists: true,
         enterprise_artifact_requirements: expect.objectContaining({
+          require_all_scenarios_covered: true,
+          required_chaos_scenarios: DOJO_CHAOS_SCENARIOS,
+          require_no_failed_tests: true,
+          require_no_skipped_tests: true,
+          require_budget_ok: true,
+          require_performance_metrics: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -330,6 +337,16 @@ describe("Dojo release gate manifest", () => {
       .filter((capability) => capability !== "browser_origin_privacy_boundary");
     expect(validateDojoReleaseGateManifest(brokenPrivacy, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "privacy_redaction_missing_required_capabilities:browser_origin_privacy_boundary",
+    ]));
+
+    const brokenChaos = JSON.parse(JSON.stringify(manifest));
+    const chaosGate = brokenChaos.gates.find((gate) => gate.id === "dojo_chaos_performance_self_check");
+    chaosGate.enterprise_artifact_requirements.required_chaos_scenarios = DOJO_CHAOS_SCENARIOS
+      .filter((scenario) => scenario !== "api_timeout");
+    chaosGate.enterprise_artifact_requirements.require_no_skipped_tests = false;
+    expect(validateDojoReleaseGateManifest(brokenChaos, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "chaos_performance_missing_required_scenarios:api_timeout",
+      "chaos_performance_missing_no_skipped_requirement",
     ]));
   });
 

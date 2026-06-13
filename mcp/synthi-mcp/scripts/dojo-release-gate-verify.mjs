@@ -22,6 +22,7 @@ import {
   buildConformanceReleaseGateSummary,
   redactConformanceReport,
 } from "./dojo-mcp-host-conformance.mjs";
+import { DOJO_CHAOS_SCENARIOS } from "./dojo-chaos-performance-self-check.mjs";
 import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "./dojo-compliance-export-self-check.mjs";
 import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "./dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "./dojo-security-abuse-self-check.mjs";
@@ -999,6 +1000,12 @@ export async function verifyDojoChaosPerformanceEvidenceArtifact({ evidencePath,
 
 export function validateDojoChaosPerformanceEvidenceForEnterprise(evidence) {
   const errors = [];
+  const configuredScenarios = Array.isArray(evidence?.configured_chaos_scenarios)
+    ? evidence.configured_chaos_scenarios.map(String)
+    : [];
+  const testedScenarios = Array.isArray(evidence?.tested_chaos_scenarios)
+    ? evidence.tested_chaos_scenarios.map(String)
+    : [];
   if (evidence?.schema_version !== "synthi.dojo.chaosPerformanceEvidence.v1") {
     errors.push(`chaos_performance_schema_mismatch:${evidence?.schema_version || "missing"}`);
   }
@@ -1008,9 +1015,28 @@ export function validateDojoChaosPerformanceEvidenceForEnterprise(evidence) {
   if (Array.isArray(evidence?.missing_chaos_scenarios) && evidence.missing_chaos_scenarios.length > 0) {
     errors.push(`chaos_performance_missing_scenarios:${evidence.missing_chaos_scenarios.join(",")}`);
   }
+  const missingConfiguredScenarios = DOJO_CHAOS_SCENARIOS
+    .filter((scenario) => !configuredScenarios.includes(scenario));
+  if (missingConfiguredScenarios.length > 0) {
+    errors.push(`chaos_performance_required_scenarios_missing:${missingConfiguredScenarios.join(",")}`);
+  }
+  const untestedRequiredScenarios = DOJO_CHAOS_SCENARIOS
+    .filter((scenario) => !testedScenarios.includes(scenario));
+  if (untestedRequiredScenarios.length > 0) {
+    errors.push(`chaos_performance_required_scenarios_untested:${untestedRequiredScenarios.join(",")}`);
+  }
+  if (Number(evidence?.configured_scenario_count || 0) !== configuredScenarios.length) {
+    errors.push(`chaos_performance_configured_scenario_count_mismatch:${evidence?.configured_scenario_count ?? "missing"}:${configuredScenarios.length}`);
+  }
+  if (Number(evidence?.scenario_count || 0) !== testedScenarios.length) {
+    errors.push(`chaos_performance_tested_scenario_count_mismatch:${evidence?.scenario_count ?? "missing"}:${testedScenarios.length}`);
+  }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("chaos_performance_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
     errors.push(`chaos_performance_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`chaos_performance_pending_tests:${evidence.test_summary.pending_tests}`);
   }
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("chaos_performance_no_reported_tests");
   if (!Number.isFinite(Number(evidence?.performance_metrics?.test_case_duration_p95_ms))) {
@@ -2718,6 +2744,10 @@ async function writeChaosEvidenceForSelfCheck({
     generated_at: new Date().toISOString(),
     ok: true,
     exit_code: 0,
+    configured_chaos_scenarios: DOJO_CHAOS_SCENARIOS,
+    tested_chaos_scenarios: DOJO_CHAOS_SCENARIOS,
+    scenario_count: DOJO_CHAOS_SCENARIOS.length,
+    configured_scenario_count: DOJO_CHAOS_SCENARIOS.length,
     scenario_coverage_complete: true,
     missing_chaos_scenarios: [],
     budget_evaluation: {
@@ -2736,6 +2766,7 @@ async function writeChaosEvidenceForSelfCheck({
       total_tests: 9,
       passed_tests: 9,
       failed_tests: 0,
+      pending_tests: 0,
     },
     performance_metrics: {
       self_check_duration_ms: 1250,

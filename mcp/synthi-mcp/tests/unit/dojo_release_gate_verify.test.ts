@@ -13,6 +13,7 @@ import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
+import { DOJO_CHAOS_SCENARIOS } from "../../scripts/dojo-chaos-performance-self-check.mjs";
 import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "../../scripts/dojo-compliance-export-self-check.mjs";
 import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "../../scripts/dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "../../scripts/dojo-security-abuse-self-check.mjs";
@@ -849,6 +850,38 @@ describe("Dojo release gate artifact verifier", () => {
       "chaos_performance_not_ok",
       "chaos_performance_scenario_coverage_incomplete",
       "chaos_performance_missing_scenarios:api_timeout",
+    ]));
+
+    const driftedPath = await writeChaosEvidenceFixture({
+      dir,
+      basename: "drifted-chaos",
+      evidence: chaosEvidenceFixture({
+        configured_chaos_scenarios: DOJO_CHAOS_SCENARIOS.filter((scenario) => scenario !== "api_timeout"),
+        tested_chaos_scenarios: DOJO_CHAOS_SCENARIOS.filter((scenario) => scenario !== "api_timeout"),
+        scenario_count: DOJO_CHAOS_SCENARIOS.length - 1,
+        configured_scenario_count: DOJO_CHAOS_SCENARIOS.length - 1,
+      }),
+    });
+    const drifted = await verifyDojoChaosPerformanceEvidenceArtifact({ evidencePath: driftedPath });
+    expect(drifted.errors).toEqual(expect.arrayContaining([
+      "chaos_performance_required_scenarios_missing:api_timeout",
+      "chaos_performance_required_scenarios_untested:api_timeout",
+    ]));
+
+    const skippedPath = await writeChaosEvidenceFixture({
+      dir,
+      basename: "skipped-chaos",
+      evidence: chaosEvidenceFixture({
+        test_summary: {
+          total_tests: 9,
+          passed_tests: 8,
+          failed_tests: 0,
+          pending_tests: 1,
+        },
+      }),
+    });
+    expect((await verifyDojoChaosPerformanceEvidenceArtifact({ evidencePath: skippedPath })).errors).toEqual(expect.arrayContaining([
+      "chaos_performance_pending_tests:1",
     ]));
 
     const tamperedJson = path.join(dir, "tampered-chaos.vitest.json");
@@ -1934,6 +1967,10 @@ function chaosEvidenceFixture(overrides = {}) {
     generated_at: "2026-06-11T00:00:00.000Z",
     ok: true,
     exit_code: 0,
+    configured_chaos_scenarios: DOJO_CHAOS_SCENARIOS,
+    tested_chaos_scenarios: DOJO_CHAOS_SCENARIOS,
+    scenario_count: DOJO_CHAOS_SCENARIOS.length,
+    configured_scenario_count: DOJO_CHAOS_SCENARIOS.length,
     scenario_coverage_complete: true,
     missing_chaos_scenarios: [],
     budget_evaluation: { ok: true },
@@ -1941,6 +1978,7 @@ function chaosEvidenceFixture(overrides = {}) {
       total_tests: 9,
       passed_tests: 9,
       failed_tests: 0,
+      pending_tests: 0,
     },
     performance_metrics: {
       self_check_duration_ms: 1200,
