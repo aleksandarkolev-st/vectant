@@ -26,6 +26,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES = [
   "tests/integration/dojo_postgres_proof_store.test.ts",
   "tests/integration/dojo_evidence_ledger_store.test.ts",
   "tests/integration/dojo_audit_store.test.ts",
+  "tests/integration/dojo_postgres_license_store.test.ts",
   "tests/integration/dojo_postgres_governance_store.test.ts",
   "tests/integration/dojo_postgres_source_registry_store.test.ts",
   "tests/integration/dojo_postgres_mcp_skill_bus_store.test.ts",
@@ -53,6 +54,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES = [
   "evidence_ledger_append_verify",
   "evidence_tamper_detection",
   "audit_event_repository",
+  "license_repository",
   "postgres_evidence_proof_issuance",
 ];
 
@@ -350,6 +352,10 @@ function capabilityMatchers(capability) {
     evidence_ledger_append_verify: ["appends evidence records advances checkpoints and verifies the chain"],
     evidence_tamper_detection: ["detects tampered evidence records", "detects tampered ledger checkpoint"],
     audit_event_repository: ["persists audit actor request correlation entity and details", "records proof issue use rejection and revoke events"],
+    license_repository: [
+      "postgresdojolicensestore persists licenses and version history by tenant scope",
+      "postgresdojolicensestore revokes licenses with audit custody",
+    ],
     postgres_evidence_proof_issuance: ["issues a production proof capsule from evidence record ids resolved through postgres"],
   };
   return [...new Set([normalized, ...(aliases[capability] ?? [])].map(normalizeCapabilityText))];

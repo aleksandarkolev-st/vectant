@@ -1,4 +1,4 @@
-import type { DojoSkill } from "../../browser/dojo.js";
+import type { DojoPermissionLicense, DojoSkill, DojoSkillReadinessLevel } from "../../browser/dojo.js";
 import type { DojoCaseLawBindingScope, DojoCaseLawRecord, DojoCaseLawStatus } from "../case_law/registry.js";
 import type { DojoSourceSnapshot } from "../source/source_snapshot.js";
 import type { DojoPublishedWorkflowBinding } from "./published_workflow_index.js";
@@ -168,8 +168,71 @@ export interface DojoControlPlaneStore extends DojoSkillStore, DojoProofStore, D
   clear(): void;
 }
 
+export type DojoStoredLicenseStatus = "active" | "expired" | "revoked" | "superseded";
+
+export interface DojoPermissionLicenseRecord {
+  tenant_id: string;
+  workspace_id: string;
+  license_id: string;
+  skill_id: string;
+  license_version: string;
+  status: DojoStoredLicenseStatus;
+  entrustment_level: DojoPermissionLicense["entrustment_level"];
+  readiness_level: DojoSkillReadinessLevel;
+  license_json: DojoPermissionLicense;
+  expires_at?: string;
+  revoked_at?: string;
+  revoked_reason?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DojoPermissionLicenseVersionRecord {
+  tenant_id: string;
+  workspace_id: string;
+  license_id: string;
+  license_version: string;
+  skill_id: string;
+  status: DojoStoredLicenseStatus;
+  entrustment_level: DojoPermissionLicense["entrustment_level"];
+  readiness_level: DojoSkillReadinessLevel;
+  license_json: DojoPermissionLicense;
+  created_at: string;
+  created_by?: string;
+}
+
+export interface DojoLicenseListFilter {
+  license_id?: string;
+  skill_id?: string;
+  license_version?: string;
+  status?: DojoStoredLicenseStatus;
+  entrustment_level?: DojoPermissionLicense["entrustment_level"];
+  readiness_level?: DojoSkillReadinessLevel;
+  limit?: number;
+}
+
 export interface DojoLicenseStore {
   readonly store_contract_kind?: "license";
+  saveLicense(
+    license: DojoPermissionLicense,
+    options: {
+      readiness_level: DojoSkillReadinessLevel;
+      status?: DojoStoredLicenseStatus;
+      expires_at?: string;
+      created_by?: DojoAuditActor;
+      now?: string;
+    }
+  ): MaybePromise<DojoPermissionLicenseRecord>;
+  getLicense(licenseId: string): MaybePromise<DojoPermissionLicenseRecord | null>;
+  getLicenseVersion(licenseId: string, licenseVersion: string): MaybePromise<DojoPermissionLicenseVersionRecord | null>;
+  listLicenses(filter?: DojoLicenseListFilter): MaybePromise<DojoPermissionLicenseRecord[]>;
+  listLicenseVersions(filter?: DojoLicenseListFilter): MaybePromise<DojoPermissionLicenseVersionRecord[]>;
+  revokeLicense(
+    licenseId: string,
+    reason: string,
+    now?: string,
+    revokedBy?: DojoAuditActor
+  ): MaybePromise<DojoPermissionLicenseRecord | null>;
 }
 
 export interface DojoEvidenceStore {
