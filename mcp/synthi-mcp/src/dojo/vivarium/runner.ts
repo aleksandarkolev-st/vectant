@@ -80,16 +80,26 @@ export class DojoVivariumRunner {
     now?: string;
   }): Promise<DojoScenarioRunResult> {
     const budget = input.budget ?? input.materialized.definition.budget;
-    if (budget.max_runs < 1) {
-      throw new Error("dojo_scenario_budget_max_runs_exhausted");
-    }
-
     const runtime = input.runtime ?? new DojoSkillGraphRuntime();
     const tenantContext = input.tenant ?? input.materialized.tenant_context;
     const graphEvents: DojoGraphEvidenceEvent[] = [];
     const startedAt = input.now ?? new Date().toISOString();
     const runId = input.run_id ?? createScenarioRunId(input.materialized, input.graph, startedAt);
     const completedAt = input.now ?? new Date().toISOString();
+    if (budget.max_runs < 1) {
+      return blockedScenarioRunResult({
+        materialized: input.materialized,
+        tenant: tenantContext,
+        graph: input.graph,
+        run_id: runId,
+        started_at: startedAt,
+        completed_at: completedAt,
+        budget,
+        blocked_by: ["dojo_scenario_budget_max_runs_exhausted"],
+        observed_evidence: input.observed_evidence ?? [],
+      });
+    }
+
     const graphResult = await runtime.execute({
       graph: input.graph,
       run_id: runId,
@@ -150,6 +160,56 @@ export class DojoVivariumRunner {
       blocked_by: ok ? [] : ["fixture_reset_not_deterministic"],
     };
   }
+}
+
+function blockedScenarioRunResult(input: {
+  materialized: DojoMaterializedScenario;
+  tenant?: DojoTenantContext;
+  graph: DojoSkillGraph;
+  run_id: string;
+  started_at: string;
+  completed_at: string;
+  budget: DojoScenarioBudget;
+  blocked_by: string[];
+  observed_evidence: string[];
+}): DojoScenarioRunResult {
+  const graphResult: DojoGraphRunResult = {
+    ok: false,
+    status: "blocked",
+    mode: "checkride",
+    run_id: input.run_id,
+    node_results: [],
+    blocked_by: [...input.blocked_by],
+    evidence_refs: [`dojo-budget://${input.run_id}`],
+  };
+  const observedEvidence = observedEvidenceForRun(input.materialized, graphResult, [], [
+    ...input.observed_evidence,
+    "scenario_budget_state",
+  ]);
+  const oracleResult = evaluateDojoScenarioOracle({
+    definition: input.materialized.definition,
+    fixture: input.materialized.fixture,
+    graph_result: graphResult,
+    observed_evidence: observedEvidence,
+  });
+  return {
+    schema_version: "synthi.dojo.scenarioRunResult.v1",
+    run_id: input.run_id,
+    scenario_id: input.materialized.definition.scenario_id,
+    mutation_kind: input.materialized.definition.mutation_kind,
+    materialized_id: input.materialized.materialized_id,
+    ...(input.tenant ? { tenant_context: cloneTenantContext(input.tenant) } : {}),
+    fixture_materialization_hash: input.materialized.fixture.materialization_hash,
+    status: oracleResult.status,
+    expectation_met: oracleResult.expectation_met,
+    graph_result: graphResult,
+    oracle_result: oracleResult,
+    observed_evidence: observedEvidence,
+    evidence_refs: [...graphResult.evidence_refs, `dojo-oracle://${input.run_id}/${oracleResult.oracle_id}`],
+    started_at: input.started_at,
+    completed_at: input.completed_at,
+    budget: input.budget,
+  };
 }
 
 function cloneTenantContext(tenant: DojoTenantContext): DojoTenantContext {

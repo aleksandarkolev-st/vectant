@@ -144,6 +144,47 @@ describe("Dojo Vivarium runner", () => {
     ]));
   });
 
+  it("classifies exhausted scenario budget as a blocked run instead of throwing", async () => {
+    const runner = new DojoVivariumRunner();
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: toDojoScenarioDefinition(scenarioFixture({
+        mutation_kind: "baseline",
+        layer: "skill",
+        risk_tags: ["baseline"],
+      })),
+      seed: "budget-exhausted-seed",
+    });
+
+    await expect(runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-budget-exhausted",
+      budget: {
+        ...materialized.definition.budget,
+        max_runs: 0,
+      },
+      now: "2026-06-11T00:00:01.000Z",
+    })).resolves.toEqual(expect.objectContaining({
+      status: "blocked",
+      expectation_met: false,
+      graph_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["dojo_scenario_budget_max_runs_exhausted"],
+        evidence_refs: ["dojo-budget://scenario-run-budget-exhausted"],
+      }),
+      oracle_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["dojo_scenario_budget_max_runs_exhausted"],
+      }),
+      observed_evidence: expect.arrayContaining(["graph_run_result", "oracle_result", "scenario_budget_state"]),
+      evidence_refs: expect.arrayContaining([
+        "dojo-budget://scenario-run-budget-exhausted",
+        "dojo-oracle://scenario-run-budget-exhausted/oracle_seed-a_scenario_baseline",
+      ]),
+    }));
+  });
+
   it("proves fixture reset is deterministic for the materialized scenario seed", () => {
     const runner = new DojoVivariumRunner();
     const materialized = runner.materialize({
