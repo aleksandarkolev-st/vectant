@@ -90,6 +90,7 @@ export interface DojoGovernanceLicenseHealth {
   gated_action_count: number;
   blocked_action_count: number;
   recertification_triggers: string[];
+  evidence_refs: string[];
 }
 
 export interface DojoGovernanceApprovalQueueItem {
@@ -582,6 +583,7 @@ export function queryDojoLicenseHealth(input: {
           ...(expiry.invalid_expires_at ? [LICENSE_EXPIRY_INVALID_TRIGGER] : []),
           ...(expiry.invalid_now ? [GOVERNANCE_VALIDATION_TIME_INVALID_TRIGGER] : []),
         ],
+        evidence_refs: licenseHealthEvidenceRefs(skill),
       };
     })
     .sort((left, right) => sortStatus(left.status) - sortStatus(right.status) || left.skill_id.localeCompare(right.skill_id));
@@ -1018,6 +1020,19 @@ function digestFor(parts: unknown[]): string {
     hash = Math.imul(hash, 0x01000193);
   }
   return `fnv1a:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function licenseHealthEvidenceRefs(skill: DojoSkill): string[] {
+  return uniqueStrings([
+    `license:${skill.permission_license.license_id}`,
+    `skill:${skill.skill_id}`,
+    skill.checkride?.checkride_id ? `checkride:${skill.checkride.checkride_id}` : "",
+    skill.assurance_case?.assurance_case_id ? `assurance:${skill.assurance_case.assurance_case_id}` : "",
+    ...stringArrayField(skill.skill_passport, "evidence_refs"),
+    ...(skill.training_report?.evidence_refs ?? []),
+    ...(skill.assurance_case?.evidence_refs ?? []),
+    ...(skill.case_law ?? []).flatMap((record) => record.evidence_refs),
+  ]);
 }
 
 function caseLawItemFromSkillCase(skill: DojoSkill, record: DojoSkillCase): DojoGovernanceCaseLawReviewItem {

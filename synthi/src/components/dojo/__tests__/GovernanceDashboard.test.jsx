@@ -109,6 +109,7 @@ function buildGovernanceSummary() {
           allowed_action_count: 1,
           gated_action_count: 1,
           blocked_action_count: 1,
+          evidence_refs: ['evidence-license-health-001'],
         },
         {
           skill_id: 'skill-stale',
@@ -385,6 +386,7 @@ describe('GovernanceDashboard', () => {
                 skill_name: 'Save invoice',
                 license_id: 'license-001',
                 status: 'active',
+                evidence_refs: ['evidence-license-health-001'],
               },
             ],
             case_law_review_queue: [
@@ -500,7 +502,7 @@ describe('GovernanceDashboard', () => {
           reason: 'license revoked after governance review',
           actor_id: 'governance-operator',
           actor_type: 'human',
-          evidence_refs: [],
+          evidence_refs: ['evidence-license-health-001'],
         },
       });
       expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('License revoked: Save invoice');

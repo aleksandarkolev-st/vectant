@@ -36,6 +36,12 @@ describe("Dojo governance service", () => {
       skill_id: "skill-active",
       status: "active",
       days_until_expiry: 30,
+      evidence_refs: expect.arrayContaining([
+        "skill:skill-active",
+        expect.stringMatching(/^license:/),
+        "evidence-passport",
+        "evidence-training",
+      ]),
     }));
   });
 

@@ -463,6 +463,7 @@ function normalizeLicenseHealthItem(item, fallbackSkill) {
     gatedActionCount: Number(item.gated_action_count ?? item.gatedActionCount ?? fallbackSkill?.gatedActions?.length ?? 0),
     blockedActionCount: Number(item.blocked_action_count ?? item.blockedActionCount ?? fallbackSkill?.blockedActions?.length ?? 0),
     recertificationTriggers: compactStrings(item.recertification_triggers || item.recertificationTriggers),
+    evidenceRefs: compactStrings(item.evidence_refs || item.evidenceRefs),
   };
 }
 
@@ -1475,6 +1476,8 @@ export async function revokeDojoLicense({
   if (!resolvedReason) throw new Error('dojo_license_revocation_reason_required');
   const actor = resolveGovernanceActor({ actorId, actorType });
   if (!actor.actorId) throw new Error('dojo_governance_actor_required');
+  const resolvedEvidenceRefs = governanceReviewEvidenceRefs(item, evidenceRefs);
+  if (!resolvedEvidenceRefs.length) throw new Error('dojo_license_revocation_evidence_required');
   const body = await callAgentWorkflowTool({
     url,
     token,
@@ -1485,7 +1488,7 @@ export async function revokeDojoLicense({
       reason: resolvedReason,
       actor_id: actor.actorId,
       actor_type: actor.actorType,
-      evidence_refs: compactStrings(evidenceRefs),
+      evidence_refs: resolvedEvidenceRefs,
     },
   });
   assertBridgeToolActionOk(body, 'dojo_license_revoke_failed');
