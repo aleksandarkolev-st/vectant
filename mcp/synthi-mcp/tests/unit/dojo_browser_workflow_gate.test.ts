@@ -60,6 +60,43 @@ describe("Dojo raw browser workflow replay gate", () => {
     expect(action).not.toHaveBeenCalled();
   });
 
+  it("marks generated scripts for Dojo-published workflows as practice-only in production", async () => {
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    const workflowId = teachWorkflow();
+    const skill = buildDojoSkill(browserBroker.compiledWorkflow().contract, {
+      workspace_id: "workspace-a",
+      published_tool_name: "synthi_app_open_details",
+    });
+    dojoSkillRegistry.publish(skill);
+
+    const response = await dispatchBrowserTool("synthi_browser_generate_script", {
+      workflow_id: workflowId,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      workflow_id: workflowId,
+      artifact_execution_policy: expect.objectContaining({
+        status: "practice_only",
+        enforcement_mode: "production",
+        workflow_id: workflowId,
+        skill_id: skill.skill_id,
+        required_tool: "synthi_dojo_run_with_proof_capsule",
+        execution_mode_env: "SYNTHI_DOJO_ARTIFACT_EXECUTION_MODE",
+        allowed_execution_modes: ["practice", "test", "ci"],
+        blocked_by: ["dojo_published_workflow_artifact_not_for_production"],
+      }),
+    }));
+    const body = response?.structuredContent as { code: string; warnings: string[] };
+    expect(body.warnings).toContain(
+      "Dojo-published workflow artifacts are practice/test-only under production enforcement; use synthi_dojo_run_with_proof_capsule for production execution."
+    );
+    expect(body.code).toContain("SYNTHI_DOJO_ARTIFACT_EXECUTION_MODE");
+    expect(body.code).toContain("test.skip(");
+    expect(body.code).toContain("synthi_dojo_run_with_proof_capsule");
+  });
+
   it("does not block unpublished raw workflow replay in production", async () => {
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
     const workflowId = teachWorkflow();

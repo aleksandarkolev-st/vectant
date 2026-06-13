@@ -43,6 +43,9 @@ import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import { dispatchSafetyTool } from "./safety.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
+const DOJO_ARTIFACT_EXECUTION_MODE_ENV = "SYNTHI_DOJO_ARTIFACT_EXECUTION_MODE";
+const DOJO_ARTIFACT_ALLOWED_EXECUTION_MODES = ["practice", "test", "ci"] as const;
+
 browserPlaywrightAdapter.setTeachEventSink((event) => {
   if (event.action === "navigate") {
     browserBroker.handleOriginChange(event.tab_id, event.url, event.detail);
@@ -1274,7 +1277,23 @@ function browserGenerateScriptTool(args: unknown): ToolResponse {
   const mode = a["mode"] === undefined ? undefined : normalizeReplayMode(a["mode"]);
   const result = browserBroker.generatedScriptFor(stringOpt(a["workflow_id"]), mode);
   if (!result.ok) return errorResponse(result.error, result.workflow_id ? { workflow_id: result.workflow_id } : undefined);
-  return jsonResponse({ ok: true, ...result.generated, workflow_id: result.artifact.workflow_id });
+  const artifactExecutionPolicy = dojoArtifactExecutionPolicyForWorkflow(result.artifact.workflow_id);
+  const generated = artifactExecutionPolicy
+    ? {
+        ...result.generated,
+        code: addDojoPracticeArtifactGuard(result.generated.code),
+        warnings: [
+          ...result.generated.warnings,
+          "Dojo-published workflow artifacts are practice/test-only under production enforcement; use synthi_dojo_run_with_proof_capsule for production execution.",
+        ],
+      }
+    : result.generated;
+  return jsonResponse({
+    ok: true,
+    ...generated,
+    workflow_id: result.artifact.workflow_id,
+    ...(artifactExecutionPolicy ? { artifact_execution_policy: artifactExecutionPolicy } : {}),
+  });
 }
 
 function browserGeneratePrivateToolManifestTool(args: unknown): ToolResponse {
@@ -2155,6 +2174,39 @@ function dojoBindingForPrivateTool(toolName: string, workflowId: string): DojoPu
     workflow_id: binding.workflow_id,
     tool_name: toolName,
   };
+}
+
+function dojoArtifactExecutionPolicyForWorkflow(workflowId: string): Record<string, unknown> | null {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement) return null;
+  const binding = dojoSkillRegistry.getPublishedWorkflowBindingByWorkflowId(workflowId);
+  if (!binding) return null;
+  return {
+    status: "practice_only",
+    enforcement_mode: enforcement.enforcement_mode,
+    workflow_id: binding.workflow_id,
+    skill_id: binding.skill_id,
+    tool_names: binding.tool_names,
+    required_tool: "synthi_dojo_run_with_proof_capsule",
+    execution_mode_env: DOJO_ARTIFACT_EXECUTION_MODE_ENV,
+    allowed_execution_modes: [...DOJO_ARTIFACT_ALLOWED_EXECUTION_MODES],
+    blocked_by: ["dojo_published_workflow_artifact_not_for_production"],
+  };
+}
+
+function addDojoPracticeArtifactGuard(code: string): string {
+  const testStart = "test('replayed browser workflow', async ({ page }) => {";
+  const guard = [
+    `  const synthiDojoArtifactMode = process.env[${JSON.stringify(DOJO_ARTIFACT_EXECUTION_MODE_ENV)}];`,
+    `  const synthiDojoAllowedArtifactModes = new Set(${JSON.stringify(DOJO_ARTIFACT_ALLOWED_EXECUTION_MODES)});`,
+    "  test.skip(",
+    "    !synthiDojoArtifactMode || !synthiDojoAllowedArtifactModes.has(synthiDojoArtifactMode),",
+    "    'Dojo-published workflow artifacts are practice/test-only. Use synthi_dojo_run_with_proof_capsule for production execution.'",
+    "  );",
+    "",
+  ].join("\n");
+  if (!code.includes(testStart)) return `${guard}\n${code}`;
+  return code.replace(`${testStart}\n`, `${testStart}\n${guard}`);
 }
 
 function dojoTenantContext(args: unknown, workflowId: string): DojoTenantContext {
