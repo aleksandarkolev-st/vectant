@@ -31,6 +31,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "../../scripts/dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
+  DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
+} from "../../scripts/dojo-governance-lifecycle-self-check.mjs";
+import {
   DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "../../scripts/dojo-managed-key-signing-self-check.mjs";
@@ -60,6 +64,7 @@ import {
   validateDojoPrivateToolStdioAcceptanceForRelease,
   validateDojoPrivateToolStdioHostConformanceForRelease,
   validateDojoDockerIntegrationEvidenceForMilestone,
+  validateDojoGovernanceLifecycleEvidenceForRelease,
   validateDojoManagedKeySigningEvidenceForRelease,
   validateDojoPostgresControlPlaneEvidenceForMilestone,
   validateDojoWorkflowPipelineE2EForRelease,
@@ -75,6 +80,7 @@ import {
   verifyDojoApiToolCompilerEvidenceArtifact,
   verifyDojoSourceDriftEvidenceArtifact,
   verifyDojoDockerIntegrationEvidenceArtifact,
+  verifyDojoGovernanceLifecycleEvidenceArtifact,
   verifyDojoManagedKeySigningEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoPrivateToolCodexAcceptanceArtifact,
@@ -892,6 +898,7 @@ describe("Dojo release gate artifact verifier", () => {
     });
     const securityEvidencePath = await writeSecurityEvidenceFixture({ dir });
     const managedKeySigningEvidencePath = await writeManagedKeySigningEvidenceFixture({ dir });
+    const governanceLifecycleEvidencePath = await writeGovernanceLifecycleEvidenceFixture({ dir });
     const complianceEvidencePath = await writeComplianceExportEvidenceFixture({ dir });
     const privacyEvidencePath = await writePrivacyRedactionEvidenceFixture({ dir });
     const workflowE2E = await writeWorkflowE2EFixture({ dir });
@@ -941,6 +948,7 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "dojo_api_tool_compiler_self_check").default_evidence_path = apiToolCompilerEvidencePath;
     manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path = managedKeySigningEvidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check").default_evidence_path = governanceLifecycleEvidencePath;
     manifest.gates.find((gate) => gate.id === "privacy_redaction_suite").default_evidence_path = privacyEvidencePath;
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
     manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioAcceptance.transcriptPath;
@@ -968,6 +976,7 @@ describe("Dojo release gate artifact verifier", () => {
         "mcp-host-conformance-evidence": conformanceEvidencePath,
         "security-abuse-evidence": securityEvidencePath,
         "managed-key-signing-evidence": managedKeySigningEvidencePath,
+        "governance-lifecycle-evidence": governanceLifecycleEvidencePath,
         "source-drift-evidence": sourceDriftEvidencePath,
         "api-tool-compiler-evidence": apiToolCompilerEvidencePath,
       },
@@ -1035,6 +1044,13 @@ describe("Dojo release gate artifact verifier", () => {
         id: "dojo_managed_key_signing_self_check",
         ok: true,
         evidence_path: managedKeySigningEvidencePath,
+      }),
+    ]);
+    expect(verified.governance_lifecycle).toEqual([
+      expect.objectContaining({
+        id: "dojo_governance_lifecycle_self_check",
+        ok: true,
+        evidence_path: governanceLifecycleEvidencePath,
       }),
     ]);
     expect(verified.compliance_export).toEqual([
@@ -1168,6 +1184,71 @@ describe("Dojo release gate artifact verifier", () => {
     expect(tamperedJsonResult.errors).toEqual(expect.arrayContaining([
       expect.stringMatching(/^json_report_sha256_mismatch:/),
       expect.stringMatching(/^json_report_bytes_mismatch:/),
+    ]));
+  });
+
+  it("verifies governance lifecycle evidence coverage and control-plane contract", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-governance-lifecycle-verify-"));
+    const evidencePath = await writeGovernanceLifecycleEvidenceFixture({ dir });
+
+    expect(validateDojoGovernanceLifecycleEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoGovernanceLifecycleEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_governance_lifecycle_self_check",
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = governanceLifecycleEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["governance_revokes_license_to_blocked_scope_with_audit"],
+      governance_contract: {
+        ...governanceLifecycleEvidenceFixture().governance_contract,
+        license_revocation_required: false,
+        compliance_pack_required: false,
+      },
+    });
+    const incompletePath = await writeGovernanceLifecycleEvidenceFixture({
+      dir,
+      basename: "incomplete-governance-lifecycle",
+      evidence: incomplete,
+    });
+    const rejected = await verifyDojoGovernanceLifecycleEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "governance_lifecycle_not_ok",
+      "governance_lifecycle_coverage_incomplete",
+      "governance_lifecycle_missing_capabilities:governance_revokes_license_to_blocked_scope_with_audit",
+      "governance_lifecycle_license_revocation_requirement_missing",
+      "governance_lifecycle_compliance_pack_requirement_missing",
+    ]));
+
+    const driftedPath = await writeGovernanceLifecycleEvidenceFixture({
+      dir,
+      basename: "drifted-governance-lifecycle",
+      evidence: governanceLifecycleEvidenceFixture({
+        configured_capabilities: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES
+          .filter((capability) => capability !== "governance_builds_approval_queue"),
+        tested_capabilities: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES
+          .filter((capability) => capability !== "governance_builds_approval_queue"),
+        capability_count: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.length - 1,
+        test_files: [],
+        test_file_count: 0,
+        reported_test_file_count: 0,
+      }),
+    });
+    expect((await verifyDojoGovernanceLifecycleEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "governance_lifecycle_required_capabilities_missing:governance_builds_approval_queue",
+      "governance_lifecycle_required_capabilities_untested:governance_builds_approval_queue",
+      `governance_lifecycle_required_test_files_missing:${DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES[0]}`,
     ]));
   });
 
@@ -2838,6 +2919,109 @@ function managedKeySigningJsonReportFixtureText() {
     numFailedTests: 0,
     numPendingTests: 0,
     testResults: [],
+  }, null, 2);
+}
+
+async function writeGovernanceLifecycleEvidenceFixture({
+  dir,
+  basename = "dojo-governance-lifecycle",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "governance lifecycle suite passed\n";
+  const stderr = "";
+  const jsonReport = governanceLifecycleJsonReportFixtureText();
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? governanceLifecycleEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(body, null, 2), "utf8");
+  return evidencePath;
+}
+
+function governanceLifecycleEvidenceFixture(overrides = {}) {
+  const stdout = "governance lifecycle suite passed\n";
+  const stderr = "";
+  const jsonReport = governanceLifecycleJsonReportFixtureText();
+  return {
+    schema_version: "synthi.dojo.governanceLifecycleEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES],
+    tested_capabilities: [...DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.length,
+    configured_capability_count: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    governance_contract: {
+      license_health_required: true,
+      approval_queue_required: true,
+      approval_decision_audit_required: true,
+      case_law_review_required: true,
+      license_revocation_required: true,
+      recertification_queue_required: true,
+      policy_gates_required: true,
+      audit_export_required: true,
+      compliance_pack_required: true,
+      proof_public_verification_custody_required: true,
+      malformed_expiry_fails_closed_required: true,
+    },
+    test_files: [...DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES],
+    test_file_count: DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES.length,
+    reported_test_file_count: DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES.length,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.length,
+      passed_tests: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: overrides.stdout_path || path.join(tmpdir(), "dojo-governance-lifecycle.stdout.log"),
+    stderr_path: overrides.stderr_path || path.join(tmpdir(), "dojo-governance-lifecycle.stderr.log"),
+    json_report_path: overrides.json_report_path || path.join(tmpdir(), "dojo-governance-lifecycle.vitest.json"),
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    json_report_sha256: sha256(jsonReport),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function governanceLifecycleJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.length,
+    numPassedTests: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES.length,
+    numPassedTestSuites: DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
   }, null, 2);
 }
 

@@ -30,6 +30,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "./dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
+  DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
+} from "./dojo-governance-lifecycle-self-check.mjs";
+import {
   DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "./dojo-managed-key-signing-self-check.mjs";
@@ -571,6 +575,37 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
   },
   {
+    id: "dojo_governance_lifecycle_self_check",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:governance-lifecycle:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_governance_service.test.ts -- --reporter=json --outputFile ../../tmp/dojo-governance-lifecycle/dojo-governance-lifecycle.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:governance-lifecycle:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.governanceLifecycleEvidence.v1",
+    default_evidence_path: "tmp/dojo-governance-lifecycle/dojo-governance-lifecycle.evidence.json",
+    release_artifact_requirements: {
+      require_all_governance_lifecycle_capabilities_covered: true,
+      required_governance_lifecycle_capabilities: [...DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES],
+      required_test_files: [...DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES],
+      require_license_health: true,
+      require_approval_queue: true,
+      require_approval_decision_audit: true,
+      require_case_law_review: true,
+      require_license_revocation: true,
+      require_recertification_queue: true,
+      require_policy_gates: true,
+      require_audit_export: true,
+      require_compliance_pack: true,
+      require_proof_public_verification_custody: true,
+      require_malformed_expiry_fails_closed: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "security_abuse_suite",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -706,6 +741,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "private_tool_stdio_host_conformance",
   "private_tool_codex_host_conformance",
   "dojo_managed_key_signing_self_check",
+  "dojo_governance_lifecycle_self_check",
   "security_abuse_suite",
   "compliance_export_suite",
   "privacy_redaction_suite",
@@ -1170,6 +1206,58 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!managedKeySigningGate.release_artifact_requirements?.require_json_report_digest_match) {
       errors.push("managed_key_signing_missing_json_report_digest_requirement");
+    }
+  }
+  const governanceLifecycleGate = gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check");
+  if (governanceLifecycleGate) {
+    if (governanceLifecycleGate.evidence_schema_version !== "synthi.dojo.governanceLifecycleEvidence.v1") {
+      errors.push("governance_lifecycle_missing_evidence_schema");
+    }
+    if (governanceLifecycleGate.package_script !== "proof:dojo:governance-lifecycle:self-check") {
+      errors.push("governance_lifecycle_missing_package_script");
+    }
+    if (!governanceLifecycleGate.default_evidence_path) errors.push("governance_lifecycle_missing_default_evidence_path");
+    if (!governanceLifecycleGate.release_artifact_requirements?.require_all_governance_lifecycle_capabilities_covered) {
+      errors.push("governance_lifecycle_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_license_health", "governance_lifecycle_missing_license_health_requirement"],
+      ["require_approval_queue", "governance_lifecycle_missing_approval_queue_requirement"],
+      ["require_approval_decision_audit", "governance_lifecycle_missing_approval_audit_requirement"],
+      ["require_case_law_review", "governance_lifecycle_missing_case_law_review_requirement"],
+      ["require_license_revocation", "governance_lifecycle_missing_license_revocation_requirement"],
+      ["require_recertification_queue", "governance_lifecycle_missing_recertification_requirement"],
+      ["require_policy_gates", "governance_lifecycle_missing_policy_gates_requirement"],
+      ["require_audit_export", "governance_lifecycle_missing_audit_export_requirement"],
+      ["require_compliance_pack", "governance_lifecycle_missing_compliance_pack_requirement"],
+      ["require_proof_public_verification_custody", "governance_lifecycle_missing_public_verification_requirement"],
+      ["require_malformed_expiry_fails_closed", "governance_lifecycle_missing_malformed_expiry_requirement"],
+    ]) {
+      if (!governanceLifecycleGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredGovernanceCapabilities = Array.isArray(governanceLifecycleGate.release_artifact_requirements?.required_governance_lifecycle_capabilities)
+      ? governanceLifecycleGate.release_artifact_requirements.required_governance_lifecycle_capabilities
+      : [];
+    const missingGovernanceCapabilities = DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES
+      .filter((capability) => !requiredGovernanceCapabilities.includes(capability));
+    if (missingGovernanceCapabilities.length > 0) {
+      errors.push(`governance_lifecycle_missing_required_capabilities:${missingGovernanceCapabilities.join(",")}`);
+    }
+    const missingGovernanceTestFiles = missingRequiredEntries(
+      DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
+      governanceLifecycleGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingGovernanceTestFiles.length > 0) {
+      errors.push(`governance_lifecycle_missing_required_test_files:${missingGovernanceTestFiles.join(",")}`);
+    }
+    if (!governanceLifecycleGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("governance_lifecycle_missing_no_skipped_requirement");
+    }
+    if (!governanceLifecycleGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("governance_lifecycle_missing_digest_requirement");
+    }
+    if (!governanceLifecycleGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("governance_lifecycle_missing_json_report_digest_requirement");
     }
   }
   const securityAbuseGate = gates.find((gate) => gate.id === "security_abuse_suite");

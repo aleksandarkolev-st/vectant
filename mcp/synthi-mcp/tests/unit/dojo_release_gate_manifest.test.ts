@@ -31,6 +31,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "../../scripts/dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
+  DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
+} from "../../scripts/dojo-governance-lifecycle-self-check.mjs";
+import {
   DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "../../scripts/dojo-managed-key-signing-self-check.mjs";
@@ -66,6 +70,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:api-tool-compiler:self-check": "node scripts/dojo-api-tool-compiler-self-check.mjs",
     "proof:dojo:source-drift:self-check": "node scripts/dojo-source-drift-self-check.mjs",
     "proof:dojo:managed-key-signing:self-check": "node scripts/dojo-managed-key-signing-self-check.mjs",
+    "proof:dojo:governance-lifecycle:self-check": "node scripts/dojo-governance-lifecycle-self-check.mjs",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
     "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
     "proof:dojo:privacy-redaction:self-check": "node scripts/dojo-privacy-redaction-self-check.mjs",
@@ -350,6 +355,32 @@ describe("Dojo release gate manifest", () => {
         }),
       }),
       expect.objectContaining({
+        id: "dojo_governance_lifecycle_self_check",
+        tier: "T7",
+        package_script: "proof:dojo:governance-lifecycle:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.governanceLifecycleEvidence.v1",
+        default_evidence_path: "tmp/dojo-governance-lifecycle/dojo-governance-lifecycle.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          require_all_governance_lifecycle_capabilities_covered: true,
+          required_governance_lifecycle_capabilities: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
+          required_test_files: DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
+          require_license_health: true,
+          require_approval_queue: true,
+          require_approval_decision_audit: true,
+          require_case_law_review: true,
+          require_license_revocation: true,
+          require_recertification_queue: true,
+          require_policy_gates: true,
+          require_audit_export: true,
+          require_compliance_pack: true,
+          require_proof_public_verification_custody: true,
+          require_malformed_expiry_fails_closed: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "security_abuse_suite",
         tier: "T7",
         package_script: "proof:dojo:security-abuse:self-check",
@@ -575,6 +606,22 @@ describe("Dojo release gate manifest", () => {
       `managed_key_signing_missing_required_test_files:${missingManagedKeySigningTestFile}`,
     ]));
 
+    const brokenGovernanceLifecycle = JSON.parse(JSON.stringify(manifest));
+    const governanceLifecycleGate = brokenGovernanceLifecycle.gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check");
+    const missingGovernanceTestFile = DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES[0];
+    governanceLifecycleGate.release_artifact_requirements.required_governance_lifecycle_capabilities = DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES
+      .filter((capability) => capability !== "governance_revokes_license_to_blocked_scope_with_audit");
+    governanceLifecycleGate.release_artifact_requirements.required_test_files = DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES
+      .filter((file) => file !== missingGovernanceTestFile);
+    governanceLifecycleGate.release_artifact_requirements.require_license_revocation = false;
+    governanceLifecycleGate.release_artifact_requirements.require_compliance_pack = false;
+    expect(validateDojoReleaseGateManifest(brokenGovernanceLifecycle, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "governance_lifecycle_missing_license_revocation_requirement",
+      "governance_lifecycle_missing_compliance_pack_requirement",
+      "governance_lifecycle_missing_required_capabilities:governance_revokes_license_to_blocked_scope_with_audit",
+      `governance_lifecycle_missing_required_test_files:${missingGovernanceTestFile}`,
+    ]));
+
     const brokenSecurity = JSON.parse(JSON.stringify(manifest));
     const securityGate = brokenSecurity.gates.find((gate) => gate.id === "security_abuse_suite");
     const missingSecurityTestFile = DOJO_SECURITY_ABUSE_TEST_FILES[0];
@@ -650,6 +697,7 @@ describe("Dojo release gate manifest", () => {
       "workflow_e2e_hosted",
       "dojo_mcp_host_conformance",
       "dojo_managed_key_signing_self_check",
+      "dojo_governance_lifecycle_self_check",
       "security_abuse_suite",
       "compliance_export_suite",
       "privacy_redaction_suite",
@@ -680,7 +728,7 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 16,
+      proof_artifact_gate_count: 17,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
@@ -691,6 +739,7 @@ describe("Dojo release gate manifest", () => {
         "workflow_e2e_hosted",
         "dojo_mcp_host_conformance",
         "dojo_managed_key_signing_self_check",
+        "dojo_governance_lifecycle_self_check",
         "compliance_export_suite",
         "privacy_redaction_suite",
       ]),
