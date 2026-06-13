@@ -1067,6 +1067,11 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     process.env.SYNTHI_DOJO_PROOF_SIGNING_KEY_ID = `lost-local-key-${proofKeyPair.key_id}`;
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
     expect(dojoSkillRegistry.getProofRecord(issued.proof_capsule.capsule_id)).toBeNull();
+    dojoSkillRegistry.publish({
+      ...savedSkill!,
+      name: "stale local skill should not satisfy production reads",
+    });
+    expect(dojoSkillRegistry.get(published.skill.skill_id)?.name).toBe("stale local skill should not satisfy production reads");
 
     const readSkill = await dispatchDojoTool("synthi_dojo_get_skill", {
       skill_id: published.skill.skill_id,
@@ -1084,9 +1089,10 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       skill: expect.objectContaining({
         skill_id: published.skill.skill_id,
         workflow_id: published.skill.workflow_id,
+        name: published.skill.name,
       }),
     }));
-    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)?.name).toBe("stale local skill should not satisfy production reads");
 
     const validate = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
       skill_id: published.skill.skill_id,

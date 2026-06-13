@@ -3535,13 +3535,11 @@ async function dojoRevokeProofCapsuleTool(args: unknown): Promise<ToolResponse> 
 
 async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_create_hosted_runtime_session");
-  if (!skill.ok) return skill.error;
   const runId = stringOpt(a["run_id"]);
   if (!runId) {
     return errorResponse("dojo_hosted_runtime_run_id_required", {
       ok: false,
-      skill_id: skill.skill.skill_id,
+      skill_id: stringOpt(a["skill_id"]) ?? null,
       blocked_by: ["runtime_run_binding_required"],
     });
   }
@@ -3549,7 +3547,7 @@ async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolRe
   if (!workspaceUrl) {
     return errorResponse("dojo_hosted_runtime_workspace_url_required", {
       ok: false,
-      skill_id: skill.skill.skill_id,
+      skill_id: stringOpt(a["skill_id"]) ?? null,
       run_id: runId,
       blocked_by: ["runtime_workspace_url_invalid"],
     });
@@ -3559,7 +3557,7 @@ async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolRe
   if (!gatewayResolution.ok) {
     return errorResponse("dojo_hosted_runtime_control_plane_store_required", {
       ok: false,
-      skill_id: skill.skill.skill_id,
+      skill_id: stringOpt(a["skill_id"]) ?? null,
       run_id: runId,
       store_kind: gatewayResolution.store_kind,
       production_capable: gatewayResolution.production_capable,
@@ -3567,6 +3565,8 @@ async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolRe
       blocked_by: gatewayResolution.blocked_by,
     });
   }
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_create_hosted_runtime_session");
+  if (!skill.ok) return skill.error;
   const session = await gatewayResolution.gateway.createSession({
     tenant: skill.tenant,
     skill_id: skill.skill.skill_id,
@@ -3604,6 +3604,8 @@ async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolRe
 
 async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_with_proof_capsule", { postgres_wired: true });
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_run_with_proof_capsule");
   if (!skill.ok) return skill.error;
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
@@ -3621,8 +3623,6 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
   const runId = stringOpt(a["run_id"])
     ?? stringOpt(a["request_id"])
     ?? `dojo_run_${hashId(`${(capsule as { capsule_id: string }).capsule_id}:${skill.skill.skill_id}:${requestedAction}:${skill.skill.skill_version}`)}`;
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_with_proof_capsule", { postgres_wired: true });
-  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const now = stringOpt(a["now"]);
   const tenant = skill.tenant;
   const durableProofRegistry = await durableProofRegistryForTenantIfRequired({
@@ -4034,21 +4034,18 @@ async function requiredAuthorizedSkillForProductionRead(
   | { ok: true; skill: DojoSkill; tenant: DojoTenantContext; control_plane_source: "compatibility_registry" | "postgres" }
   | { ok: false; error: ToolResponse }
 > {
-  const local = requiredAuthorizedSkill(args);
-  if (local.ok) {
+  const enforcement = resolveDojoEnforcementConfig();
+  const requested = obj(args);
+  const skillId = stringOpt(requested["skill_id"]);
+  const workflowId = stringOpt(requested["workflow_id"]);
+  if (!enforcement.production_enforcement || !enforcement.require_durable_store || (!skillId && !workflowId)) {
+    const local = requiredAuthorizedSkill(args);
+    if (!local.ok) return local;
     return {
       ...local,
       control_plane_source: "compatibility_registry",
     };
   }
-
-  const enforcement = resolveDojoEnforcementConfig();
-  if (!enforcement.production_enforcement || !enforcement.require_durable_store) return local;
-
-  const requested = obj(args);
-  const skillId = stringOpt(requested["skill_id"]);
-  const workflowId = stringOpt(requested["workflow_id"]);
-  if (!skillId && !workflowId) return local;
 
   const tenantContext = dojoTenantContextResultFromArgs(args);
   if (!tenantContext.ok) return tenantContext;
