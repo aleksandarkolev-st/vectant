@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, rm, stat, writeFile } from "node:fs/promises";
@@ -69,6 +70,10 @@ function structured(response) {
   assert(response, "tool returned no response");
   assert.notEqual(response.isError, true, JSON.stringify(response.structuredContent ?? response, null, 2));
   return response.structuredContent ?? {};
+}
+
+function sha256Hex(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 async function writeArtifacts(root, artifacts) {
@@ -394,6 +399,7 @@ async function main() {
     { sourceIdentityRegistry },
     { dojoSkillRegistry, validateDojoProofCapsule },
     { InMemoryDojoSkillStore },
+    { buildDojoEvidenceLedgerRecord },
     { dispatchBrowserTool },
     { dispatchDojoTool },
   ] = await Promise.all([
@@ -402,6 +408,7 @@ async function main() {
     import("../dist/browser/source_identity.js"),
     import("../dist/browser/dojo.js"),
     import("../dist/browser/dojo_store.js"),
+    import("../dist/dojo/evidence/ledger_record.js"),
     import("../dist/tools/browser.js"),
     import("../dist/tools/dojo.js"),
   ]);
@@ -467,14 +474,37 @@ async function main() {
   assert.equal(direct?.structuredContent?.error, "dojo_proof_capsule_required", "raw tool should require Dojo proof");
   log("ok", "verified direct backing tool execution is proof-gated");
 
+  const skill = dojoSkillRegistry.get(publish.skill.skill_id);
+  assert(skill, "published skill should be registered");
+  const proofEvidenceCreatedAt = new Date().toISOString();
+  const proofEvidencePayload = JSON.stringify({
+    checkride_id: checkride.checkride.checkride_id,
+    created_at: proofEvidenceCreatedAt,
+    required_evidence_claims: skill.permission_license.proof_requirements.required_evidence_claims,
+    skill_id: skill.skill_id,
+  });
+  const proofEvidenceRecord = buildDojoEvidenceLedgerRecord({
+    record_id: `evidence-${publish.skill.skill_id}-self-check-proof`,
+    tenant_id: "local-tenant",
+    workspace_id: skill.workspace_id,
+    skill_id: skill.skill_id,
+    run_id: checkride.checkride.checkride_id,
+    kind: "checkride",
+    artifact_uri: `memory://dojo/self-check/${publish.skill.skill_id}/checkride`,
+    artifact_sha256: sha256Hex(proofEvidencePayload),
+    claim_ids: skill.permission_license.proof_requirements.required_evidence_claims,
+    created_at: proofEvidenceCreatedAt,
+    created_by: "dojo-proof-self-check",
+    retention_class: "ephemeral",
+  });
   const capsuleResponse = structured(await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
     skill_id: publish.skill.skill_id,
     requested_action: "run_workflow",
     context_claims: { workspace_verified: true },
+    evidence_ledger_records: [proofEvidenceRecord],
+    require_verified_evidence: true,
   }));
   assert.equal(capsuleResponse.validation.ok, true, "issued proof capsule should validate");
-  const skill = dojoSkillRegistry.get(publish.skill.skill_id);
-  assert(skill, "published skill should be registered");
   const validation = validateDojoProofCapsule(skill, capsuleResponse.proof_capsule, "run_workflow");
   assert.equal(validation.ok, true, "proof capsule should validate through core validator");
   const kernelValidation = structured(await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {

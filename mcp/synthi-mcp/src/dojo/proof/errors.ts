@@ -62,6 +62,14 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
   if (
     reason.startsWith("missing_evidence_claim:") ||
     reason.startsWith("evidence_claim_refs_missing:") ||
+    reason.startsWith("evidence_claim_record_ref_missing:") ||
+    reason.startsWith("evidence_claim_ref_invalid:") ||
+    reason.startsWith("evidence_claim_ref_record_missing:") ||
+    reason.startsWith("evidence_claim_ledger_checkpoint_missing:") ||
+    reason === "evidence_ledger_checkpoint_without_records" ||
+    reason === "proof_capsule_ledger_checkpoint_missing" ||
+    reason === "proof_capsule_evidence_records_missing" ||
+    reason === "proof_capsule_evidence_record_ids_invalid" ||
     reason === "proof_evidence_claim_unverified"
   ) {
     return "proof_evidence_claim_unverified";

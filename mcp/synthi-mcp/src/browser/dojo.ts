@@ -1374,6 +1374,10 @@ export function validateDojoProofCapsule(
   if (capsule.ledger_checkpoint_hash && !isSha256Hex(capsule.ledger_checkpoint_hash)) {
     blockedBy.push("proof_capsule_ledger_checkpoint_invalid");
   }
+  blockedBy.push(...proofCapsuleEvidenceBindingFailures(
+    capsule,
+    license.proof_requirements.required_evidence_claims
+  ));
   const issuedAtMs = parseDojoProofTimestamp(capsule.issued_at);
   const expiresAtMs = parseDojoProofTimestamp(capsule.expires_at);
   const validationTimeMs = parseDojoProofTimestamp(now);
@@ -3231,8 +3235,18 @@ function evidenceClaimsForProofIssue(
   const records = input.evidence_ledger_records ?? [];
   const strictEvidence = input.require_verified_evidence === true || records.length > 0;
   if (!strictEvidence) {
+    const claims = input.evidence_claims ?? defaultEvidenceClaimsFor(skill);
+    const ledgerBindingFailures = evidenceClaimLedgerBindingFailures({
+      claims,
+      recordIds: [],
+      ledgerCheckpointHash: input.ledger_checkpoint_hash,
+      checkedAt,
+    });
+    if (ledgerBindingFailures.length > 0) {
+      throw new DojoProofEvidenceClaimError(ledgerBindingFailures);
+    }
     return {
-      claims: input.evidence_claims ?? defaultEvidenceClaimsFor(skill),
+      claims,
       recordIds: [],
       ledgerCheckpointHash: input.ledger_checkpoint_hash,
     };
@@ -3290,6 +3304,125 @@ function latestLedgerHeadForEvidenceRecords(records: DojoEvidenceLedgerRecord[],
     if (record && ids.has(record.record_id)) return record.ledger_head_hash;
   }
   return undefined;
+}
+
+function proofCapsuleEvidenceBindingFailures(
+  capsule: DojoProofCarryingSkillCapsule,
+  requiredEvidenceClaims: string[]
+): string[] {
+  const blockedBy: string[] = [];
+  const evidenceRecordIds = normalizedEvidenceRecordIds(capsule.evidence_record_ids);
+  const hasLedgerCheckpoint = typeof capsule.ledger_checkpoint_hash === "string" && capsule.ledger_checkpoint_hash.trim().length > 0;
+  const proofRequiresEvidence = requiredEvidenceClaims.length > 0;
+  if (evidenceRecordIds.length !== (Array.isArray(capsule.evidence_record_ids) ? capsule.evidence_record_ids.length : 0)) {
+    blockedBy.push("proof_capsule_evidence_record_ids_invalid");
+  }
+  if ((proofRequiresEvidence || evidenceRecordIds.length > 0) && !hasLedgerCheckpoint) {
+    blockedBy.push("proof_capsule_ledger_checkpoint_missing");
+  }
+  if ((proofRequiresEvidence || hasLedgerCheckpoint) && evidenceRecordIds.length === 0) {
+    blockedBy.push("proof_capsule_evidence_records_missing");
+  }
+  const knownRecordIds = new Set(evidenceRecordIds);
+  const satisfiedEvidenceClaims = new Map(
+    (Array.isArray(capsule.evidence_claims) ? capsule.evidence_claims : [])
+      .filter((claim) => claim.satisfied)
+      .map((claim) => [claim.claim, claim])
+  );
+  for (const claimId of requiredEvidenceClaims) {
+    const claim = satisfiedEvidenceClaims.get(claimId);
+    if (!claim) continue;
+    const claimRecordRefs = evidenceClaimRefs(claim)
+      .map(evidenceRecordIdFromRef)
+      .filter((recordId): recordId is string => Boolean(recordId));
+    if (claimRecordRefs.length === 0) {
+      blockedBy.push(`evidence_claim_record_ref_missing:${claimId}`);
+    }
+  }
+  for (const claim of Array.isArray(capsule.evidence_claims) ? capsule.evidence_claims : []) {
+    for (const ref of evidenceClaimRefs(claim)) {
+      const recordId = evidenceRecordIdFromRef(ref);
+      if (recordId === undefined) continue;
+      if (!recordId) {
+        blockedBy.push(`evidence_claim_ref_invalid:${claim.claim}`);
+        continue;
+      }
+      if (!knownRecordIds.has(recordId)) {
+        blockedBy.push(`evidence_claim_ref_record_missing:${claim.claim}`);
+      }
+      if (!hasLedgerCheckpoint) {
+        blockedBy.push(`evidence_claim_ledger_checkpoint_missing:${claim.claim}`);
+      }
+    }
+  }
+  return [...new Set(blockedBy)];
+}
+
+function evidenceClaimLedgerBindingFailures(input: {
+  claims: DojoEvidenceClaim[];
+  recordIds: string[];
+  ledgerCheckpointHash?: string;
+  checkedAt: string;
+}): DojoEvidenceClaimResult[] {
+  const knownRecordIds = new Set(input.recordIds);
+  const hasLedgerCheckpoint = typeof input.ledgerCheckpointHash === "string" && input.ledgerCheckpointHash.trim().length > 0;
+  const failures: DojoEvidenceClaimResult[] = [];
+  if (hasLedgerCheckpoint && input.recordIds.length === 0) {
+    failures.push({
+      claim_id: "ledger_checkpoint_requires_evidence",
+      ok: false,
+      status: "failed",
+      evidence_record_ids: [],
+      checked_at: input.checkedAt,
+      blocked_by: ["evidence_ledger_checkpoint_without_records"],
+    });
+  }
+  for (const claim of input.claims) {
+    const blockedBy: string[] = [];
+    const refRecordIds: string[] = [];
+    for (const ref of evidenceClaimRefs(claim)) {
+      const recordId = evidenceRecordIdFromRef(ref);
+      if (recordId === undefined) continue;
+      if (!recordId) {
+        blockedBy.push(`evidence_claim_ref_invalid:${claim.claim}`);
+        continue;
+      }
+      refRecordIds.push(recordId);
+      if (!knownRecordIds.has(recordId)) {
+        blockedBy.push(`evidence_claim_ref_record_missing:${claim.claim}`);
+      }
+      if (!hasLedgerCheckpoint) {
+        blockedBy.push(`evidence_claim_ledger_checkpoint_missing:${claim.claim}`);
+      }
+    }
+    if (blockedBy.length > 0) {
+      failures.push({
+        claim_id: claim.claim,
+        ok: false,
+        status: "failed",
+        evidence_record_ids: refRecordIds,
+        checked_at: input.checkedAt,
+        blocked_by: [...new Set(blockedBy)],
+      });
+    }
+  }
+  return failures;
+}
+
+function normalizedEvidenceRecordIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && item.trim().length > 0))];
+}
+
+function evidenceClaimRefs(claim: DojoEvidenceClaim): string[] {
+  return Array.isArray(claim.evidence_refs)
+    ? claim.evidence_refs.filter((ref): ref is string => typeof ref === "string" && ref.trim().length > 0)
+    : [];
+}
+
+function evidenceRecordIdFromRef(ref: string): string | undefined {
+  if (!ref.startsWith("evidence:")) return undefined;
+  return ref.slice("evidence:".length).trim();
 }
 
 function evidenceRecordIntegrityFailures(records: DojoEvidenceLedgerRecord[], checkedAt: string): DojoEvidenceClaimResult[] {

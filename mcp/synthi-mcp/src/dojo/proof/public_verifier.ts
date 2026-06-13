@@ -77,7 +77,18 @@ export function verifyDojoProofCapsulePublic(input: {
   if (capsule.ledger_checkpoint_hash && !isSha256Hex(capsule.ledger_checkpoint_hash)) {
     blockedBy.push("proof_capsule_ledger_checkpoint_invalid");
   }
+  const evidenceRecordIds = parsePublicEvidenceRecordIds(capsule.evidence_record_ids);
+  const hasLedgerCheckpoint = typeof capsule.ledger_checkpoint_hash === "string" && capsule.ledger_checkpoint_hash.trim().length > 0;
+  if (capsule.evidence_record_ids !== undefined && evidenceRecordIds.length !== capsule.evidence_record_ids.length) {
+    blockedBy.push("proof_capsule_evidence_record_ids_invalid");
+  }
   const requiredEvidenceClaims = input.expected?.required_evidence_claims ?? [];
+  if ((requiredEvidenceClaims.length > 0 || evidenceRecordIds.length > 0) && !hasLedgerCheckpoint) {
+    blockedBy.push("proof_capsule_ledger_checkpoint_missing");
+  }
+  if ((requiredEvidenceClaims.length > 0 || hasLedgerCheckpoint) && evidenceRecordIds.length === 0) {
+    blockedBy.push("proof_capsule_evidence_records_missing");
+  }
   if (requiredEvidenceClaims.length > 0) {
     const evidenceClaims = parsePublicEvidenceClaims(capsule.evidence_claims);
     if (!evidenceClaims) {
@@ -94,6 +105,8 @@ export function verifyDojoProofCapsulePublic(input: {
           blockedBy.push(`proof_capsule_evidence_claim_missing:${claim}`);
         } else if (!hasEvidenceRefs(evidenceClaim)) {
           blockedBy.push(`proof_capsule_evidence_claim_refs_missing:${claim}`);
+        } else {
+          blockedBy.push(...publicEvidenceClaimLedgerBindingFailures(evidenceClaim, evidenceRecordIds, hasLedgerCheckpoint));
         }
       }
     }
@@ -149,6 +162,39 @@ function parseTimestamp(value: string): number | undefined {
 
 function isSha256Hex(value: string): boolean {
   return /^[a-f0-9]{64}$/i.test(value);
+}
+
+function parsePublicEvidenceRecordIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && item.trim().length > 0))];
+}
+
+function publicEvidenceClaimLedgerBindingFailures(
+  claim: DojoPublicProofEvidenceClaim,
+  evidenceRecordIds: string[],
+  hasLedgerCheckpoint: boolean
+): string[] {
+  const knownRecordIds = new Set(evidenceRecordIds);
+  const blockedBy: string[] = [];
+  const ledgerRefs = (claim.evidence_refs ?? [])
+    .filter((ref) => typeof ref === "string" && ref.startsWith("evidence:"));
+  if (ledgerRefs.length === 0) {
+    blockedBy.push(`proof_capsule_evidence_claim_record_ref_missing:${claim.claim}`);
+  }
+  for (const ref of ledgerRefs) {
+    const recordId = ref.slice("evidence:".length).trim();
+    if (!recordId) {
+      blockedBy.push(`proof_capsule_evidence_claim_ref_invalid:${claim.claim}`);
+      continue;
+    }
+    if (!knownRecordIds.has(recordId)) {
+      blockedBy.push(`proof_capsule_evidence_claim_ref_record_missing:${claim.claim}`);
+    }
+    if (!hasLedgerCheckpoint) {
+      blockedBy.push(`proof_capsule_evidence_claim_ledger_checkpoint_missing:${claim.claim}`);
+    }
+  }
+  return blockedBy;
 }
 
 function parsePublicEvidenceClaims(value: unknown): DojoPublicProofEvidenceClaim[] | undefined {

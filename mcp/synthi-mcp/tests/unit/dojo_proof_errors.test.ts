@@ -13,6 +13,7 @@ import { evaluateDojoLicenseKernel } from "../../src/browser/dojo_license_kernel
 import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
+import { verifiedProofEvidenceInput } from "./dojo_test_fixtures.js";
 
 beforeEach(() => {
   dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
@@ -49,6 +50,7 @@ describe("Dojo proof error taxonomy", () => {
     });
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -75,6 +77,7 @@ describe("Dojo proof error taxonomy", () => {
     dojoSkillRegistry.publish(skill);
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -105,6 +108,7 @@ describe("Dojo proof error taxonomy", () => {
     dojoSkillRegistry.publish(malformedLicenseSkill);
     const capsule = issueDojoProofCapsule(malformedLicenseSkill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(malformedLicenseSkill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -135,6 +139,7 @@ describe("Dojo proof error taxonomy", () => {
     dojoSkillRegistry.publish(skill);
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -200,6 +205,7 @@ describe("Dojo proof error taxonomy", () => {
     dojoSkillRegistry.publish(gatedSkill);
     const capsule = issueDojoProofCapsule(gatedSkill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(gatedSkill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });

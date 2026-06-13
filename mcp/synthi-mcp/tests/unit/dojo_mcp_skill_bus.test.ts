@@ -10,6 +10,7 @@ import {
   type DojoSkillBusProofValidation,
 } from "../../src/dojo/mcp/skill_bus.js";
 import type { DojoTenantContext } from "../../src/dojo/mcp/execution_policy_gate.js";
+import { verifiedProofEvidenceInput } from "./dojo_test_fixtures.js";
 
 describe("Dojo MCP skill bus", () => {
   it("lists only tenant-visible licensed competencies while legacy context preserves local compatibility", async () => {
@@ -88,11 +89,7 @@ describe("Dojo MCP skill bus", () => {
     const skill = skillFixture("workspace-a", "Open details");
     const proof = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
-      evidence_claims: [
-        { claim: "checkride_passed", satisfied: true },
-        { claim: "success_assertions_defined", satisfied: true },
-        { claim: "guardrails_active", satisfied: true },
-      ],
+      ...verifiedProofEvidenceInput(skill),
       substrate_claim: "mcp",
       now: "2026-06-11T00:00:00.000Z",
     });
@@ -185,11 +182,7 @@ describe("Dojo MCP skill bus", () => {
     const skillB = reidentifiedSkill(skillFixture("workspace-a", "Save invoice"), "save_invoice");
     const proofForA = issueDojoProofCapsule(skillA, "run_workflow", {
       context_claims: { workspace_verified: true },
-      evidence_claims: [
-        { claim: "checkride_passed", satisfied: true },
-        { claim: "success_assertions_defined", satisfied: true },
-        { claim: "guardrails_active", satisfied: true },
-      ],
+      ...verifiedProofEvidenceInput(skillA),
       substrate_claim: "mcp",
       now: "2026-06-11T00:00:00.000Z",
     });

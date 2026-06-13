@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -17,6 +18,7 @@ import { InMemoryPrivateWorkflowToolStore, privateWorkflowToolRegistry } from ".
 import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
+import type { DojoSkill } from "../../src/browser/dojo.js";
 import { createSynthiServer } from "../../src/server.js";
 import { validateDojoMcpSkillManifest, type DojoMcpSkillManifestV1 } from "../../src/dojo/mcp/manifest_signing.js";
 import { dispatchBrowserTool } from "../../src/tools/browser.js";
@@ -198,11 +200,15 @@ describe("Agent Dojo core", () => {
     const skill = buildDojoSkill(workflow.contract, { workspace_id: "workspace-a", now: "2026-06-11T00:00:00.000Z" });
     const missingWorkspaceClaim = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: {},
+      evidence_ledger_records: evidenceLedgerRecordsForProof(skill),
+      require_verified_evidence: true,
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
     const valid = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(skill),
+      require_verified_evidence: true,
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -1516,6 +1522,8 @@ describe("Agent Dojo MCP tools", () => {
       skill_id: published.skill.skill_id,
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!),
+      require_verified_evidence: true,
     });
     expect(capsuleResponse?.isError).toBeUndefined();
     const capsule = (capsuleResponse?.structuredContent as { proof_capsule: unknown }).proof_capsule;
@@ -1570,6 +1578,8 @@ describe("Agent Dojo MCP tools", () => {
       skill_id: published.skill.skill_id,
       requested_action: "run_prefix_validation",
       context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, { record_id: "evidence-prefix-proof" }),
+      require_verified_evidence: true,
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -1661,6 +1671,8 @@ describe("Agent Dojo MCP tools", () => {
       skill_id: published.skill.skill_id,
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, { record_id: "evidence-second-proof" }),
+      require_verified_evidence: true,
     });
     const secondCapsule = (secondCapsuleResponse?.structuredContent as { proof_capsule: { capsule_id: string } }).proof_capsule;
     const revokedProofMissingReason = await dispatchDojoTool("synthi_dojo_revoke_proof_capsule", {
@@ -2569,10 +2581,17 @@ describe("Agent Dojo MCP tools", () => {
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
     expect(publish?.isError).toBeUndefined();
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const publishedSkill = dojoSkillRegistry.get(skillId);
+    expect(publishedSkill).toBeTruthy();
     const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, {
+        record_id: "evidence-production-proof-context",
+        tenant_id: "tenant-a",
+      }),
+      require_verified_evidence: true,
       ...productionTenantContextArgs({
         actor_id: "production-agent-a",
         request_id: "req-production-issue",
@@ -2684,10 +2703,17 @@ describe("Agent Dojo MCP tools", () => {
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
     expect(publish?.isError).toBeUndefined();
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const publishedSkill = dojoSkillRegistry.get(skillId);
+    expect(publishedSkill).toBeTruthy();
     const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
       requested_action: "run_prefix_validation",
       context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, {
+        record_id: "evidence-hosted-runtime-proof",
+        tenant_id: "tenant-a",
+      }),
+      require_verified_evidence: true,
       ...productionTenantContextArgs({
         actor_id: "hosted-runtime-agent-a",
         request_id: "req-hosted-runtime-proof-issue",
@@ -2845,6 +2871,8 @@ describe("Agent Dojo MCP tools", () => {
       skill_id: skillId,
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(skill!, { record_id: "evidence-approval-proof" }),
+      require_verified_evidence: true,
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -3008,6 +3036,41 @@ function productionTenantContextArgs(overrides: Record<string, unknown> = {}): R
     correlation_id: "corr-production-a",
     ...overrides,
   };
+}
+
+function evidenceLedgerRecordsForProof(
+  skill: DojoSkill,
+  options: {
+    record_id?: string;
+    tenant_id?: string;
+    created_at?: string;
+  } = {}
+): ReturnType<typeof buildDojoEvidenceLedgerRecord>[] {
+  const recordId = options.record_id ?? `evidence-${skill.skill_id}`;
+  const createdAt = options.created_at ?? "2026-06-11T00:00:00.000Z";
+  const claimIds = skill.permission_license.proof_requirements.required_evidence_claims;
+  const artifactPayload = JSON.stringify({
+    claim_ids: claimIds,
+    created_at: createdAt,
+    record_id: recordId,
+    skill_id: skill.skill_id,
+  });
+  return [
+    buildDojoEvidenceLedgerRecord({
+      record_id: recordId,
+      tenant_id: options.tenant_id ?? "local-tenant",
+      workspace_id: skill.workspace_id,
+      skill_id: skill.skill_id,
+      run_id: `checkride-${skill.skill_id}`,
+      kind: "checkride",
+      artifact_uri: `memory://dojo/tests/${skill.skill_id}/checkride`,
+      artifact_sha256: createHash("sha256").update(artifactPayload, "utf8").digest("hex"),
+      claim_ids: claimIds,
+      created_at: createdAt,
+      created_by: "dojo-tool-test",
+      retention_class: "ephemeral",
+    }),
+  ];
 }
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {

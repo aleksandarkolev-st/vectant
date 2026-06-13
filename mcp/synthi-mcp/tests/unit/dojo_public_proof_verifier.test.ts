@@ -19,13 +19,16 @@ import {
   verifyDojoProofCapsulePublic,
   type DojoPublicProofCapsule,
 } from "../../src/dojo/proof/public_verifier.js";
+import { dojoEvidenceRecordForProof } from "./dojo_test_fixtures.js";
 
 describe("Dojo public proof capsule verifier", () => {
-  it("verifies a real issued development-compatible capsule with an external verifier", () => {
+  it("verifies a real issued evidence-backed capsule with an external verifier", () => {
     const skill = skillFixture();
+    const evidenceRecord = dojoEvidenceRecordForProof(skill, { record_id: "evidence-public-proof-a" });
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
-      ledger_checkpoint_hash: "a".repeat(64),
+      evidence_ledger_records: [evidenceRecord],
+      require_verified_evidence: true,
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -44,7 +47,8 @@ describe("Dojo public proof capsule verifier", () => {
         skill_version: skill.skill_version,
         license_version: skill.permission_license.license_version,
         requested_action: "run_workflow",
-        ledger_checkpoint_hash: "a".repeat(64),
+        ledger_checkpoint_hash: evidenceRecord.ledger_head_hash,
+        required_evidence_claims: skill.permission_license.proof_requirements.required_evidence_claims,
       },
       require_ledger_checkpoint: true,
       now: "2026-06-11T00:01:00.000Z",

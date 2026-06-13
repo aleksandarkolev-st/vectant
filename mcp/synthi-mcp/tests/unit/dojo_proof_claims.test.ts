@@ -181,7 +181,7 @@ describe("Dojo proof issuance evidence claims", () => {
     }));
   });
 
-  it("keeps development-compatible proof issuance available without strict evidence", () => {
+  it("keeps development-compatible proof construction available but blocks validation without ledger evidence", () => {
     const skill = skillFixture();
 
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
@@ -194,8 +194,46 @@ describe("Dojo proof issuance evidence claims", () => {
     expect(capsule.ledger_checkpoint_hash).toBeUndefined();
     expect(capsule.evidence_claims.length).toBeGreaterThan(0);
     expect(validateDojoProofCapsule(skill, capsule, "run_workflow", "2026-06-11T00:01:00.000Z")).toEqual(
-      expect.objectContaining({ ok: true, status: "allowed" })
+      expect.objectContaining({
+        ok: false,
+        status: "blocked",
+        blocked_by: expect.arrayContaining([
+          "proof_capsule_ledger_checkpoint_missing",
+          "proof_capsule_evidence_records_missing",
+          "evidence_claim_record_ref_missing:checkride_passed",
+        ]),
+        error_codes: ["proof_evidence_claim_unverified"],
+      })
     );
+  });
+
+  it("blocks proof issuance when caller-supplied evidence refs are not backed by ledger records", () => {
+    const skill = skillFixture();
+    const requiredClaims = skill.permission_license.proof_requirements.required_evidence_claims;
+
+    const error = captureProofIssueError(() => issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      evidence_claims: requiredClaims.map((claim) => ({
+        claim,
+        satisfied: true,
+        evidence_refs: ["evidence:caller-supplied-only"],
+      })),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    }));
+
+    expect(error).toEqual(expect.objectContaining({
+      code: "dojo_proof_evidence_claim_unverified",
+      failed_results: expect.arrayContaining([
+        expect.objectContaining({
+          claim_id: "checkride_passed",
+          blocked_by: expect.arrayContaining([
+            "evidence_claim_ref_record_missing:checkride_passed",
+            "evidence_claim_ledger_checkpoint_missing:checkride_passed",
+          ]),
+        }),
+      ]),
+    }));
   });
 
   it("blocks signed proof capsules whose satisfied evidence claims have no evidence references", () => {

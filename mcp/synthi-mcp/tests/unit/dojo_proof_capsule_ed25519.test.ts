@@ -21,6 +21,7 @@ import {
   encodeDojoProofSignatureEnvelope,
   generateEd25519DojoProofKeyPair,
 } from "../../src/dojo/proof/signing.js";
+import { verifiedProofEvidenceInput } from "./dojo_test_fixtures.js";
 
 const ENV_KEYS = [
   DOJO_PROOF_SIGNING_PROVIDER_ENV,
@@ -55,6 +56,7 @@ describe("Dojo Ed25519 proof capsules", () => {
 
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -71,6 +73,7 @@ describe("Dojo Ed25519 proof capsules", () => {
     const skill = skillFixture();
     const base = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -103,6 +106,7 @@ describe("Dojo Ed25519 proof capsules", () => {
     const skill = skillFixture();
     const base = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -138,6 +142,7 @@ describe("Dojo Ed25519 proof capsules", () => {
 
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -163,6 +168,7 @@ describe("Dojo Ed25519 proof capsules", () => {
     const skill = skillFixture();
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -182,6 +188,7 @@ describe("Dojo Ed25519 proof capsules", () => {
 
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
