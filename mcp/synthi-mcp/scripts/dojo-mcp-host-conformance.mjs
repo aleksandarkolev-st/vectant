@@ -82,6 +82,9 @@ async function main() {
       requested_action: config.requestedAction,
       execute_production: config.executeProduction,
       raw_backing_tool_required: !config.skipRawBackingToolCheck,
+      evidence_record_count: config.evidenceRecordIds.length,
+      ledger_checkpoint_hash_configured: Boolean(config.ledgerCheckpointHash),
+      require_verified_evidence: config.requireVerifiedEvidence,
     },
     steps: [],
   };
@@ -134,6 +137,10 @@ async function main() {
       requested_action: config.requestedAction,
       context_claims: config.contextClaims,
       ...(config.evidenceClaims ? { evidence_claims: config.evidenceClaims } : {}),
+      ...(config.evidenceRecordIds.length ? { evidence_record_ids: config.evidenceRecordIds } : {}),
+      ...(config.ledgerCheckpointHash ? { ledger_checkpoint_hash: config.ledgerCheckpointHash } : {}),
+      ...(config.evidenceMaxAgeMs !== undefined ? { evidence_max_age_ms: config.evidenceMaxAgeMs } : {}),
+      ...(config.requireVerifiedEvidence !== undefined ? { require_verified_evidence: config.requireVerifiedEvidence } : {}),
       substrate_claim: config.substrateClaim,
     });
     assertToolOk(issueCall, "issue proof capsule");
@@ -281,6 +288,10 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
     substrateClaim: args["substrate-claim"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_SUBSTRATE_CLAIM || "mcp",
     contextClaims: parseJsonObjectArgument(args["context-claims-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_CONTEXT_CLAIMS_JSON || "{\"workspace_verified\":true}", "context_claims"),
     evidenceClaims: parseOptionalJsonArray(args["evidence-claims-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_EVIDENCE_CLAIMS_JSON, "evidence_claims"),
+    evidenceRecordIds: parseStringList(args["evidence-record-ids"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EVIDENCE_RECORD_IDS),
+    ledgerCheckpointHash: normalizeOptionalText(args["ledger-checkpoint-hash"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_LEDGER_CHECKPOINT_HASH),
+    evidenceMaxAgeMs: parseOptionalNonNegativeInteger(args["evidence-max-age-ms"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EVIDENCE_MAX_AGE_MS, "evidence_max_age_ms"),
+    requireVerifiedEvidence: parseOptionalBooleanFlag(args["require-verified-evidence"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUIRE_VERIFIED_EVIDENCE),
     toolArgs: parseJsonObjectArgument(args["tool-args-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_TOOL_ARGS_JSON || "{}", "tool_args"),
     rawToolArgs: parseJsonObjectArgument(args["raw-tool-args-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_RAW_TOOL_ARGS_JSON || "{}", "raw_tool_args"),
     executeProduction: parseBooleanFlag(args["execute-production"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EXECUTE_PRODUCTION),
@@ -302,6 +313,16 @@ function parseStringList(value) {
   const normalized = normalizeOptionalText(value);
   if (!normalized) return [];
   return normalized.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function parseOptionalBooleanFlag(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return undefined;
+  return parseBooleanFlag(value);
+}
+
+function parseOptionalNonNegativeInteger(value, label) {
+  if (value === undefined || value === null || String(value).trim() === "") return undefined;
+  return parseNonNegativeInteger(value, label);
 }
 
 export function resolveMcpCommandSpec({

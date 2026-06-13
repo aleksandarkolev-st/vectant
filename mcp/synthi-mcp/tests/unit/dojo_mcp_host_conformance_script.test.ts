@@ -90,6 +90,10 @@ describe("Dojo MCP host conformance harness", () => {
         "tool-args-json": "{\"workspace_id\":\"acme\"}",
         "context-claims-json": "{\"workspace_verified\":true}",
         "evidence-claims-json": "[{\"claim\":\"checkride_passed\",\"satisfied\":true}]",
+        "evidence-record-ids": "evidence-a,evidence-b",
+        "ledger-checkpoint-hash": "a".repeat(64),
+        "evidence-max-age-ms": "60000",
+        "require-verified-evidence": "1",
         "revocation-evidence-refs": "evidence-a,evidence-b",
       },
       env: {
@@ -106,6 +110,10 @@ describe("Dojo MCP host conformance harness", () => {
     expect(config.contextClaims).toEqual({ workspace_verified: true });
     expect(config.toolArgs).toEqual({ workspace_id: "acme" });
     expect(config.evidenceClaims).toEqual([{ claim: "checkride_passed", satisfied: true }]);
+    expect(config.evidenceRecordIds).toEqual(["evidence-a", "evidence-b"]);
+    expect(config.ledgerCheckpointHash).toBe("a".repeat(64));
+    expect(config.evidenceMaxAgeMs).toBe(60000);
+    expect(config.requireVerifiedEvidence).toBe(true);
     expect(config.revocationActorId).toBe("host-conformance-operator");
     expect(config.revocationActorType).toBe("service");
     expect(config.revocationEvidenceRefs).toEqual(["evidence-a", "evidence-b"]);
