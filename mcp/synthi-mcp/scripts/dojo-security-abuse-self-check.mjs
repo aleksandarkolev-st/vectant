@@ -112,7 +112,8 @@ export async function runDojoSecurityAbuseSelfCheck({
   await writeFile(path.join(outputDir, "dojo-security-abuse.json-reporter.stdout.log"), jsonStdout);
   await writeFile(path.join(outputDir, "dojo-security-abuse.json-reporter.stderr.log"), jsonStderr);
   const jsonReportError = existsSync(jsonReportPath) ? undefined : `json_report_missing:${jsonReportPath}`;
-  const jsonReport = jsonReportError ? null : await readVitestJsonReport(jsonReportPath);
+  const jsonReportText = jsonReportError ? "" : await readFile(jsonReportPath, "utf8");
+  const jsonReport = jsonReportError ? null : JSON.parse(jsonReportText);
   const durationMs = performance.now() - startedAt;
   const evidence = buildDojoSecurityAbuseEvidenceManifest({
     now,
@@ -127,6 +128,7 @@ export async function runDojoSecurityAbuseSelfCheck({
     stderrPath,
     jsonReport,
     jsonReportPath,
+    jsonReportText,
     timeoutMs,
     error: result.error?.message ?? jsonResult.error?.message ?? jsonReportError,
   });
@@ -159,6 +161,7 @@ export function buildDojoSecurityAbuseEvidenceManifest({
   stderrPath,
   jsonReport,
   jsonReportPath,
+  jsonReportText,
   timeoutMs = 120000,
   error,
 }) {
@@ -192,6 +195,8 @@ export function buildDojoSecurityAbuseEvidenceManifest({
     basic_run_duration_ms: typeof basicRunDurationMs === "number" ? Number(basicRunDurationMs.toFixed(3)) : null,
     budget_evaluation: budgetEvaluation,
     json_report_path: jsonReportPath ?? null,
+    json_report_sha256: sha256(jsonReportText ?? (jsonReport ? JSON.stringify(jsonReport) : "")),
+    json_report_bytes: Buffer.byteLength(jsonReportText ?? (jsonReport ? JSON.stringify(jsonReport) : "")),
     stdout_path: stdoutPath,
     stderr_path: stderrPath,
     stdout_sha256: sha256(stdout),

@@ -974,6 +974,13 @@ async function validateVisualScreenshotArtifacts(report) {
 async function validateDigestReferencedLogArtifacts(evidence, evidencePath) {
   const errors = [];
   errors.push(...await validateDigestReferencedFile({
+    label: "json_report",
+    filePath: evidence?.json_report_path,
+    expectedSha256: evidence?.json_report_sha256,
+    expectedBytes: evidence?.json_report_bytes,
+    evidencePath,
+  }));
+  errors.push(...await validateDigestReferencedFile({
     label: "stdout",
     filePath: evidence?.stdout_path,
     expectedSha256: evidence?.stdout_sha256,
@@ -1760,10 +1767,13 @@ async function writeSecurityEvidenceForSelfCheck({
 }) {
   const stdout = "security abuse focused suite passed\n";
   const stderr = "";
+  const jsonReport = JSON.stringify({ success: true, numTotalTests: 8, numPassedTests: 8, numFailedTests: 0, testResults: [] }, null, 2);
   const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
   const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
   await writeFile(stdoutPath, stdout, "utf8");
   await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
   const evidence = {
     schema_version: "synthi.dojo.securityAbuseEvidence.v1",
     generated_at: new Date().toISOString(),
@@ -1786,6 +1796,9 @@ async function writeSecurityEvidenceForSelfCheck({
       passed_tests: 8,
       failed_tests: 0,
     },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
     stdout_path: stdoutPath,
     stderr_path: stderrPath,
     stdout_sha256: sha256(stdout),
@@ -1809,10 +1822,13 @@ async function writeChaosEvidenceForSelfCheck({
 }) {
   const stdout = "chaos performance preflight passed\n";
   const stderr = "";
+  const jsonReport = JSON.stringify({ success: true, numTotalTests: 9, numPassedTests: 9, numFailedTests: 0, testResults: [] }, null, 2);
   const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
   const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
   await writeFile(stdoutPath, stdout, "utf8");
   await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
   const evidence = {
     schema_version: "synthi.dojo.chaosPerformanceEvidence.v1",
     generated_at: new Date().toISOString(),
@@ -1844,6 +1860,9 @@ async function writeChaosEvidenceForSelfCheck({
       failed_test_count: 0,
       passed_test_count: 9,
     },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
     stdout_path: stdoutPath,
     stderr_path: stderrPath,
     stdout_sha256: sha256(stdout),

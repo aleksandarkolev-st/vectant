@@ -54,6 +54,8 @@ describe("Dojo security abuse self-check script", () => {
     expect(evidence.test_summary.total_tests).toBeGreaterThanOrEqual(DOJO_SECURITY_ABUSE_CLASSES.length);
     expect(evidence.stdout_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(evidence.stderr_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(evidence.json_report_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(evidence.json_report_bytes).toBeGreaterThan(0);
   });
 
   it("fails closed when an abuse class has no executable test evidence", () => {

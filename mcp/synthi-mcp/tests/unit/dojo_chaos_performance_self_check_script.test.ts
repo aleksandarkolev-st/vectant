@@ -163,6 +163,8 @@ describe("Dojo chaos performance self-check script", () => {
     }));
     expect(evidence.stdout_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(evidence.stderr_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(evidence.json_report_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(evidence.json_report_bytes).toBeGreaterThan(0);
   });
 
   it("summarizes Vitest JSON and reports scenario coverage gaps honestly", () => {

@@ -467,6 +467,25 @@ describe("Dojo release gate artifact verifier", () => {
       expect.stringMatching(/^stdout_sha256_mismatch:/),
       expect.stringMatching(/^stdout_bytes_mismatch:/),
     ]));
+
+    const tamperedJson = path.join(dir, "tampered-security.vitest.json");
+    await writeFile(tamperedJson, JSON.stringify({ success: false, numFailedTests: 1 }), "utf8");
+    const expectedSecurityJson = securityJsonReportFixtureText();
+    const tamperedJsonPath = await writeSecurityEvidenceFixture({
+      dir,
+      basename: "tampered-security-json",
+      evidence: securityEvidenceFixture({
+        json_report_path: tamperedJson,
+        json_report_sha256: sha256(expectedSecurityJson),
+        json_report_bytes: Buffer.byteLength(expectedSecurityJson),
+      }),
+      writeLogs: false,
+    });
+    const tamperedJsonResult = await verifyDojoSecurityAbuseEvidenceArtifact({ evidencePath: tamperedJsonPath });
+    expect(tamperedJsonResult.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^json_report_sha256_mismatch:/),
+      expect.stringMatching(/^json_report_bytes_mismatch:/),
+    ]));
   });
 
   it("verifies chaos performance evidence coverage, metrics, and referenced log digests", async () => {
@@ -517,6 +536,24 @@ describe("Dojo release gate artifact verifier", () => {
       "chaos_performance_not_ok",
       "chaos_performance_scenario_coverage_incomplete",
       "chaos_performance_missing_scenarios:api_timeout",
+    ]));
+
+    const tamperedJson = path.join(dir, "tampered-chaos.vitest.json");
+    await writeFile(tamperedJson, JSON.stringify({ success: false, numFailedTests: 1 }), "utf8");
+    const expectedChaosJson = chaosJsonReportFixtureText();
+    const tamperedJsonPath = await writeChaosEvidenceFixture({
+      dir,
+      basename: "tampered-chaos-json",
+      evidence: chaosEvidenceFixture({
+        json_report_path: tamperedJson,
+        json_report_sha256: sha256(expectedChaosJson),
+        json_report_bytes: Buffer.byteLength(expectedChaosJson),
+      }),
+    });
+    const tamperedJsonResult = await verifyDojoChaosPerformanceEvidenceArtifact({ evidencePath: tamperedJsonPath });
+    expect(tamperedJsonResult.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^json_report_sha256_mismatch:/),
+      expect.stringMatching(/^json_report_bytes_mismatch:/),
     ]));
   });
 
@@ -1006,19 +1043,28 @@ async function writeSecurityEvidenceFixture({
 }) {
   const stdout = "security suite passed\n";
   const stderr = "";
+  const jsonReport = securityJsonReportFixtureText();
   const stdoutPath = path.join(dir, `${basename}.stdout.log`);
   const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
   if (writeLogs) {
     await writeFile(stdoutPath, stdout, "utf8");
     await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
   } else {
     await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
   }
-  const body = evidence ?? securityEvidenceFixture({ stdout_path: stdoutPath, stderr_path: stderrPath });
+  const body = evidence ?? securityEvidenceFixture({ stdout_path: stdoutPath, stderr_path: stderrPath, json_report_path: jsonReportPath });
   const withLogDefaults = {
     ...body,
     stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
     stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
+    json_report_path: body.json_report_path && body.json_report_path !== "vitest.json" ? body.json_report_path : jsonReportPath,
+    json_report_sha256: body.json_report_sha256 && body.json_report_sha256 !== "json-report-sha256" ? body.json_report_sha256 : sha256(jsonReport),
+    json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
+      ? body.json_report_bytes
+      : Buffer.byteLength(jsonReport),
   };
   const evidencePath = path.join(dir, `${basename}.evidence.json`);
   await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
@@ -1043,12 +1089,25 @@ function securityEvidenceFixture(overrides = {}) {
     },
     stdout_path: "stdout.log",
     stderr_path: "stderr.log",
+    json_report_path: "vitest.json",
+    json_report_sha256: "json-report-sha256",
+    json_report_bytes: undefined,
     stdout_sha256: sha256(stdout),
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
     ...overrides,
   };
+}
+
+function securityJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: 8,
+    numPassedTests: 8,
+    numFailedTests: 0,
+    testResults: [],
+  }, null, 2);
 }
 
 async function writeChaosEvidenceFixture({
@@ -1058,15 +1117,23 @@ async function writeChaosEvidenceFixture({
 }) {
   const stdout = "chaos suite passed\n";
   const stderr = "";
+  const jsonReport = chaosJsonReportFixtureText();
   const stdoutPath = path.join(dir, `${basename}.stdout.log`);
   const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
   await writeFile(stdoutPath, stdout, "utf8");
   await writeFile(stderrPath, stderr, "utf8");
-  const body = evidence ?? chaosEvidenceFixture({ stdout_path: stdoutPath, stderr_path: stderrPath });
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const body = evidence ?? chaosEvidenceFixture({ stdout_path: stdoutPath, stderr_path: stderrPath, json_report_path: jsonReportPath });
   const withLogDefaults = {
     ...body,
     stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
     stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
+    json_report_path: body.json_report_path && body.json_report_path !== "vitest.json" ? body.json_report_path : jsonReportPath,
+    json_report_sha256: body.json_report_sha256 && body.json_report_sha256 !== "json-report-sha256" ? body.json_report_sha256 : sha256(jsonReport),
+    json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
+      ? body.json_report_bytes
+      : Buffer.byteLength(jsonReport),
   };
   const evidencePath = path.join(dir, `${basename}.evidence.json`);
   await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
@@ -1098,12 +1165,25 @@ function chaosEvidenceFixture(overrides = {}) {
     },
     stdout_path: "stdout.log",
     stderr_path: "stderr.log",
+    json_report_path: "vitest.json",
+    json_report_sha256: "json-report-sha256",
+    json_report_bytes: undefined,
     stdout_sha256: sha256(stdout),
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
     ...overrides,
   };
+}
+
+function chaosJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: 9,
+    numPassedTests: 9,
+    numFailedTests: 0,
+    testResults: [],
+  }, null, 2);
 }
 
 async function writeSoakFixture({
