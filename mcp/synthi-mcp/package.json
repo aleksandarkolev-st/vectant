@@ -38,6 +38,130 @@
       "types": "./dist/dojo/mcp/skill_bus.d.ts",
       "import": "./dist/dojo/mcp/skill_bus.js"
     },
+    "./dojo/mcp/execution-policy-gate": {
+      "types": "./dist/dojo/mcp/execution_policy_gate.d.ts",
+      "import": "./dist/dojo/mcp/execution_policy_gate.js"
+    },
+    "./dojo/mcp/manifest-signing": {
+      "types": "./dist/dojo/mcp/manifest_signing.d.ts",
+      "import": "./dist/dojo/mcp/manifest_signing.js"
+    },
+    "./dojo/evidence/types": {
+      "types": "./dist/dojo/evidence/types.d.ts",
+      "import": "./dist/dojo/evidence/types.js"
+    },
+    "./dojo/evidence/ledger-store": {
+      "types": "./dist/dojo/evidence/ledger_store.d.ts",
+      "import": "./dist/dojo/evidence/ledger_store.js"
+    },
+    "./dojo/evidence/claims": {
+      "types": "./dist/dojo/evidence/claims.d.ts",
+      "import": "./dist/dojo/evidence/claims.js"
+    },
+    "./dojo/evidence/redaction": {
+      "types": "./dist/dojo/evidence/redaction.d.ts",
+      "import": "./dist/dojo/evidence/redaction.js"
+    },
+    "./dojo/evidence/export": {
+      "types": "./dist/dojo/evidence/export.d.ts",
+      "import": "./dist/dojo/evidence/export.js"
+    },
+    "./dojo/graph/types": {
+      "types": "./dist/dojo/graph/types.d.ts",
+      "import": "./dist/dojo/graph/types.js"
+    },
+    "./dojo/graph/compiler": {
+      "types": "./dist/dojo/graph/compiler.d.ts",
+      "import": "./dist/dojo/graph/compiler.js"
+    },
+    "./dojo/graph/runtime": {
+      "types": "./dist/dojo/graph/runtime.d.ts",
+      "import": "./dist/dojo/graph/runtime.js"
+    },
+    "./dojo/graph/substrate-executor": {
+      "types": "./dist/dojo/graph/substrate_executor.d.ts",
+      "import": "./dist/dojo/graph/substrate_executor.js"
+    },
+    "./dojo/vivarium/scenario-dsl": {
+      "types": "./dist/dojo/vivarium/scenario_dsl.d.ts",
+      "import": "./dist/dojo/vivarium/scenario_dsl.js"
+    },
+    "./dojo/vivarium/fixture-materializer": {
+      "types": "./dist/dojo/vivarium/fixture_materializer.d.ts",
+      "import": "./dist/dojo/vivarium/fixture_materializer.js"
+    },
+    "./dojo/vivarium/oracle": {
+      "types": "./dist/dojo/vivarium/oracle.d.ts",
+      "import": "./dist/dojo/vivarium/oracle.js"
+    },
+    "./dojo/vivarium/runner": {
+      "types": "./dist/dojo/vivarium/runner.d.ts",
+      "import": "./dist/dojo/vivarium/runner.js"
+    },
+    "./dojo/checkride/runner": {
+      "types": "./dist/dojo/checkride/runner.d.ts",
+      "import": "./dist/dojo/checkride/runner.js"
+    },
+    "./dojo/checkride/entrustment": {
+      "types": "./dist/dojo/checkride/entrustment.d.ts",
+      "import": "./dist/dojo/checkride/entrustment.js"
+    },
+    "./dojo/checkride/readiness": {
+      "types": "./dist/dojo/checkride/readiness.d.ts",
+      "import": "./dist/dojo/checkride/readiness.js"
+    },
+    "./dojo/case-law/registry": {
+      "types": "./dist/dojo/case_law/registry.d.ts",
+      "import": "./dist/dojo/case_law/registry.js"
+    },
+    "./dojo/case-law/guardrail-synthesizer": {
+      "types": "./dist/dojo/case_law/guardrail_synthesizer.d.ts",
+      "import": "./dist/dojo/case_law/guardrail_synthesizer.js"
+    },
+    "./dojo/source/source-snapshot": {
+      "types": "./dist/dojo/source/source_snapshot.d.ts",
+      "import": "./dist/dojo/source/source_snapshot.js"
+    },
+    "./dojo/source/source-drift": {
+      "types": "./dist/dojo/source/source_drift.d.ts",
+      "import": "./dist/dojo/source/source_drift.js"
+    },
+    "./dojo/source/agent-ready-ui-contract": {
+      "types": "./dist/dojo/source/agent_ready_ui_contract.d.ts",
+      "import": "./dist/dojo/source/agent_ready_ui_contract.js"
+    },
+    "./dojo/source/affordance-pr-plan": {
+      "types": "./dist/dojo/source/affordance_pr_plan.d.ts",
+      "import": "./dist/dojo/source/affordance_pr_plan.js"
+    },
+    "./dojo/source/codemod": {
+      "types": "./dist/dojo/source/codemod.d.ts",
+      "import": "./dist/dojo/source/codemod.js"
+    },
+    "./dojo/source/pr-generator": {
+      "types": "./dist/dojo/source/pr_generator.d.ts",
+      "import": "./dist/dojo/source/pr_generator.js"
+    },
+    "./dojo/api/types": {
+      "types": "./dist/dojo/api/types.d.ts",
+      "import": "./dist/dojo/api/types.js"
+    },
+    "./dojo/api/endpoint-inference": {
+      "types": "./dist/dojo/api/endpoint_inference.d.ts",
+      "import": "./dist/dojo/api/endpoint_inference.js"
+    },
+    "./dojo/api/api-tool-compiler": {
+      "types": "./dist/dojo/api/api_tool_compiler.d.ts",
+      "import": "./dist/dojo/api/api_tool_compiler.js"
+    },
+    "./dojo/governance/service": {
+      "types": "./dist/dojo/governance/service.d.ts",
+      "import": "./dist/dojo/governance/service.js"
+    },
+    "./dojo/runtime/hosted-runtime-gateway": {
+      "types": "./dist/dojo/runtime/hosted_runtime_gateway.d.ts",
+      "import": "./dist/dojo/runtime/hosted_runtime_gateway.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
