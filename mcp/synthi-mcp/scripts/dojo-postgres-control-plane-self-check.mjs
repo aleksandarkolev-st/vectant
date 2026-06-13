@@ -29,6 +29,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES = [
   "tests/integration/dojo_postgres_governance_store.test.ts",
   "tests/integration/dojo_postgres_source_registry_store.test.ts",
   "tests/integration/dojo_postgres_mcp_skill_bus_store.test.ts",
+  "tests/integration/dojo_postgres_graph_run_store.test.ts",
   "tests/integration/dojo_proof_ledger_tool.test.ts",
 ];
 
@@ -41,6 +42,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES = [
   "source_snapshot_registry_schema",
   "source_registry_repository",
   "graph_registry_schema",
+  "graph_run_repository",
   "executable_run_registry_schema",
   "governance_registry_schema",
   "governance_repository",
@@ -324,6 +326,10 @@ function capabilityMatchers(capability) {
       "postgresdojosourceregistrystore rejects tampered or unverified source snapshots",
     ],
     graph_registry_schema: ["defines graph node memory and license version registries"],
+    graph_run_repository: [
+      "postgresdojographrunstore persists skill graphs node memories and graph execution runs",
+      "postgresdojographrunstore persists executable checkride reports and scenario runs",
+    ],
     executable_run_registry_schema: ["defines executable checkride and scenario run registries"],
     governance_registry_schema: ["defines governance case law antibody and approval registries"],
     governance_repository: [

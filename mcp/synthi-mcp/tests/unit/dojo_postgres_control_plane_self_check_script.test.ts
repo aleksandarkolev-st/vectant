@@ -112,6 +112,10 @@ function postgresVitestReportFixture() {
       "PostgresDojoMcpSkillBusStore records MCP tool invocations with audit custody",
     ],
     [
+      "PostgresDojoGraphRunStore persists skill graphs, node memories, and graph execution runs",
+      "PostgresDojoGraphRunStore persists executable checkride reports and scenario runs from observed runtime evidence",
+    ],
+    [
       "Dojo proof issuance from Postgres evidence ledger issues a production proof capsule from evidence record IDs resolved through Postgres",
     ],
   ];

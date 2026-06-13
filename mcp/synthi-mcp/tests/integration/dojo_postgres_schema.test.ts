@@ -117,6 +117,7 @@ describe("Dojo Postgres schema migration", () => {
   it("defines graph, node-memory, and license-version registries", () => {
     const skillGraphs = normalizedStatements()["dojo_skill_graphs"];
     const nodeMemories = normalizedStatements()["dojo_node_memories"];
+    const graphRuns = normalizedStatements()["dojo_graph_execution_runs"];
     const licenseVersions = normalizedStatements()["dojo_license_versions"];
 
     expect(skillGraphs).toContain("primary key (tenant_id, workspace_id, graph_id)");
@@ -129,8 +130,16 @@ describe("Dojo Postgres schema migration", () => {
       "foreign key (tenant_id, workspace_id, graph_id) references dojo_skill_graphs(tenant_id, workspace_id, graph_id) on delete cascade"
     );
     expect(nodeMemories).toContain("check (confidence is null or (confidence >= 0 and confidence <= 1))");
+    expect(graphRuns).toContain("primary key (tenant_id, workspace_id, graph_run_id)");
+    expect(graphRuns).toContain(
+      "foreign key (tenant_id, workspace_id, graph_id) references dojo_skill_graphs(tenant_id, workspace_id, graph_id) on delete restrict"
+    );
+    expect(graphRuns).toContain("check (mode in ('practice', 'checkride', 'shadow', 'production'))");
+    expect(graphRuns).toContain("check (status in ('completed', 'blocked', 'failed', 'paused'))");
     expect(licenseVersions).toContain("primary key (tenant_id, workspace_id, license_id, license_version)");
     expect(licenseVersions).toContain("check (readiness_level >= 0 and readiness_level <= 9)");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_graph_execution_runs_graph_idx");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_graph_execution_runs_skill_idx");
   });
 
   it("defines executable checkride and scenario run registries", () => {
