@@ -13,6 +13,7 @@ import type {
   DojoPermissionUpgradeRequestRecord,
 } from "../store/interfaces.js";
 import type { DojoCaseLawRecord } from "../case_law/registry.js";
+import type { DojoProofKeyRecord } from "../proof/key_registry.js";
 
 const LICENSE_EXPIRY_INVALID_TRIGGER = "license_expiry_invalid";
 const GOVERNANCE_VALIDATION_TIME_INVALID_TRIGGER = "governance_validation_time_invalid";
@@ -492,6 +493,7 @@ export function buildDojoGovernanceServiceView(input: {
   case_law_records?: DojoCaseLawRecord[];
   permission_upgrade_requests?: DojoPermissionUpgradeRequestRecord[];
   audit_events?: DojoAuditEventRecord[];
+  proof_key_records?: DojoProofKeyRecord[];
   now?: string;
   expiry_warning_days?: number;
 }): DojoGovernanceServiceView {
@@ -531,6 +533,7 @@ export function buildDojoGovernanceServiceView(input: {
     skills: input.skills,
     case_law_review_queue: caseLawReviewQueue,
     audit_exports: auditExports,
+    proof_key_records: input.proof_key_records,
     generated_at: now,
   });
 
@@ -860,10 +863,12 @@ export function buildDojoComplianceEvidencePack(input: {
   skills: DojoSkill[];
   case_law_review_queue: DojoGovernanceCaseLawReviewItem[];
   audit_exports: DojoGovernanceAuditExportItem[];
+  proof_key_records?: DojoProofKeyRecord[];
   generated_at: string;
 }): DojoGovernanceComplianceEvidencePack {
   const skillCaseLaw = input.skills.flatMap((skill) => skill.case_law);
   const controlPlaneAuditExport = input.audit_exports.find((item) => item.export_id === "control_plane_audit");
+  const proofKeyRecords = input.proof_key_records;
   const caseLawEvidenceRefs = [
     ...skillCaseLaw.flatMap((item) => item.evidence_refs),
     ...input.case_law_review_queue.flatMap((item) => item.evidence_refs),
@@ -904,6 +909,19 @@ export function buildDojoComplianceEvidencePack(input: {
       ]),
       evidence_refs: caseLawEvidenceRefs,
     },
+    ...(proofKeyRecords !== undefined ? [{
+      artifact_id: "proof_public_verification",
+      title: "Proof Public Verification Bundle",
+      status: proofKeyRecords.length > 0 ? "available" as const : "missing" as const,
+      digest: digestFor([
+        "compliance",
+        "proof_public_verification",
+        ...proofKeyRecords
+          .map((record) => `${record.key_id}:${record.issuer}:${record.algorithm}:${record.status}:${digestFor([record.public_key_pem])}`)
+          .sort(),
+      ]),
+      evidence_refs: proofKeyRecords.map((record) => `proof_key:${record.key_id}`),
+    }] : []),
   ];
   return {
     pack_id: `governance_pack_${digestFor([input.generated_at, artifacts.map((item) => item.artifact_id).join(":")]).slice(0, 12)}`,

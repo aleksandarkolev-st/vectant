@@ -1117,6 +1117,66 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     }));
     expect(dojoSkillRegistry.getProofRecord(issued.proof_capsule.capsule_id)).toBeNull();
 
+    const complianceExport = await dispatchDojoTool("synthi_dojo_export_compliance_pack", {
+      skill_id: published.skill.skill_id,
+      ...tenant,
+      actor_id: "postgres-proof-auditor",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      request_id: "req-postgres-proof-compliance-export",
+      correlation_id: "corr-postgres-proof-compliance-export",
+      now: "2026-06-11T00:01:30.000Z",
+    });
+    expect(complianceExport?.isError).toBeUndefined();
+    const complianceContent = complianceExport?.structuredContent as {
+      pack: {
+        compliance_evidence_pack: { artifacts: Array<{ artifact_id: string; status: string }> };
+      };
+      artifacts: Array<{ path: string; content: string; sensitive: boolean }>;
+    };
+    expect(complianceContent.pack.compliance_evidence_pack.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        artifact_id: "proof_public_verification",
+        status: "available",
+      }),
+    ]));
+    const publicVerificationArtifact = complianceContent.artifacts.find((artifact) =>
+      artifact.path.includes("proof-public-verification")
+    );
+    expect(publicVerificationArtifact).toEqual(expect.objectContaining({
+      sensitive: false,
+    }));
+    const publicVerificationBundle = JSON.parse(publicVerificationArtifact?.content ?? "null") as {
+      schema_version: string;
+      key_count: number;
+      verifier: { package_export: string; function_name: string };
+      proof_keys: Array<{
+        key_id: string;
+        public_key_pem: string;
+        public_key_pem_sha256: string;
+        verification_available: boolean;
+      }>;
+      secret_policy: string;
+    };
+    expect(publicVerificationBundle).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.proofPublicVerificationBundle.v1",
+      key_count: 1,
+      verifier: expect.objectContaining({
+        package_export: "@synthi-inc/mcp-server/dojo/proof/public-verifier",
+        function_name: "verifyDojoProofCapsulePublicWithKeyRecord",
+      }),
+      secret_policy: "public_keys_only_no_private_or_hmac_secrets",
+    }));
+    expect(publicVerificationBundle.proof_keys).toEqual([
+      expect.objectContaining({
+        key_id: proofKeyPair.key_id,
+        public_key_pem: proofKeyPair.public_key_pem.trim(),
+        public_key_pem_sha256: createHash("sha256").update(proofKeyPair.public_key_pem.trim(), "utf8").digest("hex"),
+        verification_available: true,
+      }),
+    ]);
+    expect(JSON.stringify(publicVerificationBundle)).not.toContain(proofKeyPair.private_key_pem);
+
     const session = await dispatchDojoTool("synthi_dojo_create_hosted_runtime_session", {
       skill_id: published.skill.skill_id,
       run_id: "postgres-proof-run-1",

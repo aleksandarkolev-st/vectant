@@ -13,6 +13,7 @@ import {
   type DojoProofCarryingSkillCapsule,
   type DojoEvidenceClaim,
   type DojoExecutionSubstrate,
+  type DojoRepoArtifact,
   type DojoSkill,
 } from "../browser/dojo.js";
 import {
@@ -53,7 +54,8 @@ import {
 import { createDojoControlPlaneStoresFromEnv } from "../dojo/store/control_plane_resolver.js";
 import { resolveDojoEvidenceLedgerRecords } from "../dojo/evidence/ledger_resolver.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
-import { buildDojoProofKeyRecord } from "../dojo/proof/key_registry.js";
+import { buildDojoProofKeyRecord, type DojoProofKeyRecord } from "../dojo/proof/key_registry.js";
+import { buildDojoProofPublicVerificationBundle } from "../dojo/proof/public_verification_export.js";
 import type { DojoProofVerifier } from "../dojo/proof/signing.js";
 import { normalizeDojoProofErrorCodes } from "../dojo/proof/errors.js";
 import {
@@ -3091,7 +3093,7 @@ async function dojoExportCompliancePackTool(args: unknown): Promise<ToolResponse
   let tenant: DojoTenantContext;
   let skills: DojoSkill[];
   if (hasExplicitSkillSelection) {
-    const skill = requiredAuthorizedSkill(args);
+    const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_export_compliance_pack");
     if (!skill.ok) return skill.error;
     tenant = skill.tenant;
     skills = [skill.skill];
@@ -3103,12 +3105,24 @@ async function dojoExportCompliancePackTool(args: unknown): Promise<ToolResponse
   }
   if (skills.length === 0) return errorResponse("dojo_skill_required");
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
-  const governanceService = await governanceServiceViewForTenant(tenant, now, skills);
+  const proofVerificationExport = await proofPublicVerificationExportForTenant({
+    tenant,
+    skill_ids: skills.map((skill) => skill.skill_id),
+    now,
+    operation: "synthi_dojo_export_compliance_pack",
+  });
+  if (!proofVerificationExport.ok) return proofVerificationExport.error;
+  const governanceService = await governanceServiceViewForTenant(tenant, now, skills, {
+    proof_key_records: proofVerificationExport.proof_key_records,
+  });
   const exportedArtifacts = skills.flatMap((skill) => exportDojoRepoArtifacts(skill));
   const complianceArtifactIds = governanceService.compliance_evidence_pack.artifacts
     .filter((artifact) => artifact.status === "available")
     .map((artifact) => artifact.artifact_id);
-  const selectedArtifacts = selectComplianceArtifacts(exportedArtifacts, complianceArtifactIds);
+  const selectedArtifacts = [
+    ...selectComplianceArtifacts(exportedArtifacts, complianceArtifactIds),
+    ...proofVerificationExport.artifacts,
+  ].sort((left, right) => left.path.localeCompare(right.path));
   const manifest = {
     schema_version: "synthi.dojo.complianceEvidencePackExport.v1",
     export_id: `compliance_export_${hashId(`${now}:${skills.map((skill) => skill.skill_id).join(":")}:${selectedArtifacts.length}`)}`,
@@ -4261,7 +4275,10 @@ function visibleDojoPermissionUpgradeRequestsForSkills(skills: DojoSkill[]): Doj
 async function governanceServiceViewForTenant(
   tenant: DojoTenantContext,
   now: string,
-  visibleSkills?: DojoSkill[]
+  visibleSkills?: DojoSkill[],
+  options: {
+    proof_key_records?: DojoProofKeyRecord[];
+  } = {}
 ) {
   const skills = visibleSkills ?? visibleDojoSkillsForTenant(tenant);
   return buildDojoGovernanceServiceView({
@@ -4269,8 +4286,59 @@ async function governanceServiceViewForTenant(
     case_law_records: visibleDojoCaseLawRecordsForTenant(tenant, skills),
     permission_upgrade_requests: visibleDojoPermissionUpgradeRequestsForSkills(skills),
     audit_events: await visibleDojoAuditEventsForTenant(tenant, skills),
+    proof_key_records: options.proof_key_records,
     now,
   });
+}
+
+async function proofPublicVerificationExportForTenant(input: {
+  tenant: DojoTenantContext;
+  skill_ids: string[];
+  now: string;
+  operation: string;
+}): Promise<
+  | { ok: true; proof_key_records?: DojoProofKeyRecord[]; artifacts: DojoRepoArtifact[] }
+  | { ok: false; error: ToolResponse }
+> {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_durable_store) {
+    return { ok: true, artifacts: [] };
+  }
+  const resolution = await createDojoControlPlaneStoresFromEnv({ tenant: input.tenant });
+  if (!resolution.ok) {
+    return {
+      ok: false,
+      error: controlPlaneResolutionError(input.operation, resolution),
+    };
+  }
+  try {
+    const skillIds = new Set(input.skill_ids);
+    const proofRecords = (await resolution.proof_store.listProofRecords())
+      .filter((record) => skillIds.has(record.skill_id));
+    const proofKeyIds = new Set(proofRecords.map((record) => record.key_id).filter((keyId): keyId is string => Boolean(keyId)));
+    const proofKeyRecords = (await resolution.proof_key_registry.list(input.tenant.tenant_id))
+      .filter((record) => proofKeyIds.has(record.key_id));
+    const bundle = buildDojoProofPublicVerificationBundle({
+      tenant: input.tenant,
+      proof_keys: proofKeyRecords,
+      generated_at: input.now,
+    });
+    const artifacts: DojoRepoArtifact[] = proofKeyRecords.length > 0
+      ? [{
+        path: `.synthi/dojo/compliance/proof-public-verification.${hashId(`${input.tenant.tenant_id}:${input.tenant.workspace_id}:${input.now}:${proofKeyRecords.length}`)}.json`,
+        content_type: "application/json",
+        content: `${JSON.stringify(bundle, null, 2)}\n`,
+        sensitive: false,
+      }]
+      : [];
+    return {
+      ok: true,
+      proof_key_records: proofKeyRecords,
+      artifacts,
+    };
+  } finally {
+    await resolution.close?.();
+  }
 }
 
 async function visibleDojoAuditEventsForTenant(

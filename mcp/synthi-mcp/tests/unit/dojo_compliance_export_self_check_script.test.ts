@@ -81,9 +81,10 @@ describe("Dojo compliance export self-check script", () => {
       "compliance_pack_view_model",
       "control_plane_audit_export",
       "redacted_evidence_export",
-      "redaction_fail_closed",
-      "source_ref_redaction",
-    ]));
+        "redaction_fail_closed",
+        "source_ref_redaction",
+        "proof_public_verification_export",
+      ]));
     expect(evidence.budget_evaluation.failed_checks).toEqual(["capability_coverage_complete"]);
   });
 
@@ -122,6 +123,7 @@ function complianceVitestReportFixture({
     "Dojo redacted evidence export exports redacted evidence metadata without raw artifact content",
     "Dojo redacted evidence export fails closed when a bound evidence record lacks redaction metadata",
     "Dojo redacted evidence export allows local generated artifacts while redacting source refs",
+    "Dojo proof public verification export builds a public verification bundle from proof-key custody records without private material",
   ],
   totalTests = assertionTitles.length,
   testFiles = DOJO_COMPLIANCE_EXPORT_TEST_FILES,

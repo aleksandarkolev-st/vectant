@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { DojoSkill } from "../../src/browser/dojo.js";
 import type { DojoCaseLawRecord } from "../../src/dojo/case_law/registry.js";
+import { buildDojoProofKeyRecord } from "../../src/dojo/proof/key_registry.js";
+import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
 import type { DojoAuditEventRecord, DojoPermissionUpgradeRequestRecord } from "../../src/dojo/store/interfaces.js";
 import {
   buildDojoGovernanceServiceView,
@@ -731,6 +733,43 @@ describe("Dojo governance service", () => {
         evidence_refs: ["evidence-case-approved"],
       }),
     ]));
+  });
+
+  it("adds proof public verification custody to the compliance pack when proof keys are supplied", () => {
+    const skill = skillFixture({ skillId: "skill-proof-key-export" });
+    const keyPair = generateEd25519DojoProofKeyPair("ed25519-governance-compliance");
+    const auditExports = queryDojoAuditExports({
+      skills: [skill],
+      case_law_review_queue: [],
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+    const pack = buildDojoComplianceEvidencePack({
+      skills: [skill],
+      case_law_review_queue: [],
+      audit_exports: auditExports,
+      proof_key_records: [
+        buildDojoProofKeyRecord({
+          tenant_id: "tenant-a",
+          key_id: keyPair.key_id,
+          issuer: "dojo-proof-service",
+          algorithm: "ed25519",
+          public_key_pem: keyPair.public_key_pem,
+          status: "active",
+          created_at: "2026-06-11T00:00:00.000Z",
+        }),
+      ],
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(pack.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        artifact_id: "proof_public_verification",
+        title: "Proof Public Verification Bundle",
+        status: "available",
+        evidence_refs: [`proof_key:${keyPair.key_id}`],
+      }),
+    ]));
+    expect(pack.missing_artifacts).not.toContain("proof_public_verification");
   });
 });
 

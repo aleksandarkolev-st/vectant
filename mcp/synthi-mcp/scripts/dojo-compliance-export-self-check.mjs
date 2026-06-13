@@ -25,6 +25,7 @@ export const DOJO_COMPLIANCE_EXPORT_TEST_FILES = [
   "tests/unit/dojo_tools.test.ts",
   "tests/unit/dojo_governance_service.test.ts",
   "tests/unit/dojo_evidence_export.test.ts",
+  "tests/unit/dojo_proof_public_verification_export.test.ts",
 ];
 
 export const DOJO_COMPLIANCE_EXPORT_CAPABILITIES = [
@@ -34,6 +35,7 @@ export const DOJO_COMPLIANCE_EXPORT_CAPABILITIES = [
   "redacted_evidence_export",
   "redaction_fail_closed",
   "source_ref_redaction",
+  "proof_public_verification_export",
 ];
 
 const args = parseArgs(process.argv.slice(2));
@@ -249,6 +251,8 @@ function complianceCapabilityMatchers(capability) {
       return ["fails closed when a bound evidence record", "redaction metadata"];
     case "source_ref_redaction":
       return ["redacting source refs", "source refs"];
+    case "proof_public_verification_export":
+      return ["proof public verification bundle", "public verification bundle"];
     default:
       return [capability.replaceAll("_", " ")];
   }
