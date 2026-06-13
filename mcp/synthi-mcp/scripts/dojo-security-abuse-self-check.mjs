@@ -31,6 +31,7 @@ export const DOJO_SECURITY_ABUSE_TEST_FILES = [
   "tests/unit/dojo_private_tool_gate.test.ts",
   "tests/unit/dojo_browser_workflow_gate.test.ts",
   "tests/unit/dojo_evidence_claim_verifier.test.ts",
+  "tests/unit/dojo_graph_runtime.test.ts",
   "tests/unit/dojo_guardrail_runtime.test.ts",
   "tests/unit/dojo_fixture_materializer.test.ts",
   "tests/unit/dojo_scenario_oracle.test.ts",
@@ -59,6 +60,8 @@ export const DOJO_SECURITY_ABUSE_CLASSES = [
   "approval_denial",
   "fake_success_oracle",
   "guardrail_failure",
+  "case_law_binding_enforcement",
+  "rollback_unavailable_human_review",
   "prompt_injection_scanning",
   "untrusted_document_instruction_quarantine",
 ];
@@ -283,6 +286,8 @@ function abuseClassMatchers(abuseClass) {
     approval_denial: ["approval and denial decisions", "approval denied"],
     fake_success_oracle: ["classifies fake success as failed from observed fixture state instead of visual success"],
     guardrail_failure: ["guardrail fails", "guardrail failed", "block-severity guardrail fails"],
+    case_law_binding_enforcement: ["case law nodes only when referenced cases are binding", "case-law nodes when binding state is missing or inactive"],
+    rollback_unavailable_human_review: ["rollback nodes when rollback is unavailable without human review", "rollback unavailable human review"],
     prompt_injection_scanning: ["ignore previous instructions", "prompt injection", "instructions are not quarantined"],
     untrusted_document_instruction_quarantine: ["document instructions are quarantined", "unquarantined prompt injection document scenarios"],
   };
