@@ -403,6 +403,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_no_failed_tests: true,
       require_budget_ok: true,
       require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
     },
   },
   {
@@ -421,6 +422,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_budget_ok: true,
       require_performance_metrics: true,
       require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
     },
   },
   {
@@ -652,6 +654,9 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!securityAbuseGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
       errors.push("security_abuse_missing_digest_requirement");
     }
+    if (!securityAbuseGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("security_abuse_missing_json_report_digest_requirement");
+    }
   }
   const chaosPerformanceGate = gates.find((gate) => gate.id === "dojo_chaos_performance_self_check");
   if (chaosPerformanceGate) {
@@ -664,6 +669,9 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_performance_metrics) {
       errors.push("chaos_performance_missing_metrics_requirement");
+    }
+    if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("chaos_performance_missing_json_report_digest_requirement");
     }
   }
   const soakPerformanceGate = gates.find((gate) => gate.id === "soak_performance");

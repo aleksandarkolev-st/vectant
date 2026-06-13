@@ -174,12 +174,20 @@ describe("Dojo release gate manifest", () => {
         tier: "T7",
         package_script: "proof:dojo:security-abuse:self-check",
         script_exists: true,
+        release_artifact_requirements: expect.objectContaining({
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
       }),
       expect.objectContaining({
         id: "dojo_chaos_performance_self_check",
         tier: "T8",
         package_script: "proof:dojo:chaos-performance:self-check",
         script_exists: true,
+        enterprise_artifact_requirements: expect.objectContaining({
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
       }),
       expect.objectContaining({ id: "soak_performance", tier: "T8", script_exists: true }),
     ]));
