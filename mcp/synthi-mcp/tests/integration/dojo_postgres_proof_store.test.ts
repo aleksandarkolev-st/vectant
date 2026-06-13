@@ -104,6 +104,78 @@ describeWithPostgres("PostgresDojoProofStore", () => {
     }));
   });
 
+  it("does not allow saveProofRecord to reset a used proof lifecycle", async () => {
+    const store = new PostgresDojoProofStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
+    const issued = await store.saveProofRecord(proofRecord("capsule_lifecycle_used", skillId));
+    expect(issued).toEqual(expect.objectContaining({ status: "issued" }));
+    await expect(store.markProofCapsuleUsed(
+      "capsule_lifecycle_used",
+      "run_lifecycle_1",
+      "2026-06-11T00:02:00.000Z"
+    )).resolves.toEqual(expect.objectContaining({ ok: true, status: "used" }));
+
+    const resaved = await store.saveProofRecord({
+      ...proofRecord("capsule_lifecycle_used", skillId),
+      issued_at: "2026-06-11T00:10:00.000Z",
+      expires_at: "2026-06-11T00:30:00.000Z",
+      status: "issued",
+    });
+
+    expect(resaved).toEqual(expect.objectContaining({
+      capsule_id: "capsule_lifecycle_used",
+      status: "used",
+      first_used_at: "2026-06-11T00:02:00.000Z",
+      issued_at: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    }));
+    await expect(store.markProofCapsuleUsed(
+      "capsule_lifecycle_used",
+      "run_lifecycle_2",
+      "2026-06-11T00:03:00.000Z"
+    )).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "already_used",
+      blocked_by: ["proof_capsule_replay_detected"],
+    }));
+  });
+
+  it("does not allow saveProofRecord to reset a revoked proof lifecycle", async () => {
+    const store = new PostgresDojoProofStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
+    await store.saveProofRecord(proofRecord("capsule_lifecycle_revoked", skillId));
+    await store.revokeProofCapsule(
+      "capsule_lifecycle_revoked",
+      "unit_test_revoked",
+      "2026-06-11T00:05:00.000Z",
+      undefined,
+      ["evidence:postgres-proof-revocation"]
+    );
+
+    const resaved = await store.saveProofRecord({
+      ...proofRecord("capsule_lifecycle_revoked", skillId),
+      status: "issued",
+      revoked_at: undefined,
+      revoked_reason: undefined,
+      revocation_evidence_refs: undefined,
+    });
+
+    expect(resaved).toEqual(expect.objectContaining({
+      capsule_id: "capsule_lifecycle_revoked",
+      status: "revoked",
+      revoked_reason: "unit_test_revoked",
+      revoked_at: "2026-06-11T00:05:00.000Z",
+      revocation_evidence_refs: ["evidence:postgres-proof-revocation"],
+    }));
+    await expect(store.markProofCapsuleUsed(
+      "capsule_lifecycle_revoked",
+      "run_lifecycle_revoked",
+      "2026-06-11T00:06:00.000Z"
+    )).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "revoked",
+      blocked_by: ["proof_capsule_revoked"],
+    }));
+  });
+
   it("allows only one winner during concurrent proof consume", async () => {
     const store = new PostgresDojoProofStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
     await store.saveProofRecord(proofRecord("capsule_race", skillId));

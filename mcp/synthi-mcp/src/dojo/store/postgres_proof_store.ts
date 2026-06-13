@@ -83,7 +83,7 @@ export class PostgresDojoProofStore {
 
   async saveProofRecord(record: DojoProofCapsuleRecord): Promise<DojoProofCapsuleRecord> {
     this.assertRecordScope(record);
-    await this.queryable.query(
+    const inserted = await this.queryable.query(
       `INSERT INTO dojo_proof_records (
         tenant_id,
         workspace_id,
@@ -102,21 +102,7 @@ export class PostgresDojoProofStore {
         proof_json,
         updated_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10::timestamptz, $11::timestamptz, $12::timestamptz, $13::timestamptz, $14, $15::jsonb, now())
-      ON CONFLICT (tenant_id, capsule_id) DO UPDATE SET
-        workspace_id = EXCLUDED.workspace_id,
-        skill_id = EXCLUDED.skill_id,
-        license_id = EXCLUDED.license_id,
-        requested_action = EXCLUDED.requested_action,
-        nonce = EXCLUDED.nonce,
-        status = EXCLUDED.status,
-        issued_at = EXCLUDED.issued_at,
-        expires_at = EXCLUDED.expires_at,
-        first_used_at = EXCLUDED.first_used_at,
-        last_validated_at = EXCLUDED.last_validated_at,
-        revoked_at = EXCLUDED.revoked_at,
-        revoked_reason = EXCLUDED.revoked_reason,
-        proof_json = EXCLUDED.proof_json,
-        updated_at = now()`,
+      ON CONFLICT (tenant_id, capsule_id) DO NOTHING`,
       [
         this.tenantId,
         this.workspaceId,
@@ -137,10 +123,12 @@ export class PostgresDojoProofStore {
     );
     const saved = await this.getProofRecord(record.capsule_id);
     if (!saved) throw new Error("dojo_postgres_proof_save_failed");
-    await this.appendProofAudit("proof_issued", saved, {
-      requested_action: saved.requested_action,
-      proof_status: saved.status,
-    });
+    if (inserted.rowCount === 1) {
+      await this.appendProofAudit("proof_issued", saved, {
+        requested_action: saved.requested_action,
+        proof_status: saved.status,
+      });
+    }
     return saved;
   }
 
