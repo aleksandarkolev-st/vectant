@@ -279,6 +279,16 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     command: "npm --prefix mcp/synthi-mcp run live:dojo:mcp-host-conformance",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
+    report_schema_version: "synthi.dojo.mcpHostConformance.v1",
+    evidence_schema_version: "synthi.dojo.mcpHostConformanceEvidence.v1",
+    default_report_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.json",
+    default_evidence_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.evidence.json",
+    release_artifact_requirements: {
+      reject_self_check_schema: true,
+      require_non_loopback_mcp_host: true,
+      require_production_execution: true,
+      require_raw_backing_tool_block: true,
+    },
     requires_env: ["SYNTHI_DOJO_MCP_HOST_URL"],
   },
   {
@@ -454,6 +464,23 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!gate.default_report_path) errors.push(`visual_gate_missing_report_path:${gate.id}`);
     if (!gate.visual_report_requirements?.requires_pixel_metrics) errors.push(`visual_gate_missing_pixel_metrics:${gate.id}`);
     if (!gate.visual_report_requirements?.requires_layout_metrics) errors.push(`visual_gate_missing_layout_metrics:${gate.id}`);
+  }
+  const mcpHostConformanceGate = gates.find((gate) => gate.id === "dojo_mcp_host_conformance");
+  if (mcpHostConformanceGate) {
+    if (mcpHostConformanceGate.report_schema_version !== "synthi.dojo.mcpHostConformance.v1") {
+      errors.push("mcp_host_conformance_missing_release_report_schema");
+    }
+    if (mcpHostConformanceGate.evidence_schema_version !== "synthi.dojo.mcpHostConformanceEvidence.v1") {
+      errors.push("mcp_host_conformance_missing_evidence_schema");
+    }
+    if (!mcpHostConformanceGate.default_report_path) errors.push("mcp_host_conformance_missing_default_report_path");
+    if (!mcpHostConformanceGate.default_evidence_path) errors.push("mcp_host_conformance_missing_default_evidence_path");
+    if (!mcpHostConformanceGate.release_artifact_requirements?.require_production_execution) {
+      errors.push("mcp_host_conformance_missing_production_execution_requirement");
+    }
+    if (!mcpHostConformanceGate.release_artifact_requirements?.require_non_loopback_mcp_host) {
+      errors.push("mcp_host_conformance_missing_non_loopback_requirement");
+    }
   }
   return {
     ok: errors.length === 0,

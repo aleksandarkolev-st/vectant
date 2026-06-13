@@ -105,6 +105,20 @@ describe("Dojo release gate manifest", () => {
       }),
       expect.objectContaining({ id: "dojo_mcp_host_conformance", tier: "T6", script_exists: true }),
       expect.objectContaining({
+        id: "dojo_mcp_host_conformance",
+        tier: "T6",
+        report_schema_version: "synthi.dojo.mcpHostConformance.v1",
+        evidence_schema_version: "synthi.dojo.mcpHostConformanceEvidence.v1",
+        default_report_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.json",
+        default_evidence_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          reject_self_check_schema: true,
+          require_non_loopback_mcp_host: true,
+          require_production_execution: true,
+          require_raw_backing_tool_block: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "security_abuse_suite",
         tier: "T7",
         package_script: "proof:dojo:security-abuse:self-check",
