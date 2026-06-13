@@ -79,6 +79,14 @@ describe("Dojo Postgres control-plane self-check script", () => {
 function postgresVitestReportFixture() {
   const fileTitles = [
     [
+      "Dojo Postgres schema migration emits repeat-safe DDL for each required foundation table",
+      "Dojo Postgres schema migration defines release-scoped source snapshot custody",
+      "Dojo Postgres schema migration defines graph, node-memory, and license-version registries",
+      "Dojo Postgres schema migration defines executable checkride and scenario run registries",
+      "Dojo Postgres schema migration defines governance case-law, antibody, and approval registries",
+      "Dojo Postgres schema migration defines MCP skill-bus registration, invocation, and conformance custody",
+    ],
+    [
       "PostgresDojoProofStore persists, reads, lists, and revokes proof records by tenant scope",
       "PostgresDojoProofStore atomically consumes an issued proof exactly once",
       "PostgresDojoProofStore allows only one winner during concurrent proof consume",
