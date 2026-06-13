@@ -65,6 +65,7 @@ import {
 import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
 import { toDojoScenarioDefinitions } from "../dojo/vivarium/scenario_dsl.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
+import { inferDojoApiEndpointCandidateFromTrace } from "../dojo/api/endpoint_inference.js";
 
 export type DojoEntrustmentLevel = "E0" | "E1" | "E2" | "E3" | "E4" | "E5" | "EX";
 export type DojoSkillReadinessLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
@@ -3795,26 +3796,47 @@ function riskCluesFor(contract: WorkflowContractV7): DojoRiskClue[] {
 function sourceAnchorsFor(contract: WorkflowContractV7): DojoSourceAnchor[] {
   const anchors: DojoSourceAnchor[] = [];
   for (const step of contract.steps) {
-    if (step.sourcePlan.status !== "linked") {
+    if (step.sourcePlan.status === "linked") {
+      anchors.push({
+        anchor_id: `source_${shortHash(`${step.sourcePlan.filePath}:${step.sourcePlan.line}:${step.stepId}`)}`,
+        kind: "source",
+        label: step.sourcePlan.filePath ?? step.label,
+        source_step_id: step.stepId,
+        ...(step.sourcePlan.sourceId ? { source_id: step.sourcePlan.sourceId } : {}),
+        ...(step.sourcePlan.filePath ? { file_path: step.sourcePlan.filePath } : {}),
+        ...(step.sourcePlan.line ? { line: step.sourcePlan.line } : {}),
+      });
+    } else {
       anchors.push({
         anchor_id: `ui_${step.stepId}`,
         kind: "ui",
         label: step.action.target?.label ?? step.label,
         source_step_id: step.stepId,
       });
-      continue;
     }
-    anchors.push({
-      anchor_id: `source_${shortHash(`${step.sourcePlan.filePath}:${step.sourcePlan.line}:${step.stepId}`)}`,
-      kind: "source",
-      label: step.sourcePlan.filePath ?? step.label,
-      source_step_id: step.stepId,
-      ...(step.sourcePlan.sourceId ? { source_id: step.sourcePlan.sourceId } : {}),
-      ...(step.sourcePlan.filePath ? { file_path: step.sourcePlan.filePath } : {}),
-      ...(step.sourcePlan.line ? { line: step.sourcePlan.line } : {}),
-    });
+    const apiAnchor = apiAnchorForStep(step);
+    if (apiAnchor) anchors.push(apiAnchor);
   }
   return dedupeBy(anchors, (anchor) => anchor.anchor_id);
+}
+
+function apiAnchorForStep(step: WorkflowStepContractV7): DojoSourceAnchor | undefined {
+  if (step.apiPlan?.status !== "observed") return undefined;
+  const candidate = inferDojoApiEndpointCandidateFromTrace({
+    method: step.apiPlan.method,
+    url: step.apiPlan.url,
+    source_ref: `workflow_step:${step.stepId}`,
+  });
+  return {
+    anchor_id: `api_${shortHash(`${candidate.candidate_id}:${step.stepId}`)}`,
+    kind: "api",
+    label: `${candidate.method} ${candidate.path}`,
+    source_step_id: step.stepId,
+    api_candidate_id: candidate.candidate_id,
+    method: candidate.method,
+    path: candidate.path,
+    proof_claim_mapping: candidate.proof_claim_mapping,
+  };
 }
 
 function unknownsFor(

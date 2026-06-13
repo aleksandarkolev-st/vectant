@@ -86,24 +86,22 @@ describe("Dojo graph compiler", () => {
     });
     const skill = skillFixture({
       saveSourceId: "invoice.save",
+      saveNetwork: {
+        method: "POST",
+        url: "https://app.example.test/api/invoices?include=summary",
+      },
     });
-    const apiAnchor = {
-      anchor_id: "api_invoice_create",
-      kind: "api" as const,
-      label: "Create invoice API candidate",
-      source_step_id: "save",
-      api_candidate_id: "api_candidate_invoice_create",
-      method: "POST",
-      path: "/api/invoices",
-      proof_claim_mapping: { workspace_verified: "claim:workspace_verified" },
-    };
-    skill.skill_seed.source_or_api_anchors.push(apiAnchor);
-    skill.source_links.push(apiAnchor);
-    skill.execution_substrates = [...new Set([...skill.execution_substrates, "api"])];
+    const apiAnchor = skill.skill_seed.source_or_api_anchors.find((anchor) => anchor.kind === "api");
 
     const graph = compileDojoSkillGraphForSkill(skill).graph;
     const action = graph.nodes.find((node) => node.node_id === "action");
 
+    expect(apiAnchor).toEqual(expect.objectContaining({
+      source_step_id: "save",
+      method: "POST",
+      path: "/api/invoices",
+      api_candidate_id: expect.stringMatching(/^api_candidate_/),
+    }));
     expect(action).toEqual(expect.objectContaining({
       source_bindings: expect.arrayContaining([
         expect.objectContaining({
@@ -117,20 +115,20 @@ describe("Dojo graph compiler", () => {
       ]),
       api_bindings: [
         expect.objectContaining({
-          anchor_id: "api_invoice_create",
+          anchor_id: apiAnchor?.anchor_id,
           kind: "api",
           source_step_id: "save",
-          api_candidate_id: "api_candidate_invoice_create",
+          api_candidate_id: apiAnchor?.api_candidate_id,
           method: "POST",
           path: "/api/invoices",
-          proof_claim_mapping: { workspace_verified: "claim:workspace_verified" },
+          proof_claim_mapping: {},
         }),
       ],
       metadata: expect.objectContaining({
         source_anchor_ids: expect.arrayContaining([expect.stringMatching(/^source_/)]),
-        api_anchor_ids: ["api_invoice_create"],
-        api_candidate_id: "api_candidate_invoice_create",
-        api_candidate_ids: ["api_candidate_invoice_create"],
+        api_anchor_ids: [apiAnchor?.anchor_id],
+        api_candidate_id: apiAnchor?.api_candidate_id,
+        api_candidate_ids: [apiAnchor?.api_candidate_id],
       }),
     }));
   });
@@ -152,7 +150,11 @@ describe("Dojo graph compiler", () => {
   });
 });
 
-function skillFixture(input: { clientSourceId?: string; saveSourceId?: string } = {}) {
+function skillFixture(input: {
+  clientSourceId?: string;
+  saveSourceId?: string;
+  saveNetwork?: { method: string; url: string };
+} = {}) {
   return buildDojoSkill(compileWorkflowContract([
     event({
       event_id: "client",
@@ -168,7 +170,15 @@ function skillFixture(input: { clientSourceId?: string; saveSourceId?: string } 
       event_id: "save",
       event_seq: 2,
       action: "click",
-      detail: { element: { role: "button", name: "Save invoice", ...(input.saveSourceId ? { source_id: input.saveSourceId } : {}) } },
+      detail: {
+        element: { role: "button", name: "Save invoice", ...(input.saveSourceId ? { source_id: input.saveSourceId } : {}) },
+        ...(input.saveNetwork ? {
+          network_method: input.saveNetwork.method,
+          network_url: input.saveNetwork.url,
+          network_url_redacted: false,
+          resource_type: "fetch",
+        } : {}),
+      },
       locator_candidates: [
         { kind: "role", locator: "page.getByRole(\"button\", { name: \"Save invoice\" })", confidence: 0.96, reason: "role" },
       ],
