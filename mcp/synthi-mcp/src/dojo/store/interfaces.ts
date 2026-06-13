@@ -101,6 +101,43 @@ export interface DojoCaseLawRecordFilter {
   limit?: number;
 }
 
+export interface DojoGhostShadowEvidenceRecord {
+  schema_version: "synthi.dojo.ghostShadowEvidence.v1";
+  tenant_id: string;
+  workspace_id: string;
+  evidence_id: string;
+  run_id: string;
+  skill_id: string;
+  workflow_id: string;
+  license_id: string;
+  evidence_kind: "shadow";
+  production_mutations_executed: false;
+  action_matches: boolean;
+  observed_label: string;
+  planned_label: string;
+  observed_human_action: Record<string, unknown>;
+  agent_planned_action: Record<string, unknown>;
+  license_status: "licensed" | "blocked";
+  guardrail_refs: string[];
+  evidence_refs: string[];
+  entrustment_impact: Record<string, unknown>;
+  created_at: string;
+  created_by: DojoAuditActor;
+  request_context: {
+    request_id: string;
+    correlation_id: string;
+  };
+}
+
+export interface DojoGhostShadowEvidenceFilter {
+  evidence_id?: string;
+  run_id?: string;
+  skill_id?: string;
+  workflow_id?: string;
+  action_matches?: boolean;
+  limit?: number;
+}
+
 export interface DojoSkillStore {
   saveSkill(skill: DojoSkill): void;
   getSkill(skillId: string): DojoSkill | null;
@@ -126,7 +163,7 @@ export interface DojoProofStore {
   ): DojoProofCapsuleRecord | null;
 }
 
-export interface DojoControlPlaneStore extends DojoSkillStore, DojoProofStore, DojoApprovalStore, DojoCaseLawStore, DojoTransactionalStore {
+export interface DojoControlPlaneStore extends DojoSkillStore, DojoProofStore, DojoApprovalStore, DojoCaseLawStore, DojoGhostShadowEvidenceStore, DojoTransactionalStore {
   clear(): void;
 }
 
@@ -136,6 +173,11 @@ export interface DojoLicenseStore {
 
 export interface DojoEvidenceStore {
   readonly store_contract_kind?: "evidence";
+}
+
+export interface DojoGhostShadowEvidenceStore {
+  saveGhostShadowEvidence(record: DojoGhostShadowEvidenceRecord): void;
+  listGhostShadowEvidence(filter?: DojoGhostShadowEvidenceFilter): DojoGhostShadowEvidenceRecord[];
 }
 
 export interface DojoApprovalStore {

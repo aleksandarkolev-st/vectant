@@ -9,6 +9,7 @@ import type {
   DojoApprovalStore,
   DojoCaseLawStore,
   DojoControlPlaneStore,
+  DojoGhostShadowEvidenceStore,
   DojoPermissionUpgradeRequestRecord,
   DojoProofCapsuleRecord,
   DojoProofStore,
@@ -87,6 +88,7 @@ function assertControlPlaneStore(store: DojoControlPlaneStore): void {
   const proofStore: DojoProofStore = store;
   const approvalStore: DojoApprovalStore = store;
   const caseLawStore: DojoCaseLawStore = store;
+  const ghostShadowEvidenceStore: DojoGhostShadowEvidenceStore = store;
   const skill = buildDojoSkill(compileWorkflowContract([
     event({
       event_id: "open",
@@ -159,6 +161,37 @@ function assertControlPlaneStore(store: DojoControlPlaneStore): void {
   approvalStore.savePermissionUpgradeRequest(upgradeRequest);
   caseLawStore.saveCaseLawRecord(caseLaw);
   caseLawStore.saveCaseLawRecord(approvedCaseLaw);
+  ghostShadowEvidenceStore.saveGhostShadowEvidence({
+    schema_version: "synthi.dojo.ghostShadowEvidence.v1",
+    tenant_id: "tenant-a",
+    workspace_id: skill.workspace_id,
+    evidence_id: "ghost-evidence-unit-test",
+    run_id: "ghost-run-unit-test",
+    skill_id: skill.skill_id,
+    workflow_id: skill.workflow_id,
+    license_id: skill.permission_license.license_id,
+    evidence_kind: "shadow",
+    production_mutations_executed: false,
+    action_matches: false,
+    observed_human_action: { label: "Open details", action: "click" },
+    agent_planned_action: { label: "Delete details", action: "click" },
+    observed_label: "open details",
+    planned_label: "delete details",
+    license_status: "licensed",
+    guardrail_refs: skill.guardrails.map((guardrail) => guardrail.guardrail_id).slice(0, 1),
+    evidence_refs: [`skill:${skill.skill_id}`, "ghost:ghost-run-unit-test"],
+    entrustment_impact: {
+      upgrade_allowed: false,
+      recommended_entrustment: "EX",
+      reason: "Mismatch blocks upgrade.",
+    },
+    created_at: "2026-06-11T00:04:00.000Z",
+    created_by: { actor_id: "unit-test", actor_type: "agent" },
+    request_context: {
+      request_id: "ghost-unit-test-request",
+      correlation_id: "ghost-unit-test-correlation",
+    },
+  });
 
   expect(skillStore.getSkill(skill.skill_id)).toEqual(expect.objectContaining({ skill_id: skill.skill_id }));
   expect(skillStore.getSkillByWorkflowId(skill.workflow_id)).toEqual(expect.objectContaining({ skill_id: skill.skill_id }));
@@ -203,6 +236,20 @@ function assertControlPlaneStore(store: DojoControlPlaneStore): void {
   expect(caseLawStore.listCaseLawRecords({
     binding_scope: { kind: "workspace", id: "other-workspace" },
   })).toEqual([]);
+  expect(ghostShadowEvidenceStore.listGhostShadowEvidence({ skill_id: skill.skill_id })).toEqual([
+    expect.objectContaining({
+      evidence_id: "ghost-evidence-unit-test",
+      run_id: "ghost-run-unit-test",
+      skill_id: skill.skill_id,
+      production_mutations_executed: false,
+      action_matches: false,
+      request_context: {
+        request_id: "ghost-unit-test-request",
+        correlation_id: "ghost-unit-test-correlation",
+      },
+    }),
+  ]);
+  expect(ghostShadowEvidenceStore.listGhostShadowEvidence({ action_matches: true })).toEqual([]);
   expect(store.clear).toEqual(expect.any(Function));
   expect(store.withTransaction).toBeUndefined();
 }

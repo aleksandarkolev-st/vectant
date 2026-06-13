@@ -70,12 +70,44 @@ describe("EncryptedFileDojoSkillStore", () => {
         correlation_id: "upgrade-encrypted-store-correlation",
       },
     });
+    store.saveGhostShadowEvidence({
+      schema_version: "synthi.dojo.ghostShadowEvidence.v1",
+      tenant_id: "tenant-a",
+      workspace_id: skill.workspace_id,
+      evidence_id: "ghost-evidence-encrypted-store",
+      run_id: "ghost-run-encrypted-store",
+      skill_id: skill.skill_id,
+      workflow_id: skill.workflow_id,
+      license_id: skill.permission_license.license_id,
+      evidence_kind: "shadow",
+      production_mutations_executed: false,
+      action_matches: true,
+      observed_human_action: { label: "Save draft", action: "click" },
+      agent_planned_action: { label: "Save draft", action: "click" },
+      observed_label: "save draft",
+      planned_label: "save draft",
+      license_status: "licensed",
+      guardrail_refs: [],
+      evidence_refs: [`skill:${skill.skill_id}`, "ghost:ghost-run-encrypted-store"],
+      entrustment_impact: {
+        upgrade_allowed: true,
+        recommended_entrustment: skill.entrustment_level,
+        reason: "Ghost Mode matched without mutation.",
+      },
+      created_at: "2026-06-11T00:02:00.000Z",
+      created_by: { actor_id: "unit-test", actor_type: "agent" },
+      request_context: {
+        request_id: "ghost-encrypted-store",
+        correlation_id: "ghost-encrypted-store-correlation",
+      },
+    });
 
     const rawStore = readFileSync(filePath, "utf8");
     expect(rawStore).toContain("synthi_dojo_store_envelope_v1");
     expect(rawStore).not.toContain(skill.name);
     expect(rawStore).not.toContain(skill.skill_seed.inferred_intent);
     expect(rawStore).not.toContain("upgrade-encrypted-store");
+    expect(rawStore).not.toContain("ghost-evidence-encrypted-store");
 
     const reopened = new EncryptedFileDojoSkillStore({
       file_path: filePath,
@@ -130,6 +162,18 @@ describe("EncryptedFileDojoSkillStore", () => {
         status: "pending",
       }),
     ]);
+    expect(reopened.listGhostShadowEvidence({ skill_id: skill.skill_id })).toEqual([
+      expect.objectContaining({
+        evidence_id: "ghost-evidence-encrypted-store",
+        run_id: "ghost-run-encrypted-store",
+        action_matches: true,
+        production_mutations_executed: false,
+        request_context: {
+          request_id: "ghost-encrypted-store",
+          correlation_id: "ghost-encrypted-store-correlation",
+        },
+      }),
+    ]);
 
     const revoked = reopened.revokeProofCapsule(
       capsule.capsule_id,
@@ -162,6 +206,7 @@ describe("EncryptedFileDojoSkillStore", () => {
     expect(otherScope.listSkills()).toEqual([]);
     expect(otherScope.listProofRecords()).toEqual([]);
     expect(otherScope.listPermissionUpgradeRequests()).toEqual([]);
+    expect(otherScope.listGhostShadowEvidence()).toEqual([]);
   });
 });
 

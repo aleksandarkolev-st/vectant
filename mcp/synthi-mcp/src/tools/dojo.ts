@@ -49,7 +49,7 @@ import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { normalizeDojoProofErrorCodes } from "../dojo/proof/errors.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
 import { toDojoScenarioDefinitions, validateDojoScenarioDefinition } from "../dojo/vivarium/scenario_dsl.js";
-import type { DojoPermissionUpgradeRequestRecord } from "../dojo/store/interfaces.js";
+import type { DojoGhostShadowEvidenceRecord, DojoPermissionUpgradeRequestRecord } from "../dojo/store/interfaces.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
 import {
   createInProcessDojoMcpSkillBus,
@@ -1204,15 +1204,20 @@ function dojoRunGhostModeTool(args: unknown): ToolResponse {
       recommended_entrustment: "EX",
       reason: "Ghost Mode mismatch prevents entrustment upgrade until the planned action is retrained or recertified.",
     };
-  const shadowEvidence = {
+  const shadowEvidence: DojoGhostShadowEvidenceRecord = {
     schema_version: "synthi.dojo.ghostShadowEvidence.v1",
+    tenant_id: skill.tenant.tenant_id,
+    workspace_id: skill.tenant.workspace_id,
     evidence_id: `ghost_evidence_${hashId(`${runId}:${evidenceRefs.join("|")}`)}`,
     run_id: runId,
     skill_id: skill.skill.skill_id,
     workflow_id: skill.skill.workflow_id,
+    license_id: skill.skill.permission_license.license_id,
     evidence_kind: "shadow",
     production_mutations_executed: false,
     action_matches: actionMatches,
+    observed_human_action: observed,
+    agent_planned_action: planned,
     observed_label: observedLabel,
     planned_label: plannedLabel,
     license_status: licenseStatus,
@@ -1220,7 +1225,16 @@ function dojoRunGhostModeTool(args: unknown): ToolResponse {
     evidence_refs: evidenceRefs,
     entrustment_impact: entrustmentImpact,
     created_at: now,
+    created_by: {
+      actor_id: skill.tenant.actor_id,
+      actor_type: skill.tenant.actor_type,
+    },
+    request_context: {
+      request_id: skill.tenant.request_id,
+      correlation_id: skill.tenant.correlation_id,
+    },
   };
+  const recordedShadowEvidence = dojoSkillRegistry.recordGhostShadowEvidence(shadowEvidence);
   const run = {
     run_id: runId,
     skill_id: skill.skill.skill_id,
@@ -1233,7 +1247,7 @@ function dojoRunGhostModeTool(args: unknown): ToolResponse {
     license_status: licenseStatus,
     guardrails_triggered: guardrailsTriggered.map((guardrail) => guardrail.guardrail_id),
     production_mutations_executed: false,
-    shadow_evidence_id: shadowEvidence.evidence_id,
+    shadow_evidence_id: recordedShadowEvidence.evidence_id,
     evidence_refs: evidenceRefs,
     entrustment_impact: entrustmentImpact,
     explanation: actionMatches
@@ -1244,7 +1258,8 @@ function dojoRunGhostModeTool(args: unknown): ToolResponse {
     ok: true,
     skill_id: skill.skill.skill_id,
     ghost_run: run,
-    shadow_evidence: shadowEvidence,
+    shadow_evidence: recordedShadowEvidence,
+    shadow_evidence_recorded: true,
     guardrails: guardrailsTriggered,
   });
 }

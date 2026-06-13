@@ -1811,7 +1811,7 @@ describe("Agent Dojo MCP tools", () => {
       now: "2026-06-11T00:02:00.000Z",
     });
     expect(ghostMode?.structuredContent).toEqual(expect.objectContaining({
-      implementation_status: "report_only",
+      implementation_status: "executable",
       ghost_run: expect.objectContaining({
         mode: "ghost",
         status: "mismatch",
@@ -1829,6 +1829,8 @@ describe("Agent Dojo MCP tools", () => {
       }),
       shadow_evidence: expect.objectContaining({
         schema_version: "synthi.dojo.ghostShadowEvidence.v1",
+        tenant_id: expect.any(String),
+        workspace_id: expect.any(String),
         production_mutations_executed: false,
         action_matches: false,
         observed_label: "open details",
@@ -1836,8 +1838,27 @@ describe("Agent Dojo MCP tools", () => {
         entrustment_impact: expect.objectContaining({
           reason: expect.stringContaining("prevents entrustment upgrade"),
         }),
+        created_by: expect.objectContaining({
+          actor_id: expect.any(String),
+          actor_type: expect.any(String),
+        }),
+        request_context: expect.objectContaining({
+          request_id: expect.any(String),
+          correlation_id: expect.any(String),
+        }),
       }),
+      shadow_evidence_recorded: true,
     }));
+    const shadowEvidence = (ghostMode?.structuredContent as { shadow_evidence: { evidence_id: string } } | undefined)?.shadow_evidence;
+    expect(dojoSkillRegistry.listGhostShadowEvidence({ evidence_id: shadowEvidence?.evidence_id })).toEqual([
+      expect.objectContaining({
+        evidence_id: shadowEvidence?.evidence_id,
+        skill_id: published.skill.skill_id,
+        workflow_id: published.skill.workflow_id,
+        production_mutations_executed: false,
+        action_matches: false,
+      }),
+    ]);
     const upgradeMissingActor = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
       skill_id: published.skill.skill_id,
       requested_action: "commit_mutation",

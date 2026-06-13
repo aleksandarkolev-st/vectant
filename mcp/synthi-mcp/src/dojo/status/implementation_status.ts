@@ -61,7 +61,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_explain_failure: report("Returns a failure explanation from generated scenario/checkride findings."),
   synthi_dojo_debug_counterfactual: deterministic("Returns a generated counterfactual debug report; it is not an executable replay."),
   synthi_dojo_run_time_machine_debugger: deterministic("Runs the current deterministic time-machine report builder."),
-  synthi_dojo_run_ghost_mode: reportWithRuntimeEvidence("Returns non-mutating Ghost Mode comparison data with structured shadow evidence and entrustment impact."),
+  synthi_dojo_run_ghost_mode: ghostRuntime("Records non-mutating Ghost Mode shadow evidence with human-vs-agent action comparison and entrustment impact."),
   synthi_dojo_request_permission_upgrade: controlPlaneWrite(
     "Records a permission-upgrade request in the configured Dojo store and exposes it through the governance approval queue.",
     ["license_promotion_still_requires_checkride_and_evidence_policy"]
@@ -226,6 +226,20 @@ function reportWithRuntimeEvidence(summary: string): DojoImplementationMetadata 
     summary,
     maturity_blockers: [
       "read_only_report_surface",
+      "release_gate_visual_and_hosted_proof_required",
+    ],
+  };
+}
+
+function ghostRuntime(summary: string): DojoImplementationMetadata {
+  return {
+    implementation_status: "executable",
+    runtime_enforced: true,
+    evidence_backing: "runtime_validation",
+    simulation_backing: "none",
+    summary,
+    maturity_blockers: [
+      "shadow_evidence_store_is_repo_local_until_durable_control_plane_is_configured",
       "release_gate_visual_and_hosted_proof_required",
     ],
   };

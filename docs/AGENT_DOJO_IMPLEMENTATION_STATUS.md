@@ -32,6 +32,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - license and proof capsule issuance/validation with strict evidence-claim mode, Ed25519 signing support, and an external command signer adapter
 - proof-gated backing private workflow tool and raw workflow boundary checks
 - case-law records that can bind guardrail predicates
+- non-mutating Ghost Mode shadow evidence records
 - source/API contract, linter, candidate, substrate, and React codemod foundations
 - dedicated Dojo product UX surfaces and governance view models
 - repo artifact export
@@ -78,7 +79,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_explain_failure` | `report_only` |
 | `synthi_dojo_debug_counterfactual` | `deterministic_projection` |
 | `synthi_dojo_run_time_machine_debugger` | `deterministic_projection` |
-| `synthi_dojo_run_ghost_mode` | `report_only` |
+| `synthi_dojo_run_ghost_mode` | `executable` |
 | `synthi_dojo_request_permission_upgrade` | `executable` |
 | `synthi_dojo_review_permission_upgrade` | `executable` |
 | `synthi_dojo_review_case_law` | `executable` |

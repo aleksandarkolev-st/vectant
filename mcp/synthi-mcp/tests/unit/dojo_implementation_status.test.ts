@@ -61,6 +61,19 @@ describe("Dojo implementation status registry", () => {
     );
   });
 
+  it("classifies Ghost Mode as a non-mutating executable shadow-evidence write", () => {
+    expect(getDojoToolImplementationMetadata("synthi_dojo_run_ghost_mode")).toEqual(
+      expect.objectContaining({
+        implementation_status: "executable",
+        runtime_enforced: true,
+        evidence_backing: "runtime_validation",
+        maturity_blockers: expect.arrayContaining([
+          "shadow_evidence_store_is_repo_local_until_durable_control_plane_is_configured",
+        ]),
+      })
+    );
+  });
+
   it("classifies permission upgrade requests as control-plane writes, not runtime enforcement", () => {
     expect(getDojoToolImplementationMetadata("synthi_dojo_request_permission_upgrade")).toEqual(
       expect.objectContaining({

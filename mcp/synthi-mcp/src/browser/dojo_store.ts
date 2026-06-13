@@ -8,6 +8,8 @@ import type {
   DojoCaseLawRecordFilter,
   DojoControlPlaneStore,
   DojoAuditActor,
+  DojoGhostShadowEvidenceFilter,
+  DojoGhostShadowEvidenceRecord,
   DojoPermissionUpgradeRequestFilter,
   DojoPermissionUpgradeRequestRecord,
   DojoProofConsumeResult,
@@ -22,6 +24,9 @@ export type {
   DojoCaseLawStore,
   DojoControlPlaneStore,
   DojoEvidenceStore,
+  DojoGhostShadowEvidenceFilter,
+  DojoGhostShadowEvidenceRecord,
+  DojoGhostShadowEvidenceStore,
   DojoLicenseStore,
   DojoPermissionUpgradeRequestFilter,
   DojoPermissionUpgradeRequestRecord,
@@ -43,6 +48,7 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
   private readonly proofRecords = new Map<string, DojoProofCapsuleRecord>();
   private readonly permissionUpgradeRequests = new Map<string, DojoPermissionUpgradeRequestRecord>();
   private readonly caseLawRecords = new Map<string, DojoCaseLawRecord>();
+  private readonly ghostShadowEvidence = new Map<string, DojoGhostShadowEvidenceRecord>();
 
   saveSkill(skill: DojoSkill): void {
     const clone = cloneJson(skill);
@@ -143,6 +149,14 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
     return filterCaseLawRecords([...this.caseLawRecords.values()], filter).map(cloneJson);
   }
 
+  saveGhostShadowEvidence(record: DojoGhostShadowEvidenceRecord): void {
+    this.ghostShadowEvidence.set(record.evidence_id, cloneJson(record));
+  }
+
+  listGhostShadowEvidence(filter: DojoGhostShadowEvidenceFilter = {}): DojoGhostShadowEvidenceRecord[] {
+    return filterGhostShadowEvidence([...this.ghostShadowEvidence.values()], filter).map(cloneJson);
+  }
+
   revokeProofCapsule(
     capsuleId: string,
     reason: string,
@@ -172,6 +186,7 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
     this.proofRecords.clear();
     this.permissionUpgradeRequests.clear();
     this.caseLawRecords.clear();
+    this.ghostShadowEvidence.clear();
   }
 
   private removeToolIndexesForSkill(skillId: string): void {
@@ -194,6 +209,7 @@ interface PersistedDojoScope {
   proof_records: Record<string, DojoProofCapsuleRecord>;
   permission_upgrade_requests: Record<string, DojoPermissionUpgradeRequestRecord>;
   case_law_records: Record<string, DojoCaseLawRecord>;
+  ghost_shadow_evidence: Record<string, DojoGhostShadowEvidenceRecord>;
 }
 
 interface EncryptedDojoStoreDocument {
@@ -351,6 +367,16 @@ export class EncryptedFileDojoSkillStore implements DojoControlPlaneStore {
     return filterCaseLawRecords(Object.values(this.scope().case_law_records), filter).map(cloneJson);
   }
 
+  saveGhostShadowEvidence(record: DojoGhostShadowEvidenceRecord): void {
+    this.updateScope((scope) => {
+      scope.ghost_shadow_evidence[record.evidence_id] = cloneJson(record);
+    });
+  }
+
+  listGhostShadowEvidence(filter: DojoGhostShadowEvidenceFilter = {}): DojoGhostShadowEvidenceRecord[] {
+    return filterGhostShadowEvidence(Object.values(this.scope().ghost_shadow_evidence), filter).map(cloneJson);
+  }
+
   revokeProofCapsule(
     capsuleId: string,
     reason: string,
@@ -483,6 +509,7 @@ function emptyScope(): PersistedDojoScope {
     proof_records: {},
     permission_upgrade_requests: {},
     case_law_records: {},
+    ghost_shadow_evidence: {},
   };
 }
 
@@ -497,6 +524,9 @@ function cloneScope(scope: PersistedDojoScope): PersistedDojoScope {
     ),
     case_law_records: Object.fromEntries(
       Object.entries(scope.case_law_records ?? {}).map(([key, value]) => [key, cloneJson(value)])
+    ),
+    ghost_shadow_evidence: Object.fromEntries(
+      Object.entries(scope.ghost_shadow_evidence ?? {}).map(([key, value]) => [key, cloneJson(value)])
     ),
   };
 }
@@ -578,5 +608,22 @@ function filterCaseLawRecords(
     .sort((left, right) => left.binding_scope.kind.localeCompare(right.binding_scope.kind)
       || left.binding_scope.id.localeCompare(right.binding_scope.id)
       || left.case_id.localeCompare(right.case_id));
+  return typeof limit === "number" ? filtered.slice(0, limit) : filtered;
+}
+
+function filterGhostShadowEvidence(
+  records: DojoGhostShadowEvidenceRecord[],
+  filter: DojoGhostShadowEvidenceFilter
+): DojoGhostShadowEvidenceRecord[] {
+  const limit = Number.isFinite(filter.limit) && typeof filter.limit === "number" && filter.limit > 0
+    ? Math.floor(filter.limit)
+    : undefined;
+  const filtered = records
+    .filter((record) => !filter.evidence_id || record.evidence_id === filter.evidence_id)
+    .filter((record) => !filter.run_id || record.run_id === filter.run_id)
+    .filter((record) => !filter.skill_id || record.skill_id === filter.skill_id)
+    .filter((record) => !filter.workflow_id || record.workflow_id === filter.workflow_id)
+    .filter((record) => typeof filter.action_matches !== "boolean" || record.action_matches === filter.action_matches)
+    .sort((left, right) => right.created_at.localeCompare(left.created_at) || left.evidence_id.localeCompare(right.evidence_id));
   return typeof limit === "number" ? filtered.slice(0, limit) : filtered;
 }

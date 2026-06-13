@@ -17,6 +17,8 @@ import {
   type DojoAuditActor,
   type DojoCaseLawRecordFilter,
   type DojoControlPlaneStore,
+  type DojoGhostShadowEvidenceFilter,
+  type DojoGhostShadowEvidenceRecord,
   type DojoPermissionUpgradeRequestFilter,
   type DojoPermissionUpgradeRequestRecord,
   type DojoProofConsumeResult,
@@ -850,6 +852,15 @@ export class DojoSkillRegistry {
 
   listCaseLawRecords(filter?: DojoCaseLawRecordFilter): DojoCaseLawRecord[] {
     return this.store.listCaseLawRecords(filter);
+  }
+
+  recordGhostShadowEvidence(record: DojoGhostShadowEvidenceRecord): DojoGhostShadowEvidenceRecord {
+    this.store.saveGhostShadowEvidence(record);
+    return cloneJson(record);
+  }
+
+  listGhostShadowEvidence(filter?: DojoGhostShadowEvidenceFilter): DojoGhostShadowEvidenceRecord[] {
+    return this.store.listGhostShadowEvidence(filter);
   }
 
   useStoreForTests(store: DojoControlPlaneStore = new InMemoryDojoSkillStore()): void {
