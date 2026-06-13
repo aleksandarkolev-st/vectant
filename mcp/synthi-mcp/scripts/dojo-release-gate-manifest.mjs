@@ -14,6 +14,11 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "./dojo-compliance-export-self-check.mjs";
 import { DOJO_CHAOS_SCENARIOS } from "./dojo-chaos-performance-self-check.mjs";
+import {
+  DOJO_DOCKER_HEALTHY_SERVICES,
+  DOJO_DOCKER_REQUIRED_ENDPOINTS,
+  DOJO_DOCKER_REQUIRED_SERVICES,
+} from "./dojo-docker-integration-self-check.mjs";
 import { DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES } from "./dojo-postgres-control-plane-self-check.mjs";
 import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "./dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "./dojo-security-abuse-self-check.mjs";
@@ -266,8 +271,14 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     artifact_requirements: {
       require_compose_up_ran: true,
       require_all_required_services_running: true,
+      required_services: [...DOJO_DOCKER_REQUIRED_SERVICES],
       require_required_healthchecks_healthy: true,
+      required_healthy_services: [...DOJO_DOCKER_HEALTHY_SERVICES],
       require_required_endpoints_ok: true,
+      required_endpoint_contracts: DOJO_DOCKER_REQUIRED_ENDPOINTS.map((endpoint) => ({
+        id: endpoint.id,
+        expected_status: endpoint.expected_status,
+      })),
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
     },
@@ -731,11 +742,44 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!dockerIntegrationGate.artifact_requirements?.require_all_required_services_running) {
       errors.push("docker_integration_missing_service_requirement");
     }
+    const requiredDockerServices = Array.isArray(dockerIntegrationGate.artifact_requirements?.required_services)
+      ? dockerIntegrationGate.artifact_requirements.required_services
+      : [];
+    const missingDockerServices = DOJO_DOCKER_REQUIRED_SERVICES
+      .filter((service) => !requiredDockerServices.includes(service));
+    if (missingDockerServices.length > 0) {
+      errors.push(`docker_integration_missing_required_services:${missingDockerServices.join(",")}`);
+    }
     if (!dockerIntegrationGate.artifact_requirements?.require_required_healthchecks_healthy) {
       errors.push("docker_integration_missing_healthcheck_requirement");
     }
+    const requiredHealthyServices = Array.isArray(dockerIntegrationGate.artifact_requirements?.required_healthy_services)
+      ? dockerIntegrationGate.artifact_requirements.required_healthy_services
+      : [];
+    const missingHealthyServices = DOJO_DOCKER_HEALTHY_SERVICES
+      .filter((service) => !requiredHealthyServices.includes(service));
+    if (missingHealthyServices.length > 0) {
+      errors.push(`docker_integration_missing_required_healthy_services:${missingHealthyServices.join(",")}`);
+    }
     if (!dockerIntegrationGate.artifact_requirements?.require_required_endpoints_ok) {
       errors.push("docker_integration_missing_endpoint_requirement");
+    }
+    const requiredEndpointContracts = Array.isArray(dockerIntegrationGate.artifact_requirements?.required_endpoint_contracts)
+      ? dockerIntegrationGate.artifact_requirements.required_endpoint_contracts
+      : [];
+    const requiredEndpointIds = new Set(requiredEndpointContracts.map((endpoint) => String(endpoint?.id || "")));
+    const missingEndpointContracts = DOJO_DOCKER_REQUIRED_ENDPOINTS
+      .filter((endpoint) => !requiredEndpointIds.has(endpoint.id));
+    if (missingEndpointContracts.length > 0) {
+      errors.push(`docker_integration_missing_required_endpoints:${missingEndpointContracts.map((endpoint) => endpoint.id).join(",")}`);
+    }
+    const mismatchedEndpointContracts = DOJO_DOCKER_REQUIRED_ENDPOINTS
+      .filter((endpoint) => {
+        const declared = requiredEndpointContracts.find((item) => item?.id === endpoint.id);
+        return declared && Number(declared.expected_status) !== Number(endpoint.expected_status);
+      });
+    if (mismatchedEndpointContracts.length > 0) {
+      errors.push(`docker_integration_endpoint_status_contract_mismatch:${mismatchedEndpointContracts.map((endpoint) => endpoint.id).join(",")}`);
     }
     if (!dockerIntegrationGate.artifact_requirements?.require_json_report_digest_match) {
       errors.push("docker_integration_missing_json_report_digest_requirement");

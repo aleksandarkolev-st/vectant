@@ -15,6 +15,11 @@ import {
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
 import { DOJO_CHAOS_SCENARIOS } from "../../scripts/dojo-chaos-performance-self-check.mjs";
 import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "../../scripts/dojo-compliance-export-self-check.mjs";
+import {
+  DOJO_DOCKER_HEALTHY_SERVICES,
+  DOJO_DOCKER_REQUIRED_ENDPOINTS,
+  DOJO_DOCKER_REQUIRED_SERVICES,
+} from "../../scripts/dojo-docker-integration-self-check.mjs";
 import { DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES } from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
 import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "../../scripts/dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "../../scripts/dojo-security-abuse-self-check.mjs";
@@ -272,6 +277,29 @@ describe("Dojo release gate artifact verifier", () => {
       "docker_integration_endpoint_failed:collab_ports:503",
       "docker_integration_budget_not_ok",
       "docker_integration_failed_checks:all_required_services_present,required_endpoints_ok",
+    ]));
+
+    const driftedPath = await writeDockerIntegrationEvidenceFixture({
+      dir,
+      basename: "dojo-docker-integration-drifted",
+      evidence: dockerIntegrationEvidenceFixture({
+        required_services: DOJO_DOCKER_REQUIRED_SERVICES.filter((service) => service !== "mcp"),
+        required_service_count: DOJO_DOCKER_REQUIRED_SERVICES.length - 1,
+        running_services: DOJO_DOCKER_REQUIRED_SERVICES.filter((service) => service !== "mcp"),
+        healthy_services_required: DOJO_DOCKER_HEALTHY_SERVICES.filter((service) => service !== "postgres"),
+        endpoint_checks: DOJO_DOCKER_REQUIRED_ENDPOINTS
+          .filter((endpoint) => endpoint.id !== "collab_ports")
+          .map((endpoint) => dockerEndpointFixture({ id: endpoint.id, expectedStatus: endpoint.expected_status })),
+        endpoint_count: DOJO_DOCKER_REQUIRED_ENDPOINTS.length - 1,
+        endpoint_ok_count: DOJO_DOCKER_REQUIRED_ENDPOINTS.length - 1,
+      }),
+    });
+    const drifted = await verifyDojoDockerIntegrationEvidenceArtifact({ evidencePath: driftedPath });
+    expect(drifted.errors).toEqual(expect.arrayContaining([
+      "docker_integration_required_services_missing:mcp",
+      "docker_integration_required_services_not_running:mcp",
+      "docker_integration_required_healthy_services_missing:postgres",
+      "docker_integration_required_endpoints_missing:collab_ports",
     ]));
   });
 
@@ -1572,13 +1600,13 @@ function dockerIntegrationEvidenceFixture(overrides = {}) {
     running_services: dockerRequiredServicesFixture(),
     missing_services: [],
     unhealthy_services: [],
-    healthy_services_required: ["postgres", "redis", "y-sweet"],
-    endpoint_checks: [
-      dockerEndpointFixture({ id: "frontend_workspace" }),
-      dockerEndpointFixture({ id: "collab_ports" }),
-    ],
-    endpoint_count: 2,
-    endpoint_ok_count: 2,
+    healthy_services_required: [...DOJO_DOCKER_HEALTHY_SERVICES],
+    endpoint_checks: DOJO_DOCKER_REQUIRED_ENDPOINTS.map((endpoint) => dockerEndpointFixture({
+      id: endpoint.id,
+      expectedStatus: endpoint.expected_status,
+    })),
+    endpoint_count: DOJO_DOCKER_REQUIRED_ENDPOINTS.length,
+    endpoint_ok_count: DOJO_DOCKER_REQUIRED_ENDPOINTS.length,
     command_evaluation: {
       compose_up_ran: true,
       compose_up_exit_code: 0,
@@ -1630,27 +1658,15 @@ function dockerIntegrationJsonReportFixtureText() {
     },
     configured_services: dockerRequiredServicesFixture(),
     service_evaluation: dockerServiceEvaluationFixture(),
-    endpoint_checks: [
-      dockerEndpointFixture({ id: "frontend_workspace" }),
-      dockerEndpointFixture({ id: "collab_ports" }),
-    ],
+    endpoint_checks: DOJO_DOCKER_REQUIRED_ENDPOINTS.map((endpoint) => dockerEndpointFixture({
+      id: endpoint.id,
+      expectedStatus: endpoint.expected_status,
+    })),
   }, null, 2);
 }
 
 function dockerRequiredServicesFixture() {
-  return [
-    "frontend",
-    "collab-server",
-    "mcp",
-    "worker",
-    "signaling-server",
-    "ai-gateway",
-    "ai-engine",
-    "y-sweet",
-    "postgres",
-    "redis",
-    "coturn",
-  ];
+  return [...DOJO_DOCKER_REQUIRED_SERVICES];
 }
 
 function dockerServiceEvaluationFixture() {
@@ -1667,7 +1683,7 @@ function dockerServiceEvaluationFixture() {
     service_states: services.map((service) => ({
       service,
       state: "running",
-      health: ["postgres", "redis", "y-sweet"].includes(service) ? "healthy" : "",
+      health: DOJO_DOCKER_HEALTHY_SERVICES.includes(service) ? "healthy" : "",
       status: "running",
     })),
   };
@@ -1677,11 +1693,16 @@ function dockerEndpointFixture({
   id,
   ok = true,
   status = 200,
+  expectedStatus,
 } = {}) {
+  const contract = DOJO_DOCKER_REQUIRED_ENDPOINTS.find((endpoint) => endpoint.id === id);
+  const expected_status = Number.isFinite(Number(expectedStatus))
+    ? Number(expectedStatus)
+    : Number(contract?.expected_status ?? 200);
   return {
     id,
-    url: id === "collab_ports" ? "http://127.0.0.1:1234/ports" : "http://127.0.0.1:3000/workspace",
-    expected_status: 200,
+    url: contract?.default_url ?? "http://127.0.0.1/",
+    expected_status,
     status,
     ok,
     duration_ms: 25,

@@ -24,6 +24,11 @@ import {
 } from "./dojo-mcp-host-conformance.mjs";
 import { DOJO_CHAOS_SCENARIOS } from "./dojo-chaos-performance-self-check.mjs";
 import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "./dojo-compliance-export-self-check.mjs";
+import {
+  DOJO_DOCKER_HEALTHY_SERVICES,
+  DOJO_DOCKER_REQUIRED_ENDPOINTS,
+  DOJO_DOCKER_REQUIRED_SERVICES,
+} from "./dojo-docker-integration-self-check.mjs";
 import { DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES } from "./dojo-postgres-control-plane-self-check.mjs";
 import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "./dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "./dojo-security-abuse-self-check.mjs";
@@ -474,6 +479,16 @@ export async function verifyDojoDockerIntegrationEvidenceArtifact({ evidencePath
 
 export function validateDojoDockerIntegrationEvidenceForMilestone(evidence) {
   const errors = [];
+  const requiredServices = Array.isArray(evidence?.required_services)
+    ? evidence.required_services.map(String)
+    : [];
+  const runningServices = Array.isArray(evidence?.running_services)
+    ? evidence.running_services.map(String)
+    : [];
+  const healthyServicesRequired = Array.isArray(evidence?.healthy_services_required)
+    ? evidence.healthy_services_required.map(String)
+    : [];
+  const endpointChecks = Array.isArray(evidence?.endpoint_checks) ? evidence.endpoint_checks : [];
   if (evidence?.schema_version !== "synthi.dojo.dockerIntegrationEvidence.v1") {
     errors.push(`docker_integration_schema_mismatch:${evidence?.schema_version || "missing"}`);
   }
@@ -490,6 +505,19 @@ export function validateDojoDockerIntegrationEvidenceForMilestone(evidence) {
     errors.push(`docker_integration_compose_config_exit_code:${evidence?.command_evaluation?.compose_config_exit_code ?? "missing"}`);
   }
   if (Number(evidence?.required_service_count || 0) <= 0) errors.push("docker_integration_no_required_services");
+  const missingRequiredServices = DOJO_DOCKER_REQUIRED_SERVICES
+    .filter((service) => !requiredServices.includes(service));
+  if (missingRequiredServices.length > 0) {
+    errors.push(`docker_integration_required_services_missing:${missingRequiredServices.join(",")}`);
+  }
+  const requiredServicesNotRunning = DOJO_DOCKER_REQUIRED_SERVICES
+    .filter((service) => !runningServices.includes(service));
+  if (requiredServicesNotRunning.length > 0) {
+    errors.push(`docker_integration_required_services_not_running:${requiredServicesNotRunning.join(",")}`);
+  }
+  if (Number(evidence?.required_service_count || 0) !== requiredServices.length) {
+    errors.push(`docker_integration_required_service_count_mismatch:${evidence?.required_service_count ?? "missing"}:${requiredServices.length}`);
+  }
   if (Array.isArray(evidence?.missing_services) && evidence.missing_services.length > 0) {
     errors.push(`docker_integration_missing_services:${evidence.missing_services.join(",")}`);
   }
@@ -499,14 +527,34 @@ export function validateDojoDockerIntegrationEvidenceForMilestone(evidence) {
   if (Array.isArray(evidence?.unhealthy_services) && evidence.unhealthy_services.length > 0) {
     errors.push(`docker_integration_unhealthy_services:${evidence.unhealthy_services.join(",")}`);
   }
+  const missingHealthyServiceRequirements = DOJO_DOCKER_HEALTHY_SERVICES
+    .filter((service) => !healthyServicesRequired.includes(service));
+  if (missingHealthyServiceRequirements.length > 0) {
+    errors.push(`docker_integration_required_healthy_services_missing:${missingHealthyServiceRequirements.join(",")}`);
+  }
   if (Number(evidence?.running_services?.length || 0) !== Number(evidence?.required_service_count || 0)) {
     errors.push(`docker_integration_running_service_count_mismatch:${evidence?.running_services?.length ?? "missing"}:${evidence?.required_service_count ?? "missing"}`);
   }
   if (Number(evidence?.endpoint_count || 0) <= 0) errors.push("docker_integration_no_endpoint_checks");
+  if (Number(evidence?.endpoint_count || 0) !== endpointChecks.length) {
+    errors.push(`docker_integration_endpoint_reported_count_mismatch:${evidence?.endpoint_count ?? "missing"}:${endpointChecks.length}`);
+  }
   if (Number(evidence?.endpoint_ok_count || 0) !== Number(evidence?.endpoint_count || 0)) {
     errors.push(`docker_integration_endpoint_count_mismatch:${evidence?.endpoint_ok_count ?? "missing"}:${evidence?.endpoint_count ?? "missing"}`);
   }
-  for (const check of Array.isArray(evidence?.endpoint_checks) ? evidence.endpoint_checks : []) {
+  const endpointIds = new Set(endpointChecks.map((check) => String(check?.id || "")));
+  const missingEndpointChecks = DOJO_DOCKER_REQUIRED_ENDPOINTS
+    .filter((endpoint) => !endpointIds.has(endpoint.id));
+  if (missingEndpointChecks.length > 0) {
+    errors.push(`docker_integration_required_endpoints_missing:${missingEndpointChecks.map((endpoint) => endpoint.id).join(",")}`);
+  }
+  for (const endpoint of DOJO_DOCKER_REQUIRED_ENDPOINTS) {
+    const check = endpointChecks.find((item) => item?.id === endpoint.id);
+    if (check && Number(check.expected_status) !== Number(endpoint.expected_status)) {
+      errors.push(`docker_integration_endpoint_expected_status_mismatch:${endpoint.id}:${check.expected_status ?? "missing"}:${endpoint.expected_status}`);
+    }
+  }
+  for (const check of endpointChecks) {
     if (check?.ok !== true) {
       errors.push(`docker_integration_endpoint_failed:${check?.id || "unknown"}:${check?.status ?? check?.error ?? "unknown"}`);
     }
@@ -2337,18 +2385,18 @@ async function writeDockerIntegrationEvidenceForSelfCheck({
     duration_ms: 1500,
     docker_compose_up_ran: true,
     docker_compose_up_skipped: false,
-    required_services: dockerRequiredServicesFixture(),
-    required_service_count: dockerRequiredServicesFixture().length,
-    running_services: dockerRequiredServicesFixture(),
+    required_services: [...DOJO_DOCKER_REQUIRED_SERVICES],
+    required_service_count: DOJO_DOCKER_REQUIRED_SERVICES.length,
+    running_services: [...DOJO_DOCKER_REQUIRED_SERVICES],
     missing_services: [],
     unhealthy_services: [],
-    healthy_services_required: ["postgres", "redis", "y-sweet"],
-    endpoint_checks: [
-      dockerEndpointFixture({ id: "frontend_workspace" }),
-      dockerEndpointFixture({ id: "collab_ports" }),
-    ],
-    endpoint_count: 2,
-    endpoint_ok_count: 2,
+    healthy_services_required: [...DOJO_DOCKER_HEALTHY_SERVICES],
+    endpoint_checks: DOJO_DOCKER_REQUIRED_ENDPOINTS.map((endpoint) => dockerEndpointFixture({
+      id: endpoint.id,
+      expectedStatus: endpoint.expected_status,
+    })),
+    endpoint_count: DOJO_DOCKER_REQUIRED_ENDPOINTS.length,
+    endpoint_ok_count: DOJO_DOCKER_REQUIRED_ENDPOINTS.length,
     command_evaluation: {
       compose_up_ran: true,
       compose_up_exit_code: 0,
@@ -2417,31 +2465,19 @@ function dockerIntegrationReportFixture() {
     service_rows: services.map((service) => ({
       Service: service,
       State: "running",
-      Health: ["postgres", "redis", "y-sweet"].includes(service) ? "healthy" : "",
-      Status: ["postgres", "redis", "y-sweet"].includes(service) ? "running (healthy)" : "running",
+      Health: DOJO_DOCKER_HEALTHY_SERVICES.includes(service) ? "healthy" : "",
+      Status: DOJO_DOCKER_HEALTHY_SERVICES.includes(service) ? "running (healthy)" : "running",
     })),
     service_evaluation: dockerServiceEvaluationFixture(),
-    endpoint_checks: [
-      dockerEndpointFixture({ id: "frontend_workspace" }),
-      dockerEndpointFixture({ id: "collab_ports" }),
-    ],
+    endpoint_checks: DOJO_DOCKER_REQUIRED_ENDPOINTS.map((endpoint) => dockerEndpointFixture({
+      id: endpoint.id,
+      expectedStatus: endpoint.expected_status,
+    })),
   };
 }
 
 function dockerRequiredServicesFixture() {
-  return [
-    "frontend",
-    "collab-server",
-    "mcp",
-    "worker",
-    "signaling-server",
-    "ai-gateway",
-    "ai-engine",
-    "y-sweet",
-    "postgres",
-    "redis",
-    "coturn",
-  ];
+  return [...DOJO_DOCKER_REQUIRED_SERVICES];
 }
 
 function dockerServiceEvaluationFixture() {
@@ -2458,8 +2494,8 @@ function dockerServiceEvaluationFixture() {
     service_states: services.map((service) => ({
       service,
       state: "running",
-      health: ["postgres", "redis", "y-sweet"].includes(service) ? "healthy" : "",
-      status: ["postgres", "redis", "y-sweet"].includes(service) ? "running (healthy)" : "running",
+      health: DOJO_DOCKER_HEALTHY_SERVICES.includes(service) ? "healthy" : "",
+      status: DOJO_DOCKER_HEALTHY_SERVICES.includes(service) ? "running (healthy)" : "running",
     })),
   };
 }
@@ -2468,11 +2504,16 @@ function dockerEndpointFixture({
   id,
   ok = true,
   status = 200,
+  expectedStatus,
 } = {}) {
+  const contract = DOJO_DOCKER_REQUIRED_ENDPOINTS.find((endpoint) => endpoint.id === id);
+  const expected_status = Number.isFinite(Number(expectedStatus))
+    ? Number(expectedStatus)
+    : Number(contract?.expected_status ?? 200);
   return {
     id,
-    url: id === "collab_ports" ? "http://127.0.0.1:1234/ports" : "http://127.0.0.1:3000/workspace",
-    expected_status: 200,
+    url: contract?.default_url ?? "http://127.0.0.1/",
+    expected_status,
     status,
     ok,
     duration_ms: 25,

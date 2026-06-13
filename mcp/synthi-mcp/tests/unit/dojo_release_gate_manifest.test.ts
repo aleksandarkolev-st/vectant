@@ -12,6 +12,11 @@ import {
 } from "../../scripts/dojo-release-gate-manifest.mjs";
 import { DOJO_CHAOS_SCENARIOS } from "../../scripts/dojo-chaos-performance-self-check.mjs";
 import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "../../scripts/dojo-compliance-export-self-check.mjs";
+import {
+  DOJO_DOCKER_HEALTHY_SERVICES,
+  DOJO_DOCKER_REQUIRED_ENDPOINTS,
+  DOJO_DOCKER_REQUIRED_SERVICES,
+} from "../../scripts/dojo-docker-integration-self-check.mjs";
 import { DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES } from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
 import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "../../scripts/dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "../../scripts/dojo-security-abuse-self-check.mjs";
@@ -133,8 +138,14 @@ describe("Dojo release gate manifest", () => {
         artifact_requirements: expect.objectContaining({
           require_compose_up_ran: true,
           require_all_required_services_running: true,
+          required_services: DOJO_DOCKER_REQUIRED_SERVICES,
           require_required_healthchecks_healthy: true,
+          required_healthy_services: DOJO_DOCKER_HEALTHY_SERVICES,
           require_required_endpoints_ok: true,
+          required_endpoint_contracts: DOJO_DOCKER_REQUIRED_ENDPOINTS.map((endpoint) => ({
+            id: endpoint.id,
+            expected_status: endpoint.expected_status,
+          })),
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -322,6 +333,21 @@ describe("Dojo release gate manifest", () => {
       .filter((capability) => capability !== "atomic_proof_consume");
     expect(validateDojoReleaseGateManifest(brokenPostgres, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "postgres_control_plane_missing_required_capabilities:atomic_proof_consume",
+    ]));
+
+    const brokenDocker = JSON.parse(JSON.stringify(manifest));
+    const dockerGate = brokenDocker.gates.find((gate) => gate.id === "docker_integration");
+    dockerGate.artifact_requirements.required_services = DOJO_DOCKER_REQUIRED_SERVICES
+      .filter((service) => service !== "mcp");
+    dockerGate.artifact_requirements.required_healthy_services = DOJO_DOCKER_HEALTHY_SERVICES
+      .filter((service) => service !== "postgres");
+    dockerGate.artifact_requirements.required_endpoint_contracts = DOJO_DOCKER_REQUIRED_ENDPOINTS
+      .filter((endpoint) => endpoint.id !== "collab_ports")
+      .map((endpoint) => ({ id: endpoint.id, expected_status: endpoint.expected_status }));
+    expect(validateDojoReleaseGateManifest(brokenDocker, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "docker_integration_missing_required_services:mcp",
+      "docker_integration_missing_required_healthy_services:postgres",
+      "docker_integration_missing_required_endpoints:collab_ports",
     ]));
 
     const brokenSecurity = JSON.parse(JSON.stringify(manifest));
