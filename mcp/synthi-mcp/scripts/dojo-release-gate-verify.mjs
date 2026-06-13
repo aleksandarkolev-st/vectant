@@ -30,6 +30,9 @@ const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 
 const DEFAULT_RELEASE_GATE_DIR = path.join(REPO_ROOT, "tmp", "dojo-release-gates");
 const DEFAULT_VERIFY_DIR = path.join(REPO_ROOT, "tmp", "dojo-release-gate-verify");
+const DEFAULT_WORKFLOW_PIPELINE_E2E_DIR = path.join(REPO_ROOT, "tmp", "workflow-pipeline-e2e");
+const DEFAULT_PRIVATE_TOOL_STDIO_ACCEPTANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-stdio-acceptance");
+const DEFAULT_PRIVATE_TOOL_CODEX_ACCEPTANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-acceptance");
 const DEFAULT_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-host-conformance");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_CHAOS_PERFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-chaos-performance");
@@ -108,6 +111,35 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
+  const liveHostedRuntimeResults = [];
+  const shouldVerifyLiveHostedRuntime = truthy(args["release-candidate"])
+    || args["workflow-e2e-summary"]
+    || args["private-tool-stdio-acceptance"]
+    || args["private-tool-codex-acceptance"];
+  if (shouldVerifyLiveHostedRuntime) {
+    const workflowGate = findGate(manifest, "workflow_e2e_hosted") || {};
+    const stdioGate = findGate(manifest, "private_tool_stdio_acceptance") || {};
+    const codexGate = findGate(manifest, "private_tool_codex_acceptance") || {};
+    liveHostedRuntimeResults.push(await verifyDojoWorkflowPipelineE2EArtifact({
+      summaryPath: resolveRepoPath(args["workflow-e2e-summary"]
+        || workflowGate.default_report_path
+        || path.join(DEFAULT_WORKFLOW_PIPELINE_E2E_DIR, "summary.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+    liveHostedRuntimeResults.push(await verifyDojoPrivateToolStdioAcceptanceArtifact({
+      transcriptPath: resolveRepoPath(args["private-tool-stdio-acceptance"]
+        || stdioGate.default_report_path
+        || path.join(DEFAULT_PRIVATE_TOOL_STDIO_ACCEPTANCE_DIR, "mcp-stdio-private-tool-acceptance.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+    liveHostedRuntimeResults.push(await verifyDojoPrivateToolCodexAcceptanceArtifact({
+      transcriptPath: resolveRepoPath(args["private-tool-codex-acceptance"]
+        || codexGate.default_report_path
+        || path.join(DEFAULT_PRIVATE_TOOL_CODEX_ACCEPTANCE_DIR, "codex-private-tool-acceptance.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
   const conformanceResults = [];
   if (truthy(args["release-candidate"]) || args["mcp-host-conformance-report"]) {
     conformanceResults.push(await verifyDojoMcpHostConformanceArtifacts({
@@ -143,7 +175,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...conformanceResults, ...securityResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...liveHostedRuntimeResults, ...conformanceResults, ...securityResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -153,6 +185,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     manifest: summarizeSection(manifestResult),
     dojo_self_check: proofSelfCheckResults.map(summarizeSection),
     visual_reports: visualResults.map(summarizeSection),
+    live_hosted_runtime: liveHostedRuntimeResults.map(summarizeSection),
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
     chaos_performance: chaosPerformanceResults.map(summarizeSection),
@@ -269,6 +302,177 @@ export function validateDojoProofSelfCheckForRelease(summary, productionEvidence
   }
   if (JSON.stringify(productionEvidence ?? {}).includes("credential_secret")) {
     errors.push("dojo_self_check_runtime_credential_secret_leaked");
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoWorkflowPipelineE2EArtifact({ summaryPath, releaseCandidate = false }) {
+  const summary = await readJsonFile(summaryPath);
+  const errors = validateDojoWorkflowPipelineE2EForRelease(summary).errors;
+  return {
+    id: "workflow_e2e_hosted",
+    ok: errors.length === 0,
+    errors,
+    artifact_path: summaryPath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: summary?.schema_version ?? null,
+    result_count: Array.isArray(summary?.results) ? summary.results.length : 0,
+  };
+}
+
+export function validateDojoWorkflowPipelineE2EForRelease(summary) {
+  const errors = [];
+  if (summary?.schema_version !== "synthi.dojo.workflowPipelineE2E.v1") {
+    errors.push(`workflow_e2e_schema_mismatch:${summary?.schema_version || "missing"}`);
+  }
+  if (summary?.ok !== true) errors.push("workflow_e2e_not_ok");
+  if (Number(summary?.case_count || 0) <= 0) errors.push("workflow_e2e_no_cases");
+  const results = Array.isArray(summary?.results) ? summary.results : [];
+  if (results.length === 0) errors.push("workflow_e2e_no_results");
+  for (const result of results) {
+    if (result?.ok !== true) {
+      errors.push(`workflow_e2e_failed_result:${result?.caseId || "unknown"}:${result?.name || "unknown"}`);
+    }
+  }
+  if (summary?.hosted_runtime?.cdp_url_configured !== true) errors.push("workflow_e2e_hosted_cdp_missing");
+  if (summary?.hosted_runtime?.non_loopback_runtime !== true) {
+    errors.push(`workflow_e2e_runtime_not_remote:${summary?.hosted_runtime?.runtime_host_class || "missing"}`);
+  }
+  if (summary?.fresh_mcp?.verify_fresh_mcp !== true) errors.push("workflow_e2e_fresh_mcp_not_enabled");
+  if (summary?.fresh_mcp?.private_workflow_store_env_configured !== true) {
+    errors.push("workflow_e2e_fresh_mcp_store_missing");
+  }
+  for (const required of [
+    "export avoids forwarded port literals",
+    "run exported Playwright",
+    "fresh MCP attach hosted browser",
+    "fresh MCP call discovered private tool",
+  ]) {
+    if (!hasPassingResult(results, required)) errors.push(`workflow_e2e_missing_result:${required}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoPrivateToolStdioAcceptanceArtifact({ transcriptPath, releaseCandidate = false }) {
+  const transcript = await readJsonFile(transcriptPath);
+  const errors = validateDojoPrivateToolStdioAcceptanceForRelease(transcript).errors;
+  errors.push(...await validateTranscriptVisualStepArtifact({
+    id: "private_tool_stdio_acceptance",
+    transcript,
+    transcriptPath,
+  }));
+  return {
+    id: "private_tool_stdio_acceptance",
+    ok: errors.length === 0,
+    errors,
+    artifact_path: transcriptPath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: transcript?.schema_version ?? null,
+    result_count: Array.isArray(transcript?.steps) ? transcript.steps.length : 0,
+  };
+}
+
+export function validateDojoPrivateToolStdioAcceptanceForRelease(transcript) {
+  const errors = validateCommonPrivateToolAcceptanceTranscript(transcript, {
+    schemaVersion: "synthi.dojo.privateToolStdioAcceptance.v1",
+    errorPrefix: "private_tool_stdio",
+  });
+  for (const required of [
+    "production-style deployment readiness through MCP",
+    "discover private MCP tool",
+    "strict host schema validation before execution",
+    "discover private workflow registry through MCP",
+    "lookup manifest through MCP",
+    "attach hosted workspace browser through MCP",
+    "grant exact-origin consent",
+    "open target page",
+    "call discovered private MCP tool",
+    "visual proof snapshot",
+  ]) {
+    if (!hasPassingStep(transcript, required)) errors.push(`private_tool_stdio_missing_step:${required}`);
+  }
+  const strictStep = findPassingStep(transcript, "strict host schema validation before execution");
+  if (strictStep) {
+    if (strictStep.accepted_configured_call !== true) errors.push("private_tool_stdio_strict_schema_configured_call_rejected");
+    const rejected = Array.isArray(strictStep.rejected) ? strictStep.rejected : [];
+    if (rejected.length < 2 || rejected.some((item) => !Array.isArray(item?.errors) || item.errors.length === 0)) {
+      errors.push("private_tool_stdio_strict_schema_rejections_missing");
+    }
+  }
+  const attachStep = findPassingStep(transcript, "attach hosted workspace browser through MCP");
+  if (attachStep) {
+    if (attachStep.evidence?.hosted_attach !== true) errors.push("private_tool_stdio_hosted_attach_missing");
+    if (attachStep.evidence?.local_attach !== false) errors.push("private_tool_stdio_local_attach_used");
+  }
+  const callStep = findPassingStep(transcript, "call discovered private MCP tool");
+  if (callStep) {
+    const stepsRun = Number(callStep.result?.replay?.steps_run);
+    const expectedSteps = Number(transcript?.acceptance?.expected_steps_min || 0);
+    if (!Number.isFinite(stepsRun) || stepsRun < expectedSteps) {
+      errors.push(`private_tool_stdio_steps_run_below_expected:${stepsRun}:${expectedSteps}`);
+    }
+    if (typeof callStep.result?.private_tool?.tool_name !== "string") {
+      errors.push("private_tool_stdio_private_tool_name_missing");
+    }
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoPrivateToolCodexAcceptanceArtifact({ transcriptPath, releaseCandidate = false }) {
+  const transcript = await readJsonFile(transcriptPath);
+  const errors = validateDojoPrivateToolCodexAcceptanceForRelease(transcript).errors;
+  errors.push(...await validateTranscriptVisualStepArtifact({
+    id: "private_tool_codex_acceptance",
+    transcript,
+    transcriptPath,
+  }));
+  return {
+    id: "private_tool_codex_acceptance",
+    ok: errors.length === 0,
+    errors,
+    artifact_path: transcriptPath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: transcript?.schema_version ?? null,
+    result_count: Array.isArray(transcript?.steps) ? transcript.steps.length : 0,
+  };
+}
+
+export function validateDojoPrivateToolCodexAcceptanceForRelease(transcript) {
+  const errors = validateCommonPrivateToolAcceptanceTranscript(transcript, {
+    schemaVersion: "synthi.dojo.privateToolCodexAcceptance.v1",
+    errorPrefix: "private_tool_codex",
+  });
+  for (const required of [
+    "codex discovered and called private MCP tool",
+    "visual proof snapshot",
+  ]) {
+    if (!hasPassingStep(transcript, required)) errors.push(`private_tool_codex_missing_step:${required}`);
+  }
+  const evidence = transcript?.codex?.mcp_evidence;
+  if (transcript?.codex?.exit_code !== 0) errors.push(`private_tool_codex_exit_code:${transcript?.codex?.exit_code ?? "missing"}`);
+  if (transcript?.codex?.saw_private_tool_name !== true) errors.push("private_tool_codex_did_not_see_private_tool");
+  if (evidence?.hosted_attach_call !== true) errors.push("private_tool_codex_hosted_attach_missing");
+  if (evidence?.local_attach_call !== false) errors.push("private_tool_codex_local_attach_used");
+  if (evidence?.private_tool_call !== true) errors.push("private_tool_codex_private_tool_call_missing");
+  if (evidence?.private_tool_result_ok !== true) errors.push("private_tool_codex_private_tool_result_not_ok");
+  if (evidence?.consent_call !== true) errors.push("private_tool_codex_consent_missing");
+  if (evidence?.open_call !== true) errors.push("private_tool_codex_open_missing");
+  if (Number(evidence?.command_execution_count || 0) !== 0) {
+    errors.push(`private_tool_codex_shell_commands_used:${evidence?.command_execution_count}`);
+  }
+  const stepsRun = Number(evidence?.private_tool_steps_run);
+  const expectedSteps = Number(transcript?.acceptance?.expected_steps_min || 0);
+  if (!Number.isFinite(stepsRun) || stepsRun < expectedSteps) {
+    errors.push(`private_tool_codex_steps_run_below_expected:${stepsRun}:${expectedSteps}`);
   }
   return {
     ok: errors.length === 0,
@@ -479,6 +683,63 @@ export function validateDojoSoakPerformanceSummary(summary, {
     ok: errors.length === 0,
     errors,
   };
+}
+
+function validateCommonPrivateToolAcceptanceTranscript(transcript, {
+  schemaVersion,
+  errorPrefix,
+}) {
+  const errors = [];
+  if (transcript?.schema_version !== schemaVersion) {
+    errors.push(`${errorPrefix}_schema_mismatch:${transcript?.schema_version || "missing"}`);
+  }
+  if (transcript?.ok !== true) errors.push(`${errorPrefix}_not_ok`);
+  if (transcript?.product_path !== "agent_client_to_synthi_mcp_to_broker_to_hosted_browser") {
+    errors.push(`${errorPrefix}_product_path_mismatch:${transcript?.product_path || "missing"}`);
+  }
+  if (transcript?.conformance?.non_loopback_runtime !== true) {
+    errors.push(`${errorPrefix}_runtime_not_remote:${transcript?.conformance?.runtime_host_class || "missing"}`);
+  }
+  const steps = Array.isArray(transcript?.steps) ? transcript.steps : [];
+  if (steps.length === 0) errors.push(`${errorPrefix}_steps_missing`);
+  for (const step of steps) {
+    if (step?.ok !== true) errors.push(`${errorPrefix}_failed_step:${step?.name || "unknown"}`);
+  }
+  return errors;
+}
+
+async function validateTranscriptVisualStepArtifact({ id, transcript, transcriptPath }) {
+  const errors = [];
+  const step = findPassingStep(transcript, "visual proof snapshot");
+  if (!step) {
+    errors.push(`${id}_visual_step_missing`);
+    return errors;
+  }
+  const screenshotPath = resolveEvidenceArtifactPath(step.screenshot_path, transcriptPath);
+  if (!screenshotPath) {
+    errors.push(`${id}_visual_screenshot_path_missing`);
+    return errors;
+  }
+  try {
+    const info = await stat(screenshotPath);
+    if (!info.isFile()) errors.push(`${id}_visual_screenshot_not_file:${screenshotPath}`);
+    if (info.size <= 0) errors.push(`${id}_visual_screenshot_empty:${screenshotPath}`);
+  } catch {
+    errors.push(`${id}_visual_screenshot_missing:${screenshotPath}`);
+  }
+  return errors;
+}
+
+function hasPassingResult(results, name) {
+  return (Array.isArray(results) ? results : []).some((result) => result?.name === name && result.ok === true);
+}
+
+function hasPassingStep(transcript, name) {
+  return Boolean(findPassingStep(transcript, name));
+}
+
+function findPassingStep(transcript, name) {
+  return (Array.isArray(transcript?.steps) ? transcript.steps : []).find((step) => step?.name === name && step.ok === true);
 }
 
 function validateSoakMemoryMetrics(memory) {
@@ -693,6 +954,45 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedProofSelfCheck.errors.includes("dojo_self_check_production_proof_not_consumed"));
   assert(rejectedProofSelfCheck.errors.includes("dojo_self_check_evidence_proof_not_consumed"));
 
+  const liveHostedDir = path.join(outDir, "live-hosted-runtime");
+  await mkdir(liveHostedDir, { recursive: true });
+  const liveHostedArtifacts = await writeLiveHostedRuntimeArtifactsForSelfCheck({ outDir: liveHostedDir });
+  const workflowE2EResult = await verifyDojoWorkflowPipelineE2EArtifact({
+    summaryPath: liveHostedArtifacts.workflow_summary_path,
+    releaseCandidate: true,
+  });
+  assert.equal(workflowE2EResult.ok, true, workflowE2EResult.errors.join(";"));
+  const stdioAcceptanceResult = await verifyDojoPrivateToolStdioAcceptanceArtifact({
+    transcriptPath: liveHostedArtifacts.stdio_transcript_path,
+    releaseCandidate: true,
+  });
+  assert.equal(stdioAcceptanceResult.ok, true, stdioAcceptanceResult.errors.join(";"));
+  const codexAcceptanceResult = await verifyDojoPrivateToolCodexAcceptanceArtifact({
+    transcriptPath: liveHostedArtifacts.codex_transcript_path,
+    releaseCandidate: true,
+  });
+  assert.equal(codexAcceptanceResult.ok, true, codexAcceptanceResult.errors.join(";"));
+  const rejectedCodexTranscriptPath = await writeCodexAcceptanceTranscriptForSelfCheck({
+    outDir: liveHostedDir,
+    basename: "codex-private-tool-acceptance-rejected",
+    overrides: {
+      codex: {
+        ...buildCodexAcceptanceTranscriptForSelfCheck().codex,
+        mcp_evidence: {
+          ...buildCodexAcceptanceTranscriptForSelfCheck().codex.mcp_evidence,
+          local_attach_call: true,
+          command_execution_count: 1,
+        },
+      },
+    },
+  });
+  const rejectedCodexAcceptance = await verifyDojoPrivateToolCodexAcceptanceArtifact({
+    transcriptPath: rejectedCodexTranscriptPath,
+    releaseCandidate: true,
+  });
+  assert(rejectedCodexAcceptance.errors.includes("private_tool_codex_local_attach_used"));
+  assert(rejectedCodexAcceptance.errors.includes("private_tool_codex_shell_commands_used:1"));
+
   const conformanceDir = path.join(outDir, "conformance");
   await mkdir(conformanceDir, { recursive: true });
   const releaseReport = buildReleaseCandidateConformanceReport();
@@ -826,6 +1126,9 @@ async function runSelfCheck({ outDir }) {
     ok: true,
     verified_sections: [
       summarizeSection(manifestResult),
+      summarizeSection(workflowE2EResult),
+      summarizeSection(stdioAcceptanceResult),
+      summarizeSection(codexAcceptanceResult),
       summarizeSection(conformanceResult),
       summarizeSection(visualResult),
       summarizeSection(securityResult),
@@ -834,6 +1137,7 @@ async function runSelfCheck({ outDir }) {
     ],
     rejected_controls: [
       summarizeSection(rejectedSelfCheck),
+      summarizeSection(rejectedCodexAcceptance),
       summarizeSection(rejectedDryRun),
       summarizeSection(rejectedSecurity),
       summarizeSection(rejectedChaos),
@@ -886,6 +1190,203 @@ function buildReleaseCandidateConformanceReport({
   };
   report.release_gate = buildConformanceReleaseGateSummary(report);
   return redactConformanceReport(report);
+}
+
+async function writeLiveHostedRuntimeArtifactsForSelfCheck({ outDir }) {
+  const workflowSummaryPath = await writeWorkflowE2ESummaryForSelfCheck({ outDir });
+  const stdioTranscriptPath = await writeStdioAcceptanceTranscriptForSelfCheck({ outDir });
+  const codexTranscriptPath = await writeCodexAcceptanceTranscriptForSelfCheck({ outDir });
+  return {
+    workflow_summary_path: workflowSummaryPath,
+    stdio_transcript_path: stdioTranscriptPath,
+    codex_transcript_path: codexTranscriptPath,
+  };
+}
+
+async function writeWorkflowE2ESummaryForSelfCheck({ outDir, basename = "workflow-e2e", overrides = {} }) {
+  const summary = {
+    schema_version: "synthi.dojo.workflowPipelineE2E.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    case_count: 1,
+    hosted_runtime: {
+      cdp_url: "wss://hosted-runtime.example.test/session",
+      cdp_url_configured: true,
+      ok: true,
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: true,
+      runtime_host_class: "remote",
+    },
+    fresh_mcp: {
+      verify_fresh_mcp: true,
+      bridge_url: "http://127.0.0.1:49999",
+      private_workflow_store_env_configured: true,
+    },
+    results: [
+      { caseId: "self-check-case", name: "export avoids forwarded port literals", ok: true, detail: "none" },
+      { caseId: "self-check-case", name: "run exported Playwright", ok: true, detail: "passed" },
+      { caseId: "self-check-case", name: "fresh MCP attach hosted browser", ok: true, detail: "hosted" },
+      { caseId: "self-check-case", name: "fresh MCP call discovered private tool", ok: true, detail: "steps=1" },
+    ],
+    ...overrides,
+  };
+  const summaryPath = path.join(outDir, `${basename}.json`);
+  await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  return summaryPath;
+}
+
+async function writeStdioAcceptanceTranscriptForSelfCheck({ outDir, basename = "mcp-stdio-private-tool-acceptance", overrides = {} }) {
+  const screenshotPath = path.join(outDir, `${basename}.png`);
+  await writeFile(screenshotPath, Buffer.from(`${basename}:visual-proof`));
+  const transcript = {
+    schema_version: "synthi.dojo.privateToolStdioAcceptance.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    cdp_url: "wss://hosted-runtime.example.test/session",
+    target_url: "https://workspace.example.test/private-tool",
+    workspace_id: "workspace-self-check",
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+    conformance: {
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: true,
+      runtime_host_class: "remote",
+      require_external_private_tool_store: false,
+      external_private_tool_store: false,
+    },
+    private_tool_store: {
+      external: false,
+      file: "redacted-private-tools.enc.json",
+      scope: "self-check",
+    },
+    acceptance: {
+      requested_tool_name: null,
+      tool_args_keys: [],
+      expected_steps_min: 1,
+      expected_text_required: true,
+    },
+    steps: [
+      { name: "initialize", ok: true },
+      { name: "production-style deployment readiness through MCP", ok: true, workflow_bridge_required: false },
+      { name: "discover private MCP tool", ok: true, tool_name: "synthi_app_self_check", tool_count: 1 },
+      {
+        name: "strict host schema validation before execution",
+        ok: true,
+        rejected: [
+          { arguments: ["script_path"], errors: ["additional_property:script_path"] },
+          { arguments: ["run_mode"], errors: ["enum:run_mode"] },
+        ],
+        accepted_configured_call: true,
+      },
+      { name: "discover private workflow registry through MCP", ok: true, count: 1, tool_name: "synthi_app_self_check" },
+      { name: "lookup manifest through MCP", ok: true, result: { tool_name: "synthi_app_self_check" } },
+      {
+        name: "attach hosted workspace browser through MCP",
+        ok: true,
+        evidence: { hosted_attach: true, local_attach: false, runtime_kind: "hosted" },
+      },
+      { name: "grant exact-origin consent", ok: true },
+      { name: "open target page", ok: true, tab: { tab_id: "tab-self-check" } },
+      {
+        name: "call discovered private MCP tool",
+        ok: true,
+        result: {
+          ok: true,
+          private_tool: { tool_name: "synthi_app_self_check", run_mode: "sameSession" },
+          replay: { steps_run: 2 },
+        },
+      },
+      {
+        name: "visual proof snapshot",
+        ok: true,
+        screenshot_path: screenshotPath,
+        url: "https://workspace.example.test/private-tool",
+        expected_text: "Details opened",
+      },
+    ],
+    ...overrides,
+  };
+  const transcriptPath = path.join(outDir, `${basename}.json`);
+  await writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`, "utf8");
+  return transcriptPath;
+}
+
+async function writeCodexAcceptanceTranscriptForSelfCheck({ outDir, basename = "codex-private-tool-acceptance", overrides = {} }) {
+  const screenshotPath = path.join(outDir, `${basename}.png`);
+  await writeFile(screenshotPath, Buffer.from(`${basename}:visual-proof`));
+  const transcript = buildCodexAcceptanceTranscriptForSelfCheck({
+    screenshotPath,
+    ...overrides,
+  });
+  const transcriptPath = path.join(outDir, `${basename}.json`);
+  await writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`, "utf8");
+  return transcriptPath;
+}
+
+function buildCodexAcceptanceTranscriptForSelfCheck(overrides = {}) {
+  const screenshotPath = overrides.screenshotPath || "codex-private-tool-acceptance.png";
+  const transcript = {
+    schema_version: "synthi.dojo.privateToolCodexAcceptance.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    cdp_url: "wss://hosted-runtime.example.test/session",
+    target_url: "https://workspace.example.test/private-tool",
+    workspace_id: "workspace-self-check",
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+    conformance: {
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: true,
+      runtime_host_class: "remote",
+      require_external_private_tool_store: false,
+      external_private_tool_store: false,
+    },
+    private_tool_store: {
+      external: false,
+      file: "redacted-private-tools.enc.json",
+      scope: "self-check",
+    },
+    acceptance: {
+      requested_tool_name: null,
+      tool_args_keys: [],
+      expected_steps_min: 1,
+      expected_text_required: true,
+    },
+    codex_model: "gpt-5-codex-self-check",
+    codex: {
+      exit_code: 0,
+      event_count: 9,
+      final_message: "WORKFLOW_DONE synthi_app_self_check",
+      saw_private_tool_name: true,
+      mcp_evidence: {
+        hosted_attach_call: true,
+        local_attach_call: false,
+        private_tool_call: true,
+        private_tool_result_ok: true,
+        private_tool_steps_run: 2,
+        private_tool_called_name: "synthi_app_self_check",
+        consent_call: true,
+        open_call: true,
+        command_execution_count: 0,
+        command_executions: [],
+      },
+    },
+    steps: [
+      { name: "codex discovered and called private MCP tool", ok: true, tool_name: "synthi_app_self_check" },
+      {
+        name: "visual proof snapshot",
+        ok: true,
+        screenshot_path: screenshotPath,
+        url: "https://workspace.example.test/private-tool",
+        match: true,
+        expected_text: "Details opened",
+      },
+    ],
+  };
+  const cleanedOverrides = { ...overrides };
+  delete cleanedOverrides.screenshotPath;
+  return {
+    ...transcript,
+    ...cleanedOverrides,
+  };
 }
 
 async function writeConformanceArtifactsForSelfCheck({ outDir, report, basename }) {

@@ -16,16 +16,22 @@ import {
 import {
   validateDojoProofSelfCheckForRelease,
   validateDojoMcpHostConformanceReportForRelease,
+  validateDojoPrivateToolCodexAcceptanceForRelease,
+  validateDojoPrivateToolStdioAcceptanceForRelease,
+  validateDojoWorkflowPipelineE2EForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
   validateDojoSecurityAbuseEvidenceForRelease,
   validateDojoSoakPerformanceSummary,
   verifyDojoChaosPerformanceEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
+  verifyDojoPrivateToolCodexAcceptanceArtifact,
+  verifyDojoPrivateToolStdioAcceptanceArtifact,
   verifyDojoProofSelfCheckArtifacts,
   verifyDojoReleaseGateArtifactsFromArgs,
   verifyDojoReleaseGateManifestArtifacts,
   verifyDojoSecurityAbuseEvidenceArtifact,
   verifyDojoSoakPerformanceArtifacts,
+  verifyDojoWorkflowPipelineE2EArtifact,
   verifyVisualProofArtifact,
 } from "../../scripts/dojo-release-gate-verify.mjs";
 
@@ -132,6 +138,74 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("verifies live hosted runtime acceptance artifacts for release candidates", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-live-hosted-runtime-verify-"));
+    const workflow = await writeWorkflowE2EFixture({ dir });
+    const stdio = await writePrivateToolStdioAcceptanceFixture({ dir });
+    const codex = await writePrivateToolCodexAcceptanceFixture({ dir });
+
+    expect(validateDojoWorkflowPipelineE2EForRelease(workflow.report)).toEqual({ ok: true, errors: [] });
+    expect(await verifyDojoWorkflowPipelineE2EArtifact({
+      summaryPath: workflow.reportPath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    expect(validateDojoPrivateToolStdioAcceptanceForRelease(stdio.transcript)).toEqual({ ok: true, errors: [] });
+    expect(await verifyDojoPrivateToolStdioAcceptanceArtifact({
+      transcriptPath: stdio.transcriptPath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    expect(validateDojoPrivateToolCodexAcceptanceForRelease(codex.transcript)).toEqual({ ok: true, errors: [] });
+    expect(await verifyDojoPrivateToolCodexAcceptanceArtifact({
+      transcriptPath: codex.transcriptPath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const staleWorkflow = workflowE2EFixture({
+      hosted_runtime: {
+        ...workflow.report.hosted_runtime,
+        non_loopback_runtime: false,
+        runtime_host_class: "loopback",
+      },
+      fresh_mcp: {
+        ...workflow.report.fresh_mcp,
+        verify_fresh_mcp: false,
+      },
+    });
+    expect(validateDojoWorkflowPipelineE2EForRelease(staleWorkflow).errors).toEqual(expect.arrayContaining([
+      "workflow_e2e_runtime_not_remote:loopback",
+      "workflow_e2e_fresh_mcp_not_enabled",
+    ]));
+
+    const unsafeCodex = privateToolCodexAcceptanceFixture({
+      codex: {
+        ...codex.transcript.codex,
+        mcp_evidence: {
+          ...codex.transcript.codex.mcp_evidence,
+          local_attach_call: true,
+          command_execution_count: 1,
+        },
+      },
+    });
+    expect(validateDojoPrivateToolCodexAcceptanceForRelease(unsafeCodex).errors).toEqual(expect.arrayContaining([
+      "private_tool_codex_local_attach_used",
+      "private_tool_codex_shell_commands_used:1",
+    ]));
+  });
+
   it("includes manifest-declared Dojo proof self-check artifacts in release candidate verification", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-candidate-self-check-"));
     const selfCheck = await writeProofSelfCheckFixture({ dir });
@@ -143,6 +217,9 @@ describe("Dojo release gate artifact verifier", () => {
       evidencePath: conformanceEvidencePath,
     });
     const securityEvidencePath = await writeSecurityEvidenceFixture({ dir });
+    const workflowE2E = await writeWorkflowE2EFixture({ dir });
+    const stdioAcceptance = await writePrivateToolStdioAcceptanceFixture({ dir });
+    const codexAcceptance = await writePrivateToolCodexAcceptanceFixture({ dir });
 
     const packageScripts = await readPackageScripts();
     const manifest = buildDojoReleaseGateManifest({
@@ -152,6 +229,9 @@ describe("Dojo release gate artifact verifier", () => {
     const selfCheckGate = manifest.gates.find((gate) => gate.id === "dojo_self_check");
     selfCheckGate.default_report_path = selfCheck.summaryPath;
     selfCheckGate.default_evidence_path = selfCheck.productionEvidencePath;
+    manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
+    manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioAcceptance.transcriptPath;
+    manifest.gates.find((gate) => gate.id === "private_tool_codex_acceptance").default_report_path = codexAcceptance.transcriptPath;
     for (const gate of manifest.gates.filter((item) => item.evidence_kind === "visual_report")) {
       const visual = await writeVisualReportFixture({
         dir,
@@ -187,6 +267,13 @@ describe("Dojo release gate artifact verifier", () => {
     ]);
     expect(verified.visual_reports).toHaveLength(2);
     expect(verified.visual_reports.every((report) => report.ok)).toBe(true);
+    expect(verified.live_hosted_runtime).toHaveLength(3);
+    expect(verified.live_hosted_runtime.map((report) => report.id)).toEqual([
+      "workflow_e2e_hosted",
+      "private_tool_stdio_acceptance",
+      "private_tool_codex_acceptance",
+    ]);
+    expect(verified.live_hosted_runtime.every((report) => report.ok)).toBe(true);
   });
 
   it("verifies MCP host conformance evidence hashes before release promotion", async () => {
@@ -566,6 +653,202 @@ function productionRuntimeEvidenceFixture(overrides = {}) {
     audit_event_types: ["runtime_session_created", "runtime_action_authorized", "proof_used"],
     ...overrides,
   };
+}
+
+async function writeWorkflowE2EFixture({
+  dir,
+  basename = "workflow-e2e",
+  report = workflowE2EFixture(),
+}) {
+  const reportPath = path.join(dir, `${basename}.json`);
+  await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
+  return { report, reportPath };
+}
+
+function workflowE2EFixture(overrides = {}) {
+  return {
+    schema_version: "synthi.dojo.workflowPipelineE2E.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    case_count: 1,
+    hosted_runtime: {
+      cdp_url: "wss://hosted-runtime.example.test/session",
+      cdp_url_configured: true,
+      ok: true,
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: true,
+      runtime_host_class: "remote",
+    },
+    fresh_mcp: {
+      verify_fresh_mcp: true,
+      bridge_url: "http://127.0.0.1:49999",
+      private_workflow_store_env_configured: true,
+    },
+    results: [
+      { caseId: "fixture-case", name: "export avoids forwarded port literals", ok: true, detail: "none" },
+      { caseId: "fixture-case", name: "run exported Playwright", ok: true, detail: "passed" },
+      { caseId: "fixture-case", name: "fresh MCP attach hosted browser", ok: true, detail: "hosted" },
+      { caseId: "fixture-case", name: "fresh MCP call discovered private tool", ok: true, detail: "steps=1" },
+    ],
+    ...overrides,
+  };
+}
+
+async function writePrivateToolStdioAcceptanceFixture({
+  dir,
+  basename = "private-tool-stdio",
+  transcript,
+}) {
+  const screenshotPath = path.join(dir, `${basename}.png`);
+  await writeFile(screenshotPath, Buffer.from(`${basename}:visual-proof`));
+  const body = transcript ?? privateToolStdioAcceptanceFixture({ screenshotPath });
+  const transcriptPath = path.join(dir, `${basename}.json`);
+  await writeFile(transcriptPath, JSON.stringify(body, null, 2), "utf8");
+  return {
+    transcript: body,
+    transcriptPath,
+    screenshotPath,
+  };
+}
+
+function privateToolStdioAcceptanceFixture(overrides = {}) {
+  const screenshotPath = overrides.screenshotPath || "private-tool-stdio.png";
+  const base = privateToolAcceptanceBaseFixture({
+    schema_version: "synthi.dojo.privateToolStdioAcceptance.v1",
+    steps: [
+      { name: "initialize", ok: true },
+      { name: "production-style deployment readiness through MCP", ok: true, workflow_bridge_required: false },
+      { name: "discover private MCP tool", ok: true, tool_name: "synthi_app_fixture", tool_count: 1 },
+      {
+        name: "strict host schema validation before execution",
+        ok: true,
+        rejected: [
+          { arguments: ["script_path"], errors: ["additional_property:script_path"] },
+          { arguments: ["run_mode"], errors: ["enum:run_mode"] },
+        ],
+        accepted_configured_call: true,
+      },
+      { name: "discover private workflow registry through MCP", ok: true, count: 1, tool_name: "synthi_app_fixture" },
+      { name: "lookup manifest through MCP", ok: true, result: { tool_name: "synthi_app_fixture" } },
+      {
+        name: "attach hosted workspace browser through MCP",
+        ok: true,
+        evidence: { hosted_attach: true, local_attach: false, runtime_kind: "hosted" },
+      },
+      { name: "grant exact-origin consent", ok: true },
+      { name: "open target page", ok: true, tab: { tab_id: "tab-fixture" } },
+      {
+        name: "call discovered private MCP tool",
+        ok: true,
+        result: {
+          ok: true,
+          private_tool: { tool_name: "synthi_app_fixture", run_mode: "sameSession" },
+          replay: { steps_run: 2 },
+        },
+      },
+      {
+        name: "visual proof snapshot",
+        ok: true,
+        screenshot_path: screenshotPath,
+        url: "https://workspace.example.test/private-tool",
+        expected_text: "Details opened",
+      },
+    ],
+  });
+  return { ...base, ...withoutFixtureOnlyOverrides(overrides) };
+}
+
+async function writePrivateToolCodexAcceptanceFixture({
+  dir,
+  basename = "private-tool-codex",
+  transcript,
+}) {
+  const screenshotPath = path.join(dir, `${basename}.png`);
+  await writeFile(screenshotPath, Buffer.from(`${basename}:visual-proof`));
+  const body = transcript ?? privateToolCodexAcceptanceFixture({ screenshotPath });
+  const transcriptPath = path.join(dir, `${basename}.json`);
+  await writeFile(transcriptPath, JSON.stringify(body, null, 2), "utf8");
+  return {
+    transcript: body,
+    transcriptPath,
+    screenshotPath,
+  };
+}
+
+function privateToolCodexAcceptanceFixture(overrides = {}) {
+  const screenshotPath = overrides.screenshotPath || "private-tool-codex.png";
+  const base = privateToolAcceptanceBaseFixture({
+    schema_version: "synthi.dojo.privateToolCodexAcceptance.v1",
+    codex_model: "gpt-5-codex-fixture",
+    codex: {
+      exit_code: 0,
+      event_count: 9,
+      final_message: "WORKFLOW_DONE synthi_app_fixture",
+      saw_private_tool_name: true,
+      mcp_evidence: {
+        hosted_attach_call: true,
+        local_attach_call: false,
+        private_tool_call: true,
+        private_tool_result_ok: true,
+        private_tool_steps_run: 2,
+        private_tool_called_name: "synthi_app_fixture",
+        consent_call: true,
+        open_call: true,
+        command_execution_count: 0,
+        command_executions: [],
+      },
+    },
+    steps: [
+      { name: "codex discovered and called private MCP tool", ok: true, tool_name: "synthi_app_fixture" },
+      {
+        name: "visual proof snapshot",
+        ok: true,
+        screenshot_path: screenshotPath,
+        url: "https://workspace.example.test/private-tool",
+        match: true,
+        expected_text: "Details opened",
+      },
+    ],
+  });
+  return { ...base, ...withoutFixtureOnlyOverrides(overrides) };
+}
+
+function privateToolAcceptanceBaseFixture(overrides = {}) {
+  return {
+    schema_version: overrides.schema_version,
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    cdp_url: "wss://hosted-runtime.example.test/session",
+    target_url: "https://workspace.example.test/private-tool",
+    workspace_id: "workspace-fixture",
+    product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
+    conformance: {
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: true,
+      runtime_host_class: "remote",
+      require_external_private_tool_store: false,
+      external_private_tool_store: false,
+    },
+    private_tool_store: {
+      external: false,
+      file: "redacted-private-tools.enc.json",
+      scope: "acceptance-fixture",
+    },
+    acceptance: {
+      requested_tool_name: null,
+      tool_args_keys: [],
+      expected_steps_min: 1,
+      expected_text_required: true,
+    },
+    steps: [],
+    ...overrides,
+  };
+}
+
+function withoutFixtureOnlyOverrides(overrides) {
+  const cleaned = { ...overrides };
+  delete cleaned.screenshotPath;
+  return cleaned;
 }
 
 async function writeSecurityEvidenceFixture({

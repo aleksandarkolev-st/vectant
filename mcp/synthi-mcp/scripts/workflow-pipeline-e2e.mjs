@@ -22,8 +22,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { chromium } from "playwright-core";
 import { freshMcpProcessEnv } from "./lib/workflow-pipeline-e2e-helpers.mjs";
+import { runtimeEndpointConformance } from "./private-tool-acceptance-conformance.mjs";
 
 export { freshMcpProcessEnv } from "./lib/workflow-pipeline-e2e-helpers.mjs";
+
+const WORKFLOW_PIPELINE_SUMMARY_SCHEMA_VERSION = "synthi.dojo.workflowPipelineE2E.v1";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -233,7 +236,7 @@ async function main() {
 
     await writeFile(
       path.join(artifactRoot, "summary.json"),
-      JSON.stringify({ generated_at: new Date().toISOString(), results }, null, 2)
+      JSON.stringify(buildWorkflowPipelineSummary({ selectedCases }), null, 2)
     );
     log("ok", `workflow pipeline passed ${selectedCases.length} seeded project(s)`);
     console.log(`artifacts=${artifactRoot}`);
@@ -242,6 +245,40 @@ async function main() {
     // Closing the Playwright Browser can terminate that runtime; let process
     // teardown release the client connection instead.
     if (ownedBridge) await ownedBridge.close().catch(() => undefined);
+  }
+}
+
+function buildWorkflowPipelineSummary({ selectedCases }) {
+  return {
+    schema_version: WORKFLOW_PIPELINE_SUMMARY_SCHEMA_VERSION,
+    generated_at: new Date().toISOString(),
+    ok: results.every((result) => result?.ok === true),
+    case_count: selectedCases.length,
+    hosted_runtime: {
+      cdp_url: redactUrl(CFG.cdpUrl),
+      cdp_url_configured: Boolean(CFG.cdpUrl),
+      ...runtimeEndpointConformance({
+        cdpUrl: CFG.cdpUrl,
+        requireNonLoopbackRuntime: true,
+      }),
+    },
+    fresh_mcp: {
+      verify_fresh_mcp: CFG.verifyFreshMcp === true,
+      bridge_url: redactUrl(CFG.bridgeUrl),
+      private_workflow_store_env_configured: Boolean(CFG.privateWorkflowStoreEnv),
+    },
+    results,
+  };
+}
+
+function redactUrl(value) {
+  try {
+    const parsed = new URL(String(value));
+    if (parsed.username) parsed.username = "redacted";
+    if (parsed.password) parsed.password = "redacted";
+    return parsed.toString();
+  } catch {
+    return "invalid";
   }
 }
 

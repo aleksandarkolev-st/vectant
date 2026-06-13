@@ -65,6 +65,7 @@ const __dirname = path.dirname(__filename);
 const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
+const PRIVATE_TOOL_CODEX_ACCEPTANCE_SCHEMA_VERSION = "synthi.dojo.privateToolCodexAcceptance.v1";
 
 const args = parseArgs(process.argv.slice(2));
 const CFG = {
@@ -134,7 +135,9 @@ async function main() {
   const expectedText = CFG.expectedText ?? (privateToolStore.external ? "" : "Details opened");
   const workspaceId = CFG.workspaceId || `codex-private-tool-acceptance-${process.pid}`;
   const transcript = {
+    schema_version: PRIVATE_TOOL_CODEX_ACCEPTANCE_SCHEMA_VERSION,
     generated_at: new Date().toISOString(),
+    ok: true,
     cdp_url: redactCdpUrl(CFG.cdpUrl),
     target_url: targetUrl,
     workspace_id: workspaceId,

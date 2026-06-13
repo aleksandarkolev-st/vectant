@@ -103,6 +103,13 @@ export const DOJO_VISUAL_REPORT_REQUIREMENTS = Object.freeze({
   ],
 });
 
+export const DOJO_LIVE_HOSTED_RUNTIME_REQUIREMENTS = Object.freeze({
+  require_hosted_runtime: true,
+  require_non_loopback_runtime: true,
+  require_visual_proof: true,
+  require_successful_steps: true,
+});
+
 export const DOJO_RELEASE_GATE_COMMANDS = [
   {
     id: "mcp_typecheck",
@@ -259,6 +266,14 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     command: "npm --prefix mcp/synthi-mcp run live:browser:workflow-pipeline",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
+    report_schema_version: "synthi.dojo.workflowPipelineE2E.v1",
+    default_report_path: "tmp/workflow-pipeline-e2e/summary.json",
+    release_artifact_requirements: {
+      ...DOJO_LIVE_HOSTED_RUNTIME_REQUIREMENTS,
+      require_fresh_mcp_bridge: true,
+      require_exported_playwright: true,
+      require_no_forwarded_port_literals: true,
+    },
     requires_env: [
       "SYNTHI_HOSTED_BROWSER_CDP_URL",
       "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP",
@@ -272,6 +287,15 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     command: "npm --prefix mcp/synthi-mcp run live:browser:private-tool-stdio",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
+    report_schema_version: "synthi.dojo.privateToolStdioAcceptance.v1",
+    default_report_path: "tmp/private-tool-stdio-acceptance/mcp-stdio-private-tool-acceptance.json",
+    release_artifact_requirements: {
+      ...DOJO_LIVE_HOSTED_RUNTIME_REQUIREMENTS,
+      require_strict_schema_validation: true,
+      require_private_tool_registry: true,
+      require_no_local_attach: true,
+    },
+    requires_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
   },
   {
     id: "private_tool_codex_acceptance",
@@ -281,6 +305,15 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     command: "npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
+    report_schema_version: "synthi.dojo.privateToolCodexAcceptance.v1",
+    default_report_path: "tmp/private-tool-codex-acceptance/codex-private-tool-acceptance.json",
+    release_artifact_requirements: {
+      ...DOJO_LIVE_HOSTED_RUNTIME_REQUIREMENTS,
+      require_agent_mcp_only: true,
+      require_private_tool_call: true,
+      require_no_local_attach: true,
+    },
+    requires_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
   },
   {
     id: "dojo_mcp_host_conformance",
@@ -502,6 +535,17 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!gate.default_report_path) errors.push(`visual_gate_missing_report_path:${gate.id}`);
     if (!gate.visual_report_requirements?.requires_pixel_metrics) errors.push(`visual_gate_missing_pixel_metrics:${gate.id}`);
     if (!gate.visual_report_requirements?.requires_layout_metrics) errors.push(`visual_gate_missing_layout_metrics:${gate.id}`);
+  }
+  for (const gate of gates.filter((item) => item.tier === "T5")) {
+    if (gate.evidence_kind !== "proof_artifact") errors.push(`live_hosted_gate_missing_artifact_contract:${gate.id}`);
+    if (!gate.report_schema_version) errors.push(`live_hosted_gate_missing_schema:${gate.id}`);
+    if (!gate.default_report_path) errors.push(`live_hosted_gate_missing_report_path:${gate.id}`);
+    if (!gate.release_artifact_requirements?.require_hosted_runtime) {
+      errors.push(`live_hosted_gate_missing_runtime_requirement:${gate.id}`);
+    }
+    if (!gate.release_artifact_requirements?.require_visual_proof) {
+      errors.push(`live_hosted_gate_missing_visual_requirement:${gate.id}`);
+    }
   }
   const dojoSelfCheckGate = gates.find((gate) => gate.id === "dojo_self_check");
   if (dojoSelfCheckGate) {
