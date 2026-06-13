@@ -20,6 +20,7 @@ import { selectFocusedEditorPaneId } from '../state/layout-slice';
 import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 import EditorPaneHeader from '@/components/EditorPaneHeader';
 import { WORKFLOW_ACTIONS } from '@/components/agent-workflows/AgentWorkflowPanel';
+import { collectDojoAuditEvidenceRefs } from '@/services/agentWorkflowDojoAudit';
 import { buildAgentWorkflowHandoffFiles, buildDojoArtifactFiles, SYNTHI_WORKFLOW_ROOT } from '@/services/agentWorkflowHandoff';
 import {
   callAgentWorkflowTool,
@@ -28,8 +29,17 @@ import {
   resolveAgentWorkflowBridgeUrl,
 } from '@/services/agentWorkflowClient';
 import { gitClient } from '@/services/gitClient';
+import { getCurrentUser } from '@/services/userIdentity';
 
 const WORKSPACE_PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
+
+function currentDojoAuditActor() {
+  const user = getCurrentUser();
+  return {
+    actor_id: user?.id || 'guest',
+    actor_type: 'human',
+  };
+}
 
 // ────────────────────────────────────────────────────────
 //  Lazy component imports (code-split, no SSR)
@@ -554,20 +564,31 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           });
           break;
         case WORKFLOW_ACTIONS.RECORD_CASE_LAW:
-          await callWorkflowTool(WORKFLOW_ACTIONS.RECORD_CASE_LAW, {
-            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
-            title: 'Operator Review Required',
-            finding: workflowState?.dojo?.blockExplanation?.refusal || 'An operator marked this skill branch for review.',
-            impact: 'Production execution could exceed the currently reviewed license boundary.',
-            rule: 'Require human review and recertification before expanding this skill license.',
-            applies_to: ['workflow_execution'],
-          });
+          {
+            const evidenceRefs = collectDojoAuditEvidenceRefs({ workflowState });
+            await callWorkflowTool(WORKFLOW_ACTIONS.RECORD_CASE_LAW, {
+              ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+              title: 'Operator Review Required',
+              finding: workflowState?.dojo?.blockExplanation?.refusal || 'An operator marked this skill branch for review.',
+              impact: 'Production execution could exceed the currently reviewed license boundary.',
+              rule: 'Require human review and recertification before expanding this skill license.',
+              applies_to: ['workflow_execution'],
+              evidence_refs: evidenceRefs,
+            });
+          }
           break;
         case WORKFLOW_ACTIONS.REVOKE_LICENSE:
-          await callWorkflowTool(WORKFLOW_ACTIONS.REVOKE_LICENSE, {
-            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
-            reason: 'operator_requested_recertification',
-          });
+          {
+            const actor = currentDojoAuditActor();
+            const evidenceRefs = collectDojoAuditEvidenceRefs({ workflowState });
+            await callWorkflowTool(WORKFLOW_ACTIONS.REVOKE_LICENSE, {
+              ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+              reason: 'operator_requested_recertification',
+              actor_id: actor.actor_id,
+              actor_type: actor.actor_type,
+              evidence_refs: evidenceRefs,
+            });
+          }
           break;
         case WORKFLOW_ACTIONS.PREFIX_VALIDATE:
           await callWorkflowTool(WORKFLOW_ACTIONS.PREFIX_VALIDATE, {
