@@ -349,12 +349,16 @@ export async function verifyDojoProofSelfCheckArtifacts({ summaryPath, productio
     ?? resolveEvidenceArtifactPath(summary?.production_runtime_evidence, summaryPath);
   const evidence = await readJsonFile(resolvedEvidencePath);
   const errors = validateDojoProofSelfCheckForRelease(summary, evidence).errors;
+  const visualArtifacts = await validateDojoProofSelfCheckVisualArtifacts({ summary, summaryPath });
+  errors.push(...visualArtifacts.errors);
   return {
     id: "dojo_self_check",
     ok: errors.length === 0,
     errors,
     artifact_path: summaryPath,
     evidence_path: resolvedEvidencePath,
+    visual_evidence_path: visualArtifacts.visual_evidence_path,
+    visual_screenshot_path: visualArtifacts.visual_screenshot_path,
     report_schema_version: summary?.schema_version ?? null,
     evidence_schema_version: evidence?.schema_version ?? null,
   };
@@ -404,6 +408,108 @@ export function validateDojoProofSelfCheckForRelease(summary, productionEvidence
   return {
     ok: errors.length === 0,
     errors,
+  };
+}
+
+async function validateDojoProofSelfCheckVisualArtifacts({ summary, summaryPath }) {
+  const errors = [];
+  const visualEvidencePath = summary?.visual_proof_evidence
+    ? resolveEvidenceArtifactPath(summary.visual_proof_evidence, summaryPath)
+    : "";
+  const summaryScreenshotPath = summary?.visual_proof_screenshot
+    ? resolveEvidenceArtifactPath(summary.visual_proof_screenshot, summaryPath)
+    : "";
+  let visualEvidence = null;
+  if (!visualEvidencePath) {
+    errors.push("dojo_self_check_visual_evidence_path_missing");
+  } else {
+    try {
+      visualEvidence = await readJsonFile(visualEvidencePath);
+    } catch (err) {
+      errors.push(`dojo_self_check_visual_evidence_missing:${visualEvidencePath}`);
+    }
+  }
+
+  if (!visualEvidence) {
+    return {
+      errors,
+      visual_evidence_path: visualEvidencePath || null,
+      visual_screenshot_path: summaryScreenshotPath || null,
+    };
+  }
+
+  if (visualEvidence?.schema_version !== "synthi.dojo.proofSelfCheckVisualEvidence.v1") {
+    errors.push(`dojo_self_check_visual_evidence_schema_mismatch:${visualEvidence?.schema_version || "missing"}`);
+  }
+  if (visualEvidence?.ok !== true) errors.push("dojo_self_check_visual_evidence_not_ok");
+  if (Array.isArray(visualEvidence?.failed_visual_gates) && visualEvidence.failed_visual_gates.length > 0) {
+    errors.push(`dojo_self_check_visual_failed_gates:${visualEvidence.failed_visual_gates.join(",")}`);
+  }
+
+  for (const checkName of ["has_skill_id", "has_tool_name", "has_license_status", "has_proof_capsule"]) {
+    if (visualEvidence?.checks?.[checkName] !== true) {
+      errors.push(`dojo_self_check_visual_required_check_failed:${checkName}`);
+    }
+  }
+
+  const thresholds = visualEvidence?.visual_thresholds || {};
+  const imageMetrics = visualEvidence?.image_metrics || {};
+  const layoutMetrics = visualEvidence?.layout_metrics || {};
+  if (imageMetrics.pixel_metrics_verified !== true) errors.push("dojo_self_check_visual_pixel_metrics_missing");
+  if (Number(imageMetrics.width || 0) <= 0 || Number(imageMetrics.height || 0) <= 0) {
+    errors.push("dojo_self_check_visual_image_dimensions_missing");
+  }
+  if (Number(imageMetrics.unique_color_sample_count || 0) < Number(thresholds.min_unique_color_sample_count || 0)) {
+    errors.push(`dojo_self_check_visual_unique_color_budget_failed:${imageMetrics.unique_color_sample_count ?? "missing"}`);
+  }
+  if (Number(imageMetrics.luma_stddev || 0) < Number(thresholds.min_luma_stddev || 0)) {
+    errors.push(`dojo_self_check_visual_luma_budget_failed:${imageMetrics.luma_stddev ?? "missing"}`);
+  }
+  if (Number(imageMetrics.background_diff_pixel_ratio || 0) < Number(thresholds.min_background_diff_pixel_ratio || 0)) {
+    errors.push(`dojo_self_check_visual_background_diff_budget_failed:${imageMetrics.background_diff_pixel_ratio ?? "missing"}`);
+  }
+  if (layoutMetrics.selector_found !== true || layoutMetrics.selector_visible !== true) {
+    errors.push("dojo_self_check_visual_selector_not_visible");
+  }
+  if (Number(layoutMetrics.horizontal_overflow_px || 0) > Number(thresholds.max_horizontal_overflow_px ?? 4)) {
+    errors.push(`dojo_self_check_visual_horizontal_overflow:${layoutMetrics.horizontal_overflow_px ?? "missing"}`);
+  }
+  if (Number(layoutMetrics.selector_visible_area_px || 0) < Number(thresholds.min_selector_visible_area_px || 0)) {
+    errors.push(`dojo_self_check_visual_visible_area_budget_failed:${layoutMetrics.selector_visible_area_px ?? "missing"}`);
+  }
+
+  const evidenceScreenshotPath = visualEvidence?.screenshot_path
+    ? resolveEvidenceArtifactPath(visualEvidence.screenshot_path, visualEvidencePath)
+    : "";
+  const screenshotPath = evidenceScreenshotPath || summaryScreenshotPath;
+  if (!screenshotPath) {
+    errors.push("dojo_self_check_visual_screenshot_path_missing");
+  }
+  if (summaryScreenshotPath && evidenceScreenshotPath && path.resolve(summaryScreenshotPath) !== path.resolve(evidenceScreenshotPath)) {
+    errors.push("dojo_self_check_visual_screenshot_path_mismatch");
+  }
+  if (screenshotPath) {
+    try {
+      const info = await stat(screenshotPath);
+      if (!info.isFile()) errors.push(`dojo_self_check_visual_screenshot_not_file:${screenshotPath}`);
+      if (Number(visualEvidence?.screenshot_bytes || 0) !== info.size) {
+        errors.push(`dojo_self_check_visual_screenshot_bytes_mismatch:${visualEvidence?.screenshot_bytes ?? "missing"}:${info.size}`);
+      }
+      const minScreenshotBytes = Number(thresholds.min_screenshot_bytes || 0);
+      if (info.size < minScreenshotBytes) {
+        errors.push(`dojo_self_check_visual_screenshot_too_small:${info.size}:${minScreenshotBytes}`);
+      }
+      const bytes = await readFile(screenshotPath);
+      if (!isPngBytes(bytes)) errors.push("dojo_self_check_visual_screenshot_not_png");
+    } catch {
+      errors.push(`dojo_self_check_visual_screenshot_missing:${screenshotPath}`);
+    }
+  }
+
+  return {
+    errors,
+    visual_evidence_path: visualEvidencePath || null,
+    visual_screenshot_path: screenshotPath || null,
   };
 }
 
@@ -3059,6 +3165,8 @@ function summarizeSection(section) {
     errors: section.errors,
     artifact_path: section.artifact_path,
     evidence_path: section.evidence_path,
+    visual_evidence_path: section.visual_evidence_path,
+    visual_screenshot_path: section.visual_screenshot_path,
     report_schema_version: section.report_schema_version,
     result_count: section.result_count,
     release_candidate: section.release_candidate,
@@ -3078,6 +3186,19 @@ function resolveEvidenceArtifactPath(value, evidencePath) {
   if (path.isAbsolute(text)) return text;
   const evidenceRelative = path.resolve(path.dirname(evidencePath), text);
   return evidenceRelative;
+}
+
+function isPngBytes(bytes) {
+  return Buffer.isBuffer(bytes)
+    && bytes.length >= 8
+    && bytes[0] === 0x89
+    && bytes[1] === 0x50
+    && bytes[2] === 0x4e
+    && bytes[3] === 0x47
+    && bytes[4] === 0x0d
+    && bytes[5] === 0x0a
+    && bytes[6] === 0x1a
+    && bytes[7] === 0x0a;
 }
 
 function parseNdjson(text) {

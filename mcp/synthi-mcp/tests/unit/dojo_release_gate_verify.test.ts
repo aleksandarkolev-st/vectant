@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -167,6 +167,8 @@ describe("Dojo release gate artifact verifier", () => {
       ok: true,
       errors: [],
       evidence_path: artifacts.productionEvidencePath,
+      visual_evidence_path: artifacts.visualEvidencePath,
+      visual_screenshot_path: artifacts.visualScreenshotPath,
     }));
 
     const rejectedArtifacts = await writeProofSelfCheckFixture({
@@ -196,6 +198,43 @@ describe("Dojo release gate artifact verifier", () => {
       "dojo_self_check_evidence_proof_not_consumed",
       "dojo_self_check_evidence_replay_not_blocked",
       "dojo_self_check_runtime_screenshot_privacy_missing",
+    ]));
+
+    const rejectedVisualArtifacts = await writeProofSelfCheckFixture({
+      dir,
+      basename: "dojo-proof-self-check-visual-rejected",
+      visualEvidence: proofSelfCheckVisualEvidenceFixture({
+        ok: false,
+        screenshot_bytes: 1,
+        checks: {
+          ...proofSelfCheckVisualEvidenceFixture().checks,
+          has_proof_capsule: false,
+        },
+        failed_visual_gates: ["proof_capsule_missing"],
+        image_metrics: {
+          ...proofSelfCheckVisualEvidenceFixture().image_metrics,
+          pixel_metrics_verified: false,
+          unique_color_sample_count: 1,
+        },
+        layout_metrics: {
+          ...proofSelfCheckVisualEvidenceFixture().layout_metrics,
+          horizontal_overflow_px: 12,
+        },
+      }),
+    });
+    const rejectedVisual = await verifyDojoProofSelfCheckArtifacts({
+      summaryPath: rejectedVisualArtifacts.summaryPath,
+      productionEvidencePath: rejectedVisualArtifacts.productionEvidencePath,
+    });
+    expect(rejectedVisual.ok).toBe(false);
+    expect(rejectedVisual.errors).toEqual(expect.arrayContaining([
+      "dojo_self_check_visual_evidence_not_ok",
+      "dojo_self_check_visual_failed_gates:proof_capsule_missing",
+      "dojo_self_check_visual_required_check_failed:has_proof_capsule",
+      "dojo_self_check_visual_pixel_metrics_missing",
+      "dojo_self_check_visual_unique_color_budget_failed:1",
+      "dojo_self_check_visual_horizontal_overflow:12",
+      expect.stringMatching(/^dojo_self_check_visual_screenshot_bytes_mismatch:/),
     ]));
   });
 
@@ -1206,26 +1245,53 @@ async function writeProofSelfCheckFixture({
   basename = "dojo-proof-self-check",
   summary,
   productionEvidence,
+  visualEvidence,
+  screenshotBytes,
 }) {
   const productionEvidenceBody = productionEvidence ?? productionRuntimeEvidenceFixture();
   const productionEvidencePath = path.join(dir, `${basename}.production-runtime-evidence.json`);
+  const visualDir = path.join(dir, `${basename}.visual-proof`);
+  await mkdir(visualDir, { recursive: true });
+  const visualScreenshotPath = path.join(visualDir, "dojo-proof-visual.png");
+  const visualScreenshotBytes = screenshotBytes ?? proofSelfCheckPngFixtureBytes();
+  await writeFile(visualScreenshotPath, visualScreenshotBytes);
+  const visualEvidenceBody = visualEvidence
+    ? {
+        ...visualEvidence,
+        screenshot_path: visualEvidence.screenshot_path || visualScreenshotPath,
+      }
+    : proofSelfCheckVisualEvidenceFixture({
+        screenshot_path: visualScreenshotPath,
+        screenshot_bytes: visualScreenshotBytes.length,
+      });
+  const visualEvidencePath = path.join(visualDir, "dojo-proof-visual.evidence.json");
   const summaryBody = summary ?? proofSelfCheckSummaryFixture({
     production_runtime_evidence: path.basename(productionEvidencePath),
+    visual_proof_screenshot: path.relative(dir, visualScreenshotPath).replace(/\\/g, "/"),
+    visual_proof_evidence: path.relative(dir, visualEvidencePath).replace(/\\/g, "/"),
   });
   const summaryPath = path.join(dir, `${basename}.summary.json`);
   await writeFile(productionEvidencePath, JSON.stringify(productionEvidenceBody, null, 2), "utf8");
+  await writeFile(visualEvidencePath, JSON.stringify(visualEvidenceBody, null, 2), "utf8");
   await writeFile(summaryPath, JSON.stringify({
     ...summaryBody,
     production_runtime_evidence: path.basename(productionEvidencePath),
+    visual_proof_screenshot: summaryBody.visual_proof_screenshot ?? path.relative(dir, visualScreenshotPath).replace(/\\/g, "/"),
+    visual_proof_evidence: summaryBody.visual_proof_evidence ?? path.relative(dir, visualEvidencePath).replace(/\\/g, "/"),
   }, null, 2), "utf8");
   return {
     summary: {
       ...summaryBody,
       production_runtime_evidence: path.basename(productionEvidencePath),
+      visual_proof_screenshot: summaryBody.visual_proof_screenshot ?? path.relative(dir, visualScreenshotPath).replace(/\\/g, "/"),
+      visual_proof_evidence: summaryBody.visual_proof_evidence ?? path.relative(dir, visualEvidencePath).replace(/\\/g, "/"),
     },
     productionEvidence: productionEvidenceBody,
+    visualEvidence: visualEvidenceBody,
     summaryPath,
     productionEvidencePath,
+    visualEvidencePath,
+    visualScreenshotPath,
   };
 }
 
@@ -1241,8 +1307,57 @@ function proofSelfCheckSummaryFixture(overrides = {}) {
     visual_proof_ok: true,
     visual_proof_pixel_metrics_verified: true,
     visual_proof_horizontal_overflow_px: 0,
+    visual_proof_screenshot: "visual-proof/dojo-proof-visual.png",
+    visual_proof_evidence: "visual-proof/dojo-proof-visual.evidence.json",
     ...overrides,
   };
+}
+
+function proofSelfCheckVisualEvidenceFixture(overrides = {}) {
+  return {
+    schema_version: "synthi.dojo.proofSelfCheckVisualEvidence.v1",
+    ok: true,
+    page_path: "dojo-proof-visual.html",
+    screenshot_path: "dojo-proof-visual.png",
+    screenshot_bytes: proofSelfCheckPngFixtureBytes().length,
+    checks: {
+      has_skill_id: true,
+      has_tool_name: true,
+      has_license_status: true,
+      has_proof_capsule: true,
+    },
+    failed_visual_gates: [],
+    visual_thresholds: {
+      min_screenshot_bytes: 10000,
+      min_unique_color_sample_count: 24,
+      min_luma_stddev: 2,
+      min_background_diff_pixel_ratio: 0.01,
+      max_horizontal_overflow_px: 4,
+      min_selector_visible_area_px: 900,
+    },
+    image_metrics: {
+      pixel_metrics_verified: true,
+      width: 1360,
+      height: 1000,
+      unique_color_sample_count: 64,
+      luma_stddev: 20,
+      background_diff_pixel_ratio: 0.9,
+    },
+    layout_metrics: {
+      selector_found: true,
+      selector_visible: true,
+      horizontal_overflow_px: 0,
+      selector_visible_area_px: 100000,
+    },
+    ...overrides,
+  };
+}
+
+function proofSelfCheckPngFixtureBytes() {
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(12000, 1),
+  ]);
 }
 
 function productionRuntimeEvidenceFixture(overrides = {}) {
