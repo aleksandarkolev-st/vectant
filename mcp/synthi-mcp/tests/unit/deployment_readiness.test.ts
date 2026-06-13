@@ -125,7 +125,12 @@ describe("browser workflow deployment readiness", () => {
   it("fails production readiness when Dojo proof signing falls back to the default local key", () => {
     const readiness = browserWorkflowDeploymentReadiness({}, {
       ...productionReadyEnv(),
+      SYNTHI_DOJO_PROOF_SIGNING_PROVIDER: "hmac-local",
+      SYNTHI_DOJO_PROOF_SIGNING_KEY_ID: undefined,
       SYNTHI_DOJO_PROOF_SIGNING_KEY: "synthi-dojo-local-development-signing-key",
+      SYNTHI_DOJO_PROOF_SIGNING_COMMAND: undefined,
+      SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS: undefined,
+      SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM: undefined,
     });
 
     expect(readiness.ok).toBe(false);
@@ -283,6 +288,25 @@ describe("browser workflow deployment readiness", () => {
     ]));
   });
 
+  it("fails production readiness for unsupported proof signing providers", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_PROOF_SIGNING_PROVIDER: "test-kms",
+      SYNTHI_DOJO_PROOF_SIGNING_KEY_ID: "dojo-prod-key-1",
+      SYNTHI_DOJO_PROOF_SIGNING_COMMAND: undefined,
+      SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM: undefined,
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "dojo_external_signing",
+        status: "fail",
+        message: expect.stringContaining("not supported"),
+      }),
+    ]));
+  });
+
   it("exposes a redacted MCP tool report without secret values", async () => {
     const originalEnv = { ...process.env };
     try {
@@ -324,9 +348,11 @@ function productionReadyEnv(): NodeJS.ProcessEnv {
     SYNTHI_DOJO_STORE_KEY: "dojo-store-secret",
     SYNTHI_DOJO_STORE_SCOPE: "tenant-a:workspace-a",
     SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING: "1",
-    SYNTHI_DOJO_PROOF_SIGNING_PROVIDER: "test-kms",
-    SYNTHI_DOJO_PROOF_SIGNING_KEY_ID: "dojo-prod-key-1",
-    SYNTHI_DOJO_PROOF_SIGNING_KEY: "dojo-signing-secret",
+    SYNTHI_DOJO_PROOF_SIGNING_PROVIDER: "external-command",
+    SYNTHI_DOJO_PROOF_SIGNING_KEY_ID: "external-ed-key-a",
+    SYNTHI_DOJO_PROOF_SIGNING_COMMAND: "/usr/local/bin/dojo-proof-signer",
+    SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS: "[\"--tenant\",\"tenant-a\"]",
+    SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM: "-----BEGIN PUBLIC KEY-----\nredacted\n-----END PUBLIC KEY-----",
     SYNTHI_DOJO_MCP_MANIFEST_ISSUER: "synthi-dojo-skill-bus-prod",
     SYNTHI_DOJO_MCP_MANIFEST_KEY_ID: "dojo-mcp-manifest-key-1",
     SYNTHI_DOJO_MCP_MANIFEST_SIGNING_KEY: "dojo-manifest-secret",

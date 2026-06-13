@@ -3520,16 +3520,21 @@ function dojoProofSigningKey(): string {
 }
 
 function dojoProofKeyId(): string {
-  if (dojoProofSigningProvider() === "ed25519-local" || dojoProofSigningProvider() === "external-command") {
+  const provider = dojoProofSigningProvider();
+  if (provider === "ed25519-local" || provider === "external-command") {
     const keyId = process.env[DOJO_PROOF_SIGNING_KEY_ID_ENV]?.trim();
     if (!keyId) throw new Error("dojo_proof_signing_key_id_required");
     return keyId;
+  }
+  if (provider !== "hmac-local") {
+    throw new Error(`dojo_proof_signing_provider_unsupported:${provider}`);
   }
   return `dojo-key-${createHash("sha256").update(dojoProofSigningKey()).digest("hex").slice(0, 12)}`;
 }
 
 function dojoProofSigner(): DojoProofSigner {
-  if (dojoProofSigningProvider() === "ed25519-local") {
+  const provider = dojoProofSigningProvider();
+  if (provider === "ed25519-local") {
     const privateKeyPem = process.env[DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV]?.trim();
     if (!privateKeyPem) throw new Error("dojo_proof_signing_private_key_required");
     return createEd25519DojoProofSigner({
@@ -3537,7 +3542,7 @@ function dojoProofSigner(): DojoProofSigner {
       private_key_pem: privateKeyPem,
     });
   }
-  if (dojoProofSigningProvider() === "external-command") {
+  if (provider === "external-command") {
     const command = process.env[DOJO_PROOF_SIGNING_COMMAND_ENV]?.trim();
     if (!command) throw new Error("dojo_external_proof_signing_command_required");
     return createExternalCommandDojoProofSigner({
@@ -3545,6 +3550,9 @@ function dojoProofSigner(): DojoProofSigner {
       command,
       args: dojoProofSigningCommandArgs(),
     });
+  }
+  if (provider !== "hmac-local") {
+    throw new Error(`dojo_proof_signing_provider_unsupported:${provider}`);
   }
   return createLocalHmacDojoProofSigner({
     key: dojoProofSigningKey(),
@@ -3561,6 +3569,7 @@ function dojoProofVerifierForCapsule(capsule: DojoProofCarryingSkillCapsule): Do
       public_key_pem: publicKeyPem,
     });
   }
+  if (dojoProofSigningProvider() !== "hmac-local") return null;
   return createLocalHmacDojoProofSigner({
     key: dojoProofSigningKey(),
     key_id: capsule.key_id,

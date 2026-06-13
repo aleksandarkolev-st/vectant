@@ -242,19 +242,19 @@ function checkDojoExternalSigning(
     && keyId
     && command
     && publicKey;
-  const hasExternalSigner = provider
+  if (config.require_external_signing && hasExternalCommandSigner) {
+    return pass("dojo_external_signing", "Dojo proof signing is configured through an implemented external-command signing provider.", required, configured);
+  }
+  const unsupportedProvider = provider
     && provider !== "hmac-local"
     && provider !== "ed25519-local"
-    && provider !== "external-command"
-    && keyId
-    && !isDojoDefaultLocalProofSigningKey(env);
-  if (config.require_external_signing && (hasExternalCommandSigner || hasExternalSigner)) {
-    return pass("dojo_external_signing", "Dojo proof signing is configured through a non-local signing provider.", required, configured);
-  }
+    && provider !== "external-command";
   return {
     id: "dojo_external_signing",
     status: production ? "fail" : "warn",
-    message: "Dojo proof signing is not production-ready; an external signer or non-local signing provider is required.",
+    message: unsupportedProvider
+      ? "Dojo proof signing provider is not supported by the runtime; configure external-command signing or a supported provider."
+      : "Dojo proof signing is not production-ready; an external-command signing provider is required.",
     required_env: required,
     configured_env: configured,
   };

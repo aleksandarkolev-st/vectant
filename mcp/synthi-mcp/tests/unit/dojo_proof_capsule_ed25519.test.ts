@@ -200,6 +200,19 @@ describe("Dojo Ed25519 proof capsules", () => {
       expect.objectContaining({ ok: true, status: "allowed" })
     );
   });
+
+  it("fails closed instead of falling back to HMAC for unsupported signer providers", () => {
+    process.env[DOJO_PROOF_SIGNING_PROVIDER_ENV] = "test-kms";
+    process.env[DOJO_PROOF_SIGNING_KEY_ID_ENV] = "kms-key-a";
+    const skill = skillFixture();
+
+    expect(() => issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    })).toThrow("dojo_proof_signing_provider_unsupported:test-kms");
+  });
 });
 
 function configureEd25519ProofSigning() {
