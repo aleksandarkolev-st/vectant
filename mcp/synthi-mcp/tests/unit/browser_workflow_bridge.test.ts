@@ -397,7 +397,13 @@ describe("browser workflow bridge", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         tool: "synthi_workflow_publish_tool",
-        arguments: { workspace_id: "workspace-a" },
+        arguments: {
+          workspace_id: "workspace-a",
+          reason: "unit_test_publish",
+          actor_id: "bridge-publisher",
+          actor_type: "human",
+          evidence_refs: ["evidence:bridge-publish"],
+        },
       }),
     });
 
@@ -427,6 +433,15 @@ describe("browser workflow bridge", () => {
     expect(body.tool).toBe("synthi_dojo_publish_skill");
     expect(body.result.skill.skill_id).toBe("dojo_save_settings");
     expect(body.result.private_tool.tool_name).toBe("synthi_app_save_settings");
+    expect(body.result).toEqual(expect.objectContaining({
+      publication: expect.objectContaining({
+        reason: "unit_test_publish",
+        evidence_refs: ["evidence:bridge-publish"],
+        audit_event: expect.objectContaining({
+          actor: { actor_id: "bridge-publisher", actor_type: "human" },
+        }),
+      }),
+    }));
     expect(body.state.dojo).toEqual(expect.objectContaining({
       status: "licensed",
       published: true,
@@ -565,7 +580,13 @@ describe("browser workflow bridge", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         tool: "synthi_workflow_publish_tool",
-        arguments: { workspace_id: "workspace-a" },
+        arguments: {
+          workspace_id: "workspace-a",
+          reason: "unit_test_publish_for_revocation",
+          actor_id: "bridge-publisher",
+          actor_type: "human",
+          evidence_refs: ["evidence:bridge-revocation-publish"],
+        },
       }),
     });
     expect(publish.status).toBe(200);

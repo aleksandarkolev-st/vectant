@@ -285,7 +285,7 @@ describe("Agent Dojo MCP tools", () => {
     process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
 
     recordOpenDetailsWorkflowForDojoToolTest();
-    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", { workspace_id: "workspace-a" });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
     expect(publish?.isError).toBeUndefined();
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
 
@@ -410,7 +410,7 @@ describe("Agent Dojo MCP tools", () => {
 
   it("returns structured proof errors when proof issuance receives invalid timestamps", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
-    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", { workspace_id: "workspace-a" });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
     expect(publish?.isError).toBeUndefined();
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
 
@@ -435,7 +435,7 @@ describe("Agent Dojo MCP tools", () => {
 
   it("reports malformed license expiry metadata as blocked license health", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
-    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", { workspace_id: "workspace-a" });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
     expect(publish?.isError).toBeUndefined();
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
     const storedSkill = dojoSkillRegistry.get(skillId);
@@ -546,7 +546,48 @@ describe("Agent Dojo MCP tools", () => {
       runtime_guardrails: expect.any(Array),
     }));
 
-    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", { workspace_id: "workspace-a" });
+    const publishMissingReason = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: "workspace-a",
+      actor_id: "unit-publisher",
+      actor_type: "human",
+      evidence_refs: ["evidence:unit-publish"],
+    });
+    expect(publishMissingReason?.isError).toBe(true);
+    expect(publishMissingReason?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_skill_publication_reason_required",
+    }));
+    const publishMissingEvidence = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: "workspace-a",
+      reason: "unit_test_publish",
+      actor_id: "unit-publisher",
+      actor_type: "human",
+    });
+    expect(publishMissingEvidence?.isError).toBe(true);
+    expect(publishMissingEvidence?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_skill_publication_evidence_required",
+    }));
+    const publishMissingActor = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: "workspace-a",
+      reason: "unit_test_publish",
+      actor_type: "human",
+      evidence_refs: ["evidence:unit-publish"],
+    });
+    expect(publishMissingActor?.isError).toBe(true);
+    expect(publishMissingActor?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_skill_publication_actor_required",
+    }));
+    const publishInvalidActorType = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: "workspace-a",
+      reason: "unit_test_publish",
+      actor_id: "unit-publisher",
+      actor_type: "robot",
+      evidence_refs: ["evidence:unit-publish"],
+    });
+    expect(publishInvalidActorType?.isError).toBe(true);
+    expect(publishInvalidActorType?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_skill_publication_actor_type_required",
+    }));
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
     expect(publish?.isError).toBeUndefined();
     const published = publish?.structuredContent as {
       skill: { skill_id: string; published_tool_name: string };
@@ -558,6 +599,19 @@ describe("Agent Dojo MCP tools", () => {
       tool_name: "synthi_app_open_details",
     }));
     expect((publish?.structuredContent as { tool_name: string }).tool_name).toBe("synthi_app_open_details");
+    expect(publish?.structuredContent).toEqual(expect.objectContaining({
+      publication: expect.objectContaining({
+        ok: true,
+        status: "applied",
+        reason: "unit_test_publish",
+        evidence_refs: ["evidence:unit-publish"],
+        audit_event: expect.objectContaining({
+          event_type: "skill_version_created",
+          actor: { actor_id: "unit-publisher", actor_type: "human" },
+          evidence_refs: ["evidence:unit-publish"],
+        }),
+      }),
+    }));
     const publishedSkill = dojoSkillRegistry.get(published.skill.skill_id);
     expect(publishedSkill).toBeTruthy();
     const publishedManifest = (publish?.structuredContent as {
@@ -1549,7 +1603,7 @@ describe("Agent Dojo MCP tools", () => {
 
   it("uses top-level approval and actor context for license validation without duplicating workflow args", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
-    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", { workspace_id: "workspace-a" });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
     expect(publish?.isError).toBeUndefined();
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
     const skill = dojoSkillRegistry.get(skillId);
@@ -1685,6 +1739,17 @@ function recordOpenDetailsWorkflowForDojoToolTest(): void {
       { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
     ],
   });
+}
+
+function publishArgsForDojoToolTest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    workspace_id: "workspace-a",
+    reason: "unit_test_publish",
+    actor_id: "unit-publisher",
+    actor_type: "human",
+    evidence_refs: ["evidence:unit-publish"],
+    ...overrides,
+  };
 }
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {

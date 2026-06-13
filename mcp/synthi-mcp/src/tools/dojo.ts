@@ -453,8 +453,13 @@ export const DOJO_TOOLS = [
       properties: {
         workflow_id: { type: "string" },
         workspace_id: { type: "string" },
+        reason: { type: "string" },
+        actor_id: { type: "string" },
+        actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        evidence_refs: { type: "array", items: { type: "string" } },
+        now: { type: "string" },
       },
-      required: [],
+      required: ["reason", "actor_id", "actor_type", "evidence_refs"],
     },
   },
   {
@@ -1632,15 +1637,39 @@ function checkrideRuntimeInputsFor(skill: DojoSkill): Record<string, unknown> {
 function dojoPublishSkillTool(args: unknown): ToolResponse {
   const artifact = requiredWorkflowArtifact(args);
   if (!artifact.ok) return artifact.error;
-  const workspaceId = stringOpt(obj(args)["workspace_id"]);
+  const a = obj(args);
+  const workspaceId = stringOpt(a["workspace_id"]);
+  const reason = stringOpt(a["reason"]);
+  if (!reason) return errorResponse("dojo_skill_publication_reason_required");
+  const actorId = stringOpt(a["actor_id"]);
+  if (!actorId) return errorResponse("dojo_skill_publication_actor_required");
+  const actorType = actorTypeInputOpt(a["actor_type"]);
+  if (!actorType) return errorResponse("dojo_skill_publication_actor_type_required");
+  const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
+  if (evidenceRefs.length === 0) return errorResponse("dojo_skill_publication_evidence_required");
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const contract = artifact.artifact.workflow.contract;
   const manifest = generatePrivateWorkflowToolManifest(contract);
   const publishedTool = publishBackingPrivateTool(manifest, artifact.artifact);
   const skill = dojoSkillRegistry.publish(buildDojoSkill(contract, {
     workspace_id: workspaceId,
+    now,
     private_tool_manifest: manifest,
     ...(publishedTool.ok ? { published_tool_name: publishedTool.tool_name } : {}),
   }));
+  const auditEvent = {
+    event_type: "skill_version_created" as const,
+    actor: {
+      actor_id: actorId,
+      actor_type: actorType,
+    },
+    occurred_at: now,
+    workspace_id: skill.workspace_id,
+    skill_id: skill.skill_id,
+    license_id: skill.permission_license.license_id,
+    reason,
+    evidence_refs: evidenceRefs,
+  };
   return jsonResponse({
     ok: true,
     tool_name: publishedTool.tool_name,
@@ -1652,6 +1681,13 @@ function dojoPublishSkillTool(args: unknown): ToolResponse {
     license: skill.permission_license,
     assurance_case: skill.assurance_case,
     private_tool: publishedTool,
+    publication: {
+      ok: true,
+      status: "applied",
+      reason,
+      evidence_refs: evidenceRefs,
+      audit_event: auditEvent,
+    },
     repo_artifacts: artifactSummary(exportDojoRepoArtifacts(skill)),
   });
 }

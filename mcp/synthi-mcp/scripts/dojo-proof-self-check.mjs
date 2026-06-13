@@ -446,7 +446,13 @@ async function main() {
   assert(checkride.repo_artifacts.length > 20, "checkride preview should expose Dojo artifacts");
   log("ok", "ran Dojo checkride");
 
-  const publish = structured(await dispatchDojoTool("synthi_dojo_publish_skill", { workspace_id: workspaceId }));
+  const publish = structured(await dispatchDojoTool("synthi_dojo_publish_skill", {
+    workspace_id: workspaceId,
+    reason: "dojo_proof_self_check_publish",
+    actor_id: "dojo-proof-self-check",
+    actor_type: "service",
+    evidence_refs: ["evidence:dojo-proof-self-check-publish"],
+  }));
   assert.equal(publish.skill.skill_id, "dojo_open_details", "published skill id should derive from workflow intent");
   assert.equal(
     publish.private_tool.ok,

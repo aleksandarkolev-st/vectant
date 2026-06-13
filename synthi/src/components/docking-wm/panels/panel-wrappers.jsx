@@ -626,8 +626,14 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           break;
         case WORKFLOW_ACTIONS.PUBLISH_TOOL:
           {
+            const actor = currentDojoAuditActor();
+            const evidenceRefs = collectDojoAuditEvidenceRefs({ workflowState });
             const publishBody = await callWorkflowTool(WORKFLOW_ACTIONS.PUBLISH_TOOL, {
               ...(workspaceId ? { workspace_id: workspaceId } : {}),
+              reason: 'operator_requested_license_publish',
+              actor_id: actor.actor_id,
+              actor_type: actor.actor_type,
+              evidence_refs: evidenceRefs,
             });
             const skillId = publishBody?.result?.skill?.skill_id;
             if (skillId) {
