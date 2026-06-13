@@ -875,6 +875,18 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
         errors.push(`mcp_host_conformance_missing_env:${requiredEnv}`);
       }
     }
+    const missingScriptFlags = missingRequiredPackageScriptTokens(packageScripts, mcpHostConformanceGate, [
+      "--require-non-loopback-mcp-host",
+      "--execute-production",
+      "--require-external-control-plane-store",
+      "--require-external-proof-signing",
+      "--require-bridge-token",
+      "--require-no-local-cdp",
+      "--require-licensed-skill-filtering",
+    ]);
+    if (missingScriptFlags.length > 0) {
+      errors.push(`mcp_host_conformance_package_script_missing_flags:${missingScriptFlags.join(",")}`);
+    }
   }
   const privateToolHostConformanceGates = gates.filter((gate) => {
     return gate.id === "private_tool_stdio_host_conformance" || gate.id === "private_tool_codex_host_conformance";
@@ -903,6 +915,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!Array.isArray(gate.requires_env) || !gate.requires_env.includes("SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL")) {
       errors.push(`private_tool_host_conformance_missing_target_env:${gate.id}`);
+    }
+    const requiredScriptFlags = gate.id === "private_tool_stdio_host_conformance"
+      ? ["--require-custom-mcp-command", "--require-non-loopback-runtime", "--require-external-private-tool-store"]
+      : ["--require-non-loopback-runtime", "--require-external-private-tool-store"];
+    const missingScriptFlags = missingRequiredPackageScriptTokens(packageScripts, gate, requiredScriptFlags);
+    if (missingScriptFlags.length > 0) {
+      errors.push(`private_tool_host_conformance_package_script_missing_flags:${gate.id}:${missingScriptFlags.join(",")}`);
     }
   }
   const securityAbuseGate = gates.find((gate) => gate.id === "security_abuse_suite");
@@ -1215,6 +1234,15 @@ function gatePackageScriptIsPresent(packageScripts, gate) {
   const packageJson = gate.package_json || "mcp/synthi-mcp/package.json";
   if (packageScripts?.[packageJson]) return packageScriptExists(packageScripts, gate);
   return gate.script_exists !== false;
+}
+
+function missingRequiredPackageScriptTokens(packageScripts, gate, requiredTokens) {
+  const packageJson = gate.package_json || "mcp/synthi-mcp/package.json";
+  const scripts = packageScripts?.[packageJson];
+  if (!scripts) return [];
+  const command = scripts[gate.package_script];
+  if (typeof command !== "string") return [];
+  return requiredTokens.filter((token) => !command.includes(token));
 }
 
 function sha256(value) {

@@ -372,6 +372,22 @@ describe("Dojo release gate manifest", () => {
       "missing_package_script:mcp/synthi-mcp/package.json:proof:dojo:self-check",
     ]));
 
+    const brokenLiveScripts = {
+      ...PACKAGE_SCRIPTS,
+      "mcp/synthi-mcp/package.json": {
+        ...PACKAGE_SCRIPTS["mcp/synthi-mcp/package.json"],
+        "live:dojo:mcp-host-conformance": "node scripts/dojo-mcp-host-conformance.mjs --require-non-loopback-mcp-host",
+        "live:browser:private-tool-host-conformance": "node scripts/private-tool-stdio-acceptance.mjs --require-custom-mcp-command",
+        "live:browser:private-tool-codex-host-conformance": "node scripts/private-tool-codex-acceptance.mjs --require-non-loopback-runtime",
+      },
+    };
+    const brokenLiveManifest = buildDojoReleaseGateManifest({ packageScripts: brokenLiveScripts });
+    expect(validateDojoReleaseGateManifest(brokenLiveManifest, { packageScripts: brokenLiveScripts }).errors).toEqual(expect.arrayContaining([
+      "mcp_host_conformance_package_script_missing_flags:--execute-production,--require-external-control-plane-store,--require-external-proof-signing,--require-bridge-token,--require-no-local-cdp,--require-licensed-skill-filtering",
+      "private_tool_host_conformance_package_script_missing_flags:private_tool_stdio_host_conformance:--require-non-loopback-runtime,--require-external-private-tool-store",
+      "private_tool_host_conformance_package_script_missing_flags:private_tool_codex_host_conformance:--require-external-private-tool-store",
+    ]));
+
     const brokenPostgres = JSON.parse(JSON.stringify(manifest));
     const postgresGate = brokenPostgres.gates.find((gate) => gate.id === "dojo_postgres_control_plane_self_check");
     const missingPostgresTestFile = DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES[0];
