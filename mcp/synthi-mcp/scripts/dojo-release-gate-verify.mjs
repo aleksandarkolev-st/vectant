@@ -45,6 +45,10 @@ import {
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "./dojo-governance-lifecycle-self-check.mjs";
 import {
+  DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
+  DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
+} from "./dojo-hosted-runtime-gateway-self-check.mjs";
+import {
   DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "./dojo-managed-key-signing-self-check.mjs";
@@ -84,6 +88,7 @@ const DEFAULT_SOURCE_DRIFT_DIR = path.join(REPO_ROOT, "tmp", "dojo-source-drift"
 const DEFAULT_API_TOOL_COMPILER_DIR = path.join(REPO_ROOT, "tmp", "dojo-api-tool-compiler");
 const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-integration");
 const DEFAULT_GOVERNANCE_LIFECYCLE_DIR = path.join(REPO_ROOT, "tmp", "dojo-governance-lifecycle");
+const DEFAULT_HOSTED_RUNTIME_GATEWAY_DIR = path.join(REPO_ROOT, "tmp", "dojo-hosted-runtime-gateway");
 const DEFAULT_MANAGED_KEY_SIGNING_DIR = path.join(REPO_ROOT, "tmp", "dojo-managed-key-signing");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_COMPLIANCE_EXPORT_DIR = path.join(REPO_ROOT, "tmp", "dojo-compliance-export");
@@ -296,6 +301,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
+  const hostedRuntimeGatewayResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-hosted-runtime-gateway"]) || args["hosted-runtime-gateway-evidence"]) {
+    const hostedRuntimeGatewayGate = findGate(manifest, "dojo_hosted_runtime_gateway_self_check") || {};
+    hostedRuntimeGatewayResults.push(await verifyDojoHostedRuntimeGatewayEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["hosted-runtime-gateway-evidence"]
+        || hostedRuntimeGatewayGate.default_evidence_path
+        || path.join(DEFAULT_HOSTED_RUNTIME_GATEWAY_DIR, "dojo-hosted-runtime-gateway.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
   const securityResults = [];
   if (truthy(args["release-candidate"]) || args["security-abuse-evidence"]) {
     securityResults.push(await verifyDojoSecurityAbuseEvidenceArtifact({
@@ -344,7 +360,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -361,6 +377,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     managed_key_signing: managedKeySigningResults.map(summarizeSection),
     governance_lifecycle: governanceLifecycleResults.map(summarizeSection),
+    hosted_runtime_gateway: hostedRuntimeGatewayResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
     compliance_export: complianceExportResults.map(summarizeSection),
     privacy_redaction: privacyRedactionResults.map(summarizeSection),
@@ -1556,6 +1573,94 @@ export function validateDojoGovernanceLifecycleEvidenceForRelease(evidence) {
   };
 }
 
+export async function verifyDojoHostedRuntimeGatewayEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_hosted_runtime_gateway_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.hostedRuntimeGatewayEvidence.v1") {
+    errors.push(`hosted_runtime_gateway_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("hosted_runtime_gateway_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`hosted_runtime_gateway_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("hosted_runtime_gateway_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`hosted_runtime_gateway_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`hosted_runtime_gateway_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
+    prefix: "hosted_runtime_gateway",
+  }));
+  const untestedRequiredCapabilities = DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`hosted_runtime_gateway_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`hosted_runtime_gateway_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`hosted_runtime_gateway_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.hosted_runtime_contract || {};
+  for (const [field, errorCode] of [
+    ["tenant_scoped_sessions_required", "hosted_runtime_gateway_tenant_scope_requirement_missing"],
+    ["short_lived_credentials_required", "hosted_runtime_gateway_short_lived_credentials_requirement_missing"],
+    ["stored_secret_redaction_required", "hosted_runtime_gateway_secret_redaction_requirement_missing"],
+    ["origin_allowlist_required", "hosted_runtime_gateway_origin_allowlist_requirement_missing"],
+    ["local_network_policy_required", "hosted_runtime_gateway_local_network_policy_requirement_missing"],
+    ["screenshot_redaction_required", "hosted_runtime_gateway_screenshot_redaction_requirement_missing"],
+    ["skill_run_binding_required", "hosted_runtime_gateway_skill_run_binding_requirement_missing"],
+    ["audit_events_required", "hosted_runtime_gateway_audit_requirement_missing"],
+    ["evidence_write_required", "hosted_runtime_gateway_evidence_requirement_missing"],
+    ["fail_closed_on_missing_evidence_writer_required", "hosted_runtime_gateway_fail_closed_evidence_requirement_missing"],
+    ["revocation_and_expiry_required", "hosted_runtime_gateway_revocation_expiry_requirement_missing"],
+    ["durable_store_production_requirement_required", "hosted_runtime_gateway_durable_store_requirement_missing"],
+    ["postgres_session_store_required", "hosted_runtime_gateway_postgres_store_requirement_missing"],
+    ["malformed_record_rejection_required", "hosted_runtime_gateway_malformed_record_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("hosted_runtime_gateway_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`hosted_runtime_gateway_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`hosted_runtime_gateway_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("hosted_runtime_gateway_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`hosted_runtime_gateway_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
 export async function verifyDojoSecurityAbuseEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
   const evidence = await readJsonFile(evidencePath);
   const errors = validateDojoSecurityAbuseEvidenceForRelease(evidence).errors;
@@ -2610,6 +2715,37 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_license_revocation_requirement_missing"));
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_compliance_pack_requirement_missing"));
 
+  const hostedRuntimeGatewayDir = path.join(outDir, "hosted-runtime-gateway");
+  await mkdir(hostedRuntimeGatewayDir, { recursive: true });
+  const hostedRuntimeGatewayArtifacts = await writeHostedRuntimeGatewayEvidenceForSelfCheck({ outDir: hostedRuntimeGatewayDir });
+  const hostedRuntimeGatewayResult = await verifyDojoHostedRuntimeGatewayEvidenceArtifact({
+    evidencePath: hostedRuntimeGatewayArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(hostedRuntimeGatewayResult.ok, true, hostedRuntimeGatewayResult.errors.join(";"));
+  const rejectedHostedRuntimeGatewayArtifacts = await writeHostedRuntimeGatewayEvidenceForSelfCheck({
+    outDir: hostedRuntimeGatewayDir,
+    basename: "dojo-hosted-runtime-gateway-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["hosted_runtime_blocks_expired_and_revoked_sessions"],
+      hosted_runtime_contract: {
+        ...hostedRuntimeGatewayArtifacts.evidence.hosted_runtime_contract,
+        revocation_and_expiry_required: false,
+        evidence_write_required: false,
+      },
+    },
+  });
+  const rejectedHostedRuntimeGateway = await verifyDojoHostedRuntimeGatewayEvidenceArtifact({
+    evidencePath: rejectedHostedRuntimeGatewayArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedHostedRuntimeGateway.errors.includes("hosted_runtime_gateway_coverage_incomplete"));
+  assert(rejectedHostedRuntimeGateway.errors.includes("hosted_runtime_gateway_missing_capabilities:hosted_runtime_blocks_expired_and_revoked_sessions"));
+  assert(rejectedHostedRuntimeGateway.errors.includes("hosted_runtime_gateway_revocation_expiry_requirement_missing"));
+  assert(rejectedHostedRuntimeGateway.errors.includes("hosted_runtime_gateway_evidence_requirement_missing"));
+
   const visualDir = path.join(outDir, "visual");
   await mkdir(visualDir, { recursive: true });
   const visualReportPath = await writeSelfCheckVisualReport({ outDir: visualDir });
@@ -2759,6 +2895,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(codexHostConformanceResult),
       summarizeSection(managedKeySigningResult),
       summarizeSection(governanceLifecycleResult),
+      summarizeSection(hostedRuntimeGatewayResult),
       summarizeSection(sourceDriftResult),
       summarizeSection(apiToolCompilerResult),
       summarizeSection(visualResult),
@@ -2777,6 +2914,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedStdioHost),
       summarizeSection(rejectedManagedKeySigning),
       summarizeSection(rejectedGovernanceLifecycle),
+      summarizeSection(rejectedHostedRuntimeGateway),
       summarizeSection(rejectedSourceDrift),
       summarizeSection(rejectedApiToolCompiler),
       summarizeSection(rejectedSecurity),
@@ -4090,6 +4228,108 @@ async function writeGovernanceLifecycleEvidenceForSelfCheck({
     test_summary: {
       total_tests: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.length,
       passed_tests: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeHostedRuntimeGatewayEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-hosted-runtime-gateway",
+  overrides = {},
+}) {
+  const stdout = "hosted runtime gateway focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length,
+    numPassedTests: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.length,
+    numPassedTestSuites: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.hostedRuntimeGatewayEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
+    tested_capabilities: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
+    missing_capabilities: [],
+    capability_count: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length,
+    configured_capability_count: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    hosted_runtime_contract: {
+      tenant_scoped_sessions_required: true,
+      short_lived_credentials_required: true,
+      stored_secret_redaction_required: true,
+      origin_allowlist_required: true,
+      local_network_policy_required: true,
+      screenshot_redaction_required: true,
+      skill_run_binding_required: true,
+      audit_events_required: true,
+      evidence_write_required: true,
+      fail_closed_on_missing_evidence_writer_required: true,
+      revocation_and_expiry_required: true,
+      durable_store_production_requirement_required: true,
+      postgres_session_store_required: true,
+      malformed_record_rejection_required: true,
+    },
+    test_files: [...DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES],
+    test_file_count: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.length,
+    reported_test_file_count: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.length,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_report_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length,
+      passed_tests: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length,
       failed_tests: 0,
       pending_tests: 0,
     },

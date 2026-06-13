@@ -35,6 +35,10 @@ import {
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "../../scripts/dojo-governance-lifecycle-self-check.mjs";
 import {
+  DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
+  DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
+} from "../../scripts/dojo-hosted-runtime-gateway-self-check.mjs";
+import {
   DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "../../scripts/dojo-managed-key-signing-self-check.mjs";
@@ -65,6 +69,7 @@ import {
   validateDojoPrivateToolStdioHostConformanceForRelease,
   validateDojoDockerIntegrationEvidenceForMilestone,
   validateDojoGovernanceLifecycleEvidenceForRelease,
+  validateDojoHostedRuntimeGatewayEvidenceForRelease,
   validateDojoManagedKeySigningEvidenceForRelease,
   validateDojoPostgresControlPlaneEvidenceForMilestone,
   validateDojoWorkflowPipelineE2EForRelease,
@@ -81,6 +86,7 @@ import {
   verifyDojoSourceDriftEvidenceArtifact,
   verifyDojoDockerIntegrationEvidenceArtifact,
   verifyDojoGovernanceLifecycleEvidenceArtifact,
+  verifyDojoHostedRuntimeGatewayEvidenceArtifact,
   verifyDojoManagedKeySigningEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoPrivateToolCodexAcceptanceArtifact,
@@ -899,6 +905,7 @@ describe("Dojo release gate artifact verifier", () => {
     const securityEvidencePath = await writeSecurityEvidenceFixture({ dir });
     const managedKeySigningEvidencePath = await writeManagedKeySigningEvidenceFixture({ dir });
     const governanceLifecycleEvidencePath = await writeGovernanceLifecycleEvidenceFixture({ dir });
+    const hostedRuntimeGatewayEvidencePath = await writeHostedRuntimeGatewayEvidenceFixture({ dir });
     const complianceEvidencePath = await writeComplianceExportEvidenceFixture({ dir });
     const privacyEvidencePath = await writePrivacyRedactionEvidenceFixture({ dir });
     const workflowE2E = await writeWorkflowE2EFixture({ dir });
@@ -949,6 +956,7 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path = managedKeySigningEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check").default_evidence_path = governanceLifecycleEvidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check").default_evidence_path = hostedRuntimeGatewayEvidencePath;
     manifest.gates.find((gate) => gate.id === "privacy_redaction_suite").default_evidence_path = privacyEvidencePath;
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
     manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioAcceptance.transcriptPath;
@@ -977,6 +985,7 @@ describe("Dojo release gate artifact verifier", () => {
         "security-abuse-evidence": securityEvidencePath,
         "managed-key-signing-evidence": managedKeySigningEvidencePath,
         "governance-lifecycle-evidence": governanceLifecycleEvidencePath,
+        "hosted-runtime-gateway-evidence": hostedRuntimeGatewayEvidencePath,
         "source-drift-evidence": sourceDriftEvidencePath,
         "api-tool-compiler-evidence": apiToolCompilerEvidencePath,
       },
@@ -1051,6 +1060,13 @@ describe("Dojo release gate artifact verifier", () => {
         id: "dojo_governance_lifecycle_self_check",
         ok: true,
         evidence_path: governanceLifecycleEvidencePath,
+      }),
+    ]);
+    expect(verified.hosted_runtime_gateway).toEqual([
+      expect.objectContaining({
+        id: "dojo_hosted_runtime_gateway_self_check",
+        ok: true,
+        evidence_path: hostedRuntimeGatewayEvidencePath,
       }),
     ]);
     expect(verified.compliance_export).toEqual([
@@ -1249,6 +1265,71 @@ describe("Dojo release gate artifact verifier", () => {
       "governance_lifecycle_required_capabilities_missing:governance_builds_approval_queue",
       "governance_lifecycle_required_capabilities_untested:governance_builds_approval_queue",
       `governance_lifecycle_required_test_files_missing:${DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES[0]}`,
+    ]));
+  });
+
+  it("verifies hosted runtime gateway evidence coverage and custody contract", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-hosted-runtime-gateway-verify-"));
+    const evidencePath = await writeHostedRuntimeGatewayEvidenceFixture({ dir });
+
+    expect(validateDojoHostedRuntimeGatewayEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoHostedRuntimeGatewayEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_hosted_runtime_gateway_self_check",
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = hostedRuntimeGatewayEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["hosted_runtime_blocks_expired_and_revoked_sessions"],
+      hosted_runtime_contract: {
+        ...hostedRuntimeGatewayEvidenceFixture().hosted_runtime_contract,
+        revocation_and_expiry_required: false,
+        evidence_write_required: false,
+      },
+    });
+    const incompletePath = await writeHostedRuntimeGatewayEvidenceFixture({
+      dir,
+      basename: "incomplete-hosted-runtime-gateway",
+      evidence: incomplete,
+    });
+    const rejected = await verifyDojoHostedRuntimeGatewayEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "hosted_runtime_gateway_not_ok",
+      "hosted_runtime_gateway_coverage_incomplete",
+      "hosted_runtime_gateway_missing_capabilities:hosted_runtime_blocks_expired_and_revoked_sessions",
+      "hosted_runtime_gateway_revocation_expiry_requirement_missing",
+      "hosted_runtime_gateway_evidence_requirement_missing",
+    ]));
+
+    const driftedPath = await writeHostedRuntimeGatewayEvidenceFixture({
+      dir,
+      basename: "drifted-hosted-runtime-gateway",
+      evidence: hostedRuntimeGatewayEvidenceFixture({
+        configured_capabilities: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES
+          .filter((capability) => capability !== "hosted_runtime_requires_skill_and_run_binding"),
+        tested_capabilities: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES
+          .filter((capability) => capability !== "hosted_runtime_requires_skill_and_run_binding"),
+        capability_count: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length - 1,
+        test_files: [],
+        test_file_count: 0,
+        reported_test_file_count: 0,
+      }),
+    });
+    expect((await verifyDojoHostedRuntimeGatewayEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "hosted_runtime_gateway_required_capabilities_missing:hosted_runtime_requires_skill_and_run_binding",
+      "hosted_runtime_gateway_required_capabilities_untested:hosted_runtime_requires_skill_and_run_binding",
+      `hosted_runtime_gateway_required_test_files_missing:${DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.join(",")}`,
     ]));
   });
 
@@ -3015,6 +3096,122 @@ function governanceLifecycleJsonReportFixtureText() {
         startTime: 0,
         endTime: 100,
         assertionResults: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+}
+
+async function writeHostedRuntimeGatewayEvidenceFixture({
+  dir,
+  basename = "dojo-hosted-runtime-gateway",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "hosted runtime gateway suite passed\n";
+  const stderr = "";
+  const jsonReport = hostedRuntimeGatewayJsonReportFixtureText();
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? hostedRuntimeGatewayEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  const withLogDefaults = {
+    ...body,
+    stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
+    stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
+    json_report_path: body.json_report_path && body.json_report_path !== "vitest.json" ? body.json_report_path : jsonReportPath,
+    json_report_sha256: body.json_report_sha256 && body.json_report_sha256 !== "json-report-sha256" ? body.json_report_sha256 : sha256(jsonReport),
+    json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
+      ? body.json_report_bytes
+      : Buffer.byteLength(jsonReport),
+  };
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
+  return evidencePath;
+}
+
+function hostedRuntimeGatewayEvidenceFixture(overrides = {}) {
+  const stdout = "hosted runtime gateway suite passed\n";
+  const stderr = "";
+  const jsonReport = hostedRuntimeGatewayJsonReportFixtureText();
+  return {
+    schema_version: "synthi.dojo.hostedRuntimeGatewayEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES],
+    tested_capabilities: [...DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length,
+    configured_capability_count: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    hosted_runtime_contract: {
+      tenant_scoped_sessions_required: true,
+      short_lived_credentials_required: true,
+      stored_secret_redaction_required: true,
+      origin_allowlist_required: true,
+      local_network_policy_required: true,
+      screenshot_redaction_required: true,
+      skill_run_binding_required: true,
+      audit_events_required: true,
+      evidence_write_required: true,
+      fail_closed_on_missing_evidence_writer_required: true,
+      revocation_and_expiry_required: true,
+      durable_store_production_requirement_required: true,
+      postgres_session_store_required: true,
+      malformed_record_rejection_required: true,
+    },
+    test_files: [...DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES],
+    test_file_count: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.length,
+    reported_test_file_count: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.length,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length,
+      passed_tests: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: overrides.stdout_path || path.join(tmpdir(), "dojo-hosted-runtime-gateway.stdout.log"),
+    stderr_path: overrides.stderr_path || path.join(tmpdir(), "dojo-hosted-runtime-gateway.stderr.log"),
+    json_report_path: overrides.json_report_path || path.join(tmpdir(), "dojo-hosted-runtime-gateway.vitest.json"),
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    json_report_sha256: sha256(jsonReport),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function hostedRuntimeGatewayJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length,
+    numPassedTests: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.length,
+    numPassedTestSuites: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES.map((capability, index) => ({
           fullName: `release verifier fixture covers ${capability}`,
           title: `release verifier fixture covers ${capability}`,
           status: "passed",

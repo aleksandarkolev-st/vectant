@@ -34,6 +34,10 @@ import {
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "./dojo-governance-lifecycle-self-check.mjs";
 import {
+  DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
+  DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
+} from "./dojo-hosted-runtime-gateway-self-check.mjs";
+import {
   DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "./dojo-managed-key-signing-self-check.mjs";
@@ -606,6 +610,40 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
   },
   {
+    id: "dojo_hosted_runtime_gateway_self_check",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:hosted-runtime-gateway:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_hosted_runtime_gateway.test.ts tests/unit/dojo_hosted_runtime_gateway_resolver.test.ts tests/unit/dojo_hosted_runtime_postgres_store.test.ts -- --reporter=json --outputFile ../../tmp/dojo-hosted-runtime-gateway/dojo-hosted-runtime-gateway.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:hosted-runtime-gateway:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.hostedRuntimeGatewayEvidence.v1",
+    default_evidence_path: "tmp/dojo-hosted-runtime-gateway/dojo-hosted-runtime-gateway.evidence.json",
+    release_artifact_requirements: {
+      require_all_hosted_runtime_gateway_capabilities_covered: true,
+      required_hosted_runtime_gateway_capabilities: [...DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES],
+      required_test_files: [...DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES],
+      require_tenant_scoped_sessions: true,
+      require_short_lived_credentials: true,
+      require_stored_secret_redaction: true,
+      require_origin_allowlist: true,
+      require_local_network_policy: true,
+      require_screenshot_redaction: true,
+      require_skill_run_binding: true,
+      require_audit_events: true,
+      require_evidence_write: true,
+      require_fail_closed_on_missing_evidence_writer: true,
+      require_revocation_and_expiry: true,
+      require_durable_store_production_requirement: true,
+      require_postgres_session_store: true,
+      require_malformed_record_rejection: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "security_abuse_suite",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -742,6 +780,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "private_tool_codex_host_conformance",
   "dojo_managed_key_signing_self_check",
   "dojo_governance_lifecycle_self_check",
+  "dojo_hosted_runtime_gateway_self_check",
   "security_abuse_suite",
   "compliance_export_suite",
   "privacy_redaction_suite",
@@ -1258,6 +1297,61 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!governanceLifecycleGate.release_artifact_requirements?.require_json_report_digest_match) {
       errors.push("governance_lifecycle_missing_json_report_digest_requirement");
+    }
+  }
+  const hostedRuntimeGatewayGate = gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check");
+  if (hostedRuntimeGatewayGate) {
+    if (hostedRuntimeGatewayGate.evidence_schema_version !== "synthi.dojo.hostedRuntimeGatewayEvidence.v1") {
+      errors.push("hosted_runtime_gateway_missing_evidence_schema");
+    }
+    if (hostedRuntimeGatewayGate.package_script !== "proof:dojo:hosted-runtime-gateway:self-check") {
+      errors.push("hosted_runtime_gateway_missing_package_script");
+    }
+    if (!hostedRuntimeGatewayGate.default_evidence_path) errors.push("hosted_runtime_gateway_missing_default_evidence_path");
+    if (!hostedRuntimeGatewayGate.release_artifact_requirements?.require_all_hosted_runtime_gateway_capabilities_covered) {
+      errors.push("hosted_runtime_gateway_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_tenant_scoped_sessions", "hosted_runtime_gateway_missing_tenant_scope_requirement"],
+      ["require_short_lived_credentials", "hosted_runtime_gateway_missing_short_lived_credentials_requirement"],
+      ["require_stored_secret_redaction", "hosted_runtime_gateway_missing_secret_redaction_requirement"],
+      ["require_origin_allowlist", "hosted_runtime_gateway_missing_origin_allowlist_requirement"],
+      ["require_local_network_policy", "hosted_runtime_gateway_missing_local_network_policy_requirement"],
+      ["require_screenshot_redaction", "hosted_runtime_gateway_missing_screenshot_redaction_requirement"],
+      ["require_skill_run_binding", "hosted_runtime_gateway_missing_skill_run_binding_requirement"],
+      ["require_audit_events", "hosted_runtime_gateway_missing_audit_requirement"],
+      ["require_evidence_write", "hosted_runtime_gateway_missing_evidence_requirement"],
+      ["require_fail_closed_on_missing_evidence_writer", "hosted_runtime_gateway_missing_fail_closed_evidence_requirement"],
+      ["require_revocation_and_expiry", "hosted_runtime_gateway_missing_revocation_expiry_requirement"],
+      ["require_durable_store_production_requirement", "hosted_runtime_gateway_missing_durable_store_requirement"],
+      ["require_postgres_session_store", "hosted_runtime_gateway_missing_postgres_store_requirement"],
+      ["require_malformed_record_rejection", "hosted_runtime_gateway_missing_malformed_record_requirement"],
+    ]) {
+      if (!hostedRuntimeGatewayGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredHostedRuntimeCapabilities = Array.isArray(hostedRuntimeGatewayGate.release_artifact_requirements?.required_hosted_runtime_gateway_capabilities)
+      ? hostedRuntimeGatewayGate.release_artifact_requirements.required_hosted_runtime_gateway_capabilities
+      : [];
+    const missingHostedRuntimeCapabilities = DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES
+      .filter((capability) => !requiredHostedRuntimeCapabilities.includes(capability));
+    if (missingHostedRuntimeCapabilities.length > 0) {
+      errors.push(`hosted_runtime_gateway_missing_required_capabilities:${missingHostedRuntimeCapabilities.join(",")}`);
+    }
+    const missingHostedRuntimeTestFiles = missingRequiredEntries(
+      DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
+      hostedRuntimeGatewayGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingHostedRuntimeTestFiles.length > 0) {
+      errors.push(`hosted_runtime_gateway_missing_required_test_files:${missingHostedRuntimeTestFiles.join(",")}`);
+    }
+    if (!hostedRuntimeGatewayGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("hosted_runtime_gateway_missing_no_skipped_requirement");
+    }
+    if (!hostedRuntimeGatewayGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("hosted_runtime_gateway_missing_digest_requirement");
+    }
+    if (!hostedRuntimeGatewayGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("hosted_runtime_gateway_missing_json_report_digest_requirement");
     }
   }
   const securityAbuseGate = gates.find((gate) => gate.id === "security_abuse_suite");
