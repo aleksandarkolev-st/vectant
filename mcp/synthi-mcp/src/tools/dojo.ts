@@ -1756,9 +1756,9 @@ function dojoRunTimeMachineDebuggerTool(args: unknown): ToolResponse {
 }
 
 async function dojoRunGhostModeTool(args: unknown): Promise<ToolResponse> {
-  const skill = requiredAuthorizedSkill(args);
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_run_ghost_mode");
   if (!skill.ok) return skill.error;
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_ghost_mode");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_ghost_mode", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const a = obj(args);
   const observed = objectOpt(a["observed_human_action"]) ?? {};
@@ -1819,8 +1819,7 @@ async function dojoRunGhostModeTool(args: unknown): Promise<ToolResponse> {
       correlation_id: skill.tenant.correlation_id,
     },
   };
-  const recordedShadowEvidence = dojoSkillRegistry.recordGhostShadowEvidence(shadowEvidence);
-  const shadowEvidenceAuditEvent = await dojoSkillRegistry.recordAuditEvent({
+  const shadowEvidenceAuditInput = {
     tenant_id: skill.tenant.tenant_id,
     workspace_id: skill.tenant.workspace_id,
     actor: {
@@ -1831,7 +1830,7 @@ async function dojoRunGhostModeTool(args: unknown): Promise<ToolResponse> {
     request_id: skill.tenant.request_id,
     correlation_id: skill.tenant.correlation_id,
     entity_kind: "ghost_shadow_evidence",
-    entity_id: recordedShadowEvidence.evidence_id,
+    entity_id: shadowEvidence.evidence_id,
     details: {
       skill_id: skill.skill.skill_id,
       workflow_id: skill.skill.workflow_id,
@@ -1848,7 +1847,40 @@ async function dojoRunGhostModeTool(args: unknown): Promise<ToolResponse> {
       recommended_entrustment: entrustmentImpact.recommended_entrustment,
     },
     created_at: now,
-  });
+  } as const;
+  const enforcement = resolveDojoEnforcementConfig();
+  let recordedShadowEvidence = shadowEvidence;
+  let shadowEvidenceAuditEvent: DojoAuditEventRecord | null = null;
+  let controlPlaneSource: "compatibility_registry" | "postgres" = "compatibility_registry";
+  if (enforcement.production_enforcement && enforcement.require_durable_store) {
+    const resolution = await createDojoControlPlaneStoresFromEnv({
+      tenant: skill.tenant,
+      app_origin: skill.skill.app_origin,
+    });
+    if (!resolution.ok) return controlPlaneResolutionError("synthi_dojo_run_ghost_mode", resolution);
+    try {
+      recordedShadowEvidence = await resolution.ghost_shadow_evidence_store.saveGhostShadowEvidence(shadowEvidence);
+      shadowEvidenceAuditEvent = await resolution.audit_store.appendAuditEvent(shadowEvidenceAuditInput);
+      controlPlaneSource = "postgres";
+    } finally {
+      await resolution.close?.();
+    }
+  }
+  if (skill.control_plane_source === "compatibility_registry") {
+    const localShadowEvidence = dojoSkillRegistry.recordGhostShadowEvidence(shadowEvidence);
+    if (controlPlaneSource === "compatibility_registry") recordedShadowEvidence = localShadowEvidence;
+    const localAuditEvent = await dojoSkillRegistry.recordAuditEvent(shadowEvidenceAuditInput);
+    if (!shadowEvidenceAuditEvent) shadowEvidenceAuditEvent = localAuditEvent;
+  }
+  if (!shadowEvidenceAuditEvent) {
+    return errorResponse("dojo_ghost_mode_shadow_evidence_audit_failed", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      run_id: runId,
+      control_plane_source: controlPlaneSource,
+      blocked_by: ["dojo_shadow_evidence_audit_missing"],
+    });
+  }
   const run = {
     run_id: runId,
     skill_id: skill.skill.skill_id,
@@ -1871,6 +1903,7 @@ async function dojoRunGhostModeTool(args: unknown): Promise<ToolResponse> {
   };
   return jsonResponse({
     ok: true,
+    control_plane_source: controlPlaneSource,
     skill_id: skill.skill.skill_id,
     ghost_run: run,
     shadow_evidence: recordedShadowEvidence,

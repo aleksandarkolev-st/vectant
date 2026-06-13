@@ -29,6 +29,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES = [
   "tests/integration/dojo_postgres_skill_store.test.ts",
   "tests/integration/dojo_postgres_license_store.test.ts",
   "tests/integration/dojo_postgres_tool_control_plane.test.ts",
+  "tests/integration/dojo_postgres_ghost_shadow_evidence_store.test.ts",
   "tests/integration/dojo_postgres_governance_store.test.ts",
   "tests/integration/dojo_postgres_source_registry_store.test.ts",
   "tests/integration/dojo_postgres_mcp_skill_bus_store.test.ts",
@@ -66,6 +67,8 @@ export const DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES = [
   "tool_control_plane_recertification_path",
   "tool_control_plane_permission_upgrade_path",
   "tool_control_plane_case_law_path",
+  "ghost_shadow_evidence_repository",
+  "tool_control_plane_ghost_mode_path",
   "tool_control_plane_proof_lifecycle_path",
   "postgres_evidence_proof_issuance",
 ];
@@ -391,6 +394,13 @@ function capabilityMatchers(capability) {
     ],
     tool_control_plane_case_law_path: [
       "dojo tool postgres control plane wiring persists case law proposal and review through postgres after local reset",
+    ],
+    ghost_shadow_evidence_repository: [
+      "postgresdojoghostshadowevidencestore persists ghost mode shadow evidence by tenant scope and filters operational fields",
+      "postgresdojoghostshadowevidencestore enforces tenant scope and rejects mutating evidence",
+    ],
+    tool_control_plane_ghost_mode_path: [
+      "dojo tool postgres control plane wiring records ghost mode shadow evidence through postgres after local reset",
     ],
     tool_control_plane_proof_lifecycle_path: [
       "dojo tool postgres control plane wiring uses postgres skill and proof records for production validation consumption and replay after local process loss",

@@ -7,6 +7,7 @@ import {
 } from "../config/enforcement.js";
 import type { DojoTenantContext } from "../mcp/execution_policy_gate.js";
 import { PostgresDojoAuditStore } from "./audit_store.js";
+import { PostgresDojoGhostShadowEvidenceStore } from "./postgres_ghost_shadow_evidence_store.js";
 import { PostgresDojoGovernanceStore } from "./postgres_governance_store.js";
 import { PostgresDojoLicenseStore } from "./postgres_license_store.js";
 import {
@@ -38,6 +39,7 @@ export type DojoControlPlaneStoreResolution =
     license_store: PostgresDojoLicenseStore;
     proof_store: PostgresDojoProofStore;
     governance_store: PostgresDojoGovernanceStore;
+    ghost_shadow_evidence_store: PostgresDojoGhostShadowEvidenceStore;
     close?: () => Promise<void>;
   }
   | {
@@ -125,6 +127,7 @@ export async function createDojoControlPlaneStoresFromEnv(
     license_store: new PostgresDojoLicenseStore(baseStoreOptions),
     proof_store: new PostgresDojoProofStore(baseStoreOptions),
     governance_store: new PostgresDojoGovernanceStore(baseStoreOptions),
+    ghost_shadow_evidence_store: new PostgresDojoGhostShadowEvidenceStore(baseStoreOptions),
     close: options.queryable ? undefined : async () => {
       if ("end" in queryable && typeof queryable.end === "function") {
         await queryable.end();

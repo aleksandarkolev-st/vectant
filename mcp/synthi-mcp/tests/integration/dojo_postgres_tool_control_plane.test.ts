@@ -14,6 +14,7 @@ import { applyDojoPostgresMigrations } from "../../src/dojo/store/postgres_proof
 import { PostgresDojoProofStore } from "../../src/dojo/store/postgres_proof_store.js";
 import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_record.js";
 import { PostgresDojoAuditStore } from "../../src/dojo/store/audit_store.js";
+import { PostgresDojoGhostShadowEvidenceStore } from "../../src/dojo/store/postgres_ghost_shadow_evidence_store.js";
 import { PostgresDojoGovernanceStore } from "../../src/dojo/store/postgres_governance_store.js";
 import { PostgresDojoSkillStore } from "../../src/dojo/store/postgres_skill_store.js";
 import { dispatchDojoTool } from "../../src/tools/dojo.js";
@@ -622,6 +623,120 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     }));
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
     expect(dojoSkillRegistry.getCaseLawRecord(caseId)).toBeNull();
+  });
+
+  it("records Ghost Mode shadow evidence through Postgres after local reset", async () => {
+    const tenantId = `tenant_ghost_tool_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_ghost_tool_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-ghost-publish",
+      correlation_id: "corr-postgres-ghost-publish",
+      actor_id: "postgres-ghost-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_ghost_publish",
+      evidence_refs: ["evidence:integration-postgres-ghost-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+      license: { license_id: string };
+    };
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+
+    const ghost = await dispatchDojoTool("synthi_dojo_run_ghost_mode", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      observed_human_action: { action: "click", name: "Open details" },
+      agent_planned_action: { action: "click", name: "Open details" },
+      actor_id: "postgres-ghost-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-ghost-run",
+      correlation_id: "corr-postgres-ghost-run",
+      now: "2026-06-11T03:30:00.000Z",
+    });
+    expect(ghost?.isError).toBeUndefined();
+    expect(ghost?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      skill_id: published.skill.skill_id,
+      shadow_evidence_recorded: true,
+      shadow_evidence: expect.objectContaining({
+        tenant_id: tenantId,
+        workspace_id: workspaceId,
+        skill_id: published.skill.skill_id,
+        workflow_id: published.skill.workflow_id,
+        license_id: published.license.license_id,
+        evidence_kind: "shadow",
+        production_mutations_executed: false,
+        action_matches: true,
+      }),
+      shadow_evidence_audit_event: expect.objectContaining({
+        event_type: "ghost_shadow_evidence_recorded",
+        correlation_id: "corr-postgres-ghost-run",
+        entity_kind: "ghost_shadow_evidence",
+      }),
+      ghost_run: expect.objectContaining({
+        status: "matched",
+        would_execute: false,
+        production_mutations_executed: false,
+      }),
+    }));
+    const ghostContent = ghost?.structuredContent as {
+      shadow_evidence: { evidence_id: string; run_id: string };
+      shadow_evidence_audit_event: { audit_event_id: string };
+    };
+
+    const ghostEvidenceStore = new PostgresDojoGhostShadowEvidenceStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(ghostEvidenceStore.listGhostShadowEvidence({
+      evidence_id: ghostContent.shadow_evidence.evidence_id,
+    })).resolves.toEqual([
+      expect.objectContaining({
+        evidence_id: ghostContent.shadow_evidence.evidence_id,
+        run_id: ghostContent.shadow_evidence.run_id,
+        skill_id: published.skill.skill_id,
+        action_matches: true,
+        production_mutations_executed: false,
+      }),
+    ]);
+    const auditStore = new PostgresDojoAuditStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(auditStore.listAuditEvents({ entity_id: ghostContent.shadow_evidence.evidence_id })).resolves.toEqual([
+      expect.objectContaining({
+        audit_event_id: ghostContent.shadow_evidence_audit_event.audit_event_id,
+        event_type: "ghost_shadow_evidence_recorded",
+        details: expect.objectContaining({
+          skill_id: published.skill.skill_id,
+          action_matches: true,
+          production_mutations_executed: false,
+        }),
+      }),
+    ]);
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+    expect(dojoSkillRegistry.listGhostShadowEvidence({ evidence_id: ghostContent.shadow_evidence.evidence_id })).toEqual([]);
   });
 
   it("uses Postgres skill and proof records for production validation, consumption, and replay after local process loss", async () => {

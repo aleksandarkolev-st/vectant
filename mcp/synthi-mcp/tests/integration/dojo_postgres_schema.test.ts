@@ -186,6 +186,27 @@ describe("Dojo Postgres schema migration", () => {
     expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_approvals_workflow_idx");
   });
 
+  it("defines Ghost Mode shadow evidence custody with non-mutating production boundaries", () => {
+    const ghostEvidence = normalizedStatements()["dojo_ghost_shadow_evidence"];
+
+    expect(ghostEvidence).toContain("primary key (tenant_id, workspace_id, evidence_id)");
+    expect(ghostEvidence).toContain(
+      "foreign key (tenant_id, workspace_id) references dojo_workspaces(tenant_id, workspace_id) on delete restrict"
+    );
+    expect(ghostEvidence).toContain(
+      "foreign key (tenant_id, skill_id) references dojo_skills(tenant_id, skill_id) on delete restrict"
+    );
+    expect(ghostEvidence).toContain(
+      "foreign key (tenant_id, license_id) references dojo_licenses(tenant_id, license_id) on delete restrict"
+    );
+    expect(ghostEvidence).toContain("action_matches boolean not null");
+    expect(ghostEvidence).toContain("check (license_status in ('licensed', 'blocked'))");
+    expect(ghostEvidence).toContain("check (jsonb_typeof(evidence_json) = 'object')");
+    expect(ghostEvidence).toContain("check (cardinality(evidence_refs) > 0)");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_ghost_shadow_evidence_skill_idx");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_ghost_shadow_evidence_run_idx");
+  });
+
   it("defines MCP skill-bus registration, invocation, and conformance custody", () => {
     const toolRegistrations = normalizedStatements()["dojo_tool_registrations"];
     const toolInvocations = normalizedStatements()["dojo_tool_invocations"];

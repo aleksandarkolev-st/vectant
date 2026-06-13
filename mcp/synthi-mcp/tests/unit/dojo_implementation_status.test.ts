@@ -137,7 +137,7 @@ describe("Dojo implementation status registry", () => {
         evidence_backing: "runtime_validation",
         maturity_blockers: expect.arrayContaining([
           "non_mutating_shadow_does_not_execute_production_actions",
-          "shadow_evidence_store_is_repo_local_until_durable_control_plane_is_configured",
+          "shadow_evidence_store_requires_postgres_control_plane_for_production_custody",
         ]),
       })
     );
