@@ -29,6 +29,10 @@ describe("package exports", () => {
         import: "./dist/dojo/proof/capsule_service.js",
         types: "./dist/dojo/proof/capsule_service.d.ts",
       }),
+      "./dojo/license/kernel": expect.objectContaining({
+        import: "./dist/dojo/license/kernel.js",
+        types: "./dist/dojo/license/kernel.d.ts",
+      }),
     }));
   });
 });

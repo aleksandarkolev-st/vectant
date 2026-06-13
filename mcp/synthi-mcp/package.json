@@ -30,6 +30,10 @@
       "types": "./dist/dojo/proof/capsule_service.d.ts",
       "import": "./dist/dojo/proof/capsule_service.js"
     },
+    "./dojo/license/kernel": {
+      "types": "./dist/dojo/license/kernel.d.ts",
+      "import": "./dist/dojo/license/kernel.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
