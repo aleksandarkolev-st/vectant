@@ -224,6 +224,7 @@ export function buildDojoProofVisualHtml(input) {
   const checkride = input?.checkride ?? {};
   const vivariumRun = input?.vivarium_run ?? {};
   const windTunnel = input?.wind_tunnel ?? {};
+  const evilTwin = input?.evil_twin ?? {};
   const sourcePlan = input?.source_plan ?? {};
   const licenseHealth = input?.license_health ?? {};
   const typedPatchPlan = sourcePlan?.source_affordance_pr_plan?.typed_patch_plan ?? {};
@@ -236,10 +237,12 @@ export function buildDojoProofVisualHtml(input) {
     ["Proof", proofCapsule.capsule_id],
     ["License", skill.license?.license_id || publish.skill?.license?.license_id],
     ["Health", licenseHealth.license_health?.status],
+    ["Evil Twin Attacks", evilTwin?.evil_twin_runtime?.attack_count],
     ["Entrustment", skill.license?.entrustment_level || publish.skill?.license?.entrustment_level],
     ["Readiness", skill.license?.readiness_level ?? publish.skill?.license?.readiness_level],
   ].filter(([, value]) => value !== undefined && value !== null && String(value).trim());
   const scenarioRows = Array.isArray(checkride?.checkride?.results) ? checkride.checkride.results.slice(0, 8) : [];
+  const evilTwinRows = Array.isArray(evilTwin?.evil_twin_runtime?.attacks) ? evilTwin.evil_twin_runtime.attacks.slice(0, 5) : [];
   const patchOperations = Array.isArray(typedPatchPlan.operations) ? typedPatchPlan.operations : [];
   const reviewRequirements = Array.isArray(generatedPrMetadata.review_requirements) ? generatedPrMetadata.review_requirements : [];
   const caseLaw = Array.isArray(skill.case_law) ? skill.case_law : [];
@@ -379,6 +382,7 @@ export function buildDojoProofVisualHtml(input) {
           <tbody>
             <tr><th>Vivarium Run</th><td>${escapeHtml(vivariumRun?.vivarium_run?.run?.run_id || "not recorded")}</td></tr>
             <tr><th>Wind Tunnel</th><td>${escapeHtml(windTunnel?.wind_tunnel_execution?.run_count ?? "not recorded")} scenarios executed</td></tr>
+            <tr><th>Evil Twin</th><td>${escapeHtml(evilTwin?.evil_twin_runtime?.attack_count ?? "not recorded")} attacks, ${escapeHtml(evilTwin?.evil_twin_runtime?.attack_success_rate ?? "n/a")} ASR</td></tr>
             <tr><th>Proof Capsule</th><td>${escapeHtml(proofCapsule.capsule_id || "not recorded")}</td></tr>
             <tr><th>Generated Tool</th><td>${escapeHtml(publish.private_tool?.tool_name || "not published")}</td></tr>
           </tbody>
@@ -390,6 +394,16 @@ export function buildDojoProofVisualHtml(input) {
         <p>${reviewRequirements.map((requirement) => `<span class="pill blue">${escapeHtml(requirement.gate)}</span>`).join("") || "<span class=\"pill red\">no review gates</span>"}</p>
       </section>
     </div>
+
+    <section>
+      <h2>Evil Twin Runtime Attacks</h2>
+      <table>
+        <thead><tr><th>Scenario</th><th>Status</th><th>Attack</th><th>Finding</th></tr></thead>
+        <tbody>
+          ${evilTwinRows.map((attack) => `<tr><td>${escapeHtml(attack.scenario_id)}</td><td><span class="pill ${attack.attack_succeeded ? "red" : "green"}">${escapeHtml(attack.status)}</span></td><td>${escapeHtml(attack.assumption_kind || attack.mutation_kind)}</td><td>${escapeHtml(attack.finding)}</td></tr>`).join("\n          ")}
+        </tbody>
+      </table>
+    </section>
 
     <section>
       <h2>Checkride Scenario Evidence</h2>
@@ -433,6 +447,7 @@ async function runDojoProofVisualEvidence(input) {
         has_tool_name: textIncludesRequired(text, input.publish?.private_tool?.tool_name),
         has_license_status: textIncludesRequired(text, input.license_health?.license_health?.status),
         has_proof_capsule: textIncludesRequired(text, input.proof_capsule?.capsule_id),
+        has_evil_twin_runtime: Number(input.evil_twin?.evil_twin_runtime?.attack_count) > 0 && text.includes("Evil Twin Runtime Attacks"),
       };
       const decision = evaluateVisualProofCapture({
         checks,
@@ -557,10 +572,14 @@ async function main() {
   const skill = dojoSkillRegistry.get(publish.skill.skill_id);
   assert(skill, "published skill should be registered");
   const proofEvidenceCreatedAt = new Date().toISOString();
+  const proofEvidenceClaimIds = [...new Set([
+    ...skill.permission_license.proof_requirements.required_evidence_claims,
+    ...skill.permission_license.proof_requirements.required_context_claims,
+  ])];
   const proofEvidencePayload = JSON.stringify({
     checkride_id: checkride.checkride.checkride_id,
     created_at: proofEvidenceCreatedAt,
-    required_evidence_claims: skill.permission_license.proof_requirements.required_evidence_claims,
+    required_evidence_claims: proofEvidenceClaimIds,
     skill_id: skill.skill_id,
   });
   const proofEvidenceRecord = buildDojoEvidenceLedgerRecord({
@@ -572,7 +591,7 @@ async function main() {
     kind: "checkride",
     artifact_uri: `memory://dojo/self-check/${publish.skill.skill_id}/checkride`,
     artifact_sha256: sha256Hex(proofEvidencePayload),
-    claim_ids: skill.permission_license.proof_requirements.required_evidence_claims,
+    claim_ids: proofEvidenceClaimIds,
     created_at: proofEvidenceCreatedAt,
     created_by: "dojo-proof-self-check",
     retention_class: "ephemeral",
@@ -728,6 +747,16 @@ async function main() {
   assert.equal(windTunnel.wind_tunnel_execution.schema_version, "synthi.dojo.windTunnelExecution.v1", "wind tunnel schema should match");
   log("ok", "ran Workflow Wind Tunnel");
 
+  const evilTwin = structured(await dispatchDojoTool("synthi_dojo_run_evil_twin", {
+    skill_id: publish.skill.skill_id,
+    max_attacks: 3,
+    harden: true,
+  }));
+  assert.equal(evilTwin.evil_twin_runtime.schema_version, "synthi.dojo.evilTwinRuntimeReport.v1", "Evil Twin runtime schema should match");
+  assert(evilTwin.evil_twin_runtime.attack_count > 0, "Evil Twin should execute at least one targeted attack");
+  assert.equal(evilTwin.hardening.schema_version, "synthi.dojo.evilTwinHardeningReport.v1", "Evil Twin hardening schema should match");
+  log("ok", "ran Evil Twin targeted attacks");
+
   const universe = structured(await dispatchDojoTool("synthi_dojo_get_universe_dossier", { skill_id: publish.skill.skill_id }));
   assert.equal(universe.universe_dossier.schema_version, "synthi.dojo.universeDossier.v1", "universe dossier schema should match");
   const sourcePlan = structured(await dispatchDojoTool("synthi_dojo_get_source_affordance_pr_plan", { skill_id: publish.skill.skill_id }));
@@ -795,6 +824,7 @@ async function main() {
     checkride,
     vivarium_run: vivariumRun,
     wind_tunnel: windTunnel,
+    evil_twin: evilTwin,
     source_plan: sourcePlan,
     license_health: licenseHealth,
   });
@@ -818,6 +848,9 @@ async function main() {
     production_runtime_evidence_record_count: productionRuntimeEvidence.runtime_authorization.evidence_record_ids.length,
     vivarium_run_id: vivariumRun.vivarium_run.run.run_id,
     wind_tunnel_run_count: windTunnel.wind_tunnel_execution.run_count,
+    evil_twin_attack_count: evilTwin.evil_twin_runtime.attack_count,
+    evil_twin_attack_success_rate: evilTwin.evil_twin_runtime.attack_success_rate,
+    evil_twin_hardening_guardrail_count: evilTwin.hardening.applied_guardrails.length,
     source_affordance_patch_count: sourcePlan.source_affordance_pr_plan.patch_count,
     source_affordance_typed_operation_count: typedPatchPlan.operations.length,
     source_affordance_typed_target_match_count: typedPatchPlan.operations.filter((operation) => operation.target_match?.role).length,
