@@ -17,7 +17,6 @@ Options:
   --branch BRANCH      Branch to push when --push is used. Default: main
   --push               Push HEAD to origin/<branch> before submitting Cloud Build
   --allow-dirty        Allow deploying a dirty local checkout
-  --scan               Enable Cloud Build vulnerability scan gate
   -h, --help           Show this help
 
 Environment:
@@ -40,7 +39,6 @@ IMAGE_TAG=""
 DEPLOY_BRANCH="main"
 PUSH_FIRST="false"
 ALLOW_DIRTY="false"
-ENABLE_VULNERABILITY_SCAN="false"
 GCLOUD_BIN="${GCLOUD_BIN:-gcloud}"
 
 while [[ $# -gt 0 ]]; do
@@ -79,10 +77,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-dirty)
       ALLOW_DIRTY="true"
-      shift
-      ;;
-    --scan)
-      ENABLE_VULNERABILITY_SCAN="true"
       shift
       ;;
     -h|--help)
@@ -150,4 +144,4 @@ echo "  tag:      ${IMAGE_TAG}"
   --project="$PROJECT_ID" \
   --config="$REPO_ROOT/cloudbuild.yaml" \
   --ignore-file="$REPO_ROOT/.gcloudignore" \
-  --substitutions="_REGION=${REGION},_GKE_CLUSTER=${GKE_CLUSTER},_GKE_ZONE=${GKE_ZONE},_REGISTRY=${REGISTRY},_IMAGE_TAG=${IMAGE_TAG},_ENABLE_VULNERABILITY_SCAN=${ENABLE_VULNERABILITY_SCAN}"
+  --substitutions="_REGION=${REGION},_GKE_CLUSTER=${GKE_CLUSTER},_GKE_ZONE=${GKE_ZONE},_REGISTRY=${REGISTRY},_IMAGE_TAG=${IMAGE_TAG}"

@@ -1246,6 +1246,44 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ========================================================================
+  // SPAWNER — /api/spawner/release
+  // Explicitly stop the caller's current runtime. This complements the idle
+  // culler so users can free a pod/container immediately.
+  // Body: { session_id | runtimeScope, reason? }
+  // ========================================================================
+  if (req.url === '/api/spawner/release' && req.method === 'POST') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+
+    const sessionId = parsed.session_id || parsed.runtimeScope || '';
+    const headerScope = String(req.headers['x-runtime-scope'] || '').trim();
+    if (!sessionId || typeof sessionId !== 'string') {
+      res.writeHead(400);
+      res.end('Missing session_id');
+      return;
+    }
+    if (headerScope && headerScope !== sessionId) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'runtime_scope_mismatch' }));
+      return;
+    }
+
+    try {
+      const reason = parsed.reason || 'explicit_release';
+      await spawner.teardown(sessionId, { reason });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, session_id: sessionId, reason }));
+    } catch (e) {
+      console.error('[Spawner] release failed:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   if (req.url === '/turn-credentials' && req.method === 'GET') {
     res.setHeader('Content-Type', 'application/json');
     try {

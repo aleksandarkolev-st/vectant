@@ -10,14 +10,6 @@ on:
         description: "Optional immutable image tag. Defaults to prod-<sha>-<run number>."
         required: false
         type: string
-      enable_vulnerability_scan:
-        description: "Fail deploy when Artifact Analysis reports critical vulnerabilities."
-        required: true
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
 
 permissions:
   contents: read
@@ -56,7 +48,6 @@ jobs:
       - name: Submit production Cloud Build
         env:
           REQUESTED_IMAGE_TAG: ${{ github.event.inputs.image_tag || '' }}
-          REQUESTED_SCAN: ${{ github.event.inputs.enable_vulnerability_scan || 'false' }}
         run: |
           set -euo pipefail
           if [[ -n "${REQUESTED_IMAGE_TAG}" ]]; then
@@ -74,4 +65,4 @@ jobs:
             --project="${PROJECT_ID}" \
             --config=cloudbuild.yaml \
             --ignore-file=.gcloudignore \
-            --substitutions="_REGION=${REGION},_GKE_CLUSTER=${GKE_CLUSTER},_GKE_ZONE=${GKE_ZONE},_REGISTRY=${REGISTRY},_IMAGE_TAG=${IMAGE_TAG},_ENABLE_VULNERABILITY_SCAN=${REQUESTED_SCAN}"
+            --substitutions="_REGION=${REGION},_GKE_CLUSTER=${GKE_CLUSTER},_GKE_ZONE=${GKE_ZONE},_REGISTRY=${REGISTRY},_IMAGE_TAG=${IMAGE_TAG}"

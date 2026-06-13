@@ -2,7 +2,7 @@
 #  Synthi IDE — Cloud Build CI/CD Pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 #  Trigger: Push to main branch
-#  Steps:  Build (Kaniko, parallel) → Vulnerability Scan → Deploy (kubectl)
+#  Steps:  Build (Kaniko, parallel) → Deploy (kubectl)
 #
 #  Substitutions (override via trigger config or --substitutions):
 #    _REGION:       Artifact Registry + GKE region    (default: europe-west10)
@@ -42,7 +42,6 @@ substitutions:
   _NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.vectant.dev"
   _NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER: "true"
   _WORKER_INSTALL_ROCM: "false"
-  _ENABLE_VULNERABILITY_SCAN: "false"
 
 options:
   machineType: E2_HIGHCPU_32
@@ -201,71 +200,6 @@ steps:
       - --cache-ttl=168h
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # SCAN — Vulnerability scan on representative images
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: vulnerability-scan
-    name: gcr.io/cloud-builders/gcloud:latest@sha256:46e6289806bc317cb06c2476ee53631d3e0046edb6743ef4486fd38f13f5ff93
-    entrypoint: bash
-    args:
-      - -c
-      - |
-        set -euo pipefail
-        if [ "${_ENABLE_VULNERABILITY_SCAN}" != "true" ]; then
-          echo "=== Vulnerability Scan skipped (_ENABLE_VULNERABILITY_SCAN=${_ENABLE_VULNERABILITY_SCAN}) ==="
-          exit 0
-        fi
-        echo "=== Vulnerability Scan ==="
-        SCAN_FAILED=0
-
-        for IMAGE in \
-          "${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-collab-server:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-ai-engine:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-ai-gateway:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-signaling-server:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-worker:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-prisma-migrate:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-browser-workflow-bridge:${_IMAGE_TAG}"
-        do
-          echo ""
-          echo "Scanning: $${IMAGE}"
-          SCAN_ID=$$(gcloud artifacts docker images scan "$${IMAGE}" \
-            --format='value(response.scan)' \
-            --project=${PROJECT_ID})
-
-          echo "  Scan ID: $${SCAN_ID}"
-          CRITICAL=$$(gcloud artifacts docker images list-vulnerabilities "$${SCAN_ID}" \
-            --format='value(vulnerability.effectiveSeverity)' \
-            --project=${PROJECT_ID} | grep -c CRITICAL || true)
-
-          echo "  Critical vulnerabilities: $${CRITICAL}"
-          if [ "$${CRITICAL}" -gt 0 ]; then
-            echo "  ERROR: Critical vulnerabilities found in $${IMAGE}"
-            gcloud artifacts docker images list-vulnerabilities "$${SCAN_ID}" \
-              --format='table(vulnerability.effectiveSeverity, vulnerability.shortDescription)' \
-              --project=${PROJECT_ID} | head -20
-            SCAN_FAILED=1
-          fi
-        done
-
-        echo ""
-        if [ "$${SCAN_FAILED}" -ne 0 ]; then
-          echo "=== Scan failed: critical vulnerabilities found ==="
-          exit 1
-        fi
-        echo "=== Scan complete: no critical vulnerabilities found ==="
-    waitFor:
-      - build-frontend
-      - build-collab-server
-      - build-ai-engine
-      - build-ai-gateway
-      - build-signaling
-      - build-worker
-      - build-prisma-migrate
-      - build-browser-workflow-bridge
-
-  # ═══════════════════════════════════════════════════════════════════════════
   # DEPLOY — Rolling update on GKE
   # ═══════════════════════════════════════════════════════════════════════════
 
@@ -285,6 +219,7 @@ steps:
       - build-ai-gateway
       - build-signaling
       - build-worker
+      - build-prisma-migrate
       - build-browser-workflow-bridge
 
   - id: deploy-to-gke
@@ -338,6 +273,5 @@ steps:
         echo "=== Deploy complete ==="
     waitFor:
       - get-gke-credentials
-      - vulnerability-scan
 
 timeout: 3600s

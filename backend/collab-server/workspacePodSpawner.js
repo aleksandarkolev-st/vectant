@@ -96,6 +96,11 @@ function serviceName(sessionId) {
   return runtimeResourceId(sessionId);
 }
 
+function cleanupReason(options, fallback = 'teardown') {
+  if (typeof options === 'string') return options;
+  return options?.reason || fallback;
+}
+
 function runtimeLabels(sessionId, userId) {
   return {
     app: 'workspace',
@@ -842,7 +847,7 @@ exec worker`,
   } catch (err) {
     // Timeout: tear down the failed deployment to avoid ghost pods.
     console.error(`[Spawner] Pod readiness timeout for ${name}, tearing down:`, err.message);
-    await teardown(sessionId);
+    await teardown(sessionId, { reason: 'readiness_timeout' });
     throw new Error(`Workspace pod failed to start within ${POD_READY_TIMEOUT_MS / 1000}s`);
   }
 }
@@ -962,15 +967,18 @@ async function warm(sessionId, userId, metadata = {}) {
  * Immediately delete the workspace Deployment and Service for a session.
  * Called when the signaling server reports both peers disconnected.
  */
-async function teardown(sessionId) {
+async function teardown(sessionId, options = {}) {
+  const reason = cleanupReason(options);
   if (process.env.SPAWNER_MODE === 'local') {
     activeSessions.delete(sessionId);
     releaseRuntimeFilesystem(sessionId);
+    lifecycle.markTerminated(sessionId, reason);
     return;
   }
   const name = deploymentName(sessionId);
   activeSessions.delete(sessionId);
   releaseRuntimeFilesystem(sessionId);
+  lifecycle.markTerminated(sessionId, reason);
 
   // Delete Service first (non-fatal).
   await deleteService(sessionId);
@@ -978,7 +986,7 @@ async function teardown(sessionId) {
   // Delete Deployment.
   try {
     await appsApi.deleteNamespacedDeployment(name, NAMESPACE);
-    console.log(`[Spawner] Deleted workspace pod: ${name}`);
+    console.log(`[Spawner] Deleted workspace pod: ${name} (reason=${reason})`);
   } catch (err) {
     if (err.response && err.response.statusCode === 404) {
       // Already gone — not an error.
@@ -1010,10 +1018,10 @@ async function cullIdleWorkspaces() {
         const sid = dep.metadata.annotations?.['synthi/runtimeScopeFull'] || '?';
         console.log(`[Culler] Deleting idle workspace ${depName} (session=${sid}, idle=${Math.round((now - lastActive) / 1000)}s)`);
 
-        // Delete the associated Service.
-        await deleteService(sid);
-        activeSessions.delete(sid);
-        releaseRuntimeFilesystem(sid);
+        if (sid && sid !== '?') {
+          await teardown(sid, { reason: 'idle_timeout' });
+          continue;
+        }
 
         try {
           await appsApi.deleteNamespacedDeployment(depName, NAMESPACE);
@@ -1068,7 +1076,7 @@ async function gracefulShutdown(signal) {
   if (process.env.SPAWNER_CLEANUP_ON_SHUTDOWN === 'true') {
     console.log('[Spawner] SPAWNER_CLEANUP_ON_SHUTDOWN=true, tearing down all sessions...');
     const promises = [...activeSessions].map(sid =>
-      teardown(sid).catch(err =>
+      teardown(sid, { reason: 'shutdown_cleanup' }).catch(err =>
         console.error(`[Spawner] Cleanup error for ${sid}:`, err.message)
       )
     );
@@ -1116,7 +1124,7 @@ async function handleSessionEnded(req, res) {
   }
 
   console.log(`[Spawner] Received session-ended webhook for session=${sessionId}`);
-  await teardown(sessionId);
+  await teardown(sessionId, { reason: 'session_ended' });
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ ok: true }));
