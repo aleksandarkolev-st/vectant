@@ -223,6 +223,70 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("executes only targeted graph nodes and required ancestors", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = {
+      ...toDojoScenarioDefinition(scenarioFixture({
+        mutation_kind: "baseline",
+        layer: "skill",
+        risk_tags: ["baseline"],
+      })),
+      target_graph_node_ids: ["target_action"],
+    };
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "targeted-graph-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: branchingGraphFixture(),
+      run_id: "scenario-run-targeted-graph",
+      now: "2026-06-11T00:00:01.000Z",
+    });
+
+    expect(result.graph_result.node_results.map((node) => node.node_id)).toEqual(["trigger", "target_action"]);
+    expect(result.graph_result.evidence_refs).toEqual([
+      "dojo-graph://scenario-run-targeted-graph/trigger",
+      "dojo-graph://scenario-run-targeted-graph/target_action",
+    ]);
+    expect(result.graph_result.node_results.some((node) => node.node_id === "untargeted_action")).toBe(false);
+  });
+
+  it("blocks scenarios that reference missing target graph nodes", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = {
+      ...toDojoScenarioDefinition(scenarioFixture({
+        mutation_kind: "baseline",
+        layer: "skill",
+        risk_tags: ["baseline"],
+      })),
+      target_graph_node_ids: ["missing_action"],
+    };
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "missing-target-seed",
+    });
+
+    await expect(runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-missing-target",
+      now: "2026-06-11T00:00:01.000Z",
+    })).resolves.toEqual(expect.objectContaining({
+      status: "blocked",
+      graph_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["dojo_scenario_target_graph_node_missing:missing_action"],
+      }),
+      oracle_result: expect.objectContaining({
+        blocked_by: ["dojo_scenario_target_graph_node_missing:missing_action"],
+      }),
+    }));
+  });
+
   it("proves fixture reset is deterministic for the materialized scenario seed", () => {
     const runner = new DojoVivariumRunner();
     const materialized = runner.materialize({
@@ -280,6 +344,33 @@ function graphFixture(): DojoSkillGraph {
         edge_id: "edge_trigger_action",
         from_node_id: "trigger",
         to_node_id: "action",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function branchingGraphFixture(): DojoSkillGraph {
+  return {
+    ...graphFixture(),
+    nodes: [
+      safeNode("trigger", "Trigger", "Skill invocation"),
+      safeNode("target_action", "Action", "Targeted synthetic action"),
+      safeNode("untargeted_action", "Action", "Untargeted synthetic action"),
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_target",
+        from_node_id: "trigger",
+        to_node_id: "target_action",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_trigger_untargeted",
+        from_node_id: "trigger",
+        to_node_id: "untargeted_action",
         confidence: 1,
         observed_variants: [],
       },

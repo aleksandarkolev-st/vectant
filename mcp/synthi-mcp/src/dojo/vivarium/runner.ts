@@ -86,6 +86,20 @@ export class DojoVivariumRunner {
     const startedAt = input.now ?? new Date().toISOString();
     const runId = input.run_id ?? createScenarioRunId(input.materialized, input.graph, startedAt);
     const completedAt = input.now ?? new Date().toISOString();
+    const targetedGraph = graphForScenarioTargets(input.graph, input.materialized.definition.target_graph_node_ids);
+    if (!targetedGraph.ok) {
+      return blockedScenarioRunResult({
+        materialized: input.materialized,
+        tenant: tenantContext,
+        graph: input.graph,
+        run_id: runId,
+        started_at: startedAt,
+        completed_at: completedAt,
+        budget,
+        blocked_by: targetedGraph.blocked_by,
+        observed_evidence: input.observed_evidence ?? [],
+      });
+    }
     if (budget.max_runs < 1) {
       return blockedScenarioRunResult({
         materialized: input.materialized,
@@ -103,7 +117,7 @@ export class DojoVivariumRunner {
     let graphResult: DojoGraphRunResult;
     try {
       graphResult = await runtime.execute({
-        graph: input.graph,
+        graph: targetedGraph.graph,
         run_id: runId,
         mode: "checkride",
         now: startedAt,
@@ -220,6 +234,50 @@ function blockedGraphRunResult(runId: string, blockedBy: string[], evidenceRefs:
     node_results: [],
     blocked_by: [...blockedBy],
     evidence_refs: [...evidenceRefs],
+  };
+}
+
+function graphForScenarioTargets(
+  graph: DojoSkillGraph,
+  targetGraphNodeIds: string[]
+): { ok: true; graph: DojoSkillGraph } | { ok: false; blocked_by: string[] } {
+  const targetIds = [...new Set(targetGraphNodeIds.map((nodeId) => nodeId.trim()).filter(Boolean))];
+  if (targetIds.length === 0) return { ok: true, graph };
+
+  const nodesById = new Map(graph.nodes.map((node) => [node.node_id, node]));
+  const missingTargets = targetIds.filter((nodeId) => !nodesById.has(nodeId));
+  if (missingTargets.length > 0) {
+    return {
+      ok: false,
+      blocked_by: missingTargets.map((nodeId) => `dojo_scenario_target_graph_node_missing:${nodeId}`),
+    };
+  }
+
+  const incomingEdgesByTarget = new Map<string, DojoSkillGraph["edges"]>();
+  for (const edge of graph.edges) {
+    const incoming = incomingEdgesByTarget.get(edge.to_node_id) ?? [];
+    incoming.push(edge);
+    incomingEdgesByTarget.set(edge.to_node_id, incoming);
+  }
+
+  const requiredNodeIds = new Set<string>();
+  const queue = [...targetIds];
+  while (queue.length > 0) {
+    const nodeId = queue.shift();
+    if (!nodeId || requiredNodeIds.has(nodeId)) continue;
+    requiredNodeIds.add(nodeId);
+    for (const edge of incomingEdgesByTarget.get(nodeId) ?? []) {
+      if (!requiredNodeIds.has(edge.from_node_id)) queue.push(edge.from_node_id);
+    }
+  }
+
+  return {
+    ok: true,
+    graph: {
+      ...graph,
+      nodes: graph.nodes.filter((node) => requiredNodeIds.has(node.node_id)),
+      edges: graph.edges.filter((edge) => requiredNodeIds.has(edge.from_node_id) && requiredNodeIds.has(edge.to_node_id)),
+    },
   };
 }
 
