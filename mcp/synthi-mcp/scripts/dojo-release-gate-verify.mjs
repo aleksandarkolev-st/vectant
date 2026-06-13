@@ -39,6 +39,7 @@ const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tm
 const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-postgres-control-plane");
 const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-integration");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
+const DEFAULT_COMPLIANCE_EXPORT_DIR = path.join(REPO_ROOT, "tmp", "dojo-compliance-export");
 const DEFAULT_CHAOS_PERFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-chaos-performance");
 const DEFAULT_SOAK_DIR = path.join(MCP_ROOT, ".soak");
 
@@ -201,6 +202,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
+  const complianceExportResults = [];
+  if (truthy(args["release-candidate"]) || args["compliance-export-evidence"]) {
+    const complianceGate = findGate(manifest, "compliance_export_suite") || {};
+    complianceExportResults.push(await verifyDojoComplianceExportEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["compliance-export-evidence"]
+        || complianceGate.default_evidence_path
+        || path.join(DEFAULT_COMPLIANCE_EXPORT_DIR, "dojo-compliance-export.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
   const chaosPerformanceResults = [];
   if (truthy(args["enterprise-release"]) || truthy(args["include-chaos-performance"]) || args["chaos-performance-evidence"]) {
     chaosPerformanceResults.push(await verifyDojoChaosPerformanceEvidenceArtifact({
@@ -219,7 +231,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceResults, ...securityResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceResults, ...securityResults, ...complianceExportResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -234,6 +246,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     live_hosted_runtime: liveHostedRuntimeResults.map(summarizeSection),
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
+    compliance_export: complianceExportResults.map(summarizeSection),
     chaos_performance: chaosPerformanceResults.map(summarizeSection),
     soak_performance: soakPerformanceResults.map(summarizeSection),
   };
@@ -792,6 +805,49 @@ export function validateDojoSecurityAbuseEvidenceForRelease(evidence) {
     errors.push(`security_abuse_failed_tests:${evidence.test_summary.failed_tests}`);
   }
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("security_abuse_no_reported_tests");
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoComplianceExportEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoComplianceExportEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "compliance_export_suite",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+    result_count: Number(evidence?.test_summary?.total_tests || 0),
+  };
+}
+
+export function validateDojoComplianceExportEvidenceForRelease(evidence) {
+  const errors = [];
+  if (evidence?.schema_version !== "synthi.dojo.complianceExportEvidence.v1") {
+    errors.push(`compliance_export_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("compliance_export_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`compliance_export_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("compliance_export_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`compliance_export_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("compliance_export_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`compliance_export_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`compliance_export_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("compliance_export_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`compliance_export_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
   return {
     ok: errors.length === 0,
     errors,
@@ -1487,6 +1543,31 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedSecurity.errors.includes("security_abuse_coverage_incomplete"));
   assert(rejectedSecurity.errors.includes("security_abuse_missing_classes:raw_private_tool_bypass"));
 
+  const complianceDir = path.join(outDir, "compliance-export");
+  await mkdir(complianceDir, { recursive: true });
+  const complianceArtifacts = await writeComplianceExportEvidenceForSelfCheck({ outDir: complianceDir });
+  const complianceResult = await verifyDojoComplianceExportEvidenceArtifact({
+    evidencePath: complianceArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(complianceResult.ok, true, complianceResult.errors.join(";"));
+  const rejectedComplianceArtifacts = await writeComplianceExportEvidenceForSelfCheck({
+    outDir: complianceDir,
+    basename: "dojo-compliance-export-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["redacted_evidence_export"],
+      budget_evaluation: { ok: false },
+    },
+  });
+  const rejectedCompliance = await verifyDojoComplianceExportEvidenceArtifact({
+    evidencePath: rejectedComplianceArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedCompliance.errors.includes("compliance_export_coverage_incomplete"));
+  assert(rejectedCompliance.errors.includes("compliance_export_missing_capabilities:redacted_evidence_export"));
+
   const chaosDir = path.join(outDir, "chaos");
   await mkdir(chaosDir, { recursive: true });
   const chaosArtifacts = await writeChaosEvidenceForSelfCheck({ outDir: chaosDir });
@@ -1552,6 +1633,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(codexHostConformanceResult),
       summarizeSection(visualResult),
       summarizeSection(securityResult),
+      summarizeSection(complianceResult),
       summarizeSection(chaosResult),
       summarizeSection(soakResult),
     ],
@@ -1563,6 +1645,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedDryRun),
       summarizeSection(rejectedStdioHost),
       summarizeSection(rejectedSecurity),
+      summarizeSection(rejectedCompliance),
       summarizeSection(rejectedChaos),
       summarizeSection(rejectedSoak),
     ],
@@ -2282,6 +2365,76 @@ async function writeSecurityEvidenceForSelfCheck({
       total_tests: 8,
       passed_tests: 8,
       failed_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeComplianceExportEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-compliance-export",
+  overrides = {},
+}) {
+  const stdout = "compliance export focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({ success: true, numTotalTests: 12, numPassedTests: 12, numFailedTests: 0, numPendingTests: 0, testResults: [] }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const configuredCapabilities = [
+    "tool_authorized_compliance_export",
+    "compliance_pack_view_model",
+    "control_plane_audit_export",
+    "redacted_evidence_export",
+    "redaction_fail_closed",
+    "source_ref_redaction",
+  ];
+  const evidence = {
+    schema_version: "synthi.dojo.complianceExportEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: configuredCapabilities,
+    tested_capabilities: configuredCapabilities,
+    missing_capabilities: [],
+    capability_coverage_complete: true,
+    test_file_count: 3,
+    reported_test_file_count: 3,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_spawn_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: 12,
+      passed_tests: 12,
+      failed_tests: 0,
+      pending_tests: 0,
     },
     json_report_path: jsonReportPath,
     json_report_sha256: sha256(jsonReport),

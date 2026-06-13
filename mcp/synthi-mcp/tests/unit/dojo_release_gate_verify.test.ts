@@ -24,9 +24,11 @@ import {
   validateDojoPostgresControlPlaneEvidenceForMilestone,
   validateDojoWorkflowPipelineE2EForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
+  validateDojoComplianceExportEvidenceForRelease,
   validateDojoSecurityAbuseEvidenceForRelease,
   validateDojoSoakPerformanceSummary,
   verifyDojoChaosPerformanceEvidenceArtifact,
+  verifyDojoComplianceExportEvidenceArtifact,
   verifyDojoDockerIntegrationEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoPrivateToolCodexAcceptanceArtifact,
@@ -408,6 +410,7 @@ describe("Dojo release gate artifact verifier", () => {
       evidencePath: conformanceEvidencePath,
     });
     const securityEvidencePath = await writeSecurityEvidenceFixture({ dir });
+    const complianceEvidencePath = await writeComplianceExportEvidenceFixture({ dir });
     const workflowE2E = await writeWorkflowE2EFixture({ dir });
     const stdioAcceptance = await writePrivateToolStdioAcceptanceFixture({ dir });
     const codexAcceptance = await writePrivateToolCodexAcceptanceFixture({ dir });
@@ -448,6 +451,7 @@ describe("Dojo release gate artifact verifier", () => {
     selfCheckGate.default_evidence_path = selfCheck.productionEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_postgres_control_plane_self_check").default_evidence_path = postgresEvidencePath;
     manifest.gates.find((gate) => gate.id === "docker_integration").default_evidence_path = dockerEvidencePath;
+    manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
     manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioAcceptance.transcriptPath;
     manifest.gates.find((gate) => gate.id === "private_tool_codex_acceptance").default_report_path = codexAcceptance.transcriptPath;
@@ -515,6 +519,13 @@ describe("Dojo release gate artifact verifier", () => {
       "private_tool_codex_host_conformance",
     ]);
     expect(verified.mcp_host_conformance.every((report) => report.ok)).toBe(true);
+    expect(verified.compliance_export).toEqual([
+      expect.objectContaining({
+        id: "compliance_export_suite",
+        ok: true,
+        evidence_path: complianceEvidencePath,
+      }),
+    ]);
   });
 
   it("verifies MCP host conformance evidence hashes before release promotion", async () => {
@@ -606,6 +617,64 @@ describe("Dojo release gate artifact verifier", () => {
       writeLogs: false,
     });
     const tamperedJsonResult = await verifyDojoSecurityAbuseEvidenceArtifact({ evidencePath: tamperedJsonPath });
+    expect(tamperedJsonResult.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^json_report_sha256_mismatch:/),
+      expect.stringMatching(/^json_report_bytes_mismatch:/),
+    ]));
+  });
+
+  it("verifies compliance export evidence coverage and referenced log digests", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-compliance-export-verify-"));
+    const evidencePath = await writeComplianceExportEvidenceFixture({ dir });
+
+    expect(validateDojoComplianceExportEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoComplianceExportEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = complianceExportEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["redacted_evidence_export"],
+      budget_evaluation: { ok: false },
+      test_summary: {
+        ...complianceExportEvidenceFixture().test_summary,
+        pending_tests: 1,
+      },
+    });
+    const incompletePath = await writeComplianceExportEvidenceFixture({ dir, basename: "incomplete-compliance", evidence: incomplete });
+    const rejected = await verifyDojoComplianceExportEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "compliance_export_not_ok",
+      "compliance_export_coverage_incomplete",
+      "compliance_export_missing_capabilities:redacted_evidence_export",
+      "compliance_export_budget_not_ok",
+      "compliance_export_pending_tests:1",
+    ]));
+
+    const tamperedJson = path.join(dir, "tampered-compliance.vitest.json");
+    await writeFile(tamperedJson, JSON.stringify({ success: false, numFailedTests: 1 }), "utf8");
+    const expectedComplianceJson = complianceExportJsonReportFixtureText();
+    const tamperedJsonPath = await writeComplianceExportEvidenceFixture({
+      dir,
+      basename: "tampered-compliance-json",
+      evidence: complianceExportEvidenceFixture({
+        json_report_path: tamperedJson,
+        json_report_sha256: sha256(expectedComplianceJson),
+        json_report_bytes: Buffer.byteLength(expectedComplianceJson),
+      }),
+      writeLogs: false,
+    });
+    const tamperedJsonResult = await verifyDojoComplianceExportEvidenceArtifact({ evidencePath: tamperedJsonPath });
     expect(tamperedJsonResult.errors).toEqual(expect.arrayContaining([
       expect.stringMatching(/^json_report_sha256_mismatch:/),
       expect.stringMatching(/^json_report_bytes_mismatch:/),
@@ -1515,6 +1584,95 @@ function securityJsonReportFixtureText() {
     numTotalTests: 8,
     numPassedTests: 8,
     numFailedTests: 0,
+    testResults: [],
+  }, null, 2);
+}
+
+async function writeComplianceExportEvidenceFixture({
+  dir,
+  basename = "dojo-compliance-export",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "compliance suite passed\n";
+  const stderr = "";
+  const jsonReport = complianceExportJsonReportFixtureText();
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  } else {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+  }
+  const body = evidence ?? complianceExportEvidenceFixture({ stdout_path: stdoutPath, stderr_path: stderrPath, json_report_path: jsonReportPath });
+  const withLogDefaults = {
+    ...body,
+    stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
+    stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
+    json_report_path: body.json_report_path && body.json_report_path !== "vitest.json" ? body.json_report_path : jsonReportPath,
+    json_report_sha256: body.json_report_sha256 && body.json_report_sha256 !== "json-report-sha256" ? body.json_report_sha256 : sha256(jsonReport),
+    json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
+      ? body.json_report_bytes
+      : Buffer.byteLength(jsonReport),
+  };
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
+  return evidencePath;
+}
+
+function complianceExportEvidenceFixture(overrides = {}) {
+  const stdout = "compliance suite passed\n";
+  const stderr = "";
+  const capabilities = [
+    "tool_authorized_compliance_export",
+    "compliance_pack_view_model",
+    "control_plane_audit_export",
+    "redacted_evidence_export",
+    "redaction_fail_closed",
+    "source_ref_redaction",
+  ];
+  return {
+    schema_version: "synthi.dojo.complianceExportEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: capabilities,
+    tested_capabilities: capabilities,
+    missing_capabilities: [],
+    capability_coverage_complete: true,
+    test_file_count: 3,
+    reported_test_file_count: 3,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: 12,
+      passed_tests: 12,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: "stdout.log",
+    stderr_path: "stderr.log",
+    json_report_path: "vitest.json",
+    json_report_sha256: "json-report-sha256",
+    json_report_bytes: undefined,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+}
+
+function complianceExportJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: 12,
+    numPassedTests: 12,
+    numFailedTests: 0,
+    numPendingTests: 0,
     testResults: [],
   }, null, 2);
 }
