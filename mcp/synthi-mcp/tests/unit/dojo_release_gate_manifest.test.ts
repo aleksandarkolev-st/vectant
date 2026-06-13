@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildDojoReleaseGateEvidenceManifest,
@@ -43,7 +45,7 @@ const PACKAGE_SCRIPTS = {
     build: "tsc",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
-    "test:dojo:postgres-control-plane": "vitest run tests/integration/dojo_postgres_schema.test.ts tests/integration/dojo_postgres_proof_store.test.ts tests/integration/dojo_evidence_ledger_store.test.ts tests/integration/dojo_audit_store.test.ts tests/integration/dojo_postgres_skill_store.test.ts tests/integration/dojo_postgres_license_store.test.ts tests/integration/dojo_postgres_governance_store.test.ts tests/integration/dojo_postgres_source_registry_store.test.ts tests/integration/dojo_postgres_mcp_skill_bus_store.test.ts tests/integration/dojo_postgres_graph_run_store.test.ts tests/integration/dojo_postgres_hosted_runtime_store.test.ts tests/integration/dojo_postgres_mcp_host_conformance_store.test.ts tests/integration/dojo_proof_ledger_tool.test.ts",
+    "test:dojo:postgres-control-plane": "vitest run tests/integration/dojo_postgres_schema.test.ts tests/integration/dojo_postgres_proof_store.test.ts tests/integration/dojo_evidence_ledger_store.test.ts tests/integration/dojo_audit_store.test.ts tests/integration/dojo_postgres_skill_store.test.ts tests/integration/dojo_postgres_license_store.test.ts tests/integration/dojo_postgres_tool_control_plane.test.ts tests/integration/dojo_postgres_ghost_shadow_evidence_store.test.ts tests/integration/dojo_postgres_governance_store.test.ts tests/integration/dojo_postgres_source_registry_store.test.ts tests/integration/dojo_postgres_mcp_skill_bus_store.test.ts tests/integration/dojo_postgres_graph_run_store.test.ts tests/integration/dojo_postgres_hosted_runtime_store.test.ts tests/integration/dojo_hosted_runtime_gateway_resolver.test.ts tests/integration/dojo_postgres_mcp_host_conformance_store.test.ts tests/integration/dojo_proof_ledger_tool.test.ts",
     "proof:dojo:self-check": "node scripts/dojo-proof-self-check.mjs",
     "proof:dojo:mcp-host-conformance:self-check": "node scripts/dojo-mcp-host-conformance.mjs --self-check",
     "proof:dojo:docker-integration:self-check": "node scripts/dojo-docker-integration-self-check.mjs",
@@ -71,6 +73,14 @@ const PACKAGE_SCRIPTS = {
 };
 
 describe("Dojo release gate manifest", () => {
+  it("keeps the package Postgres control-plane script aligned with the authoritative self-check suite", () => {
+    const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
+    const script = packageJson.scripts["test:dojo:postgres-control-plane"];
+    const scriptFiles = script.split(/\s+/).filter((part) => part.endsWith(".test.ts"));
+
+    expect(scriptFiles).toEqual(DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES);
+  });
+
   it("defines the complete T0 through T8 tier matrix", () => {
     expect(DOJO_RELEASE_GATE_TIERS.map((tier) => tier.id)).toEqual([
       "T0",
