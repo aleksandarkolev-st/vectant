@@ -12,6 +12,8 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "./dojo-compliance-export-self-check.mjs";
+import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "./dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "./dojo-security-abuse-self-check.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -453,6 +455,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     default_evidence_path: "tmp/dojo-compliance-export/dojo-compliance-export.evidence.json",
     release_artifact_requirements: {
       require_all_compliance_capabilities_covered: true,
+      required_compliance_capabilities: [...DOJO_COMPLIANCE_EXPORT_CAPABILITIES],
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -471,6 +474,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     default_evidence_path: "tmp/dojo-privacy-redaction/dojo-privacy-redaction.evidence.json",
     release_artifact_requirements: {
       require_all_privacy_capabilities_covered: true,
+      required_privacy_capabilities: [...DOJO_PRIVACY_REDACTION_CAPABILITIES],
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -807,6 +811,14 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!complianceExportGate.release_artifact_requirements?.require_all_compliance_capabilities_covered) {
       errors.push("compliance_export_missing_capability_requirement");
     }
+    const requiredComplianceCapabilities = Array.isArray(complianceExportGate.release_artifact_requirements?.required_compliance_capabilities)
+      ? complianceExportGate.release_artifact_requirements.required_compliance_capabilities
+      : [];
+    const missingComplianceCapabilities = DOJO_COMPLIANCE_EXPORT_CAPABILITIES
+      .filter((capability) => !requiredComplianceCapabilities.includes(capability));
+    if (missingComplianceCapabilities.length > 0) {
+      errors.push(`compliance_export_missing_required_capabilities:${missingComplianceCapabilities.join(",")}`);
+    }
     if (!complianceExportGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
       errors.push("compliance_export_missing_digest_requirement");
     }
@@ -825,6 +837,14 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!privacyRedactionGate.default_evidence_path) errors.push("privacy_redaction_missing_default_evidence_path");
     if (!privacyRedactionGate.release_artifact_requirements?.require_all_privacy_capabilities_covered) {
       errors.push("privacy_redaction_missing_capability_requirement");
+    }
+    const requiredPrivacyCapabilities = Array.isArray(privacyRedactionGate.release_artifact_requirements?.required_privacy_capabilities)
+      ? privacyRedactionGate.release_artifact_requirements.required_privacy_capabilities
+      : [];
+    const missingPrivacyCapabilities = DOJO_PRIVACY_REDACTION_CAPABILITIES
+      .filter((capability) => !requiredPrivacyCapabilities.includes(capability));
+    if (missingPrivacyCapabilities.length > 0) {
+      errors.push(`privacy_redaction_missing_required_capabilities:${missingPrivacyCapabilities.join(",")}`);
     }
     if (!privacyRedactionGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
       errors.push("privacy_redaction_missing_digest_requirement");

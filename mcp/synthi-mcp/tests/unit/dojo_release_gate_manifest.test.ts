@@ -10,6 +10,8 @@ import {
   validateDojoReleaseGateManifest,
   validateDojoVisualProofReport,
 } from "../../scripts/dojo-release-gate-manifest.mjs";
+import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "../../scripts/dojo-compliance-export-self-check.mjs";
+import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "../../scripts/dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "../../scripts/dojo-security-abuse-self-check.mjs";
 
 const PACKAGE_SCRIPTS = {
@@ -240,6 +242,7 @@ describe("Dojo release gate manifest", () => {
         default_evidence_path: "tmp/dojo-compliance-export/dojo-compliance-export.evidence.json",
         release_artifact_requirements: expect.objectContaining({
           require_all_compliance_capabilities_covered: true,
+          required_compliance_capabilities: DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -255,6 +258,7 @@ describe("Dojo release gate manifest", () => {
         default_evidence_path: "tmp/dojo-privacy-redaction/dojo-privacy-redaction.evidence.json",
         release_artifact_requirements: expect.objectContaining({
           require_all_privacy_capabilities_covered: true,
+          required_privacy_capabilities: DOJO_PRIVACY_REDACTION_CAPABILITIES,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -310,6 +314,22 @@ describe("Dojo release gate manifest", () => {
     expect(validateDojoReleaseGateManifest(brokenSecurity, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "security_abuse_missing_required_classes:fake_success_oracle",
       "security_abuse_missing_no_skipped_requirement",
+    ]));
+
+    const brokenCompliance = JSON.parse(JSON.stringify(manifest));
+    const complianceGate = brokenCompliance.gates.find((gate) => gate.id === "compliance_export_suite");
+    complianceGate.release_artifact_requirements.required_compliance_capabilities = DOJO_COMPLIANCE_EXPORT_CAPABILITIES
+      .filter((capability) => capability !== "redacted_evidence_export");
+    expect(validateDojoReleaseGateManifest(brokenCompliance, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "compliance_export_missing_required_capabilities:redacted_evidence_export",
+    ]));
+
+    const brokenPrivacy = JSON.parse(JSON.stringify(manifest));
+    const privacyGate = brokenPrivacy.gates.find((gate) => gate.id === "privacy_redaction_suite");
+    privacyGate.release_artifact_requirements.required_privacy_capabilities = DOJO_PRIVACY_REDACTION_CAPABILITIES
+      .filter((capability) => capability !== "browser_origin_privacy_boundary");
+    expect(validateDojoReleaseGateManifest(brokenPrivacy, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "privacy_redaction_missing_required_capabilities:browser_origin_privacy_boundary",
     ]));
   });
 
