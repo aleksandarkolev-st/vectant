@@ -781,6 +781,77 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("requires tenant authorization for production proof lifecycle tools", async () => {
+    const { hiddenSkill } = await publishTwoWorkspaceSkillsForDojoToolTest();
+    const issuedHiddenProof = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: hiddenSkill.skill_id,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+    });
+    expect(issuedHiddenProof?.isError).toBeUndefined();
+    const hiddenProofCapsule = (issuedHiddenProof?.structuredContent as {
+      proof_capsule: { capsule_id: string };
+    }).proof_capsule;
+
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    const protectedProofCalls = [
+      {
+        tool_name: "synthi_dojo_issue_proof_capsule",
+        args: {
+          skill_id: hiddenSkill.skill_id,
+          requested_action: "run_workflow",
+          context_claims: { workspace_verified: true },
+        },
+      },
+      {
+        tool_name: "synthi_dojo_validate_proof_capsule",
+        args: {
+          skill_id: hiddenSkill.skill_id,
+          requested_action: "run_workflow",
+          proof_capsule: hiddenProofCapsule,
+        },
+      },
+      {
+        tool_name: "synthi_dojo_run_with_proof_capsule",
+        args: {
+          skill_id: hiddenSkill.skill_id,
+          requested_action: "run_workflow",
+          proof_capsule: hiddenProofCapsule,
+          dry_run: true,
+        },
+      },
+      {
+        tool_name: "synthi_dojo_revoke_proof_capsule",
+        args: {
+          capsule_id: hiddenProofCapsule.capsule_id,
+          reason: "cross-workspace proof lifecycle test",
+          actor_id: "workspace-a-proof-operator",
+          actor_type: "human",
+          evidence_refs: ["evidence:proof-revocation-review"],
+        },
+      },
+    ];
+
+    for (const call of protectedProofCalls) {
+      const blocked = await dispatchDojoTool(call.tool_name, {
+        ...productionTenantContextArgs({
+          request_id: `req-${call.tool_name}-hidden-proof`,
+          correlation_id: `corr-${call.tool_name}-hidden-proof`,
+          actor_id: "workspace-a-proof-operator",
+          roles: ["dojo:reviewer"],
+        }),
+        ...call.args,
+      });
+      expect(blocked?.isError, call.tool_name).toBe(true);
+      expect(blocked?.structuredContent, call.tool_name).toEqual(expect.objectContaining({
+        error: "dojo_skill_not_authorized",
+        skill_id: hiddenSkill.skill_id,
+        workspace_id: "workspace-b",
+        tenant_workspace_id: "workspace-a",
+      }));
+    }
+  });
+
   it("advertises the static Dojo tool surface to strict MCP clients", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createSynthiServer({ defaultSignalingUrl: "ws://localhost:9000" });

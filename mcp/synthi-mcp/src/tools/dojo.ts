@@ -1997,15 +1997,11 @@ function dojoExportCompliancePackTool(args: unknown): ToolResponse {
 
 function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
   const a = obj(args);
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
   const enforcement = resolveDojoEnforcementConfig();
-  const tenantContext = dojoTenantContextResultFromArgs(a, {
-    development_defaults: { workspace_id: skill.skill.workspace_id },
-  });
-  if (!tenantContext.ok) return tenantContext.error;
-  const tenant = tenantContext.tenant;
+  const tenant = skill.tenant;
   const issuerActorId = stringOpt(a["actor_id"]);
   const issuerActorType = actorTypeInputOpt(a["actor_type"]);
   const issuerActorProvided = Boolean(issuerActorId) || a["actor_type"] !== undefined;
@@ -2118,7 +2114,7 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
 
 function dojoValidateProofCapsuleTool(args: unknown): ToolResponse {
   const a = obj(args);
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
   const capsule = proofCapsuleOpt(a["proof_capsule"]);
@@ -2131,11 +2127,7 @@ function dojoValidateProofCapsuleTool(args: unknown): ToolResponse {
     });
   }
   const now = stringOpt(a["now"]);
-  const tenantContext = dojoTenantContextResultFromArgs(a, {
-    development_defaults: { workspace_id: skill.skill.workspace_id },
-  });
-  if (!tenantContext.ok) return tenantContext.error;
-  const tenant = tenantContext.tenant;
+  const tenant = skill.tenant;
   const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, objectOpt(a["tool_args"]) ?? {});
   const decision = evaluateDojoLicenseKernel({
     skill: skill.skill,
@@ -2173,6 +2165,15 @@ function dojoRevokeProofCapsuleTool(args: unknown): ToolResponse {
   if (!actorType) return errorResponse("dojo_proof_capsule_revocation_actor_type_required");
   const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
   if (evidenceRefs.length === 0) return errorResponse("dojo_proof_capsule_revocation_evidence_required");
+  const existingRecord = dojoSkillRegistry.getProofRecord(capsuleId);
+  if (!existingRecord) return errorResponse("dojo_proof_capsule_not_found", { capsule_id: capsuleId });
+  const skill = dojoSkillRegistry.get(existingRecord.skill_id);
+  if (!skill) return errorResponse("dojo_proof_capsule_skill_not_found", {
+    capsule_id: capsuleId,
+    skill_id: existingRecord.skill_id,
+  });
+  const authorization = authorizeTenantForDojoSkill(args, skill);
+  if (!authorization.ok) return authorization.error;
   const record = dojoSkillRegistry.revokeProofCapsule(capsuleId, reason, stringOpt(a["now"]), {
     actor_id: actorId,
     actor_type: actorType,
@@ -2183,7 +2184,7 @@ function dojoRevokeProofCapsuleTool(args: unknown): ToolResponse {
 
 async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const skill = requiredSkill(args);
+  const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
   const capsule = proofCapsuleOpt(a["proof_capsule"]);
@@ -2201,11 +2202,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
     ?? stringOpt(a["request_id"])
     ?? `dojo_run_${hashId(`${(capsule as { capsule_id: string }).capsule_id}:${skill.skill.skill_id}:${requestedAction}:${skill.skill.skill_version}`)}`;
   const now = stringOpt(a["now"]);
-  const tenantContext = dojoTenantContextResultFromArgs(a, {
-    development_defaults: { workspace_id: skill.skill.workspace_id },
-  });
-  if (!tenantContext.ok) return tenantContext.error;
-  const tenant = tenantContext.tenant;
+  const tenant = skill.tenant;
   const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, toolArgs);
   let decision: ReturnType<typeof evaluateDojoLicenseKernel> | undefined;
   const skillBus = createInProcessDojoMcpSkillBus({
