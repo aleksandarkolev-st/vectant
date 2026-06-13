@@ -94,6 +94,7 @@ export class DojoVivariumRunner {
       graph: input.graph,
       run_id: runId,
       mode: "checkride",
+      now: startedAt,
       inputs: {
         ...input.materialized.definition.input_overrides,
         ...fixtureInputs(input.materialized.fixture),

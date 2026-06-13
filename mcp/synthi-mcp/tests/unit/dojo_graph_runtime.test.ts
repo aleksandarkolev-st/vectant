@@ -74,6 +74,7 @@ describe("Dojo graph runtime", () => {
       proof_capsule: { capsule_id: "capsule-a" },
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor(),
+      now: "2026-06-11T00:00:02.000Z",
       evidence_writer: (event) => {
         events.push(event);
         return `ledger://${event.run_id}/${event.node_id}`;
@@ -94,11 +95,13 @@ describe("Dojo graph runtime", () => {
         skill_id: "skill-a",
         node_id: "trigger",
         status: "completed",
+        created_at: "2026-06-11T00:00:02.000Z",
       }),
       expect.objectContaining({
         run_id: "graph-run-1",
         node_id: "action_submit",
         status: "completed",
+        created_at: "2026-06-11T00:00:02.000Z",
         guardrail_ids: ["guard_client_stable_id"],
         proof_required: true,
         proof_claims: ["checkride_passed", "workspace_verified"],

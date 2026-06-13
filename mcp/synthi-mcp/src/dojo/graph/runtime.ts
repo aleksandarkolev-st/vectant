@@ -119,6 +119,7 @@ export interface DojoSkillGraphRuntimeInput {
   allow_self_attested_proof?: boolean;
   substrate_executor?: DojoSubstrateExecutor;
   evidence_writer?: DojoGraphEvidenceWriter;
+  now?: string;
 }
 
 export class DojoSkillGraphRuntime {
@@ -466,7 +467,7 @@ async function emitGraphNodeEvidence(
     ...(result.substrate_result ? { substrate_status: result.substrate_result.status } : {}),
     ...(result.substrate_result?.substrate ? { substrate: result.substrate_result.substrate } : {}),
     substrate_evidence_refs: [...(result.substrate_result?.evidence_refs ?? [])],
-    created_at: new Date().toISOString(),
+    created_at: input.now ?? new Date().toISOString(),
   });
   return typeof emittedRef === "string" && emittedRef.trim() ? emittedRef : fallbackRef;
 }
