@@ -147,6 +147,51 @@ describe("Dojo proof capsule service", () => {
     expect(store.listProofRecords()).toEqual([]);
   });
 
+  it("fails closed when a persisted proof record is not scoped to the validation tenant", async () => {
+    const skill = skillFixture();
+    const tenant = tenantFixture(skill.workspace_id);
+    const store = new InMemoryDojoSkillStore();
+    const service = createDojoProofCapsuleService({ proof_store: store });
+
+    const issued = await service.issue({
+      tenant,
+      skill,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill, { tenant_id: tenant.tenant_id }),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(issued.ok).toBe(true);
+    const proofRecord = store.getProofRecord(issued.proof_capsule!.capsule_id);
+    expect(proofRecord).toBeTruthy();
+    store.saveProofRecord({
+      ...proofRecord!,
+      tenant_id: "tenant-b",
+      workspace_id: "workspace-b",
+    });
+
+    const validation = await service.validate({
+      tenant,
+      skill,
+      proof_capsule: issued.proof_capsule!,
+      requested_action: "run_workflow",
+      dry_run: true,
+      validation_options: { now: "2026-06-11T00:01:00.000Z" },
+    });
+
+    expect(validation).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: expect.arrayContaining([
+        "proof_record_tenant_mismatch",
+        "proof_record_workspace_mismatch",
+      ]),
+      validation: expect.objectContaining({
+        error_codes: ["proof_capsule_registry_mismatch"],
+      }),
+    }));
+  });
+
   it("fails closed when consumption is requested without a proof store", async () => {
     const service = createDojoProofCapsuleService();
 

@@ -189,6 +189,7 @@ function vitestJsonReportFixture(input = {}) {
     "Dojo evidence claim verifier returns stale when evidence is older than the requested max age",
     "Dojo proof claims blocks strict proof issuance when backing evidence belongs to another skill scope",
     "Dojo proof claims blocks strict proof issuance when backing evidence belongs to another workspace scope",
+    "Dojo proof capsule service fails closed when a persisted proof record is not scoped to the validation tenant",
     "Dojo governance service reports expired and active license health",
     "Dojo governance service reports revoked licenses before expiry checks",
     "Dojo source drift expiry expires graph nodes mapped to changed source tokens",

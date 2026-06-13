@@ -220,7 +220,10 @@ class DefaultDojoProofCapsuleService implements DojoProofCapsuleService {
       ? await this.proofStore.getProofRecord(input.proof_capsule.capsule_id)
       : null;
     const registryBlockedBy = this.proofStore
-      ? proofRegistryBlockedBy(input.proof_capsule, record)
+      ? proofRegistryBlockedBy(input.proof_capsule, record, {
+        tenant: input.tenant,
+        skill: input.skill,
+      })
       : [];
     const validation = registryBlockedBy.length > 0
       ? mergeProofValidationBlocks(structuralValidation, registryBlockedBy)
@@ -252,13 +255,22 @@ class DefaultDojoProofCapsuleService implements DojoProofCapsuleService {
 
 function proofRegistryBlockedBy(
   capsule: DojoProofCarryingSkillCapsule,
-  record: DojoProofCapsuleRecord | null
+  record: DojoProofCapsuleRecord | null,
+  expected: {
+    tenant: DojoTenantContext;
+    skill: DojoSkill;
+  }
 ): string[] {
   if (!record) return ["proof_capsule_not_issued"];
   const blockedBy: string[] = [];
   if (record.status === "revoked") blockedBy.push("proof_capsule_revoked");
   if (record.status === "used") blockedBy.push("proof_capsule_replay_detected");
+  if (record.tenant_id && record.tenant_id !== expected.tenant.tenant_id) blockedBy.push("proof_record_tenant_mismatch");
+  if (record.workspace_id && record.workspace_id !== expected.tenant.workspace_id) blockedBy.push("proof_record_workspace_mismatch");
   if (record.skill_id !== capsule.skill_id) blockedBy.push("proof_record_skill_mismatch");
+  if (record.license_id && record.license_id !== expected.skill.permission_license.license_id) {
+    blockedBy.push("proof_record_license_mismatch");
+  }
   if (record.requested_action !== capsule.requested_action) blockedBy.push("proof_record_action_mismatch");
   if (record.license_version && record.license_version !== capsule.license_version) {
     blockedBy.push("proof_record_license_version_mismatch");
@@ -267,6 +279,15 @@ function proofRegistryBlockedBy(
   if (record.key_id && record.key_id !== capsule.key_id) blockedBy.push("proof_record_key_mismatch");
   if (record.signature_algorithm && record.signature_algorithm !== capsule.signature_algorithm) {
     blockedBy.push("proof_record_signature_algorithm_mismatch");
+  }
+  if (record.substrate_claim && record.substrate_claim !== capsule.substrate_claim) {
+    blockedBy.push("proof_record_substrate_mismatch");
+  }
+  if (record.ledger_checkpoint_hash && record.ledger_checkpoint_hash !== capsule.ledger_checkpoint_hash) {
+    blockedBy.push("proof_record_ledger_checkpoint_mismatch");
+  }
+  if (record.evidence_record_ids && !sameStringSet(record.evidence_record_ids, capsule.evidence_record_ids)) {
+    blockedBy.push("proof_record_evidence_mismatch");
   }
   return blockedBy;
 }
@@ -329,4 +350,11 @@ function evidenceRecordIdsFromRefs(refs: string[] | undefined): string[] {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.trim().length > 0))];
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  const normalizedLeft = uniqueStrings(left).sort();
+  const normalizedRight = uniqueStrings(right).sort();
+  return normalizedLeft.length === normalizedRight.length
+    && normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }

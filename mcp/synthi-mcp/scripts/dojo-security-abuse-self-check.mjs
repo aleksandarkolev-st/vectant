@@ -282,7 +282,7 @@ function abuseClassMatchers(abuseClass) {
     evidence_scope_mismatch: ["belongs to another skill scope", "belongs to another workspace scope"],
     license_revocation_or_expiry: ["reports revoked licenses before expiry checks", "reports expired and active license health", "revokes licenses by deriving blocked scope"],
     source_drift_expiry: ["expires graph nodes mapped to changed source tokens", "rejects drift reports from tampered or unverifiable source snapshots"],
-    tenant_workspace_isolation: ["prevents cross tenant proof reads", "rejects writes outside the configured tenant and workspace scope"],
+    tenant_workspace_isolation: ["prevents cross tenant proof reads", "rejects writes outside the configured tenant and workspace scope", "not scoped to the validation tenant"],
     auth_expiry: ["classifies expired auth checkpoints before workflow replay", "auth expiry"],
     role_downgrade: ["role downgrade", "permission change identity tissue", "permission downgraded"],
     approval_denial: ["approval and denial decisions", "approval denied"],
