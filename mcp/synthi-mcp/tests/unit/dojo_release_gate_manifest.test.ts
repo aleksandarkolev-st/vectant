@@ -104,6 +104,7 @@ describe("Dojo release gate manifest", () => {
         visual_report_requirements: expect.objectContaining({
           requires_pixel_metrics: true,
           requires_layout_metrics: true,
+          required_result_fields: expect.arrayContaining(["screenshot_sha256"]),
         }),
       }),
       expect.objectContaining({
@@ -117,6 +118,7 @@ describe("Dojo release gate manifest", () => {
         visual_report_requirements: expect.objectContaining({
           requires_pixel_metrics: true,
           requires_layout_metrics: true,
+          required_result_fields: expect.arrayContaining(["screenshot_sha256"]),
         }),
       }),
       expect.objectContaining({ id: "dojo_mcp_host_conformance", tier: "T6", script_exists: true }),
@@ -301,6 +303,7 @@ describe("Dojo release gate manifest", () => {
             horizontal_overflow_px: 0,
             selector_visible_area_px: 468_000,
           },
+          screenshot_sha256: "0".repeat(64),
         },
       ],
     };

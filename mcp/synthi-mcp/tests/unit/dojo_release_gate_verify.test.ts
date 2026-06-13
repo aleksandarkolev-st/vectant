@@ -637,7 +637,11 @@ describe("Dojo release gate artifact verifier", () => {
     const imageBytes = Buffer.from("not-a-real-production-screenshot");
     await writeFile(screenshotPath, imageBytes);
     const reportPath = path.join(dir, "visual-proof.json");
-    const report = buildVisualReport({ screenshotPath, bytes: imageBytes.length });
+    const report = buildVisualReport({
+      screenshotPath,
+      bytes: imageBytes.length,
+      screenshotSha256: sha256(imageBytes),
+    });
     await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
 
     expect(await verifyVisualProofArtifact({
@@ -653,6 +657,7 @@ describe("Dojo release gate artifact verifier", () => {
     await writeFile(reportPath, JSON.stringify(buildVisualReport({
       screenshotPath,
       bytes: imageBytes.length + 1,
+      screenshotSha256: sha256(imageBytes),
     }), null, 2), "utf8");
     const rejected = await verifyVisualProofArtifact({
       manifest,
@@ -662,6 +667,21 @@ describe("Dojo release gate artifact verifier", () => {
     expect(rejected.ok).toBe(false);
     expect(rejected.errors).toEqual(expect.arrayContaining([
       "visual_result_screenshot_bytes_mismatch:visual-proof:33:32",
+    ]));
+
+    await writeFile(reportPath, JSON.stringify(buildVisualReport({
+      screenshotPath,
+      bytes: imageBytes.length,
+      screenshotSha256: sha256("different-screenshot"),
+    }), null, 2), "utf8");
+    const digestRejected = await verifyVisualProofArtifact({
+      manifest,
+      gateId: "dojo_full_visual_proof",
+      reportPath,
+    });
+    expect(digestRejected.ok).toBe(false);
+    expect(digestRejected.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^visual_result_screenshot_sha256_mismatch:visual-proof:/),
     ]));
   });
 });
@@ -705,6 +725,7 @@ async function writeVisualReportFixture({ dir, basename, schemaVersion }) {
   await writeFile(reportPath, JSON.stringify(buildVisualReport({
     screenshotPath,
     bytes: imageBytes.length,
+    screenshotSha256: sha256(imageBytes),
     schemaVersion,
   }), null, 2), "utf8");
   return {
@@ -1337,7 +1358,7 @@ function buildConformanceReport({
   return report;
 }
 
-function buildVisualReport({ screenshotPath, bytes, schemaVersion = "synthi.dojo.visualProof.v1" }) {
+function buildVisualReport({ screenshotPath, bytes, screenshotSha256, schemaVersion = "synthi.dojo.visualProof.v1" }) {
   return {
     schema_version: schemaVersion,
     ok: true,
@@ -1349,6 +1370,7 @@ function buildVisualReport({ screenshotPath, bytes, schemaVersion = "synthi.dojo
         ok: true,
         failed_visual_gates: [],
         screenshot_path: screenshotPath,
+        screenshot_sha256: screenshotSha256,
         bytes,
         image_metrics: {
           pixel_metrics_verified: true,

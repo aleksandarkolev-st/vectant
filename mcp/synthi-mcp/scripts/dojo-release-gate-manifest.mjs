@@ -100,6 +100,7 @@ export const DOJO_VISUAL_REPORT_REQUIREMENTS = Object.freeze({
     "image_metrics.luma_stddev",
     "layout_metrics.horizontal_overflow_px",
     "layout_metrics.selector_visible_area_px",
+    "screenshot_sha256",
   ],
 });
 

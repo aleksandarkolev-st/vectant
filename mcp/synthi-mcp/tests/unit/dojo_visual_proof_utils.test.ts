@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   buildVisualProofDevServerEnv,
   evaluateVisualProofCapture,
+  sha256File,
 } from "../../../../synthi/scripts/dojo-visual-proof-utils.mjs";
 
 const viewport = { name: "desktop", width: 1440, height: 1100 };
@@ -53,6 +58,15 @@ describe("dojo visual proof utility", () => {
     expect(env.PATH).toBe("local-path");
     expect(env.NEXT_TELEMETRY_DISABLED).toBe("1");
     expect(env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS).toBe("1");
+  });
+
+  it("hashes screenshot files for release evidence custody", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-visual-proof-utils-"));
+    const screenshotPath = path.join(dir, "capture.png");
+    const bytes = Buffer.from("visual-proof-custody");
+    await writeFile(screenshotPath, bytes);
+
+    expect(await sha256File(screenshotPath)).toBe(createHash("sha256").update(bytes).digest("hex"));
   });
 
   it("accepts a route capture with text, layout, and pixel evidence", () => {

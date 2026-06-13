@@ -11,6 +11,7 @@ import {
   buildVisualProofDevServerEnv,
   collectRouteLayoutMetrics,
   evaluateVisualProofCapture,
+  sha256File,
 } from "./dojo-visual-proof-utils.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -175,6 +176,7 @@ async function captureRoute({ browser, port, route, viewport }) {
     const screenshotPath = path.join(OUT_DIR, `${route.id}-${viewport.name}.png`);
     await page.screenshot({ path: screenshotPath, fullPage: true });
     const stats = await stat(screenshotPath);
+    const screenshotSha256 = await sha256File(screenshotPath);
     const imageMetrics = await analyzeScreenshotVisualEvidence({ sharp, screenshotPath });
     const visualDecision = evaluateVisualProofCapture({
       checks,
@@ -195,6 +197,7 @@ async function captureRoute({ browser, port, route, viewport }) {
       image_metrics: imageMetrics,
       layout_metrics: layoutMetrics,
       screenshot_path: screenshotPath,
+      screenshot_sha256: screenshotSha256,
       bytes: stats.size,
     };
   } finally {

@@ -958,6 +958,13 @@ async function validateVisualScreenshotArtifacts(report) {
       if (Number(result.bytes) !== info.size) {
         errors.push(`visual_result_screenshot_bytes_mismatch:${label}:${result.bytes}:${info.size}`);
       }
+      const screenshotBytes = await readFile(screenshotPath);
+      const actualSha256 = sha256(screenshotBytes);
+      if (!result.screenshot_sha256) {
+        errors.push(`visual_result_screenshot_sha256_missing:${label}`);
+      } else if (String(result.screenshot_sha256) !== actualSha256) {
+        errors.push(`visual_result_screenshot_sha256_mismatch:${label}:${result.screenshot_sha256}:${actualSha256}`);
+      }
     } catch {
       errors.push(`visual_result_screenshot_missing:${label}:${screenshotPath}`);
     }
@@ -1741,6 +1748,7 @@ async function writeSelfCheckVisualReport({ outDir }) {
         ok: true,
         failed_visual_gates: [],
         screenshot_path: screenshotPath,
+        screenshot_sha256: sha256(imageBytes),
         bytes: imageBytes.length,
         image_metrics: {
           pixel_metrics_verified: true,

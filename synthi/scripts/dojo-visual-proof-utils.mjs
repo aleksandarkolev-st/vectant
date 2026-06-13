@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+
 export const DEFAULT_VISUAL_PROOF_THRESHOLDS = Object.freeze({
   min_screenshot_bytes: 10_000,
   min_unique_color_sample_count: 24,
@@ -13,6 +16,11 @@ export function buildVisualProofDevServerEnv(baseEnv = process.env) {
     NEXT_TELEMETRY_DISABLED: "1",
     NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "1",
   };
+}
+
+export async function sha256File(filePath) {
+  const bytes = await readFile(filePath);
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 export async function analyzeScreenshotVisualEvidence({

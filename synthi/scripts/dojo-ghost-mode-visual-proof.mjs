@@ -11,6 +11,7 @@ import {
   buildVisualProofDevServerEnv,
   collectRouteLayoutMetrics,
   evaluateVisualProofCapture,
+  sha256File,
 } from "./dojo-visual-proof-utils.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -90,6 +91,7 @@ async function captureGhostMode({ port, viewport, name }) {
     const screenshotPath = path.join(OUT_DIR, `ghost-mode-shadow-${name}.png`);
     await page.screenshot({ path: screenshotPath, fullPage: true });
     const stats = await stat(screenshotPath);
+    const screenshotSha256 = await sha256File(screenshotPath);
     const imageMetrics = await analyzeScreenshotVisualEvidence({ sharp, screenshotPath });
     const visualDecision = evaluateVisualProofCapture({
       checks,
@@ -108,6 +110,7 @@ async function captureGhostMode({ port, viewport, name }) {
       image_metrics: imageMetrics,
       layout_metrics: layoutMetrics,
       screenshot_path: screenshotPath,
+      screenshot_sha256: screenshotSha256,
       bytes: stats.size,
     };
   } finally {
