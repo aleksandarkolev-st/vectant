@@ -315,7 +315,22 @@ describe("Dojo release gate manifest", () => {
           require_json_report_digest_match: true,
         }),
       }),
-      expect.objectContaining({ id: "soak_performance", tier: "T8", script_exists: true }),
+      expect.objectContaining({
+        id: "soak_performance",
+        tier: "T8",
+        package_script: "soak",
+        script_exists: true,
+        default_summary_path: "mcp/synthi-mcp/.soak/soak-summary.json",
+        default_events_path: "mcp/synthi-mcp/.soak/soak-events.ndjson",
+        enterprise_artifact_requirements: expect.objectContaining({
+          require_min_duration_seconds: 3600,
+          require_zero_errors: true,
+          require_iteration_events: true,
+          require_tool_latency_metrics: true,
+          require_memory_growth_metrics: true,
+          require_post_detach_leak_counters: true,
+        }),
+      }),
     ]));
   });
 
@@ -423,6 +438,15 @@ describe("Dojo release gate manifest", () => {
       "chaos_performance_missing_required_scenarios:api_timeout",
       `chaos_performance_missing_required_test_files:${missingChaosTestFile}`,
       "chaos_performance_missing_no_skipped_requirement",
+    ]));
+
+    const brokenSoak = JSON.parse(JSON.stringify(manifest));
+    const soakGate = brokenSoak.gates.find((gate) => gate.id === "soak_performance");
+    soakGate.enterprise_artifact_requirements.require_zero_errors = false;
+    soakGate.enterprise_artifact_requirements.require_tool_latency_metrics = false;
+    expect(validateDojoReleaseGateManifest(brokenSoak, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "soak_performance_missing_zero_error_requirement",
+      "soak_performance_missing_tool_latency_requirement",
     ]));
   });
 

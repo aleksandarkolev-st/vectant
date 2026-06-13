@@ -1002,6 +1002,12 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!soakPerformanceGate.enterprise_artifact_requirements?.require_iteration_events) {
       errors.push("soak_performance_missing_event_requirement");
     }
+    if (!soakPerformanceGate.enterprise_artifact_requirements?.require_zero_errors) {
+      errors.push("soak_performance_missing_zero_error_requirement");
+    }
+    if (!soakPerformanceGate.enterprise_artifact_requirements?.require_tool_latency_metrics) {
+      errors.push("soak_performance_missing_tool_latency_requirement");
+    }
     if (!soakPerformanceGate.enterprise_artifact_requirements?.require_memory_growth_metrics) {
       errors.push("soak_performance_missing_memory_requirement");
     }
