@@ -744,6 +744,7 @@ async function main() {
   log("ok", `captured Playwright visual proof screenshot - ${visualProof.screenshot_path}`);
 
   const summary = {
+    schema_version: "synthi.dojo.proofSelfCheckSummary.v1",
     ok: true,
     run_id: RUN_ID,
     output_dir: RUN_ROOT,

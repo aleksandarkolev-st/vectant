@@ -68,6 +68,16 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   const manifestResult = await verifyDojoReleaseGateManifestArtifacts({ manifestPath, evidencePath });
   const manifest = manifestResult.manifest;
 
+  const proofSelfCheckResults = [];
+  if (args["dojo-self-check-summary"] || args["dojo-self-check-production-evidence"]) {
+    proofSelfCheckResults.push(await verifyDojoProofSelfCheckArtifacts({
+      summaryPath: resolveRepoPath(args["dojo-self-check-summary"] || path.join(DEFAULT_VERIFY_DIR, "dojo-proof-self-check-summary.json")),
+      productionEvidencePath: args["dojo-self-check-production-evidence"]
+        ? resolveRepoPath(args["dojo-self-check-production-evidence"])
+        : undefined,
+    }));
+  }
+
   const visualResults = [];
   if (truthy(args["include-visual-defaults"])) {
     for (const gate of manifest?.gates || []) {
@@ -122,7 +132,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...visualResults, ...conformanceResults, ...securityResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...conformanceResults, ...securityResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -130,6 +140,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     ok: errors.length === 0,
     errors,
     manifest: summarizeSection(manifestResult),
+    dojo_self_check: proofSelfCheckResults.map(summarizeSection),
     visual_reports: visualResults.map(summarizeSection),
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
@@ -187,6 +198,70 @@ export async function verifyVisualProofArtifact({ manifest, gateId, reportPath }
     artifact_path: reportPath,
     report_schema_version: report?.schema_version ?? null,
     result_count: validation.result_count,
+  };
+}
+
+export async function verifyDojoProofSelfCheckArtifacts({ summaryPath, productionEvidencePath }) {
+  const summary = await readJsonFile(summaryPath);
+  const resolvedEvidencePath = productionEvidencePath
+    ?? resolveEvidenceArtifactPath(summary?.production_runtime_evidence, summaryPath);
+  const evidence = await readJsonFile(resolvedEvidencePath);
+  const errors = validateDojoProofSelfCheckForRelease(summary, evidence).errors;
+  return {
+    id: "dojo_self_check",
+    ok: errors.length === 0,
+    errors,
+    artifact_path: summaryPath,
+    evidence_path: resolvedEvidencePath,
+    report_schema_version: summary?.schema_version ?? null,
+    evidence_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoProofSelfCheckForRelease(summary, productionEvidence) {
+  const errors = [];
+  if (summary?.schema_version !== "synthi.dojo.proofSelfCheckSummary.v1") {
+    errors.push(`dojo_self_check_summary_schema_mismatch:${summary?.schema_version || "missing"}`);
+  }
+  if (summary?.ok !== true) errors.push("dojo_self_check_not_ok");
+  if (summary?.production_proof_consumed !== true) errors.push("dojo_self_check_production_proof_not_consumed");
+  if (summary?.production_proof_replay_blocked !== true) errors.push("dojo_self_check_replay_not_blocked");
+  if (Number(summary?.production_runtime_evidence_record_count || 0) <= 0) {
+    errors.push("dojo_self_check_runtime_evidence_missing");
+  }
+  if (summary?.visual_proof_ok !== true) errors.push("dojo_self_check_visual_not_ok");
+  if (summary?.visual_proof_pixel_metrics_verified !== true) errors.push("dojo_self_check_visual_pixel_metrics_missing");
+  if (Number(summary?.visual_proof_horizontal_overflow_px || 0) > 4) {
+    errors.push(`dojo_self_check_visual_horizontal_overflow:${summary.visual_proof_horizontal_overflow_px}`);
+  }
+
+  if (productionEvidence?.schema_version !== "synthi.dojo.proofSelfCheck.productionRuntimeEvidence.v1") {
+    errors.push(`dojo_self_check_production_evidence_schema_mismatch:${productionEvidence?.schema_version || "missing"}`);
+  }
+  if (productionEvidence?.proof_consumed !== true) errors.push("dojo_self_check_evidence_proof_not_consumed");
+  if (productionEvidence?.replay_blocked !== true) errors.push("dojo_self_check_evidence_replay_not_blocked");
+  if (productionEvidence?.runtime_session?.redaction_policy?.screenshots !== true) {
+    errors.push("dojo_self_check_runtime_screenshot_privacy_missing");
+  }
+  if (productionEvidence?.runtime_session?.egress_policy?.local_network_allowed !== false) {
+    errors.push("dojo_self_check_runtime_local_network_not_blocked");
+  }
+  if (productionEvidence?.runtime_authorization?.ok !== true) {
+    errors.push("dojo_self_check_runtime_authorization_not_ok");
+  }
+  if (!Array.isArray(productionEvidence?.runtime_authorization?.evidence_record_ids)
+    || productionEvidence.runtime_authorization.evidence_record_ids.length === 0) {
+    errors.push("dojo_self_check_runtime_authorization_evidence_missing");
+  }
+  if (productionEvidence?.proof_record?.status !== "used") {
+    errors.push(`dojo_self_check_proof_record_not_used:${productionEvidence?.proof_record?.status || "missing"}`);
+  }
+  if (JSON.stringify(productionEvidence ?? {}).includes("credential_secret")) {
+    errors.push("dojo_self_check_runtime_credential_secret_leaked");
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
   };
 }
 
@@ -582,6 +657,31 @@ async function runSelfCheck({ outDir }) {
   });
   assert.equal(manifestResult.ok, true, manifestResult.errors.join(";"));
 
+  const proofSelfCheckDir = path.join(outDir, "proof-self-check");
+  await mkdir(proofSelfCheckDir, { recursive: true });
+  const proofSelfCheckArtifacts = await writeProofSelfCheckArtifactsForSelfCheck({ outDir: proofSelfCheckDir });
+  const proofSelfCheckResult = await verifyDojoProofSelfCheckArtifacts({
+    summaryPath: proofSelfCheckArtifacts.summary_path,
+  });
+  assert.equal(proofSelfCheckResult.ok, true, proofSelfCheckResult.errors.join(";"));
+  const rejectedProofSelfCheckArtifacts = await writeProofSelfCheckArtifactsForSelfCheck({
+    outDir: proofSelfCheckDir,
+    basename: "dojo-proof-self-check-rejected",
+    summaryOverrides: {
+      production_proof_consumed: false,
+      production_proof_replay_blocked: false,
+    },
+    productionEvidenceOverrides: {
+      proof_consumed: false,
+      replay_blocked: false,
+    },
+  });
+  const rejectedProofSelfCheck = await verifyDojoProofSelfCheckArtifacts({
+    summaryPath: rejectedProofSelfCheckArtifacts.summary_path,
+  });
+  assert(rejectedProofSelfCheck.errors.includes("dojo_self_check_production_proof_not_consumed"));
+  assert(rejectedProofSelfCheck.errors.includes("dojo_self_check_evidence_proof_not_consumed"));
+
   const conformanceDir = path.join(outDir, "conformance");
   await mkdir(conformanceDir, { recursive: true });
   const releaseReport = buildReleaseCandidateConformanceReport();
@@ -789,6 +889,84 @@ async function writeConformanceArtifactsForSelfCheck({ outDir, report, basename 
   await writeFile(reportPath, serialized, "utf8");
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2), "utf8");
   return { report_path: reportPath, evidence_path: evidencePath };
+}
+
+async function writeProofSelfCheckArtifactsForSelfCheck({
+  outDir,
+  basename = "dojo-proof-self-check",
+  summaryOverrides = {},
+  productionEvidenceOverrides = {},
+}) {
+  const productionEvidence = {
+    schema_version: "synthi.dojo.proofSelfCheck.productionRuntimeEvidence.v1",
+    run_id: "dojo-release-gate-verifier-self-check-production",
+    requested_action: "run_prefix_validation",
+    proof_capsule_id: "capsule-release-gate-self-check",
+    proof_consumed: true,
+    replay_blocked: true,
+    replay_error: "dojo_license_kernel_blocked",
+    runtime_session: {
+      schema_version: "synthi.dojo.hostedRuntimeSession.v1",
+      session_id: "dojo_runtime_session_release_gate_self_check",
+      runtime_id: "dojo_runtime_release_gate_self_check",
+      tenant_id: "tenant-release-gate",
+      organization_id: "org-release-gate",
+      workspace_id: "workspace-release-gate",
+      skill_id: "skill-release-gate",
+      run_id: "dojo-release-gate-verifier-self-check-production",
+      actor_id: "release-gate-agent",
+      actor_type: "service",
+      workspace_url: "https://app.example.test/settings",
+      workspace_origin: "https://app.example.test",
+      origin_allowlist: ["https://app.example.test"],
+      status: "active",
+      created_at: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:10:00.000Z",
+      credential_id: "runtime_cred_release_gate_self_check",
+      credential_expires_at: "2026-06-11T00:05:00.000Z",
+      egress_policy: { local_network_allowed: false },
+      redaction_policy: { screenshots: true },
+      audit_event_refs: ["audit-runtime-session"],
+      evidence_refs: [],
+    },
+    runtime_authorization: {
+      ok: true,
+      status: "authorized",
+      session_id: "dojo_runtime_session_release_gate_self_check",
+      action_kind: "proof_gated_tool",
+      blocked_by: [],
+      audit_event_id: "audit-runtime-action",
+      evidence_record_ids: ["evidence:runtime-action"],
+    },
+    proof_record: {
+      capsule_id: "capsule-release-gate-self-check",
+      status: "used",
+      first_used_at: "2026-06-11T00:01:00.000Z",
+    },
+    audit_event_types: ["runtime_session_created", "runtime_action_authorized", "proof_used"],
+    ...productionEvidenceOverrides,
+  };
+  const productionEvidencePath = path.join(outDir, `${basename}.production-runtime-evidence.json`);
+  await writeFile(productionEvidencePath, `${JSON.stringify(productionEvidence, null, 2)}\n`, "utf8");
+  const summary = {
+    schema_version: "synthi.dojo.proofSelfCheckSummary.v1",
+    ok: true,
+    run_id: "dojo-release-gate-verifier-self-check",
+    production_proof_consumed: true,
+    production_proof_replay_blocked: true,
+    production_runtime_evidence: path.basename(productionEvidencePath),
+    production_runtime_evidence_record_count: 1,
+    visual_proof_ok: true,
+    visual_proof_pixel_metrics_verified: true,
+    visual_proof_horizontal_overflow_px: 0,
+    ...summaryOverrides,
+  };
+  const summaryPath = path.join(outDir, `${basename}.summary.json`);
+  await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  return {
+    summary_path: summaryPath,
+    production_evidence_path: productionEvidencePath,
+  };
 }
 
 async function writeSelfCheckVisualReport({ outDir }) {

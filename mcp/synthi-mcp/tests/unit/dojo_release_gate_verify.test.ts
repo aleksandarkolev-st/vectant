@@ -14,12 +14,14 @@ import {
   buildConformanceReleaseGateSummary,
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
 import {
+  validateDojoProofSelfCheckForRelease,
   validateDojoMcpHostConformanceReportForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
   validateDojoSecurityAbuseEvidenceForRelease,
   validateDojoSoakPerformanceSummary,
   verifyDojoChaosPerformanceEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
+  verifyDojoProofSelfCheckArtifacts,
   verifyDojoReleaseGateManifestArtifacts,
   verifyDojoSecurityAbuseEvidenceArtifact,
   verifyDojoSoakPerformanceArtifacts,
@@ -80,6 +82,52 @@ describe("Dojo release gate artifact verifier", () => {
     expect(validateDojoMcpHostConformanceReportForRelease(dryRun).errors).toEqual(expect.arrayContaining([
       "conformance_execute_production_missing",
       "conformance_production_execution_step_missing",
+    ]));
+  });
+
+  it("verifies Dojo proof self-check production proof consumption and runtime custody", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-proof-self-check-verify-"));
+    const artifacts = await writeProofSelfCheckFixture({ dir });
+
+    expect(validateDojoProofSelfCheckForRelease(artifacts.summary, artifacts.productionEvidence)).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoProofSelfCheckArtifacts({
+      summaryPath: artifacts.summaryPath,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      evidence_path: artifacts.productionEvidencePath,
+    }));
+
+    const rejectedArtifacts = await writeProofSelfCheckFixture({
+      dir,
+      basename: "dojo-proof-self-check-rejected",
+      summary: proofSelfCheckSummaryFixture({
+        production_proof_consumed: false,
+        production_proof_replay_blocked: false,
+      }),
+      productionEvidence: productionRuntimeEvidenceFixture({
+        proof_consumed: false,
+        replay_blocked: false,
+        runtime_session: {
+          ...productionRuntimeEvidenceFixture().runtime_session,
+          redaction_policy: { screenshots: false },
+        },
+      }),
+    });
+    const rejected = await verifyDojoProofSelfCheckArtifacts({
+      summaryPath: rejectedArtifacts.summaryPath,
+      productionEvidencePath: rejectedArtifacts.productionEvidencePath,
+    });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "dojo_self_check_production_proof_not_consumed",
+      "dojo_self_check_replay_not_blocked",
+      "dojo_self_check_evidence_proof_not_consumed",
+      "dojo_self_check_evidence_replay_not_blocked",
+      "dojo_self_check_runtime_screenshot_privacy_missing",
     ]));
   });
 
@@ -348,6 +396,102 @@ async function writeConformancePair({ report, reportPath, evidencePath }) {
   });
   await writeFile(reportPath, serialized, "utf8");
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2), "utf8");
+}
+
+async function writeProofSelfCheckFixture({
+  dir,
+  basename = "dojo-proof-self-check",
+  summary,
+  productionEvidence,
+}) {
+  const productionEvidenceBody = productionEvidence ?? productionRuntimeEvidenceFixture();
+  const productionEvidencePath = path.join(dir, `${basename}.production-runtime-evidence.json`);
+  const summaryBody = summary ?? proofSelfCheckSummaryFixture({
+    production_runtime_evidence: path.basename(productionEvidencePath),
+  });
+  const summaryPath = path.join(dir, `${basename}.summary.json`);
+  await writeFile(productionEvidencePath, JSON.stringify(productionEvidenceBody, null, 2), "utf8");
+  await writeFile(summaryPath, JSON.stringify({
+    ...summaryBody,
+    production_runtime_evidence: path.basename(productionEvidencePath),
+  }, null, 2), "utf8");
+  return {
+    summary: {
+      ...summaryBody,
+      production_runtime_evidence: path.basename(productionEvidencePath),
+    },
+    productionEvidence: productionEvidenceBody,
+    summaryPath,
+    productionEvidencePath,
+  };
+}
+
+function proofSelfCheckSummaryFixture(overrides = {}) {
+  return {
+    schema_version: "synthi.dojo.proofSelfCheckSummary.v1",
+    ok: true,
+    run_id: "proof-self-check-fixture",
+    production_proof_consumed: true,
+    production_proof_replay_blocked: true,
+    production_runtime_evidence: "dojo-proof-self-check.production-runtime-evidence.json",
+    production_runtime_evidence_record_count: 1,
+    visual_proof_ok: true,
+    visual_proof_pixel_metrics_verified: true,
+    visual_proof_horizontal_overflow_px: 0,
+    ...overrides,
+  };
+}
+
+function productionRuntimeEvidenceFixture(overrides = {}) {
+  return {
+    schema_version: "synthi.dojo.proofSelfCheck.productionRuntimeEvidence.v1",
+    run_id: "proof-self-check-production",
+    requested_action: "run_prefix_validation",
+    proof_capsule_id: "capsule-fixture",
+    proof_consumed: true,
+    replay_blocked: true,
+    replay_error: "dojo_license_kernel_blocked",
+    runtime_session: {
+      schema_version: "synthi.dojo.hostedRuntimeSession.v1",
+      session_id: "dojo_runtime_session_fixture",
+      runtime_id: "dojo_runtime_fixture",
+      tenant_id: "tenant-fixture",
+      organization_id: "org-fixture",
+      workspace_id: "workspace-fixture",
+      skill_id: "skill-fixture",
+      run_id: "proof-self-check-production",
+      actor_id: "agent-fixture",
+      actor_type: "service",
+      workspace_url: "https://app.example.test/settings",
+      workspace_origin: "https://app.example.test",
+      origin_allowlist: ["https://app.example.test"],
+      status: "active",
+      created_at: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:10:00.000Z",
+      credential_id: "runtime_cred_fixture",
+      credential_expires_at: "2026-06-11T00:05:00.000Z",
+      egress_policy: { local_network_allowed: false },
+      redaction_policy: { screenshots: true },
+      audit_event_refs: ["audit-runtime-session"],
+      evidence_refs: [],
+    },
+    runtime_authorization: {
+      ok: true,
+      status: "authorized",
+      session_id: "dojo_runtime_session_fixture",
+      action_kind: "proof_gated_tool",
+      blocked_by: [],
+      audit_event_id: "audit-runtime-action",
+      evidence_record_ids: ["evidence:runtime-action"],
+    },
+    proof_record: {
+      capsule_id: "capsule-fixture",
+      status: "used",
+      first_used_at: "2026-06-11T00:01:00.000Z",
+    },
+    audit_event_types: ["runtime_session_created", "runtime_action_authorized", "proof_used"],
+    ...overrides,
+  };
 }
 
 async function writeSecurityEvidenceFixture({
