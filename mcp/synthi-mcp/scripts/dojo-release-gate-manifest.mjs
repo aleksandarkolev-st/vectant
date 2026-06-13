@@ -17,6 +17,10 @@ import {
   DOJO_API_TOOL_COMPILER_TEST_FILES,
 } from "./dojo-api-tool-compiler-self-check.mjs";
 import {
+  DOJO_CASE_LAW_RUNTIME_CAPABILITIES,
+  DOJO_CASE_LAW_RUNTIME_TEST_FILES,
+} from "./dojo-case-law-runtime-self-check.mjs";
+import {
   DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
   DOJO_COMPLIANCE_EXPORT_TEST_FILES,
 } from "./dojo-compliance-export-self-check.mjs";
@@ -694,6 +698,43 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
   },
   {
+    id: "dojo_case_law_runtime_self_check",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:case-law-runtime:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_case_law_registry.test.ts tests/unit/dojo_case_law_refusal.test.ts tests/unit/dojo_antibody_matcher.test.ts tests/integration/dojo_case_law_guardrail_runtime.test.ts -- --reporter=json --outputFile ../../tmp/dojo-case-law-runtime/dojo-case-law-runtime.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:case-law-runtime:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.caseLawRuntimeEvidence.v1",
+    default_evidence_path: "tmp/dojo-case-law-runtime/dojo-case-law-runtime.evidence.json",
+    release_artifact_requirements: {
+      require_all_case_law_runtime_capabilities_covered: true,
+      required_case_law_runtime_capabilities: [...DOJO_CASE_LAW_RUNTIME_CAPABILITIES],
+      required_test_files: [...DOJO_CASE_LAW_RUNTIME_TEST_FILES],
+      require_case_law_registry: true,
+      require_reviewed_evidence: true,
+      require_proposed_cases_nonbinding: true,
+      require_approved_binding_scope: true,
+      require_deprecated_cases_excluded: true,
+      require_guardrail_synthesis: true,
+      require_explicit_predicate_preservation: true,
+      require_graph_binding: true,
+      require_runtime_guardrail_block: true,
+      require_refusal_case_citation: true,
+      require_inactive_case_suppression: true,
+      require_antibody_matching: true,
+      require_antibody_proposed_only: true,
+      require_antibody_private_data_redaction: true,
+      require_local_practice: true,
+      require_local_checkride: true,
+      require_deterministic_antibody_ids: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "dojo_hosted_runtime_gateway_self_check",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -866,6 +907,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "dojo_governance_lifecycle_self_check",
   "dojo_graph_runtime_self_check",
   "dojo_vivarium_runtime_self_check",
+  "dojo_case_law_runtime_self_check",
   "dojo_hosted_runtime_gateway_self_check",
   "security_abuse_suite",
   "compliance_export_suite",
@@ -1501,6 +1543,64 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!vivariumRuntimeGate.release_artifact_requirements?.require_json_report_digest_match) {
       errors.push("vivarium_runtime_missing_json_report_digest_requirement");
+    }
+  }
+  const caseLawRuntimeGate = gates.find((gate) => gate.id === "dojo_case_law_runtime_self_check");
+  if (caseLawRuntimeGate) {
+    if (caseLawRuntimeGate.evidence_schema_version !== "synthi.dojo.caseLawRuntimeEvidence.v1") {
+      errors.push("case_law_runtime_missing_evidence_schema");
+    }
+    if (caseLawRuntimeGate.package_script !== "proof:dojo:case-law-runtime:self-check") {
+      errors.push("case_law_runtime_missing_package_script");
+    }
+    if (!caseLawRuntimeGate.default_evidence_path) errors.push("case_law_runtime_missing_default_evidence_path");
+    if (!caseLawRuntimeGate.release_artifact_requirements?.require_all_case_law_runtime_capabilities_covered) {
+      errors.push("case_law_runtime_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_case_law_registry", "case_law_runtime_missing_registry_requirement"],
+      ["require_reviewed_evidence", "case_law_runtime_missing_reviewed_evidence_requirement"],
+      ["require_proposed_cases_nonbinding", "case_law_runtime_missing_proposed_nonbinding_requirement"],
+      ["require_approved_binding_scope", "case_law_runtime_missing_binding_scope_requirement"],
+      ["require_deprecated_cases_excluded", "case_law_runtime_missing_deprecated_exclusion_requirement"],
+      ["require_guardrail_synthesis", "case_law_runtime_missing_guardrail_synthesis_requirement"],
+      ["require_explicit_predicate_preservation", "case_law_runtime_missing_explicit_predicate_requirement"],
+      ["require_graph_binding", "case_law_runtime_missing_graph_binding_requirement"],
+      ["require_runtime_guardrail_block", "case_law_runtime_missing_runtime_block_requirement"],
+      ["require_refusal_case_citation", "case_law_runtime_missing_refusal_citation_requirement"],
+      ["require_inactive_case_suppression", "case_law_runtime_missing_inactive_suppression_requirement"],
+      ["require_antibody_matching", "case_law_runtime_missing_antibody_matching_requirement"],
+      ["require_antibody_proposed_only", "case_law_runtime_missing_antibody_proposed_only_requirement"],
+      ["require_antibody_private_data_redaction", "case_law_runtime_missing_antibody_private_data_requirement"],
+      ["require_local_practice", "case_law_runtime_missing_local_practice_requirement"],
+      ["require_local_checkride", "case_law_runtime_missing_local_checkride_requirement"],
+      ["require_deterministic_antibody_ids", "case_law_runtime_missing_deterministic_antibody_requirement"],
+    ]) {
+      if (!caseLawRuntimeGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredCaseLawRuntimeCapabilities = Array.isArray(caseLawRuntimeGate.release_artifact_requirements?.required_case_law_runtime_capabilities)
+      ? caseLawRuntimeGate.release_artifact_requirements.required_case_law_runtime_capabilities
+      : [];
+    const missingCaseLawRuntimeCapabilities = DOJO_CASE_LAW_RUNTIME_CAPABILITIES
+      .filter((capability) => !requiredCaseLawRuntimeCapabilities.includes(capability));
+    if (missingCaseLawRuntimeCapabilities.length > 0) {
+      errors.push(`case_law_runtime_missing_required_capabilities:${missingCaseLawRuntimeCapabilities.join(",")}`);
+    }
+    const missingCaseLawRuntimeTestFiles = missingRequiredEntries(
+      DOJO_CASE_LAW_RUNTIME_TEST_FILES,
+      caseLawRuntimeGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingCaseLawRuntimeTestFiles.length > 0) {
+      errors.push(`case_law_runtime_missing_required_test_files:${missingCaseLawRuntimeTestFiles.join(",")}`);
+    }
+    if (!caseLawRuntimeGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("case_law_runtime_missing_no_skipped_requirement");
+    }
+    if (!caseLawRuntimeGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("case_law_runtime_missing_digest_requirement");
+    }
+    if (!caseLawRuntimeGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("case_law_runtime_missing_json_report_digest_requirement");
     }
   }
   const hostedRuntimeGatewayGate = gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check");

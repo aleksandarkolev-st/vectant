@@ -18,6 +18,10 @@ import {
   DOJO_API_TOOL_COMPILER_TEST_FILES,
 } from "../../scripts/dojo-api-tool-compiler-self-check.mjs";
 import {
+  DOJO_CASE_LAW_RUNTIME_CAPABILITIES,
+  DOJO_CASE_LAW_RUNTIME_TEST_FILES,
+} from "../../scripts/dojo-case-law-runtime-self-check.mjs";
+import {
   DOJO_CHAOS_PERFORMANCE_TEST_FILES,
   DOJO_CHAOS_SCENARIOS,
 } from "../../scripts/dojo-chaos-performance-self-check.mjs";
@@ -85,6 +89,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:governance-lifecycle:self-check": "node scripts/dojo-governance-lifecycle-self-check.mjs",
     "proof:dojo:graph-runtime:self-check": "node scripts/dojo-graph-runtime-self-check.mjs",
     "proof:dojo:vivarium-runtime:self-check": "node scripts/dojo-vivarium-runtime-self-check.mjs",
+    "proof:dojo:case-law-runtime:self-check": "node scripts/dojo-case-law-runtime-self-check.mjs",
     "proof:dojo:hosted-runtime-gateway:self-check": "node scripts/dojo-hosted-runtime-gateway-self-check.mjs",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
     "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
@@ -462,6 +467,38 @@ describe("Dojo release gate manifest", () => {
         }),
       }),
       expect.objectContaining({
+        id: "dojo_case_law_runtime_self_check",
+        tier: "T7",
+        package_script: "proof:dojo:case-law-runtime:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.caseLawRuntimeEvidence.v1",
+        default_evidence_path: "tmp/dojo-case-law-runtime/dojo-case-law-runtime.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          require_all_case_law_runtime_capabilities_covered: true,
+          required_case_law_runtime_capabilities: DOJO_CASE_LAW_RUNTIME_CAPABILITIES,
+          required_test_files: DOJO_CASE_LAW_RUNTIME_TEST_FILES,
+          require_case_law_registry: true,
+          require_reviewed_evidence: true,
+          require_proposed_cases_nonbinding: true,
+          require_approved_binding_scope: true,
+          require_deprecated_cases_excluded: true,
+          require_guardrail_synthesis: true,
+          require_explicit_predicate_preservation: true,
+          require_graph_binding: true,
+          require_runtime_guardrail_block: true,
+          require_refusal_case_citation: true,
+          require_inactive_case_suppression: true,
+          require_antibody_matching: true,
+          require_antibody_proposed_only: true,
+          require_antibody_private_data_redaction: true,
+          require_local_practice: true,
+          require_local_checkride: true,
+          require_deterministic_antibody_ids: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "dojo_hosted_runtime_gateway_self_check",
         tier: "T7",
         package_script: "proof:dojo:hosted-runtime-gateway:self-check",
@@ -764,6 +801,22 @@ describe("Dojo release gate manifest", () => {
       `vivarium_runtime_missing_required_test_files:${missingVivariumRuntimeTestFile}`,
     ]));
 
+    const brokenCaseLawRuntime = JSON.parse(JSON.stringify(manifest));
+    const caseLawRuntimeGate = brokenCaseLawRuntime.gates.find((gate) => gate.id === "dojo_case_law_runtime_self_check");
+    const missingCaseLawRuntimeTestFile = DOJO_CASE_LAW_RUNTIME_TEST_FILES[0];
+    caseLawRuntimeGate.release_artifact_requirements.required_case_law_runtime_capabilities = DOJO_CASE_LAW_RUNTIME_CAPABILITIES
+      .filter((capability) => capability !== "antibody_matcher_proposes_without_binding");
+    caseLawRuntimeGate.release_artifact_requirements.required_test_files = DOJO_CASE_LAW_RUNTIME_TEST_FILES
+      .filter((file) => file !== missingCaseLawRuntimeTestFile);
+    caseLawRuntimeGate.release_artifact_requirements.require_antibody_matching = false;
+    caseLawRuntimeGate.release_artifact_requirements.require_antibody_private_data_redaction = false;
+    expect(validateDojoReleaseGateManifest(brokenCaseLawRuntime, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "case_law_runtime_missing_antibody_matching_requirement",
+      "case_law_runtime_missing_antibody_private_data_requirement",
+      "case_law_runtime_missing_required_capabilities:antibody_matcher_proposes_without_binding",
+      `case_law_runtime_missing_required_test_files:${missingCaseLawRuntimeTestFile}`,
+    ]));
+
     const brokenHostedRuntimeGateway = JSON.parse(JSON.stringify(manifest));
     const hostedRuntimeGatewayGate = brokenHostedRuntimeGateway.gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check");
     const missingHostedRuntimeTestFile = DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES[0];
@@ -858,6 +911,7 @@ describe("Dojo release gate manifest", () => {
       "dojo_governance_lifecycle_self_check",
       "dojo_graph_runtime_self_check",
       "dojo_vivarium_runtime_self_check",
+      "dojo_case_law_runtime_self_check",
       "dojo_hosted_runtime_gateway_self_check",
       "security_abuse_suite",
       "compliance_export_suite",
@@ -889,7 +943,7 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 20,
+      proof_artifact_gate_count: 21,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
@@ -903,6 +957,7 @@ describe("Dojo release gate manifest", () => {
         "dojo_governance_lifecycle_self_check",
         "dojo_graph_runtime_self_check",
         "dojo_vivarium_runtime_self_check",
+        "dojo_case_law_runtime_self_check",
         "dojo_hosted_runtime_gateway_self_check",
         "compliance_export_suite",
         "privacy_redaction_suite",

@@ -22,6 +22,10 @@ import {
   DOJO_API_TOOL_COMPILER_TEST_FILES,
 } from "./dojo-api-tool-compiler-self-check.mjs";
 import {
+  DOJO_CASE_LAW_RUNTIME_CAPABILITIES,
+  DOJO_CASE_LAW_RUNTIME_TEST_FILES,
+} from "./dojo-case-law-runtime-self-check.mjs";
+import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
   DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS,
@@ -99,6 +103,7 @@ const DEFAULT_GOVERNANCE_LIFECYCLE_DIR = path.join(REPO_ROOT, "tmp", "dojo-gover
 const DEFAULT_GRAPH_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-graph-runtime");
 const DEFAULT_HOSTED_RUNTIME_GATEWAY_DIR = path.join(REPO_ROOT, "tmp", "dojo-hosted-runtime-gateway");
 const DEFAULT_MANAGED_KEY_SIGNING_DIR = path.join(REPO_ROOT, "tmp", "dojo-managed-key-signing");
+const DEFAULT_CASE_LAW_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-case-law-runtime");
 const DEFAULT_VIVARIUM_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-vivarium-runtime");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_COMPLIANCE_EXPORT_DIR = path.join(REPO_ROOT, "tmp", "dojo-compliance-export");
@@ -333,6 +338,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
+  const caseLawRuntimeResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-case-law-runtime"]) || args["case-law-runtime-evidence"]) {
+    const caseLawRuntimeGate = findGate(manifest, "dojo_case_law_runtime_self_check") || {};
+    caseLawRuntimeResults.push(await verifyDojoCaseLawRuntimeEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["case-law-runtime-evidence"]
+        || caseLawRuntimeGate.default_evidence_path
+        || path.join(DEFAULT_CASE_LAW_RUNTIME_DIR, "dojo-case-law-runtime.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
   const hostedRuntimeGatewayResults = [];
   if (truthy(args["release-candidate"]) || truthy(args["include-hosted-runtime-gateway"]) || args["hosted-runtime-gateway-evidence"]) {
     const hostedRuntimeGatewayGate = findGate(manifest, "dojo_hosted_runtime_gateway_self_check") || {};
@@ -392,7 +408,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...vivariumRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...vivariumRuntimeResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -411,6 +427,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     governance_lifecycle: governanceLifecycleResults.map(summarizeSection),
     graph_runtime: graphRuntimeResults.map(summarizeSection),
     vivarium_runtime: vivariumRuntimeResults.map(summarizeSection),
+    case_law_runtime: caseLawRuntimeResults.map(summarizeSection),
     hosted_runtime_gateway: hostedRuntimeGatewayResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
     compliance_export: complianceExportResults.map(summarizeSection),
@@ -1791,6 +1808,97 @@ export function validateDojoVivariumRuntimeEvidenceForRelease(evidence) {
   };
 }
 
+export async function verifyDojoCaseLawRuntimeEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoCaseLawRuntimeEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_case_law_runtime_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoCaseLawRuntimeEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.caseLawRuntimeEvidence.v1") {
+    errors.push(`case_law_runtime_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("case_law_runtime_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`case_law_runtime_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("case_law_runtime_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`case_law_runtime_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_CASE_LAW_RUNTIME_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`case_law_runtime_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_CASE_LAW_RUNTIME_TEST_FILES,
+    prefix: "case_law_runtime",
+  }));
+  const untestedRequiredCapabilities = DOJO_CASE_LAW_RUNTIME_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`case_law_runtime_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`case_law_runtime_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`case_law_runtime_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.case_law_contract || {};
+  for (const [field, errorCode] of [
+    ["case_law_registry_required", "case_law_runtime_registry_requirement_missing"],
+    ["reviewed_evidence_required", "case_law_runtime_reviewed_evidence_requirement_missing"],
+    ["proposed_cases_nonbinding_required", "case_law_runtime_proposed_nonbinding_requirement_missing"],
+    ["approved_binding_scope_required", "case_law_runtime_binding_scope_requirement_missing"],
+    ["deprecated_cases_excluded_required", "case_law_runtime_deprecated_exclusion_requirement_missing"],
+    ["guardrail_synthesis_required", "case_law_runtime_guardrail_synthesis_requirement_missing"],
+    ["explicit_predicate_preservation_required", "case_law_runtime_explicit_predicate_requirement_missing"],
+    ["graph_binding_required", "case_law_runtime_graph_binding_requirement_missing"],
+    ["runtime_guardrail_block_required", "case_law_runtime_runtime_block_requirement_missing"],
+    ["refusal_case_citation_required", "case_law_runtime_refusal_citation_requirement_missing"],
+    ["inactive_case_suppression_required", "case_law_runtime_inactive_suppression_requirement_missing"],
+    ["antibody_matching_required", "case_law_runtime_antibody_matching_requirement_missing"],
+    ["antibody_proposed_only_required", "case_law_runtime_antibody_proposed_only_requirement_missing"],
+    ["antibody_private_data_redaction_required", "case_law_runtime_antibody_private_data_requirement_missing"],
+    ["local_practice_required", "case_law_runtime_local_practice_requirement_missing"],
+    ["local_checkride_required", "case_law_runtime_local_checkride_requirement_missing"],
+    ["deterministic_antibody_ids_required", "case_law_runtime_deterministic_antibody_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("case_law_runtime_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`case_law_runtime_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`case_law_runtime_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("case_law_runtime_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`case_law_runtime_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
 export async function verifyDojoHostedRuntimeGatewayEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
   const evidence = await readJsonFile(evidencePath);
   const errors = validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence).errors;
@@ -2995,6 +3103,37 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_evil_twin_hardening_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_checkride_requirement_missing"));
 
+  const caseLawRuntimeDir = path.join(outDir, "case-law-runtime");
+  await mkdir(caseLawRuntimeDir, { recursive: true });
+  const caseLawRuntimeArtifacts = await writeCaseLawRuntimeEvidenceForSelfCheck({ outDir: caseLawRuntimeDir });
+  const caseLawRuntimeResult = await verifyDojoCaseLawRuntimeEvidenceArtifact({
+    evidencePath: caseLawRuntimeArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(caseLawRuntimeResult.ok, true, caseLawRuntimeResult.errors.join(";"));
+  const rejectedCaseLawRuntimeArtifacts = await writeCaseLawRuntimeEvidenceForSelfCheck({
+    outDir: caseLawRuntimeDir,
+    basename: "dojo-case-law-runtime-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["antibody_matcher_proposes_without_binding"],
+      case_law_contract: {
+        ...caseLawRuntimeArtifacts.evidence.case_law_contract,
+        antibody_matching_required: false,
+        antibody_private_data_redaction_required: false,
+      },
+    },
+  });
+  const rejectedCaseLawRuntime = await verifyDojoCaseLawRuntimeEvidenceArtifact({
+    evidencePath: rejectedCaseLawRuntimeArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedCaseLawRuntime.errors.includes("case_law_runtime_coverage_incomplete"));
+  assert(rejectedCaseLawRuntime.errors.includes("case_law_runtime_missing_capabilities:antibody_matcher_proposes_without_binding"));
+  assert(rejectedCaseLawRuntime.errors.includes("case_law_runtime_antibody_matching_requirement_missing"));
+  assert(rejectedCaseLawRuntime.errors.includes("case_law_runtime_antibody_private_data_requirement_missing"));
+
   const hostedRuntimeGatewayDir = path.join(outDir, "hosted-runtime-gateway");
   await mkdir(hostedRuntimeGatewayDir, { recursive: true });
   const hostedRuntimeGatewayArtifacts = await writeHostedRuntimeGatewayEvidenceForSelfCheck({ outDir: hostedRuntimeGatewayDir });
@@ -3177,6 +3316,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(governanceLifecycleResult),
       summarizeSection(graphRuntimeResult),
       summarizeSection(vivariumRuntimeResult),
+      summarizeSection(caseLawRuntimeResult),
       summarizeSection(hostedRuntimeGatewayResult),
       summarizeSection(sourceDriftResult),
       summarizeSection(apiToolCompilerResult),
@@ -3198,6 +3338,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedGovernanceLifecycle),
       summarizeSection(rejectedGraphRuntime),
       summarizeSection(rejectedVivariumRuntime),
+      summarizeSection(rejectedCaseLawRuntime),
       summarizeSection(rejectedHostedRuntimeGateway),
       summarizeSection(rejectedSourceDrift),
       summarizeSection(rejectedApiToolCompiler),
@@ -4724,6 +4865,111 @@ async function writeVivariumRuntimeEvidenceForSelfCheck({
     test_summary: {
       total_tests: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.length,
       passed_tests: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeCaseLawRuntimeEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-case-law-runtime",
+  overrides = {},
+}) {
+  const stdout = "case-law runtime focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length,
+    numPassedTests: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_CASE_LAW_RUNTIME_TEST_FILES.length,
+    numPassedTestSuites: DOJO_CASE_LAW_RUNTIME_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.caseLawRuntimeEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: DOJO_CASE_LAW_RUNTIME_CAPABILITIES,
+    tested_capabilities: DOJO_CASE_LAW_RUNTIME_CAPABILITIES,
+    missing_capabilities: [],
+    capability_count: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length,
+    configured_capability_count: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    case_law_contract: {
+      case_law_registry_required: true,
+      reviewed_evidence_required: true,
+      proposed_cases_nonbinding_required: true,
+      approved_binding_scope_required: true,
+      deprecated_cases_excluded_required: true,
+      guardrail_synthesis_required: true,
+      explicit_predicate_preservation_required: true,
+      graph_binding_required: true,
+      runtime_guardrail_block_required: true,
+      refusal_case_citation_required: true,
+      inactive_case_suppression_required: true,
+      antibody_matching_required: true,
+      antibody_proposed_only_required: true,
+      antibody_private_data_redaction_required: true,
+      local_practice_required: true,
+      local_checkride_required: true,
+      deterministic_antibody_ids_required: true,
+    },
+    test_files: [...DOJO_CASE_LAW_RUNTIME_TEST_FILES],
+    test_file_count: DOJO_CASE_LAW_RUNTIME_TEST_FILES.length,
+    reported_test_file_count: DOJO_CASE_LAW_RUNTIME_TEST_FILES.length,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_report_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length,
+      passed_tests: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length,
       failed_tests: 0,
       pending_tests: 0,
     },

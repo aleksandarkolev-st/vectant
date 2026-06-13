@@ -14,6 +14,10 @@ import {
   DOJO_API_TOOL_COMPILER_TEST_FILES,
 } from "../../scripts/dojo-api-tool-compiler-self-check.mjs";
 import {
+  DOJO_CASE_LAW_RUNTIME_CAPABILITIES,
+  DOJO_CASE_LAW_RUNTIME_TEST_FILES,
+} from "../../scripts/dojo-case-law-runtime-self-check.mjs";
+import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
@@ -80,6 +84,7 @@ import {
   validateDojoGraphRuntimeEvidenceForRelease,
   validateDojoHostedRuntimeGatewayEvidenceForRelease,
   validateDojoVivariumRuntimeEvidenceForRelease,
+  validateDojoCaseLawRuntimeEvidenceForRelease,
   validateDojoManagedKeySigningEvidenceForRelease,
   validateDojoPostgresControlPlaneEvidenceForMilestone,
   validateDojoWorkflowPipelineE2EForRelease,
@@ -99,6 +104,7 @@ import {
   verifyDojoGraphRuntimeEvidenceArtifact,
   verifyDojoHostedRuntimeGatewayEvidenceArtifact,
   verifyDojoVivariumRuntimeEvidenceArtifact,
+  verifyDojoCaseLawRuntimeEvidenceArtifact,
   verifyDojoManagedKeySigningEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoPrivateToolCodexAcceptanceArtifact,
@@ -919,6 +925,7 @@ describe("Dojo release gate artifact verifier", () => {
     const governanceLifecycleEvidencePath = await writeGovernanceLifecycleEvidenceFixture({ dir });
     const graphRuntimeEvidencePath = await writeGraphRuntimeEvidenceFixture({ dir });
     const vivariumRuntimeEvidencePath = await writeVivariumRuntimeEvidenceFixture({ dir });
+    const caseLawRuntimeEvidencePath = await writeCaseLawRuntimeEvidenceFixture({ dir });
     const hostedRuntimeGatewayEvidencePath = await writeHostedRuntimeGatewayEvidenceFixture({ dir });
     const complianceEvidencePath = await writeComplianceExportEvidenceFixture({ dir });
     const privacyEvidencePath = await writePrivacyRedactionEvidenceFixture({ dir });
@@ -972,6 +979,7 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check").default_evidence_path = governanceLifecycleEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_graph_runtime_self_check").default_evidence_path = graphRuntimeEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_vivarium_runtime_self_check").default_evidence_path = vivariumRuntimeEvidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_case_law_runtime_self_check").default_evidence_path = caseLawRuntimeEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check").default_evidence_path = hostedRuntimeGatewayEvidencePath;
     manifest.gates.find((gate) => gate.id === "privacy_redaction_suite").default_evidence_path = privacyEvidencePath;
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
@@ -1003,6 +1011,7 @@ describe("Dojo release gate artifact verifier", () => {
         "governance-lifecycle-evidence": governanceLifecycleEvidencePath,
         "graph-runtime-evidence": graphRuntimeEvidencePath,
         "vivarium-runtime-evidence": vivariumRuntimeEvidencePath,
+        "case-law-runtime-evidence": caseLawRuntimeEvidencePath,
         "hosted-runtime-gateway-evidence": hostedRuntimeGatewayEvidencePath,
         "source-drift-evidence": sourceDriftEvidencePath,
         "api-tool-compiler-evidence": apiToolCompilerEvidencePath,
@@ -1092,6 +1101,13 @@ describe("Dojo release gate artifact verifier", () => {
         id: "dojo_vivarium_runtime_self_check",
         ok: true,
         evidence_path: vivariumRuntimeEvidencePath,
+      }),
+    ]);
+    expect(verified.case_law_runtime).toEqual([
+      expect.objectContaining({
+        id: "dojo_case_law_runtime_self_check",
+        ok: true,
+        evidence_path: caseLawRuntimeEvidencePath,
       }),
     ]);
     expect(verified.hosted_runtime_gateway).toEqual([
@@ -1427,6 +1443,71 @@ describe("Dojo release gate artifact verifier", () => {
       "vivarium_runtime_required_capabilities_missing:vivarium_runner_executes_baseline_through_fixtures_graph_oracle",
       "vivarium_runtime_required_capabilities_untested:vivarium_runner_executes_baseline_through_fixtures_graph_oracle",
       `vivarium_runtime_required_test_files_missing:${DOJO_VIVARIUM_RUNTIME_TEST_FILES.join(",")}`,
+    ]));
+  });
+
+  it("verifies case-law runtime evidence coverage and antibody transfer contract", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-case-law-runtime-verify-"));
+    const evidencePath = await writeCaseLawRuntimeEvidenceFixture({ dir });
+
+    expect(validateDojoCaseLawRuntimeEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoCaseLawRuntimeEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_case_law_runtime_self_check",
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = caseLawRuntimeEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["antibody_matcher_proposes_without_binding"],
+      case_law_contract: {
+        ...caseLawRuntimeEvidenceFixture().case_law_contract,
+        antibody_matching_required: false,
+        antibody_private_data_redaction_required: false,
+      },
+    });
+    const incompletePath = await writeCaseLawRuntimeEvidenceFixture({
+      dir,
+      basename: "incomplete-case-law-runtime",
+      evidence: incomplete,
+    });
+    const rejected = await verifyDojoCaseLawRuntimeEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "case_law_runtime_not_ok",
+      "case_law_runtime_coverage_incomplete",
+      "case_law_runtime_missing_capabilities:antibody_matcher_proposes_without_binding",
+      "case_law_runtime_antibody_matching_requirement_missing",
+      "case_law_runtime_antibody_private_data_requirement_missing",
+    ]));
+
+    const driftedPath = await writeCaseLawRuntimeEvidenceFixture({
+      dir,
+      basename: "drifted-case-law-runtime",
+      evidence: caseLawRuntimeEvidenceFixture({
+        configured_capabilities: DOJO_CASE_LAW_RUNTIME_CAPABILITIES
+          .filter((capability) => capability !== "refusal_explainer_cites_case_law_evidence_next_step"),
+        tested_capabilities: DOJO_CASE_LAW_RUNTIME_CAPABILITIES
+          .filter((capability) => capability !== "refusal_explainer_cites_case_law_evidence_next_step"),
+        capability_count: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length - 1,
+        test_files: [],
+        test_file_count: 0,
+        reported_test_file_count: 0,
+      }),
+    });
+    expect((await verifyDojoCaseLawRuntimeEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "case_law_runtime_required_capabilities_missing:refusal_explainer_cites_case_law_evidence_next_step",
+      "case_law_runtime_required_capabilities_untested:refusal_explainer_cites_case_law_evidence_next_step",
+      `case_law_runtime_required_test_files_missing:${DOJO_CASE_LAW_RUNTIME_TEST_FILES.join(",")}`,
     ]));
   });
 
@@ -3498,6 +3579,125 @@ function vivariumRuntimeJsonReportFixtureText() {
         startTime: 0,
         endTime: 100,
         assertionResults: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+}
+
+async function writeCaseLawRuntimeEvidenceFixture({
+  dir,
+  basename = "dojo-case-law-runtime",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "case-law runtime suite passed\n";
+  const stderr = "";
+  const jsonReport = caseLawRuntimeJsonReportFixtureText();
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? caseLawRuntimeEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  const withLogDefaults = {
+    ...body,
+    stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
+    stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
+    json_report_path: body.json_report_path && body.json_report_path !== "vitest.json" ? body.json_report_path : jsonReportPath,
+    json_report_sha256: body.json_report_sha256 && body.json_report_sha256 !== "json-report-sha256" ? body.json_report_sha256 : sha256(jsonReport),
+    json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
+      ? body.json_report_bytes
+      : Buffer.byteLength(jsonReport),
+  };
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
+  return evidencePath;
+}
+
+function caseLawRuntimeEvidenceFixture(overrides = {}) {
+  const stdout = "case-law runtime suite passed\n";
+  const stderr = "";
+  const jsonReport = caseLawRuntimeJsonReportFixtureText();
+  return {
+    schema_version: "synthi.dojo.caseLawRuntimeEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_CASE_LAW_RUNTIME_CAPABILITIES],
+    tested_capabilities: [...DOJO_CASE_LAW_RUNTIME_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length,
+    configured_capability_count: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    case_law_contract: {
+      case_law_registry_required: true,
+      reviewed_evidence_required: true,
+      proposed_cases_nonbinding_required: true,
+      approved_binding_scope_required: true,
+      deprecated_cases_excluded_required: true,
+      guardrail_synthesis_required: true,
+      explicit_predicate_preservation_required: true,
+      graph_binding_required: true,
+      runtime_guardrail_block_required: true,
+      refusal_case_citation_required: true,
+      inactive_case_suppression_required: true,
+      antibody_matching_required: true,
+      antibody_proposed_only_required: true,
+      antibody_private_data_redaction_required: true,
+      local_practice_required: true,
+      local_checkride_required: true,
+      deterministic_antibody_ids_required: true,
+    },
+    test_files: [...DOJO_CASE_LAW_RUNTIME_TEST_FILES],
+    test_file_count: DOJO_CASE_LAW_RUNTIME_TEST_FILES.length,
+    reported_test_file_count: DOJO_CASE_LAW_RUNTIME_TEST_FILES.length,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length,
+      passed_tests: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: overrides.stdout_path || path.join(tmpdir(), "dojo-case-law-runtime.stdout.log"),
+    stderr_path: overrides.stderr_path || path.join(tmpdir(), "dojo-case-law-runtime.stderr.log"),
+    json_report_path: overrides.json_report_path || path.join(tmpdir(), "dojo-case-law-runtime.vitest.json"),
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    json_report_sha256: sha256(jsonReport),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function caseLawRuntimeJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length,
+    numPassedTests: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_CASE_LAW_RUNTIME_TEST_FILES.length,
+    numPassedTestSuites: DOJO_CASE_LAW_RUNTIME_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_CASE_LAW_RUNTIME_CAPABILITIES.map((capability, index) => ({
           fullName: `release verifier fixture covers ${capability}`,
           title: `release verifier fixture covers ${capability}`,
           status: "passed",
