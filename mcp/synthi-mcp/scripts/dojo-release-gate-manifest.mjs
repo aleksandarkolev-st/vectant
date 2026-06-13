@@ -358,6 +358,14 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_fresh_mcp_bridge: true,
       require_exported_playwright: true,
       require_no_forwarded_port_literals: true,
+      required_visual_artifact_fields: [
+        "path",
+        "bytes",
+        "screenshot_sha256",
+        "png_verified",
+        "stage",
+        "source",
+      ],
     },
     requires_env: [
       "SYNTHI_HOSTED_BROWSER_CDP_URL",

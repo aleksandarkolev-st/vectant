@@ -712,6 +712,7 @@ export function validateDojoDockerIntegrationEvidenceForMilestone(evidence) {
 export async function verifyDojoWorkflowPipelineE2EArtifact({ summaryPath, releaseCandidate = false }) {
   const summary = await readJsonFile(summaryPath);
   const errors = validateDojoWorkflowPipelineE2EForRelease(summary).errors;
+  errors.push(...await validateWorkflowE2EVisualArtifacts({ summary, summaryPath }));
   return {
     id: "workflow_e2e_hosted",
     ok: errors.length === 0,
@@ -745,6 +746,10 @@ export function validateDojoWorkflowPipelineE2EForRelease(summary) {
   if (summary?.fresh_mcp?.private_workflow_store_env_configured !== true) {
     errors.push("workflow_e2e_fresh_mcp_store_missing");
   }
+  if (Number(summary?.visual_artifact_count || 0) <= 0) errors.push("workflow_e2e_no_visual_artifacts");
+  if (!Array.isArray(summary?.visual_artifacts) || summary.visual_artifacts.length === 0) {
+    errors.push("workflow_e2e_visual_artifacts_missing");
+  }
   for (const required of [
     "export avoids forwarded port literals",
     "run exported Playwright",
@@ -757,6 +762,46 @@ export function validateDojoWorkflowPipelineE2EForRelease(summary) {
     ok: errors.length === 0,
     errors,
   };
+}
+
+async function validateWorkflowE2EVisualArtifacts({ summary, summaryPath }) {
+  const errors = [];
+  const artifacts = Array.isArray(summary?.visual_artifacts) ? summary.visual_artifacts : [];
+  if (artifacts.length === 0) return errors;
+  if (Number(summary?.visual_artifact_count || 0) !== artifacts.length) {
+    errors.push(`workflow_e2e_visual_artifact_count_mismatch:${summary?.visual_artifact_count ?? "missing"}:${artifacts.length}`);
+  }
+  for (const [index, artifact] of artifacts.entries()) {
+    const label = artifact?.stage || artifact?.path || `visual_artifact_${index}`;
+    const artifactPath = resolveEvidenceArtifactPath(artifact?.path, summaryPath);
+    if (!artifactPath) {
+      errors.push(`workflow_e2e_visual_artifact_path_missing:${label}`);
+      continue;
+    }
+    try {
+      const info = await stat(artifactPath);
+      if (!info.isFile()) errors.push(`workflow_e2e_visual_artifact_not_file:${label}:${artifactPath}`);
+      if (info.size <= 0) errors.push(`workflow_e2e_visual_artifact_empty:${label}:${artifactPath}`);
+      const expectedBytes = Number(artifact?.bytes);
+      if (!Number.isFinite(expectedBytes) || expectedBytes <= 0) {
+        errors.push(`workflow_e2e_visual_artifact_bytes_missing:${label}`);
+      } else if (expectedBytes !== info.size) {
+        errors.push(`workflow_e2e_visual_artifact_bytes_mismatch:${label}:${expectedBytes}:${info.size}`);
+      }
+      const bytes = await readFile(artifactPath);
+      if (!isPngBytes(bytes)) errors.push(`workflow_e2e_visual_artifact_not_png:${label}:${artifactPath}`);
+      if (artifact?.png_verified !== true) errors.push(`workflow_e2e_visual_artifact_png_not_verified:${label}`);
+      const actualSha256 = sha256(bytes);
+      if (!artifact?.screenshot_sha256) {
+        errors.push(`workflow_e2e_visual_artifact_sha256_missing:${label}`);
+      } else if (String(artifact.screenshot_sha256) !== actualSha256) {
+        errors.push(`workflow_e2e_visual_artifact_sha256_mismatch:${label}:${artifact.screenshot_sha256}:${actualSha256}`);
+      }
+    } catch {
+      errors.push(`workflow_e2e_visual_artifact_missing:${label}:${artifactPath}`);
+    }
+  }
+  return errors;
 }
 
 export async function verifyDojoPrivateToolStdioAcceptanceArtifact({ transcriptPath, releaseCandidate = false }) {
@@ -2194,6 +2239,9 @@ function deployedPrivateToolHostTranscriptOverrides(overrides = {}) {
 }
 
 async function writeWorkflowE2ESummaryForSelfCheck({ outDir, basename = "workflow-e2e", overrides = {} }) {
+  const screenshotPath = path.join(outDir, `${basename}.png`);
+  const screenshotBytes = proofSelfCheckVisualPngBytes();
+  await writeFile(screenshotPath, screenshotBytes);
   const summary = {
     schema_version: "synthi.dojo.workflowPipelineE2E.v1",
     generated_at: new Date().toISOString(),
@@ -2212,6 +2260,19 @@ async function writeWorkflowE2ESummaryForSelfCheck({ outDir, basename = "workflo
       bridge_url: "http://127.0.0.1:49999",
       private_workflow_store_env_configured: true,
     },
+    visual_artifact_count: 1,
+    visual_artifacts: [
+      {
+        case_id: "self-check-case",
+        stage: "self_check_visual",
+        source: "release_gate_self_check",
+        path: path.relative(outDir, screenshotPath).replace(/\\/g, "/"),
+        bytes: screenshotBytes.length,
+        screenshot_sha256: sha256(screenshotBytes),
+        mime_type: "image/png",
+        png_verified: true,
+      },
+    ],
     results: [
       { caseId: "self-check-case", name: "export avoids forwarded port literals", ok: true, detail: "none" },
       { caseId: "self-check-case", name: "run exported Playwright", ok: true, detail: "passed" },

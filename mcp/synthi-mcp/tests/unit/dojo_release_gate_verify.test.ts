@@ -495,6 +495,67 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("requires workflow E2E visual artifacts to be PNG digest-matched artifacts", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-workflow-visual-verify-"));
+    const fakePath = path.join(dir, "workflow-fake.png");
+    const fakeBytes = Buffer.from("not-a-png");
+    await writeFile(fakePath, fakeBytes);
+    const fakeSummaryPath = path.join(dir, "workflow-fake.json");
+    await writeFile(fakeSummaryPath, JSON.stringify(workflowE2EFixture({
+      visual_artifact_count: 1,
+      visual_artifacts: [
+        {
+          case_id: "fixture-case",
+          stage: "fake_visual",
+          source: "unit_fixture",
+          path: fakePath,
+          bytes: fakeBytes.length,
+          screenshot_sha256: sha256(fakeBytes),
+          mime_type: "image/png",
+          png_verified: true,
+        },
+      ],
+    }), null, 2), "utf8");
+
+    const fakeRejected = await verifyDojoWorkflowPipelineE2EArtifact({
+      summaryPath: fakeSummaryPath,
+      releaseCandidate: true,
+    });
+    expect(fakeRejected.ok).toBe(false);
+    expect(fakeRejected.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^workflow_e2e_visual_artifact_not_png:fake_visual:/),
+    ]));
+
+    const pngPath = path.join(dir, "workflow-digest-drift.png");
+    const pngBytes = fixtureVisualPngBytes();
+    await writeFile(pngPath, pngBytes);
+    const digestDriftPath = path.join(dir, "workflow-digest-drift.json");
+    await writeFile(digestDriftPath, JSON.stringify(workflowE2EFixture({
+      visual_artifact_count: 1,
+      visual_artifacts: [
+        {
+          case_id: "fixture-case",
+          stage: "digest_drift",
+          source: "unit_fixture",
+          path: pngPath,
+          bytes: pngBytes.length,
+          screenshot_sha256: sha256("wrong-workflow-visual"),
+          mime_type: "image/png",
+          png_verified: true,
+        },
+      ],
+    }), null, 2), "utf8");
+
+    const digestRejected = await verifyDojoWorkflowPipelineE2EArtifact({
+      summaryPath: digestDriftPath,
+      releaseCandidate: true,
+    });
+    expect(digestRejected.ok).toBe(false);
+    expect(digestRejected.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^workflow_e2e_visual_artifact_sha256_mismatch:digest_drift:/),
+    ]));
+  });
+
   it("requires deployed private-tool host conformance to use external stores and non-loopback targets", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-private-tool-host-conformance-verify-"));
     const stdioScreenshotPath = path.join(dir, "private-tool-stdio-host.png");
@@ -1458,9 +1519,13 @@ async function writeWorkflowE2EFixture({
   basename = "workflow-e2e",
   report = workflowE2EFixture(),
 }) {
+  const screenshotPath = path.join(dir, `${basename}.png`);
+  const screenshotBytes = fixtureVisualPngBytes();
+  await writeFile(screenshotPath, screenshotBytes);
+  const body = withWorkflowE2EVisualMetadata(report, { screenshotPath, screenshotBytes });
   const reportPath = path.join(dir, `${basename}.json`);
-  await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
-  return { report, reportPath };
+  await writeFile(reportPath, JSON.stringify(body, null, 2), "utf8");
+  return { report: body, reportPath };
 }
 
 function workflowE2EFixture(overrides = {}) {
@@ -1489,6 +1554,25 @@ function workflowE2EFixture(overrides = {}) {
       { caseId: "fixture-case", name: "fresh MCP call discovered private tool", ok: true, detail: "steps=1" },
     ],
     ...overrides,
+  };
+}
+
+function withWorkflowE2EVisualMetadata(report, { screenshotPath, screenshotBytes }) {
+  return {
+    ...report,
+    visual_artifact_count: 1,
+    visual_artifacts: [
+      {
+        case_id: "fixture-case",
+        stage: "fixture_visual",
+        source: "unit_fixture",
+        path: screenshotPath,
+        bytes: screenshotBytes.length,
+        screenshot_sha256: sha256(screenshotBytes),
+        mime_type: "image/png",
+        png_verified: true,
+      },
+    ],
   };
 }
 
