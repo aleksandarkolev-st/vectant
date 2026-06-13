@@ -1943,19 +1943,15 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
   if (!skill.ok) return skill.error;
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
   const enforcement = resolveDojoEnforcementConfig();
+  const tenantContext = dojoTenantContextResultFromArgs(a, {
+    development_defaults: { workspace_id: skill.skill.workspace_id },
+  });
+  if (!tenantContext.ok) return tenantContext.error;
+  const tenant = tenantContext.tenant;
   const issuerActorId = stringOpt(a["actor_id"]);
   const issuerActorType = actorTypeInputOpt(a["actor_type"]);
   const issuerActorProvided = Boolean(issuerActorId) || a["actor_type"] !== undefined;
-  if (enforcement.production_enforcement && !issuerActorId) {
-    return errorResponse("dojo_proof_capsule_issuer_required", {
-      ok: false,
-      skill_id: skill.skill.skill_id,
-      requested_action: requestedAction,
-      enforcement_mode: enforcement.enforcement_mode,
-      blocked_by: ["proof_issuer_actor_missing"],
-    });
-  }
-  if ((enforcement.production_enforcement || issuerActorProvided) && !issuerActorType) {
+  if (issuerActorProvided && !issuerActorType) {
     return errorResponse("dojo_proof_capsule_issuer_actor_type_required", {
       ok: false,
       skill_id: skill.skill.skill_id,
@@ -1964,9 +1960,10 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
       blocked_by: ["proof_issuer_actor_type_invalid"],
     });
   }
-  const issuedBy = issuerActorId && issuerActorType
-    ? { actor_id: issuerActorId, actor_type: issuerActorType }
-    : undefined;
+  const issuedBy = enforcement.production_enforcement
+    ? { actor_id: tenant.actor_id, actor_type: tenant.actor_type }
+    : (issuerActorId && issuerActorType ? { actor_id: issuerActorId, actor_type: issuerActorType } : undefined);
+  const scopedTenantId = enforcement.production_enforcement || stringOpt(a["tenant_id"]) ? tenant.tenant_id : undefined;
   const evidenceLedgerRecords = evidenceLedgerRecordsOpt(a["evidence_ledger_records"]);
   const requireVerifiedEvidence = boolOpt(a["require_verified_evidence"])
     || enforcement.production_enforcement
@@ -1980,7 +1977,7 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
       evidence_max_age_ms: numberOpt(a["evidence_max_age_ms"]),
       ledger_checkpoint_hash: stringOpt(a["ledger_checkpoint_hash"]),
       require_verified_evidence: requireVerifiedEvidence,
-      tenant_id: stringOpt(a["tenant_id"]),
+      tenant_id: scopedTenantId,
       substrate_claim: substrateOpt(a["substrate_claim"]),
       now: stringOpt(a["now"]),
       expires_at: stringOpt(a["expires_at"]),
@@ -2045,7 +2042,7 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
     throw err;
   }
   const proofRecord = dojoSkillRegistry.recordProofCapsule(capsule, {
-    tenant_id: stringOpt(a["tenant_id"]),
+    tenant_id: scopedTenantId,
     issued_by: issuedBy,
   });
   const validation = validateDojoProofCapsule(skill.skill, capsule, requestedAction, stringOpt(a["now"]));

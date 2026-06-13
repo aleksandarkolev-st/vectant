@@ -299,8 +299,10 @@ describe("Agent Dojo MCP tools", () => {
 
     const missingEvidence = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
-      actor_id: "proof-issuer-a",
-      actor_type: "agent",
+      ...productionTenantContextArgs({
+        actor_id: "proof-issuer-a",
+        request_id: "req-proof-missing-evidence",
+      }),
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
       now: "2026-06-11T00:05:00.000Z",
@@ -335,7 +337,7 @@ describe("Agent Dojo MCP tools", () => {
       retention_class: "standard",
     });
 
-    const missingIssuer = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+    const missingTenantContext = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
       tenant_id: "tenant-a",
       requested_action: "run_workflow",
@@ -344,12 +346,25 @@ describe("Agent Dojo MCP tools", () => {
       now: "2026-06-11T00:05:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
-    expect(missingIssuer?.isError).toBe(true);
-    expect(missingIssuer?.structuredContent).toEqual(expect.objectContaining({
-      error: "dojo_proof_capsule_issuer_required",
+    expect(missingTenantContext?.isError).toBe(true);
+    expect(missingTenantContext?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_tenant_context_required",
       ok: false,
       enforcement_mode: "production",
-      blocked_by: ["proof_issuer_actor_missing"],
+      missing_fields: expect.arrayContaining([
+        "organization_id",
+        "workspace_id",
+        "actor_id",
+        "actor_type",
+        "roles",
+        "request_id",
+        "correlation_id",
+      ]),
+      blocked_by: expect.arrayContaining([
+        "tenant_context_actor_id_missing",
+        "tenant_context_actor_type_missing",
+        "tenant_context_roles_missing",
+      ]),
     }));
 
     const wrongWorkspaceEvidence = buildDojoEvidenceLedgerRecord({
@@ -370,8 +385,10 @@ describe("Agent Dojo MCP tools", () => {
     });
     const wrongScope = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
-      actor_id: "proof-issuer-a",
-      actor_type: "agent",
+      ...productionTenantContextArgs({
+        actor_id: "proof-issuer-a",
+        request_id: "req-proof-wrong-scope",
+      }),
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [wrongWorkspaceEvidence],
@@ -400,9 +417,10 @@ describe("Agent Dojo MCP tools", () => {
 
     const issued = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
-      tenant_id: "tenant-a",
-      actor_id: "proof-issuer-a",
-      actor_type: "agent",
+      ...productionTenantContextArgs({
+        actor_id: "proof-issuer-a",
+        request_id: "req-proof-issued",
+      }),
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [evidenceRecord],
