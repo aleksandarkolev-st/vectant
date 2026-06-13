@@ -49,6 +49,7 @@ import {
   resolveDojoEnforcementConfig,
   resolveDojoEvidenceLedgerStoreConfig,
 } from "../dojo/config/enforcement.js";
+import { createDojoControlPlaneStoresFromEnv } from "../dojo/store/control_plane_resolver.js";
 import { resolveDojoEvidenceLedgerRecords } from "../dojo/evidence/ledger_resolver.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { normalizeDojoProofErrorCodes } from "../dojo/proof/errors.js";
@@ -63,7 +64,13 @@ import {
 } from "../dojo/runtime/hosted_runtime_gateway_resolver.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
 import { toDojoScenarioDefinitions, validateDojoScenarioDefinition } from "../dojo/vivarium/scenario_dsl.js";
-import type { DojoAuditEventRecord, DojoAuditStore, DojoGhostShadowEvidenceRecord, DojoPermissionUpgradeRequestRecord } from "../dojo/store/interfaces.js";
+import type {
+  DojoAuditActor,
+  DojoAuditEventRecord,
+  DojoAuditStore,
+  DojoGhostShadowEvidenceRecord,
+  DojoPermissionUpgradeRequestRecord,
+} from "../dojo/store/interfaces.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
 import {
   blockDojoMcpSkillBusExecution,
@@ -180,11 +187,17 @@ function dojoHostedRuntimeGatewayCacheKey(env: NodeJS.ProcessEnv): string {
   });
 }
 
-function requireDojoDurableControlPlaneWrite(operation: string): { ok: true } | { ok: false; error: ToolResponse } {
+function requireDojoDurableControlPlaneWrite(
+  operation: string,
+  options: { postgres_wired?: boolean } = {}
+): { ok: true } | { ok: false; error: ToolResponse } {
   const enforcement = resolveDojoEnforcementConfig();
   if (!enforcement.production_enforcement || !enforcement.require_durable_store) return { ok: true };
 
   const storeConfig = resolveDojoControlPlaneStoreConfig();
+  if (options.postgres_wired && storeConfig.store_kind === "postgres" && storeConfig.production_capable) {
+    return { ok: true };
+  }
   const runtimeWiringBlock = storeConfig.production_capable
     ? ["dojo_control_plane_registry_postgres_adapter_not_wired"]
     : ["dojo_control_plane_store_not_production_capable"];
@@ -212,6 +225,113 @@ function requireDojoDurableControlPlaneWrite(operation: string): { ok: true } | 
       message: "Production Dojo control-plane writes require a wired durable registry store. The compatibility registry is not accepted for production writes.",
     }),
   };
+}
+
+async function listDurableDojoSkillsForTenantIfRequired(
+  tenant: DojoTenantContext
+): Promise<{ ok: true; skills?: DojoSkill[]; source: "compatibility_registry" | "postgres" } | { ok: false; error: ToolResponse }> {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_durable_store) {
+    return { ok: true, source: "compatibility_registry" };
+  }
+
+  const resolution = await createDojoControlPlaneStoresFromEnv({ tenant });
+  if (!resolution.ok) {
+    return {
+      ok: false,
+      error: controlPlaneResolutionError("synthi_dojo_list_competencies", resolution),
+    };
+  }
+  try {
+    const skills = await resolution.skill_store.listSkills({ status: "published" });
+    return { ok: true, skills, source: "postgres" };
+  } finally {
+    await resolution.close?.();
+  }
+}
+
+async function persistPublishedSkillToDurableControlPlaneIfRequired(input: {
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  actor: DojoAuditActor;
+  now: string;
+}): Promise<{ ok: true; persistence?: Record<string, unknown> } | { ok: false; error: ToolResponse }> {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_durable_store) {
+    return { ok: true };
+  }
+
+  const resolution = await createDojoControlPlaneStoresFromEnv({
+    tenant: input.tenant,
+    app_origin: input.skill.app_origin,
+  });
+  if (!resolution.ok) {
+    return {
+      ok: false,
+      error: controlPlaneResolutionError("synthi_dojo_publish_skill", resolution),
+    };
+  }
+
+  try {
+    const skillRecord = await resolution.skill_store.saveSkill(input.skill, {
+      status: "published",
+      created_by: input.actor,
+      now: input.now,
+    });
+    const licenseRecord = await resolution.license_store.saveLicense(input.skill.permission_license, {
+      readiness_level: input.skill.skill_readiness_level,
+      status: "active",
+      expires_at: input.skill.license_expires_at,
+      created_by: input.actor,
+      now: input.now,
+    });
+    return {
+      ok: true,
+      persistence: {
+        ok: true,
+        store_kind: "postgres",
+        skill_id: skillRecord.skill_id,
+        skill_version: skillRecord.current_skill_version,
+        workflow_id: skillRecord.workflow_id,
+        workspace_id: skillRecord.workspace_id,
+        license_id: licenseRecord.license_id,
+        license_version: licenseRecord.license_version,
+        status: skillRecord.status,
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_control_plane_persistence_failed", {
+        ok: false,
+        operation: "synthi_dojo_publish_skill",
+        store_kind: "postgres",
+        skill_id: input.skill.skill_id,
+        workflow_id: input.skill.workflow_id,
+        license_id: input.skill.permission_license.license_id,
+        message: err instanceof Error ? err.message : String(err),
+        blocked_by: ["dojo_control_plane_postgres_persistence_failed"],
+        error_codes: ["dojo_control_plane_persistence_failed"],
+      }),
+    };
+  } finally {
+    await resolution.close?.();
+  }
+}
+
+function controlPlaneResolutionError(
+  operation: string,
+  resolution: Extract<Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>>, { ok: false }>
+): ToolResponse {
+  return errorResponse("dojo_control_plane_store_not_runtime_wired", {
+    ok: false,
+    operation,
+    store_kind: resolution.store_kind,
+    production_capable: resolution.production_capable,
+    configured_env: resolution.configured_env,
+    blocked_by: resolution.blocked_by,
+    error_codes: ["dojo_control_plane_store_not_runtime_wired"],
+  });
 }
 
 const DOJO_TENANT_CONTEXT_INPUT_PROPERTIES = {
@@ -926,7 +1046,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoRunCheckrideTool(args);
         break;
       case "synthi_dojo_publish_skill":
-        response = dojoPublishSkillTool(args);
+        response = await dojoPublishSkillTool(args);
         break;
       case "synthi_dojo_recertify_skill":
         response = await dojoRecertifySkillTool(args);
@@ -992,13 +1112,16 @@ function withDojoImplementationMetadata(toolName: string, response: ToolResponse
 async function dojoListCompetenciesTool(args: unknown): Promise<ToolResponse> {
   const tenantContext = dojoTenantContextResultFromArgs(args);
   if (!tenantContext.ok) return tenantContext.error;
-  const skills = dojoSkillRegistry.list();
+  const durableSkills = await listDurableDojoSkillsForTenantIfRequired(tenantContext.tenant);
+  if (!durableSkills.ok) return durableSkills.error;
+  const skills = durableSkills.skills ?? dojoSkillRegistry.list();
   const skillBus = createInProcessDojoMcpSkillBus({ listSkills: () => skills });
   const visible = await skillBus.listCompetencies({ tenant: tenantContext.tenant });
   const visibleSkillIds = new Set(visible.map((item) => item.skill_id));
   return jsonResponse({
     ok: true,
     count: visible.length,
+    control_plane_source: durableSkills.source,
     competencies: skills.filter((skill) => visibleSkillIds.has(skill.skill_id)).map(skillListItem),
     product_path: "agent_to_mcp_skill_bus_to_proof_validator_to_license_kernel_to_dojo_runtime",
   });
@@ -1799,7 +1922,7 @@ function checkrideRuntimeInputsFor(skill: DojoSkill): Record<string, unknown> {
   return inputs;
 }
 
-function dojoPublishSkillTool(args: unknown): ToolResponse {
+async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
   const workflow = requiredAuthorizedWorkflowArtifact(args);
   if (!workflow.ok) return workflow.error;
   const a = obj(args);
@@ -1812,18 +1935,29 @@ function dojoPublishSkillTool(args: unknown): ToolResponse {
   if (!actorType) return errorResponse("dojo_skill_publication_actor_type_required");
   const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
   if (evidenceRefs.length === 0) return errorResponse("dojo_skill_publication_evidence_required");
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_publish_skill");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_publish_skill", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const contract = workflow.artifact.workflow.contract;
   const manifest = generatePrivateWorkflowToolManifest(contract);
   const publishedTool = publishBackingPrivateTool(manifest, workflow.artifact);
-  const skill = dojoSkillRegistry.publish(buildDojoSkill(contract, {
+  const candidateSkill = buildDojoSkill(contract, {
     workspace_id: workspaceId,
     now,
     private_tool_manifest: manifest,
     ...(publishedTool.ok ? { published_tool_name: publishedTool.tool_name } : {}),
-  }));
+  });
+  const controlPlanePersistence = await persistPublishedSkillToDurableControlPlaneIfRequired({
+    tenant: workflow.tenant,
+    skill: candidateSkill,
+    actor: {
+      actor_id: actorId,
+      actor_type: actorType,
+    },
+    now,
+  });
+  if (!controlPlanePersistence.ok) return controlPlanePersistence.error;
+  const skill = dojoSkillRegistry.publish(candidateSkill);
   const auditEvent = {
     event_type: "skill_version_created" as const,
     actor: {
@@ -1855,6 +1989,10 @@ function dojoPublishSkillTool(args: unknown): ToolResponse {
       reason,
       evidence_refs: evidenceRefs,
       audit_event: auditEvent,
+      control_plane_persistence: controlPlanePersistence.persistence ?? {
+        ok: true,
+        store_kind: "compatibility_registry",
+      },
     },
     repo_artifacts: artifactSummary(exportDojoRepoArtifacts(skill)),
   });

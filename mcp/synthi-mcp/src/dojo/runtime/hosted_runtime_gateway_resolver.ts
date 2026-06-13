@@ -1,7 +1,5 @@
 import { Pool } from "pg";
 import {
-  DOJO_CONTROL_PLANE_POSTGRES_URL_ENV,
-  DOJO_CONTROL_PLANE_STORE_ENV,
   DOJO_REQUIRE_DURABLE_STORE_ENV,
   resolveDojoControlPlaneStoreConfig,
   resolveDojoEnforcementConfig,
@@ -13,6 +11,8 @@ import {
   type DojoPostgresConnectable,
   type DojoPostgresQueryable,
 } from "../store/postgres_proof_store.js";
+import { dojoControlPlanePostgresConnectionStringFromEnv } from "../store/control_plane_resolver.js";
+export { dojoControlPlanePostgresConnectionStringFromEnv } from "../store/control_plane_resolver.js";
 import {
   createInProcessDojoHostedRuntimeGateway,
   InMemoryDojoHostedRuntimeSessionStore,
@@ -123,16 +123,6 @@ export async function createDojoHostedRuntimeGatewayFromEnv(
   };
 }
 
-export function dojoControlPlanePostgresConnectionStringFromEnv(
-  env: NodeJS.ProcessEnv = process.env
-): string | undefined {
-  const explicit = nonEmpty(env[DOJO_CONTROL_PLANE_POSTGRES_URL_ENV]);
-  if (explicit) return explicit;
-  const store = nonEmpty(env[DOJO_CONTROL_PLANE_STORE_ENV]);
-  if (store && isPostgresUrl(store)) return store;
-  return undefined;
-}
-
 class RoutedPostgresDojoHostedRuntimeSessionStore implements DojoHostedRuntimeSessionStore {
   constructor(private readonly queryable: DojoPostgresQueryable) {}
 
@@ -209,13 +199,4 @@ class MirroredDojoAuditStore implements DojoAuditStore {
   listAuditEvents(filter: DojoAuditEventListFilter = {}): Promise<DojoAuditEventRecord[]> | DojoAuditEventRecord[] {
     return this.primary.listAuditEvents(filter);
   }
-}
-
-function nonEmpty(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function isPostgresUrl(value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  return normalized.startsWith("postgres://") || normalized.startsWith("postgresql://");
 }

@@ -108,6 +108,9 @@ function postgresVitestReportFixture() {
       "PostgresDojoLicenseStore revokes licenses with audit custody",
     ],
     [
+      "Dojo tool Postgres control-plane wiring persists production durable skill publication and lists competencies from Postgres after local reset",
+    ],
+    [
       "PostgresDojoGovernanceStore persists permission-upgrade requests, filters them by governance fields, and emits audit events",
       "PostgresDojoGovernanceStore persists case law records, filters by binding scope and action, and emits audit events",
     ],

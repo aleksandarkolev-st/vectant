@@ -2903,12 +2903,15 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
-  it("blocks compatibility registry writes when production requires a durable control plane", async () => {
+  it("blocks skill publication when production requires a durable control plane but none is configured", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
     process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
-    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
-    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = "postgres://dojo-control-plane.test/synthi";
+    delete process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE;
+    delete process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL;
+    delete process.env.SYNTHI_DOJO_STORE_FILE;
+    delete process.env.SYNTHI_DOJO_STORE_KEY;
+    delete process.env.SYNTHI_DOJO_STORE_SCOPE;
 
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
       ...productionTenantContextArgs({
@@ -2925,11 +2928,14 @@ describe("Agent Dojo MCP tools", () => {
       ok: false,
       operation: "synthi_dojo_publish_skill",
       enforcement_mode: "production",
-      store_kind: "postgres",
-      configured: true,
-      durable: true,
-      production_capable: true,
-      blocked_by: ["dojo_control_plane_registry_postgres_adapter_not_wired"],
+      store_kind: "unconfigured",
+      configured: false,
+      durable: false,
+      production_capable: false,
+      blocked_by: expect.arrayContaining([
+        "dojo_control_plane_store_not_production_capable",
+        "control_plane_store_unconfigured",
+      ]),
       error_codes: ["dojo_control_plane_store_not_runtime_wired"],
     }));
     expect(dojoSkillRegistry.list()).toHaveLength(0);

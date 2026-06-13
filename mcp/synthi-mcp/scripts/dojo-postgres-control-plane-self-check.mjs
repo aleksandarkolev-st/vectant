@@ -28,6 +28,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES = [
   "tests/integration/dojo_audit_store.test.ts",
   "tests/integration/dojo_postgres_skill_store.test.ts",
   "tests/integration/dojo_postgres_license_store.test.ts",
+  "tests/integration/dojo_postgres_tool_control_plane.test.ts",
   "tests/integration/dojo_postgres_governance_store.test.ts",
   "tests/integration/dojo_postgres_source_registry_store.test.ts",
   "tests/integration/dojo_postgres_mcp_skill_bus_store.test.ts",
@@ -60,6 +61,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES = [
   "audit_event_repository",
   "skill_repository",
   "license_repository",
+  "tool_control_plane_publish_read_path",
   "postgres_evidence_proof_issuance",
 ];
 
@@ -369,6 +371,9 @@ function capabilityMatchers(capability) {
     license_repository: [
       "postgresdojolicensestore persists licenses and version history by tenant scope",
       "postgresdojolicensestore revokes licenses with audit custody",
+    ],
+    tool_control_plane_publish_read_path: [
+      "dojo tool postgres control plane wiring persists production durable skill publication and lists competencies from postgres after local reset",
     ],
     postgres_evidence_proof_issuance: ["issues a production proof capsule from evidence record ids resolved through postgres"],
   };
