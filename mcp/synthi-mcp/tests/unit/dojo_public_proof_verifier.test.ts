@@ -16,7 +16,12 @@ import {
   generateEd25519DojoProofKeyPair,
 } from "../../src/dojo/proof/signing.js";
 import {
+  buildDojoProofKeyRecord,
+  type DojoProofKeyRecord,
+} from "../../src/dojo/proof/key_registry.js";
+import {
   verifyDojoProofCapsulePublic,
+  verifyDojoProofCapsulePublicWithKeyRecord,
   type DojoPublicProofCapsule,
 } from "../../src/dojo/proof/public_verifier.js";
 import { dojoEvidenceRecordForProof } from "./dojo_test_fixtures.js";
@@ -260,6 +265,111 @@ describe("Dojo public proof capsule verifier", () => {
       blocked_by: ["proof_validation_time_invalid"],
     }));
   });
+
+  it("verifies an Ed25519 capsule directly from a proof-key custody record", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("ed-key-custody-active");
+    const signer = createEd25519DojoProofSigner({
+      key_id: keyPair.key_id,
+      private_key_pem: keyPair.private_key_pem,
+    });
+    const unsigned = ed25519CapsuleWithoutSignature(keyPair.key_id);
+    const capsule = signPublicCapsule(unsigned, signer);
+    const proofKey = proofKeyRecordForPair(keyPair, {
+      status: "active",
+      created_at: "2026-06-10T00:00:00.000Z",
+    });
+
+    expect(verifyDojoProofCapsulePublicWithKeyRecord({
+      capsule,
+      proof_key: proofKey,
+      expected: {
+        skill_id: "skill-a",
+        skill_version: "1.0.0",
+        license_version: "license-v1",
+        requested_action: "run_workflow",
+        ledger_checkpoint_hash: "c".repeat(64),
+        required_evidence_claims: ["checkride_passed"],
+      },
+      require_ledger_checkpoint: true,
+      now: "2026-06-11T00:01:00.000Z",
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      status: "verified",
+      key_id: keyPair.key_id,
+      proof_key_status: "active",
+      proof_key_issuer: "unit-test-issuer",
+      signature_verified: true,
+      blocked_by: [],
+    }));
+  });
+
+  it("allows retired proof keys to verify historical capsules until the capsule expires", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("ed-key-custody-retired");
+    const signer = createEd25519DojoProofSigner({
+      key_id: keyPair.key_id,
+      private_key_pem: keyPair.private_key_pem,
+    });
+    const unsigned = ed25519CapsuleWithoutSignature(keyPair.key_id);
+    const capsule = signPublicCapsule(unsigned, signer);
+    const proofKey = proofKeyRecordForPair(keyPair, {
+      status: "retired",
+      created_at: "2026-06-10T00:00:00.000Z",
+      rotated_at: "2026-06-10T12:00:00.000Z",
+    });
+
+    expect(verifyDojoProofCapsulePublicWithKeyRecord({
+      capsule,
+      proof_key: proofKey,
+      now: "2026-06-11T00:01:00.000Z",
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      status: "verified",
+      proof_key_status: "retired",
+      signature_verified: true,
+      blocked_by: [],
+    }));
+  });
+
+  it("blocks revoked proof keys unless retained forensic verification is explicitly requested", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("ed-key-custody-revoked");
+    const signer = createEd25519DojoProofSigner({
+      key_id: keyPair.key_id,
+      private_key_pem: keyPair.private_key_pem,
+    });
+    const unsigned = ed25519CapsuleWithoutSignature(keyPair.key_id);
+    const capsule = signPublicCapsule(unsigned, signer);
+    const proofKey = proofKeyRecordForPair(keyPair, {
+      status: "revoked",
+      created_at: "2026-06-10T00:00:00.000Z",
+      revoked_at: "2026-06-10T12:00:00.000Z",
+      retain_for_forensic_verification: true,
+    });
+
+    expect(verifyDojoProofCapsulePublicWithKeyRecord({
+      capsule,
+      proof_key: proofKey,
+      now: "2026-06-11T00:01:00.000Z",
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      proof_key_status: "revoked",
+      signature_verified: true,
+      blocked_by: ["proof_key_revoked"],
+    }));
+
+    expect(verifyDojoProofCapsulePublicWithKeyRecord({
+      capsule,
+      proof_key: proofKey,
+      allow_forensic_verification: true,
+      now: "2026-06-11T00:01:00.000Z",
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      status: "verified",
+      proof_key_status: "revoked",
+      signature_verified: true,
+      blocked_by: [],
+    }));
+  });
 });
 
 function skillFixture() {
@@ -311,6 +421,22 @@ function signPublicCapsule(
     ...unsigned,
     signature: encodeDojoProofSignatureEnvelope(signer.sign(canonicalDojoProofPayload(unsigned))),
   };
+}
+
+function proofKeyRecordForPair(
+  keyPair: { key_id: string; public_key_pem: string },
+  overrides: Partial<DojoProofKeyRecord> = {}
+): DojoProofKeyRecord {
+  return buildDojoProofKeyRecord({
+    tenant_id: "tenant-public-proof",
+    key_id: keyPair.key_id,
+    issuer: "unit-test-issuer",
+    algorithm: "ed25519",
+    public_key_pem: keyPair.public_key_pem,
+    status: "active",
+    created_at: "2026-06-10T00:00:00.000Z",
+    ...overrides,
+  });
 }
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {

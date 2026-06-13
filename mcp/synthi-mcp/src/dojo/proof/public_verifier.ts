@@ -1,9 +1,11 @@
 import {
   canonicalDojoProofPayload,
+  createEd25519DojoProofVerifier,
   parseDojoProofSignatureEnvelope,
   type DojoProofSigningAlgorithm,
   type DojoProofVerifier,
 } from "./signing.js";
+import type { DojoProofKeyRecord } from "./key_registry.js";
 
 export interface DojoPublicProofCapsule {
   schema_version: string;
@@ -37,8 +39,60 @@ export interface DojoPublicProofVerification {
   checked_at: string;
   capsule_id?: string;
   key_id?: string;
+  proof_key_status?: string;
+  proof_key_issuer?: string;
   signature_verified: boolean;
   blocked_by: string[];
+}
+
+export function verifyDojoProofCapsulePublicWithKeyRecord(input: {
+  capsule: DojoPublicProofCapsule;
+  proof_key: DojoProofKeyRecord;
+  expected?: Parameters<typeof verifyDojoProofCapsulePublic>[0]["expected"];
+  require_ledger_checkpoint?: boolean;
+  allow_forensic_verification?: boolean;
+  now?: string;
+}): DojoPublicProofVerification {
+  const checkedAt = input.now ?? new Date().toISOString();
+  const proofKeyBlockedBy = proofKeyRecordBlockedBy(input.proof_key, input.allow_forensic_verification === true);
+  const verifier = verifierForProofKey(input.proof_key);
+  if (!verifier) {
+    return {
+      ok: false,
+      status: "blocked",
+      checked_at: checkedAt,
+      capsule_id: input.capsule.capsule_id,
+      key_id: input.capsule.key_id,
+      proof_key_status: input.proof_key.status,
+      proof_key_issuer: input.proof_key.issuer,
+      signature_verified: false,
+      blocked_by: [...new Set([
+        ...proofKeyBlockedBy,
+        "proof_key_public_verifier_unavailable",
+      ])],
+    };
+  }
+
+  const verification = verifyDojoProofCapsulePublic({
+    capsule: input.capsule,
+    verifier,
+    expected: {
+      ...input.expected,
+      issuer: input.expected?.issuer ?? input.proof_key.issuer,
+      key_id: input.expected?.key_id ?? input.proof_key.key_id,
+    },
+    require_ledger_checkpoint: input.require_ledger_checkpoint,
+    now: checkedAt,
+  });
+  const blockedBy = [...new Set([...proofKeyBlockedBy, ...verification.blocked_by])];
+  return {
+    ...verification,
+    ok: blockedBy.length === 0,
+    status: blockedBy.length === 0 ? "verified" : "blocked",
+    proof_key_status: input.proof_key.status,
+    proof_key_issuer: input.proof_key.issuer,
+    blocked_by: blockedBy,
+  };
 }
 
 export function verifyDojoProofCapsulePublic(input: {
@@ -155,9 +209,45 @@ function verifySignature(capsule: DojoPublicProofCapsule, verifier: DojoProofVer
   }
 }
 
+function verifierForProofKey(key: DojoProofKeyRecord): DojoProofVerifier | null {
+  if (key.algorithm !== "ed25519") return null;
+  if (!key.public_key_pem.trim()) return null;
+  try {
+    return createEd25519DojoProofVerifier({
+      key_id: key.key_id,
+      public_key_pem: key.public_key_pem,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function proofKeyRecordBlockedBy(key: DojoProofKeyRecord, allowForensicVerification: boolean): string[] {
+  const blockedBy: string[] = [];
+  if (key.schema_version !== "synthi.dojo.proofKey.v1") blockedBy.push("proof_key_schema_version_mismatch");
+  if (!key.key_id.trim()) blockedBy.push("proof_key_id_missing");
+  if (!key.issuer.trim()) blockedBy.push("proof_key_issuer_missing");
+  if (!key.public_key_pem.trim()) blockedBy.push("proof_key_public_key_missing");
+  if (key.algorithm !== "ed25519") blockedBy.push("proof_key_public_verifier_unavailable");
+  if (key.status !== "active" && key.status !== "retired" && key.status !== "revoked") {
+    blockedBy.push("proof_key_status_invalid");
+  }
+  if (key.status === "revoked" && !(allowForensicVerification && key.retain_for_forensic_verification)) {
+    blockedBy.push("proof_key_revoked");
+  }
+  if (!isValidTimestamp(key.created_at)) blockedBy.push("proof_key_created_at_invalid");
+  if (key.rotated_at !== undefined && !isValidTimestamp(key.rotated_at)) blockedBy.push("proof_key_rotated_at_invalid");
+  if (key.revoked_at !== undefined && !isValidTimestamp(key.revoked_at)) blockedBy.push("proof_key_revoked_at_invalid");
+  return blockedBy;
+}
+
 function parseTimestamp(value: string): number | undefined {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function isValidTimestamp(value: string): boolean {
+  return parseTimestamp(value) !== undefined;
 }
 
 function isSha256Hex(value: string): boolean {
