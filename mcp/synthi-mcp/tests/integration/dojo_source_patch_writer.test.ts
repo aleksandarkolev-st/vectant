@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -104,6 +104,47 @@ describe("Dojo source patch writer", () => {
     expect(result.ok).toBe(true);
     expect(result.written_files.every((file) => file.written === false)).toBe(true);
     await expect(access(path.join(workspaceRoot, "src/invoices/InvoiceForm.jsx"))).rejects.toThrow();
+  });
+
+  it("rejects stale source files instead of overwriting local changes", async () => {
+    const bundle = buildDojoGeneratedSourcePatchBundle({
+      plan: planFixture(),
+      files: [{ path: "src/invoices/InvoiceForm.jsx", source: invoiceFormSource() }],
+    });
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "dojo-source-patch-writer-"));
+    const targetPath = path.join(workspaceRoot, "src/invoices/InvoiceForm.jsx");
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, invoiceFormSource().replace("Save invoice", "Submit invoice"), "utf8");
+
+    const result = await writeDojoGeneratedSourcePatchBundle({ bundle, workspace_root: workspaceRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.written_files.map((file) => file.path)).not.toContain("src/invoices/InvoiceForm.jsx");
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issue_id: "source_patch_stale_source",
+        path: "src/invoices/InvoiceForm.jsx",
+      }),
+    ]));
+    await expect(readFile(targetPath, "utf8")).resolves.toContain("Submit invoice");
+  });
+
+  it("treats already-current source files as an idempotent no-op", async () => {
+    const bundle = buildDojoGeneratedSourcePatchBundle({
+      plan: planFixture(),
+      files: [{ path: "src/invoices/InvoiceForm.jsx", source: invoiceFormSource() }],
+    });
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "dojo-source-patch-writer-"));
+    const first = await writeDojoGeneratedSourcePatchBundle({ bundle, workspace_root: workspaceRoot });
+    expect(first.ok).toBe(true);
+
+    const second = await writeDojoGeneratedSourcePatchBundle({ bundle, workspace_root: workspaceRoot });
+
+    expect(second.ok).toBe(true);
+    expect(second.issues).toEqual([]);
+    expect(second.written_files.find((file) => file.path === "src/invoices/InvoiceForm.jsx")).toEqual(expect.objectContaining({
+      written: false,
+    }));
   });
 });
 

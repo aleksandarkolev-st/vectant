@@ -49,12 +49,14 @@ export async function writeDojoGeneratedSourcePatchBundle(input: {
       kind: "source" as const,
       path: file.path,
       source: file.source,
+      before_sha256: file.before_sha256,
       expected_sha256: file.after_sha256,
     })),
     ...input.bundle.generated_tests.map((file) => ({
       kind: "contract_test" as const,
       path: file.path,
       source: file.source,
+      before_sha256: undefined,
       expected_sha256: sha256(file.source),
     })),
   ];
@@ -82,8 +84,29 @@ export async function writeDojoGeneratedSourcePatchBundle(input: {
       issues.push(errorIssue("source_patch_artifact_hash_mismatch", `Patch artifact hash does not match bundle metadata for ${artifact.path}.`, artifact.path));
       continue;
     }
+    const existingSource = await readTextIfExists(safePath.absolute_path);
+    const existingHash = existingSource === null ? null : sha256(existingSource);
+    if (artifact.kind === "source" && existingHash && existingHash !== artifact.before_sha256 && existingHash !== artifact.expected_sha256) {
+      issues.push(errorIssue(
+        "source_patch_stale_source",
+        `Source file changed since the patch bundle was generated for ${artifact.path}; refusing to overwrite stale source.`,
+        artifact.path
+      ));
+      continue;
+    }
+    if (artifact.kind === "contract_test" && existingHash && existingHash !== artifact.expected_sha256) {
+      issues.push(errorIssue(
+        "source_patch_existing_artifact_conflict",
+        `Generated contract test path already exists with different content for ${artifact.path}; refusing to overwrite it.`,
+        artifact.path
+      ));
+      continue;
+    }
+    const alreadyCurrent = existingHash === artifact.expected_sha256;
     if (!input.dry_run) {
-      await atomicWriteText(safePath.absolute_path, artifact.source);
+      if (!alreadyCurrent) {
+        await atomicWriteText(safePath.absolute_path, artifact.source);
+      }
       const onDisk = await readFile(safePath.absolute_path, "utf8");
       const onDiskHash = sha256(onDisk);
       if (onDiskHash !== artifact.expected_sha256) {
@@ -97,7 +120,7 @@ export async function writeDojoGeneratedSourcePatchBundle(input: {
       absolute_path: safePath.absolute_path,
       sha256: artifact.expected_sha256,
       bytes: Buffer.byteLength(artifact.source, "utf8"),
-      written: !input.dry_run,
+      written: !input.dry_run && !alreadyCurrent,
     });
   }
 
@@ -125,6 +148,17 @@ async function atomicWriteText(targetPath: string, source: string): Promise<void
   const temporaryPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${randomUUID()}.tmp`);
   await writeFile(temporaryPath, source, "utf8");
   await rename(temporaryPath, targetPath);
+}
+
+async function readTextIfExists(targetPath: string): Promise<string | null> {
+  try {
+    return await readFile(targetPath, "utf8");
+  } catch (err) {
+    if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") {
+      return null;
+    }
+    throw err;
+  }
 }
 
 function resolveSafeBundlePath(root: string, value: string): {
