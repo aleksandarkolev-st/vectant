@@ -45,6 +45,12 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("api_tool_proof_validator_required")).toBe("proof_capsule_invalid");
     expect(normalizeDojoProofErrorCode("api_tool_graph_proof_required")).toBe("proof_capsule_invalid");
     expect(normalizeDojoProofErrorCode("api_tool_graph_proof_mismatch")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("dojo_mcp_proof_skill_mismatch")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("dojo_mcp_proof_skill_version_mismatch")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("dojo_mcp_proof_license_version_mismatch")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("dojo_mcp_proof_action_mismatch")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("dojo_mcp_skill_bus_proof_validator_unconfigured")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("dojo_mcp_proof_substrate_not_allowed")).toBe("substrate_not_allowed");
     expect(normalizeDojoProofErrorCode("api_tool_proof_evidence_claim_unverified:checkride_passed")).toBe("proof_evidence_claim_unverified");
     expect(normalizeDojoProofErrorCode("api_tool_proof_evidence_records_required")).toBe("proof_evidence_claim_unverified");
     expect(normalizeDojoProofErrorCode("api_tool_auth_scope_missing")).toBe("action_not_licensed");

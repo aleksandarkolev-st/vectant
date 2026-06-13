@@ -75,6 +75,11 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     reason === "api_tool_proof_license_version_mismatch" ||
     reason === "api_tool_proof_action_required" ||
     reason === "api_tool_proof_action_mismatch" ||
+    reason === "dojo_mcp_proof_skill_mismatch" ||
+    reason === "dojo_mcp_proof_skill_version_mismatch" ||
+    reason === "dojo_mcp_proof_license_version_mismatch" ||
+    reason === "dojo_mcp_proof_action_mismatch" ||
+    reason === "dojo_mcp_skill_bus_proof_validator_unconfigured" ||
     reason === "dojo_proof_capsule_invalid"
   ) {
     return "proof_capsule_invalid";
@@ -117,7 +122,11 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
   ) {
     return "action_not_licensed";
   }
-  if (reason.startsWith("substrate_not_allowed:") || reason === "substrate_not_allowed") return "substrate_not_allowed";
+  if (
+    reason.startsWith("substrate_not_allowed:") ||
+    reason === "substrate_not_allowed" ||
+    reason === "dojo_mcp_proof_substrate_not_allowed"
+  ) return "substrate_not_allowed";
   if (reason === "workspace_mismatch") return "workspace_mismatch";
   if (reason === "app_origin_mismatch" || reason === "app_origin_unparseable" || reason === "origin_mismatch") return "origin_mismatch";
   if (

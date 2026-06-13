@@ -242,10 +242,12 @@ describe("Dojo MCP skill bus", () => {
     });
     expect(issued.ok).toBe(true);
     const executions: string[] = [];
+    const auditEvents: DojoAuditEventRecord[] = [];
     const bus = createInProcessDojoMcpSkillBus({
       listSkills: () => [skill],
       env: manifestEnv(),
       proofService,
+      auditStore: memoryAuditStore(auditEvents),
       now: () => new Date("2026-06-11T00:02:00.000Z"),
       executeTool: ({ tool_name }) => {
         executions.push(tool_name);
@@ -282,13 +284,14 @@ describe("Dojo MCP skill bus", () => {
     }));
     expect(proofStore.getProofRecord(issued.proof_capsule!.capsule_id)?.status).toBe("used");
 
-    await expect(bus.dispatch({
+    const replay = await bus.dispatch({
       tenant: caller,
       tool_name: skill.published_tool_name!,
       requested_action: "run_workflow",
       args: {},
       proof_capsule: issued.proof_capsule,
-    })).resolves.toEqual(expect.objectContaining({
+    });
+    expect(replay).toEqual(expect.objectContaining({
       ok: false,
       blocked_by: ["proof_capsule_replay_detected"],
       validation: expect.objectContaining({
@@ -297,6 +300,43 @@ describe("Dojo MCP skill bus", () => {
       }),
     }));
     expect(executions).toEqual([skill.published_tool_name]);
+    expect(auditEvents).toEqual([
+      expect.objectContaining({
+        audit_event_id: "audit-1",
+        event_type: "mcp_tool_invocation_allowed",
+        details: expect.objectContaining({
+          proof_validation: expect.objectContaining({ ok: true, status: "allowed" }),
+        }),
+      }),
+      expect.objectContaining({
+        audit_event_id: "audit-2",
+        event_type: "mcp_tool_invocation_allowed",
+        details: expect.objectContaining({
+          proof_capsule_id: issued.proof_capsule!.capsule_id,
+          proof_validation: expect.objectContaining({ ok: true, status: "allowed" }),
+          proof_consume: expect.objectContaining({
+            ok: true,
+            status: "used",
+            blocked_by: [],
+            capsule_id: issued.proof_capsule!.capsule_id,
+            first_used_at: "2026-06-11T00:02:00.000Z",
+          }),
+        }),
+      }),
+      expect.objectContaining({
+        audit_event_id: "audit-3",
+        event_type: "mcp_tool_invocation_blocked",
+        details: expect.objectContaining({
+          blocked_by: ["proof_capsule_replay_detected"],
+          proof_validation: expect.objectContaining({
+            ok: false,
+            status: "blocked",
+            blocked_by: ["proof_capsule_replay_detected"],
+            error_codes: ["proof_capsule_replay_detected"],
+          }),
+        }),
+      }),
+    ]);
   });
 
   it("requires proof from full manifest constraints even when passport metadata is stale", async () => {

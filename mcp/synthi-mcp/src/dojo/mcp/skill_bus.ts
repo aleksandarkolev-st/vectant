@@ -461,6 +461,8 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
         status: result.status,
         blocked_by: [...result.blocked_by],
         proof_capsule_id: input.proof_capsule?.capsule_id,
+        proof_validation: result.validation ? summarizeProofValidation(result.validation) : undefined,
+        proof_consume: result.proof_consume ? summarizeProofConsumeResult(result.proof_consume) : undefined,
         manifest_id: result.resolution?.mcp_skill_manifest?.manifest_id,
         rate_limit: result.rate_limit ? summarizeRateLimitDecision(result.rate_limit) : undefined,
       },
@@ -695,6 +697,25 @@ function summarizeRateLimitDecision(decision: DojoMcpSkillBusRateLimitDecision):
     ...(typeof decision.limit === "number" ? { limit: decision.limit } : {}),
     ...(typeof decision.remaining === "number" ? { remaining: decision.remaining } : {}),
     ...(typeof decision.retry_after_ms === "number" ? { retry_after_ms: decision.retry_after_ms } : {}),
+  };
+}
+
+function summarizeProofValidation(validation: DojoSkillBusProofValidation): Record<string, unknown> {
+  return {
+    ok: validation.ok,
+    status: validation.status,
+    blocked_by: [...validation.blocked_by],
+    error_codes: validation.error_codes ? [...validation.error_codes] : undefined,
+  };
+}
+
+function summarizeProofConsumeResult(result: DojoProofConsumeResult): Record<string, unknown> {
+  return {
+    ok: result.ok,
+    status: result.status,
+    blocked_by: [...result.blocked_by],
+    capsule_id: result.record?.capsule_id,
+    first_used_at: result.record?.first_used_at,
   };
 }
 
