@@ -1,0 +1,252 @@
+import { describe, expect, it } from "vitest";
+import { buildDojoSkill } from "../../src/browser/dojo.js";
+import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
+import { compileWorkflowContract } from "../../src/browser/workflow.js";
+import type { BrowserTraceEvent } from "../../src/browser/types.js";
+import {
+  createDojoProofCapsuleService,
+  type DojoProofRecordStore,
+} from "../../src/dojo/proof/capsule_service.js";
+import type { DojoTenantContext } from "../../src/dojo/mcp/execution_policy_gate.js";
+import { dojoEvidenceRecordForProof, verifiedProofEvidenceInput } from "./dojo_test_fixtures.js";
+
+describe("Dojo proof capsule service", () => {
+  it("issues verified capsules, validates without consuming on dry run, and consumes exactly once", async () => {
+    const skill = skillFixture();
+    const tenant = tenantFixture(skill.workspace_id);
+    const store = new InMemoryDojoSkillStore();
+    const service = createDojoProofCapsuleService({ proof_store: store });
+
+    const issued = await service.issue({
+      tenant,
+      skill,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill, { tenant_id: tenant.tenant_id }),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+
+    expect(issued).toEqual(expect.objectContaining({
+      ok: true,
+      blocked_by: [],
+      validation: expect.objectContaining({ ok: true, status: "allowed" }),
+      proof_record: expect.objectContaining({
+        tenant_id: tenant.tenant_id,
+        workspace_id: tenant.workspace_id,
+        status: "issued",
+      }),
+    }));
+    expect(issued.proof_capsule?.evidence_record_ids).toHaveLength(1);
+    expect(issued.evidence_claim_results.every((result) => result.ok)).toBe(true);
+
+    const capsuleId = issued.proof_capsule!.capsule_id;
+    const dryValidation = await service.validate({
+      tenant,
+      skill,
+      proof_capsule: issued.proof_capsule!,
+      requested_action: "run_workflow",
+      dry_run: true,
+      validation_options: { now: "2026-06-11T00:01:00.000Z" },
+    });
+
+    expect(dryValidation).toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: true,
+      validation: expect.objectContaining({ ok: true, status: "allowed" }),
+    }));
+    expect(store.getProofRecord(capsuleId)?.last_validated_at).toBeUndefined();
+
+    const realValidation = await service.validate({
+      tenant,
+      skill,
+      proof_capsule: issued.proof_capsule!,
+      requested_action: "run_workflow",
+      validation_options: { now: "2026-06-11T00:02:00.000Z" },
+    });
+    expect(realValidation.proof_record).toEqual(expect.objectContaining({
+      capsule_id: capsuleId,
+      last_validated_at: "2026-06-11T00:02:00.000Z",
+    }));
+
+    const firstConsume = await service.consume({
+      tenant,
+      capsule_id: capsuleId,
+      run_id: "run-a",
+      now: "2026-06-11T00:03:00.000Z",
+    });
+    expect(firstConsume).toEqual(expect.objectContaining({
+      ok: true,
+      status: "used",
+      blocked_by: [],
+    }));
+
+    const replay = await service.consume({
+      tenant,
+      capsule_id: capsuleId,
+      run_id: "run-b",
+      now: "2026-06-11T00:04:00.000Z",
+    });
+    expect(replay).toEqual(expect.objectContaining({
+      ok: false,
+      status: "already_used",
+      blocked_by: ["proof_capsule_replay_detected"],
+    }));
+
+    const replayValidation = await service.validate({
+      tenant,
+      skill,
+      proof_capsule: issued.proof_capsule!,
+      requested_action: "run_workflow",
+      dry_run: true,
+      validation_options: { now: "2026-06-11T00:05:00.000Z" },
+    });
+    expect(replayValidation).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["proof_capsule_replay_detected"],
+      validation: expect.objectContaining({
+        error_codes: ["proof_capsule_replay_detected"],
+      }),
+    }));
+  });
+
+  it("returns a failed issue result and does not persist proof records when evidence is incomplete", async () => {
+    const skill = skillFixture();
+    const tenant = tenantFixture(skill.workspace_id);
+    const store = new InMemoryDojoSkillStore();
+    const service = createDojoProofCapsuleService({ proof_store: store });
+    const firstClaim = skill.permission_license.proof_requirements.required_evidence_claims[0]!;
+
+    const result = await service.issue({
+      tenant,
+      skill,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: [
+        dojoEvidenceRecordForProof(skill, {
+          record_id: "evidence-incomplete",
+          tenant_id: tenant.tenant_id,
+          claim_ids: [firstClaim],
+        }),
+      ],
+      require_verified_evidence: true,
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: expect.arrayContaining([expect.stringMatching(/^evidence_claim_missing:/)]),
+      validation: expect.objectContaining({
+        ok: false,
+        error_codes: ["proof_evidence_claim_unverified"],
+      }),
+    }));
+    expect(result.proof_capsule).toBeUndefined();
+    expect(result.evidence_claim_results.some((claim) => !claim.ok)).toBe(true);
+    expect(store.listProofRecords()).toEqual([]);
+  });
+
+  it("fails closed when consumption is requested without a proof store", async () => {
+    const service = createDojoProofCapsuleService();
+
+    await expect(service.consume({
+      tenant: tenantFixture("workspace-a"),
+      capsule_id: "capsule-a",
+      run_id: "run-a",
+      now: "2026-06-11T00:00:00.000Z",
+    })).resolves.toEqual({
+      ok: false,
+      record: null,
+      status: "missing",
+      blocked_by: ["proof_capsule_store_missing"],
+    });
+  });
+
+  it("supports maybe-promise proof stores for durable Postgres-compatible implementations", async () => {
+    const skill = skillFixture();
+    const tenant = tenantFixture(skill.workspace_id);
+    const backing = new InMemoryDojoSkillStore();
+    const asyncStore: DojoProofRecordStore = {
+      async saveProofRecord(record) {
+        backing.saveProofRecord(record);
+        return backing.getProofRecord(record.capsule_id);
+      },
+      async getProofRecord(capsuleId) {
+        return backing.getProofRecord(capsuleId);
+      },
+      async markProofCapsuleValidated(capsuleId, now) {
+        return backing.markProofCapsuleValidated(capsuleId, now);
+      },
+      async markProofCapsuleUsed(capsuleId, runId, now) {
+        return backing.markProofCapsuleUsed(capsuleId, runId, now);
+      },
+    };
+    const service = createDojoProofCapsuleService({ proof_store: asyncStore });
+
+    const issued = await service.issue({
+      tenant,
+      skill,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill, { tenant_id: tenant.tenant_id }),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+
+    expect(issued.ok).toBe(true);
+    expect(issued.proof_record).toEqual(expect.objectContaining({
+      capsule_id: issued.proof_capsule?.capsule_id,
+      status: "issued",
+    }));
+  });
+});
+
+function skillFixture() {
+  return buildDojoSkill(compileWorkflowContract([
+    event({
+      event_id: "open",
+      action: "click",
+      detail: { element: { role: "button", name: "Open details", source_id: "details.open" } },
+      locator_candidates: [
+        { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
+      ],
+    }),
+  ]).contract, {
+    workspace_id: "workspace-a",
+    now: "2026-06-11T00:00:00.000Z",
+  });
+}
+
+function tenantFixture(workspaceId: string): DojoTenantContext {
+  return {
+    tenant_id: "tenant-a",
+    organization_id: "org-a",
+    workspace_id: workspaceId,
+    actor_id: "agent-a",
+    actor_type: "agent",
+    roles: ["dojo.operator"],
+    request_id: "request-a",
+    correlation_id: "correlation-a",
+  };
+}
+
+function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {
+  return {
+    event_id: "evt",
+    trace_id: "trace",
+    trace_version: 1,
+    event_seq: 1,
+    ts: 1,
+    tab_id: "tab",
+    origin: "https://app.example.test",
+    url: "https://app.example.test/settings",
+    kind: "human_action",
+    action: "click",
+    target: "button",
+    selectors: [],
+    locator_candidates: [],
+    confidence: 0.99,
+    ...overrides,
+  };
+}

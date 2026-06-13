@@ -61,6 +61,10 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
   if (reason.startsWith("missing_context_claim:") || reason === "runtime_workspace_not_verified") return "proof_context_claim_unverified";
   if (
     reason.startsWith("missing_evidence_claim:") ||
+    reason.startsWith("evidence_claim_missing:") ||
+    reason.startsWith("evidence_claim_scope_mismatch:") ||
+    reason.startsWith("evidence_claim_stale:") ||
+    reason.startsWith("evidence_claim_unverified:") ||
     reason.startsWith("evidence_claim_refs_missing:") ||
     reason.startsWith("evidence_claim_record_ref_missing:") ||
     reason.startsWith("evidence_claim_ref_invalid:") ||
