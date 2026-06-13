@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "./dojo-compliance-export-self-check.mjs";
 import { DOJO_CHAOS_SCENARIOS } from "./dojo-chaos-performance-self-check.mjs";
+import { DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES } from "./dojo-postgres-control-plane-self-check.mjs";
 import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "./dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "./dojo-security-abuse-self-check.mjs";
 
@@ -172,6 +173,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     artifact_requirements: {
       require_postgres_url: true,
       require_all_control_plane_capabilities_covered: true,
+      required_control_plane_capabilities: [...DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES],
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -694,6 +696,14 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!postgresControlPlaneGate.artifact_requirements?.require_all_control_plane_capabilities_covered) {
       errors.push("postgres_control_plane_missing_capability_requirement");
+    }
+    const requiredPostgresCapabilities = Array.isArray(postgresControlPlaneGate.artifact_requirements?.required_control_plane_capabilities)
+      ? postgresControlPlaneGate.artifact_requirements.required_control_plane_capabilities
+      : [];
+    const missingPostgresCapabilities = DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES
+      .filter((capability) => !requiredPostgresCapabilities.includes(capability));
+    if (missingPostgresCapabilities.length > 0) {
+      errors.push(`postgres_control_plane_missing_required_capabilities:${missingPostgresCapabilities.join(",")}`);
     }
     if (!postgresControlPlaneGate.artifact_requirements?.require_json_report_digest_match) {
       errors.push("postgres_control_plane_missing_json_report_digest_requirement");

@@ -12,6 +12,7 @@ import {
 } from "../../scripts/dojo-release-gate-manifest.mjs";
 import { DOJO_CHAOS_SCENARIOS } from "../../scripts/dojo-chaos-performance-self-check.mjs";
 import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "../../scripts/dojo-compliance-export-self-check.mjs";
+import { DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES } from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
 import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "../../scripts/dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "../../scripts/dojo-security-abuse-self-check.mjs";
 
@@ -104,6 +105,7 @@ describe("Dojo release gate manifest", () => {
         artifact_requirements: expect.objectContaining({
           require_postgres_url: true,
           require_all_control_plane_capabilities_covered: true,
+          required_control_plane_capabilities: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -312,6 +314,14 @@ describe("Dojo release gate manifest", () => {
     }).errors).toEqual(expect.arrayContaining([
       "missing_package_script:mcp/synthi-mcp/package.json:typecheck",
       "missing_package_script:mcp/synthi-mcp/package.json:proof:dojo:self-check",
+    ]));
+
+    const brokenPostgres = JSON.parse(JSON.stringify(manifest));
+    const postgresGate = brokenPostgres.gates.find((gate) => gate.id === "dojo_postgres_control_plane_self_check");
+    postgresGate.artifact_requirements.required_control_plane_capabilities = DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES
+      .filter((capability) => capability !== "atomic_proof_consume");
+    expect(validateDojoReleaseGateManifest(brokenPostgres, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "postgres_control_plane_missing_required_capabilities:atomic_proof_consume",
     ]));
 
     const brokenSecurity = JSON.parse(JSON.stringify(manifest));

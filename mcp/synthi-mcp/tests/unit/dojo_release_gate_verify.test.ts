@@ -15,6 +15,7 @@ import {
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
 import { DOJO_CHAOS_SCENARIOS } from "../../scripts/dojo-chaos-performance-self-check.mjs";
 import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "../../scripts/dojo-compliance-export-self-check.mjs";
+import { DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES } from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
 import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "../../scripts/dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "../../scripts/dojo-security-abuse-self-check.mjs";
 import {
@@ -192,6 +193,24 @@ describe("Dojo release gate artifact verifier", () => {
       "postgres_control_plane_missing_capabilities:atomic_proof_consume",
       "postgres_control_plane_budget_not_ok",
       "postgres_control_plane_pending_tests:1",
+    ]));
+
+    const driftedPath = await writePostgresControlPlaneEvidenceFixture({
+      dir,
+      basename: "dojo-postgres-control-plane-drifted",
+      evidence: postgresControlPlaneEvidenceFixture({
+        configured_capabilities: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES
+          .filter((capability) => capability !== "atomic_proof_consume"),
+        tested_capabilities: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES
+          .filter((capability) => capability !== "atomic_proof_consume"),
+        capability_count: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES.length - 1,
+      }),
+    });
+    const drifted = await verifyDojoPostgresControlPlaneEvidenceArtifact({ evidencePath: driftedPath });
+    expect(drifted.errors).toEqual(expect.arrayContaining([
+      "postgres_control_plane_required_capabilities_missing:atomic_proof_consume",
+      "postgres_control_plane_required_capabilities_untested:atomic_proof_consume",
     ]));
   });
 
@@ -1459,6 +1478,10 @@ function postgresControlPlaneEvidenceFixture(overrides = {}) {
       password_configured: true,
       password_redacted: true,
     },
+    configured_capabilities: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
+    tested_capabilities: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
+    capability_count: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES.length,
+    configured_capability_count: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES.length,
     capability_coverage_complete: true,
     missing_capabilities: [],
     budget_evaluation: { ok: true },

@@ -24,6 +24,7 @@ import {
 } from "./dojo-mcp-host-conformance.mjs";
 import { DOJO_CHAOS_SCENARIOS } from "./dojo-chaos-performance-self-check.mjs";
 import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "./dojo-compliance-export-self-check.mjs";
+import { DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES } from "./dojo-postgres-control-plane-self-check.mjs";
 import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "./dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "./dojo-security-abuse-self-check.mjs";
 
@@ -402,6 +403,12 @@ export async function verifyDojoPostgresControlPlaneEvidenceArtifact({ evidenceP
 
 export function validateDojoPostgresControlPlaneEvidenceForMilestone(evidence) {
   const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
   if (evidence?.schema_version !== "synthi.dojo.postgresControlPlaneEvidence.v1") {
     errors.push(`postgres_control_plane_schema_mismatch:${evidence?.schema_version || "missing"}`);
   }
@@ -415,6 +422,22 @@ export function validateDojoPostgresControlPlaneEvidenceForMilestone(evidence) {
   if (evidence?.capability_coverage_complete !== true) errors.push("postgres_control_plane_capability_coverage_incomplete");
   if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
     errors.push(`postgres_control_plane_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`postgres_control_plane_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  const untestedRequiredCapabilities = DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`postgres_control_plane_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`postgres_control_plane_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`postgres_control_plane_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("postgres_control_plane_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -2233,27 +2256,11 @@ async function writePostgresControlPlaneEvidenceForSelfCheck({
       password_redacted: true,
     },
     env_requirements: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
-    configured_capabilities: [
-      "durable_proof_store",
-      "atomic_proof_consume",
-      "concurrent_replay_prevention",
-      "tenant_isolation",
-      "evidence_ledger_append_verify",
-      "evidence_tamper_detection",
-      "audit_event_repository",
-      "postgres_evidence_proof_issuance",
-    ],
-    tested_capabilities: [
-      "durable_proof_store",
-      "atomic_proof_consume",
-      "concurrent_replay_prevention",
-      "tenant_isolation",
-      "evidence_ledger_append_verify",
-      "evidence_tamper_detection",
-      "audit_event_repository",
-      "postgres_evidence_proof_issuance",
-    ],
+    configured_capabilities: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
+    tested_capabilities: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
     missing_capabilities: [],
+    capability_count: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES.length,
+    configured_capability_count: DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES.length,
     capability_coverage_complete: true,
     test_files: [
       "tests/integration/dojo_postgres_proof_store.test.ts",
