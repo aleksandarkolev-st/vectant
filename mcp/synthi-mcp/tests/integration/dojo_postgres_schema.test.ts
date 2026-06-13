@@ -53,6 +53,22 @@ describe("Dojo Postgres schema migration", () => {
     );
   });
 
+  it("defines tenant-scoped proof key custody for public verification and rotation", () => {
+    const proofKeys = normalizedStatements()["dojo_proof_keys"];
+    const sql = normalizedSql(dojoPostgresMigrationSql());
+
+    expect(proofKeys).toContain("tenant_id text not null references dojo_tenants(tenant_id) on delete restrict");
+    expect(proofKeys).toContain("primary key (tenant_id, key_id)");
+    expect(proofKeys).toContain("issuer text not null");
+    expect(proofKeys).toContain("public_key_pem text not null");
+    expect(proofKeys).toContain("retain_for_forensic_verification boolean not null default false");
+    expect(proofKeys).toContain("check (algorithm in ('ed25519', 'hmac-sha256'))");
+    expect(proofKeys).toContain("check (status in ('active', 'retired', 'revoked'))");
+    expect(proofKeys).toContain("check (jsonb_typeof(key_json) = 'object')");
+    expect(sql).toContain("create index if not exists dojo_proof_keys_active_idx");
+    expect(sql).toContain("create index if not exists dojo_proof_keys_status_idx");
+  });
+
   it("requires audit actor and correlation context", () => {
     const auditEvents = normalizedStatements()["dojo_audit_events"];
 

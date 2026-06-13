@@ -80,6 +80,7 @@ function postgresVitestReportFixture() {
   const fileTitles = [
     [
       "Dojo Postgres schema migration emits repeat-safe DDL for each required foundation table",
+      "Dojo Postgres schema migration defines tenant-scoped proof key custody for public verification and rotation",
       "Dojo Postgres schema migration defines release-scoped source snapshot custody",
       "Dojo Postgres schema migration defines graph, node-memory, and license-version registries",
       "Dojo Postgres schema migration defines executable checkride and scenario run registries",
@@ -91,6 +92,12 @@ function postgresVitestReportFixture() {
       "PostgresDojoProofStore atomically consumes an issued proof exactly once",
       "PostgresDojoProofStore allows only one winner during concurrent proof consume",
       "PostgresDojoProofStore prevents cross-tenant proof reads",
+    ],
+    [
+      "PostgresDojoProofKeyRegistry persists keys, selects the newest active key, and resolves a public verifier",
+      "PostgresDojoProofKeyRegistry retires rotated keys, blocks revoked keys, and allows explicit forensic verification",
+      "PostgresDojoProofKeyRegistry prevents cross-tenant reads and rejects mismatched writes",
+      "PostgresDojoProofKeyRegistry emits audit events for key custody writes when an audit store is supplied",
     ],
     [
       "PostgresDojoEvidenceLedgerStore appends evidence records, advances checkpoints, and verifies the chain",

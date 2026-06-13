@@ -24,6 +24,7 @@ const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 export const DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES = [
   "tests/integration/dojo_postgres_schema.test.ts",
   "tests/integration/dojo_postgres_proof_store.test.ts",
+  "tests/integration/dojo_postgres_proof_key_registry.test.ts",
   "tests/integration/dojo_evidence_ledger_store.test.ts",
   "tests/integration/dojo_audit_store.test.ts",
   "tests/integration/dojo_postgres_skill_store.test.ts",
@@ -44,6 +45,8 @@ export const DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES = [
   "durable_proof_store",
   "atomic_proof_consume",
   "concurrent_replay_prevention",
+  "proof_key_registry",
+  "proof_key_rotation_custody",
   "tenant_isolation",
   "maturity_control_plane_schema",
   "source_snapshot_registry_schema",
@@ -339,6 +342,14 @@ function capabilityMatchers(capability) {
     durable_proof_store: ["persists reads lists and revokes proof records", "postgresdojoproofstore persists"],
     atomic_proof_consume: ["atomically consumes an issued proof exactly once"],
     concurrent_replay_prevention: ["allows only one winner during concurrent proof consume"],
+    proof_key_registry: [
+      "postgresdojoproofkeyregistry persists keys selects the newest active key and resolves a public verifier",
+      "postgresdojoproofkeyregistry prevents cross tenant reads and rejects mismatched writes",
+    ],
+    proof_key_rotation_custody: [
+      "postgresdojoproofkeyregistry retires rotated keys blocks revoked keys and allows explicit forensic verification",
+      "postgresdojoproofkeyregistry emits audit events for key custody writes when an audit store is supplied",
+    ],
     tenant_isolation: ["prevents cross tenant proof reads", "isolates ledger reads by tenant"],
     maturity_control_plane_schema: ["emits repeat safe ddl for each required foundation table"],
     source_snapshot_registry_schema: ["defines release scoped source snapshot custody"],

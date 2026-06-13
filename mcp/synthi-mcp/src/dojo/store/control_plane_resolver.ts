@@ -17,6 +17,7 @@ import {
   type DojoPostgresConnectable,
   type DojoPostgresQueryable,
 } from "./postgres_proof_store.js";
+import { PostgresDojoProofKeyRegistry } from "./postgres_proof_key_registry.js";
 import { PostgresDojoSkillStore } from "./postgres_skill_store.js";
 
 export interface DojoControlPlaneStoreResolutionOptions {
@@ -39,6 +40,7 @@ export type DojoControlPlaneStoreResolution =
     skill_store: PostgresDojoSkillStore;
     license_store: PostgresDojoLicenseStore;
     proof_store: PostgresDojoProofStore;
+    proof_key_registry: PostgresDojoProofKeyRegistry;
     governance_store: PostgresDojoGovernanceStore;
     ghost_shadow_evidence_store: PostgresDojoGhostShadowEvidenceStore;
     graph_run_store: PostgresDojoGraphRunStore;
@@ -128,6 +130,7 @@ export async function createDojoControlPlaneStoresFromEnv(
     skill_store: new PostgresDojoSkillStore(baseStoreOptions),
     license_store: new PostgresDojoLicenseStore(baseStoreOptions),
     proof_store: new PostgresDojoProofStore(baseStoreOptions),
+    proof_key_registry: new PostgresDojoProofKeyRegistry(baseStoreOptions),
     governance_store: new PostgresDojoGovernanceStore(baseStoreOptions),
     ghost_shadow_evidence_store: new PostgresDojoGhostShadowEvidenceStore(baseStoreOptions),
     graph_run_store: new PostgresDojoGraphRunStore(baseStoreOptions),
