@@ -54,6 +54,12 @@ export const DOJO_DOCKER_REQUIRED_ENDPOINTS = [
   },
 ];
 
+export const DOJO_DOCKER_DEFAULT_COMPOSE_ENV = {
+  NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "1",
+  AI_ENGINE_HOST_PORT: "8081",
+  POSTGRES_HOST_PORT: "15432",
+};
+
 const args = parseArgs(process.argv.slice(2));
 
 if (isDirectRun()) {
@@ -83,6 +89,7 @@ export async function runDojoDockerIntegrationSelfCheck({
   assert.equal(existsSync(composePath), true, `missing docker compose file: ${composePath}`);
 
   const skipUp = truthy(checkOnly) || truthy(args["check-only"]) || truthy(env.SYNTHI_DOJO_DOCKER_SKIP_UP);
+  const composeEnv = dojoDockerComposeEnv(env);
   const startedAt = performance.now();
   const stdoutChunks = [];
   const stderrChunks = [];
@@ -91,7 +98,7 @@ export async function runDojoDockerIntegrationSelfCheck({
   if (!skipUp) {
     upResult = spawnDocker(["compose", "up", "-d", "--build", "--force-recreate"], {
       timeoutMs,
-      env,
+      env: composeEnv,
     });
     stdoutChunks.push(sectionLog("docker compose up", upResult.stdout));
     stderrChunks.push(sectionLog("docker compose up", upResult.stderr));
@@ -99,14 +106,14 @@ export async function runDojoDockerIntegrationSelfCheck({
 
   const psResult = spawnDocker(["compose", "ps", "--format", "json"], {
     timeoutMs: 60000,
-    env,
+    env: composeEnv,
   });
   stdoutChunks.push(sectionLog("docker compose ps", psResult.stdout));
   stderrChunks.push(sectionLog("docker compose ps", psResult.stderr));
 
   const configServicesResult = spawnDocker(["compose", "config", "--services"], {
     timeoutMs: 60000,
-    env,
+    env: composeEnv,
   });
   stdoutChunks.push(sectionLog("docker compose config --services", configServicesResult.stdout));
   stderrChunks.push(sectionLog("docker compose config --services", configServicesResult.stderr));
@@ -117,7 +124,7 @@ export async function runDojoDockerIntegrationSelfCheck({
   for (const endpoint of DOJO_DOCKER_REQUIRED_ENDPOINTS) {
     endpointChecks.push(await checkEndpoint({
       endpoint,
-      env,
+      env: composeEnv,
       timeoutMs: endpointTimeoutMs,
     }));
   }
@@ -153,6 +160,7 @@ export async function runDojoDockerIntegrationSelfCheck({
     generated_at: now,
     compose_file: "docker-compose.yml",
     command_evaluation: commandEvaluation,
+    compose_env: summarizeDockerComposeEnv(composeEnv, env),
     configured_services: configuredServices,
     service_rows: serviceRows,
     service_evaluation: serviceEvaluation,
@@ -173,6 +181,7 @@ export async function runDojoDockerIntegrationSelfCheck({
     commandEvaluation,
     serviceEvaluation,
     endpointChecks,
+    composeEnvSummary: summarizeDockerComposeEnv(composeEnv, env),
     reportPath,
     reportText,
     stdoutPath,
@@ -208,6 +217,7 @@ export function buildDojoDockerIntegrationEvidenceManifest({
   commandEvaluation,
   serviceEvaluation,
   endpointChecks,
+  composeEnvSummary,
   reportPath,
   reportText,
   stdoutPath,
@@ -249,6 +259,7 @@ export function buildDojoDockerIntegrationEvidenceManifest({
     endpoint_count: endpointChecks.length,
     endpoint_ok_count: endpointChecks.filter((check) => check.ok).length,
     command_evaluation: commandEvaluation,
+    compose_env: composeEnvSummary,
     service_evaluation: serviceEvaluation,
     budget_evaluation: budgetEvaluation,
     report_path: reportPath,
@@ -403,6 +414,26 @@ function spawnDocker(args, { timeoutMs, env }) {
     timeout: timeoutMs,
     windowsHide: true,
   });
+}
+
+export function dojoDockerComposeEnv(env = process.env) {
+  const resolved = { ...env };
+  for (const [key, value] of Object.entries(DOJO_DOCKER_DEFAULT_COMPOSE_ENV)) {
+    if (!String(resolved[key] ?? "").trim()) resolved[key] = value;
+  }
+  return resolved;
+}
+
+function summarizeDockerComposeEnv(composeEnv, originalEnv) {
+  return Object.fromEntries(
+    Object.keys(DOJO_DOCKER_DEFAULT_COMPOSE_ENV).map((key) => [
+      key,
+      {
+        value: String(composeEnv[key] ?? ""),
+        default_applied: !String(originalEnv[key] ?? "").trim(),
+      },
+    ])
+  );
 }
 
 function parseComposeServices(stdout) {

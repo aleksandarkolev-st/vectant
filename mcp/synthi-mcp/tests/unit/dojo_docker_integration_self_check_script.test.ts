@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   buildDojoDockerIntegrationEvidenceManifest,
+  dojoDockerComposeEnv,
+  DOJO_DOCKER_DEFAULT_COMPOSE_ENV,
   DOJO_DOCKER_REQUIRED_SERVICES,
   evaluateDockerServices,
   parseDockerComposePsJson,
@@ -49,6 +51,19 @@ describe("Dojo Docker integration self-check script", () => {
     expect(broken.unhealthy_services).toEqual(["postgres"]);
   });
 
+  it("uses documented local Docker defaults while preserving explicit caller overrides", () => {
+    expect(dojoDockerComposeEnv({})).toEqual(expect.objectContaining(DOJO_DOCKER_DEFAULT_COMPOSE_ENV));
+    expect(dojoDockerComposeEnv({
+      NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "0",
+      AI_ENGINE_HOST_PORT: "18081",
+      POSTGRES_HOST_PORT: "15433",
+    })).toEqual(expect.objectContaining({
+      NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "0",
+      AI_ENGINE_HOST_PORT: "18081",
+      POSTGRES_HOST_PORT: "15433",
+    }));
+  });
+
   it("builds digest-backed evidence and fails budget when endpoint checks fail", () => {
     const reportText = JSON.stringify({ ok: true });
     const stdout = "compose up ok\n";
@@ -79,6 +94,11 @@ describe("Dojo Docker integration self-check script", () => {
         { id: "frontend_workspace", url: "http://127.0.0.1:3000/workspace", expected_status: 200, status: 200, ok: true, duration_ms: 5, error: null },
         { id: "collab_ports", url: "http://127.0.0.1:1234/ports", expected_status: 200, status: 503, ok: false, duration_ms: 5, error: null },
       ],
+      composeEnvSummary: {
+        NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: { value: "1", default_applied: true },
+        AI_ENGINE_HOST_PORT: { value: "8081", default_applied: true },
+        POSTGRES_HOST_PORT: { value: "15432", default_applied: true },
+      },
       reportPath: "tmp/report.json",
       reportText,
       stdoutPath: "tmp/stdout.log",
