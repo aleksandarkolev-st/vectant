@@ -15,6 +15,7 @@ export const DOJO_RUNTIME_SCOPE_VALUES = [
   "control_plane_write",
   "proof_validation",
   "proof_gated_dispatch",
+  "hosted_runtime_gateway",
   "synthetic_fixture_runtime",
   "non_mutating_shadow",
 ] as const;
@@ -104,7 +105,8 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_issue_proof_capsule: proofExecutable("Issues and stores a proof capsule using current context and evidence-claim checks; Ed25519 local and external command signing are supported when configured."),
   synthi_dojo_validate_proof_capsule: executable("Validates proof capsule signature, registry status, action scope, expiry, and replay state."),
   synthi_dojo_revoke_proof_capsule: executable("Revokes a stored proof capsule record."),
-  synthi_dojo_run_with_proof_capsule: proofGatedDispatch("Runs the proof-gated Dojo dispatch path and blocks replay through current proof records; hosted runtime gateway wiring is still required before this is mature production runtime execution."),
+  synthi_dojo_create_hosted_runtime_session: hostedRuntimeGateway("Creates a tenant-scoped hosted runtime session with short-lived credentials for production proof-gated Dojo execution."),
+  synthi_dojo_run_with_proof_capsule: proofGatedDispatch("Runs the proof-gated Dojo dispatch path, blocks replay through current proof records, and requires hosted runtime session authorization before production proof consumption."),
 };
 
 export const DOJO_REPORT_IMPLEMENTATION_STATUS: Record<string, DojoImplementationMetadata> = {
@@ -320,7 +322,24 @@ function proofGatedDispatch(summary: string): DojoImplementationMetadata {
     simulation_backing: "none",
     summary,
     maturity_blockers: [
-      "hosted_runtime_gateway_not_on_execution_path",
+      "deployed_hosted_runtime_gateway_required_for_production_release",
+      "deployed_mcp_host_conformance_required",
+      "not_yet_proven_in_deployed_non_loopback_host",
+    ],
+  };
+}
+
+function hostedRuntimeGateway(summary: string): DojoImplementationMetadata {
+  return {
+    implementation_status: "executable",
+    runtime_enforced: true,
+    runtime_scope: "hosted_runtime_gateway",
+    production_runtime: false,
+    evidence_backing: "runtime_validation",
+    simulation_backing: "none",
+    summary,
+    maturity_blockers: [
+      "in_process_session_store_until_hosted_gateway_configured",
       "deployed_mcp_host_conformance_required",
       "not_yet_proven_in_deployed_non_loopback_host",
     ],

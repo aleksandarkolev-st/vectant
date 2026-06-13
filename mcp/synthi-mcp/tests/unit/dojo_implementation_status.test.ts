@@ -27,6 +27,7 @@ describe("Dojo implementation status registry", () => {
       "control_plane_write",
       "proof_validation",
       "proof_gated_dispatch",
+      "hosted_runtime_gateway",
       "synthetic_fixture_runtime",
       "non_mutating_shadow",
     ]);
@@ -103,7 +104,7 @@ describe("Dojo implementation status registry", () => {
     );
   });
 
-  it("marks the current proof-gated execution path as dispatch-gated, not mature production runtime", () => {
+  it("marks the current proof-gated execution path as dispatch-gated with hosted runtime authorization", () => {
     expect(getDojoToolImplementationMetadata("synthi_dojo_run_with_proof_capsule")).toEqual(
       expect.objectContaining({
         implementation_status: "executable",
@@ -111,7 +112,17 @@ describe("Dojo implementation status registry", () => {
         runtime_scope: "proof_gated_dispatch",
         production_runtime: false,
         evidence_backing: "runtime_validation",
-        maturity_blockers: expect.arrayContaining(["hosted_runtime_gateway_not_on_execution_path"]),
+        maturity_blockers: expect.arrayContaining(["deployed_hosted_runtime_gateway_required_for_production_release"]),
+      })
+    );
+    expect(getDojoToolImplementationMetadata("synthi_dojo_create_hosted_runtime_session")).toEqual(
+      expect.objectContaining({
+        implementation_status: "executable",
+        runtime_enforced: true,
+        runtime_scope: "hosted_runtime_gateway",
+        production_runtime: false,
+        evidence_backing: "runtime_validation",
+        maturity_blockers: expect.arrayContaining(["in_process_session_store_until_hosted_gateway_configured"]),
       })
     );
   });

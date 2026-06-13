@@ -47,9 +47,16 @@ import {
 import { resolveDojoEnforcementConfig } from "../dojo/config/enforcement.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { normalizeDojoProofErrorCodes } from "../dojo/proof/errors.js";
+import {
+  createInProcessDojoHostedRuntimeGateway,
+  InMemoryDojoHostedRuntimeSessionStore,
+  type DojoHostedRuntimeActionDecision,
+  type DojoHostedRuntimeEvidenceWriter,
+  type DojoHostedRuntimeSessionRecord,
+} from "../dojo/runtime/hosted_runtime_gateway.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
 import { toDojoScenarioDefinitions, validateDojoScenarioDefinition } from "../dojo/vivarium/scenario_dsl.js";
-import type { DojoAuditEventRecord, DojoGhostShadowEvidenceRecord, DojoPermissionUpgradeRequestRecord } from "../dojo/store/interfaces.js";
+import type { DojoAuditEventRecord, DojoAuditStore, DojoGhostShadowEvidenceRecord, DojoPermissionUpgradeRequestRecord } from "../dojo/store/interfaces.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
 import {
   createInProcessDojoMcpSkillBus,
@@ -109,8 +116,39 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_issue_proof_capsule",
   "synthi_dojo_validate_proof_capsule",
   "synthi_dojo_revoke_proof_capsule",
+  "synthi_dojo_create_hosted_runtime_session",
   "synthi_dojo_run_with_proof_capsule",
 ] as const;
+
+const dojoHostedRuntimeAuditStore: DojoAuditStore = {
+  appendAuditEvent: (event) => dojoSkillRegistry.recordAuditEvent(event),
+  listAuditEvents: (filter) => dojoSkillRegistry.listAuditEvents(filter),
+};
+const dojoHostedRuntimeSessionStore = new InMemoryDojoHostedRuntimeSessionStore();
+const dojoHostedRuntimeEvidenceWriter: DojoHostedRuntimeEvidenceWriter = {
+  appendRuntimeActionEvidence(input) {
+    const recordId = `dojo_runtime_action_evidence_${hashId(JSON.stringify({
+      tenant_id: input.tenant.tenant_id,
+      workspace_id: input.tenant.workspace_id,
+      session_id: input.session.session_id,
+      skill_id: input.session.skill_id,
+      run_id: input.session.run_id,
+      action_kind: input.action_kind,
+      url_origin: input.url_origin,
+      created_at: input.created_at,
+      details: input.details ?? {},
+    }))}`;
+    return {
+      record_id: recordId,
+      evidence_ref: `evidence:${recordId}`,
+    };
+  },
+};
+const dojoHostedRuntimeGateway = createInProcessDojoHostedRuntimeGateway({
+  audit_store: dojoHostedRuntimeAuditStore,
+  store: dojoHostedRuntimeSessionStore,
+  evidence_writer: dojoHostedRuntimeEvidenceWriter,
+});
 
 const DOJO_TENANT_CONTEXT_INPUT_PROPERTIES = {
   tenant_id: { type: "string" },
@@ -660,9 +698,32 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_create_hosted_runtime_session",
+    description:
+      "Create a tenant-scoped hosted runtime session and short-lived credentials that production proof-gated Dojo execution must authorize before consuming a proof capsule.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
+        run_id: { type: "string" },
+        workspace_url: { type: "string" },
+        runtime_id: { type: "string" },
+        session_id: { type: "string" },
+        origin_allowlist: { type: "array", items: { type: "string" } },
+        ttl_ms: { type: "number" },
+        credential_ttl_ms: { type: "number" },
+        local_network_allowed: { type: "boolean" },
+        redact_screenshots: { type: "boolean" },
+        sensitive_workspace: { type: "boolean" },
+        now: { type: "string" },
+      },
+      required: ["run_id", "workspace_url", "origin_allowlist"],
+    },
+  },
+  {
     name: "synthi_dojo_run_with_proof_capsule",
     description:
-      "Validate a proof-carrying skill capsule against the skill license before dispatching the backing private workflow MCP tool. Use dry_run=true to validate without execution.",
+      "Validate a proof-carrying skill capsule against the skill license before dispatching the backing private workflow MCP tool. Production execution also requires hosted runtime session authorization before proof consumption. Use dry_run=true to validate without execution.",
     inputSchema: {
       type: "object",
       properties: {
@@ -675,6 +736,10 @@ export const DOJO_TOOLS = [
         approval_evidence_ref: { type: "string" },
         dry_run: { type: "boolean" },
         run_id: { type: "string" },
+        runtime_session_id: { type: "string" },
+        runtime_credential_id: { type: "string" },
+        runtime_credential_secret: { type: "string" },
+        runtime_action_url: { type: "string" },
         now: { type: "string" },
       },
       required: ["proof_capsule"],
@@ -824,6 +889,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         break;
       case "synthi_dojo_revoke_proof_capsule":
         response = dojoRevokeProofCapsuleTool(args);
+        break;
+      case "synthi_dojo_create_hosted_runtime_session":
+        response = await dojoCreateHostedRuntimeSessionTool(args);
         break;
       case "synthi_dojo_run_with_proof_capsule":
         response = await dojoRunWithProofCapsuleTool(args);
@@ -2159,6 +2227,62 @@ function dojoRevokeProofCapsuleTool(args: unknown): ToolResponse {
   return jsonResponse({ ok: true, proof_record: record });
 }
 
+async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const skill = requiredAuthorizedSkill(args);
+  if (!skill.ok) return skill.error;
+  const runId = stringOpt(a["run_id"]);
+  if (!runId) {
+    return errorResponse("dojo_hosted_runtime_run_id_required", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      blocked_by: ["runtime_run_binding_required"],
+    });
+  }
+  const workspaceUrl = stringOpt(a["workspace_url"]);
+  if (!workspaceUrl) {
+    return errorResponse("dojo_hosted_runtime_workspace_url_required", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      run_id: runId,
+      blocked_by: ["runtime_workspace_url_invalid"],
+    });
+  }
+  const originAllowlist = stringArrayOpt(a["origin_allowlist"]);
+  const session = await dojoHostedRuntimeGateway.createSession({
+    tenant: skill.tenant,
+    skill_id: skill.skill.skill_id,
+    run_id: runId,
+    workspace_url: workspaceUrl,
+    runtime_id: stringOpt(a["runtime_id"]),
+    session_id: stringOpt(a["session_id"]),
+    origin_allowlist: originAllowlist,
+    ttl_ms: numberOpt(a["ttl_ms"]),
+    credential_ttl_ms: numberOpt(a["credential_ttl_ms"]),
+    local_network_allowed: boolOpt(a["local_network_allowed"]),
+    redact_screenshots: optionalBoolOpt(a["redact_screenshots"]),
+    sensitive_workspace: boolOpt(a["sensitive_workspace"]),
+    now: stringOpt(a["now"]),
+  });
+  if (!session.ok) {
+    return errorResponse("dojo_hosted_runtime_session_rejected", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      run_id: runId,
+      blocked_by: session.blocked_by,
+      audit_event_id: session.audit_event_id,
+    });
+  }
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    run_id: runId,
+    runtime_session: hostedRuntimeSessionPublicView(session.session),
+    credentials: session.credentials,
+    audit_event_id: session.audit_event_id,
+  });
+}
+
 async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const skill = requiredAuthorizedSkill(args);
@@ -2244,6 +2368,19 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
     });
   }
 
+  const runtimeAuthorization = await authorizeHostedRuntimeForProductionRun({
+    args: a,
+    tenant,
+    skill: skill.skill,
+    run_id: runId,
+    requested_action: requestedAction,
+    proof_capsule: capsule,
+    license_decision: licenseDecision,
+    skill_bus_preflight: skillBusPreflight,
+    now,
+  });
+  if (!runtimeAuthorization.ok) return runtimeAuthorization.error;
+
   const proofConsume = markDojoProofExecution({
     registry: dojoSkillRegistry,
     proof_capsule: capsule,
@@ -2276,6 +2413,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       },
       proof_consume: proofConsume,
       skill_bus: skillBusPreflight,
+      runtime_authorization: runtimeAuthorization.decision ?? null,
       refusal: refusalFor(skill.skill, blockedBy),
     });
   }
@@ -2290,6 +2428,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       published_tool_name: skill.skill.published_tool_name ?? null,
       skill_bus: skillBusPreflight,
       proof_consume: proofConsume,
+      runtime_authorization: runtimeAuthorization.decision ?? null,
     });
   }
   const executionLicenseDecision = {
@@ -2309,12 +2448,82 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
     validation: licenseDecision.validation,
     license_kernel: executionLicenseDecision,
     skill_bus: skillBusResult,
+    runtime_authorization: runtimeAuthorization.decision ?? null,
     proof_capsule_id: capsule.capsule_id,
     proof_consume: proofConsume,
     proof_record: proofConsume.record,
     backing_tool: requestedAction === "run_prefix_validation" ? "synthi_safety_run_prefix_validation" : skill.skill.published_tool_name,
     result: run.structuredContent ?? {},
   });
+}
+
+async function authorizeHostedRuntimeForProductionRun(input: {
+  args: Record<string, unknown>;
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  run_id: string;
+  requested_action: string;
+  proof_capsule: DojoProofCarryingSkillCapsule;
+  license_decision: ReturnType<typeof evaluateDojoLicenseKernel>;
+  skill_bus_preflight: unknown;
+  now?: string;
+}): Promise<{ ok: true; decision?: DojoHostedRuntimeActionDecision } | { ok: false; error: ToolResponse }> {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement) return { ok: true };
+
+  const decision = await dojoHostedRuntimeGateway.authorizeAction({
+    tenant: input.tenant,
+    session_id: stringOpt(input.args["runtime_session_id"]) ?? "",
+    skill_id: input.skill.skill_id,
+    run_id: input.run_id,
+    action_kind: "proof_gated_tool",
+    url: stringOpt(input.args["runtime_action_url"]) ?? "",
+    credential_id: stringOpt(input.args["runtime_credential_id"]),
+    credential_secret: stringOpt(input.args["runtime_credential_secret"]),
+    now: input.now,
+    details: {
+      requested_action: input.requested_action,
+      proof_capsule_id: input.proof_capsule.capsule_id,
+      backing_tool: input.requested_action === "run_prefix_validation"
+        ? "synthi_safety_run_prefix_validation"
+        : input.skill.published_tool_name ?? null,
+    },
+  });
+  if (decision.ok) return { ok: true, decision };
+
+  const blockedBy = [...input.license_decision.blocked_by, ...decision.blocked_by];
+  const validation = {
+    ...input.license_decision.validation,
+    ok: false,
+    status: "blocked" as const,
+    error: "dojo_hosted_runtime_authorization_failed",
+    blocked_by: blockedBy,
+    error_codes: normalizeDojoProofErrorCodes(blockedBy),
+  };
+  return {
+    ok: false,
+    error: errorResponse("dojo_hosted_runtime_authorization_failed", {
+      ok: false,
+      skill_id: input.skill.skill_id,
+      requested_action: input.requested_action,
+      run_id: input.run_id,
+      enforcement_mode: enforcement.enforcement_mode,
+      validation,
+      license_kernel: {
+        ...input.license_decision,
+        ok: false,
+        status: "blocked",
+        validation,
+        blocked_by: blockedBy,
+        error_codes: validation.error_codes,
+        proof_record: dojoSkillRegistry.getProofRecord(input.proof_capsule.capsule_id) ?? input.license_decision.proof_record ?? null,
+      },
+      runtime_authorization: decision,
+      proof_not_consumed: true,
+      skill_bus: input.skill_bus_preflight,
+      refusal: refusalFor(input.skill, blockedBy),
+    }),
+  };
 }
 
 async function dispatchBackingSkillTool(skill: DojoSkill, args: Record<string, unknown>): Promise<ToolResponse | null> {
@@ -3048,6 +3257,33 @@ function evidenceRetentionClassOpt(value: unknown): DojoEvidenceLedgerRecord["re
   return value === "ephemeral" || value === "regulated" || value === "legal_hold" ? value : "standard";
 }
 
+function hostedRuntimeSessionPublicView(session: DojoHostedRuntimeSessionRecord): Record<string, unknown> {
+  return {
+    schema_version: session.schema_version,
+    session_id: session.session_id,
+    runtime_id: session.runtime_id,
+    tenant_id: session.tenant_id,
+    organization_id: session.organization_id,
+    workspace_id: session.workspace_id,
+    skill_id: session.skill_id,
+    run_id: session.run_id,
+    actor_id: session.actor_id,
+    actor_type: session.actor_type,
+    workspace_url: session.workspace_url,
+    workspace_origin: session.workspace_origin,
+    origin_allowlist: [...session.origin_allowlist],
+    status: session.status,
+    created_at: session.created_at,
+    expires_at: session.expires_at,
+    credential_id: session.credential_id,
+    credential_expires_at: session.credential_expires_at,
+    egress_policy: { ...session.egress_policy },
+    redaction_policy: { ...session.redaction_policy },
+    audit_event_refs: [...session.audit_event_refs],
+    evidence_refs: [...session.evidence_refs],
+  };
+}
+
 function substrateOpt(value: unknown): DojoExecutionSubstrate | undefined {
   return value === "vision" || value === "dom" || value === "source" || value === "api" || value === "mcp" ? value : undefined;
 }
@@ -3324,4 +3560,8 @@ function numberOpt(value: unknown): number | undefined {
 
 function boolOpt(value: unknown): boolean {
   return value === true;
+}
+
+function optionalBoolOpt(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }

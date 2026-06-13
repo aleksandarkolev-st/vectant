@@ -15,6 +15,7 @@
     "control_plane_write",
     "proof_validation",
     "proof_gated_dispatch",
+    "hosted_runtime_gateway",
     "synthetic_fixture_runtime",
     "non_mutating_shadow"
   ],
@@ -66,6 +67,7 @@
     "synthi_dojo_issue_proof_capsule": "executable",
     "synthi_dojo_validate_proof_capsule": "executable",
     "synthi_dojo_revoke_proof_capsule": "executable",
+    "synthi_dojo_create_hosted_runtime_session": "executable",
     "synthi_dojo_run_with_proof_capsule": "executable"
   },
   "reports": {

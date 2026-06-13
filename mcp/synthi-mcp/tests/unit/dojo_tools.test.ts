@@ -1007,6 +1007,7 @@ describe("Agent Dojo MCP tools", () => {
         expect.objectContaining({ name: "synthi_dojo_revoke_license" }),
         expect.objectContaining({ name: "synthi_dojo_export_artifacts" }),
         expect.objectContaining({ name: "synthi_dojo_export_compliance_pack" }),
+        expect.objectContaining({ name: "synthi_dojo_create_hosted_runtime_session" }),
         expect.objectContaining({ name: "synthi_dojo_run_with_proof_capsule" }),
       ]));
       const reviewPermissionUpgrade = listed.tools.find((tool) => tool.name === "synthi_dojo_review_permission_upgrade");
@@ -1061,6 +1062,7 @@ describe("Agent Dojo MCP tools", () => {
         "synthi_dojo_issue_proof_capsule",
         "synthi_dojo_validate_proof_capsule",
         "synthi_dojo_revoke_proof_capsule",
+        "synthi_dojo_create_hosted_runtime_session",
         "synthi_dojo_run_with_proof_capsule",
       ];
       for (const toolName of tenantScopedToolNames) {
@@ -2669,6 +2671,139 @@ describe("Agent Dojo MCP tools", () => {
       license_kernel: expect.objectContaining({ ok: true, status: "allowed" }),
       skill_bus: expect.objectContaining({ ok: true, status: "allowed" }),
     }));
+  });
+
+  it("authorizes hosted runtime sessions before consuming production proof capsules", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_prefix_validation",
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(capsuleResponse?.isError).toBeUndefined();
+    const capsule = (capsuleResponse?.structuredContent as { proof_capsule: { capsule_id: string } }).proof_capsule;
+
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    const productionTenant = productionTenantContextArgs({
+      actor_id: "hosted-runtime-agent-a",
+      request_id: "req-hosted-runtime-proof",
+      correlation_id: "corr-hosted-runtime-proof",
+    });
+    const missingRuntimeSession = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_prefix_validation",
+      proof_capsule: capsule,
+      run_id: "hosted-runtime-run-missing",
+      now: "2026-06-11T00:01:00.000Z",
+      ...productionTenant,
+    });
+    expect(missingRuntimeSession?.isError).toBe(true);
+    expect(missingRuntimeSession?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_hosted_runtime_authorization_failed",
+      proof_not_consumed: true,
+      runtime_authorization: expect.objectContaining({
+        ok: false,
+        blocked_by: expect.arrayContaining(["runtime_session_not_found"]),
+      }),
+      license_kernel: expect.objectContaining({
+        blocked_by: expect.arrayContaining(["runtime_session_not_found"]),
+      }),
+    }));
+    const proofAfterBlockedRuntime = dojoSkillRegistry.getProofRecord(capsule.capsule_id);
+    expect(proofAfterBlockedRuntime).toEqual(expect.objectContaining({
+      status: "issued",
+    }));
+    expect(proofAfterBlockedRuntime).not.toHaveProperty("first_used_at");
+
+    const sessionResponse = await dispatchDojoTool("synthi_dojo_create_hosted_runtime_session", {
+      skill_id: skillId,
+      run_id: "hosted-runtime-run-authorized",
+      workspace_url: "https://app.example.test/settings",
+      origin_allowlist: ["https://app.example.test"],
+      ttl_ms: 600_000,
+      credential_ttl_ms: 300_000,
+      now: "2026-06-11T00:01:30.000Z",
+      ...productionTenantContextArgs({
+        actor_id: "hosted-runtime-agent-a",
+        request_id: "req-hosted-runtime-session",
+        correlation_id: "corr-hosted-runtime-session",
+      }),
+    });
+    expect(sessionResponse?.isError).toBeUndefined();
+    expect(sessionResponse?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      implementation_status: "executable",
+      runtime_scope: "hosted_runtime_gateway",
+      production_runtime: false,
+      runtime_session: expect.objectContaining({
+        schema_version: "synthi.dojo.hostedRuntimeSession.v1",
+        skill_id: skillId,
+        run_id: "hosted-runtime-run-authorized",
+        workspace_origin: "https://app.example.test",
+        status: "active",
+      }),
+      credentials: expect.objectContaining({
+        credential_id: expect.stringMatching(/^runtime_cred_/),
+        credential_secret: expect.any(String),
+      }),
+    }));
+    const runtimeSession = (sessionResponse?.structuredContent as {
+      runtime_session: { session_id: string; credential_id: string };
+      credentials: { credential_id: string; credential_secret: string };
+    }).runtime_session;
+    const credentials = (sessionResponse?.structuredContent as {
+      credentials: { credential_id: string; credential_secret: string };
+    }).credentials;
+
+    const authorizedRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_prefix_validation",
+      proof_capsule: capsule,
+      run_id: "hosted-runtime-run-authorized",
+      runtime_session_id: runtimeSession.session_id,
+      runtime_credential_id: credentials.credential_id,
+      runtime_credential_secret: credentials.credential_secret,
+      runtime_action_url: "https://app.example.test/settings",
+      now: "2026-06-11T00:02:00.000Z",
+      ...productionTenantContextArgs({
+        actor_id: "hosted-runtime-agent-a",
+        request_id: "req-hosted-runtime-authorized-run",
+        correlation_id: "corr-hosted-runtime-authorized-run",
+      }),
+    });
+    expect(authorizedRun?.isError).toBeUndefined();
+    expect(authorizedRun?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      run_id: "hosted-runtime-run-authorized",
+      runtime_authorization: expect.objectContaining({
+        ok: true,
+        status: "authorized",
+        session_id: runtimeSession.session_id,
+        action_kind: "proof_gated_tool",
+        evidence_record_ids: [expect.stringMatching(/^evidence:dojo_runtime_action_evidence_[a-f0-9]{12}$/)],
+      }),
+      proof_consume: expect.objectContaining({ ok: true, status: "used" }),
+      proof_record: expect.objectContaining({
+        status: "used",
+        first_used_at: "2026-06-11T00:02:00.000Z",
+      }),
+      result: expect.objectContaining({
+        ok: true,
+        validation: expect.objectContaining({ status: expect.any(String) }),
+      }),
+    }));
+    expect(dojoSkillRegistry.listAuditEvents().map((eventRecord) => eventRecord.event_type)).toEqual(
+      expect.arrayContaining([
+        "runtime_action_blocked",
+        "runtime_session_created",
+        "runtime_action_authorized",
+      ])
+    );
   });
 
   it("uses top-level approval and actor context for license validation without duplicating workflow args", async () => {

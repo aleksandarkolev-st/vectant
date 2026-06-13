@@ -43,7 +43,8 @@ Current runtime scopes:
 | `registry_operation` | Local registry/store operation such as publish, export, revoke, or list. |
 | `control_plane_write` | Approval, review, or governance write that does not itself promote production execution. |
 | `proof_validation` | Proof issue/validate/revoke path with current signing and replay checks. |
-| `proof_gated_dispatch` | Proof-gated dispatch path exists, but hosted runtime gateway release proof is still required. |
+| `proof_gated_dispatch` | Proof-gated dispatch path exists and production mode requires hosted runtime session authorization before proof consumption, but deployed-host release proof is still required. |
+| `hosted_runtime_gateway` | Creates or validates tenant-scoped runtime sessions and short-lived credentials through the current gateway implementation. |
 | `synthetic_fixture_runtime` | Executes against materialized synthetic fixtures, not production app/runtime execution. |
 | `non_mutating_shadow` | Writes shadow evidence and comparisons without production mutations. |
 | `none` | Planned or unknown capability. |
@@ -62,6 +63,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - durable proof replay repository and append-only evidence ledger store modules
 - license and proof capsule issuance/validation with strict evidence-claim mode, Ed25519 signing support, and an external command signer adapter
 - proof-gated backing private workflow tool and raw workflow boundary checks
+- hosted runtime session authorization before production proof-gated execution consumes a proof capsule
 - case-law records that can bind guardrail predicates
 - non-mutating Ghost Mode shadow evidence records with control-plane audit events
 - source/API contract, linter, candidate, substrate, and React codemod foundations
@@ -128,6 +130,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_issue_proof_capsule` | `executable` |
 | `synthi_dojo_validate_proof_capsule` | `executable` |
 | `synthi_dojo_revoke_proof_capsule` | `executable` |
+| `synthi_dojo_create_hosted_runtime_session` | `executable` |
 | `synthi_dojo_run_with_proof_capsule` | `executable` |
 
 ## Current Report Classification
