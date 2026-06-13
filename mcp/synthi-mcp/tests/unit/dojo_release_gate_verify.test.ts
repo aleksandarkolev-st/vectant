@@ -27,6 +27,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "../../scripts/dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
+  DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
+} from "../../scripts/dojo-managed-key-signing-self-check.mjs";
+import {
   DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
   DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
 } from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
@@ -46,6 +50,7 @@ import {
   validateDojoPrivateToolStdioAcceptanceForRelease,
   validateDojoPrivateToolStdioHostConformanceForRelease,
   validateDojoDockerIntegrationEvidenceForMilestone,
+  validateDojoManagedKeySigningEvidenceForRelease,
   validateDojoPostgresControlPlaneEvidenceForMilestone,
   validateDojoWorkflowPipelineE2EForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
@@ -58,6 +63,7 @@ import {
   verifyDojoComplianceExportEvidenceArtifact,
   verifyDojoAffordanceCodemodEvidenceArtifact,
   verifyDojoDockerIntegrationEvidenceArtifact,
+  verifyDojoManagedKeySigningEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoPrivateToolCodexAcceptanceArtifact,
   verifyDojoPrivateToolCodexHostConformanceArtifact,
@@ -699,6 +705,7 @@ describe("Dojo release gate artifact verifier", () => {
       evidencePath: conformanceEvidencePath,
     });
     const securityEvidencePath = await writeSecurityEvidenceFixture({ dir });
+    const managedKeySigningEvidencePath = await writeManagedKeySigningEvidenceFixture({ dir });
     const complianceEvidencePath = await writeComplianceExportEvidenceFixture({ dir });
     const privacyEvidencePath = await writePrivacyRedactionEvidenceFixture({ dir });
     const workflowE2E = await writeWorkflowE2EFixture({ dir });
@@ -745,6 +752,7 @@ describe("Dojo release gate artifact verifier", () => {
     affordanceGate.default_report_path = affordanceCodemod.reportPath;
     affordanceGate.default_evidence_path = affordanceCodemod.evidencePath;
     manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path = managedKeySigningEvidencePath;
     manifest.gates.find((gate) => gate.id === "privacy_redaction_suite").default_evidence_path = privacyEvidencePath;
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
     manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioAcceptance.transcriptPath;
@@ -771,6 +779,7 @@ describe("Dojo release gate artifact verifier", () => {
         "mcp-host-conformance-report": conformanceReportPath,
         "mcp-host-conformance-evidence": conformanceEvidencePath,
         "security-abuse-evidence": securityEvidencePath,
+        "managed-key-signing-evidence": managedKeySigningEvidencePath,
       },
     });
 
@@ -821,6 +830,13 @@ describe("Dojo release gate artifact verifier", () => {
       "private_tool_codex_host_conformance",
     ]);
     expect(verified.mcp_host_conformance.every((report) => report.ok)).toBe(true);
+    expect(verified.managed_key_signing).toEqual([
+      expect.objectContaining({
+        id: "dojo_managed_key_signing_self_check",
+        ok: true,
+        evidence_path: managedKeySigningEvidencePath,
+      }),
+    ]);
     expect(verified.compliance_export).toEqual([
       expect.objectContaining({
         id: "compliance_export_suite",
@@ -864,6 +880,94 @@ describe("Dojo release gate artifact verifier", () => {
     expect(rejected.errors).toEqual(expect.arrayContaining([
       expect.stringMatching(/^report_sha256_mismatch:/),
       "conformance_execute_production_missing",
+    ]));
+  });
+
+  it("verifies managed key signing evidence coverage and signing contract custody", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-managed-key-signing-verify-"));
+    const evidencePath = await writeManagedKeySigningEvidenceFixture({ dir });
+
+    expect(validateDojoManagedKeySigningEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoManagedKeySigningEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = managedKeySigningEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["managed_key_service_rejects_local_custody_metadata"],
+      signing_contract: {
+        ...managedKeySigningEvidenceFixture().signing_contract,
+        key_custody: "local",
+        production_private_key_material_allowed: true,
+        public_verifier_material_required: false,
+        required_response_fields: ["schema_version", "algorithm", "key_id", "key_uri", "signature"],
+      },
+    });
+    const incompletePath = await writeManagedKeySigningEvidenceFixture({
+      dir,
+      basename: "incomplete-managed-key-signing",
+      evidence: incomplete,
+    });
+    const rejected = await verifyDojoManagedKeySigningEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "managed_key_signing_not_ok",
+      "managed_key_signing_coverage_incomplete",
+      "managed_key_signing_missing_capabilities:managed_key_service_rejects_local_custody_metadata",
+      "managed_key_signing_custody_mismatch:local",
+      "managed_key_signing_private_material_allowed",
+      "managed_key_signing_public_verifier_requirement_missing",
+      "managed_key_signing_response_field_missing:key_custody",
+    ]));
+
+    const driftedPath = await writeManagedKeySigningEvidenceFixture({
+      dir,
+      basename: "drifted-managed-key-signing",
+      evidence: managedKeySigningEvidenceFixture({
+        configured_capabilities: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES
+          .filter((capability) => capability !== "managed_key_service_rejects_uri_mismatch"),
+        tested_capabilities: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES
+          .filter((capability) => capability !== "managed_key_service_rejects_uri_mismatch"),
+        capability_count: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length - 1,
+        test_files: DOJO_MANAGED_KEY_SIGNING_TEST_FILES
+          .filter((file) => file !== DOJO_MANAGED_KEY_SIGNING_TEST_FILES[0]),
+        test_file_count: DOJO_MANAGED_KEY_SIGNING_TEST_FILES.length - 1,
+        reported_test_file_count: DOJO_MANAGED_KEY_SIGNING_TEST_FILES.length - 1,
+      }),
+    });
+    expect((await verifyDojoManagedKeySigningEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "managed_key_signing_required_capabilities_missing:managed_key_service_rejects_uri_mismatch",
+      "managed_key_signing_required_capabilities_untested:managed_key_service_rejects_uri_mismatch",
+      `managed_key_signing_required_test_files_missing:${DOJO_MANAGED_KEY_SIGNING_TEST_FILES[0]}`,
+    ]));
+
+    const tamperedJson = path.join(dir, "tampered-managed-key-signing.vitest.json");
+    await writeFile(tamperedJson, JSON.stringify({ success: false, numFailedTests: 1 }), "utf8");
+    const expectedManagedKeyJson = managedKeySigningJsonReportFixtureText();
+    const tamperedJsonPath = await writeManagedKeySigningEvidenceFixture({
+      dir,
+      basename: "tampered-managed-key-signing-json",
+      evidence: managedKeySigningEvidenceFixture({
+        json_report_path: tamperedJson,
+        json_report_sha256: sha256(expectedManagedKeyJson),
+        json_report_bytes: Buffer.byteLength(expectedManagedKeyJson),
+      }),
+      writeLogs: false,
+    });
+    const tamperedJsonResult = await verifyDojoManagedKeySigningEvidenceArtifact({ evidencePath: tamperedJsonPath });
+    expect(tamperedJsonResult.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^json_report_sha256_mismatch:/),
+      expect.stringMatching(/^json_report_bytes_mismatch:/),
     ]));
   });
 
@@ -2273,6 +2377,93 @@ async function writeSecurityEvidenceFixture({
   const evidencePath = path.join(dir, `${basename}.evidence.json`);
   await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
   return evidencePath;
+}
+
+async function writeManagedKeySigningEvidenceFixture({
+  dir,
+  basename = "dojo-managed-key-signing",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "managed key signing suite passed\n";
+  const stderr = "";
+  const jsonReport = managedKeySigningJsonReportFixtureText();
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? managedKeySigningEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(body, null, 2), "utf8");
+  return evidencePath;
+}
+
+function managedKeySigningEvidenceFixture(overrides = {}) {
+  const stdout = "managed key signing suite passed\n";
+  const stderr = "";
+  const jsonReport = managedKeySigningJsonReportFixtureText();
+  return {
+    schema_version: "synthi.dojo.managedKeySigningEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
+    tested_capabilities: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
+    capability_count: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
+    configured_capability_count: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    missing_capabilities: [],
+    signing_contract: {
+      provider: "managed-key-service",
+      algorithm: "ed25519",
+      request_schema_version: "synthi.dojo.managedKeySignerRequest.v1",
+      response_schema_version: "synthi.dojo.managedKeySignerResponse.v1",
+      key_custody: "managed",
+      required_request_fields: ["schema_version", "algorithm", "key_id", "key_uri", "payload"],
+      required_response_fields: ["schema_version", "algorithm", "key_id", "key_uri", "key_custody", "signature"],
+      production_private_key_material_allowed: false,
+      public_verifier_material_required: true,
+    },
+    test_files: [...DOJO_MANAGED_KEY_SIGNING_TEST_FILES],
+    test_file_count: DOJO_MANAGED_KEY_SIGNING_TEST_FILES.length,
+    reported_test_file_count: DOJO_MANAGED_KEY_SIGNING_TEST_FILES.length,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
+      passed_tests: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: overrides.stdout_path || path.join(tmpdir(), "dojo-managed-key-signing.stdout.log"),
+    stderr_path: overrides.stderr_path || path.join(tmpdir(), "dojo-managed-key-signing.stderr.log"),
+    json_report_path: overrides.json_report_path || path.join(tmpdir(), "dojo-managed-key-signing.vitest.json"),
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    json_report_sha256: sha256(jsonReport),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function managedKeySigningJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
+    numPassedTests: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    testResults: [],
+  }, null, 2);
 }
 
 function securityEvidenceFixture(overrides = {}) {

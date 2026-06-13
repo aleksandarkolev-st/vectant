@@ -27,6 +27,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "../../scripts/dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
+  DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
+} from "../../scripts/dojo-managed-key-signing-self-check.mjs";
+import {
   DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
   DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
 } from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
@@ -51,6 +55,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:docker-integration:self-check": "node scripts/dojo-docker-integration-self-check.mjs",
     "proof:dojo:postgres-control-plane:self-check": "node scripts/dojo-postgres-control-plane-self-check.mjs",
     "proof:dojo:affordance-codemod:self-check": "node scripts/dojo-affordance-codemod-self-check.mjs",
+    "proof:dojo:managed-key-signing:self-check": "node scripts/dojo-managed-key-signing-self-check.mjs",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
     "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
     "proof:dojo:privacy-redaction:self-check": "node scripts/dojo-privacy-redaction-self-check.mjs",
@@ -270,6 +275,26 @@ describe("Dojo release gate manifest", () => {
         }),
       }),
       expect.objectContaining({
+        id: "dojo_managed_key_signing_self_check",
+        tier: "T7",
+        package_script: "proof:dojo:managed-key-signing:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.managedKeySigningEvidence.v1",
+        default_evidence_path: "tmp/dojo-managed-key-signing/dojo-managed-key-signing.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          require_all_managed_key_signing_capabilities_covered: true,
+          required_managed_key_signing_capabilities: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
+          required_test_files: DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
+          require_no_failed_tests: true,
+          require_no_skipped_tests: true,
+          require_managed_key_service_provider: true,
+          require_managed_key_custody: true,
+          require_public_verifier_material: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "security_abuse_suite",
         tier: "T7",
         package_script: "proof:dojo:security-abuse:self-check",
@@ -449,6 +474,20 @@ describe("Dojo release gate manifest", () => {
       "private_tool_host_conformance_missing_private_tool_call:private_tool_stdio_host_conformance",
     ]));
 
+    const brokenManagedKeySigning = JSON.parse(JSON.stringify(manifest));
+    const managedKeySigningGate = brokenManagedKeySigning.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check");
+    const missingManagedKeySigningTestFile = DOJO_MANAGED_KEY_SIGNING_TEST_FILES[0];
+    managedKeySigningGate.release_artifact_requirements.required_managed_key_signing_capabilities = DOJO_MANAGED_KEY_SIGNING_CAPABILITIES
+      .filter((capability) => capability !== "managed_key_service_rejects_local_custody_metadata");
+    managedKeySigningGate.release_artifact_requirements.required_test_files = DOJO_MANAGED_KEY_SIGNING_TEST_FILES
+      .filter((file) => file !== missingManagedKeySigningTestFile);
+    managedKeySigningGate.release_artifact_requirements.require_managed_key_custody = false;
+    expect(validateDojoReleaseGateManifest(brokenManagedKeySigning, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "managed_key_signing_missing_custody_requirement",
+      "managed_key_signing_missing_required_capabilities:managed_key_service_rejects_local_custody_metadata",
+      `managed_key_signing_missing_required_test_files:${missingManagedKeySigningTestFile}`,
+    ]));
+
     const brokenSecurity = JSON.parse(JSON.stringify(manifest));
     const securityGate = brokenSecurity.gates.find((gate) => gate.id === "security_abuse_suite");
     const missingSecurityTestFile = DOJO_SECURITY_ABUSE_TEST_FILES[0];
@@ -523,6 +562,7 @@ describe("Dojo release gate manifest", () => {
     expect(manifest.release_gate_ids).toEqual(expect.arrayContaining([
       "workflow_e2e_hosted",
       "dojo_mcp_host_conformance",
+      "dojo_managed_key_signing_self_check",
       "security_abuse_suite",
       "compliance_export_suite",
       "privacy_redaction_suite",
@@ -553,7 +593,7 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 13,
+      proof_artifact_gate_count: 14,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
@@ -561,6 +601,7 @@ describe("Dojo release gate manifest", () => {
         "docker_integration",
         "workflow_e2e_hosted",
         "dojo_mcp_host_conformance",
+        "dojo_managed_key_signing_self_check",
         "compliance_export_suite",
         "privacy_redaction_suite",
       ]),

@@ -26,6 +26,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "./dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
+  DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
+} from "./dojo-managed-key-signing-self-check.mjs";
+import {
   DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
   DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
 } from "./dojo-postgres-control-plane-self-check.mjs";
@@ -479,6 +483,29 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     ],
   },
   {
+    id: "dojo_managed_key_signing_self_check",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:managed-key-signing:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:managed-key-signing:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.managedKeySigningEvidence.v1",
+    default_evidence_path: "tmp/dojo-managed-key-signing/dojo-managed-key-signing.evidence.json",
+    release_artifact_requirements: {
+      require_all_managed_key_signing_capabilities_covered: true,
+      required_managed_key_signing_capabilities: [...DOJO_MANAGED_KEY_SIGNING_CAPABILITIES],
+      required_test_files: [...DOJO_MANAGED_KEY_SIGNING_TEST_FILES],
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_managed_key_service_provider: true,
+      require_managed_key_custody: true,
+      require_public_verifier_material: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "security_abuse_suite",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -611,6 +638,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "dojo_mcp_host_conformance",
   "private_tool_stdio_host_conformance",
   "private_tool_codex_host_conformance",
+  "dojo_managed_key_signing_self_check",
   "security_abuse_suite",
   "compliance_export_suite",
   "privacy_redaction_suite",
@@ -930,6 +958,52 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     const missingScriptFlags = missingRequiredPackageScriptTokens(packageScripts, gate, requiredScriptFlags);
     if (missingScriptFlags.length > 0) {
       errors.push(`private_tool_host_conformance_package_script_missing_flags:${gate.id}:${missingScriptFlags.join(",")}`);
+    }
+  }
+  const managedKeySigningGate = gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check");
+  if (managedKeySigningGate) {
+    if (managedKeySigningGate.evidence_schema_version !== "synthi.dojo.managedKeySigningEvidence.v1") {
+      errors.push("managed_key_signing_missing_evidence_schema");
+    }
+    if (managedKeySigningGate.package_script !== "proof:dojo:managed-key-signing:self-check") {
+      errors.push("managed_key_signing_missing_package_script");
+    }
+    if (!managedKeySigningGate.default_evidence_path) errors.push("managed_key_signing_missing_default_evidence_path");
+    if (!managedKeySigningGate.release_artifact_requirements?.require_all_managed_key_signing_capabilities_covered) {
+      errors.push("managed_key_signing_missing_capability_requirement");
+    }
+    if (!managedKeySigningGate.release_artifact_requirements?.require_managed_key_service_provider) {
+      errors.push("managed_key_signing_missing_provider_requirement");
+    }
+    if (!managedKeySigningGate.release_artifact_requirements?.require_managed_key_custody) {
+      errors.push("managed_key_signing_missing_custody_requirement");
+    }
+    if (!managedKeySigningGate.release_artifact_requirements?.require_public_verifier_material) {
+      errors.push("managed_key_signing_missing_public_verifier_requirement");
+    }
+    const requiredManagedKeySigningCapabilities = Array.isArray(managedKeySigningGate.release_artifact_requirements?.required_managed_key_signing_capabilities)
+      ? managedKeySigningGate.release_artifact_requirements.required_managed_key_signing_capabilities
+      : [];
+    const missingManagedKeySigningCapabilities = DOJO_MANAGED_KEY_SIGNING_CAPABILITIES
+      .filter((capability) => !requiredManagedKeySigningCapabilities.includes(capability));
+    if (missingManagedKeySigningCapabilities.length > 0) {
+      errors.push(`managed_key_signing_missing_required_capabilities:${missingManagedKeySigningCapabilities.join(",")}`);
+    }
+    const missingManagedKeySigningTestFiles = missingRequiredEntries(
+      DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
+      managedKeySigningGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingManagedKeySigningTestFiles.length > 0) {
+      errors.push(`managed_key_signing_missing_required_test_files:${missingManagedKeySigningTestFiles.join(",")}`);
+    }
+    if (!managedKeySigningGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("managed_key_signing_missing_no_skipped_requirement");
+    }
+    if (!managedKeySigningGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("managed_key_signing_missing_digest_requirement");
+    }
+    if (!managedKeySigningGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("managed_key_signing_missing_json_report_digest_requirement");
     }
   }
   const securityAbuseGate = gates.find((gate) => gate.id === "security_abuse_suite");

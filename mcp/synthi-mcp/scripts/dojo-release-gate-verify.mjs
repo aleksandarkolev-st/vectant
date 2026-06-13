@@ -37,6 +37,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "./dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
+  DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
+} from "./dojo-managed-key-signing-self-check.mjs";
+import {
   DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
   DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
 } from "./dojo-postgres-control-plane-self-check.mjs";
@@ -65,6 +69,7 @@ const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tm
 const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-postgres-control-plane");
 const DEFAULT_AFFORDANCE_CODEMOD_DIR = path.join(REPO_ROOT, "tmp", "dojo-affordance-codemod-self-check");
 const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-integration");
+const DEFAULT_MANAGED_KEY_SIGNING_DIR = path.join(REPO_ROOT, "tmp", "dojo-managed-key-signing");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_COMPLIANCE_EXPORT_DIR = path.join(REPO_ROOT, "tmp", "dojo-compliance-export");
 const DEFAULT_PRIVACY_REDACTION_DIR = path.join(REPO_ROOT, "tmp", "dojo-privacy-redaction");
@@ -236,6 +241,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
+  const managedKeySigningResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-managed-key-signing"]) || args["managed-key-signing-evidence"]) {
+    const managedKeyGate = findGate(manifest, "dojo_managed_key_signing_self_check") || {};
+    managedKeySigningResults.push(await verifyDojoManagedKeySigningEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["managed-key-signing-evidence"]
+        || managedKeyGate.default_evidence_path
+        || path.join(DEFAULT_MANAGED_KEY_SIGNING_DIR, "dojo-managed-key-signing.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
   const securityResults = [];
   if (truthy(args["release-candidate"]) || args["security-abuse-evidence"]) {
     securityResults.push(await verifyDojoSecurityAbuseEvidenceArtifact({
@@ -284,7 +300,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...liveHostedRuntimeResults, ...conformanceResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -299,6 +315,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     source_api: sourceApiResults.map(summarizeSection),
     live_hosted_runtime: liveHostedRuntimeResults.map(summarizeSection),
     mcp_host_conformance: conformanceResults.map(summarizeSection),
+    managed_key_signing: managedKeySigningResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
     compliance_export: complianceExportResults.map(summarizeSection),
     privacy_redaction: privacyRedactionResults.map(summarizeSection),
@@ -1137,6 +1154,103 @@ export function validateDojoMcpHostConformanceReportForRelease(report) {
     if (deploymentClaims[requirement.observedField] !== true) {
       errors.push(`conformance_${requirement.id}_missing`);
     }
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoManagedKeySigningEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoManagedKeySigningEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_managed_key_signing_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoManagedKeySigningEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.managedKeySigningEvidence.v1") {
+    errors.push(`managed_key_signing_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("managed_key_signing_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`managed_key_signing_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("managed_key_signing_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`managed_key_signing_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_MANAGED_KEY_SIGNING_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`managed_key_signing_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
+    prefix: "managed_key_signing",
+  }));
+  const untestedRequiredCapabilities = DOJO_MANAGED_KEY_SIGNING_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`managed_key_signing_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`managed_key_signing_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`managed_key_signing_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const signingContract = evidence?.signing_contract || {};
+  if (signingContract.provider !== "managed-key-service") {
+    errors.push(`managed_key_signing_provider_mismatch:${signingContract.provider || "missing"}`);
+  }
+  if (signingContract.algorithm !== "ed25519") {
+    errors.push(`managed_key_signing_algorithm_mismatch:${signingContract.algorithm || "missing"}`);
+  }
+  if (signingContract.request_schema_version !== "synthi.dojo.managedKeySignerRequest.v1") {
+    errors.push(`managed_key_signing_request_schema_mismatch:${signingContract.request_schema_version || "missing"}`);
+  }
+  if (signingContract.response_schema_version !== "synthi.dojo.managedKeySignerResponse.v1") {
+    errors.push(`managed_key_signing_response_schema_mismatch:${signingContract.response_schema_version || "missing"}`);
+  }
+  if (signingContract.key_custody !== "managed") {
+    errors.push(`managed_key_signing_custody_mismatch:${signingContract.key_custody || "missing"}`);
+  }
+  if (signingContract.production_private_key_material_allowed !== false) {
+    errors.push("managed_key_signing_private_material_allowed");
+  }
+  if (signingContract.public_verifier_material_required !== true) {
+    errors.push("managed_key_signing_public_verifier_requirement_missing");
+  }
+  const requiredResponseFields = new Set(Array.isArray(signingContract.required_response_fields)
+    ? signingContract.required_response_fields.map(String)
+    : []);
+  for (const field of ["schema_version", "algorithm", "key_id", "key_uri", "key_custody", "signature"]) {
+    if (!requiredResponseFields.has(field)) errors.push(`managed_key_signing_response_field_missing:${field}`);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("managed_key_signing_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`managed_key_signing_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`managed_key_signing_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("managed_key_signing_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`managed_key_signing_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
   }
   return {
     ok: errors.length === 0,
@@ -2074,6 +2188,37 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_custom_mcp_command_missing"));
   assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_target_not_remote:loopback"));
 
+  const managedKeySigningDir = path.join(outDir, "managed-key-signing");
+  await mkdir(managedKeySigningDir, { recursive: true });
+  const managedKeySigningArtifacts = await writeManagedKeySigningEvidenceForSelfCheck({ outDir: managedKeySigningDir });
+  const managedKeySigningResult = await verifyDojoManagedKeySigningEvidenceArtifact({
+    evidencePath: managedKeySigningArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(managedKeySigningResult.ok, true, managedKeySigningResult.errors.join(";"));
+  const rejectedManagedKeySigningArtifacts = await writeManagedKeySigningEvidenceForSelfCheck({
+    outDir: managedKeySigningDir,
+    basename: "dojo-managed-key-signing-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["managed_key_service_rejects_local_custody_metadata"],
+      signing_contract: {
+        ...managedKeySigningArtifacts.evidence.signing_contract,
+        key_custody: "local",
+        production_private_key_material_allowed: true,
+      },
+    },
+  });
+  const rejectedManagedKeySigning = await verifyDojoManagedKeySigningEvidenceArtifact({
+    evidencePath: rejectedManagedKeySigningArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedManagedKeySigning.errors.includes("managed_key_signing_coverage_incomplete"));
+  assert(rejectedManagedKeySigning.errors.includes("managed_key_signing_missing_capabilities:managed_key_service_rejects_local_custody_metadata"));
+  assert(rejectedManagedKeySigning.errors.includes("managed_key_signing_custody_mismatch:local"));
+  assert(rejectedManagedKeySigning.errors.includes("managed_key_signing_private_material_allowed"));
+
   const visualDir = path.join(outDir, "visual");
   await mkdir(visualDir, { recursive: true });
   const visualReportPath = await writeSelfCheckVisualReport({ outDir: visualDir });
@@ -2221,6 +2366,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(conformanceResult),
       summarizeSection(stdioHostConformanceResult),
       summarizeSection(codexHostConformanceResult),
+      summarizeSection(managedKeySigningResult),
       summarizeSection(visualResult),
       summarizeSection(securityResult),
       summarizeSection(complianceResult),
@@ -2235,6 +2381,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedCodexAcceptance),
       summarizeSection(rejectedDryRun),
       summarizeSection(rejectedStdioHost),
+      summarizeSection(rejectedManagedKeySigning),
       summarizeSection(rejectedSecurity),
       summarizeSection(rejectedCompliance),
       summarizeSection(rejectedPrivacy),
@@ -3167,6 +3314,103 @@ async function writeSecurityEvidenceForSelfCheck({
     test_summary: {
       total_tests: DOJO_SECURITY_ABUSE_CLASSES.length,
       passed_tests: DOJO_SECURITY_ABUSE_CLASSES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeManagedKeySigningEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-managed-key-signing",
+  overrides = {},
+}) {
+  const stdout = "managed key signing focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
+    numPassedTests: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: 1,
+    numPassedTestSuites: 1,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.managedKeySigningEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
+    tested_capabilities: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
+    capability_count: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
+    configured_capability_count: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    missing_capabilities: [],
+    signing_contract: {
+      provider: "managed-key-service",
+      algorithm: "ed25519",
+      request_schema_version: "synthi.dojo.managedKeySignerRequest.v1",
+      response_schema_version: "synthi.dojo.managedKeySignerResponse.v1",
+      key_custody: "managed",
+      required_request_fields: ["schema_version", "algorithm", "key_id", "key_uri", "payload"],
+      required_response_fields: ["schema_version", "algorithm", "key_id", "key_uri", "key_custody", "signature"],
+      production_private_key_material_allowed: false,
+      public_verifier_material_required: true,
+    },
+    test_files: [...DOJO_MANAGED_KEY_SIGNING_TEST_FILES],
+    test_file_count: DOJO_MANAGED_KEY_SIGNING_TEST_FILES.length,
+    reported_test_file_count: DOJO_MANAGED_KEY_SIGNING_TEST_FILES.length,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_spawn_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
+      passed_tests: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
       failed_tests: 0,
       pending_tests: 0,
     },

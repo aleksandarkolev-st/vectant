@@ -86,7 +86,7 @@ describe("Dojo proof signing", () => {
     expect(verifier.verify(payload(), signature)).toBe(true);
   });
 
-  it("signs through a managed key service signer with explicit key custody", () => {
+  it("signs through a managed key service signer and verifies with explicit key custody", () => {
     const keyPair = generateEd25519DojoProofKeyPair("managed-ed-key-a");
     const keyUri = "kms://tenant-a/proof/managed-ed-key-a";
     const signer = createManagedKeyServiceDojoProofSigner({
@@ -112,6 +112,22 @@ describe("Dojo proof signing", () => {
       signature: expect.stringMatching(/^ed25519:/),
     }));
     expect(verifier.verify(payload(), signature)).toBe(true);
+  });
+
+  it("requires managed key service command and key URI configuration", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("managed-ed-key-a");
+
+    expect(() => createManagedKeyServiceDojoProofSigner({
+      key_id: keyPair.key_id,
+      key_uri: "kms://tenant-a/proof/managed-ed-key-a",
+      command: " ",
+    })).toThrow("dojo_managed_key_signing_command_required");
+
+    expect(() => createManagedKeyServiceDojoProofSigner({
+      key_id: keyPair.key_id,
+      key_uri: " ",
+      command: process.execPath,
+    })).toThrow("dojo_managed_key_uri_required");
   });
 
   it("fails closed when a managed key service returns mismatched custody metadata", () => {
