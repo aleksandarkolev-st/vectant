@@ -6,9 +6,10 @@
  */
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -227,6 +228,8 @@ async function main() {
       name: "visual proof snapshot",
       ok: true,
       screenshot_path: visual.screenshotPath,
+      screenshot_bytes: visual.screenshotBytes,
+      screenshot_sha256: visual.screenshotSha256,
       text: visual.text,
       url: visual.url,
       match: visual.match,
@@ -312,7 +315,16 @@ async function captureVisualProof({ targetUrl, expectedText }) {
       if (match) {
         const screenshotPath = path.join(CFG.outDir, "after-codex-private-tool-call.png");
         await match.page.screenshot(visualProofScreenshotOptions({ path: screenshotPath, timeoutMs: CFG.timeoutMs }));
-        return { screenshotPath, text: match.text, url: match.url, match: match.match };
+        const screenshotBytes = await readFile(screenshotPath);
+        if (!isPngBytes(screenshotBytes)) throw new Error("visual_proof_screenshot_not_png");
+        return {
+          screenshotPath,
+          screenshotBytes: screenshotBytes.length,
+          screenshotSha256: sha256(screenshotBytes),
+          text: match.text,
+          url: match.url,
+          match: match.match,
+        };
       }
       await sleep(500);
     }
@@ -320,6 +332,23 @@ async function captureVisualProof({ targetUrl, expectedText }) {
   } finally {
     await browser.close().catch(() => undefined);
   }
+}
+
+function isPngBytes(bytes) {
+  return Buffer.isBuffer(bytes)
+    && bytes.length >= 8
+    && bytes[0] === 0x89
+    && bytes[1] === 0x50
+    && bytes[2] === 0x4e
+    && bytes[3] === 0x47
+    && bytes[4] === 0x0d
+    && bytes[5] === 0x0a
+    && bytes[6] === 0x1a
+    && bytes[7] === 0x0a;
+}
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 async function seedPrivateWorkflowStore({ storeFile, storeKey, storeScope, targetUrl }) {

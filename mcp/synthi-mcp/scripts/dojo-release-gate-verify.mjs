@@ -1438,6 +1438,20 @@ async function validateTranscriptVisualStepArtifact({ id, transcript, transcript
     const info = await stat(screenshotPath);
     if (!info.isFile()) errors.push(`${id}_visual_screenshot_not_file:${screenshotPath}`);
     if (info.size <= 0) errors.push(`${id}_visual_screenshot_empty:${screenshotPath}`);
+    const bytes = await readFile(screenshotPath);
+    if (!isPngBytes(bytes)) errors.push(`${id}_visual_screenshot_not_png:${screenshotPath}`);
+    const expectedBytes = Number(step.screenshot_bytes);
+    if (!Number.isFinite(expectedBytes) || expectedBytes <= 0) {
+      errors.push(`${id}_visual_screenshot_bytes_missing`);
+    } else if (expectedBytes !== info.size) {
+      errors.push(`${id}_visual_screenshot_bytes_mismatch:${expectedBytes}:${info.size}`);
+    }
+    const actualSha256 = sha256(bytes);
+    if (!step.screenshot_sha256) {
+      errors.push(`${id}_visual_screenshot_sha256_missing`);
+    } else if (String(step.screenshot_sha256) !== actualSha256) {
+      errors.push(`${id}_visual_screenshot_sha256_mismatch:${step.screenshot_sha256}:${actualSha256}`);
+    }
   } catch {
     errors.push(`${id}_visual_screenshot_missing:${screenshotPath}`);
   }
@@ -2213,7 +2227,8 @@ async function writeWorkflowE2ESummaryForSelfCheck({ outDir, basename = "workflo
 
 async function writeStdioAcceptanceTranscriptForSelfCheck({ outDir, basename = "mcp-stdio-private-tool-acceptance", overrides = {} }) {
   const screenshotPath = path.join(outDir, `${basename}.png`);
-  await writeFile(screenshotPath, Buffer.from(`${basename}:visual-proof`));
+  const screenshotBytes = proofSelfCheckVisualPngBytes();
+  await writeFile(screenshotPath, screenshotBytes);
   const transcript = {
     schema_version: "synthi.dojo.privateToolStdioAcceptance.v1",
     generated_at: new Date().toISOString(),
@@ -2275,6 +2290,8 @@ async function writeStdioAcceptanceTranscriptForSelfCheck({ outDir, basename = "
         name: "visual proof snapshot",
         ok: true,
         screenshot_path: screenshotPath,
+        screenshot_bytes: screenshotBytes.length,
+        screenshot_sha256: sha256(screenshotBytes),
         url: "https://workspace.example.test/private-tool",
         expected_text: "Details opened",
       },
@@ -2288,9 +2305,12 @@ async function writeStdioAcceptanceTranscriptForSelfCheck({ outDir, basename = "
 
 async function writeCodexAcceptanceTranscriptForSelfCheck({ outDir, basename = "codex-private-tool-acceptance", overrides = {} }) {
   const screenshotPath = path.join(outDir, `${basename}.png`);
-  await writeFile(screenshotPath, Buffer.from(`${basename}:visual-proof`));
+  const screenshotBytes = proofSelfCheckVisualPngBytes();
+  await writeFile(screenshotPath, screenshotBytes);
   const transcript = buildCodexAcceptanceTranscriptForSelfCheck({
     screenshotPath,
+    screenshotBytes: screenshotBytes.length,
+    screenshotSha256: sha256(screenshotBytes),
     ...overrides,
   });
   const transcriptPath = path.join(outDir, `${basename}.json`);
@@ -2300,6 +2320,8 @@ async function writeCodexAcceptanceTranscriptForSelfCheck({ outDir, basename = "
 
 function buildCodexAcceptanceTranscriptForSelfCheck(overrides = {}) {
   const screenshotPath = overrides.screenshotPath || "codex-private-tool-acceptance.png";
+  const screenshotBytes = Number(overrides.screenshotBytes);
+  const screenshotSha256 = overrides.screenshotSha256;
   const transcript = {
     schema_version: "synthi.dojo.privateToolCodexAcceptance.v1",
     generated_at: new Date().toISOString(),
@@ -2351,6 +2373,8 @@ function buildCodexAcceptanceTranscriptForSelfCheck(overrides = {}) {
         name: "visual proof snapshot",
         ok: true,
         screenshot_path: screenshotPath,
+        screenshot_bytes: Number.isFinite(screenshotBytes) ? screenshotBytes : undefined,
+        screenshot_sha256: screenshotSha256,
         url: "https://workspace.example.test/private-tool",
         match: true,
         expected_text: "Details opened",
@@ -2359,6 +2383,8 @@ function buildCodexAcceptanceTranscriptForSelfCheck(overrides = {}) {
   };
   const cleanedOverrides = { ...overrides };
   delete cleanedOverrides.screenshotPath;
+  delete cleanedOverrides.screenshotBytes;
+  delete cleanedOverrides.screenshotSha256;
   return {
     ...transcript,
     ...cleanedOverrides,

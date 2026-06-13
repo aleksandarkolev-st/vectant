@@ -454,6 +454,47 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("requires private-tool transcript visual snapshots to be PNG digest-matched artifacts", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-private-tool-visual-verify-"));
+    const fakePngPath = path.join(dir, "fake-stdio.png");
+    const fakeBytes = Buffer.from("not-a-png");
+    await writeFile(fakePngPath, fakeBytes);
+    const fakeTranscriptPath = path.join(dir, "fake-stdio.json");
+    await writeFile(fakeTranscriptPath, JSON.stringify(privateToolStdioAcceptanceFixture({
+      screenshotPath: fakePngPath,
+      screenshotBytes: fakeBytes.length,
+      screenshotSha256: sha256(fakeBytes),
+    }), null, 2), "utf8");
+
+    const fakeRejected = await verifyDojoPrivateToolStdioAcceptanceArtifact({
+      transcriptPath: fakeTranscriptPath,
+      releaseCandidate: true,
+    });
+    expect(fakeRejected.ok).toBe(false);
+    expect(fakeRejected.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^private_tool_stdio_acceptance_visual_screenshot_not_png:/),
+    ]));
+
+    const pngPath = path.join(dir, "digest-drift-codex.png");
+    const pngBytes = fixtureVisualPngBytes();
+    await writeFile(pngPath, pngBytes);
+    const digestDriftPath = path.join(dir, "digest-drift-codex.json");
+    await writeFile(digestDriftPath, JSON.stringify(privateToolCodexAcceptanceFixture({
+      screenshotPath: pngPath,
+      screenshotBytes: pngBytes.length,
+      screenshotSha256: sha256("wrong-visual-bytes"),
+    }), null, 2), "utf8");
+
+    const digestRejected = await verifyDojoPrivateToolCodexAcceptanceArtifact({
+      transcriptPath: digestDriftPath,
+      releaseCandidate: true,
+    });
+    expect(digestRejected.ok).toBe(false);
+    expect(digestRejected.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^private_tool_codex_acceptance_visual_screenshot_sha256_mismatch:/),
+    ]));
+  });
+
   it("requires deployed private-tool host conformance to use external stores and non-loopback targets", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-private-tool-host-conformance-verify-"));
     const stdioScreenshotPath = path.join(dir, "private-tool-stdio-host.png");
@@ -1457,8 +1498,12 @@ async function writePrivateToolStdioAcceptanceFixture({
   transcript,
 }) {
   const screenshotPath = path.join(dir, `${basename}.png`);
-  await writeFile(screenshotPath, Buffer.from(`${basename}:visual-proof`));
-  const body = transcript ?? privateToolStdioAcceptanceFixture({ screenshotPath });
+  const screenshotBytes = fixtureVisualPngBytes();
+  await writeFile(screenshotPath, screenshotBytes);
+  const body = withPrivateToolVisualMetadata(
+    transcript ?? privateToolStdioAcceptanceFixture({ screenshotPath }),
+    { screenshotPath, screenshotBytes }
+  );
   const transcriptPath = path.join(dir, `${basename}.json`);
   await writeFile(transcriptPath, JSON.stringify(body, null, 2), "utf8");
   return {
@@ -1470,6 +1515,7 @@ async function writePrivateToolStdioAcceptanceFixture({
 
 function privateToolStdioAcceptanceFixture(overrides = {}) {
   const screenshotPath = overrides.screenshotPath || "private-tool-stdio.png";
+  const screenshotBytes = Number(overrides.screenshotBytes);
   const base = privateToolAcceptanceBaseFixture({
     schema_version: "synthi.dojo.privateToolStdioAcceptance.v1",
     steps: [
@@ -1507,6 +1553,8 @@ function privateToolStdioAcceptanceFixture(overrides = {}) {
         name: "visual proof snapshot",
         ok: true,
         screenshot_path: screenshotPath,
+        screenshot_bytes: Number.isFinite(screenshotBytes) ? screenshotBytes : undefined,
+        screenshot_sha256: overrides.screenshotSha256,
         url: "https://workspace.example.test/private-tool",
         expected_text: "Details opened",
       },
@@ -1521,8 +1569,12 @@ async function writePrivateToolCodexAcceptanceFixture({
   transcript,
 }) {
   const screenshotPath = path.join(dir, `${basename}.png`);
-  await writeFile(screenshotPath, Buffer.from(`${basename}:visual-proof`));
-  const body = transcript ?? privateToolCodexAcceptanceFixture({ screenshotPath });
+  const screenshotBytes = fixtureVisualPngBytes();
+  await writeFile(screenshotPath, screenshotBytes);
+  const body = withPrivateToolVisualMetadata(
+    transcript ?? privateToolCodexAcceptanceFixture({ screenshotPath }),
+    { screenshotPath, screenshotBytes }
+  );
   const transcriptPath = path.join(dir, `${basename}.json`);
   await writeFile(transcriptPath, JSON.stringify(body, null, 2), "utf8");
   return {
@@ -1534,6 +1586,7 @@ async function writePrivateToolCodexAcceptanceFixture({
 
 function privateToolCodexAcceptanceFixture(overrides = {}) {
   const screenshotPath = overrides.screenshotPath || "private-tool-codex.png";
+  const screenshotBytes = Number(overrides.screenshotBytes);
   const base = privateToolAcceptanceBaseFixture({
     schema_version: "synthi.dojo.privateToolCodexAcceptance.v1",
     codex_model: "gpt-5-codex-fixture",
@@ -1561,6 +1614,8 @@ function privateToolCodexAcceptanceFixture(overrides = {}) {
         name: "visual proof snapshot",
         ok: true,
         screenshot_path: screenshotPath,
+        screenshot_bytes: Number.isFinite(screenshotBytes) ? screenshotBytes : undefined,
+        screenshot_sha256: overrides.screenshotSha256,
         url: "https://workspace.example.test/private-tool",
         match: true,
         expected_text: "Details opened",
@@ -1568,6 +1623,22 @@ function privateToolCodexAcceptanceFixture(overrides = {}) {
     ],
   });
   return { ...base, ...withoutFixtureOnlyOverrides(overrides) };
+}
+
+function withPrivateToolVisualMetadata(transcript, { screenshotPath, screenshotBytes }) {
+  const digest = sha256(screenshotBytes);
+  return {
+    ...transcript,
+    steps: (Array.isArray(transcript.steps) ? transcript.steps : []).map((step) => {
+      if (step?.name !== "visual proof snapshot") return step;
+      return {
+        ...step,
+        screenshot_path: step.screenshot_path || screenshotPath,
+        screenshot_bytes: screenshotBytes.length,
+        screenshot_sha256: digest,
+      };
+    }),
+  };
 }
 
 function privateToolAcceptanceBaseFixture(overrides = {}) {
@@ -1635,6 +1706,8 @@ function deployedPrivateToolHostFixtureOverrides(overrides = {}) {
 function withoutFixtureOnlyOverrides(overrides) {
   const cleaned = { ...overrides };
   delete cleaned.screenshotPath;
+  delete cleaned.screenshotBytes;
+  delete cleaned.screenshotSha256;
   return cleaned;
 }
 
@@ -2360,6 +2433,13 @@ async function readJson(filePath) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function fixtureVisualPngBytes() {
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(12000, 1),
+  ]);
 }
 
 function buildConformanceReport({

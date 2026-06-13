@@ -11,6 +11,7 @@
  */
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -351,15 +352,17 @@ async function main() {
     if (expectedText) {
       assert(dom.includes(expectedText), `snapshot DOM did not include expected postcondition text: ${expectedText}`);
     }
-    const screenshotPath = await writeSnapshotScreenshot(snapshot.parsed?.snapshot, CFG.outDir);
+    const screenshot = await writeSnapshotScreenshot(snapshot.parsed?.snapshot, CFG.outDir);
     transcript.steps.push({
       name: "visual proof snapshot",
       ok: true,
-      screenshot_path: screenshotPath,
+      screenshot_path: screenshot.path,
+      screenshot_bytes: screenshot.bytes,
+      screenshot_sha256: screenshot.sha256,
       url: snapshot.parsed?.snapshot?.url ?? null,
       expected_text: expectedText || null,
     });
-    log("ok", `visual proof snapshot - ${screenshotPath}`);
+    log("ok", `visual proof snapshot - ${screenshot.path}`);
 
     const transcriptPath = path.join(CFG.outDir, "mcp-stdio-private-tool-acceptance.json");
     await writeFile(transcriptPath, JSON.stringify(transcript, null, 2));
@@ -592,9 +595,32 @@ async function writeSnapshotScreenshot(snapshot, outDir) {
   if (typeof screenshot !== "string" || screenshot.length === 0) {
     throw new Error("snapshot_missing_screenshot_base64");
   }
+  const bytes = Buffer.from(screenshot, "base64");
+  if (!isPngBytes(bytes)) throw new Error("snapshot_screenshot_not_png");
   const screenshotPath = path.join(outDir, "after-private-tool-call.png");
-  await writeFile(screenshotPath, Buffer.from(screenshot, "base64"));
-  return screenshotPath;
+  await writeFile(screenshotPath, bytes);
+  return {
+    path: screenshotPath,
+    bytes: bytes.length,
+    sha256: sha256(bytes),
+  };
+}
+
+function isPngBytes(bytes) {
+  return Buffer.isBuffer(bytes)
+    && bytes.length >= 8
+    && bytes[0] === 0x89
+    && bytes[1] === 0x50
+    && bytes[2] === 0x4e
+    && bytes[3] === 0x47
+    && bytes[4] === 0x0d
+    && bytes[5] === 0x0a
+    && bytes[6] === 0x1a
+    && bytes[7] === 0x0a;
+}
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 async function pruneExistingCdpPageTargets(cdpUrl) {
