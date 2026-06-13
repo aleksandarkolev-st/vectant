@@ -27,7 +27,7 @@ export function evaluateDojoGuardrailPredicate(
     const [, key, operator, rawExpected] = comparison;
     if (/^[<>=!]/.test(rawExpected.trim())) return failed(predicate, "guardrail_predicate_unsupported");
     const actual = context[key];
-    const expected = parseExpectedValue(rawExpected.trim());
+    const expected = parseExpectedValue(rawExpected.trim(), context);
     const ok = compare(actual, expected, operator);
     return ok ? passed(predicate, actual, expected, operator) : failed(predicate, "guardrail_comparison_failed", actual, expected, operator);
   }
@@ -59,12 +59,15 @@ function compare(actual: unknown, expected: unknown, operator: string): boolean 
   }
 }
 
-function parseExpectedValue(raw: string): unknown {
+function parseExpectedValue(raw: string, context: Record<string, unknown>): unknown {
   if (raw === "true") return true;
   if (raw === "false") return false;
   if (/^-?\d+(?:\.\d+)?$/.test(raw)) return Number(raw);
   if ((raw.startsWith("\"") && raw.endsWith("\"")) || (raw.startsWith("'") && raw.endsWith("'"))) {
     return raw.slice(1, -1);
+  }
+  if (/^[a-zA-Z0-9_.-]+$/.test(raw) && Object.prototype.hasOwnProperty.call(context, raw)) {
+    return context[raw];
   }
   return raw;
 }

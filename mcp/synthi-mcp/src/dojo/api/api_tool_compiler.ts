@@ -209,7 +209,7 @@ export async function executeDojoApiBackedToolInvocation(input: {
   const postcondition = input.tool.postcondition
     ? evaluateDojoGuardrailPredicate(
         input.tool.postcondition,
-        apiPostconditionContext(input.tool.postcondition, response)
+        apiPostconditionContext(input.tool.postcondition, request, response)
       )
     : undefined;
   if (postcondition && !postcondition.ok) {
@@ -650,6 +650,7 @@ function parseProofEvidenceClaims(value: unknown): Array<{ claim: string; satisf
 
 function apiPostconditionContext(
   postcondition: string,
+  request: DojoApiToolHttpRequest,
   response: DojoApiToolHttpResponse
 ): Record<string, unknown> {
   const context: Record<string, unknown> = {
@@ -663,6 +664,14 @@ function apiPostconditionContext(
     for (const [path, value] of Object.entries(flattened)) {
       context[`response.${path}`] = value;
     }
+  }
+  if (request.body && typeof request.body === "object" && !Array.isArray(request.body)) {
+    for (const [path, value] of Object.entries(flattenObject(request.body as Record<string, unknown>))) {
+      context[`request.${path}`] = value;
+    }
+  }
+  for (const [path, value] of Object.entries(request.query)) {
+    context[`request.query.${path}`] = value;
   }
   const key = postcondition.match(/^([a-zA-Z0-9_.-]+)\s*(?:==|!=|<=|>=|<|>|\s+in\s+)/)?.[1];
   if (key && context[key] === undefined && key.includes(".")) {

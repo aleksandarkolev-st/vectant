@@ -403,6 +403,67 @@ describe("Dojo API-backed MCP tool compiler", () => {
     expect(proofValidations).toEqual(["capsule-a:run_workflow"]);
   });
 
+  it("evaluates API postconditions against both request and response values", async () => {
+    const tool = compileDojoApiBackedMcpTool({
+      candidate: {
+        ...approvedMutationCandidate(),
+        postcondition: "invoice.amount == request.amount",
+      },
+      skill_id: "dojo_save_invoice",
+      license_id: "license_save_invoice",
+      license_version: "1.0.0",
+      action: "run_workflow",
+      tool_name: "synthi_api_save_invoice",
+    }).tool!;
+
+    const matched = await executeDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: proofCapsuleFixture(),
+        request: { client_id: "client-a", amount: 42 },
+        idempotency_key: "idem-a",
+      },
+      license_context: licenseContext(),
+      validate_proof: () => ({ ok: true, blocked_by: [] }),
+      transport: () => ({ status: 201, body: { invoice: { amount: 42 } } }),
+      write_evidence: () => "evidence:api-tool-matched-postcondition",
+    });
+
+    expect(matched).toEqual(expect.objectContaining({
+      ok: true,
+      status: "executed",
+      postcondition: expect.objectContaining({
+        ok: true,
+        actual: 42,
+        expected: 42,
+      }),
+    }));
+
+    const mismatched = await executeDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: proofCapsuleFixture(),
+        request: { client_id: "client-a", amount: 42 },
+        idempotency_key: "idem-b",
+      },
+      license_context: licenseContext(),
+      validate_proof: () => ({ ok: true, blocked_by: [] }),
+      transport: () => ({ status: 201, body: { invoice: { amount: 41 } } }),
+      write_evidence: () => "evidence:api-tool-mismatched-postcondition",
+    });
+
+    expect(mismatched).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_postcondition_guardrail_comparison_failed"],
+      postcondition: expect.objectContaining({
+        ok: false,
+        actual: 41,
+        expected: 42,
+      }),
+    }));
+  });
+
   it("does not call the API transport when proof or license validation fails", async () => {
     const tool = compileDojoApiBackedMcpTool({
       candidate: approvedMutationCandidate(),

@@ -82,6 +82,26 @@ describe("Dojo guardrail runtime", () => {
     );
   });
 
+  it("can compare predicate values against other context keys", () => {
+    expect(evaluateDojoGuardrailPredicate("invoice.amount == request.amount", {
+      "invoice.amount": 42,
+      "request.amount": 42,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      actual: 42,
+      expected: 42,
+    }));
+    expect(evaluateDojoGuardrailPredicate("invoice.amount == request.amount", {
+      "invoice.amount": 41,
+      "request.amount": 42,
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["guardrail_comparison_failed"],
+      actual: 41,
+      expected: 42,
+    }));
+  });
+
   it("blocks graph execution when a block-severity guardrail fails", async () => {
     const runtime = new DojoSkillGraphRuntime();
 
