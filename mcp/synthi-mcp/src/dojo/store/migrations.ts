@@ -668,6 +668,28 @@ export const DOJO_POSTGRES_MIGRATIONS: DojoPostgresMigration[] = [
       "CREATE INDEX IF NOT EXISTS dojo_proof_keys_status_idx ON dojo_proof_keys (tenant_id, status, updated_at DESC)",
     ],
   },
+  {
+    id: "007_dojo_evidence_append_only_guards",
+    description: "Install database-level append-only guards for evidence ledger records and checkpoints.",
+    statements: [
+      `CREATE OR REPLACE FUNCTION dojo_reject_evidence_ledger_mutation()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        RAISE EXCEPTION 'dojo_evidence_ledger_append_only';
+      END;
+      $$`,
+      "DROP TRIGGER IF EXISTS dojo_evidence_records_append_only ON dojo_evidence_records",
+      `CREATE TRIGGER dojo_evidence_records_append_only
+      BEFORE UPDATE OR DELETE ON dojo_evidence_records
+      FOR EACH ROW EXECUTE FUNCTION dojo_reject_evidence_ledger_mutation()`,
+      "DROP TRIGGER IF EXISTS dojo_ledger_checkpoints_append_only ON dojo_ledger_checkpoints",
+      `CREATE TRIGGER dojo_ledger_checkpoints_append_only
+      BEFORE UPDATE OR DELETE ON dojo_ledger_checkpoints
+      FOR EACH ROW EXECUTE FUNCTION dojo_reject_evidence_ledger_mutation()`,
+    ],
+  },
 ];
 
 export function dojoPostgresMigrationSql(migrations: DojoPostgresMigration[] = DOJO_POSTGRES_MIGRATIONS): string {

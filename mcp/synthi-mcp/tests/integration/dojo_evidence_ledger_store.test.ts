@@ -74,21 +74,27 @@ describeWithPostgres("PostgresDojoEvidenceLedgerStore", () => {
     }));
   });
 
-  it("detects tampered evidence records", async () => {
+  it("rejects evidence record updates and deletes at the database layer", async () => {
     const store = new PostgresDojoEvidenceLedgerStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
-    await store.append(evidenceInput("evidence_tamper", skillId, "run_a", "c".repeat(64), "2026-06-11T00:01:00.000Z"));
+    const record = await store.append(evidenceInput("evidence_tamper", skillId, "run_a", "c".repeat(64), "2026-06-11T00:01:00.000Z"));
 
-    await pool.query(
+    await expect(pool.query(
       `UPDATE dojo_evidence_records
       SET artifact_sha256 = $4
       WHERE tenant_id = $1 AND workspace_id = $2 AND record_id = $3`,
       [tenantId, workspaceId, "evidence_tamper", "d".repeat(64)]
-    );
+    )).rejects.toThrow(/dojo_evidence_ledger_append_only/);
+
+    await expect(pool.query(
+      `DELETE FROM dojo_evidence_records
+      WHERE tenant_id = $1 AND workspace_id = $2 AND record_id = $3`,
+      [tenantId, workspaceId, "evidence_tamper"]
+    )).rejects.toThrow(/dojo_evidence_ledger_append_only/);
 
     expect(await store.verifyRecordChain("2026-06-11T00:04:00.000Z")).toEqual(expect.objectContaining({
-      ok: false,
-      failed_record_id: "evidence_tamper",
-      blocked_by: ["evidence_record_hash_mismatch"],
+      ok: true,
+      ledger_head_hash: record.record_hash,
+      blocked_by: [],
     }));
   });
 
@@ -118,17 +124,17 @@ describeWithPostgres("PostgresDojoEvidenceLedgerStore", () => {
       blocked_by: [],
     }));
 
-    await pool.query(
+    await expect(pool.query(
       `UPDATE dojo_evidence_records
       SET signature = $4
       WHERE tenant_id = $1 AND workspace_id = $2 AND record_id = $3`,
       [tenantId, workspaceId, "evidence_signed", `hmac-sha256:${"0".repeat(64)}`]
-    );
+    )).rejects.toThrow(/dojo_evidence_ledger_append_only/);
 
     expect(await store.verifyRecordChain("2026-06-11T00:03:00.000Z")).toEqual(expect.objectContaining({
-      ok: false,
-      failed_record_id: "evidence_signed",
-      blocked_by: ["dojo_evidence_signature_invalid"],
+      ok: true,
+      ledger_head_hash: record.record_hash,
+      blocked_by: [],
     }));
   });
 
@@ -156,22 +162,21 @@ describeWithPostgres("PostgresDojoEvidenceLedgerStore", () => {
     });
   });
 
-  it("detects tampered ledger checkpoint record counts", async () => {
+  it("rejects ledger checkpoint updates at the database layer", async () => {
     const store = new PostgresDojoEvidenceLedgerStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
     const record = await store.append(evidenceInput("evidence_checkpoint_count", skillId, "run_a", "2".repeat(64), "2026-06-11T00:01:00.000Z"));
 
-    await pool.query(
+    await expect(pool.query(
       `UPDATE dojo_ledger_checkpoints
       SET record_count = $4
       WHERE tenant_id = $1 AND workspace_id = $2 AND ledger_head_hash = $3`,
       [tenantId, workspaceId, record.record_hash, 3]
-    );
+    )).rejects.toThrow(/dojo_evidence_ledger_append_only/);
 
     expect(await store.verifyRecordChain("2026-06-11T00:04:00.000Z")).toEqual(expect.objectContaining({
-      ok: false,
-      failed_record_id: "evidence_checkpoint_count",
+      ok: true,
       ledger_head_hash: record.record_hash,
-      blocked_by: ["evidence_checkpoint_record_count_mismatch"],
+      blocked_by: [],
     }));
   });
 
