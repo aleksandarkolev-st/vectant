@@ -41,7 +41,9 @@ export type DojoHostedRuntimeBlockCode =
   | "runtime_origin_not_allowed"
   | "runtime_local_network_blocked"
   | "runtime_evidence_writer_missing"
-  | "runtime_evidence_write_failed";
+  | "runtime_evidence_write_failed"
+  | "runtime_timestamp_invalid"
+  | "runtime_revocation_reason_required";
 
 export interface DojoHostedRuntimeCredential {
   credential_id: string;
@@ -268,7 +270,24 @@ class InProcessDojoHostedRuntimeGateway implements DojoHostedRuntimeGateway {
   }
 
   async createSession(input: DojoHostedRuntimeCreateSessionInput): Promise<DojoHostedRuntimeCreateSessionResult> {
-    const now = this.resolveNow(input.now);
+    const nowResolution = this.resolveNow(input.now);
+    if (!nowResolution.ok) {
+      const audit = await this.appendAudit({
+        tenant: input.tenant,
+        event_type: "runtime_session_rejected",
+        entity_kind: "runtime_session",
+        entity_id: input.session_id,
+        created_at: nowResolution.audit_now.toISOString(),
+        details: {
+          skill_id: input.skill_id,
+          run_id: input.run_id,
+          workspace_url: input.workspace_url,
+          blocked_by: nowResolution.blocked_by,
+        },
+      });
+      return { ok: false, blocked_by: nowResolution.blocked_by, audit_event_id: audit.audit_event_id };
+    }
+    const now = nowResolution.now;
     const tenant = input.tenant;
     const workspaceOrigin = originForUrl(input.workspace_url);
     const originAllowlist = normalizeDojoHostedRuntimeOriginAllowlist(input.origin_allowlist);
@@ -383,7 +402,11 @@ class InProcessDojoHostedRuntimeGateway implements DojoHostedRuntimeGateway {
   }
 
   async authorizeAction(input: DojoHostedRuntimeAuthorizeActionInput): Promise<DojoHostedRuntimeActionDecision> {
-    const now = this.resolveNow(input.now);
+    const nowResolution = this.resolveNow(input.now);
+    if (!nowResolution.ok) {
+      return this.blockAction(input, nowResolution.blocked_by, nowResolution.audit_now.toISOString());
+    }
+    const now = nowResolution.now;
     const tenant = input.tenant;
     const session = await this.store.getSession({
       tenant_id: tenant.tenant_id,
@@ -462,7 +485,22 @@ class InProcessDojoHostedRuntimeGateway implements DojoHostedRuntimeGateway {
   }
 
   async revokeSession(input: DojoHostedRuntimeRevokeSessionInput): Promise<DojoHostedRuntimeRevokeSessionResult> {
-    const now = this.resolveNow(input.now);
+    const nowResolution = this.resolveNow(input.now);
+    if (!nowResolution.ok) {
+      const audit = await this.appendAudit({
+        tenant: input.tenant,
+        event_type: "runtime_action_blocked",
+        entity_kind: "runtime_session",
+        entity_id: input.session_id,
+        created_at: nowResolution.audit_now.toISOString(),
+        details: {
+          blocked_by: nowResolution.blocked_by,
+          attempted_action: "revoke_session",
+        },
+      });
+      return { ok: false, blocked_by: nowResolution.blocked_by, audit_event_id: audit.audit_event_id };
+    }
+    const now = nowResolution.now;
     const tenant = input.tenant;
     const session = await this.store.getSession({
       tenant_id: tenant.tenant_id,
@@ -484,11 +522,27 @@ class InProcessDojoHostedRuntimeGateway implements DojoHostedRuntimeGateway {
       return { ok: false, blocked_by: ["runtime_session_not_found"], audit_event_id: audit.audit_event_id };
     }
 
+    const reason = input.reason.trim();
+    if (!reason) {
+      const audit = await this.appendAudit({
+        tenant,
+        event_type: "runtime_action_blocked",
+        entity_kind: "runtime_session",
+        entity_id: input.session_id,
+        created_at: now.toISOString(),
+        details: {
+          blocked_by: ["runtime_revocation_reason_required"],
+          attempted_action: "revoke_session",
+        },
+      });
+      return { ok: false, blocked_by: ["runtime_revocation_reason_required"], audit_event_id: audit.audit_event_id };
+    }
+
     const revoked: DojoHostedRuntimeSessionRecord = {
       ...session,
       status: "revoked",
       revoked_at: session.revoked_at ?? now.toISOString(),
-      revoked_reason: session.revoked_reason ?? requiredString(input.reason, "reason"),
+      revoked_reason: session.revoked_reason ?? reason,
     };
     const audit = await this.appendAudit({
       tenant,
@@ -629,13 +683,31 @@ class InProcessDojoHostedRuntimeGateway implements DojoHostedRuntimeGateway {
     });
   }
 
-  private resolveNow(value: string | undefined): Date {
-    if (!value) return this.nowFn();
+  private resolveNow(value: string | undefined): DojoHostedRuntimeNowResolution {
+    const auditNow = this.nowFn();
+    if (!value) return { ok: true, now: auditNow };
     const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) throw new Error("dojo_hosted_runtime_now_invalid");
-    return parsed;
+    if (Number.isNaN(parsed.getTime())) {
+      return {
+        ok: false,
+        blocked_by: ["runtime_timestamp_invalid"],
+        audit_now: auditNow,
+      };
+    }
+    return { ok: true, now: parsed };
   }
 }
+
+type DojoHostedRuntimeNowResolution =
+  | {
+      ok: true;
+      now: Date;
+    }
+  | {
+      ok: false;
+      blocked_by: ["runtime_timestamp_invalid"];
+      audit_now: Date;
+    };
 
 export function normalizeDojoHostedRuntimeOriginAllowlist(values: string[]): string[] {
   return [...new Set(values.map(originForUrl).filter((value): value is string => Boolean(value)))].sort();
@@ -806,12 +878,6 @@ function runtimeActionEvidenceDetails(
       credential_expires_at: session.credential_expires_at,
     },
   };
-}
-
-function requiredString(value: string, field: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) throw new Error(`dojo_hosted_runtime_${field}_required`);
-  return trimmed;
 }
 
 function sessionKey(tenantId: string, workspaceId: string, sessionId: string): string {

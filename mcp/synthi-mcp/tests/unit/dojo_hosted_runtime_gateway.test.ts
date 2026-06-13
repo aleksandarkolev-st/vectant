@@ -145,6 +145,67 @@ describe("Dojo hosted runtime gateway", () => {
     ]);
   });
 
+  it("rejects invalid timestamps as auditable blocks", async () => {
+    const audit = new MemoryAuditStore();
+    const gateway = gatewayWith({
+      audit,
+      ids: ["session-id", "runtime-id", "credential-id"],
+      secrets: ["secret-a"],
+    });
+
+    const invalidCreate = await gateway.createSession({
+      tenant: tenant("tenant-a", "workspace-a"),
+      skill_id: "skill-a",
+      run_id: "run-a",
+      workspace_url: "https://workspace.example.test/app",
+      origin_allowlist: ["https://workspace.example.test"],
+      now: "not-a-date",
+    });
+    expect(invalidCreate).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["runtime_timestamp_invalid"],
+      audit_event_id: "audit-1",
+    }));
+
+    const created = await createSession(gateway);
+    if (!created.ok) throw new Error("expected_session_create_success");
+
+    const invalidAuthorize = await gateway.authorizeAction({
+      tenant: tenant("tenant-a", "workspace-a"),
+      session_id: created.session.session_id,
+      skill_id: "skill-a",
+      run_id: "run-a",
+      action_kind: "control",
+      url: "https://workspace.example.test/app",
+      credential_id: created.credentials.credential_id,
+      credential_secret: created.credentials.credential_secret,
+      now: "not-a-date",
+    });
+    expect(invalidAuthorize).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["runtime_timestamp_invalid"],
+      audit_event_id: "audit-3",
+    }));
+
+    const invalidRevoke = await gateway.revokeSession({
+      tenant: tenant("tenant-a", "workspace-a"),
+      session_id: created.session.session_id,
+      reason: "operator_revoked",
+      now: "not-a-date",
+    });
+    expect(invalidRevoke).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["runtime_timestamp_invalid"],
+      audit_event_id: "audit-4",
+    }));
+    expect(audit.events.map((event) => event.event_type)).toEqual([
+      "runtime_session_rejected",
+      "runtime_session_created",
+      "runtime_action_blocked",
+      "runtime_action_blocked",
+    ]);
+  });
+
   it("rejects local-network hosted sessions unless egress is explicitly allowed", async () => {
     const audit = new MemoryAuditStore();
     const gateway = gatewayWith({ audit });
@@ -341,6 +402,44 @@ describe("Dojo hosted runtime gateway", () => {
       ok: false,
       blocked_by: ["runtime_evidence_writer_missing"],
       evidence_record_ids: [],
+    }));
+  });
+
+  it("rejects empty revocation reasons without revoking the session", async () => {
+    const audit = new MemoryAuditStore();
+    const store = new InMemoryDojoHostedRuntimeSessionStore();
+    const gateway = gatewayWith({
+      audit,
+      store,
+      ids: ["session-id", "runtime-id", "credential-id"],
+      secrets: ["secret-a"],
+    });
+    const created = await createSession(gateway);
+    if (!created.ok) throw new Error("expected_session_create_success");
+
+    const rejected = await gateway.revokeSession({
+      tenant: tenant("tenant-a", "workspace-a"),
+      session_id: created.session.session_id,
+      reason: " ",
+      now: "2026-06-11T00:00:30.000Z",
+    });
+
+    expect(rejected).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["runtime_revocation_reason_required"],
+      audit_event_id: "audit-2",
+    }));
+    expect(store.getSession({
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      session_id: created.session.session_id,
+    })?.status).toBe("active");
+    expect(audit.events[1]).toEqual(expect.objectContaining({
+      event_type: "runtime_action_blocked",
+      details: expect.objectContaining({
+        blocked_by: ["runtime_revocation_reason_required"],
+        attempted_action: "revoke_session",
+      }),
     }));
   });
 
