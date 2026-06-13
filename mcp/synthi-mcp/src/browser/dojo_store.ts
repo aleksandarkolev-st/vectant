@@ -121,7 +121,7 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
     return cloneJson(validated);
   }
 
-  markProofCapsuleUsed(capsuleId: string, _runId: string, now: string = new Date().toISOString()): DojoProofConsumeResult {
+  markProofCapsuleUsed(capsuleId: string, runId: string, now: string = new Date().toISOString()): DojoProofConsumeResult {
     const record = this.proofRecords.get(capsuleId);
     if (!record) return proofConsumeBlocked(null, "missing", "proof_capsule_not_issued_by_registry");
     if (record.status === "revoked") return proofConsumeBlocked(record, "revoked", "proof_capsule_revoked");
@@ -133,6 +133,7 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
       last_validated_at: now,
     };
     this.proofRecords.set(capsuleId, cloneJson(used));
+    this.appendAuditEvent(proofUseAuditEventInput(used, runId, now));
     return { ok: true, record: cloneJson(used), status: "used", blocked_by: [] };
   }
 
@@ -335,7 +336,7 @@ export class EncryptedFileDojoSkillStore implements DojoControlPlaneStore {
     return validated ? cloneJson(validated) : null;
   }
 
-  markProofCapsuleUsed(capsuleId: string, _runId: string, now: string = new Date().toISOString()): DojoProofConsumeResult {
+  markProofCapsuleUsed(capsuleId: string, runId: string, now: string = new Date().toISOString()): DojoProofConsumeResult {
     let result: DojoProofConsumeResult | null = null;
     this.updateScope((scope) => {
       const record = scope.proof_records[capsuleId];
@@ -358,6 +359,8 @@ export class EncryptedFileDojoSkillStore implements DojoControlPlaneStore {
         last_validated_at: now,
       };
       scope.proof_records[capsuleId] = cloneJson(used);
+      const audit = auditEventRecordFromInput(proofUseAuditEventInput(used, runId, now));
+      scope.audit_events[audit.audit_event_id] = cloneJson(audit);
       result = { ok: true, record: cloneJson(used), status: "used", blocked_by: [] };
     });
     return result ?? proofConsumeBlocked(null, "missing", "proof_capsule_not_issued_by_registry");
@@ -606,6 +609,29 @@ function auditEventRecordFromInput(event: DojoAuditEventInput): DojoAuditEventRe
     ...(event.entity_id ? { entity_id: event.entity_id } : {}),
     details: cloneJson(event.details ?? {}),
     created_at: createdAt,
+  };
+}
+
+function proofUseAuditEventInput(record: DojoProofCapsuleRecord, runId: string, now: string): DojoAuditEventInput {
+  return {
+    tenant_id: record.tenant_id ?? "legacy-local-tenant",
+    workspace_id: record.workspace_id ?? "legacy-local-workspace",
+    actor: record.issued_by ?? { actor_id: "dojo-proof-store", actor_type: "service" },
+    event_type: "proof_used",
+    request_id: `proof-used-${record.capsule_id}`,
+    correlation_id: `proof-${record.skill_id}-${record.capsule_id}`,
+    entity_kind: "proof_capsule",
+    entity_id: record.capsule_id,
+    created_at: now,
+    details: {
+      skill_id: record.skill_id,
+      requested_action: record.requested_action,
+      run_id: runId,
+      license_id: record.license_id,
+      license_version: record.license_version,
+      proof_status: record.status,
+      substrate_claim: record.substrate_claim,
+    },
   };
 }
 

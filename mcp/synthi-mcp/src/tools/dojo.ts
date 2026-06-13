@@ -2062,7 +2062,7 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
   const issuedBy = enforcement.production_enforcement
     ? { actor_id: tenant.actor_id, actor_type: tenant.actor_type }
     : (issuerActorId && issuerActorType ? { actor_id: issuerActorId, actor_type: issuerActorType } : undefined);
-  const scopedTenantId = enforcement.production_enforcement || stringOpt(a["tenant_id"]) ? tenant.tenant_id : undefined;
+  const scopedTenantId = tenant.tenant_id;
   const evidenceLedgerRecords = evidenceLedgerRecordsOpt(a["evidence_ledger_records"]);
   const requireVerifiedEvidence = boolOpt(a["require_verified_evidence"])
     || enforcement.production_enforcement

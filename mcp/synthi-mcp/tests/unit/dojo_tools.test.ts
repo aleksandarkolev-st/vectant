@@ -1911,10 +1911,11 @@ describe("Agent Dojo MCP tools", () => {
           expect.objectContaining({
             export_id: "control_plane_audit",
             status: "available",
-            record_count: 1,
-            audit_event_refs: [expect.stringMatching(/^audit:audit_/)],
+            record_count: 3,
+            audit_event_refs: expect.arrayContaining([expect.stringMatching(/^audit:audit_/)]),
             event_type_counts: expect.objectContaining({
               ghost_shadow_evidence_recorded: 1,
+              proof_used: 2,
             }),
           }),
         ]),
@@ -1923,14 +1924,14 @@ describe("Agent Dojo MCP tools", () => {
             expect.objectContaining({
               artifact_id: "control_plane_audit",
               status: "available",
-              evidence_refs: [expect.stringMatching(/^audit:audit_/)],
+              evidence_refs: expect.arrayContaining([expect.stringMatching(/^audit:audit_/)]),
             }),
           ]),
         }),
       }),
       governance_service: expect.objectContaining({
         audit_exports: expect.arrayContaining([
-          expect.objectContaining({ export_id: "control_plane_audit", record_count: 1 }),
+          expect.objectContaining({ export_id: "control_plane_audit", record_count: 3 }),
         ]),
       }),
     }));
@@ -2572,6 +2573,11 @@ describe("Agent Dojo MCP tools", () => {
       skill_id: skillId,
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
+      ...productionTenantContextArgs({
+        actor_id: "production-agent-a",
+        request_id: "req-production-issue",
+        correlation_id: "corr-production-issue",
+      }),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -2682,6 +2688,11 @@ describe("Agent Dojo MCP tools", () => {
       skill_id: skillId,
       requested_action: "run_prefix_validation",
       context_claims: { workspace_verified: true },
+      ...productionTenantContextArgs({
+        actor_id: "hosted-runtime-agent-a",
+        request_id: "req-hosted-runtime-proof-issue",
+        correlation_id: "corr-hosted-runtime-proof-issue",
+      }),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -2802,6 +2813,7 @@ describe("Agent Dojo MCP tools", () => {
         "runtime_action_blocked",
         "runtime_session_created",
         "runtime_action_authorized",
+        "proof_used",
       ])
     );
   });
