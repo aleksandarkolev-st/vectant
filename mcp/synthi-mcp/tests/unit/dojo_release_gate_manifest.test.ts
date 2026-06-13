@@ -46,6 +46,10 @@ import {
   DOJO_SECURITY_ABUSE_CLASSES,
   DOJO_SECURITY_ABUSE_TEST_FILES,
 } from "../../scripts/dojo-security-abuse-self-check.mjs";
+import {
+  DOJO_SOURCE_DRIFT_CAPABILITIES,
+  DOJO_SOURCE_DRIFT_TEST_FILES,
+} from "../../scripts/dojo-source-drift-self-check.mjs";
 
 const PACKAGE_SCRIPTS = {
   "mcp/synthi-mcp/package.json": {
@@ -60,6 +64,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:postgres-control-plane:self-check": "node scripts/dojo-postgres-control-plane-self-check.mjs",
     "proof:dojo:affordance-codemod:self-check": "node scripts/dojo-affordance-codemod-self-check.mjs",
     "proof:dojo:api-tool-compiler:self-check": "node scripts/dojo-api-tool-compiler-self-check.mjs",
+    "proof:dojo:source-drift:self-check": "node scripts/dojo-source-drift-self-check.mjs",
     "proof:dojo:managed-key-signing:self-check": "node scripts/dojo-managed-key-signing-self-check.mjs",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
     "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
@@ -163,6 +168,28 @@ describe("Dojo release gate manifest", () => {
         script_exists: true,
         report_schema_version: "synthi.dojo.affordanceCodemodSelfCheck.v1",
         evidence_schema_version: "synthi.dojo.affordanceCodemodEvidence.v1",
+      }),
+      expect.objectContaining({
+        id: "dojo_source_drift_self_check",
+        tier: "T2",
+        package_script: "proof:dojo:source-drift:self-check",
+        evidence_kind: "proof_artifact",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.sourceDriftEvidence.v1",
+        default_evidence_path: "tmp/dojo-source-drift/dojo-source-drift.evidence.json",
+        artifact_requirements: expect.objectContaining({
+          require_all_source_drift_capabilities_covered: true,
+          required_source_drift_capabilities: DOJO_SOURCE_DRIFT_CAPABILITIES,
+          required_test_files: DOJO_SOURCE_DRIFT_TEST_FILES,
+          require_release_scoped_snapshot: true,
+          require_signed_snapshot_verification: true,
+          require_source_content_hash: true,
+          require_changed_token_expiry: true,
+          require_removed_token_expiry: true,
+          require_added_risky_affordance_review: true,
+          require_unrelated_token_no_expiry: true,
+          require_tamper_rejection: true,
+        }),
       }),
       expect.objectContaining({
         id: "dojo_api_tool_compiler_self_check",
@@ -463,6 +490,22 @@ describe("Dojo release gate manifest", () => {
       `postgres_control_plane_missing_required_test_files:${missingPostgresTestFile}`,
     ]));
 
+    const brokenSourceDrift = JSON.parse(JSON.stringify(manifest));
+    const sourceDriftGate = brokenSourceDrift.gates.find((gate) => gate.id === "dojo_source_drift_self_check");
+    const missingSourceDriftTestFile = DOJO_SOURCE_DRIFT_TEST_FILES[0];
+    sourceDriftGate.artifact_requirements.required_source_drift_capabilities = DOJO_SOURCE_DRIFT_CAPABILITIES
+      .filter((capability) => capability !== "source_drift_rejects_unverified_snapshots");
+    sourceDriftGate.artifact_requirements.required_test_files = DOJO_SOURCE_DRIFT_TEST_FILES
+      .filter((file) => file !== missingSourceDriftTestFile);
+    sourceDriftGate.artifact_requirements.require_changed_token_expiry = false;
+    sourceDriftGate.artifact_requirements.require_tamper_rejection = false;
+    expect(validateDojoReleaseGateManifest(brokenSourceDrift, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "source_drift_missing_changed_token_expiry_requirement",
+      "source_drift_missing_tamper_rejection_requirement",
+      "source_drift_missing_required_capabilities:source_drift_rejects_unverified_snapshots",
+      `source_drift_missing_required_test_files:${missingSourceDriftTestFile}`,
+    ]));
+
     const brokenApiToolCompiler = JSON.parse(JSON.stringify(manifest));
     const apiToolCompilerGate = brokenApiToolCompiler.gates.find((gate) => gate.id === "dojo_api_tool_compiler_self_check");
     const missingApiToolCompilerTestFile = DOJO_API_TOOL_COMPILER_TEST_FILES[0];
@@ -637,11 +680,12 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 15,
+      proof_artifact_gate_count: 16,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
         "dojo_mcp_host_conformance_self_check",
+        "dojo_source_drift_self_check",
         "dojo_api_tool_compiler_self_check",
         "docker_integration",
         "workflow_e2e_hosted",

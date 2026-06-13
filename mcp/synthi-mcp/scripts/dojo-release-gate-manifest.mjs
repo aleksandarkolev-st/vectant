@@ -45,6 +45,10 @@ import {
   DOJO_SECURITY_ABUSE_CLASSES,
   DOJO_SECURITY_ABUSE_TEST_FILES,
 } from "./dojo-security-abuse-self-check.mjs";
+import {
+  DOJO_SOURCE_DRIFT_CAPABILITIES,
+  DOJO_SOURCE_DRIFT_TEST_FILES,
+} from "./dojo-source-drift-self-check.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -264,6 +268,34 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     evidence_schema_version: "synthi.dojo.affordanceCodemodEvidence.v1",
     default_report_path: "tmp/dojo-affordance-codemod-self-check/dojo-affordance-codemod-self-check.json",
     default_evidence_path: "tmp/dojo-affordance-codemod-self-check/dojo-affordance-codemod-self-check.evidence.json",
+  },
+  {
+    id: "dojo_source_drift_self_check",
+    tier: "T2",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:source-drift:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_source_snapshot.test.ts tests/unit/dojo_source_drift.test.ts -- --reporter=json --outputFile ../../tmp/dojo-source-drift/dojo-source-drift.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:source-drift:self-check",
+    required_for: ["milestone", "release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.sourceDriftEvidence.v1",
+    default_evidence_path: "tmp/dojo-source-drift/dojo-source-drift.evidence.json",
+    artifact_requirements: {
+      require_all_source_drift_capabilities_covered: true,
+      required_source_drift_capabilities: [...DOJO_SOURCE_DRIFT_CAPABILITIES],
+      required_test_files: [...DOJO_SOURCE_DRIFT_TEST_FILES],
+      require_release_scoped_snapshot: true,
+      require_signed_snapshot_verification: true,
+      require_source_content_hash: true,
+      require_changed_token_expiry: true,
+      require_removed_token_expiry: true,
+      require_added_risky_affordance_review: true,
+      require_unrelated_token_no_expiry: true,
+      require_tamper_rejection: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
   },
   {
     id: "dojo_api_tool_compiler_self_check",
@@ -658,6 +690,7 @@ export const DOJO_MILESTONE_GATE_IDS = [
   "dojo_self_check",
   "dojo_mcp_host_conformance_self_check",
   "dojo_affordance_codemod_self_check",
+  "dojo_source_drift_self_check",
   "dojo_api_tool_compiler_self_check",
   "docker_integration",
   "dojo_full_visual_proof",
@@ -836,6 +869,55 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!Array.isArray(postgresControlPlaneGate.requires_env)
       || !postgresControlPlaneGate.requires_env.includes("SYNTHI_DOJO_POSTGRES_TEST_URL")) {
       errors.push("postgres_control_plane_missing_postgres_env");
+    }
+  }
+  const sourceDriftGate = gates.find((gate) => gate.id === "dojo_source_drift_self_check");
+  if (sourceDriftGate) {
+    if (sourceDriftGate.evidence_schema_version !== "synthi.dojo.sourceDriftEvidence.v1") {
+      errors.push("source_drift_missing_evidence_schema");
+    }
+    if (sourceDriftGate.package_script !== "proof:dojo:source-drift:self-check") {
+      errors.push("source_drift_missing_package_script");
+    }
+    if (!sourceDriftGate.default_evidence_path) errors.push("source_drift_missing_default_evidence_path");
+    if (!sourceDriftGate.artifact_requirements?.require_all_source_drift_capabilities_covered) {
+      errors.push("source_drift_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_release_scoped_snapshot", "source_drift_missing_release_scope_requirement"],
+      ["require_signed_snapshot_verification", "source_drift_missing_signature_requirement"],
+      ["require_source_content_hash", "source_drift_missing_content_hash_requirement"],
+      ["require_changed_token_expiry", "source_drift_missing_changed_token_expiry_requirement"],
+      ["require_removed_token_expiry", "source_drift_missing_removed_token_expiry_requirement"],
+      ["require_added_risky_affordance_review", "source_drift_missing_risky_affordance_review_requirement"],
+      ["require_unrelated_token_no_expiry", "source_drift_missing_unrelated_no_expiry_requirement"],
+      ["require_tamper_rejection", "source_drift_missing_tamper_rejection_requirement"],
+    ]) {
+      if (!sourceDriftGate.artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredSourceDriftCapabilities = Array.isArray(sourceDriftGate.artifact_requirements?.required_source_drift_capabilities)
+      ? sourceDriftGate.artifact_requirements.required_source_drift_capabilities
+      : [];
+    const missingSourceDriftCapabilities = DOJO_SOURCE_DRIFT_CAPABILITIES
+      .filter((capability) => !requiredSourceDriftCapabilities.includes(capability));
+    if (missingSourceDriftCapabilities.length > 0) {
+      errors.push(`source_drift_missing_required_capabilities:${missingSourceDriftCapabilities.join(",")}`);
+    }
+    const missingSourceDriftTestFiles = missingRequiredEntries(
+      DOJO_SOURCE_DRIFT_TEST_FILES,
+      sourceDriftGate.artifact_requirements?.required_test_files,
+    );
+    if (missingSourceDriftTestFiles.length > 0) {
+      errors.push(`source_drift_missing_required_test_files:${missingSourceDriftTestFiles.join(",")}`);
+    }
+    if (!sourceDriftGate.artifact_requirements?.require_no_skipped_tests) {
+      errors.push("source_drift_missing_no_skipped_requirement");
+    }
+    if (!sourceDriftGate.artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("source_drift_missing_digest_requirement");
+    }
+    if (!sourceDriftGate.artifact_requirements?.require_json_report_digest_match) {
+      errors.push("source_drift_missing_json_report_digest_requirement");
     }
   }
   const apiToolCompilerGate = gates.find((gate) => gate.id === "dojo_api_tool_compiler_self_check");

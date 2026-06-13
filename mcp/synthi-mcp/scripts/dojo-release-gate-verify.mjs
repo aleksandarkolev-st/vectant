@@ -56,6 +56,10 @@ import {
   DOJO_SECURITY_ABUSE_CLASSES,
   DOJO_SECURITY_ABUSE_TEST_FILES,
 } from "./dojo-security-abuse-self-check.mjs";
+import {
+  DOJO_SOURCE_DRIFT_CAPABILITIES,
+  DOJO_SOURCE_DRIFT_TEST_FILES,
+} from "./dojo-source-drift-self-check.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -72,6 +76,7 @@ const DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tm
 const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-host-conformance");
 const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-postgres-control-plane");
 const DEFAULT_AFFORDANCE_CODEMOD_DIR = path.join(REPO_ROOT, "tmp", "dojo-affordance-codemod-self-check");
+const DEFAULT_SOURCE_DRIFT_DIR = path.join(REPO_ROOT, "tmp", "dojo-source-drift");
 const DEFAULT_API_TOOL_COMPILER_DIR = path.join(REPO_ROOT, "tmp", "dojo-api-tool-compiler");
 const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-integration");
 const DEFAULT_MANAGED_KEY_SIGNING_DIR = path.join(REPO_ROOT, "tmp", "dojo-managed-key-signing");
@@ -186,6 +191,15 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       evidencePath: resolveRepoPath(args["affordance-codemod-evidence"]
         || affordanceGate.default_evidence_path
         || path.join(DEFAULT_AFFORDANCE_CODEMOD_DIR, "dojo-affordance-codemod-self-check.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+  if (truthy(args["release-candidate"]) || truthy(args["include-source-drift"]) || args["source-drift-evidence"]) {
+    const sourceDriftGate = findGate(manifest, "dojo_source_drift_self_check") || {};
+    sourceApiResults.push(await verifyDojoSourceDriftEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["source-drift-evidence"]
+        || sourceDriftGate.default_evidence_path
+        || path.join(DEFAULT_SOURCE_DRIFT_DIR, "dojo-source-drift.evidence.json")),
       releaseCandidate: truthy(args["release-candidate"]),
     }));
   }
@@ -780,6 +794,88 @@ export async function verifyDojoAffordanceCodemodEvidenceArtifact({ reportPath, 
     report_schema_version: report?.schema_version ?? null,
     evidence_schema_version: evidence?.schema_version ?? null,
     operation_count: Array.isArray(evidence?.operation_ids) ? evidence.operation_ids.length : 0,
+  };
+}
+
+export async function verifyDojoSourceDriftEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoSourceDriftEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_source_drift_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoSourceDriftEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.sourceDriftEvidence.v1") {
+    errors.push(`source_drift_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("source_drift_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`source_drift_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("source_drift_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`source_drift_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_SOURCE_DRIFT_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`source_drift_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_SOURCE_DRIFT_TEST_FILES,
+    prefix: "source_drift",
+  }));
+  const untestedRequiredCapabilities = DOJO_SOURCE_DRIFT_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`source_drift_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`source_drift_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`source_drift_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.source_drift_contract || {};
+  for (const [field, errorCode] of [
+    ["release_scoped_snapshot_required", "source_drift_release_scope_requirement_missing"],
+    ["signed_snapshot_verification_required", "source_drift_signature_requirement_missing"],
+    ["source_content_hash_required", "source_drift_content_hash_requirement_missing"],
+    ["changed_token_expiry_required", "source_drift_changed_token_expiry_requirement_missing"],
+    ["removed_token_expiry_required", "source_drift_removed_token_expiry_requirement_missing"],
+    ["added_risky_affordance_review_required", "source_drift_risky_affordance_review_requirement_missing"],
+    ["unrelated_token_no_expiry_required", "source_drift_unrelated_no_expiry_requirement_missing"],
+    ["tamper_rejection_required", "source_drift_tamper_rejection_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("source_drift_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`source_drift_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`source_drift_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("source_drift_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`source_drift_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
   };
 }
 
@@ -2140,6 +2236,37 @@ async function runSelfCheck({ outDir }) {
   });
   assert(rejectedAffordanceCodemod.errors.includes("affordance_codemod_before_did_not_fail"));
 
+  const sourceDriftDir = path.join(outDir, "source-drift");
+  await mkdir(sourceDriftDir, { recursive: true });
+  const sourceDriftArtifacts = await writeSourceDriftEvidenceForSelfCheck({ outDir: sourceDriftDir });
+  const sourceDriftResult = await verifyDojoSourceDriftEvidenceArtifact({
+    evidencePath: sourceDriftArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(sourceDriftResult.ok, true, sourceDriftResult.errors.join(";"));
+  const rejectedSourceDriftArtifacts = await writeSourceDriftEvidenceForSelfCheck({
+    outDir: sourceDriftDir,
+    basename: "dojo-source-drift-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["source_drift_rejects_unverified_snapshots"],
+      source_drift_contract: {
+        ...sourceDriftArtifacts.evidence.source_drift_contract,
+        changed_token_expiry_required: false,
+        tamper_rejection_required: false,
+      },
+    },
+  });
+  const rejectedSourceDrift = await verifyDojoSourceDriftEvidenceArtifact({
+    evidencePath: rejectedSourceDriftArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedSourceDrift.errors.includes("source_drift_coverage_incomplete"));
+  assert(rejectedSourceDrift.errors.includes("source_drift_missing_capabilities:source_drift_rejects_unverified_snapshots"));
+  assert(rejectedSourceDrift.errors.includes("source_drift_changed_token_expiry_requirement_missing"));
+  assert(rejectedSourceDrift.errors.includes("source_drift_tamper_rejection_requirement_missing"));
+
   const apiToolCompilerDir = path.join(outDir, "api-tool-compiler");
   await mkdir(apiToolCompilerDir, { recursive: true });
   const apiToolCompilerArtifacts = await writeApiToolCompilerEvidenceForSelfCheck({ outDir: apiToolCompilerDir });
@@ -2498,6 +2625,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(stdioHostConformanceResult),
       summarizeSection(codexHostConformanceResult),
       summarizeSection(managedKeySigningResult),
+      summarizeSection(sourceDriftResult),
       summarizeSection(apiToolCompilerResult),
       summarizeSection(visualResult),
       summarizeSection(securityResult),
@@ -2514,6 +2642,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedDryRun),
       summarizeSection(rejectedStdioHost),
       summarizeSection(rejectedManagedKeySigning),
+      summarizeSection(rejectedSourceDrift),
       summarizeSection(rejectedApiToolCompiler),
       summarizeSection(rejectedSecurity),
       summarizeSection(rejectedCompliance),
@@ -2712,6 +2841,91 @@ async function writeAffordanceCodemodArtifactsForSelfCheck({ outDir, basename = 
   return {
     report_path: reportPath,
     evidence_path: evidencePath,
+  };
+}
+
+async function writeSourceDriftEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-source-drift",
+  overrides = {},
+}) {
+  const stdout = "source drift focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_SOURCE_DRIFT_CAPABILITIES.length,
+    numPassedTests: DOJO_SOURCE_DRIFT_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: 1,
+    numPassedTestSuites: 1,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_SOURCE_DRIFT_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.sourceDriftEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_SOURCE_DRIFT_CAPABILITIES],
+    tested_capabilities: [...DOJO_SOURCE_DRIFT_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_SOURCE_DRIFT_CAPABILITIES.length,
+    configured_capability_count: DOJO_SOURCE_DRIFT_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    source_drift_contract: {
+      release_scoped_snapshot_required: true,
+      signed_snapshot_verification_required: true,
+      source_content_hash_required: true,
+      changed_token_expiry_required: true,
+      removed_token_expiry_required: true,
+      added_risky_affordance_review_required: true,
+      unrelated_token_no_expiry_required: true,
+      tamper_rejection_required: true,
+    },
+    test_files: [...DOJO_SOURCE_DRIFT_TEST_FILES],
+    test_file_count: DOJO_SOURCE_DRIFT_TEST_FILES.length,
+    reported_test_file_count: DOJO_SOURCE_DRIFT_TEST_FILES.length,
+    test_summary: {
+      total_tests: DOJO_SOURCE_DRIFT_CAPABILITIES.length,
+      passed_tests: DOJO_SOURCE_DRIFT_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    budget_evaluation: { ok: true },
+    stdout_path: stdoutPath,
+    stdout_sha256: sha256(stdout),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_path: stderrPath,
+    stderr_sha256: sha256(stderr),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
   };
 }
 
