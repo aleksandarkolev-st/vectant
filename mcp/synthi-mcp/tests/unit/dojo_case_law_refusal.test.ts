@@ -98,6 +98,46 @@ describe("Dojo case-law refusal explanation", () => {
       evidence_refs: [],
     }));
   });
+
+  it("does not cite inactive case law even when a stale graph reference remains", () => {
+    const registry = new InMemoryDojoCaseLawRegistry();
+    const proposed = registry.propose(createDojoCaseLawFromFailure({
+      source_skill_id: "skill-a",
+      source_run_id: "run-a",
+      scenario_id: "scenario-a",
+      mutation_kind: "duplicate_entity",
+      finding: "Duplicate display name caused unsafe selection.",
+      impact: "Wrong record may be mutated.",
+      rule_created: "Require stable ID before mutation.",
+      applies_to: ["run_workflow"],
+      binding_scope: { kind: "workspace", id: "workspace-a" },
+      evidence_refs: ["evidence:oracle-a"],
+      now: "2026-06-11T00:00:00.000Z",
+    }));
+    const approved = registry.approve(proposed.case_id, {
+      reviewer: "reviewer-a",
+      now: "2026-06-11T01:00:00.000Z",
+    });
+    const graph = bindCaseLawGuardrailsToGraph(graphFixture(), [approved]);
+    const staleRecord = {
+      ...approved,
+      status: "deprecated" as const,
+      superseded_by: "case-next",
+      updated_at: "2026-06-11T02:00:00.000Z",
+    };
+
+    expect(explainDojoRuntimeRefusal({
+      graph,
+      blocked_action: "run_workflow",
+      blocked_by: [`guardrail_failed:case_guard_${approved.case_id}`],
+      case_law: [staleRecord],
+    })).toEqual(expect.objectContaining({
+      rule: "Satisfy guardrail predicate: stable_entity_identity == true",
+      case_law_citations: [],
+      evidence_refs: [],
+      smallest_allowed_next_step: "Provide the missing proof, approval, or runtime condition before run_workflow.",
+    }));
+  });
 });
 
 function graphFixture(): DojoSkillGraph {

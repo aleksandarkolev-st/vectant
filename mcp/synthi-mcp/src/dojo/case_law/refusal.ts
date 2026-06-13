@@ -1,5 +1,5 @@
 import type { DojoSkillGraph } from "../graph/types.js";
-import type { DojoCaseLawRecord } from "./registry.js";
+import { isDojoCaseLawBindingActive, type DojoCaseLawRecord } from "./registry.js";
 
 export interface DojoRuntimeRefusalExplanation {
   schema_version: "synthi.dojo.runtimeRefusalExplanation.v1";
@@ -35,7 +35,8 @@ export function explainDojoRuntimeRefusal(input: {
     : []
   );
   const citations = input.case_law
-    .filter((record) => matchingCaseIds.has(record.case_id))
+    .filter((record) => matchingCaseIds.has(record.case_id) && isDojoCaseLawBindingActive(record))
+    .sort((left, right) => left.case_id.localeCompare(right.case_id))
     .map((record) => ({
       case_id: record.case_id,
       title: record.title,

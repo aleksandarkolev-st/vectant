@@ -1,5 +1,5 @@
 import type { DojoGraphGuardrailRequirement, DojoSkillGraph } from "../graph/types.js";
-import type { DojoCaseLawRecord } from "./registry.js";
+import { isDojoCaseLawBindingActive, type DojoCaseLawRecord } from "./registry.js";
 
 export interface DojoCaseLawGuardrailBinding {
   case_id: string;
@@ -9,7 +9,7 @@ export interface DojoCaseLawGuardrailBinding {
 }
 
 export function synthesizeDojoGuardrailFromCase(caseLaw: DojoCaseLawRecord): DojoCaseLawGuardrailBinding | null {
-  if (caseLaw.status !== "approved") return null;
+  if (!isDojoCaseLawBindingActive(caseLaw)) return null;
   return {
     case_id: caseLaw.case_id,
     guardrail: {

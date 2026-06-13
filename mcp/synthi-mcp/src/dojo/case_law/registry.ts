@@ -48,23 +48,29 @@ export function createDojoCaseLawFromFailure(input: {
   evidence_refs: string[];
   now: string;
 }): DojoCaseLawRecord {
-  if (input.evidence_refs.length === 0) throw new Error("dojo_case_law_evidence_required");
+  const evidenceRefs = uniqueStrings(input.evidence_refs);
+  if (evidenceRefs.length === 0) throw new Error("dojo_case_law_evidence_required");
   const caseId = `case_${shortHash(`${input.source_skill_id}:${input.source_run_id}:${input.scenario_id}:${input.finding}`)}`;
-  return {
+  const record: DojoCaseLawRecord = {
     schema_version: "synthi.dojo.caseLaw.v1",
     case_id: caseId,
     title: titleFor(input.mutation_kind),
     finding: input.finding,
     impact: input.impact,
     rule_created: input.rule_created,
-    applies_to: [...new Set(input.applies_to)].sort(),
-    binding_scope: input.binding_scope,
+    applies_to: uniqueStrings(input.applies_to),
+    binding_scope: {
+      kind: input.binding_scope.kind,
+      id: input.binding_scope.id,
+    },
     status: "proposed",
-    evidence_refs: [...new Set(input.evidence_refs)].sort(),
+    evidence_refs: evidenceRefs,
     appeal_status: "none",
     created_at: input.now,
     updated_at: input.now,
   };
+  validateCaseLawRecord(record);
+  return record;
 }
 
 export class InMemoryDojoCaseLawRegistry implements DojoCaseLawRegistry {
@@ -72,6 +78,7 @@ export class InMemoryDojoCaseLawRegistry implements DojoCaseLawRegistry {
 
   propose(record: DojoCaseLawRecord): DojoCaseLawRecord {
     validateCaseLawRecord(record);
+    if (record.status !== "proposed") throw new Error("dojo_case_law_proposal_status_invalid");
     const clone = cloneCase(record);
     this.cases.set(clone.case_id, clone);
     return cloneCase(clone);
@@ -79,27 +86,33 @@ export class InMemoryDojoCaseLawRegistry implements DojoCaseLawRegistry {
 
   approve(caseId: string, input: { reviewer: string; now: string }): DojoCaseLawRecord {
     const record = this.requiredCase(caseId);
-    if (!input.reviewer.trim()) throw new Error("dojo_case_law_reviewer_required");
+    validateReviewerAndTimestamp(input);
+    if (record.status !== "proposed") throw new Error("dojo_case_law_approval_not_pending");
+    if (record.appeal_status === "overturned") throw new Error("dojo_case_law_appeal_overturned");
     const approved = {
       ...record,
       status: "approved" as const,
-      reviewer: input.reviewer,
+      reviewer: input.reviewer.trim(),
       updated_at: input.now,
     };
+    validateCaseLawRecord(approved);
     this.cases.set(caseId, approved);
     return cloneCase(approved);
   }
 
   deprecate(caseId: string, input: { superseded_by?: string; reviewer: string; now: string }): DojoCaseLawRecord {
     const record = this.requiredCase(caseId);
-    if (!input.reviewer.trim()) throw new Error("dojo_case_law_reviewer_required");
+    validateReviewerAndTimestamp(input);
+    if (record.status === "deprecated") throw new Error("dojo_case_law_already_deprecated");
+    const supersededBy = input.superseded_by?.trim();
     const deprecated = {
       ...record,
       status: "deprecated" as const,
-      reviewer: input.reviewer,
-      ...(input.superseded_by ? { superseded_by: input.superseded_by } : {}),
+      reviewer: input.reviewer.trim(),
+      ...(supersededBy ? { superseded_by: supersededBy } : {}),
       updated_at: input.now,
     };
+    validateCaseLawRecord(deprecated);
     this.cases.set(caseId, deprecated);
     return cloneCase(deprecated);
   }
@@ -111,7 +124,7 @@ export class InMemoryDojoCaseLawRegistry implements DojoCaseLawRegistry {
 
   listBindingCases(scope: DojoCaseLawBindingScope): DojoCaseLawRecord[] {
     return [...this.cases.values()]
-      .filter((record) => record.status === "approved")
+      .filter(isDojoCaseLawBindingActive)
       .filter((record) => record.binding_scope.kind === scope.kind && record.binding_scope.id === scope.id)
       .map(cloneCase)
       .sort((left, right) => left.case_id.localeCompare(right.case_id));
@@ -127,10 +140,31 @@ export class InMemoryDojoCaseLawRegistry implements DojoCaseLawRegistry {
 export function validateCaseLawRecord(record: DojoCaseLawRecord): void {
   if (record.schema_version !== "synthi.dojo.caseLaw.v1") throw new Error("dojo_case_law_schema_version_invalid");
   if (!record.case_id.trim()) throw new Error("dojo_case_law_case_id_required");
+  if (!record.title.trim()) throw new Error("dojo_case_law_title_required");
   if (!record.finding.trim()) throw new Error("dojo_case_law_finding_required");
+  if (!record.impact.trim()) throw new Error("dojo_case_law_impact_required");
   if (!record.rule_created.trim()) throw new Error("dojo_case_law_rule_required");
+  if (!CASE_LAW_STATUSES.has(record.status)) throw new Error("dojo_case_law_status_invalid");
+  if (!CASE_LAW_APPEAL_STATUSES.has(record.appeal_status)) throw new Error("dojo_case_law_appeal_status_invalid");
+  if (!CASE_LAW_BINDING_SCOPE_KINDS.has(record.binding_scope.kind)) throw new Error("dojo_case_law_binding_scope_kind_invalid");
   if (!record.binding_scope.id.trim()) throw new Error("dojo_case_law_binding_scope_required");
-  if (record.evidence_refs.length === 0) throw new Error("dojo_case_law_evidence_required");
+  if (uniqueStrings(record.evidence_refs).length === 0) throw new Error("dojo_case_law_evidence_required");
+  if (record.applies_to.some((action) => !action.trim())) throw new Error("dojo_case_law_applies_to_invalid");
+  if (!isValidTimestamp(record.created_at) || !isValidTimestamp(record.updated_at)) {
+    throw new Error("dojo_case_law_timestamp_invalid");
+  }
+  if ((record.status === "approved" || record.status === "deprecated") && !record.reviewer?.trim()) {
+    throw new Error("dojo_case_law_reviewer_required");
+  }
+  if (record.superseded_by !== undefined && !record.superseded_by.trim()) {
+    throw new Error("dojo_case_law_superseded_by_invalid");
+  }
+}
+
+export function isDojoCaseLawBindingActive(record: DojoCaseLawRecord): boolean {
+  return record.status === "approved"
+    && ACTIVE_APPEAL_STATUSES.has(record.appeal_status)
+    && !record.superseded_by?.trim();
 }
 
 function titleFor(mutationKind: string): string {
@@ -145,6 +179,29 @@ function shortHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
+function validateReviewerAndTimestamp(input: { reviewer: string; now: string }): void {
+  if (!input.reviewer.trim()) throw new Error("dojo_case_law_reviewer_required");
+  if (!isValidTimestamp(input.now)) throw new Error("dojo_case_law_timestamp_invalid");
+}
+
+function isValidTimestamp(value: string): boolean {
+  return Number.isFinite(Date.parse(value));
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))].sort();
+}
+
 function cloneCase(record: DojoCaseLawRecord): DojoCaseLawRecord {
   return JSON.parse(JSON.stringify(record)) as DojoCaseLawRecord;
 }
+
+const CASE_LAW_STATUSES = new Set<DojoCaseLawStatus>(["proposed", "approved", "deprecated"]);
+const CASE_LAW_APPEAL_STATUSES = new Set<DojoCaseLawAppealStatus>(["none", "requested", "upheld", "overturned"]);
+const ACTIVE_APPEAL_STATUSES = new Set<DojoCaseLawAppealStatus>(["none", "requested", "upheld"]);
+const CASE_LAW_BINDING_SCOPE_KINDS = new Set<DojoCaseLawBindingScopeKind>([
+  "tenant",
+  "organization",
+  "workspace",
+  "skill",
+]);
