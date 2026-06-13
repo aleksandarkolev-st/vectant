@@ -27,7 +27,7 @@ import {
 } from "../browser/dojo_universe.js";
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
 import { privateWorkflowToolDefinition, privateWorkflowToolRegistry } from "../browser/private_tool_registry.js";
-import { evaluateDojoLicenseKernel, markDojoProofExecution } from "../browser/dojo_license_kernel.js";
+import { evaluateDojoLicenseKernel, markDojoProofExecution } from "../dojo/license/kernel.js";
 import { runDojoVivariumScenario, runDojoWindTunnel } from "../browser/dojo_vivarium.js";
 import { explainDojoRuntimeRefusal } from "../dojo/case_law/refusal.js";
 import { bindCaseLawGuardrailsToGraph } from "../dojo/case_law/guardrail_synthesizer.js";

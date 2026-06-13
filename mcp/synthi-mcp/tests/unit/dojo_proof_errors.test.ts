@@ -9,7 +9,7 @@ import {
   issueDojoProofCapsule,
   validateDojoProofCapsule,
 } from "../../src/browser/dojo.js";
-import { evaluateDojoLicenseKernel } from "../../src/browser/dojo_license_kernel.js";
+import { createDojoLicenseKernel, evaluateDojoLicenseKernel } from "../../src/dojo/license/kernel.js";
 import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
@@ -21,6 +21,10 @@ beforeEach(() => {
 });
 
 describe("Dojo proof error taxonomy", () => {
+  it("exposes the license kernel through the stable Dojo module boundary", () => {
+    expect(createDojoLicenseKernel().evaluate).toBe(evaluateDojoLicenseKernel);
+  });
+
   it("normalizes proof and license failure reasons to stable codes", () => {
     expect(normalizeDojoProofErrorCode("proof_capsule_not_issued_by_registry")).toBe("proof_capsule_not_issued");
     expect(normalizeDojoProofErrorCode("missing_evidence_claim:checkride_passed")).toBe("proof_evidence_claim_unverified");
