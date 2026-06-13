@@ -354,6 +354,14 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     command: "npm --prefix mcp/synthi-mcp run soak",
     required_for: ["nightly", "enterprise_release"],
     evidence_kind: "metrics",
+    default_summary_path: "mcp/synthi-mcp/.soak/soak-summary.json",
+    default_events_path: "mcp/synthi-mcp/.soak/soak-events.ndjson",
+    enterprise_artifact_requirements: {
+      require_min_duration_seconds: 3600,
+      require_zero_errors: true,
+      require_iteration_events: true,
+      require_tool_latency_metrics: true,
+    },
   },
 ];
 
@@ -523,6 +531,17 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_performance_metrics) {
       errors.push("chaos_performance_missing_metrics_requirement");
+    }
+  }
+  const soakPerformanceGate = gates.find((gate) => gate.id === "soak_performance");
+  if (soakPerformanceGate) {
+    if (!soakPerformanceGate.default_summary_path) errors.push("soak_performance_missing_default_summary_path");
+    if (!soakPerformanceGate.default_events_path) errors.push("soak_performance_missing_default_events_path");
+    if (!Number.isFinite(Number(soakPerformanceGate.enterprise_artifact_requirements?.require_min_duration_seconds))) {
+      errors.push("soak_performance_missing_duration_requirement");
+    }
+    if (!soakPerformanceGate.enterprise_artifact_requirements?.require_iteration_events) {
+      errors.push("soak_performance_missing_event_requirement");
     }
   }
   return {

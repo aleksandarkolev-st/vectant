@@ -33,6 +33,7 @@ const DEFAULT_VERIFY_DIR = path.join(REPO_ROOT, "tmp", "dojo-release-gate-verify
 const DEFAULT_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-host-conformance");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_CHAOS_PERFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-chaos-performance");
+const DEFAULT_SOAK_DIR = path.join(MCP_ROOT, ".soak");
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -111,7 +112,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...visualResults, ...conformanceResults, ...securityResults, ...chaosPerformanceResults];
+  const soakPerformanceResults = [];
+  if (truthy(args["enterprise-release"]) || args["soak-summary"]) {
+    soakPerformanceResults.push(await verifyDojoSoakPerformanceArtifacts({
+      summaryPath: resolveRepoPath(args["soak-summary"] || path.join(DEFAULT_SOAK_DIR, "soak-summary.json")),
+      eventsPath: resolveRepoPath(args["soak-events"] || path.join(DEFAULT_SOAK_DIR, "soak-events.ndjson")),
+      enterpriseRelease: truthy(args["enterprise-release"]),
+      minDurationSeconds: parseOptionalNumber(args["min-soak-duration-s"]),
+    }));
+  }
+
+  const sections = [manifestResult, ...visualResults, ...conformanceResults, ...securityResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -123,6 +134,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
     chaos_performance: chaosPerformanceResults.map(summarizeSection),
+    soak_performance: soakPerformanceResults.map(summarizeSection),
   };
 }
 
@@ -306,6 +318,73 @@ export function validateDojoChaosPerformanceEvidenceForEnterprise(evidence) {
   }
   if (!Number.isFinite(Number(evidence?.performance_metrics?.test_file_duration_p95_ms))) {
     errors.push("chaos_performance_missing_test_file_p95");
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoSoakPerformanceArtifacts({
+  summaryPath,
+  eventsPath,
+  enterpriseRelease = false,
+  minDurationSeconds,
+}) {
+  const summary = await readJsonFile(summaryPath);
+  const eventsText = await readFile(eventsPath, "utf8");
+  const events = parseNdjson(eventsText);
+  const errors = validateDojoSoakPerformanceSummary(summary, {
+    events,
+    enterpriseRelease,
+    minDurationSeconds,
+  }).errors;
+  return {
+    id: "soak_performance",
+    ok: errors.length === 0,
+    errors,
+    artifact_path: summaryPath,
+    evidence_path: eventsPath,
+    enterprise_release: Boolean(enterpriseRelease),
+    result_count: events.length,
+  };
+}
+
+export function validateDojoSoakPerformanceSummary(summary, {
+  events = [],
+  enterpriseRelease = false,
+  minDurationSeconds,
+} = {}) {
+  const errors = [];
+  const durationSeconds = Number(summary?.duration_s);
+  const requiredDurationSeconds = Number.isFinite(Number(minDurationSeconds))
+    ? Number(minDurationSeconds)
+    : enterpriseRelease ? 3600 : 0;
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    errors.push("soak_duration_missing");
+  } else if (durationSeconds < requiredDurationSeconds) {
+    errors.push(`soak_duration_below_required:${durationSeconds}:${requiredDurationSeconds}`);
+  }
+  const iterations = Number(summary?.iterations);
+  if (!Number.isInteger(iterations) || iterations <= 0) errors.push("soak_iterations_missing");
+  if (Number(summary?.errors || 0) !== 0) errors.push(`soak_errors_nonzero:${summary?.errors}`);
+  if (!Array.isArray(events) || events.length === 0) {
+    errors.push("soak_events_missing");
+  } else if (Number.isInteger(iterations) && events.length < iterations) {
+    errors.push(`soak_event_count_below_iterations:${events.length}:${iterations}`);
+  }
+  if (events.some((event) => event.parse_error)) errors.push("soak_events_parse_error");
+
+  const perTool = summary?.per_tool && typeof summary.per_tool === "object" ? summary.per_tool : {};
+  for (const toolName of ["screenshot", "locate", "wait"]) {
+    const tool = perTool[toolName];
+    if (!tool || typeof tool !== "object") {
+      errors.push(`soak_tool_missing:${toolName}`);
+      continue;
+    }
+    if (Number(tool.count || 0) <= 0) errors.push(`soak_tool_count_missing:${toolName}`);
+    if (Number(tool.errors || 0) !== 0) errors.push(`soak_tool_errors_nonzero:${toolName}:${tool.errors}`);
+    if (!Number.isFinite(Number(tool.p95))) errors.push(`soak_tool_p95_missing:${toolName}`);
   }
   return {
     ok: errors.length === 0,
@@ -541,6 +620,31 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedChaos.errors.includes("chaos_performance_scenario_coverage_incomplete"));
   assert(rejectedChaos.errors.includes("chaos_performance_missing_scenarios:api_timeout"));
 
+  const soakDir = path.join(outDir, "soak");
+  await mkdir(soakDir, { recursive: true });
+  const soakArtifacts = await writeSoakArtifactsForSelfCheck({ outDir: soakDir });
+  const soakResult = await verifyDojoSoakPerformanceArtifacts({
+    summaryPath: soakArtifacts.summary_path,
+    eventsPath: soakArtifacts.events_path,
+    minDurationSeconds: 1,
+  });
+  assert.equal(soakResult.ok, true, soakResult.errors.join(";"));
+  const rejectedSoakArtifacts = await writeSoakArtifactsForSelfCheck({
+    outDir: soakDir,
+    basename: "soak-rejected",
+    summaryOverrides: {
+      duration_s: 0.5,
+      errors: 1,
+    },
+  });
+  const rejectedSoak = await verifyDojoSoakPerformanceArtifacts({
+    summaryPath: rejectedSoakArtifacts.summary_path,
+    eventsPath: rejectedSoakArtifacts.events_path,
+    minDurationSeconds: 1,
+  });
+  assert(rejectedSoak.errors.includes("soak_duration_below_required:0.5:1"));
+  assert(rejectedSoak.errors.includes("soak_errors_nonzero:1"));
+
   const report = {
     schema_version: "synthi.dojo.releaseGateVerifierSelfCheck.v1",
     generated_at: new Date().toISOString(),
@@ -551,12 +655,14 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(visualResult),
       summarizeSection(securityResult),
       summarizeSection(chaosResult),
+      summarizeSection(soakResult),
     ],
     rejected_controls: [
       summarizeSection(rejectedSelfCheck),
       summarizeSection(rejectedDryRun),
       summarizeSection(rejectedSecurity),
       summarizeSection(rejectedChaos),
+      summarizeSection(rejectedSoak),
     ],
   };
   const reportPath = path.join(outDir, "dojo-release-gate-verifier-self-check.json");
@@ -766,6 +872,62 @@ async function writeChaosEvidenceForSelfCheck({
   };
 }
 
+async function writeSoakArtifactsForSelfCheck({
+  outDir,
+  basename = "soak",
+  summaryOverrides = {},
+  events = defaultSoakEvents(),
+}) {
+  const summary = {
+    duration_s: 2,
+    iterations: events.length,
+    errors: 0,
+    snapshots_captured: 1,
+    per_tool: {
+      screenshot: { name: "screenshot", count: events.length, errors: 0, p50: 15, p95: 18, p99: 19, max: 19 },
+      locate: { name: "locate", count: events.length, errors: 0, p50: 20, p95: 24, p99: 25, max: 25 },
+      wait: { name: "wait", count: events.length, errors: 0, p50: 12, p95: 16, p99: 17, max: 17 },
+      snapshot: { name: "snapshot", count: 1, errors: 0, p50: 21, p95: 21, p99: 21, max: 21 },
+      usage: { name: "usage", count: 1, errors: 0, p50: 8, p95: 8, p99: 8, max: 8 },
+    },
+    ...summaryOverrides,
+  };
+  const summaryPath = path.join(outDir, `${basename}-summary.json`);
+  const eventsPath = path.join(outDir, `${basename}-events.ndjson`);
+  await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  await writeFile(eventsPath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+  return {
+    summary_path: summaryPath,
+    events_path: eventsPath,
+    summary,
+  };
+}
+
+function defaultSoakEvents() {
+  return [
+    {
+      iter: 0,
+      at: 1781300000000,
+      steps: [
+        { tool: "screenshot", latency_ms: 15, ok: true },
+        { tool: "locate", latency_ms: 20, ok: true },
+        { tool: "wait", latency_ms: 12, ok: true },
+        { tool: "snapshot", latency_ms: 21, ok: true },
+      ],
+    },
+    {
+      iter: 1,
+      at: 1781300002000,
+      steps: [
+        { tool: "screenshot", latency_ms: 18, ok: true },
+        { tool: "locate", latency_ms: 24, ok: true },
+        { tool: "wait", latency_ms: 16, ok: true },
+        { tool: "usage", latency_ms: 8, ok: true },
+      ],
+    },
+  ];
+}
+
 function parseVisualReportArgs(inputArgs) {
   const requests = [];
   if (inputArgs["visual-report"]) {
@@ -825,6 +987,26 @@ function resolveEvidenceArtifactPath(value, evidencePath) {
   if (path.isAbsolute(text)) return text;
   const evidenceRelative = path.resolve(path.dirname(evidencePath), text);
   return evidenceRelative;
+}
+
+function parseNdjson(text) {
+  const rows = [];
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      rows.push(JSON.parse(trimmed));
+    } catch (err) {
+      rows.push({ parse_error: err instanceof Error ? err.message : String(err), raw: trimmed });
+    }
+  }
+  return rows;
+}
+
+function parseOptionalNumber(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function sha256(value) {

@@ -17,10 +17,12 @@ import {
   validateDojoMcpHostConformanceReportForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
   validateDojoSecurityAbuseEvidenceForRelease,
+  validateDojoSoakPerformanceSummary,
   verifyDojoChaosPerformanceEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoReleaseGateManifestArtifacts,
   verifyDojoSecurityAbuseEvidenceArtifact,
+  verifyDojoSoakPerformanceArtifacts,
   verifyVisualProofArtifact,
 } from "../../scripts/dojo-release-gate-verify.mjs";
 
@@ -208,6 +210,55 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("verifies soak summary metrics and iteration event artifacts", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-soak-verify-"));
+    const artifacts = await writeSoakFixture({ dir });
+
+    expect(validateDojoSoakPerformanceSummary(artifacts.summary, {
+      events: artifacts.events,
+      minDurationSeconds: 1,
+    })).toEqual({ ok: true, errors: [] });
+    expect(await verifyDojoSoakPerformanceArtifacts({
+      summaryPath: artifacts.summaryPath,
+      eventsPath: artifacts.eventsPath,
+      minDurationSeconds: 1,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      result_count: artifacts.events.length,
+    }));
+
+    const tooShort = await writeSoakFixture({
+      dir,
+      basename: "too-short-soak",
+      summary: soakSummaryFixture({
+        duration_s: 0.5,
+        errors: 1,
+      }),
+    });
+    const rejected = await verifyDojoSoakPerformanceArtifacts({
+      summaryPath: tooShort.summaryPath,
+      eventsPath: tooShort.eventsPath,
+      minDurationSeconds: 1,
+    });
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "soak_duration_below_required:0.5:1",
+      "soak_errors_nonzero:1",
+    ]));
+
+    const malformedEvents = await writeSoakFixture({
+      dir,
+      basename: "malformed-events-soak",
+      rawEvents: "{\"iter\":0}\nnot-json\n",
+    });
+    const malformed = await verifyDojoSoakPerformanceArtifacts({
+      summaryPath: malformedEvents.summaryPath,
+      eventsPath: malformedEvents.eventsPath,
+      minDurationSeconds: 1,
+    });
+    expect(malformed.errors).toContain("soak_events_parse_error");
+  });
+
   it("verifies visual reports against schema, pixel/layout metrics, and screenshot bytes", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-visual-verify-"));
     const packageScripts = await readPackageScripts();
@@ -385,6 +436,71 @@ function chaosEvidenceFixture(overrides = {}) {
     stderr_bytes: Buffer.byteLength(stderr),
     ...overrides,
   };
+}
+
+async function writeSoakFixture({
+  dir,
+  basename = "soak",
+  summary = soakSummaryFixture(),
+  events = soakEventsFixture(),
+  rawEvents,
+}) {
+  const summaryPath = path.join(dir, `${basename}-summary.json`);
+  const eventsPath = path.join(dir, `${basename}-events.ndjson`);
+  await writeFile(summaryPath, JSON.stringify(summary, null, 2), "utf8");
+  await writeFile(
+    eventsPath,
+    rawEvents ?? `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+    "utf8"
+  );
+  return {
+    summaryPath,
+    eventsPath,
+    summary,
+    events,
+  };
+}
+
+function soakSummaryFixture(overrides = {}) {
+  return {
+    duration_s: 2,
+    iterations: 2,
+    errors: 0,
+    snapshots_captured: 1,
+    per_tool: {
+      screenshot: { name: "screenshot", count: 2, errors: 0, p50: 15, p95: 18, p99: 18, max: 18 },
+      locate: { name: "locate", count: 2, errors: 0, p50: 20, p95: 24, p99: 24, max: 24 },
+      wait: { name: "wait", count: 2, errors: 0, p50: 12, p95: 16, p99: 16, max: 16 },
+      snapshot: { name: "snapshot", count: 1, errors: 0, p50: 21, p95: 21, p99: 21, max: 21 },
+      usage: { name: "usage", count: 1, errors: 0, p50: 8, p95: 8, p99: 8, max: 8 },
+    },
+    ...overrides,
+  };
+}
+
+function soakEventsFixture() {
+  return [
+    {
+      iter: 0,
+      at: 1781300000000,
+      steps: [
+        { tool: "screenshot", latency_ms: 15, ok: true },
+        { tool: "locate", latency_ms: 20, ok: true },
+        { tool: "wait", latency_ms: 12, ok: true },
+        { tool: "snapshot", latency_ms: 21, ok: true },
+      ],
+    },
+    {
+      iter: 1,
+      at: 1781300002000,
+      steps: [
+        { tool: "screenshot", latency_ms: 18, ok: true },
+        { tool: "locate", latency_ms: 24, ok: true },
+        { tool: "wait", latency_ms: 16, ok: true },
+        { tool: "usage", latency_ms: 8, ok: true },
+      ],
+    },
+  ];
 }
 
 async function readJson(filePath) {
