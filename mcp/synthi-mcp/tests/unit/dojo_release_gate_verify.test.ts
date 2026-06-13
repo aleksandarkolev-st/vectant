@@ -13,6 +13,7 @@ import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
+import { DOJO_SECURITY_ABUSE_CLASSES } from "../../scripts/dojo-security-abuse-self-check.mjs";
 import {
   validateDojoProofSelfCheckForRelease,
   validateDojoMcpHostConformanceReportForRelease,
@@ -598,6 +599,24 @@ describe("Dojo release gate artifact verifier", () => {
       "security_abuse_not_ok",
       "security_abuse_coverage_incomplete",
       "security_abuse_missing_classes:raw_private_tool_bypass",
+    ]));
+
+    const skipped = securityEvidenceFixture({
+      ok: false,
+      budget_evaluation: { ok: false },
+      test_summary: {
+        total_tests: DOJO_SECURITY_ABUSE_CLASSES.length + 1,
+        passed_tests: DOJO_SECURITY_ABUSE_CLASSES.length,
+        failed_tests: 0,
+        pending_tests: 1,
+      },
+    });
+    const skippedPath = await writeSecurityEvidenceFixture({ dir, basename: "skipped-security", evidence: skipped });
+    const skippedResult = await verifyDojoSecurityAbuseEvidenceArtifact({ evidencePath: skippedPath });
+    expect(skippedResult.errors).toEqual(expect.arrayContaining([
+      "security_abuse_not_ok",
+      "security_abuse_budget_not_ok",
+      "security_abuse_pending_tests:1",
     ]));
 
     const tamperedStdout = path.join(dir, "tampered-security.stdout.log");
@@ -1626,13 +1645,20 @@ function securityEvidenceFixture(overrides = {}) {
     generated_at: "2026-06-11T00:00:00.000Z",
     ok: true,
     exit_code: 0,
+    configured_abuse_classes: DOJO_SECURITY_ABUSE_CLASSES,
+    tested_abuse_classes: DOJO_SECURITY_ABUSE_CLASSES,
+    abuse_class_count: DOJO_SECURITY_ABUSE_CLASSES.length,
+    configured_abuse_class_count: DOJO_SECURITY_ABUSE_CLASSES.length,
     abuse_class_coverage_complete: true,
     missing_abuse_classes: [],
+    test_file_count: 1,
+    reported_test_file_count: 1,
     budget_evaluation: { ok: true },
     test_summary: {
-      total_tests: 8,
-      passed_tests: 8,
+      total_tests: DOJO_SECURITY_ABUSE_CLASSES.length,
+      passed_tests: DOJO_SECURITY_ABUSE_CLASSES.length,
       failed_tests: 0,
+      pending_tests: 0,
     },
     stdout_path: "stdout.log",
     stderr_path: "stderr.log",
@@ -1650,10 +1676,25 @@ function securityEvidenceFixture(overrides = {}) {
 function securityJsonReportFixtureText() {
   return JSON.stringify({
     success: true,
-    numTotalTests: 8,
-    numPassedTests: 8,
+    numTotalTests: DOJO_SECURITY_ABUSE_CLASSES.length,
+    numPassedTests: DOJO_SECURITY_ABUSE_CLASSES.length,
     numFailedTests: 0,
-    testResults: [],
+    numPendingTests: 0,
+    numTotalTestSuites: 1,
+    numPassedTestSuites: 1,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_SECURITY_ABUSE_CLASSES.map((abuseClass, index) => ({
+          fullName: `release verifier fixture covers ${abuseClass}`,
+          title: `release verifier fixture covers ${abuseClass}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
   }, null, 2);
 }
 

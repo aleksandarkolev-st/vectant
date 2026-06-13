@@ -10,14 +10,43 @@ import {
 describe("Dojo security abuse self-check script", () => {
   it("defines a focused executable abuse-suite file list", () => {
     expect(DOJO_SECURITY_ABUSE_TEST_FILES).toEqual(expect.arrayContaining([
+      "tests/unit/browser_tools.test.ts",
       "tests/unit/dojo_proof_errors.test.ts",
       "tests/unit/dojo_proof_claims.test.ts",
       "tests/unit/dojo_private_tool_gate.test.ts",
       "tests/unit/dojo_browser_workflow_gate.test.ts",
       "tests/unit/dojo_scenario_oracle.test.ts",
+      "tests/unit/dojo_source_drift.test.ts",
+      "tests/unit/dojo_governance_service.test.ts",
+      "tests/unit/dojo_hosted_runtime_postgres_store.test.ts",
       "tests/unit/security.test.ts",
+      "tests/integration/dojo_vivarium_runner.test.ts",
+      "tests/integration/dojo_checkride_runner.test.ts",
     ]));
-    expect(DOJO_SECURITY_ABUSE_TEST_FILES.length).toBeGreaterThanOrEqual(12);
+    expect(DOJO_SECURITY_ABUSE_TEST_FILES.length).toBeGreaterThanOrEqual(18);
+  });
+
+  it("requires deterministic coverage for the release security abuse classes", () => {
+    expect(DOJO_SECURITY_ABUSE_CLASSES).toEqual(expect.arrayContaining([
+      "proof_signature_tampering",
+      "proof_context_tampering",
+      "proof_replay_or_missing_capsule",
+      "raw_private_tool_bypass",
+      "raw_browser_workflow_bypass",
+      "evidence_record_tampering",
+      "evidence_claim_missing_or_stale",
+      "evidence_scope_mismatch",
+      "license_revocation_or_expiry",
+      "source_drift_expiry",
+      "tenant_workspace_isolation",
+      "auth_expiry",
+      "role_downgrade",
+      "approval_denial",
+      "fake_success_oracle",
+      "guardrail_failure",
+      "prompt_injection_scanning",
+      "untrusted_document_instruction_quarantine",
+    ]));
   });
 
   it("builds digest evidence for a completed security abuse run", () => {
@@ -46,7 +75,16 @@ describe("Dojo security abuse self-check script", () => {
         "proof_signature_tampering",
         "raw_private_tool_bypass",
         "raw_browser_workflow_bypass",
+        "evidence_record_tampering",
+        "license_revocation_or_expiry",
+        "source_drift_expiry",
+        "tenant_workspace_isolation",
+        "auth_expiry",
+        "role_downgrade",
+        "approval_denial",
+        "fake_success_oracle",
         "prompt_injection_scanning",
+        "untrusted_document_instruction_quarantine",
       ]),
       missing_abuse_classes: [],
     }));
@@ -86,6 +124,26 @@ describe("Dojo security abuse self-check script", () => {
     expect(evidence.budget_evaluation.checks.abuse_class_coverage_complete).toBe(false);
     expect(evidence.missing_abuse_classes.length).toBeGreaterThan(0);
   });
+
+  it("fails closed when the focused abuse suite reports skipped tests", () => {
+    const evidence = buildDojoSecurityAbuseEvidenceManifest({
+      now: "2026-06-11T00:00:00.000Z",
+      exitCode: 0,
+      signal: null,
+      durationMs: 1234,
+      testFiles: DOJO_SECURITY_ABUSE_TEST_FILES,
+      stdout: "some tests skipped",
+      stderr: "",
+      stdoutPath: "tmp/stdout.log",
+      stderrPath: "tmp/stderr.log",
+      jsonReport: vitestJsonReportFixture({ pending: 1 }),
+      jsonReportPath: "tmp/dojo-security-abuse.vitest.json",
+    });
+
+    expect(evidence.ok).toBe(false);
+    expect(evidence.budget_evaluation.checks.no_skipped_tests).toBe(false);
+    expect(evidence.budget_evaluation.failed_checks).toContain("no_skipped_tests");
+  });
 });
 
 function vitestJsonReportFixture(input = {}) {
@@ -95,18 +153,31 @@ function vitestJsonReportFixture(input = {}) {
     "Dojo execution policy gate requires proof for production skill bus calls to published skills",
     "browser private tool gate blocks a Dojo-published backing private tool direct call in production",
     "browser workflow gate blocks raw replay for Dojo-published workflows in production",
+    "Dojo proof claims blocks strict proof issuance when supplied evidence record material is tampered",
     "Dojo proof claims blocks strict proof issuance when required evidence claims are missing",
     "Dojo evidence claim verifier returns stale when evidence is older than the requested max age",
+    "Dojo proof claims blocks strict proof issuance when backing evidence belongs to another skill scope",
+    "Dojo proof claims blocks strict proof issuance when backing evidence belongs to another workspace scope",
+    "Dojo governance service reports expired and active license health",
+    "Dojo governance service reports revoked licenses before expiry checks",
+    "Dojo source drift expiry expires graph nodes mapped to changed source tokens",
+    "PostgresDojoHostedRuntimeSessionStore rejects writes outside the configured tenant and workspace scope",
+    "browser tools classifies expired auth checkpoints before workflow replay",
+    "Dojo synthetic fixture materializer materializes role downgrade permission change identity tissue as a blocked synthetic state",
+    "Dojo governance service records permission upgrade approval and denial decisions with review evidence",
+    "Dojo Vivarium runner classifies fake success as failed from observed fixture state instead of visual success",
     "Dojo guardrail runtime blocks graph execution when a block-severity guardrail fails",
     "security patterns flags `ignore previous instructions`",
+    "Dojo Vivarium runner passes prompt injection scenarios only when document instructions are quarantined",
     "Dojo scenario oracle fails prompt injection document scenarios when instructions are not quarantined",
   ];
+  const pending = input.pending ?? 0;
   return {
     success: true,
-    numTotalTests: titles.length,
+    numTotalTests: titles.length + pending,
     numPassedTests: titles.length,
     numFailedTests: 0,
-    numPendingTests: 0,
+    numPendingTests: pending,
     numTotalTestSuites: 1,
     numPassedTestSuites: 1,
     numFailedTestSuites: 0,

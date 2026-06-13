@@ -21,6 +21,7 @@ const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 
 export const DOJO_SECURITY_ABUSE_TEST_FILES = [
+  "tests/unit/browser_tools.test.ts",
   "tests/unit/dojo_proof_errors.test.ts",
   "tests/unit/dojo_proof_claims.test.ts",
   "tests/unit/dojo_proof_capsule_ed25519.test.ts",
@@ -33,7 +34,12 @@ export const DOJO_SECURITY_ABUSE_TEST_FILES = [
   "tests/unit/dojo_guardrail_runtime.test.ts",
   "tests/unit/dojo_fixture_materializer.test.ts",
   "tests/unit/dojo_scenario_oracle.test.ts",
+  "tests/unit/dojo_source_drift.test.ts",
+  "tests/unit/dojo_governance_service.test.ts",
+  "tests/unit/dojo_hosted_runtime_postgres_store.test.ts",
   "tests/unit/security.test.ts",
+  "tests/integration/dojo_vivarium_runner.test.ts",
+  "tests/integration/dojo_checkride_runner.test.ts",
 ];
 
 export const DOJO_SECURITY_ABUSE_CLASSES = [
@@ -42,9 +48,19 @@ export const DOJO_SECURITY_ABUSE_CLASSES = [
   "proof_replay_or_missing_capsule",
   "raw_private_tool_bypass",
   "raw_browser_workflow_bypass",
+  "evidence_record_tampering",
   "evidence_claim_missing_or_stale",
+  "evidence_scope_mismatch",
+  "license_revocation_or_expiry",
+  "source_drift_expiry",
+  "tenant_workspace_isolation",
+  "auth_expiry",
+  "role_downgrade",
+  "approval_denial",
+  "fake_success_oracle",
   "guardrail_failure",
   "prompt_injection_scanning",
+  "untrusted_document_instruction_quarantine",
 ];
 
 const args = parseArgs(process.argv.slice(2));
@@ -65,7 +81,7 @@ async function main() {
 export async function runDojoSecurityAbuseSelfCheck({
   outDir,
   now = new Date().toISOString(),
-  timeoutMs = 120000,
+  timeoutMs = 180000,
 } = {}) {
   const outputDir = path.resolve(outDir || path.join(REPO_ROOT, "tmp", "dojo-security-abuse"));
   await mkdir(outputDir, { recursive: true });
@@ -227,6 +243,7 @@ function buildSecurityAbuseBudgetEvaluation({ abuseCoverage, testSummary, durati
   const checks = {
     no_spawn_error: !error,
     no_failed_tests: testSummary.failed_tests === 0,
+    no_skipped_tests: testSummary.pending_tests === 0,
     all_reported_tests_passed: testSummary.total_tests > 0 && testSummary.passed_tests === testSummary.total_tests,
     abuse_class_coverage_complete: abuseCoverage.every((item) => item.covered),
     self_check_within_timeout: durationMs <= timeoutMs,
@@ -234,6 +251,9 @@ function buildSecurityAbuseBudgetEvaluation({ abuseCoverage, testSummary, durati
   return {
     ok: Object.values(checks).every(Boolean),
     checks,
+    failed_checks: Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([check]) => check),
   };
 }
 
@@ -250,9 +270,19 @@ function abuseClassMatchers(abuseClass) {
     proof_replay_or_missing_capsule: ["requires proof", "missing capsule", "without validated dojo dispatcher context", "proof capsule not issued"],
     raw_private_tool_bypass: ["backing private tool direct call", "private tool direct call"],
     raw_browser_workflow_bypass: ["raw replay", "raw workflow replay"],
+    evidence_record_tampering: ["evidence record material is tampered"],
     evidence_claim_missing_or_stale: ["missing evidence", "backing evidence is stale", "returns stale"],
+    evidence_scope_mismatch: ["belongs to another skill scope", "belongs to another workspace scope"],
+    license_revocation_or_expiry: ["reports revoked licenses before expiry checks", "reports expired and active license health", "revokes licenses by deriving blocked scope"],
+    source_drift_expiry: ["expires graph nodes mapped to changed source tokens", "rejects drift reports from tampered or unverifiable source snapshots"],
+    tenant_workspace_isolation: ["prevents cross tenant proof reads", "rejects writes outside the configured tenant and workspace scope"],
+    auth_expiry: ["classifies expired auth checkpoints before workflow replay", "auth expiry"],
+    role_downgrade: ["role downgrade", "permission change identity tissue", "permission downgraded"],
+    approval_denial: ["approval and denial decisions", "approval denied"],
+    fake_success_oracle: ["classifies fake success as failed from observed fixture state instead of visual success"],
     guardrail_failure: ["guardrail fails", "guardrail failed", "block-severity guardrail fails"],
     prompt_injection_scanning: ["ignore previous instructions", "prompt injection", "instructions are not quarantined"],
+    untrusted_document_instruction_quarantine: ["document instructions are quarantined", "unquarantined prompt injection document scenarios"],
   };
   return [...new Set([normalized, ...(aliases[abuseClass] ?? [])].map(normalizeAbuseText))];
 }

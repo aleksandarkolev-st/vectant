@@ -22,6 +22,7 @@ import {
   buildConformanceReleaseGateSummary,
   redactConformanceReport,
 } from "./dojo-mcp-host-conformance.mjs";
+import { DOJO_SECURITY_ABUSE_CLASSES } from "./dojo-security-abuse-self-check.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -804,6 +805,12 @@ export async function verifyDojoSecurityAbuseEvidenceArtifact({ evidencePath, re
 
 export function validateDojoSecurityAbuseEvidenceForRelease(evidence) {
   const errors = [];
+  const configuredClasses = Array.isArray(evidence?.configured_abuse_classes)
+    ? evidence.configured_abuse_classes.map(String)
+    : [];
+  const testedClasses = Array.isArray(evidence?.tested_abuse_classes)
+    ? evidence.tested_abuse_classes.map(String)
+    : [];
   if (evidence?.schema_version !== "synthi.dojo.securityAbuseEvidence.v1") {
     errors.push(`security_abuse_schema_mismatch:${evidence?.schema_version || "missing"}`);
   }
@@ -813,9 +820,29 @@ export function validateDojoSecurityAbuseEvidenceForRelease(evidence) {
   if (Array.isArray(evidence?.missing_abuse_classes) && evidence.missing_abuse_classes.length > 0) {
     errors.push(`security_abuse_missing_classes:${evidence.missing_abuse_classes.join(",")}`);
   }
+  const missingConfiguredClasses = DOJO_SECURITY_ABUSE_CLASSES.filter((abuseClass) => !configuredClasses.includes(abuseClass));
+  if (missingConfiguredClasses.length > 0) {
+    errors.push(`security_abuse_required_classes_missing:${missingConfiguredClasses.join(",")}`);
+  }
+  const untestedRequiredClasses = DOJO_SECURITY_ABUSE_CLASSES.filter((abuseClass) => !testedClasses.includes(abuseClass));
+  if (untestedRequiredClasses.length > 0) {
+    errors.push(`security_abuse_required_classes_untested:${untestedRequiredClasses.join(",")}`);
+  }
+  if (Number(evidence?.configured_abuse_class_count || 0) !== configuredClasses.length) {
+    errors.push(`security_abuse_configured_class_count_mismatch:${evidence?.configured_abuse_class_count ?? "missing"}:${configuredClasses.length}`);
+  }
+  if (Number(evidence?.abuse_class_count || 0) !== testedClasses.length) {
+    errors.push(`security_abuse_tested_class_count_mismatch:${evidence?.abuse_class_count ?? "missing"}:${testedClasses.length}`);
+  }
+  if (Number(evidence?.test_file_count || 0) !== Number(evidence?.reported_test_file_count || 0)) {
+    errors.push(`security_abuse_test_file_count_mismatch:${evidence?.test_file_count ?? "missing"}:${evidence?.reported_test_file_count ?? "missing"}`);
+  }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("security_abuse_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
     errors.push(`security_abuse_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`security_abuse_pending_tests:${evidence.test_summary.pending_tests}`);
   }
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("security_abuse_no_reported_tests");
   return {
@@ -2420,7 +2447,28 @@ async function writeSecurityEvidenceForSelfCheck({
 }) {
   const stdout = "security abuse focused suite passed\n";
   const stderr = "";
-  const jsonReport = JSON.stringify({ success: true, numTotalTests: 8, numPassedTests: 8, numFailedTests: 0, testResults: [] }, null, 2);
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_SECURITY_ABUSE_CLASSES.length,
+    numPassedTests: DOJO_SECURITY_ABUSE_CLASSES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: 1,
+    numPassedTestSuites: 1,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_SECURITY_ABUSE_CLASSES.map((abuseClass, index) => ({
+          fullName: `release verifier fixture covers ${abuseClass}`,
+          title: `release verifier fixture covers ${abuseClass}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
   const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
   const stderrPath = path.join(outDir, `${basename}.stderr.log`);
   const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
@@ -2432,22 +2480,31 @@ async function writeSecurityEvidenceForSelfCheck({
     generated_at: new Date().toISOString(),
     ok: true,
     exit_code: 0,
+    configured_abuse_classes: DOJO_SECURITY_ABUSE_CLASSES,
+    tested_abuse_classes: DOJO_SECURITY_ABUSE_CLASSES,
+    abuse_class_count: DOJO_SECURITY_ABUSE_CLASSES.length,
+    configured_abuse_class_count: DOJO_SECURITY_ABUSE_CLASSES.length,
     abuse_class_coverage_complete: true,
     missing_abuse_classes: [],
+    test_file_count: 1,
+    reported_test_file_count: 1,
     budget_evaluation: {
       ok: true,
       checks: {
         no_spawn_error: true,
         no_failed_tests: true,
+        no_skipped_tests: true,
         all_reported_tests_passed: true,
         abuse_class_coverage_complete: true,
         self_check_within_timeout: true,
       },
+      failed_checks: [],
     },
     test_summary: {
-      total_tests: 8,
-      passed_tests: 8,
+      total_tests: DOJO_SECURITY_ABUSE_CLASSES.length,
+      passed_tests: DOJO_SECURITY_ABUSE_CLASSES.length,
       failed_tests: 0,
+      pending_tests: 0,
     },
     json_report_path: jsonReportPath,
     json_report_sha256: sha256(jsonReport),

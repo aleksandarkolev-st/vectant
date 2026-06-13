@@ -69,6 +69,28 @@ describe("Dojo synthetic fixture materializer", () => {
     expect(second).toEqual(fixture);
   });
 
+  it("materializes role downgrade permission change identity tissue as a blocked synthetic state", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "permission_change",
+      risk_tags: ["permission_change"],
+    }));
+    const fixture = materializeDojoSyntheticFixture(definition, { seed: "permission-change-seed" });
+
+    expect(fixture.synthetic_data_only).toBe(true);
+    expect(fixture.identity_state).toEqual({
+      role: "viewer",
+      auth_expired: false,
+      permission_downgraded: true,
+    });
+    expect(definition.fixture_requirements.map((requirement) => requirement.kind)).toEqual([
+      "fake_auth_session",
+      "fake_approvals",
+    ]);
+    expect(definition.mutation_scopes).toEqual(["identity", "policy"]);
+    expect(definition.oracle.expected_outcome).toBe("block");
+    expect(definition.oracle.observed_evidence_required).toContain("identity_policy_state");
+  });
+
   it("materializes unquarantined prompt injection document fixtures as failed synthetic tissue", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "prompt_injection_unquarantined",
