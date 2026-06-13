@@ -77,10 +77,68 @@ describe("Dojo Vivarium runner", () => {
     expect(result).toEqual(expect.objectContaining({
       status: "failed",
       expectation_met: true,
+      api_fault: expect.objectContaining({
+        behavior: "fake_success",
+        request_count: 1,
+        response_status: 200,
+        durable_state: expect.objectContaining({
+          committed: false,
+          fake_success: true,
+          records: [],
+        }),
+        evidence_refs: ["dojo-api-fault://scenario-run-fake-success/fake_success"],
+      }),
+      observed_evidence: expect.arrayContaining(["api_fault_server_executed", "fake_success_visual_only"]),
+      evidence_refs: expect.arrayContaining(["dojo-api-fault://scenario-run-fake-success/fake_success"]),
       oracle_result: expect.objectContaining({
         blocked_by: ["oracle_durable_state_evidence_missing"],
         finding: "Scenario produced fake visual success without durable state evidence.",
       }),
+    }));
+  });
+
+  it("executes partial-write scenarios against the API fault server and exposes durable state", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "partial_write",
+      layer: "risk",
+      risk_tags: ["partial_failure", "evidence_required"],
+    }));
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "partial-write-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-partial-write",
+    });
+
+    expect(result.api_fault).toEqual(expect.objectContaining({
+      behavior: "partial_write",
+      request_count: 1,
+      response_status: 207,
+      durable_state: expect.objectContaining({
+        committed: false,
+        partial: true,
+        records: [expect.objectContaining({
+          synthetic_record_id: expect.stringMatching(/^record_[a-f0-9]{12}_partial$/),
+          write_state: "partial",
+        })],
+      }),
+    }));
+    expect(result.observed_evidence).toEqual(expect.arrayContaining([
+      "api_fault_server_executed",
+      "partial_write_state",
+    ]));
+    expect(result.evidence_refs).toEqual(expect.arrayContaining([
+      "dojo-api-fault://scenario-run-partial-write/partial_write",
+    ]));
+    expect(result.oracle_result).toEqual(expect.objectContaining({
+      status: "failed",
+      blocked_by: ["oracle_partial_write_detected"],
     }));
   });
 

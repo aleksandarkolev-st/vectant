@@ -52,15 +52,30 @@ describe("browser Dojo Vivarium adapter", () => {
 
     const fixture = run.materialized_fixture.tissues.fixture as {
       api_state: { fake_success: boolean };
+      api_fault: {
+        behavior: string;
+        request_count: number;
+        durable_state: { fake_success: boolean; committed: boolean };
+      };
       graph_inputs: Record<string, unknown>;
       observed_evidence: string[];
     };
 
     expect(fixture.api_state.fake_success).toBe(true);
+    expect(fixture.api_fault).toEqual(expect.objectContaining({
+      behavior: "fake_success",
+      request_count: 1,
+      durable_state: expect.objectContaining({
+        committed: false,
+        fake_success: true,
+      }),
+    }));
     expect(fixture.graph_inputs).toEqual(expect.objectContaining({
       durable_state_evidence: false,
       client_id_verified: true,
     }));
+    expect(fixture.observed_evidence).toContain("api_fault_server_executed");
+    expect(fixture.observed_evidence).toContain("fake_success_visual_only");
     expect(fixture.observed_evidence).not.toContain("durable_state_evidence");
     expect(run.result.status).not.toBe("passed");
   });

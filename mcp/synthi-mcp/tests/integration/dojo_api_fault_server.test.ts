@@ -46,7 +46,10 @@ describe("Dojo API fault server", () => {
         committed: false,
         partial: true,
         records: expect.arrayContaining([
-          expect.objectContaining({ write_state: "partial" }),
+          expect.objectContaining({
+            synthetic_record_id: expect.stringMatching(/^record_[a-f0-9]{12}_partial$/),
+            write_state: "partial",
+          }),
         ]),
       }));
     } finally {

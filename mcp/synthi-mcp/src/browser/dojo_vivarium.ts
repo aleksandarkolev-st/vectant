@@ -234,6 +234,7 @@ function materializedFixtureFor(
         threshold_breaches: fixture.threshold_breaches,
         ui_state: fixture.ui_state,
         api_state: fixture.api_state,
+        api_fault: scenarioRun.api_fault ?? null,
         identity_state: fixture.identity_state,
         document_state: fixture.document_state,
         reset_evidence: fixture.reset_evidence,

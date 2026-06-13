@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
 
@@ -89,11 +90,12 @@ async function handleRequest(
 
   const body = await readJson(request);
   state.requests.push({ method: request.method, url: request.url, body });
+  const requestIndex = state.requests.length;
 
   switch (behavior) {
     case "success":
       state.durable_state.committed = true;
-      state.durable_state.records.push(recordFor(body, "committed"));
+      state.durable_state.records.push(recordFor(body, "committed", requestIndex));
       sendJson(response, 200, { ok: true, visual_success: true, durable_success: true });
       return;
     case "validation_error":
@@ -106,7 +108,7 @@ async function handleRequest(
       return;
     case "partial_write":
       state.durable_state.partial = true;
-      state.durable_state.records.push(recordFor(body, "partial"));
+      state.durable_state.records.push(recordFor(body, "partial", requestIndex));
       sendJson(response, 207, { ok: false, partial: true, durable_success: false });
       return;
     case "fake_success":
@@ -120,12 +122,30 @@ async function handleRequest(
   }
 }
 
-function recordFor(body: unknown, state: "committed" | "partial"): Record<string, unknown> {
+function recordFor(body: unknown, state: "committed" | "partial", requestIndex: number): Record<string, unknown> {
+  const digest = createHash("sha256")
+    .update(stableJson({ body, requestIndex, state }), "utf8")
+    .digest("hex")
+    .slice(0, 12);
   return {
-    synthetic_record_id: `record_${Date.now().toString(36)}_${state}`,
+    synthetic_record_id: `record_${digest}_${state}`,
     write_state: state,
     body,
   };
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(sortJson(value));
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => [key, sortJson(item)])
+  );
 }
 
 function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {

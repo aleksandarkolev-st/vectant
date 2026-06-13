@@ -5,6 +5,11 @@ import type { DojoTenantContext } from "../mcp/execution_policy_gate.js";
 import { type DojoMaterializedFixture, materializeDojoSyntheticFixture } from "./fixture_materializer.js";
 import { evaluateDojoScenarioOracle, type DojoScenarioOracleEvaluation, type DojoScenarioOracleStatus } from "./oracle.js";
 import type { DojoScenarioBudget, DojoScenarioDefinition } from "./scenario_dsl.js";
+import {
+  startDojoApiFaultServer,
+  type DojoApiFaultBehavior,
+  type DojoApiFaultServerState,
+} from "./api_fault_server.js";
 
 export interface DojoMaterializedScenario {
   schema_version: "synthi.dojo.materializedScenario.v1";
@@ -28,11 +33,23 @@ export interface DojoScenarioRunResult {
   expectation_met: boolean;
   graph_result: DojoGraphRunResult;
   oracle_result: DojoScenarioOracleEvaluation;
+  api_fault?: DojoApiFaultExecution;
   observed_evidence: string[];
   evidence_refs: string[];
   started_at: string;
   completed_at: string;
   budget: DojoScenarioBudget;
+}
+
+export interface DojoApiFaultExecution {
+  schema_version: "synthi.dojo.apiFaultExecution.v1";
+  behavior: DojoApiFaultBehavior;
+  url: string;
+  request_count: number;
+  response_status: number;
+  response_body: unknown;
+  durable_state: DojoApiFaultServerState["durable_state"];
+  evidence_refs: string[];
 }
 
 export interface DojoFixtureResetResult {
@@ -114,6 +131,7 @@ export class DojoVivariumRunner {
       });
     }
 
+    const apiFaultExecution = await executeApiFaultServerForScenario(input.materialized, runId, budget);
     let graphResult: DojoGraphRunResult;
     try {
       graphResult = await runtime.execute({
@@ -124,6 +142,7 @@ export class DojoVivariumRunner {
         inputs: {
           ...input.materialized.definition.input_overrides,
           ...fixtureInputs(input.materialized.fixture),
+          ...(apiFaultExecution ? apiFaultInputs(apiFaultExecution) : {}),
           ...(input.inputs ?? {}),
         },
         evidence_writer: (event) => {
@@ -136,7 +155,10 @@ export class DojoVivariumRunner {
         `dojo-graph-runtime://${runId}/failed`,
       ]);
     }
-    const observedEvidence = observedEvidenceForRun(input.materialized, graphResult, graphEvents, input.observed_evidence ?? []);
+    const observedEvidence = observedEvidenceForRun(input.materialized, graphResult, graphEvents, [
+      ...apiFaultObservedEvidence(apiFaultExecution),
+      ...(input.observed_evidence ?? []),
+    ]);
     const oracleResult = evaluateDojoScenarioOracle({
       definition: input.materialized.definition,
       fixture: input.materialized.fixture,
@@ -155,8 +177,13 @@ export class DojoVivariumRunner {
       expectation_met: oracleResult.expectation_met,
       graph_result: graphResult,
       oracle_result: oracleResult,
+      ...(apiFaultExecution ? { api_fault: apiFaultExecution } : {}),
       observed_evidence: observedEvidence,
-      evidence_refs: [...graphResult.evidence_refs, `dojo-oracle://${runId}/${oracleResult.oracle_id}`],
+      evidence_refs: [
+        ...graphResult.evidence_refs,
+        ...(apiFaultExecution?.evidence_refs ?? []),
+        `dojo-oracle://${runId}/${oracleResult.oracle_id}`,
+      ],
       started_at: startedAt,
       completed_at: completedAt,
       budget,
@@ -323,6 +350,93 @@ function observedEvidenceForRun(
     observed.add("document_tissue_state");
   }
   return [...observed].sort();
+}
+
+async function executeApiFaultServerForScenario(
+  materialized: DojoMaterializedScenario,
+  runId: string,
+  budget: DojoScenarioBudget
+): Promise<DojoApiFaultExecution | undefined> {
+  const behavior = apiFaultBehaviorForScenario(materialized);
+  if (!behavior) return undefined;
+
+  const server = await startDojoApiFaultServer({
+    behavior,
+    timeout_ms: Math.max(1, Math.min(250, budget.max_estimated_ms)),
+  });
+  try {
+    const response = await fetch(`${server.url}/synthetic/action`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(apiFaultPayload(materialized)),
+    });
+    const responseBody = await response.json() as unknown;
+    return {
+      schema_version: "synthi.dojo.apiFaultExecution.v1",
+      behavior,
+      url: server.url,
+      request_count: server.state.requests.length,
+      response_status: response.status,
+      response_body: responseBody,
+      durable_state: cloneDurableApiState(server.state.durable_state),
+      evidence_refs: [`dojo-api-fault://${runId}/${behavior}`],
+    };
+  } finally {
+    await server.close();
+  }
+}
+
+function apiFaultBehaviorForScenario(materialized: DojoMaterializedScenario): DojoApiFaultBehavior | undefined {
+  const requiresApiServer = materialized.definition.fixture_requirements.some((fixture) => fixture.kind === "fake_api_server");
+  if (!requiresApiServer) return undefined;
+  if (materialized.fixture.api_state.fake_success) return "fake_success";
+  if (materialized.fixture.api_state.partial_write) return "partial_write";
+  if (materialized.fixture.api_state.validation_error) return "validation_error";
+  if (materialized.fixture.api_state.latency_ms > 0) return "timeout";
+  if (materialized.definition.mutation_kind === "downstream_failure") return "downstream_failure";
+  return "success";
+}
+
+function apiFaultPayload(materialized: DojoMaterializedScenario): Record<string, unknown> {
+  return {
+    scenario_id: materialized.definition.scenario_id,
+    mutation_kind: materialized.definition.mutation_kind,
+    fixture_id: materialized.fixture.fixture_id,
+    materialization_hash: materialized.fixture.materialization_hash,
+    input_overrides: materialized.definition.input_overrides,
+    record_ids: materialized.fixture.records.map((record) => record.stable_id),
+  };
+}
+
+function cloneDurableApiState(state: DojoApiFaultServerState["durable_state"]): DojoApiFaultServerState["durable_state"] {
+  return {
+    committed: state.committed,
+    partial: state.partial,
+    validation_error: state.validation_error,
+    fake_success: state.fake_success,
+    downstream_failed: state.downstream_failed,
+    records: state.records.map((record) => ({ ...record })),
+  };
+}
+
+function apiFaultInputs(apiFault: DojoApiFaultExecution): Record<string, unknown> {
+  return {
+    api_fault_behavior: apiFault.behavior,
+    api_fault_response_status: apiFault.response_status,
+    api_fault_request_count: apiFault.request_count,
+    api_fault_durable_state: apiFault.durable_state,
+  };
+}
+
+function apiFaultObservedEvidence(apiFault: DojoApiFaultExecution | undefined): string[] {
+  if (!apiFault) return [];
+  const evidence = new Set<string>(["api_fault_server_executed"]);
+  if (apiFault.durable_state.committed) evidence.add("durable_state_evidence");
+  if (apiFault.durable_state.partial) evidence.add("partial_write_state");
+  if (apiFault.durable_state.validation_error) evidence.add("api_validation_error_state");
+  if (apiFault.durable_state.fake_success) evidence.add("fake_success_visual_only");
+  if (apiFault.durable_state.downstream_failed) evidence.add("api_downstream_failure_state");
+  return [...evidence].sort();
 }
 
 function duplicateDisplayNameCount(fixture: DojoMaterializedFixture): number {
