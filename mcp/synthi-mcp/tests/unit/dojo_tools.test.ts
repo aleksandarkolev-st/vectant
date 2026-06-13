@@ -399,6 +399,144 @@ describe("Agent Dojo MCP tools", () => {
     }
   });
 
+  it("filters production aggregate reads by tenant context", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const visibleSkillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const hiddenWorkflow = compileWorkflowContract([
+      event({
+        event_id: "archive-record",
+        event_seq: 1,
+        action: "click",
+        detail: { element: { role: "button", name: "Archive record" } },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Archive record\" })", confidence: 0.97, reason: "role" },
+        ],
+      }),
+    ]);
+    const hiddenSkill = dojoSkillRegistry.publish(buildDojoSkill(hiddenWorkflow.contract, {
+      workspace_id: "workspace-b",
+      now: "2026-06-11T00:00:00.000Z",
+    }));
+    expect(hiddenSkill.skill_id).not.toBe(visibleSkillId);
+
+    const visibleUpgrade = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
+      skill_id: visibleSkillId,
+      requested_action: "commit_mutation",
+      actor_id: "visible-requester",
+      actor_type: "agent",
+      request_id: "visible-upgrade-request",
+      correlation_id: "visible-upgrade-correlation",
+      now: "2026-06-11T00:03:00.000Z",
+    });
+    expect(visibleUpgrade?.isError).toBeUndefined();
+    const hiddenUpgrade = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
+      skill_id: hiddenSkill.skill_id,
+      requested_action: "commit_mutation",
+      actor_id: "hidden-requester",
+      actor_type: "agent",
+      request_id: "hidden-upgrade-request",
+      correlation_id: "hidden-upgrade-correlation",
+      now: "2026-06-11T00:03:00.000Z",
+    });
+    expect(hiddenUpgrade?.isError).toBeUndefined();
+
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const missingMetricsContext = await dispatchDojoTool("synthi_dojo_get_metrics", {});
+    expect(missingMetricsContext?.isError).toBe(true);
+    expect(missingMetricsContext?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_tenant_context_required",
+      blocked_by: expect.arrayContaining(["tenant_context_workspace_id_missing"]),
+    }));
+
+    const metrics = await dispatchDojoTool("synthi_dojo_get_metrics", productionTenantContextArgs({
+      request_id: "req-production-aggregate-metrics",
+    }));
+    expect(metrics?.isError).toBeUndefined();
+    expect(metrics?.structuredContent).toEqual(expect.objectContaining({
+      metrics: expect.objectContaining({
+        skill_count: 1,
+        business: expect.objectContaining({ reviewable_artifact_sets: 1 }),
+      }),
+    }));
+
+    const registry = await dispatchDojoTool("synthi_dojo_get_registry", productionTenantContextArgs({
+      request_id: "req-production-registry",
+    }));
+    expect(registry?.isError).toBeUndefined();
+    const registryContent = registry?.structuredContent as {
+      registry: { skill_count: number; competencies: Array<{ skill_id: string; workspace_id: string }> };
+      governance_service: {
+        skill_registry: Array<{ skill_id: string; workspace_id: string }>;
+        approval_queue: Array<{ request_id?: string; skill_id: string }>;
+      };
+    };
+    expect(registryContent.registry.skill_count).toBe(1);
+    expect(registryContent.registry.competencies).toEqual([
+      expect.objectContaining({ skill_id: visibleSkillId, workspace_id: "workspace-a" }),
+    ]);
+    expect(registryContent.governance_service.skill_registry).toEqual([
+      expect.objectContaining({ skill_id: visibleSkillId, workspace_id: "workspace-a" }),
+    ]);
+    expect(registryContent.governance_service.approval_queue).toEqual(expect.arrayContaining([
+      expect.objectContaining({ request_id: "visible-upgrade-request", skill_id: visibleSkillId }),
+    ]));
+    expect(registryContent.governance_service.approval_queue).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ request_id: "hidden-upgrade-request", skill_id: hiddenSkill.skill_id }),
+    ]));
+
+    const selectedHiddenMetrics = await dispatchDojoTool("synthi_dojo_get_metrics", {
+      skill_id: hiddenSkill.skill_id,
+      ...productionTenantContextArgs({ request_id: "req-production-hidden-metrics" }),
+    });
+    expect(selectedHiddenMetrics?.isError).toBe(true);
+    expect(selectedHiddenMetrics?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_skill_not_authorized",
+      skill_id: hiddenSkill.skill_id,
+      tenant_workspace_id: "workspace-a",
+    }));
+
+    const adminMetrics = await dispatchDojoTool("synthi_dojo_get_metrics", productionTenantContextArgs({
+      roles: ["dojo:admin"],
+      request_id: "req-production-admin-metrics",
+    }));
+    expect(adminMetrics?.isError).toBeUndefined();
+    expect(adminMetrics?.structuredContent).toEqual(expect.objectContaining({
+      metrics: expect.objectContaining({ skill_count: 2 }),
+    }));
+
+    const universe = await dispatchDojoTool("synthi_dojo_get_universe_dossier", {
+      skill_id: visibleSkillId,
+      ...productionTenantContextArgs({ request_id: "req-production-universe" }),
+    });
+    expect(universe?.isError).toBeUndefined();
+    expect(universe?.structuredContent).toEqual(expect.objectContaining({
+      universe_dossier: expect.objectContaining({
+        metrics: expect.objectContaining({ skill_count: 1 }),
+      }),
+    }));
+
+    const governance = await dispatchDojoTool("synthi_dojo_get_governance_report", {
+      skill_id: visibleSkillId,
+      ...productionTenantContextArgs({ request_id: "req-production-governance" }),
+    });
+    expect(governance?.isError).toBeUndefined();
+    const governanceService = (governance?.structuredContent as {
+      governance_service: {
+        skill_registry: Array<{ skill_id: string }>;
+        approval_queue: Array<{ request_id?: string }>;
+      };
+    }).governance_service;
+    expect(governanceService.skill_registry).toEqual([
+      expect.objectContaining({ skill_id: visibleSkillId }),
+    ]);
+    expect(governanceService.approval_queue).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ request_id: "hidden-upgrade-request" }),
+    ]));
+  });
+
   it("advertises the static Dojo tool surface to strict MCP clients", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createSynthiServer({ defaultSignalingUrl: "ws://localhost:9000" });

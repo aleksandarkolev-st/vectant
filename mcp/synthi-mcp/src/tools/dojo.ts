@@ -112,6 +112,17 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_run_with_proof_capsule",
 ] as const;
 
+const DOJO_TENANT_CONTEXT_INPUT_PROPERTIES = {
+  tenant_id: { type: "string" },
+  organization_id: { type: "string" },
+  workspace_id: { type: "string" },
+  actor_id: { type: "string" },
+  actor_type: { type: "string", enum: ["human", "agent", "service"] },
+  roles: { type: "array", items: { type: "string" } },
+  request_id: { type: "string" },
+  correlation_id: { type: "string" },
+} as const;
+
 export const DOJO_TOOLS = [
   {
     name: "synthi_dojo_list_competencies",
@@ -239,7 +250,15 @@ export const DOJO_TOOLS = [
   {
     name: "synthi_dojo_get_metrics",
     description: "Return technical, business, and trust metrics across the Dojo skill registry or a single selected skill.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "string" },
+        workflow_id: { type: "string" },
+        ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
+      },
+      required: [],
+    },
   },
   {
     name: "synthi_dojo_get_source_affordance_pr_plan",
@@ -249,7 +268,11 @@ export const DOJO_TOOLS = [
   {
     name: "synthi_dojo_get_registry",
     description: "Return the organization-level Dojo skill registry, case-law registry, antibody registry, and aggregate metrics.",
-    inputSchema: { type: "object", properties: {}, required: [] },
+    inputSchema: {
+      type: "object",
+      properties: { ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES },
+      required: [],
+    },
   },
   {
     name: "synthi_dojo_get_skill_assurance_case",
@@ -786,7 +809,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = dojoGetSourceAffordancePrPlanTool(args);
         break;
       case "synthi_dojo_get_registry":
-        response = dojoGetRegistryTool();
+        response = dojoGetRegistryTool(args);
         break;
       case "synthi_dojo_get_skill_assurance_case":
         response = dojoGetAssuranceCaseTool(args);
@@ -1009,10 +1032,11 @@ function dojoGetUniverseDossierTool(args: unknown): ToolResponse {
   const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const a = obj(args);
+  const visibleSkills = visibleDojoSkillsForTenant(skill.tenant);
   return jsonResponse({
     ok: true,
     skill_id: skill.skill.skill_id,
-    universe_dossier: buildDojoUniverseDossier(skill.skill, dojoSkillRegistry.list(), {
+    universe_dossier: buildDojoUniverseDossier(skill.skill, visibleSkills, {
       question: stringOpt(a["question"]),
       mutation_kind: stringOpt(a["mutation_kind"]),
     }),
@@ -1028,22 +1052,26 @@ function dojoGetLifecycleTool(args: unknown): ToolResponse {
 function dojoGetGovernanceReportTool(args: unknown): ToolResponse {
   const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
+  const now = new Date().toISOString();
   return jsonResponse({
     ok: true,
     skill_id: skill.skill.skill_id,
     governance_report: buildDojoGovernanceReport(skill.skill),
-    governance_service: buildDojoGovernanceServiceView({
-      skills: dojoSkillRegistry.list(),
-      case_law_records: dojoSkillRegistry.listCaseLawRecords(),
-      permission_upgrade_requests: dojoSkillRegistry.listPermissionUpgradeRequests(),
-      now: new Date().toISOString(),
-    }),
+    governance_service: governanceServiceViewForTenant(skill.tenant, now),
   });
 }
 
 function dojoGetMetricsTool(args: unknown): ToolResponse {
-  const selected = skillByArgs(args);
-  const skills = selected ? [selected] : dojoSkillRegistry.list();
+  const a = obj(args);
+  const hasExplicitSkillSelection = Boolean(stringOpt(a["skill_id"]) || stringOpt(a["workflow_id"]));
+  if (hasExplicitSkillSelection) {
+    const skill = requiredAuthorizedSkill(args);
+    if (!skill.ok) return skill.error;
+    return jsonResponse({ ok: true, metrics: buildDojoUniverseMetrics([skill.skill]) });
+  }
+  const tenantContext = dojoTenantContextResultFromArgs(args);
+  if (!tenantContext.ok) return tenantContext.error;
+  const skills = visibleDojoSkillsForTenant(tenantContext.tenant);
   return jsonResponse({ ok: true, metrics: buildDojoUniverseMetrics(skills) });
 }
 
@@ -1057,17 +1085,15 @@ function dojoGetSourceAffordancePrPlanTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoGetRegistryTool(): ToolResponse {
-  const skills = dojoSkillRegistry.list();
+function dojoGetRegistryTool(args: unknown): ToolResponse {
+  const tenantContext = dojoTenantContextResultFromArgs(args);
+  if (!tenantContext.ok) return tenantContext.error;
+  const now = new Date().toISOString();
+  const skills = visibleDojoSkillsForTenant(tenantContext.tenant);
   return jsonResponse({
     ok: true,
-    registry: buildDojoOrganizationRegistry(skills),
-    governance_service: buildDojoGovernanceServiceView({
-      skills,
-      case_law_records: dojoSkillRegistry.listCaseLawRecords(),
-      permission_upgrade_requests: dojoSkillRegistry.listPermissionUpgradeRequests(),
-      now: new Date().toISOString(),
-    }),
+    registry: buildDojoOrganizationRegistry(skills, { now }),
+    governance_service: governanceServiceViewForTenant(tenantContext.tenant, now),
   });
 }
 
@@ -2397,6 +2423,45 @@ function isTenantAuthorizedForDojoSkill(tenant: DojoTenantContext, skill: DojoSk
   if (!enforcement.production_enforcement && tenant.roles.includes("dojo:legacy")) return true;
   if (tenant.roles.some((role) => role === "admin" || role === "dojo:admin" || role === "dojo:operator")) return true;
   return tenant.workspace_id === skill.workspace_id;
+}
+
+function visibleDojoSkillsForTenant(tenant: DojoTenantContext, skills: DojoSkill[] = dojoSkillRegistry.list()): DojoSkill[] {
+  return skills.filter((skill) => isTenantAuthorizedForDojoSkill(tenant, skill));
+}
+
+function visibleDojoCaseLawRecordsForTenant(tenant: DojoTenantContext, skills: DojoSkill[]): DojoCaseLawRecord[] {
+  const skillIds = new Set(skills.map((skill) => skill.skill_id));
+  const workspaceIds = new Set(skills.map((skill) => skill.workspace_id));
+  const organizationIds = new Set<string>([tenant.organization_id]);
+  for (const skill of skills) {
+    organizationIds.add(bindingScopeIdForSkillCase(skill, "organization"));
+  }
+  return dojoSkillRegistry.listCaseLawRecords()
+    .filter((record) => {
+      if (record.binding_scope.kind === "skill") return skillIds.has(record.binding_scope.id);
+      if (record.binding_scope.kind === "workspace") return workspaceIds.has(record.binding_scope.id);
+      if (record.binding_scope.kind === "organization") return organizationIds.has(record.binding_scope.id);
+      return false;
+    })
+    .sort((left, right) => left.case_id.localeCompare(right.case_id));
+}
+
+function visibleDojoPermissionUpgradeRequestsForSkills(skills: DojoSkill[]): DojoPermissionUpgradeRequestRecord[] {
+  const skillIds = new Set(skills.map((skill) => skill.skill_id));
+  const workspaceIds = new Set(skills.map((skill) => skill.workspace_id));
+  return dojoSkillRegistry.listPermissionUpgradeRequests()
+    .filter((request) => skillIds.has(request.skill_id) && workspaceIds.has(request.workspace_id))
+    .sort((left, right) => left.request_id.localeCompare(right.request_id));
+}
+
+function governanceServiceViewForTenant(tenant: DojoTenantContext, now: string) {
+  const skills = visibleDojoSkillsForTenant(tenant);
+  return buildDojoGovernanceServiceView({
+    skills,
+    case_law_records: visibleDojoCaseLawRecordsForTenant(tenant, skills),
+    permission_upgrade_requests: visibleDojoPermissionUpgradeRequestsForSkills(skills),
+    now,
+  });
 }
 
 function skillByArgs(args: unknown): DojoSkill | null {
