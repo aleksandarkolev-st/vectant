@@ -245,7 +245,7 @@ function buildPrivacyRedactionBudgetEvaluation({ capabilityCoverage, testSummary
 function privacyCapabilityMatchers(capability) {
   switch (capability) {
     case "evidence_redaction_manifest":
-      return ["redacts sensitive trace and storage fields", "verifiable manifest", "redacts bearer tokens"];
+      return ["redacts sensitive trace and storage fields", "verifiable manifest", "redacts bearer tokens", "structured user entered text and file name fields"];
     case "redacted_evidence_export":
       return ["redacted evidence metadata without raw artifact content", "fails closed when a bound evidence record lacks redaction metadata"];
     case "auth_checkpoint_secret_custody":

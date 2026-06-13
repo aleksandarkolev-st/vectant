@@ -33,7 +33,7 @@ export interface DojoRedactionResult<T = unknown> {
 
 type RedactionCounts = Map<string, number>;
 
-const SENSITIVE_KEY_PATTERN = /(^|[_-])(authorization|cookie|set-cookie|token|secret|password|passwd|api[_-]?key|localstorage|sessionstorage)([_-]|$)/i;
+const SENSITIVE_KEY_PATTERN = /(^|[_-])(authorization|cookie|set-cookie|token|secret|password|passwd|api[_-]?key|localstorage|sessionstorage|user[_-]?entered|user[_-]?input|typed[_-]?text|file[_-]?name|filename|document[_-]?name)([_-]|$)/i;
 
 export function redactDojoEvidenceArtifact<T = unknown>(input: {
   artifact_kind: DojoRedactableArtifactKind;

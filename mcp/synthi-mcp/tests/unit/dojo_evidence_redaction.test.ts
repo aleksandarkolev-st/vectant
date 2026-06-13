@@ -86,6 +86,49 @@ describe("Dojo evidence redaction", () => {
     expect(result.manifest.redaction_count).toBeGreaterThanOrEqual(6);
   });
 
+  it("redacts structured user-entered text and file-name fields in trace and API artifacts", () => {
+    const result = redactDojoEvidenceArtifact({
+      artifact_kind: "api_response",
+      created_at: "2026-06-11T00:00:00.000Z",
+      content: {
+        status: "validation_failed",
+        form_state: {
+          user_entered_text: "Please reimburse Jane Doe for the private hotel booking.",
+          typedText: "Internal cost center: FIN-SECRET-44",
+          file_name: "jane-doe-bank-statement.pdf",
+          documentName: "acquisition-target-contract-draft.docx",
+        },
+        safe_metadata: {
+          workflow_id: "wf_expense_review",
+          field_count: 4,
+        },
+      },
+    });
+
+    const serialized = JSON.stringify(result.redacted_content);
+    expect(serialized).not.toContain("Jane Doe");
+    expect(serialized).not.toContain("FIN-SECRET-44");
+    expect(serialized).not.toContain("bank-statement");
+    expect(serialized).not.toContain("acquisition-target");
+    expect(result.redacted_content).toEqual(expect.objectContaining({
+      status: "validation_failed",
+      form_state: {
+        user_entered_text: "[REDACTED]",
+        typedText: "[REDACTED]",
+        file_name: "[REDACTED]",
+        documentName: "[REDACTED]",
+      },
+      safe_metadata: {
+        workflow_id: "wf_expense_review",
+        field_count: 4,
+      },
+    }));
+    expect(result.manifest.rules_applied).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rule_id: "sensitive_key", count: 4 }),
+    ]));
+    expect(verifyDojoRedactionManifest(result)).toEqual({ ok: true, blocked_by: [] });
+  });
+
   it("detects redacted content or manifest tampering", () => {
     const result = redactDojoEvidenceArtifact({
       artifact_kind: "api_response",

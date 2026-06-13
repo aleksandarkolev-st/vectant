@@ -119,6 +119,7 @@ describe("Dojo privacy/redaction self-check script", () => {
 function privacyVitestReportFixture({
   assertionTitles = [
     "Dojo evidence redaction redacts sensitive trace and storage fields while producing a verifiable manifest",
+    "Dojo evidence redaction redacts structured user-entered text and file-name fields in trace and API artifacts",
     "Dojo redacted evidence export exports redacted evidence metadata without raw artifact content",
     "Auth checkpoint encrypted file store encrypts persisted auth checkpoints and keeps secret material out of the index",
     "browser broker privacy boundary returns no screenshot, DOM, console, or network data for denied origins",
