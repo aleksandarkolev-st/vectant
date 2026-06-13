@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  acquireVisualProofDevServerLock,
   buildVisualProofDevServerEnv,
   evaluateVisualProofCapture,
   sha256File,
@@ -67,6 +68,25 @@ describe("dojo visual proof utility", () => {
     await writeFile(screenshotPath, bytes);
 
     expect(await sha256File(screenshotPath)).toBe(createHash("sha256").update(bytes).digest("hex"));
+  });
+
+  it("serializes local visual proof dev-server startup with a shared lock", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-visual-proof-lock-"));
+    const lockPath = path.join(dir, "dev-server.lock");
+    const releaseFirst = await acquireVisualProofDevServerLock({ lockPath, retryMs: 5, timeoutMs: 1000 });
+    let secondAcquired = false;
+    const second = acquireVisualProofDevServerLock({ lockPath, retryMs: 5, timeoutMs: 1000 })
+      .then((release) => {
+        secondAcquired = true;
+        return release;
+      });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(secondAcquired).toBe(false);
+    await releaseFirst();
+    const releaseSecond = await second;
+    expect(secondAcquired).toBe(true);
+    await releaseSecond();
   });
 
   it("accepts a route capture with text, layout, and pixel evidence", () => {

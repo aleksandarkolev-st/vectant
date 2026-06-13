@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
 
 export const DEFAULT_VISUAL_PROOF_THRESHOLDS = Object.freeze({
   min_screenshot_bytes: 10_000,
@@ -21,6 +22,55 @@ export function buildVisualProofDevServerEnv(baseEnv = process.env) {
 export async function sha256File(filePath) {
   const bytes = await readFile(filePath);
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+export async function acquireVisualProofDevServerLock({
+  lockPath,
+  staleMs = 15 * 60 * 1000,
+  retryMs = 250,
+  timeoutMs = 5 * 60 * 1000,
+} = {}) {
+  if (!lockPath) {
+    throw new Error("visual_proof_lock_path_required");
+  }
+  await mkdir(dirname(lockPath), { recursive: true });
+  const deadline = Date.now() + timeoutMs;
+  const payload = `${JSON.stringify({
+    pid: process.pid,
+    acquired_at: new Date().toISOString(),
+    stale_after_ms: staleMs,
+  }, null, 2)}\n`;
+
+  while (Date.now() <= deadline) {
+    try {
+      const handle = await open(lockPath, "wx");
+      await handle.writeFile(payload, "utf8");
+      await handle.close();
+      let released = false;
+      return async () => {
+        if (released) return;
+        released = true;
+        await rm(lockPath, { force: true });
+      };
+    } catch (err) {
+      if (err?.code !== "EEXIST") throw err;
+      if (await removeStaleVisualProofLock(lockPath, staleMs)) continue;
+      await delay(retryMs);
+    }
+  }
+  throw new Error(`visual_proof_dev_server_lock_timeout:${lockPath}`);
+}
+
+async function removeStaleVisualProofLock(lockPath, staleMs) {
+  try {
+    const info = await stat(lockPath);
+    if (Date.now() - info.mtimeMs < staleMs) return false;
+    await rm(lockPath, { force: true });
+    return true;
+  } catch (err) {
+    if (err?.code === "ENOENT") return true;
+    throw err;
+  }
 }
 
 export async function analyzeScreenshotVisualEvidence({
@@ -83,6 +133,10 @@ export async function analyzeScreenshotVisualEvidence({
     background_diff_pixel_count: backgroundDiffPixels,
     background_diff_pixel_ratio: backgroundDiffPixels / pixelCount,
   };
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function collectRouteLayoutMetrics(page, selector) {

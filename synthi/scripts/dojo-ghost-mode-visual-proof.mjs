@@ -7,6 +7,7 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  acquireVisualProofDevServerLock,
   analyzeScreenshotVisualEvidence,
   buildVisualProofDevServerEnv,
   collectRouteLayoutMetrics,
@@ -27,6 +28,7 @@ const args = parseArgs(process.argv.slice(2));
 const OUT_DIR = path.resolve(args["out-dir"] || path.join(SYNTHI_ROOT, "tmp", "dojo-ghost-mode-visual"));
 const HOST = "127.0.0.1";
 const BASE_PORT = Number(args.port || process.env.SYNTHI_DOJO_GHOST_VISUAL_PORT || 3107);
+const DEV_SERVER_LOCK_PATH = path.join(SYNTHI_ROOT, "tmp", "dojo-visual-proof-dev-server.lock");
 
 const DEV_OVERLAY_CSS = `
 nextjs-portal,
@@ -63,7 +65,7 @@ async function main() {
     console.log(JSON.stringify({ ok: report.ok, report_path: reportPath, screenshots: report.screenshots }, null, 2));
     if (!report.ok) process.exitCode = 1;
   } finally {
-    stopDevServer(server);
+    await stopDevServer(server);
   }
 }
 
@@ -183,6 +185,7 @@ function buildBridgeState() {
 async function startDevServer({ port }) {
   const logPath = path.join(OUT_DIR, "dev-server.log");
   const nextCli = path.join(SYNTHI_ROOT, "node_modules", "next", "dist", "bin", "next");
+  const releaseLock = await acquireVisualProofDevServerLock({ lockPath: DEV_SERVER_LOCK_PATH });
   const child = spawn(process.execPath, [nextCli, "dev", "--turbopack", "--hostname", HOST, "--port", String(port)], {
     cwd: SYNTHI_ROOT,
     env: buildVisualProofDevServerEnv(),
@@ -195,20 +198,28 @@ async function startDevServer({ port }) {
   try {
     await waitForHttp({ port, timeoutMs: 45_000 });
   } catch (err) {
-    stopDevServer(child);
+    await stopDevServer({ child, releaseLock });
     await writeFile(logPath, logs.join(""), "utf8");
     throw err;
   }
   await writeFile(logPath, logs.join(""), "utf8");
-  return child;
+  return { child, releaseLock };
 }
 
-function stopDevServer(child) {
-  if (!child || child.killed) return;
-  if (process.platform === "win32") {
-    spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-  } else {
-    child.kill("SIGTERM");
+async function stopDevServer(server) {
+  const child = server?.child ?? server;
+  try {
+    if (child && !child.killed) {
+      if (process.platform === "win32") {
+        spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      } else {
+        child.kill("SIGTERM");
+      }
+    }
+  } finally {
+    if (typeof server?.releaseLock === "function") {
+      await server.releaseLock();
+    }
   }
 }
 
