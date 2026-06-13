@@ -10,6 +10,7 @@ import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import { InMemoryPrivateWorkflowToolStore, privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
 import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
 import { PostgresDojoLicenseStore } from "../../src/dojo/store/postgres_license_store.js";
+import { PostgresDojoEvidenceLedgerStore } from "../../src/dojo/evidence/ledger_store.js";
 import { applyDojoPostgresMigrations } from "../../src/dojo/store/postgres_proof_store.js";
 import { PostgresDojoProofStore } from "../../src/dojo/store/postgres_proof_store.js";
 import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_record.js";
@@ -853,6 +854,187 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(dojoSkillRegistry.getCaseLawRecord(caseId)).toBeNull();
   });
 
+  it("requires ledger-backed case law evidence when production evidence ledger is enforced", async () => {
+    const tenantId = `tenant_case_ledger_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_case_ledger_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE = "postgres";
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-case-ledger-publish",
+      correlation_id: "corr-postgres-case-ledger-publish",
+      actor_id: "postgres-case-ledger-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_case_ledger_publish",
+      evidence_refs: ["evidence:integration-postgres-case-ledger-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+    };
+    const skill = dojoSkillRegistry.get(published.skill.skill_id);
+    expect(skill).toBeTruthy();
+
+    const unbackedRecord = await dispatchDojoTool("synthi_dojo_record_case_law", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      title: "Unbacked case law evidence",
+      finding: "This proposal intentionally references evidence that is not in the ledger.",
+      rule: "Reject unbacked case-law proposal evidence in production.",
+      applies_to: ["commit_mutation"],
+      evidence_refs: ["evidence:unbacked-case-law-proposal"],
+      actor_id: "postgres-case-ledger-author",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      request_id: "req-postgres-case-ledger-record-unbacked",
+      correlation_id: "corr-postgres-case-ledger-record-unbacked",
+      now: "2026-06-11T02:05:00.000Z",
+    });
+    expect(unbackedRecord?.isError).toBe(true);
+    expect(unbackedRecord?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_case_law_evidence_ledger_resolution_failed",
+      missing_evidence_record_ids: ["evidence:unbacked-case-law-proposal"],
+      blocked_by: ["evidence_record_missing:evidence:unbacked-case-law-proposal"],
+    }));
+
+    const proposalEvidence = await appendCaseLawEvidenceRecordForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      skill_id: published.skill.skill_id,
+      record_id: `case_law_proposal_${createHash("sha256").update(`${tenantId}:${workspaceId}:${published.skill.skill_id}:proposal`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T02:00:00.000Z",
+      created_by: "postgres-case-ledger-author",
+      source_ref: "case-law:proposal",
+    });
+
+    const recorded = await dispatchDojoTool("synthi_dojo_record_case_law", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      title: "Ledger backed stable identifier case",
+      finding: "A duplicate display name can make the skill choose the wrong entity.",
+      rule: "Require stable identifier evidence before entity mutation.",
+      applies_to: ["commit_mutation"],
+      evidence_refs: [proposalEvidence.record_id],
+      actor_id: "postgres-case-ledger-author",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      request_id: "req-postgres-case-ledger-record",
+      correlation_id: "corr-postgres-case-ledger-record",
+      now: "2026-06-11T02:10:00.000Z",
+    });
+    expect(recorded?.isError).toBeUndefined();
+    expect(recorded?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      evidence_ledger_validation: expect.objectContaining({
+        store_kind: "postgres",
+        evidence_record_ids: [proposalEvidence.record_id],
+        record_count: 1,
+      }),
+      case_law_record: expect.objectContaining({
+        status: "proposed",
+        evidence_refs: [proposalEvidence.record_id],
+      }),
+    }));
+    const caseId = (recorded?.structuredContent as {
+      case_law_record: { case_id: string };
+    }).case_law_record.case_id;
+
+    const reviewEvidence = await appendCaseLawEvidenceRecordForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      skill_id: published.skill.skill_id,
+      record_id: `case_law_review_${createHash("sha256").update(`${tenantId}:${workspaceId}:${published.skill.skill_id}:review`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T02:20:00.000Z",
+      created_by: "postgres-case-ledger-reviewer",
+      source_ref: "case-law:review",
+    });
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+
+    const unbackedReview = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      case_id: caseId,
+      decision: "approved",
+      reviewer_actor_id: "postgres-case-ledger-reviewer",
+      reviewer_actor_type: "human",
+      reason: "Reject review because one evidence ref is not in the ledger.",
+      evidence_refs: ["evidence:unbacked-case-law-review"],
+      actor_id: "postgres-case-ledger-reviewer",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      request_id: "req-postgres-case-ledger-review-unbacked",
+      correlation_id: "corr-postgres-case-ledger-review-unbacked",
+      decided_at: "2026-06-11T02:30:00.000Z",
+    });
+    expect(unbackedReview?.isError).toBe(true);
+    expect(unbackedReview?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_case_law_evidence_ledger_resolution_failed",
+      missing_evidence_record_ids: ["evidence:unbacked-case-law-review"],
+      blocked_by: ["evidence_record_missing:evidence:unbacked-case-law-review"],
+    }));
+
+    const reviewed = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      case_id: caseId,
+      decision: "approved",
+      reviewer_actor_id: "postgres-case-ledger-reviewer",
+      reviewer_actor_type: "human",
+      reason: "Ledger records prove the stable identifier guardrail is required.",
+      evidence_refs: [reviewEvidence.record_id],
+      actor_id: "postgres-case-ledger-reviewer",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      request_id: "req-postgres-case-ledger-review",
+      correlation_id: "corr-postgres-case-ledger-review",
+      decided_at: "2026-06-11T02:30:00.000Z",
+    });
+    expect(reviewed?.isError).toBeUndefined();
+    expect(reviewed?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      evidence_ledger_validation: expect.objectContaining({
+        store_kind: "postgres",
+        evidence_record_ids: expect.arrayContaining([proposalEvidence.record_id, reviewEvidence.record_id]),
+        record_count: 2,
+      }),
+      case_law_record: expect.objectContaining({
+        case_id: caseId,
+        status: "approved",
+        evidence_refs: expect.arrayContaining([proposalEvidence.record_id, reviewEvidence.record_id]),
+      }),
+      skill: expect.objectContaining({ skill_id: published.skill.skill_id }),
+    }));
+
+    const governanceStore = new PostgresDojoGovernanceStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(governanceStore.getCaseLawRecord(caseId)).resolves.toEqual(expect.objectContaining({
+      case_id: caseId,
+      status: "approved",
+      evidence_refs: expect.arrayContaining([proposalEvidence.record_id, reviewEvidence.record_id]),
+    }));
+  });
+
   it("records Ghost Mode shadow evidence through Postgres after local reset", async () => {
     const tenantId = `tenant_ghost_tool_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_ghost_tool_${Math.random().toString(16).slice(2)}`;
@@ -1568,6 +1750,52 @@ function recordOpenDetailsWorkflowForToolTest(workspaceId: string): void {
     locator_candidates: [
       { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
     ],
+  });
+}
+
+async function appendCaseLawEvidenceRecordForToolTest(
+  pool: Pool,
+  input: {
+    tenant_id: string;
+    workspace_id: string;
+    skill_id: string;
+    record_id: string;
+    created_at: string;
+    created_by: string;
+    source_ref: string;
+  }
+) {
+  const payload = JSON.stringify({
+    tenant_id: input.tenant_id,
+    workspace_id: input.workspace_id,
+    skill_id: input.skill_id,
+    record_id: input.record_id,
+    created_at: input.created_at,
+    source_ref: input.source_ref,
+  });
+  const artifactSha256 = createHash("sha256").update(payload, "utf8").digest("hex");
+  const redactionManifestSha256 = createHash("sha256").update(JSON.stringify({
+    artifact_sha256: artifactSha256,
+    redaction_policy: "metadata_only",
+  }), "utf8").digest("hex");
+  const ledgerStore = new PostgresDojoEvidenceLedgerStore({
+    tenant_id: input.tenant_id,
+    workspace_id: input.workspace_id,
+    queryable: pool,
+  });
+  return ledgerStore.append({
+    record_id: input.record_id,
+    skill_id: input.skill_id,
+    run_id: `case_law_${input.record_id}`,
+    kind: "case_law",
+    artifact_uri: `sha256://${artifactSha256}`,
+    artifact_sha256: artifactSha256,
+    redaction_manifest_sha256: redactionManifestSha256,
+    claim_ids: ["case_law_reviewed"],
+    created_at: input.created_at,
+    created_by: input.created_by,
+    retention_class: "standard",
+    source_refs: [input.source_ref],
   });
 }
 

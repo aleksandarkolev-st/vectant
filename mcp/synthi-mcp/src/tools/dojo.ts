@@ -2386,6 +2386,26 @@ async function dojoReviewCaseLawTool(args: unknown): Promise<ToolResponse> {
   }
 
   const scopedSkill = selectedSkill ?? authorization.scopedSkill;
+  if (!scopedSkill) {
+    await durableResolution.context?.close?.();
+    return errorResponse("dojo_case_law_skill_required", {
+      ok: false,
+      case_id: caseId,
+      operation: "synthi_dojo_review_case_law",
+      blocked_by: ["case_law_skill_scope_required"],
+    });
+  }
+  const evidenceLedgerValidation = await validateCaseLawEvidenceRefsAgainstLedgerIfRequired({
+    operation: "synthi_dojo_review_case_law",
+    tenant: authorization.tenant,
+    skill: scopedSkill,
+    evidence_refs: review.case_law.evidence_refs,
+    checked_at: review.case_law.updated_at,
+  });
+  if (!evidenceLedgerValidation.ok) {
+    await durableResolution.context?.close?.();
+    return evidenceLedgerValidation.error;
+  }
   let updatedRecord = review.case_law;
   let updatedSkill = scopedSkill?.case_law.some((item) => item.case_id === updatedRecord.case_id)
     ? applyCaseLawReviewToSkill(scopedSkill, updatedRecord)
@@ -2426,6 +2446,7 @@ async function dojoReviewCaseLawTool(args: unknown): Promise<ToolResponse> {
     decision,
     case_law_record: updatedRecord,
     review,
+    evidence_ledger_validation: evidenceLedgerValidation.evidence_ledger_resolution ?? null,
     ...(updatedSkill ? { skill_id: updatedSkill.skill_id, skill: skillListItem(updatedSkill) } : {}),
     governance_service: buildDojoGovernanceServiceView({
       skills: governanceSkills,
@@ -3016,7 +3037,7 @@ async function dojoRecordCaseLawTool(args: unknown): Promise<ToolResponse> {
       review_tool: "synthi_dojo_review_case_law",
     });
   }
-  const now = new Date().toISOString();
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const title = stringOpt(a["title"]) ?? titleFromFinding(finding);
   const impact = stringOpt(a["impact"]) ?? "The skill could act outside its licensed tested conditions.";
   const appliesTo = stringArrayOpt(a["applies_to"]);
@@ -3031,6 +3052,14 @@ async function dojoRecordCaseLawTool(args: unknown): Promise<ToolResponse> {
       review_tool: "synthi_dojo_review_case_law",
     });
   }
+  const evidenceLedgerValidation = await validateCaseLawEvidenceRefsAgainstLedgerIfRequired({
+    operation: "synthi_dojo_record_case_law",
+    tenant: skill.tenant,
+    skill: skill.skill,
+    evidence_refs: evidenceRefs,
+    checked_at: now,
+  });
+  if (!evidenceLedgerValidation.ok) return evidenceLedgerValidation.error;
   const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_record_case_law", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const caseId = `case_${hashId(`${skill.skill.skill_id}:${sourceRunId}:${finding}:${rule}`)}`;
@@ -3098,6 +3127,7 @@ async function dojoRecordCaseLawTool(args: unknown): Promise<ToolResponse> {
     skill_id: saved.skill_id,
     case_law: caseLaw,
     case_law_record: caseLawRecord,
+    evidence_ledger_validation: evidenceLedgerValidation.evidence_ledger_resolution ?? null,
     guardrail_proposal: guardrailProposal,
     antibody_proposal: antibodyProposal,
     guardrail_binding_status: "review_required",
@@ -4320,6 +4350,90 @@ function sourceWorkspaceIdForWorkflowArtifact(artifact: BrowserWorkflowArtifact)
 
 function visibleDojoSkillsForTenant(tenant: DojoTenantContext, skills: DojoSkill[] = dojoSkillRegistry.list()): DojoSkill[] {
   return skills.filter((skill) => isTenantAuthorizedForDojoSkill(tenant, skill));
+}
+
+async function validateCaseLawEvidenceRefsAgainstLedgerIfRequired(input: {
+  operation: string;
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  evidence_refs: string[];
+  checked_at: string;
+}): Promise<
+  | { ok: true; evidence_ledger_resolution?: Record<string, unknown> }
+  | { ok: false; error: ToolResponse }
+> {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_evidence_ledger) {
+    return { ok: true };
+  }
+
+  const evidenceRefs = [...new Set(input.evidence_refs.map((ref) => ref.trim()).filter(Boolean))];
+  if (evidenceRefs.length === 0) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_case_law_evidence_required", {
+        ok: false,
+        operation: input.operation,
+        skill_id: input.skill.skill_id,
+        blocked_by: ["case_law_evidence_refs_missing"],
+      }),
+    };
+  }
+
+  const resolved = await resolveDojoEvidenceLedgerRecords({
+    tenant_id: input.tenant.tenant_id,
+    workspace_id: input.tenant.workspace_id,
+    record_ids: evidenceRefs,
+    checked_at: input.checked_at,
+  });
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_case_law_evidence_ledger_resolution_failed", {
+        ok: false,
+        operation: input.operation,
+        skill_id: input.skill.skill_id,
+        evidence_refs: evidenceRefs,
+        evidence_record_ids: evidenceRefs,
+        missing_evidence_record_ids: resolved.missing_record_ids,
+        ledger_checkpoint_hash: resolved.ledger_checkpoint_hash,
+        evidence_ledger_store_kind: resolved.store_kind,
+        evidence_ledger_configured_env: resolved.configured_env,
+        blocked_by: resolved.blocked_by,
+        verification: resolved.verification,
+      }),
+    };
+  }
+
+  const mismatchedRecords = resolved.records.filter((record) => record.skill_id !== input.skill.skill_id);
+  if (mismatchedRecords.length > 0) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_case_law_evidence_ledger_scope_mismatch", {
+        ok: false,
+        operation: input.operation,
+        skill_id: input.skill.skill_id,
+        workspace_id: input.skill.workspace_id,
+        evidence_record_ids: evidenceRefs,
+        mismatched_evidence_record_ids: mismatchedRecords.map((record) => record.record_id),
+        mismatched_skill_ids: [...new Set(mismatchedRecords.map((record) => record.skill_id))],
+        ledger_checkpoint_hash: resolved.ledger_checkpoint_hash,
+        evidence_ledger_store_kind: resolved.store_kind,
+        blocked_by: mismatchedRecords.map((record) => `case_law_evidence_skill_mismatch:${record.record_id}`),
+      }),
+    };
+  }
+
+  return {
+    ok: true,
+    evidence_ledger_resolution: {
+      store_kind: resolved.store_kind,
+      evidence_record_ids: resolved.records.map((record) => record.record_id),
+      record_count: resolved.records.length,
+      ledger_checkpoint_hash: resolved.ledger_checkpoint_hash,
+      verification: resolved.verification,
+    },
+  };
 }
 
 async function visibleDojoSkillsForTenantFromControlPlaneIfRequired(
