@@ -6,6 +6,7 @@ export interface DojoSourceTokenSnapshot {
   component: string;
   action?: string;
   source_locator: string;
+  source_sha256?: string;
   risk?: "safe" | "mutation" | "dangerous";
 }
 
@@ -165,6 +166,7 @@ function normalizeTokens(tokens: DojoSourceTokenSnapshot[]): DojoSourceTokenSnap
         component: token.component,
         ...(token.action ? { action: token.action } : {}),
         source_locator: normalizePath(token.source_locator),
+        ...(token.source_sha256 ? { source_sha256: normalizeSha256(token.source_sha256, "source_token_source_sha256") } : {}),
         ...(token.risk ? { risk: token.risk } : {}),
       };
     })
@@ -173,6 +175,12 @@ function normalizeTokens(tokens: DojoSourceTokenSnapshot[]): DojoSourceTokenSnap
 
 function normalizePath(value: string): string {
   return value.replace(/\\/g, "/");
+}
+
+function normalizeSha256(value: string, field: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(normalized)) throw new Error(`dojo_source_snapshot_${field}_invalid`);
+  return normalized;
 }
 
 function requireNonEmpty(value: string, field: string): void {

@@ -14,7 +14,7 @@ export interface DojoGraphNodeSourceBinding {
 export interface DojoSourceDriftAffectedNode {
   node_id: string;
   source_token_id: string;
-  drift_kind: "changed" | "removed";
+  drift_kind: "changed" | "removed" | "added";
   license_id?: string;
 }
 
@@ -34,6 +34,8 @@ export interface DojoSourceDriftReport {
   previous_app_version: string;
   next_app_version: string;
   drifted_token_ids: string[];
+  added_token_ids: string[];
+  review_required_token_ids: string[];
   affected_nodes: DojoSourceDriftAffectedNode[];
   license_expiry_triggers: DojoSourceLicenseExpiryTrigger[];
 }
@@ -51,7 +53,7 @@ export function detectDojoSourceDrift(input: {
   }
   const previousTokens = tokenMap(input.previous_snapshot.source_tokens);
   const nextTokens = tokenMap(input.next_snapshot.source_tokens);
-  const drifted = new Map<string, "changed" | "removed">();
+  const drifted = new Map<string, DojoSourceDriftAffectedNode["drift_kind"]>();
   for (const [tokenId, previousToken] of previousTokens.entries()) {
     const nextToken = nextTokens.get(tokenId);
     if (!nextToken) {
@@ -62,6 +64,19 @@ export function detectDojoSourceDrift(input: {
       drifted.set(tokenId, "changed");
     }
   }
+  const addedTokenIds: string[] = [];
+  for (const tokenId of nextTokens.keys()) {
+    if (!previousTokens.has(tokenId)) {
+      addedTokenIds.push(tokenId);
+      drifted.set(tokenId, "added");
+    }
+  }
+  const reviewRequiredTokenIds = addedTokenIds
+    .map((tokenId) => nextTokens.get(tokenId))
+    .filter((token): token is DojoSourceTokenSnapshot => Boolean(token))
+    .filter((token) => token.risk === "mutation" || token.risk === "dangerous")
+    .map((token) => token.token_id)
+    .sort();
 
   const affectedNodes = input.node_bindings.flatMap((binding) =>
     binding.source_token_ids.flatMap((tokenId): DojoSourceDriftAffectedNode[] => {
@@ -84,6 +99,8 @@ export function detectDojoSourceDrift(input: {
     previous_app_version: input.previous_snapshot.app_version,
     next_app_version: input.next_snapshot.app_version,
     drifted_token_ids: [...drifted.keys()].sort(),
+    added_token_ids: addedTokenIds.sort(),
+    review_required_token_ids: reviewRequiredTokenIds,
     affected_nodes: affectedNodes.sort((left, right) => `${left.node_id}:${left.source_token_id}`.localeCompare(`${right.node_id}:${right.source_token_id}`)),
     license_expiry_triggers: affectedNodes.map((node) => ({
       trigger_id: `source_drift_${shortHash(`${node.node_id}:${node.source_token_id}:${input.next_snapshot.snapshot_hash}`)}`,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   buildDojoSourceSnapshot,
@@ -48,6 +49,40 @@ describe("Dojo source snapshot contract", () => {
     });
 
     expect(second.snapshot_hash).not.toBe(first.snapshot_hash);
+  });
+
+  it("normalizes source content hashes into the signed snapshot material", () => {
+    const snapshot = snapshotFixture({
+      source_tokens: [
+        {
+          token_id: "save-button",
+          route: "/invoices",
+          component: "InvoiceForm",
+          action: "saveInvoice",
+          source_locator: "src/routes/invoices/InvoiceForm.jsx:42",
+          source_sha256: sha256("export function saveInvoice() { return true; }").toUpperCase(),
+          risk: "mutation",
+        },
+      ],
+    });
+
+    expect(snapshot.source_tokens[0]?.source_sha256).toBe(sha256("export function saveInvoice() { return true; }"));
+    expect(verifyDojoSourceSnapshot(snapshot, { signing_keys_by_id: sourceSigningKeys() })).toEqual(expect.objectContaining({
+      ok: true,
+      blocked_by: [],
+    }));
+  });
+
+  it("rejects invalid source content hashes", () => {
+    expect(() => snapshotFixture({
+      source_tokens: [{
+        token_id: "save-button",
+        route: "/invoices",
+        component: "InvoiceForm",
+        source_locator: "src/InvoiceForm.jsx:42",
+        source_sha256: "not-a-sha",
+      }],
+    })).toThrow(/dojo_source_snapshot_source_token_source_sha256_invalid/);
   });
 
   it("rejects duplicate source token IDs", () => {
@@ -123,4 +158,8 @@ function sourceSigningKeys(): Record<string, string> {
 
 function sourceSigningKey(): string {
   return "source-signing-secret-a";
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }

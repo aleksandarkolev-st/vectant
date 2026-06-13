@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { detectDojoSourceDrift } from "../../src/dojo/source/source_drift.js";
 import { buildDojoSourceSnapshot } from "../../src/dojo/source/source_snapshot.js";
@@ -85,6 +86,76 @@ describe("Dojo source drift expiry", () => {
     ]);
   });
 
+  it("expires bound nodes when source content changes behind a stable token", () => {
+    const previous = snapshotFixture("2026.06.11", [
+      {
+        token_id: "save-button",
+        route: "/invoices",
+        component: "InvoiceForm",
+        action: "saveInvoice",
+        source_locator: "src/InvoiceForm.jsx:42",
+        source_sha256: hashSource("saveInvoice:v1"),
+        risk: "mutation",
+      },
+    ]);
+    const next = snapshotFixture("2026.06.12", [
+      {
+        token_id: "save-button",
+        route: "/invoices",
+        component: "InvoiceForm",
+        action: "saveInvoice",
+        source_locator: "src/InvoiceForm.jsx:42",
+        source_sha256: hashSource("saveInvoice:v2"),
+        risk: "mutation",
+      },
+    ]);
+
+    const report = detectDojoSourceDrift({
+      previous_snapshot: previous,
+      next_snapshot: next,
+      node_bindings: [{ node_id: "action_submit", source_token_ids: ["save-button"], license_id: "license-a" }],
+      source_snapshot_signing_keys_by_id: sourceSigningKeys(),
+    });
+
+    expect(report.drifted_token_ids).toEqual(["save-button"]);
+    expect(report.affected_nodes).toEqual([
+      expect.objectContaining({
+        node_id: "action_submit",
+        source_token_id: "save-button",
+        drift_kind: "changed",
+      }),
+    ]);
+    expect(report.license_expiry_triggers).toHaveLength(1);
+  });
+
+  it("reports newly added risky affordances for review", () => {
+    const previous = snapshotFixture("2026.06.11", [
+      { token_id: "save-button", route: "/invoices", component: "InvoiceForm", action: "saveInvoice", source_locator: "src/InvoiceForm.jsx:42", risk: "mutation" },
+    ]);
+    const next = snapshotFixture("2026.06.12", [
+      { token_id: "save-button", route: "/invoices", component: "InvoiceForm", action: "saveInvoice", source_locator: "src/InvoiceForm.jsx:42", risk: "mutation" },
+      { token_id: "delete-button", route: "/invoices", component: "InvoiceForm", action: "deleteInvoice", source_locator: "src/InvoiceForm.jsx:88", risk: "dangerous" },
+      { token_id: "title", route: "/invoices", component: "InvoiceHeader", source_locator: "src/InvoiceHeader.jsx:12", risk: "safe" },
+    ]);
+
+    const report = detectDojoSourceDrift({
+      previous_snapshot: previous,
+      next_snapshot: next,
+      node_bindings: [{ node_id: "action_delete", source_token_ids: ["delete-button"], license_id: "license-a" }],
+      source_snapshot_signing_keys_by_id: sourceSigningKeys(),
+    });
+
+    expect(report.added_token_ids).toEqual(["delete-button", "title"]);
+    expect(report.review_required_token_ids).toEqual(["delete-button"]);
+    expect(report.affected_nodes).toEqual([
+      expect.objectContaining({
+        node_id: "action_delete",
+        source_token_id: "delete-button",
+        drift_kind: "added",
+      }),
+    ]);
+  });
+
   it("rejects drift reports from tampered or unverifiable source snapshots", () => {
     const previous = snapshotFixture("2026.06.11", [
       { token_id: "save-button", route: "/invoices", component: "InvoiceForm", action: "saveInvoice", source_locator: "src/InvoiceForm.jsx:42", risk: "mutation" },
@@ -133,4 +204,8 @@ function sourceSigningKeys(): Record<string, string> {
 
 function sourceSigningKey(): string {
   return "source-signing-secret-a";
+}
+
+function hashSource(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
