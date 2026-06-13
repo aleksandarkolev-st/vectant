@@ -319,6 +319,14 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     command: "npm --prefix mcp/synthi-mcp run proof:dojo:security-abuse:self-check",
     required_for: ["release"],
     evidence_kind: "test_report",
+    evidence_schema_version: "synthi.dojo.securityAbuseEvidence.v1",
+    default_evidence_path: "tmp/dojo-security-abuse/dojo-security-abuse.evidence.json",
+    release_artifact_requirements: {
+      require_all_abuse_classes_covered: true,
+      require_no_failed_tests: true,
+      require_budget_ok: true,
+      require_stdout_stderr_digest_match: true,
+    },
   },
   {
     id: "dojo_chaos_performance_self_check",
@@ -328,6 +336,15 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     command: "npm --prefix mcp/synthi-mcp run proof:dojo:chaos-performance:self-check",
     required_for: ["nightly", "enterprise_release"],
     evidence_kind: "metrics",
+    evidence_schema_version: "synthi.dojo.chaosPerformanceEvidence.v1",
+    default_evidence_path: "tmp/dojo-chaos-performance/dojo-chaos-performance.evidence.json",
+    enterprise_artifact_requirements: {
+      require_all_scenarios_covered: true,
+      require_no_failed_tests: true,
+      require_budget_ok: true,
+      require_performance_metrics: true,
+      require_stdout_stderr_digest_match: true,
+    },
   },
   {
     id: "soak_performance",
@@ -480,6 +497,32 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!mcpHostConformanceGate.release_artifact_requirements?.require_non_loopback_mcp_host) {
       errors.push("mcp_host_conformance_missing_non_loopback_requirement");
+    }
+  }
+  const securityAbuseGate = gates.find((gate) => gate.id === "security_abuse_suite");
+  if (securityAbuseGate) {
+    if (securityAbuseGate.evidence_schema_version !== "synthi.dojo.securityAbuseEvidence.v1") {
+      errors.push("security_abuse_missing_evidence_schema");
+    }
+    if (!securityAbuseGate.default_evidence_path) errors.push("security_abuse_missing_default_evidence_path");
+    if (!securityAbuseGate.release_artifact_requirements?.require_all_abuse_classes_covered) {
+      errors.push("security_abuse_missing_coverage_requirement");
+    }
+    if (!securityAbuseGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("security_abuse_missing_digest_requirement");
+    }
+  }
+  const chaosPerformanceGate = gates.find((gate) => gate.id === "dojo_chaos_performance_self_check");
+  if (chaosPerformanceGate) {
+    if (chaosPerformanceGate.evidence_schema_version !== "synthi.dojo.chaosPerformanceEvidence.v1") {
+      errors.push("chaos_performance_missing_evidence_schema");
+    }
+    if (!chaosPerformanceGate.default_evidence_path) errors.push("chaos_performance_missing_default_evidence_path");
+    if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_all_scenarios_covered) {
+      errors.push("chaos_performance_missing_scenario_requirement");
+    }
+    if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_performance_metrics) {
+      errors.push("chaos_performance_missing_metrics_requirement");
     }
   }
   return {

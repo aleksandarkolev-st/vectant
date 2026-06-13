@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,8 +15,12 @@ import {
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
 import {
   validateDojoMcpHostConformanceReportForRelease,
+  validateDojoChaosPerformanceEvidenceForEnterprise,
+  validateDojoSecurityAbuseEvidenceForRelease,
+  verifyDojoChaosPerformanceEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoReleaseGateManifestArtifacts,
+  verifyDojoSecurityAbuseEvidenceArtifact,
   verifyVisualProofArtifact,
 } from "../../scripts/dojo-release-gate-verify.mjs";
 
@@ -106,6 +111,103 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("verifies security abuse evidence coverage and referenced log digests", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-security-abuse-verify-"));
+    const evidencePath = await writeSecurityEvidenceFixture({ dir });
+
+    expect(validateDojoSecurityAbuseEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoSecurityAbuseEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = securityEvidenceFixture({
+      ok: false,
+      abuse_class_coverage_complete: false,
+      missing_abuse_classes: ["raw_private_tool_bypass"],
+    });
+    const incompletePath = await writeSecurityEvidenceFixture({ dir, basename: "incomplete-security", evidence: incomplete });
+    const rejected = await verifyDojoSecurityAbuseEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "security_abuse_not_ok",
+      "security_abuse_coverage_incomplete",
+      "security_abuse_missing_classes:raw_private_tool_bypass",
+    ]));
+
+    const tamperedStdout = path.join(dir, "tampered-security.stdout.log");
+    await writeFile(tamperedStdout, "tampered stdout", "utf8");
+    const tamperedPath = await writeSecurityEvidenceFixture({
+      dir,
+      basename: "tampered-security",
+      evidence: securityEvidenceFixture({ stdout_path: tamperedStdout }),
+      writeLogs: false,
+    });
+    const tampered = await verifyDojoSecurityAbuseEvidenceArtifact({ evidencePath: tamperedPath });
+    expect(tampered.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^stdout_sha256_mismatch:/),
+      expect.stringMatching(/^stdout_bytes_mismatch:/),
+    ]));
+  });
+
+  it("verifies chaos performance evidence coverage, metrics, and referenced log digests", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-chaos-performance-verify-"));
+    const evidencePath = await writeChaosEvidenceFixture({ dir });
+
+    expect(validateDojoChaosPerformanceEvidenceForEnterprise(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoChaosPerformanceEvidenceArtifact({
+      evidencePath,
+      enterpriseRelease: true,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      enterprise_release: true,
+    }));
+
+    const missingMetricsPath = await writeChaosEvidenceFixture({
+      dir,
+      basename: "missing-metrics-chaos",
+      evidence: chaosEvidenceFixture({
+        performance_metrics: {
+          self_check_duration_ms: 1200,
+          failed_test_count: 0,
+          passed_test_count: 9,
+        },
+      }),
+    });
+    const missingMetrics = await verifyDojoChaosPerformanceEvidenceArtifact({ evidencePath: missingMetricsPath });
+    expect(missingMetrics.errors).toEqual(expect.arrayContaining([
+      "chaos_performance_missing_test_case_p95",
+      "chaos_performance_missing_test_file_p95",
+    ]));
+
+    const incompletePath = await writeChaosEvidenceFixture({
+      dir,
+      basename: "incomplete-chaos",
+      evidence: chaosEvidenceFixture({
+        ok: false,
+        scenario_coverage_complete: false,
+        missing_chaos_scenarios: ["api_timeout"],
+      }),
+    });
+    const rejected = await verifyDojoChaosPerformanceEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "chaos_performance_not_ok",
+      "chaos_performance_scenario_coverage_incomplete",
+      "chaos_performance_missing_scenarios:api_timeout",
+    ]));
+  });
+
   it("verifies visual reports against schema, pixel/layout metrics, and screenshot bytes", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-visual-verify-"));
     const packageScripts = await readPackageScripts();
@@ -175,6 +277,122 @@ async function writeConformancePair({ report, reportPath, evidencePath }) {
   });
   await writeFile(reportPath, serialized, "utf8");
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2), "utf8");
+}
+
+async function writeSecurityEvidenceFixture({
+  dir,
+  basename = "dojo-security-abuse",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "security suite passed\n";
+  const stderr = "";
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+  } else {
+    await writeFile(stderrPath, stderr, "utf8");
+  }
+  const body = evidence ?? securityEvidenceFixture({ stdout_path: stdoutPath, stderr_path: stderrPath });
+  const withLogDefaults = {
+    ...body,
+    stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
+    stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
+  };
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
+  return evidencePath;
+}
+
+function securityEvidenceFixture(overrides = {}) {
+  const stdout = "security suite passed\n";
+  const stderr = "";
+  return {
+    schema_version: "synthi.dojo.securityAbuseEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    abuse_class_coverage_complete: true,
+    missing_abuse_classes: [],
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: 8,
+      passed_tests: 8,
+      failed_tests: 0,
+    },
+    stdout_path: "stdout.log",
+    stderr_path: "stderr.log",
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+}
+
+async function writeChaosEvidenceFixture({
+  dir,
+  basename = "dojo-chaos-performance",
+  evidence,
+}) {
+  const stdout = "chaos suite passed\n";
+  const stderr = "";
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  const body = evidence ?? chaosEvidenceFixture({ stdout_path: stdoutPath, stderr_path: stderrPath });
+  const withLogDefaults = {
+    ...body,
+    stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
+    stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
+  };
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
+  return evidencePath;
+}
+
+function chaosEvidenceFixture(overrides = {}) {
+  const stdout = "chaos suite passed\n";
+  const stderr = "";
+  return {
+    schema_version: "synthi.dojo.chaosPerformanceEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    scenario_coverage_complete: true,
+    missing_chaos_scenarios: [],
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: 9,
+      passed_tests: 9,
+      failed_tests: 0,
+    },
+    performance_metrics: {
+      self_check_duration_ms: 1200,
+      test_case_duration_p95_ms: 42,
+      test_file_duration_p95_ms: 140,
+      failed_test_count: 0,
+      passed_test_count: 9,
+    },
+    stdout_path: "stdout.log",
+    stderr_path: "stderr.log",
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+}
+
+async function readJson(filePath) {
+  return JSON.parse(await readFile(filePath, "utf8"));
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function buildConformanceReport({

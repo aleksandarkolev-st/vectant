@@ -31,6 +31,8 @@ const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 const DEFAULT_RELEASE_GATE_DIR = path.join(REPO_ROOT, "tmp", "dojo-release-gates");
 const DEFAULT_VERIFY_DIR = path.join(REPO_ROOT, "tmp", "dojo-release-gate-verify");
 const DEFAULT_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-host-conformance");
+const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
+const DEFAULT_CHAOS_PERFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-chaos-performance");
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -93,7 +95,23 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...visualResults, ...conformanceResults];
+  const securityResults = [];
+  if (truthy(args["release-candidate"]) || args["security-abuse-evidence"]) {
+    securityResults.push(await verifyDojoSecurityAbuseEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["security-abuse-evidence"] || path.join(DEFAULT_SECURITY_ABUSE_DIR, "dojo-security-abuse.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
+  const chaosPerformanceResults = [];
+  if (truthy(args["enterprise-release"]) || truthy(args["include-chaos-performance"]) || args["chaos-performance-evidence"]) {
+    chaosPerformanceResults.push(await verifyDojoChaosPerformanceEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["chaos-performance-evidence"] || path.join(DEFAULT_CHAOS_PERFORMANCE_DIR, "dojo-chaos-performance.evidence.json")),
+      enterpriseRelease: truthy(args["enterprise-release"]),
+    }));
+  }
+
+  const sections = [manifestResult, ...visualResults, ...conformanceResults, ...securityResults, ...chaosPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -103,6 +121,8 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     manifest: summarizeSection(manifestResult),
     visual_reports: visualResults.map(summarizeSection),
     mcp_host_conformance: conformanceResults.map(summarizeSection),
+    security_abuse: securityResults.map(summarizeSection),
+    chaos_performance: chaosPerformanceResults.map(summarizeSection),
   };
 }
 
@@ -215,6 +235,84 @@ export function validateDojoMcpHostConformanceReportForRelease(report) {
   };
 }
 
+export async function verifyDojoSecurityAbuseEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoSecurityAbuseEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "security_abuse_suite",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoSecurityAbuseEvidenceForRelease(evidence) {
+  const errors = [];
+  if (evidence?.schema_version !== "synthi.dojo.securityAbuseEvidence.v1") {
+    errors.push(`security_abuse_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("security_abuse_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`security_abuse_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.abuse_class_coverage_complete !== true) errors.push("security_abuse_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_abuse_classes) && evidence.missing_abuse_classes.length > 0) {
+    errors.push(`security_abuse_missing_classes:${evidence.missing_abuse_classes.join(",")}`);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("security_abuse_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`security_abuse_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("security_abuse_no_reported_tests");
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoChaosPerformanceEvidenceArtifact({ evidencePath, enterpriseRelease = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoChaosPerformanceEvidenceForEnterprise(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_chaos_performance_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    enterprise_release: Boolean(enterpriseRelease),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoChaosPerformanceEvidenceForEnterprise(evidence) {
+  const errors = [];
+  if (evidence?.schema_version !== "synthi.dojo.chaosPerformanceEvidence.v1") {
+    errors.push(`chaos_performance_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("chaos_performance_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`chaos_performance_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.scenario_coverage_complete !== true) errors.push("chaos_performance_scenario_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_chaos_scenarios) && evidence.missing_chaos_scenarios.length > 0) {
+    errors.push(`chaos_performance_missing_scenarios:${evidence.missing_chaos_scenarios.join(",")}`);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("chaos_performance_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`chaos_performance_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("chaos_performance_no_reported_tests");
+  if (!Number.isFinite(Number(evidence?.performance_metrics?.test_case_duration_p95_ms))) {
+    errors.push("chaos_performance_missing_test_case_p95");
+  }
+  if (!Number.isFinite(Number(evidence?.performance_metrics?.test_file_duration_p95_ms))) {
+    errors.push("chaos_performance_missing_test_file_p95");
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
 async function validateVisualScreenshotArtifacts(report) {
   const errors = [];
   const resultPaths = new Set();
@@ -243,6 +341,51 @@ async function validateVisualScreenshotArtifacts(report) {
     if (!resultPaths.has(screenshotPath)) {
       errors.push(`visual_top_level_screenshot_without_result:${screenshotPath}`);
     }
+  }
+  return errors;
+}
+
+async function validateDigestReferencedLogArtifacts(evidence, evidencePath) {
+  const errors = [];
+  errors.push(...await validateDigestReferencedFile({
+    label: "stdout",
+    filePath: evidence?.stdout_path,
+    expectedSha256: evidence?.stdout_sha256,
+    expectedBytes: evidence?.stdout_bytes,
+    evidencePath,
+  }));
+  errors.push(...await validateDigestReferencedFile({
+    label: "stderr",
+    filePath: evidence?.stderr_path,
+    expectedSha256: evidence?.stderr_sha256,
+    expectedBytes: evidence?.stderr_bytes,
+    evidencePath,
+  }));
+  return errors;
+}
+
+async function validateDigestReferencedFile({
+  label,
+  filePath,
+  expectedSha256,
+  expectedBytes,
+  evidencePath,
+}) {
+  const errors = [];
+  if (!filePath) return [`${label}_path_missing`];
+  const resolved = resolveEvidenceArtifactPath(filePath, evidencePath);
+  let bytes;
+  try {
+    bytes = await readFile(resolved);
+  } catch {
+    return [`${label}_missing:${resolved}`];
+  }
+  const actualSha256 = sha256(bytes);
+  if (expectedSha256 !== actualSha256) {
+    errors.push(`${label}_sha256_mismatch:${expectedSha256 || "missing"}:${actualSha256}`);
+  }
+  if (Number(expectedBytes) !== bytes.length) {
+    errors.push(`${label}_bytes_mismatch:${expectedBytes}:${bytes.length}`);
   }
   return errors;
 }
@@ -350,6 +493,54 @@ async function runSelfCheck({ outDir }) {
   });
   assert.equal(visualResult.ok, true, visualResult.errors.join(";"));
 
+  const securityDir = path.join(outDir, "security");
+  await mkdir(securityDir, { recursive: true });
+  const securityArtifacts = await writeSecurityEvidenceForSelfCheck({ outDir: securityDir });
+  const securityResult = await verifyDojoSecurityAbuseEvidenceArtifact({
+    evidencePath: securityArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(securityResult.ok, true, securityResult.errors.join(";"));
+  const rejectedSecurityPath = await writeSecurityEvidenceForSelfCheck({
+    outDir: securityDir,
+    basename: "dojo-security-abuse-rejected",
+    overrides: {
+      ok: false,
+      abuse_class_coverage_complete: false,
+      missing_abuse_classes: ["raw_private_tool_bypass"],
+    },
+  });
+  const rejectedSecurity = await verifyDojoSecurityAbuseEvidenceArtifact({
+    evidencePath: rejectedSecurityPath.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedSecurity.errors.includes("security_abuse_coverage_incomplete"));
+  assert(rejectedSecurity.errors.includes("security_abuse_missing_classes:raw_private_tool_bypass"));
+
+  const chaosDir = path.join(outDir, "chaos");
+  await mkdir(chaosDir, { recursive: true });
+  const chaosArtifacts = await writeChaosEvidenceForSelfCheck({ outDir: chaosDir });
+  const chaosResult = await verifyDojoChaosPerformanceEvidenceArtifact({
+    evidencePath: chaosArtifacts.evidence_path,
+    enterpriseRelease: true,
+  });
+  assert.equal(chaosResult.ok, true, chaosResult.errors.join(";"));
+  const rejectedChaosArtifacts = await writeChaosEvidenceForSelfCheck({
+    outDir: chaosDir,
+    basename: "dojo-chaos-performance-rejected",
+    overrides: {
+      ok: false,
+      scenario_coverage_complete: false,
+      missing_chaos_scenarios: ["api_timeout"],
+    },
+  });
+  const rejectedChaos = await verifyDojoChaosPerformanceEvidenceArtifact({
+    evidencePath: rejectedChaosArtifacts.evidence_path,
+    enterpriseRelease: true,
+  });
+  assert(rejectedChaos.errors.includes("chaos_performance_scenario_coverage_incomplete"));
+  assert(rejectedChaos.errors.includes("chaos_performance_missing_scenarios:api_timeout"));
+
   const report = {
     schema_version: "synthi.dojo.releaseGateVerifierSelfCheck.v1",
     generated_at: new Date().toISOString(),
@@ -358,10 +549,14 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(manifestResult),
       summarizeSection(conformanceResult),
       summarizeSection(visualResult),
+      summarizeSection(securityResult),
+      summarizeSection(chaosResult),
     ],
     rejected_controls: [
       summarizeSection(rejectedSelfCheck),
       summarizeSection(rejectedDryRun),
+      summarizeSection(rejectedSecurity),
+      summarizeSection(rejectedChaos),
     ],
   };
   const reportPath = path.join(outDir, "dojo-release-gate-verifier-self-check.json");
@@ -464,6 +659,113 @@ async function writeSelfCheckVisualReport({ outDir }) {
   return reportPath;
 }
 
+async function writeSecurityEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-security-abuse",
+  overrides = {},
+}) {
+  const stdout = "security abuse focused suite passed\n";
+  const stderr = "";
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.securityAbuseEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    abuse_class_coverage_complete: true,
+    missing_abuse_classes: [],
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_spawn_error: true,
+        no_failed_tests: true,
+        all_reported_tests_passed: true,
+        abuse_class_coverage_complete: true,
+        self_check_within_timeout: true,
+      },
+    },
+    test_summary: {
+      total_tests: 8,
+      passed_tests: 8,
+      failed_tests: 0,
+    },
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeChaosEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-chaos-performance",
+  overrides = {},
+}) {
+  const stdout = "chaos performance preflight passed\n";
+  const stderr = "";
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.chaosPerformanceEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    scenario_coverage_complete: true,
+    missing_chaos_scenarios: [],
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_spawn_error: true,
+        no_failed_tests: true,
+        all_reported_tests_passed: true,
+        scenario_coverage_complete: true,
+        self_check_within_timeout: true,
+        test_case_p95_recorded: true,
+        test_file_p95_recorded: true,
+      },
+    },
+    test_summary: {
+      total_tests: 9,
+      passed_tests: 9,
+      failed_tests: 0,
+    },
+    performance_metrics: {
+      self_check_duration_ms: 1250,
+      test_case_duration_p95_ms: 42,
+      test_file_duration_p95_ms: 140,
+      failed_test_count: 0,
+      passed_test_count: 9,
+    },
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
 function parseVisualReportArgs(inputArgs) {
   const requests = [];
   if (inputArgs["visual-report"]) {
@@ -507,6 +809,7 @@ function summarizeSection(section) {
     report_schema_version: section.report_schema_version,
     result_count: section.result_count,
     release_candidate: section.release_candidate,
+    enterprise_release: section.enterprise_release,
   };
 }
 
@@ -514,6 +817,14 @@ function resolveRepoPath(value) {
   const text = String(value || "").trim();
   if (!text) return text;
   return path.isAbsolute(text) ? text : path.resolve(REPO_ROOT, text);
+}
+
+function resolveEvidenceArtifactPath(value, evidencePath) {
+  const text = String(value || "").trim();
+  if (!text) return text;
+  if (path.isAbsolute(text)) return text;
+  const evidenceRelative = path.resolve(path.dirname(evidencePath), text);
+  return evidenceRelative;
 }
 
 function sha256(value) {
