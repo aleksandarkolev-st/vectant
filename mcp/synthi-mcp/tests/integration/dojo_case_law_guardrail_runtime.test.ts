@@ -48,6 +48,31 @@ describe("Dojo case-law guardrail runtime binding", () => {
       blocked_by: [expect.stringMatching(/^guardrail_failed:case_guard_case_/)],
     }));
   });
+
+  it("executes explicit reviewed case-law predicates without keyword inference", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const graph = bindCaseLawGuardrailsToGraph(graphFixture(), [explicitPredicateCaseFixture()]);
+
+    expect(graph.nodes[0]?.guardrails).toEqual(expect.arrayContaining([
+      expect.objectContaining({ predicate: "workspace_policy_current == true" }),
+    ]));
+
+    await expect(runtime.execute({
+      graph,
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        stable_entity_identity: true,
+        workspace_policy_current: false,
+        assertion_results: { assert_submission_state: true },
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: [expect.stringMatching(/^guardrail_failed:case_guard_case_/)],
+    }));
+  });
 });
 
 function caseFixture(status: "proposed" | "approved") {
@@ -69,6 +94,25 @@ function caseFixture(status: "proposed" | "approved") {
     return registry.approve(record.case_id, { reviewer: "reviewer-a", now: "2026-06-11T01:00:00.000Z" });
   }
   return record;
+}
+
+function explicitPredicateCaseFixture() {
+  const registry = new InMemoryDojoCaseLawRegistry();
+  const record = registry.propose(createDojoCaseLawFromFailure({
+    source_skill_id: "skill-a",
+    source_run_id: "run-reviewed",
+    scenario_id: "scenario-reviewed",
+    mutation_kind: "reviewed_policy",
+    finding: "Reviewed condition failed.",
+    impact: "Action must stop until reviewed condition is true.",
+    rule_created: "Use reviewed predicate.",
+    guardrail_predicate: "workspace_policy_current == true",
+    applies_to: ["run_workflow"],
+    binding_scope: { kind: "workspace", id: "workspace-a" },
+    evidence_refs: ["evidence:reviewed-policy"],
+    now: "2026-06-11T00:00:00.000Z",
+  }));
+  return registry.approve(record.case_id, { reviewer: "reviewer-a", now: "2026-06-11T01:00:00.000Z" });
 }
 
 function graphFixture(): DojoSkillGraph {

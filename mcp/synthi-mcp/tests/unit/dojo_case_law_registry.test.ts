@@ -85,6 +85,10 @@ describe("Dojo case law registry", () => {
     })).toThrow("dojo_case_law_evidence_required");
     expect(() => validateCaseLawRecord({
       ...proposed,
+      guardrail_predicate: " ",
+    })).toThrow("dojo_case_law_guardrail_predicate_invalid");
+    expect(() => validateCaseLawRecord({
+      ...proposed,
       created_at: "not-a-date",
     })).toThrow("dojo_case_law_timestamp_invalid");
     expect(() => registry.approve(proposed.case_id, {
@@ -129,6 +133,35 @@ describe("Dojo case law registry", () => {
       ...approved,
       superseded_by: "case-next",
     })).toBeNull();
+  });
+
+  it("preserves explicit reviewed guardrail predicates without relying on case wording", () => {
+    const registry = new InMemoryDojoCaseLawRegistry();
+    const proposed = registry.propose(createDojoCaseLawFromFailure({
+      source_skill_id: "skill-a",
+      source_run_id: "run-a",
+      scenario_id: "scenario-a",
+      mutation_kind: "reviewed_policy",
+      finding: "Reviewer identified an unsafe workspace condition.",
+      impact: "The action must stop until the reviewer-defined condition is true.",
+      rule_created: "Use the reviewed guardrail predicate.",
+      guardrail_predicate: "workspace_policy_current == true",
+      applies_to: ["run_workflow"],
+      binding_scope: { kind: "workspace", id: "workspace-a" },
+      evidence_refs: ["evidence:review-a"],
+      now: "2026-06-11T00:00:00.000Z",
+    }));
+    const approved = registry.approve(proposed.case_id, {
+      reviewer: "reviewer-a",
+      now: "2026-06-11T01:00:00.000Z",
+    });
+
+    expect(approved.guardrail_predicate).toBe("workspace_policy_current == true");
+    expect(synthesizeDojoGuardrailFromCase(approved)).toEqual(expect.objectContaining({
+      guardrail: expect.objectContaining({
+        predicate: "workspace_policy_current == true",
+      }),
+    }));
   });
 });
 

@@ -16,6 +16,7 @@ export interface DojoCaseLawRecord {
   finding: string;
   impact: string;
   rule_created: string;
+  guardrail_predicate?: string;
   applies_to: string[];
   binding_scope: DojoCaseLawBindingScope;
   status: DojoCaseLawStatus;
@@ -43,6 +44,7 @@ export function createDojoCaseLawFromFailure(input: {
   finding: string;
   impact: string;
   rule_created: string;
+  guardrail_predicate?: string;
   applies_to: string[];
   binding_scope: DojoCaseLawBindingScope;
   evidence_refs: string[];
@@ -58,6 +60,7 @@ export function createDojoCaseLawFromFailure(input: {
     finding: input.finding,
     impact: input.impact,
     rule_created: input.rule_created,
+    ...(input.guardrail_predicate?.trim() ? { guardrail_predicate: input.guardrail_predicate.trim() } : {}),
     applies_to: uniqueStrings(input.applies_to),
     binding_scope: {
       kind: input.binding_scope.kind,
@@ -144,6 +147,9 @@ export function validateCaseLawRecord(record: DojoCaseLawRecord): void {
   if (!record.finding.trim()) throw new Error("dojo_case_law_finding_required");
   if (!record.impact.trim()) throw new Error("dojo_case_law_impact_required");
   if (!record.rule_created.trim()) throw new Error("dojo_case_law_rule_required");
+  if (record.guardrail_predicate !== undefined && !record.guardrail_predicate.trim()) {
+    throw new Error("dojo_case_law_guardrail_predicate_invalid");
+  }
   if (!CASE_LAW_STATUSES.has(record.status)) throw new Error("dojo_case_law_status_invalid");
   if (!CASE_LAW_APPEAL_STATUSES.has(record.appeal_status)) throw new Error("dojo_case_law_appeal_status_invalid");
   if (!CASE_LAW_BINDING_SCOPE_KINDS.has(record.binding_scope.kind)) throw new Error("dojo_case_law_binding_scope_kind_invalid");

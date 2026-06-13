@@ -60,6 +60,8 @@ export function bindCaseLawGuardrailsToGraph(
 }
 
 function predicateForCase(caseLaw: DojoCaseLawRecord): string {
+  const explicitPredicate = caseLaw.guardrail_predicate?.trim();
+  if (explicitPredicate) return explicitPredicate;
   const material = `${caseLaw.title} ${caseLaw.finding} ${caseLaw.rule_created}`.toLowerCase();
   if (material.includes("stable id") || material.includes("stable identifier") || material.includes("stable entity")) {
     return "stable_entity_identity == true";
