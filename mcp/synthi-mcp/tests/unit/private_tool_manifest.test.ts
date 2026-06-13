@@ -23,7 +23,10 @@ import type { BrowserTraceEvent } from "../../src/browser/types.js";
 import { createSynthiServer } from "../../src/server.js";
 import { browserPrivateWorkflowTools, dispatchBrowserTool } from "../../src/tools/browser.js";
 
+const originalEnv = { ...process.env };
+
 beforeEach(() => {
+  process.env = { ...originalEnv };
   privateWorkflowToolRegistry.useStoreForTests(new InMemoryPrivateWorkflowToolStore());
   browserBroker.resetForTests();
   authCheckpointManager.resetForTests();
@@ -557,6 +560,37 @@ describe("private browser workflow MCP tool manifest", () => {
       required_tool: "synthi_dojo_run_with_proof_capsule",
     }));
     expect(replay).not.toHaveBeenCalled();
+  });
+
+  it("blocks raw private tool publication in production enforcement", async () => {
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    const url = "https://app.example.test/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+    browserBroker.selectTab("tab-a");
+    expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("s_open");
+    browserBroker.recordHumanAction({
+      tab_id: "tab-a",
+      url,
+      origin: "https://app.example.test",
+      action: "click",
+      element: { role: "button", name: "Open details", source_id: "s_open" },
+      locator_candidates: [
+        { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
+      ],
+    });
+
+    const published = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});
+
+    expect(published?.isError).toBe(true);
+    expect(published?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_private_tool_publish_requires_dojo",
+      enforcement_mode: "production",
+      required_tool: "synthi_dojo_publish_skill",
+      blocked_by: ["raw_private_tool_publish_blocked"],
+    }));
+    expect(browserPrivateWorkflowTools()).toEqual([]);
   });
 
   it("tells agents which target origins need consent before a private tool replay", async () => {

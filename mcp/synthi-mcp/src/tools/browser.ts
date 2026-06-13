@@ -37,6 +37,7 @@ import {
   type DojoPublishedSkillBinding,
   type DojoTenantContext,
 } from "../dojo/mcp/execution_policy_gate.js";
+import { resolveDojoEnforcementConfig } from "../dojo/config/enforcement.js";
 import { eventLog } from "../events/index.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import { dispatchSafetyTool } from "./safety.js";
@@ -1290,6 +1291,15 @@ function browserGeneratePrivateToolManifestTool(args: unknown): ToolResponse {
 
 function browserPublishPrivateToolTool(args: unknown): ToolResponse {
   const a = obj(args);
+  const enforcement = resolveDojoEnforcementConfig();
+  if (enforcement.production_enforcement) {
+    return errorResponse("dojo_private_tool_publish_requires_dojo", {
+      ok: false,
+      enforcement_mode: enforcement.enforcement_mode,
+      required_tool: "synthi_dojo_publish_skill",
+      blocked_by: ["raw_private_tool_publish_blocked"],
+    });
+  }
   const workflowId = stringOpt(a["workflow_id"]);
   const artifact = browserBroker.workflowArtifact(workflowId);
   if (!artifact.ok) return errorResponse(artifact.error, artifact.workflow_id ? { workflow_id: artifact.workflow_id } : undefined);
