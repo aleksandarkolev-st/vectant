@@ -355,6 +355,8 @@ export function validateDojoApiBackedToolInvocation(input: {
   }
   if (!input.args["request"] || typeof input.args["request"] !== "object" || Array.isArray(input.args["request"])) {
     blockedBy.push("api_tool_request_required");
+  } else {
+    blockedBy.push(...validateToolInputSchema(input.tool.input_schema, input.args));
   }
   if (input.license_context.skill_id !== input.tool.skill_id) blockedBy.push("api_tool_skill_mismatch");
   if (input.license_context.license_id !== input.tool.license_id) blockedBy.push("api_tool_license_mismatch");
@@ -367,6 +369,80 @@ export function validateDojoApiBackedToolInvocation(input: {
     ok: blockedBy.length === 0,
     blocked_by: blockedBy,
   };
+}
+
+function validateToolInputSchema(schema: Record<string, unknown>, args: Record<string, unknown>): string[] {
+  const blockedBy: string[] = [];
+  const schemaProperties = objectRecord(schema["properties"]) ?? {};
+  const topLevelAdditional = schema["additionalProperties"];
+  if (topLevelAdditional === false) {
+    const allowed = new Set(Object.keys(schemaProperties));
+    for (const key of Object.keys(args)) {
+      if (!allowed.has(key)) blockedBy.push(`api_tool_input_schema_additional_property:${key}`);
+    }
+  }
+
+  const requestSchema = objectRecord(schemaProperties["request"]);
+  if (requestSchema) {
+    blockedBy.push(...validateJsonSchemaSubset(requestSchema, args["request"], "request", "api_tool_request_schema"));
+  }
+  return [...new Set(blockedBy)];
+}
+
+function validateJsonSchemaSubset(
+  schema: Record<string, unknown>,
+  value: unknown,
+  path: string,
+  codePrefix: string
+): string[] {
+  const blockedBy: string[] = [];
+  const type = schemaType(schema);
+  if (type && !matchesJsonSchemaType(value, type)) {
+    return [`${codePrefix}_type_mismatch:${path}`];
+  }
+
+  if (Object.prototype.hasOwnProperty.call(schema, "const") && !jsonEqual(value, schema["const"])) {
+    blockedBy.push(`${codePrefix}_const_mismatch:${path}`);
+  }
+  if (Array.isArray(schema["enum"]) && !schema["enum"].some((item) => jsonEqual(value, item))) {
+    blockedBy.push(`${codePrefix}_enum_mismatch:${path}`);
+  }
+
+  if ((type === "object" || (!type && objectRecord(value))) && objectRecord(value)) {
+    const record = value as Record<string, unknown>;
+    const properties = objectRecord(schema["properties"]) ?? {};
+    const required = stringArray(schema["required"]);
+    for (const key of required) {
+      if (!Object.prototype.hasOwnProperty.call(record, key)) {
+        blockedBy.push(`${codePrefix}_required:${joinSchemaPath(path, key)}`);
+      }
+    }
+    if (schema["additionalProperties"] === false) {
+      for (const key of Object.keys(record)) {
+        if (!Object.prototype.hasOwnProperty.call(properties, key)) {
+          blockedBy.push(`${codePrefix}_additional_property:${joinSchemaPath(path, key)}`);
+        }
+      }
+    }
+    for (const [key, nestedSchema] of Object.entries(properties)) {
+      if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+      const nested = objectRecord(nestedSchema);
+      if (nested) {
+        blockedBy.push(...validateJsonSchemaSubset(nested, record[key], joinSchemaPath(path, key), codePrefix));
+      }
+    }
+  }
+
+  if ((type === "array" || (!type && Array.isArray(value))) && Array.isArray(value)) {
+    const itemSchema = objectRecord(schema["items"]);
+    if (itemSchema) {
+      value.forEach((item, index) => {
+        blockedBy.push(...validateJsonSchemaSubset(itemSchema, item, `${path}[${index}]`, codePrefix));
+      });
+    }
+  }
+
+  return blockedBy;
 }
 
 function buildHttpRequest(tool: DojoApiBackedMcpTool, args: Record<string, unknown>): DojoApiToolHttpRequest {
@@ -430,6 +506,41 @@ function digestObject(value: unknown): string {
 function objectRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function schemaType(schema: Record<string, unknown>): string | null {
+  const type = schema["type"];
+  if (typeof type === "string" && type.trim().length > 0) return type.trim();
+  if (Array.isArray(type)) {
+    const types = type.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    const onlyType = types[0];
+    return types.length === 1 && onlyType ? onlyType.trim() : null;
+  }
+  return null;
+}
+
+function matchesJsonSchemaType(value: unknown, type: string): boolean {
+  if (type === "object") return value !== null && typeof value === "object" && !Array.isArray(value);
+  if (type === "array") return Array.isArray(value);
+  if (type === "integer") return Number.isInteger(value);
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (type === "string") return typeof value === "string";
+  if (type === "boolean") return typeof value === "boolean";
+  if (type === "null") return value === null;
+  return true;
+}
+
+function jsonEqual(left: unknown, right: unknown): boolean {
+  return canonicalJson(left) === canonicalJson(right);
+}
+
+function joinSchemaPath(path: string, key: string): string {
+  return path ? `${path}.${key}` : key;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
 function requireMatchingProofField(

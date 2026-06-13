@@ -187,6 +187,47 @@ describe("Dojo API-backed MCP tool compiler", () => {
     });
   });
 
+  it("enforces the compiled API tool input schema before transport execution", () => {
+    const tool = compileDojoApiBackedMcpTool({
+      candidate: {
+        ...approvedMutationCandidate(),
+        request_schema: {
+          type: "object",
+          properties: {
+            client_id: { type: "string" },
+            amount: { type: "number" },
+          },
+          required: ["client_id", "amount"],
+          additionalProperties: false,
+        },
+      },
+      skill_id: "dojo_save_invoice",
+      license_id: "license_save_invoice",
+      license_version: "1.0.0",
+      action: "run_workflow",
+      tool_name: "synthi_api_save_invoice",
+    }).tool!;
+
+    expect(validateDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: proofCapsuleFixture(),
+        request: { amount: "42", currency: "EUR" },
+        idempotency_key: "idem-a",
+        debug: true,
+      },
+      license_context: licenseContext(),
+    })).toEqual({
+      ok: false,
+      blocked_by: [
+        "api_tool_input_schema_additional_property:debug",
+        "api_tool_request_schema_required:request.client_id",
+        "api_tool_request_schema_additional_property:request.currency",
+        "api_tool_request_schema_type_mismatch:request.amount",
+      ],
+    });
+  });
+
   it("executes approved API-backed tools with idempotency, postcondition, and evidence", async () => {
     const tool = compileDojoApiBackedMcpTool({
       candidate: approvedMutationCandidate(),
