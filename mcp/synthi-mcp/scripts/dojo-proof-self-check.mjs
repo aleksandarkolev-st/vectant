@@ -192,13 +192,19 @@ function runGeneratedPlaywrightSpec(specPath) {
       {
         cwd: MCP_ROOT,
         encoding: "utf8",
+        maxBuffer: 10 * 1024 * 1024,
         env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1" },
       }
     );
     if (result.status !== 0) {
+      const childError = result.error
+        ? `error=${result.error.code || result.error.name || "spawn_error"}: ${result.error.message}`
+        : null;
       throw new Error([
         "generated Playwright proof harness failed",
         `exit=${result.status}`,
+        result.signal ? `signal=${result.signal}` : null,
+        childError,
         result.stdout,
         result.stderr,
       ].filter(Boolean).join("\n"));
