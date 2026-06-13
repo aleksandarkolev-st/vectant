@@ -1120,6 +1120,47 @@ describe("Agent Dojo MCP tools", () => {
         proof_records: expect.objectContaining({ used: 2, revoked: 1 }),
       }),
     }));
+    const recertMissingReason = await dispatchDojoTool("synthi_dojo_recertify_skill", {
+      skill_id: published.skill.skill_id,
+      actor_id: "recertifier-a",
+      actor_type: "human",
+      evidence_refs: ["evidence:recertification"],
+    });
+    expect(recertMissingReason?.isError).toBe(true);
+    expect(recertMissingReason?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_recertification_reason_required",
+    }));
+    const recertMissingEvidence = await dispatchDojoTool("synthi_dojo_recertify_skill", {
+      skill_id: published.skill.skill_id,
+      actor_id: "recertifier-a",
+      actor_type: "human",
+      reason: "unit_test_recertification",
+    });
+    expect(recertMissingEvidence?.isError).toBe(true);
+    expect(recertMissingEvidence?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_recertification_evidence_required",
+    }));
+    const recertMissingActor = await dispatchDojoTool("synthi_dojo_recertify_skill", {
+      skill_id: published.skill.skill_id,
+      actor_type: "human",
+      reason: "unit_test_recertification",
+      evidence_refs: ["evidence:recertification"],
+    });
+    expect(recertMissingActor?.isError).toBe(true);
+    expect(recertMissingActor?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_recertification_actor_required",
+    }));
+    const recertInvalidActorType = await dispatchDojoTool("synthi_dojo_recertify_skill", {
+      skill_id: published.skill.skill_id,
+      actor_id: "recertifier-a",
+      actor_type: "robot",
+      reason: "unit_test_recertification",
+      evidence_refs: ["evidence:recertification"],
+    });
+    expect(recertInvalidActorType?.isError).toBe(true);
+    expect(recertInvalidActorType?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_recertification_actor_type_required",
+    }));
     const recertified = await dispatchDojoTool("synthi_dojo_recertify_skill", {
       skill_id: published.skill.skill_id,
       actor_id: "recertifier-a",

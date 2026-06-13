@@ -533,7 +533,7 @@ export const DOJO_TOOLS = [
         evidence_refs: { type: "array", items: { type: "string" } },
         now: { type: "string" },
       },
-      required: [],
+      required: ["reason", "actor_id", "actor_type", "evidence_refs"],
     },
   },
   {
@@ -1665,8 +1665,13 @@ function dojoRecertifySkillTool(args: unknown): ToolResponse {
   const workspaceId = stringOpt(a["workspace_id"]) ?? existing?.workspace_id;
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const reason = stringOpt(a["reason"]);
+  if (!reason) return errorResponse("dojo_recertification_reason_required");
   const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
+  if (evidenceRefs.length === 0) return errorResponse("dojo_recertification_evidence_required");
   const actorId = stringOpt(a["actor_id"]);
+  if (!actorId) return errorResponse("dojo_recertification_actor_required");
+  const actorType = actorTypeInputOpt(a["actor_type"]);
+  if (!actorType) return errorResponse("dojo_recertification_actor_type_required");
   const previousLicenseVersion = existing?.permission_license.license_version ?? null;
   const manifest = generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract);
   const publishedToolName = existing?.published_tool_name;
@@ -1676,11 +1681,11 @@ function dojoRecertifySkillTool(args: unknown): ToolResponse {
     private_tool_manifest: manifest,
     ...(publishedToolName ? { published_tool_name: publishedToolName } : {}),
   }));
-  const auditEvent = actorId ? {
+  const auditEvent = {
     event_type: "checkride_run_completed" as const,
     actor: {
       actor_id: actorId,
-      actor_type: actorTypeOpt(a["actor_type"]),
+      actor_type: actorType,
     },
     occurred_at: now,
     workspace_id: recertified.workspace_id,
@@ -1688,7 +1693,7 @@ function dojoRecertifySkillTool(args: unknown): ToolResponse {
     license_id: recertified.permission_license.license_id,
     reason,
     evidence_refs: evidenceRefs,
-  } : undefined;
+  };
   return jsonResponse({
     ok: true,
     skill: skillListItem(recertified),
