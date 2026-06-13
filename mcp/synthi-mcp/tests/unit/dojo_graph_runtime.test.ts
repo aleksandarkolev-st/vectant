@@ -152,6 +152,68 @@ describe("Dojo graph runtime", () => {
     }));
   });
 
+  it("blocks production actions when evidence writer does not return a ledger-backed ref", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      run_id: "graph-run-evidence-missing",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: (event) => event.node_id === "trigger" ? `ledger://${event.run_id}/${event.node_id}` : undefined,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      run_id: "graph-run-evidence-missing",
+      blocked_by: ["graph_evidence_record_missing"],
+      evidence_refs: ["ledger://graph-run-evidence-missing/trigger"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["graph_evidence_record_missing"],
+        }),
+      ]),
+    }));
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      run_id: "graph-run-evidence-unbacked",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: (event) => event.node_id === "trigger"
+        ? `ledger://${event.run_id}/${event.node_id}`
+        : `dojo-graph://${event.run_id}/${event.node_id}`,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      run_id: "graph-run-evidence-unbacked",
+      blocked_by: ["graph_evidence_record_unbacked"],
+      evidence_refs: ["ledger://graph-run-evidence-unbacked/trigger"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["graph_evidence_record_unbacked"],
+        }),
+      ]),
+    }));
+  });
+
   it("blocks a node when static preconditions fail", async () => {
     const runtime = new DojoSkillGraphRuntime();
 

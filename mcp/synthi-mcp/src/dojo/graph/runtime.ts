@@ -530,6 +530,7 @@ async function emitGraphNodeEvidence(
   result: DojoGraphNodeRunResult
 ): Promise<string> {
   const fallbackRef = `dojo-graph://${runId}/${node.node_id}`;
+  const mode = input.mode ?? graph.mode;
   try {
     const emittedRef = await input.evidence_writer?.({
       schema_version: "synthi.dojo.graphEvidenceEvent.v1",
@@ -556,10 +557,32 @@ async function emitGraphNodeEvidence(
       substrate_evidence_refs: [...(result.substrate_result?.evidence_refs ?? [])],
       created_at: input.now ?? new Date().toISOString(),
     });
-    return typeof emittedRef === "string" && emittedRef.trim() ? emittedRef : fallbackRef;
-  } catch {
+    const normalizedRef = typeof emittedRef === "string" ? emittedRef.trim() : "";
+    if (productionActionRequiresLedgerBackedEvidence(node, mode, result)) {
+      if (!normalizedRef) {
+        throw new DojoGraphEvidenceWriteError(node.node_id, ["graph_evidence_record_missing"]);
+      }
+      if (!isLedgerBackedGraphEvidenceRef(normalizedRef)) {
+        throw new DojoGraphEvidenceWriteError(node.node_id, ["graph_evidence_record_unbacked"]);
+      }
+    }
+    return normalizedRef || fallbackRef;
+  } catch (error) {
+    if (error instanceof DojoGraphEvidenceWriteError) throw error;
     throw new DojoGraphEvidenceWriteError(node.node_id, ["graph_evidence_write_failed"]);
   }
+}
+
+function productionActionRequiresLedgerBackedEvidence(
+  node: DojoGraphNode,
+  mode: DojoGraphMode,
+  result: DojoGraphNodeRunResult
+): boolean {
+  return mode === "production" && node.kind === "Action" && node.evidence_policy.length > 0 && result.status === "completed";
+}
+
+function isLedgerBackedGraphEvidenceRef(ref: string): boolean {
+  return ref.startsWith("evidence:") || ref.startsWith("ledger://");
 }
 
 function createGraphRunId(graph: DojoSkillGraph): string {
