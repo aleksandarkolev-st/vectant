@@ -16,12 +16,17 @@ export interface DojoLicenseKernelDecision {
   error_codes: DojoProofErrorCode[];
   proof_record?: DojoProofCapsuleRecord | null;
   runtime_claims: {
+    tenant_id?: string;
+    organization_id?: string;
     workspace_id: string;
     app_origin: string;
     requested_action: string;
     dry_run: boolean;
     actor_id?: string;
     actor_type?: "human" | "agent" | "service";
+    roles?: string[];
+    request_id?: string;
+    correlation_id?: string;
     approval_id?: string;
     approval_evidence_ref?: string;
   };
@@ -41,6 +46,11 @@ export function evaluateDojoLicenseKernel(input: {
   const toolArgs = input.tool_args ?? {};
   const validation = validateDojoProofCapsule(input.skill, input.proof_capsule, input.requested_action, now);
   const approval = evaluateApprovalContext(input.skill, input.requested_action, validation, toolArgs);
+  const tenantId = stringOpt(toolArgs["tenant_id"]) ?? stringOpt(toolArgs["tenant"]);
+  const organizationId = stringOpt(toolArgs["organization_id"]) ?? stringOpt(toolArgs["organization"]);
+  const requestId = stringOpt(toolArgs["request_id"]);
+  const correlationId = stringOpt(toolArgs["correlation_id"]);
+  const roles = stringArrayOpt(toolArgs["roles"]);
   const hardBlockedBy: string[] = validation.status === "blocked" ? [...validation.blocked_by] : [];
   const approvalBlockedBy: string[] = validation.status === "approval_required" && !approval.satisfied
     ? validation.blocked_by.map((reason) => `approval_constraint:${reason}`)
@@ -110,12 +120,17 @@ export function evaluateDojoLicenseKernel(input: {
     error_codes: errorCodes,
     proof_record: record,
     runtime_claims: {
+      ...(tenantId ? { tenant_id: tenantId } : {}),
+      ...(organizationId ? { organization_id: organizationId } : {}),
       workspace_id: input.skill.workspace_id,
       app_origin: input.skill.app_origin,
       requested_action: input.requested_action,
       dry_run: dryRun,
       ...(approval.actor_id ? { actor_id: approval.actor_id } : {}),
       ...(approval.actor_type ? { actor_type: approval.actor_type } : {}),
+      ...(roles.length ? { roles } : {}),
+      ...(requestId ? { request_id: requestId } : {}),
+      ...(correlationId ? { correlation_id: correlationId } : {}),
       ...(approval.approval_id ? { approval_id: approval.approval_id } : {}),
       ...(approval.approval_evidence_ref ? { approval_evidence_ref: approval.approval_evidence_ref } : {}),
     },
@@ -254,6 +269,11 @@ export function markDojoProofExecution(input: {
 
 function stringOpt(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function stringArrayOpt(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean))];
 }
 
 function actorTypeOpt(value: unknown): "human" | "agent" | "service" | undefined {

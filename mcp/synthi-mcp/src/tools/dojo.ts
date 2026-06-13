@@ -2076,10 +2076,11 @@ function dojoValidateProofCapsuleTool(args: unknown): ToolResponse {
     });
   }
   const now = stringOpt(a["now"]);
-  const tenant = dojoTenantContextFromArgs({
-    ...a,
-    workspace_id: stringOpt(a["workspace_id"]) ?? skill.skill.workspace_id,
+  const tenantContext = dojoTenantContextResultFromArgs(a, {
+    development_defaults: { workspace_id: skill.skill.workspace_id },
   });
+  if (!tenantContext.ok) return tenantContext.error;
+  const tenant = tenantContext.tenant;
   const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, objectOpt(a["tool_args"]) ?? {});
   const decision = evaluateDojoLicenseKernel({
     skill: skill.skill,
@@ -2145,10 +2146,11 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
     ?? stringOpt(a["request_id"])
     ?? `dojo_run_${hashId(`${(capsule as { capsule_id: string }).capsule_id}:${skill.skill.skill_id}:${requestedAction}:${skill.skill.skill_version}`)}`;
   const now = stringOpt(a["now"]);
-  const tenant = dojoTenantContextFromArgs({
-    ...a,
-    workspace_id: stringOpt(a["workspace_id"]) ?? skill.skill.workspace_id,
+  const tenantContext = dojoTenantContextResultFromArgs(a, {
+    development_defaults: { workspace_id: skill.skill.workspace_id },
   });
+  if (!tenantContext.ok) return tenantContext.error;
+  const tenant = tenantContext.tenant;
   const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, toolArgs);
   let decision: ReturnType<typeof evaluateDojoLicenseKernel> | undefined;
   const skillBus = createInProcessDojoMcpSkillBus({
@@ -2777,6 +2779,76 @@ function evidenceRetentionClassOpt(value: unknown): DojoEvidenceLedgerRecord["re
 
 function substrateOpt(value: unknown): DojoExecutionSubstrate | undefined {
   return value === "vision" || value === "dom" || value === "source" || value === "api" || value === "mcp" ? value : undefined;
+}
+
+function dojoTenantContextResultFromArgs(
+  args: unknown,
+  options: { development_defaults?: Record<string, unknown> } = {}
+): { ok: true; tenant: DojoTenantContext } | { ok: false; error: ToolResponse } {
+  const a = obj(args);
+  const enforcement = resolveDojoEnforcementConfig();
+  const missing = productionTenantContextMissingFields(a);
+  const actorType = actorTypeInputOpt(a["actor_type"]);
+  const actorTypeProvided = stringOpt(a["actor_type"]) !== undefined;
+  if (enforcement.production_enforcement && actorTypeProvided && !actorType) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_tenant_context_actor_type_invalid", {
+        ok: false,
+        enforcement_mode: enforcement.enforcement_mode,
+        accepted_actor_types: ["human", "agent", "service"],
+        blocked_by: ["tenant_context_actor_type_invalid"],
+      }),
+    };
+  }
+  if (enforcement.production_enforcement && missing.length > 0) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_tenant_context_required", {
+        ok: false,
+        enforcement_mode: enforcement.enforcement_mode,
+        required_fields: PRODUCTION_TENANT_CONTEXT_FIELDS,
+        missing_fields: missing,
+        blocked_by: missing.map((field) => `tenant_context_${field}_missing`),
+      }),
+    };
+  }
+  return {
+    ok: true,
+    tenant: dojoTenantContextFromArgs({
+      ...(options.development_defaults ?? {}),
+      ...a,
+    }),
+  };
+}
+
+const PRODUCTION_TENANT_CONTEXT_FIELDS = [
+  "tenant_id",
+  "organization_id",
+  "workspace_id",
+  "actor_id",
+  "actor_type",
+  "roles",
+  "request_id",
+  "correlation_id",
+] as const;
+
+type ProductionTenantContextField = (typeof PRODUCTION_TENANT_CONTEXT_FIELDS)[number];
+
+function productionTenantContextMissingFields(a: Record<string, unknown>): ProductionTenantContextField[] {
+  const missing: ProductionTenantContextField[] = [];
+  for (const field of PRODUCTION_TENANT_CONTEXT_FIELDS) {
+    if (field === "roles") {
+      if (stringArrayOpt(a[field]).length === 0) missing.push(field);
+      continue;
+    }
+    if (field === "actor_type") {
+      if (!stringOpt(a[field])) missing.push(field);
+      continue;
+    }
+    if (!stringOpt(a[field])) missing.push(field);
+  }
+  return missing;
 }
 
 function dojoTenantContextFromArgs(args: unknown): DojoTenantContext {

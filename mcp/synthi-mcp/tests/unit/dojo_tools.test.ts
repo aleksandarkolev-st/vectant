@@ -1645,6 +1645,116 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("requires complete tenant context for production proof validation and execution", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(capsuleResponse?.isError).toBeUndefined();
+    const capsule = (capsuleResponse?.structuredContent as { proof_capsule: unknown }).proof_capsule;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const missingContextValidation = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      now: "2026-06-11T00:01:00.000Z",
+    });
+    expect(missingContextValidation?.isError).toBe(true);
+    expect(missingContextValidation?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_tenant_context_required",
+      enforcement_mode: "production",
+      missing_fields: expect.arrayContaining([
+        "tenant_id",
+        "organization_id",
+        "workspace_id",
+        "actor_id",
+        "actor_type",
+        "roles",
+        "request_id",
+        "correlation_id",
+      ]),
+      blocked_by: expect.arrayContaining([
+        "tenant_context_tenant_id_missing",
+        "tenant_context_actor_id_missing",
+        "tenant_context_request_id_missing",
+      ]),
+    }));
+
+    const invalidActorContext = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      ...productionTenantContextArgs({ actor_type: "robot" }),
+      dry_run: true,
+      now: "2026-06-11T00:01:00.000Z",
+    });
+    expect(invalidActorContext?.isError).toBe(true);
+    expect(invalidActorContext?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_tenant_context_actor_type_invalid",
+      enforcement_mode: "production",
+      blocked_by: ["tenant_context_actor_type_invalid"],
+    }));
+
+    const validContextValidation = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      ...productionTenantContextArgs({ request_id: "req-production-validate" }),
+      now: "2026-06-11T00:01:00.000Z",
+    });
+    expect(validContextValidation?.isError).toBeUndefined();
+    expect(validContextValidation?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      license_kernel: expect.objectContaining({
+        ok: true,
+        runtime_claims: expect.objectContaining({
+          tenant_id: "tenant-a",
+          organization_id: "org-a",
+          workspace_id: "workspace-a",
+          actor_id: "production-agent-a",
+          actor_type: "agent",
+        }),
+      }),
+    }));
+
+    const missingContextRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      dry_run: true,
+      now: "2026-06-11T00:02:00.000Z",
+    });
+    expect(missingContextRun?.isError).toBe(true);
+    expect(missingContextRun?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_tenant_context_required",
+      blocked_by: expect.arrayContaining(["tenant_context_correlation_id_missing"]),
+    }));
+
+    const validContextRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      ...productionTenantContextArgs({ request_id: "req-production-run" }),
+      dry_run: true,
+      now: "2026-06-11T00:02:00.000Z",
+    });
+    expect(validContextRun?.isError).toBeUndefined();
+    expect(validContextRun?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: true,
+      license_kernel: expect.objectContaining({ ok: true, status: "allowed" }),
+      skill_bus: expect.objectContaining({ ok: true, status: "allowed" }),
+    }));
+  });
+
   it("uses top-level approval and actor context for license validation without duplicating workflow args", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
@@ -1792,6 +1902,20 @@ function publishArgsForDojoToolTest(overrides: Record<string, unknown> = {}): Re
     actor_id: "unit-publisher",
     actor_type: "human",
     evidence_refs: ["evidence:unit-publish"],
+    ...overrides,
+  };
+}
+
+function productionTenantContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    tenant_id: "tenant-a",
+    organization_id: "org-a",
+    workspace_id: "workspace-a",
+    actor_id: "production-agent-a",
+    actor_type: "agent",
+    roles: ["agent"],
+    request_id: "req-production-a",
+    correlation_id: "corr-production-a",
     ...overrides,
   };
 }
