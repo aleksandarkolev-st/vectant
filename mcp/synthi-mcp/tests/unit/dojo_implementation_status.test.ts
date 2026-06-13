@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { DOJO_TOOL_NAMES } from "../../src/tools/dojo.js";
 import {
@@ -22,6 +23,38 @@ describe("Dojo implementation status registry", () => {
   it("classifies every current Dojo MCP tool", () => {
     const missing = DOJO_TOOL_NAMES.filter((toolName) => !DOJO_TOOL_IMPLEMENTATION_STATUS[toolName]);
     expect(missing).toEqual([]);
+  });
+
+  it("keeps the machine-readable maturity manifest in sync with the registry", () => {
+    const manifest = JSON.parse(readFileSync(
+      new URL("../../../../.synthi/dojo/maturity/implementation-status.json", import.meta.url),
+      "utf8"
+    )) as {
+      schema_version: string;
+      generated_from: string;
+      status_values: string[];
+      tools: Record<string, string>;
+      reports: Record<string, string>;
+    };
+    const toolStatuses = Object.fromEntries(
+      Object.entries(DOJO_TOOL_IMPLEMENTATION_STATUS).map(([toolName, metadata]) => [
+        toolName,
+        metadata.implementation_status,
+      ])
+    );
+    const reportStatuses = Object.fromEntries(
+      Object.entries(DOJO_REPORT_IMPLEMENTATION_STATUS).map(([reportName, metadata]) => [
+        reportName,
+        metadata.implementation_status,
+      ])
+    );
+
+    expect(manifest.schema_version).toBe("synthi.dojo.implementationStatusManifest.v1");
+    expect(manifest.generated_from).toBe("mcp/synthi-mcp/src/dojo/status/implementation_status.ts");
+    expect(manifest.status_values).toEqual(DOJO_IMPLEMENTATION_STATUS_VALUES);
+    expect(manifest.tools).toEqual(toolStatuses);
+    expect(Object.keys(manifest.tools).sort()).toEqual([...DOJO_TOOL_NAMES].sort());
+    expect(manifest.reports).toEqual(reportStatuses);
   });
 
   it("does not classify unknown tool names as executable", () => {
