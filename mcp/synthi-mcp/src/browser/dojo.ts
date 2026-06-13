@@ -57,6 +57,7 @@ import {
   createLocalHmacDojoProofSigner,
   encodeDojoProofSignatureEnvelope,
   parseDojoProofSignatureEnvelope,
+  assertProductionDojoProofSigner,
   type DojoProofSigner,
   type DojoProofSigningAlgorithm,
   type DojoProofVerifier,
@@ -1460,6 +1461,10 @@ export function validateDojoProofCapsule(
     error_codes: [],
     license: licenseSummary(license),
   };
+}
+
+export function assertDojoProofSignerProductionReady(): void {
+  assertProductionDojoProofSigner(dojoProofSigner());
 }
 
 export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {

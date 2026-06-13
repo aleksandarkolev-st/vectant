@@ -2717,6 +2717,43 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("blocks proof issuance when external proof signing is required but only the local signer is configured", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const publishedSkill = dojoSkillRegistry.get(skillId);
+    expect(publishedSkill).toBeTruthy();
+    process.env.SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING = "1";
+    delete process.env.SYNTHI_DOJO_PROOF_SIGNING_PROVIDER;
+    delete process.env.SYNTHI_DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM;
+    delete process.env.SYNTHI_DOJO_PROOF_SIGNING_COMMAND;
+
+    const response = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, {
+        record_id: "evidence-external-signer-required",
+      }),
+      require_verified_evidence: true,
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_signer_not_production_ready",
+      ok: false,
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      require_external_signing: true,
+      blocked_by: ["dojo_proof_signer_not_production_ready"],
+      error_codes: ["proof_capsule_invalid"],
+    }));
+    expect(dojoSkillRegistry.listProofRecords()).toEqual([]);
+  });
+
   it("authorizes hosted runtime sessions before consuming production proof capsules", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());

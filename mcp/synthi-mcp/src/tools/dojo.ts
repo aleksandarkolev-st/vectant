@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { browserBroker } from "../browser/broker.js";
 import {
   buildDojoSkill,
+  assertDojoProofSignerProductionReady,
   dojoSkillRegistry,
   exportDojoRepoArtifacts,
   extractDojoSkillSeed,
@@ -3183,6 +3184,24 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   const requireVerifiedEvidence = boolOpt(a["require_verified_evidence"])
     || enforcement.production_enforcement
     || enforcement.require_evidence_ledger;
+  if (enforcement.require_external_signing) {
+    try {
+      assertDojoProofSignerProductionReady();
+    } catch {
+      const blockedBy = ["dojo_proof_signer_not_production_ready"];
+      return errorResponse("dojo_proof_signer_not_production_ready", {
+        ok: false,
+        skill_id: skill.skill.skill_id,
+        requested_action: requestedAction,
+        enforcement_mode: enforcement.enforcement_mode,
+        require_external_signing: enforcement.require_external_signing,
+        require_verified_evidence: requireVerifiedEvidence,
+        blocked_by: blockedBy,
+        error_codes: normalizeDojoProofErrorCodes(blockedBy),
+        message: "Production proof issuance requires an external or asymmetric proof signer.",
+      });
+    }
+  }
   const evidenceLedgerStore = resolveDojoEvidenceLedgerStoreConfig();
   if (enforcement.production_enforcement && enforcement.require_evidence_ledger && evidenceLedgerRecords.length > 0) {
     return errorResponse("dojo_proof_evidence_ledger_inline_records_forbidden", {
