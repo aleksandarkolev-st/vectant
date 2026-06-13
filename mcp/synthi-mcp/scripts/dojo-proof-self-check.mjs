@@ -17,9 +17,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const MCP_ROOT = path.resolve(__dirname, "..");
 const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
-const OUT_ROOT = path.join(MCP_ROOT, "tmp", "dojo-proof-self-check");
-const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
-const RUN_ROOT = path.join(OUT_ROOT, RUN_ID);
+const args = parseArgs(process.argv.slice(2));
+const OUT_ROOT = resolveOutputRoot(args["out-dir"] || process.env.SYNTHI_DOJO_PROOF_SELF_CHECK_OUT_DIR);
+const RUN_ID = normalizeRunId(args["run-id"] || args._?.[0] || process.env.SYNTHI_DOJO_PROOF_SELF_CHECK_RUN_ID || new Date().toISOString().replace(/[:.]/g, "-"));
+const RUN_ROOT = resolveOutputRunRoot(OUT_ROOT, RUN_ID);
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 const sharp = require("sharp");
@@ -64,6 +65,56 @@ function safeArtifactPath(root, artifactPath) {
     throw new Error(`artifact path escaped output root: ${artifactPath}`);
   }
   return resolved;
+}
+
+function resolveOutputRoot(value) {
+  const requested = String(value || path.join("tmp", "dojo-proof-self-check")).trim();
+  if (!requested) throw new Error("Dojo proof self-check output root is empty");
+  return path.isAbsolute(requested)
+    ? path.resolve(requested)
+    : path.resolve(MCP_ROOT, requested);
+}
+
+function normalizeRunId(value) {
+  const text = String(value || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(text)) {
+    throw new Error(`invalid Dojo proof self-check run id: ${value}`);
+  }
+  return text;
+}
+
+function resolveOutputRunRoot(outputRoot, runId) {
+  const root = path.resolve(outputRoot);
+  const resolved = path.resolve(root, runId);
+  if (!resolved.startsWith(`${root}${path.sep}`)) {
+    throw new Error(`Dojo proof self-check run id escaped output root: ${runId}`);
+  }
+  return resolved;
+}
+
+function parseArgs(argv) {
+  const parsed = { _: [] };
+  for (let i = 0; i < argv.length; i += 1) {
+    const item = argv[i];
+    if (!item.startsWith("--")) {
+      parsed._.push(item);
+      continue;
+    }
+    const equalsAt = item.indexOf("=");
+    if (equalsAt > 2) {
+      parsed[item.slice(2, equalsAt)] = item.slice(equalsAt + 1);
+      continue;
+    }
+    const key = item.slice(2);
+    const next = argv[i + 1];
+    if (!next || next.startsWith("--")) {
+      parsed[key] = "1";
+      continue;
+    }
+    parsed[key] = next;
+    i += 1;
+  }
+  return parsed;
 }
 
 function structured(response) {

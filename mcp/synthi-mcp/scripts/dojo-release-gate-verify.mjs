@@ -69,12 +69,23 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   const manifest = manifestResult.manifest;
 
   const proofSelfCheckResults = [];
-  if (args["dojo-self-check-summary"] || args["dojo-self-check-production-evidence"]) {
+  const shouldVerifyDojoSelfCheck = truthy(args["release-candidate"])
+    || truthy(args["include-dojo-self-check-default"])
+    || args["dojo-self-check-summary"]
+    || args["dojo-self-check-production-evidence"];
+  if (shouldVerifyDojoSelfCheck) {
+    const selfCheckGate = findGate(manifest, "dojo_self_check") || {};
+    const summaryPath = resolveRepoPath(args["dojo-self-check-summary"]
+      || selfCheckGate.default_report_path
+      || path.join(DEFAULT_VERIFY_DIR, "dojo-proof-self-check-summary.json"));
+    const productionEvidencePath = args["dojo-self-check-production-evidence"]
+      ? resolveRepoPath(args["dojo-self-check-production-evidence"])
+      : selfCheckGate.default_evidence_path
+        ? resolveRepoPath(selfCheckGate.default_evidence_path)
+        : undefined;
     proofSelfCheckResults.push(await verifyDojoProofSelfCheckArtifacts({
-      summaryPath: resolveRepoPath(args["dojo-self-check-summary"] || path.join(DEFAULT_VERIFY_DIR, "dojo-proof-self-check-summary.json")),
-      productionEvidencePath: args["dojo-self-check-production-evidence"]
-        ? resolveRepoPath(args["dojo-self-check-production-evidence"])
-        : undefined,
+      summaryPath,
+      productionEvidencePath,
     }));
   }
 

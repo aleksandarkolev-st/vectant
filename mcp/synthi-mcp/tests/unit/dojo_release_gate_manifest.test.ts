@@ -67,7 +67,23 @@ describe("Dojo release gate manifest", () => {
     expect(manifest.release_gate_ids).toEqual(DOJO_RELEASE_GATE_IDS);
     expect(manifest.policy.every_pr_requires).toEqual(["T0", "T1"]);
     expect(manifest.gates).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "dojo_self_check", tier: "T2", script_exists: true }),
+      expect.objectContaining({
+        id: "dojo_self_check",
+        tier: "T2",
+        script_exists: true,
+        command: "npm --prefix mcp/synthi-mcp run proof:dojo:self-check -- --run-id release-gate",
+        report_schema_version: "synthi.dojo.proofSelfCheckSummary.v1",
+        evidence_schema_version: "synthi.dojo.proofSelfCheck.productionRuntimeEvidence.v1",
+        default_report_path: "mcp/synthi-mcp/tmp/dojo-proof-self-check/release-gate/summary.json",
+        default_evidence_path: "mcp/synthi-mcp/tmp/dojo-proof-self-check/release-gate/production-runtime-evidence.json",
+        artifact_requirements: expect.objectContaining({
+          require_production_proof_consumed: true,
+          require_proof_replay_blocked: true,
+          require_runtime_custody_evidence: true,
+          require_visual_pixel_metrics: true,
+          require_no_runtime_credential_secret: true,
+        }),
+      }),
       expect.objectContaining({
         id: "dojo_affordance_codemod_self_check",
         tier: "T2",
@@ -204,6 +220,13 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
+      proof_artifact_gate_count: 9,
+      proof_artifact_gate_ids: expect.arrayContaining([
+        "dojo_self_check",
+        "dojo_mcp_host_conformance_self_check",
+        "workflow_e2e_hosted",
+        "dojo_mcp_host_conformance",
+      ]),
     }));
     expect(evidence.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
   });

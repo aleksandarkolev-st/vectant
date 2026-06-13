@@ -22,6 +22,7 @@ import {
   verifyDojoChaosPerformanceEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoProofSelfCheckArtifacts,
+  verifyDojoReleaseGateArtifactsFromArgs,
   verifyDojoReleaseGateManifestArtifacts,
   verifyDojoSecurityAbuseEvidenceArtifact,
   verifyDojoSoakPerformanceArtifacts,
@@ -129,6 +130,53 @@ describe("Dojo release gate artifact verifier", () => {
       "dojo_self_check_evidence_replay_not_blocked",
       "dojo_self_check_runtime_screenshot_privacy_missing",
     ]));
+  });
+
+  it("includes manifest-declared Dojo proof self-check artifacts in release candidate verification", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-candidate-self-check-"));
+    const selfCheck = await writeProofSelfCheckFixture({ dir });
+    const conformanceReportPath = path.join(dir, "dojo-mcp-host-conformance.json");
+    const conformanceEvidencePath = path.join(dir, "dojo-mcp-host-conformance.evidence.json");
+    await writeConformancePair({
+      report: buildConformanceReport(),
+      reportPath: conformanceReportPath,
+      evidencePath: conformanceEvidencePath,
+    });
+    const securityEvidencePath = await writeSecurityEvidenceFixture({ dir });
+
+    const packageScripts = await readPackageScripts();
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    const selfCheckGate = manifest.gates.find((gate) => gate.id === "dojo_self_check");
+    selfCheckGate.default_report_path = selfCheck.summaryPath;
+    selfCheckGate.default_evidence_path = selfCheck.productionEvidencePath;
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+
+    const verified = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        "release-candidate": "1",
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "mcp-host-conformance-report": conformanceReportPath,
+        "mcp-host-conformance-evidence": conformanceEvidencePath,
+        "security-abuse-evidence": securityEvidencePath,
+      },
+    });
+
+    expect(verified.ok).toBe(true);
+    expect(verified.errors).toEqual([]);
+    expect(verified.dojo_self_check).toEqual([
+      expect.objectContaining({
+        id: "dojo_self_check",
+        ok: true,
+        artifact_path: selfCheck.summaryPath,
+        evidence_path: selfCheck.productionEvidencePath,
+      }),
+    ]);
   });
 
   it("verifies MCP host conformance evidence hashes before release promotion", async () => {

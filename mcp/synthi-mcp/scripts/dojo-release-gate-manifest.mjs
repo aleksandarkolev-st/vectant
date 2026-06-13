@@ -145,9 +145,20 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T2",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:self-check",
-    command: "npm --prefix mcp/synthi-mcp run proof:dojo:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:self-check -- --run-id release-gate",
     required_for: ["milestone", "release"],
     evidence_kind: "proof_artifact",
+    report_schema_version: "synthi.dojo.proofSelfCheckSummary.v1",
+    evidence_schema_version: "synthi.dojo.proofSelfCheck.productionRuntimeEvidence.v1",
+    default_report_path: "mcp/synthi-mcp/tmp/dojo-proof-self-check/release-gate/summary.json",
+    default_evidence_path: "mcp/synthi-mcp/tmp/dojo-proof-self-check/release-gate/production-runtime-evidence.json",
+    artifact_requirements: {
+      require_production_proof_consumed: true,
+      require_proof_replay_blocked: true,
+      require_runtime_custody_evidence: true,
+      require_visual_pixel_metrics: true,
+      require_no_runtime_credential_secret: true,
+    },
   },
   {
     id: "dojo_mcp_host_conformance_self_check",
@@ -492,6 +503,26 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!gate.visual_report_requirements?.requires_pixel_metrics) errors.push(`visual_gate_missing_pixel_metrics:${gate.id}`);
     if (!gate.visual_report_requirements?.requires_layout_metrics) errors.push(`visual_gate_missing_layout_metrics:${gate.id}`);
   }
+  const dojoSelfCheckGate = gates.find((gate) => gate.id === "dojo_self_check");
+  if (dojoSelfCheckGate) {
+    if (dojoSelfCheckGate.report_schema_version !== "synthi.dojo.proofSelfCheckSummary.v1") {
+      errors.push("dojo_self_check_missing_summary_schema");
+    }
+    if (dojoSelfCheckGate.evidence_schema_version !== "synthi.dojo.proofSelfCheck.productionRuntimeEvidence.v1") {
+      errors.push("dojo_self_check_missing_production_evidence_schema");
+    }
+    if (!dojoSelfCheckGate.default_report_path) errors.push("dojo_self_check_missing_default_summary_path");
+    if (!dojoSelfCheckGate.default_evidence_path) errors.push("dojo_self_check_missing_default_evidence_path");
+    if (!dojoSelfCheckGate.artifact_requirements?.require_production_proof_consumed) {
+      errors.push("dojo_self_check_missing_production_proof_requirement");
+    }
+    if (!dojoSelfCheckGate.artifact_requirements?.require_runtime_custody_evidence) {
+      errors.push("dojo_self_check_missing_runtime_custody_requirement");
+    }
+    if (!dojoSelfCheckGate.artifact_requirements?.require_visual_pixel_metrics) {
+      errors.push("dojo_self_check_missing_visual_pixel_requirement");
+    }
+  }
   const mcpHostConformanceGate = gates.find((gate) => gate.id === "dojo_mcp_host_conformance");
   if (mcpHostConformanceGate) {
     if (mcpHostConformanceGate.report_schema_version !== "synthi.dojo.mcpHostConformance.v1") {
@@ -615,6 +646,9 @@ export function buildDojoReleaseGateEvidenceManifest({ manifest, manifestPath, s
   const visualGates = Array.isArray(manifest?.gates)
     ? manifest.gates.filter((gate) => gate.evidence_kind === "visual_report")
     : [];
+  const proofArtifactGates = Array.isArray(manifest?.gates)
+    ? manifest.gates.filter((gate) => gate.evidence_kind === "proof_artifact")
+    : [];
   return {
     schema_version: "synthi.dojo.releaseGateEvidence.v1",
     generated_at: new Date().toISOString(),
@@ -630,6 +664,8 @@ export function buildDojoReleaseGateEvidenceManifest({ manifest, manifestPath, s
     release_gate_count: Array.isArray(manifest?.release_gate_ids) ? manifest.release_gate_ids.length : 0,
     visual_report_gate_count: visualGates.length,
     visual_report_gate_ids: visualGates.map((gate) => gate.id),
+    proof_artifact_gate_count: proofArtifactGates.length,
+    proof_artifact_gate_ids: proofArtifactGates.map((gate) => gate.id),
   };
 }
 
