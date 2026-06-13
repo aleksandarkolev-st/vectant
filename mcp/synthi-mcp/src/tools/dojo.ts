@@ -1943,6 +1943,30 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
   if (!skill.ok) return skill.error;
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
   const enforcement = resolveDojoEnforcementConfig();
+  const issuerActorId = stringOpt(a["actor_id"]);
+  const issuerActorType = actorTypeInputOpt(a["actor_type"]);
+  const issuerActorProvided = Boolean(issuerActorId) || a["actor_type"] !== undefined;
+  if (enforcement.production_enforcement && !issuerActorId) {
+    return errorResponse("dojo_proof_capsule_issuer_required", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      requested_action: requestedAction,
+      enforcement_mode: enforcement.enforcement_mode,
+      blocked_by: ["proof_issuer_actor_missing"],
+    });
+  }
+  if ((enforcement.production_enforcement || issuerActorProvided) && !issuerActorType) {
+    return errorResponse("dojo_proof_capsule_issuer_actor_type_required", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      requested_action: requestedAction,
+      enforcement_mode: enforcement.enforcement_mode,
+      blocked_by: ["proof_issuer_actor_type_invalid"],
+    });
+  }
+  const issuedBy = issuerActorId && issuerActorType
+    ? { actor_id: issuerActorId, actor_type: issuerActorType }
+    : undefined;
   const evidenceLedgerRecords = evidenceLedgerRecordsOpt(a["evidence_ledger_records"]);
   const requireVerifiedEvidence = boolOpt(a["require_verified_evidence"])
     || enforcement.production_enforcement
@@ -2020,7 +2044,10 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
     }
     throw err;
   }
-  const proofRecord = dojoSkillRegistry.recordProofCapsule(capsule, { tenant_id: stringOpt(a["tenant_id"]) });
+  const proofRecord = dojoSkillRegistry.recordProofCapsule(capsule, {
+    tenant_id: stringOpt(a["tenant_id"]),
+    issued_by: issuedBy,
+  });
   const validation = validateDojoProofCapsule(skill.skill, capsule, requestedAction, stringOpt(a["now"]));
   return jsonResponse({
     ok: validation.ok,

@@ -768,7 +768,10 @@ export class DojoSkillRegistry {
       .map(cloneJson);
   }
 
-  recordProofCapsule(capsule: DojoProofCarryingSkillCapsule, options: { tenant_id?: string } = {}): DojoProofCapsuleRecord {
+  recordProofCapsule(
+    capsule: DojoProofCarryingSkillCapsule,
+    options: { tenant_id?: string; issued_by?: DojoAuditActor } = {}
+  ): DojoProofCapsuleRecord {
     const skill = this.get(capsule.skill_id);
     const record: DojoProofCapsuleRecord = {
       ...(options.tenant_id ? { tenant_id: options.tenant_id } : {}),
@@ -787,6 +790,7 @@ export class DojoSkillRegistry {
       issued_at: capsule.issued_at,
       expires_at: capsule.expires_at,
       status: "issued",
+      ...(options.issued_by ? { issued_by: cloneJson(options.issued_by) } : {}),
     };
     this.store.saveProofRecord(record);
     return cloneJson(record);

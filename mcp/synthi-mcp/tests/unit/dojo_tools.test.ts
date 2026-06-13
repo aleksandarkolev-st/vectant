@@ -299,6 +299,8 @@ describe("Agent Dojo MCP tools", () => {
 
     const missingEvidence = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
+      actor_id: "proof-issuer-a",
+      actor_type: "agent",
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
       now: "2026-06-11T00:05:00.000Z",
@@ -333,6 +335,23 @@ describe("Agent Dojo MCP tools", () => {
       retention_class: "standard",
     });
 
+    const missingIssuer = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      tenant_id: "tenant-a",
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: [evidenceRecord],
+      now: "2026-06-11T00:05:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(missingIssuer?.isError).toBe(true);
+    expect(missingIssuer?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_issuer_required",
+      ok: false,
+      enforcement_mode: "production",
+      blocked_by: ["proof_issuer_actor_missing"],
+    }));
+
     const wrongWorkspaceEvidence = buildDojoEvidenceLedgerRecord({
       record_id: "evidence-production-proof-wrong-workspace",
       tenant_id: "tenant-a",
@@ -351,6 +370,8 @@ describe("Agent Dojo MCP tools", () => {
     });
     const wrongScope = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
+      actor_id: "proof-issuer-a",
+      actor_type: "agent",
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [wrongWorkspaceEvidence],
@@ -380,6 +401,8 @@ describe("Agent Dojo MCP tools", () => {
     const issued = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
       tenant_id: "tenant-a",
+      actor_id: "proof-issuer-a",
+      actor_type: "agent",
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [evidenceRecord],
@@ -411,6 +434,7 @@ describe("Agent Dojo MCP tools", () => {
         substrate_claim: storedSkill?.preferred_substrate,
         evidence_record_ids: ["evidence-production-proof-001"],
         ledger_checkpoint_hash: evidenceRecord.ledger_head_hash,
+        issued_by: { actor_id: "proof-issuer-a", actor_type: "agent" },
         status: "issued",
       }),
     }));

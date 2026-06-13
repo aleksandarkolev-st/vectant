@@ -39,6 +39,7 @@ export interface DojoProofCapsuleRecord {
   issued_at: string;
   expires_at: string;
   status: "issued" | "used" | "revoked";
+  issued_by?: DojoAuditActor;
   first_used_at?: string;
   last_validated_at?: string;
   revoked_at?: string;

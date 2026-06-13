@@ -52,6 +52,7 @@ describeWithPostgres("PostgresDojoProofStore", () => {
       substrate_claim: "mcp",
       evidence_record_ids: ["evidence_capsule_a"],
       ledger_checkpoint_hash: "ledger_capsule_a",
+      issued_by: { actor_id: "proof-issuer-a", actor_type: "agent" },
       status: "issued",
       nonce: "nonce_capsule_a",
     }));
@@ -215,5 +216,6 @@ function proofRecord(capsuleId: string, skillId: string): DojoProofCapsuleRecord
     issued_at: "2026-06-11T00:00:00.000Z",
     expires_at: "2026-06-11T00:15:00.000Z",
     status: "issued",
+    issued_by: { actor_id: "proof-issuer-a", actor_type: "agent" },
   };
 }

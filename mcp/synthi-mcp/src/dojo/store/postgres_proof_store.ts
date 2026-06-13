@@ -365,6 +365,7 @@ function proofRecordJson(record: DojoProofCapsuleRecord): Record<string, unknown
     evidence_record_ids: record.evidence_record_ids,
     revocation_evidence_refs: record.revocation_evidence_refs,
     ledger_checkpoint_hash: record.ledger_checkpoint_hash,
+    issued_by: record.issued_by,
   });
 }
 
@@ -379,7 +380,17 @@ function proofRecordMetadata(value: unknown): Partial<DojoProofCapsuleRecord> {
     evidence_record_ids: stringArrayOpt(object["evidence_record_ids"]),
     revocation_evidence_refs: stringArrayOpt(object["revocation_evidence_refs"]),
     ledger_checkpoint_hash: stringOpt(object["ledger_checkpoint_hash"]),
+    issued_by: auditActorOpt(object["issued_by"]),
   });
+}
+
+function auditActorOpt(value: unknown): DojoAuditActor | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const actor = value as Record<string, unknown>;
+  const actorId = stringOpt(actor["actor_id"]);
+  const actorType = actor["actor_type"];
+  if (!actorId || (actorType !== "human" && actorType !== "agent" && actorType !== "service")) return undefined;
+  return { actor_id: actorId, actor_type: actorType };
 }
 
 function stripUndefined<T extends Record<string, unknown>>(value: T): T {
