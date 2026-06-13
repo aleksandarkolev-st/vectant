@@ -1,6 +1,14 @@
 export type AgentReadyUiRisk = "safe" | "mutation" | "dangerous";
 export type AgentReadyUiSubstrate = "dom" | "source" | "api" | "mcp";
 
+const AGENT_READY_UI_RISKS = new Set<AgentReadyUiRisk>(["safe", "mutation", "dangerous"]);
+const AGENT_READY_UI_APPROVAL_POLICIES = new Set<AgentReadyUiContractAction["approval_policy"]>([
+  "none",
+  "ask_before",
+  "required",
+]);
+const AGENT_READY_UI_SUBSTRATES = new Set<AgentReadyUiSubstrate>(["dom", "source", "api", "mcp"]);
+
 export interface AgentReadyUiContractAction {
   affordance_id: string;
   component: string;
@@ -79,8 +87,27 @@ function lintAction(
   if (!action.accessibility_label.trim()) {
     issues.push(errorIssue("ui_accessibility_label_required", "Accessibility label is required.", action.affordance_id));
   }
-  if (action.allowed_substrate.length === 0) {
+  if (!AGENT_READY_UI_RISKS.has(action.risk)) {
+    issues.push(errorIssue("ui_risk_invalid", "Risk must be safe, mutation, or dangerous.", action.affordance_id));
+  }
+  if (!AGENT_READY_UI_APPROVAL_POLICIES.has(action.approval_policy)) {
+    issues.push(errorIssue("ui_approval_policy_invalid", "Approval policy must be none, ask_before, or required.", action.affordance_id));
+  }
+  const allowedSubstrates = Array.isArray(action.allowed_substrate) ? action.allowed_substrate : [];
+  const blockedContexts = Array.isArray(action.blocked_contexts) ? action.blocked_contexts : [];
+  if (!Array.isArray(action.allowed_substrate)) {
+    issues.push(errorIssue("ui_allowed_substrate_invalid", "Allowed substrates must be an array.", action.affordance_id));
+  }
+  if (!Array.isArray(action.blocked_contexts)) {
+    issues.push(errorIssue("ui_blocked_contexts_invalid", "Blocked contexts must be an array.", action.affordance_id));
+  }
+  if (allowedSubstrates.length === 0) {
     issues.push(errorIssue("ui_allowed_substrate_required", "At least one allowed substrate is required.", action.affordance_id));
+  }
+  for (const substrate of allowedSubstrates) {
+    if (!AGENT_READY_UI_SUBSTRATES.has(substrate)) {
+      issues.push(errorIssue("ui_allowed_substrate_invalid", "Allowed substrates must be dom, source, api, or mcp.", action.affordance_id));
+    }
   }
   if (action.risk !== "safe" && !action.success_hook?.trim()) {
     issues.push(errorIssue("ui_success_hook_required_for_risky_action", "Risky actions require a success hook.", action.affordance_id));
@@ -88,7 +115,7 @@ function lintAction(
   if ((action.risk === "mutation" || action.risk === "dangerous" || action.proof_required) && !action.proof_hook?.trim()) {
     issues.push(errorIssue("ui_proof_hook_required_for_risky_action", "Proof-required or risky actions require a proof hook.", action.affordance_id));
   }
-  if (action.risk === "dangerous" && action.blocked_contexts.length === 0) {
+  if (action.risk === "dangerous" && blockedContexts.length === 0) {
     issues.push(errorIssue("ui_blocked_contexts_required_for_dangerous_action", "Dangerous actions require explicit blocked contexts.", action.affordance_id));
   }
   const proofRequiredByPolicy = action.risk !== "safe" || action.approval_policy !== "none";

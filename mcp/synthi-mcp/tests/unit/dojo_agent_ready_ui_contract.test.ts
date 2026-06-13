@@ -66,6 +66,42 @@ describe("Dojo Agent-Ready UI Contract linter", () => {
     ]));
   });
 
+  it("fails runtime-invalid enum values from parsed JSON contracts", () => {
+    const contract = contractFixture({
+      actions: [{
+        ...actionFixture(),
+        risk: "critical" as AgentReadyUiContract["actions"][number]["risk"],
+        approval_policy: "automatic" as AgentReadyUiContract["actions"][number]["approval_policy"],
+        allowed_substrate: ["dom", "sql"] as AgentReadyUiContract["actions"][number]["allowed_substrate"],
+      }],
+    });
+
+    expect(validateAgentReadyUiContract(contract).issues.map((issue) => issue.issue_id)).toEqual(expect.arrayContaining([
+      "ui_risk_invalid",
+      "ui_approval_policy_invalid",
+      "ui_allowed_substrate_invalid",
+    ]));
+  });
+
+  it("reports malformed substrate and blocked context arrays without throwing", () => {
+    const contract = contractFixture({
+      actions: [{
+        ...actionFixture(),
+        risk: "dangerous",
+        allowed_substrate: "dom" as unknown as AgentReadyUiContract["actions"][number]["allowed_substrate"],
+        blocked_contexts: "duplicate_client" as unknown as string[],
+      }],
+    });
+
+    expect(() => validateAgentReadyUiContract(contract)).not.toThrow();
+    expect(validateAgentReadyUiContract(contract).issues.map((issue) => issue.issue_id)).toEqual(expect.arrayContaining([
+      "ui_allowed_substrate_invalid",
+      "ui_allowed_substrate_required",
+      "ui_blocked_contexts_invalid",
+      "ui_blocked_contexts_required_for_dangerous_action",
+    ]));
+  });
+
   it("warns when proof requirement does not match risk and approval policy", () => {
     const contract = contractFixture({
       actions: [{
