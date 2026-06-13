@@ -72,6 +72,29 @@ function structured(response) {
   return response.structuredContent ?? {};
 }
 
+async function withTemporaryEnv(updates, fn) {
+  const previous = new Map();
+  for (const [name, value] of Object.entries(updates)) {
+    previous.set(name, process.env[name]);
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = String(value);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [name, value] of previous.entries()) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
+}
+
 function sha256Hex(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -526,6 +549,113 @@ async function main() {
   assert.equal(dryRun.validation.ok, true, "dry run should pass proof validation");
   log("ok", "ran proof-gated dry run");
 
+  const productionRuntimeEvidence = await withTemporaryEnv({
+    SYNTHI_DOJO_PRODUCTION_ENFORCEMENT: "1",
+  }, async () => {
+    const productionTenant = {
+      tenant_id: "local-tenant",
+      organization_id: "local-org",
+      workspace_id: workspaceId,
+      actor_id: "dojo-proof-self-check",
+      actor_type: "service",
+      roles: ["agent"],
+    };
+    const productionProof = structured(await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: publish.skill.skill_id,
+      requested_action: "run_prefix_validation",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: [proofEvidenceRecord],
+      require_verified_evidence: true,
+      ...productionTenant,
+      request_id: "req-dojo-proof-self-check-production-proof",
+      correlation_id: "corr-dojo-proof-self-check-production-proof",
+      now: proofEvidenceCreatedAt,
+    }));
+    assert.equal(productionProof.validation.ok, true, "production proof capsule should issue with verified evidence");
+
+    const productionRunId = `dojo-proof-self-check-production-${sha256Hex(productionProof.proof_capsule.capsule_id).slice(0, 12)}`;
+    const runtimeSession = structured(await dispatchDojoTool("synthi_dojo_create_hosted_runtime_session", {
+      skill_id: publish.skill.skill_id,
+      run_id: productionRunId,
+      workspace_url: url,
+      origin_allowlist: [url],
+      ttl_ms: 600_000,
+      credential_ttl_ms: 300_000,
+      sensitive_workspace: true,
+      ...productionTenant,
+      request_id: "req-dojo-proof-self-check-runtime-session",
+      correlation_id: "corr-dojo-proof-self-check-runtime-session",
+      now: proofEvidenceCreatedAt,
+    }));
+    assert.equal(runtimeSession.runtime_session.skill_id, publish.skill.skill_id, "runtime session should bind to the skill");
+    assert.equal(runtimeSession.runtime_session.run_id, productionRunId, "runtime session should bind to the production run");
+    assert.equal(runtimeSession.runtime_session.redaction_policy.screenshots, true, "sensitive hosted runtime sessions must keep screenshot privacy filtering enabled");
+
+    const productionRun = structured(await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: publish.skill.skill_id,
+      requested_action: "run_prefix_validation",
+      proof_capsule: productionProof.proof_capsule,
+      run_id: productionRunId,
+      runtime_session_id: runtimeSession.runtime_session.session_id,
+      runtime_credential_id: runtimeSession.credentials.credential_id,
+      runtime_credential_secret: runtimeSession.credentials.credential_secret,
+      runtime_action_url: url,
+      ...productionTenant,
+      request_id: "req-dojo-proof-self-check-production-run",
+      correlation_id: "corr-dojo-proof-self-check-production-run",
+      now: new Date(Date.parse(proofEvidenceCreatedAt) + 30_000).toISOString(),
+    }));
+    assert.equal(productionRun.proof_consume?.status, "used", "production proof should be consumed exactly once");
+    assert.equal(productionRun.runtime_authorization?.ok, true, "production proof run should require hosted runtime authorization");
+    assert(
+      Array.isArray(productionRun.runtime_authorization.evidence_record_ids)
+        && productionRun.runtime_authorization.evidence_record_ids.length > 0,
+      "runtime authorization should write evidence"
+    );
+
+    const replay = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: publish.skill.skill_id,
+      requested_action: "run_prefix_validation",
+      proof_capsule: productionProof.proof_capsule,
+      run_id: `${productionRunId}-replay`,
+      ...productionTenant,
+      request_id: "req-dojo-proof-self-check-production-replay",
+      correlation_id: "corr-dojo-proof-self-check-production-replay",
+      now: new Date(Date.parse(proofEvidenceCreatedAt) + 60_000).toISOString(),
+    });
+    assert.equal(replay?.isError, true, "second production use of the same proof should fail");
+    const replayContent = replay?.structuredContent ?? {};
+    assert(
+      JSON.stringify(replayContent).includes("proof_capsule_replay_detected")
+        || JSON.stringify(replayContent).includes("proof_record_not_issued"),
+      "proof replay should be rejected by proof/license state"
+    );
+
+    const evidence = {
+      schema_version: "synthi.dojo.proofSelfCheck.productionRuntimeEvidence.v1",
+      run_id: productionRunId,
+      requested_action: "run_prefix_validation",
+      proof_capsule_id: productionProof.proof_capsule.capsule_id,
+      proof_consumed: productionRun.proof_consume?.status === "used",
+      replay_blocked: replay?.isError === true,
+      replay_error: replayContent.error ?? null,
+      runtime_session: runtimeSession.runtime_session,
+      runtime_authorization: productionRun.runtime_authorization,
+      proof_record: productionRun.proof_record,
+      audit_event_types: dojoSkillRegistry.listAuditEvents()
+        .map((record) => record.event_type)
+        .filter((eventType) => eventType.startsWith("runtime_") || eventType === "proof_used"),
+    };
+    const evidenceJson = `${JSON.stringify(evidence, null, 2)}\n`;
+    assert(!evidenceJson.includes(runtimeSession.credentials.credential_secret), "production runtime evidence must not write credential secrets");
+    const evidencePath = path.join(RUN_ROOT, "production-runtime-evidence.json");
+    await writeFile(evidencePath, evidenceJson, "utf8");
+    return { ...evidence, evidence_path: evidencePath };
+  });
+  assert.equal(productionRuntimeEvidence.proof_consumed, true, "production self-check should consume a proof");
+  assert.equal(productionRuntimeEvidence.replay_blocked, true, "production self-check should block replay");
+  log("ok", "ran production proof-gated execution with hosted runtime authorization and replay block");
+
   const vivariumRun = structured(await dispatchDojoTool("synthi_dojo_run_vivarium_scenario", {
     skill_id: publish.skill.skill_id,
   }));
@@ -623,6 +753,11 @@ async function main() {
     written_artifacts: written.map((file) => path.relative(RUN_ROOT, file).replace(/\\/g, "/")),
     parsed_json_artifacts: parsedJson,
     proof_capsule_id: capsuleResponse.proof_capsule.capsule_id,
+    production_proof_capsule_id: productionRuntimeEvidence.proof_capsule_id,
+    production_proof_consumed: productionRuntimeEvidence.proof_consumed,
+    production_proof_replay_blocked: productionRuntimeEvidence.replay_blocked,
+    production_runtime_evidence: path.relative(RUN_ROOT, productionRuntimeEvidence.evidence_path).replace(/\\/g, "/"),
+    production_runtime_evidence_record_count: productionRuntimeEvidence.runtime_authorization.evidence_record_ids.length,
     vivarium_run_id: vivariumRun.vivarium_run.run.run_id,
     wind_tunnel_run_count: windTunnel.wind_tunnel_execution.run_count,
     source_affordance_patch_count: sourcePlan.source_affordance_pr_plan.patch_count,
