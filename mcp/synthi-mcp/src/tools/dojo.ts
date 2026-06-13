@@ -560,7 +560,7 @@ export const DOJO_TOOLS = [
   },
   {
     name: "synthi_dojo_record_case_law",
-    description: "Record a new failure-derived case-law item and binding guardrail for a Dojo skill.",
+    description: "Record a new evidence-backed, failure-derived case-law proposal for a Dojo skill. Runtime guardrails bind only after review approval.",
     inputSchema: {
       type: "object",
       properties: {
@@ -571,8 +571,12 @@ export const DOJO_TOOLS = [
         impact: { type: "string" },
         rule: { type: "string" },
         applies_to: { type: "array", items: { type: "string" } },
+        binding_scope: { type: "string", enum: ["skill", "workspace", "organization"] },
+        evidence_refs: { type: "array", items: { type: "string" } },
+        source_run_id: { type: "string" },
+        status: { type: "string", enum: ["proposed"] },
       },
-      required: ["finding", "rule"],
+      required: ["finding", "rule", "evidence_refs"],
     },
   },
   {
@@ -1764,6 +1768,14 @@ function dojoRecordCaseLawTool(args: unknown): ToolResponse {
   const finding = stringOpt(a["finding"]);
   const rule = stringOpt(a["rule"]);
   if (!finding || !rule) return errorResponse("dojo_case_law_finding_and_rule_required");
+  const requestedStatus = stringOpt(a["status"]);
+  if (requestedStatus && requestedStatus !== "proposed") {
+    return errorResponse("dojo_case_law_review_required", {
+      requested_status: requestedStatus,
+      allowed_record_status: "proposed",
+      review_tool: "synthi_dojo_review_case_law",
+    });
+  }
   const now = new Date().toISOString();
   const title = stringOpt(a["title"]) ?? titleFromFinding(finding);
   const impact = stringOpt(a["impact"]) ?? "The skill could act outside its licensed tested conditions.";
@@ -1773,9 +1785,13 @@ function dojoRecordCaseLawTool(args: unknown): ToolResponse {
     ?? skill.skill.training_runs[skill.skill.training_runs.length - 1]?.run_id
     ?? skill.skill.checkride.checkride_id;
   const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
+  if (evidenceRefs.length === 0) {
+    return errorResponse("dojo_case_law_evidence_required", {
+      required: ["evidence_refs"],
+      review_tool: "synthi_dojo_review_case_law",
+    });
+  }
   const caseId = `case_${hashId(`${skill.skill.skill_id}:${sourceRunId}:${finding}:${rule}`)}`;
-  const guardrailId = `guard_${hashId(`${caseId}:${rule}`)}`;
-  const antibodyId = `antibody_${hashId(`${caseId}:${guardrailId}`)}`;
   const caseLaw: DojoSkill["case_law"][number] = {
     case_id: caseId,
     title,
@@ -1787,41 +1803,11 @@ function dojoRecordCaseLawTool(args: unknown): ToolResponse {
     rule_created: rule,
     applies_to: appliesTo.length > 0 ? appliesTo : [...new Set(skill.skill.skill_seed.risk_clues.map((risk) => risk.label))],
     binding_scope: scope,
-    status: stringOpt(a["status"]) === "proposed" ? "proposed" : "binding",
-    evidence_refs: evidenceRefs.length > 0 ? evidenceRefs : [`skill:${skill.skill.skill_id}`, `run:${sourceRunId}`],
-  };
-  const guardrail: DojoSkill["guardrails"][number] = {
-    guardrail_id: guardrailId,
-    title: `${title} guardrail`,
-    rule,
-    blocks_actions: stringArrayOpt(a["blocks_actions"]).length > 0 ? stringArrayOpt(a["blocks_actions"]) : ["run_workflow"],
-    source_case_id: caseId,
-    severity: severityOpt(a["severity"]),
-  };
-  const antibody: DojoSkill["antibodies"][number] = {
-    antibody_id: antibodyId,
-    case_id: caseId,
-    guardrail_id: guardrailId,
-    trigger: finding,
-    response: rule,
-    applies_to: caseLaw.applies_to,
-    binding_scope: caseLaw.binding_scope,
-    evidence_refs: caseLaw.evidence_refs,
-    created_at: now,
+    status: "proposed",
+    evidence_refs: evidenceRefs,
   };
   const updated = cloneJson(skill.skill);
   updated.case_law = upsertBy(updated.case_law, caseLaw, "case_id");
-  updated.guardrails = upsertBy(updated.guardrails, guardrail, "guardrail_id");
-  updated.antibodies = upsertBy(updated.antibodies, antibody, "antibody_id");
-  updated.case_law_refs = [...new Set([...updated.case_law_refs, caseId])];
-  updated.permission_license = {
-    ...updated.permission_license,
-    license_version: bumpVersion(updated.permission_license.license_version),
-    proof_requirements: {
-      ...updated.permission_license.proof_requirements,
-      required_guardrails: [...new Set([...updated.permission_license.proof_requirements.required_guardrails, guardrailId])],
-    },
-  };
   updated.training_report = {
     ...updated.training_report,
     summary: {
@@ -1830,19 +1816,21 @@ function dojoRecordCaseLawTool(args: unknown): ToolResponse {
       antibody_count: updated.antibodies.length,
     },
     evidence_refs: [...new Set([...updated.training_report.evidence_refs, ...caseLaw.evidence_refs])],
-    readiness_decision: `Case law ${caseId} recorded; guardrail ${guardrailId} is ${caseLaw.status}.`,
+    readiness_decision: `Case law ${caseId} proposed; governance review required before runtime guardrail binding.`,
   };
   updated.last_trained_at = now;
   const saved = dojoSkillRegistry.publish(updated);
   const caseLawRecord = dojoSkillRegistry.recordCaseLawRecord(caseLawRecordForSkillCase(saved, caseLaw));
+  const guardrailProposal = guardrailForCaseLawRecord(caseLawRecord);
+  const antibodyProposal = antibodyForCaseLawRecord(caseLawRecord, guardrailProposal, now);
   return jsonResponse({
     ok: true,
     skill_id: saved.skill_id,
     case_law: caseLaw,
     case_law_record: caseLawRecord,
-    guardrail,
-    antibody,
-    license: saved.permission_license,
+    guardrail_proposal: guardrailProposal,
+    antibody_proposal: antibodyProposal,
+    guardrail_binding_status: "review_required",
     governance_report: buildDojoGovernanceReport(saved),
   });
 }
@@ -2474,7 +2462,22 @@ function applyCaseLawReviewToSkill(skill: DojoSkill, record: DojoCaseLawRecord):
     : item
   );
   if (record.status === "approved") {
+    const guardrail = guardrailForCaseLawRecord(record);
+    const antibody = antibodyForCaseLawRecord(record, guardrail, record.updated_at);
+    updated.guardrails = upsertBy(updated.guardrails, guardrail, "guardrail_id");
+    updated.antibodies = upsertBy(updated.antibodies, antibody, "antibody_id");
     updated.case_law_refs = [...new Set([...updated.case_law_refs, record.case_id])];
+    updated.permission_license = {
+      ...updated.permission_license,
+      license_version: bumpVersion(updated.permission_license.license_version),
+      proof_requirements: {
+        ...updated.permission_license.proof_requirements,
+        required_guardrails: [...new Set([
+          ...updated.permission_license.proof_requirements.required_guardrails,
+          guardrail.guardrail_id,
+        ])],
+      },
+    };
   }
   if (record.status === "deprecated") {
     updated.case_law_refs = updated.case_law_refs.filter((caseId) => caseId !== record.case_id);
@@ -2496,12 +2499,42 @@ function applyCaseLawReviewToSkill(skill: DojoSkill, record: DojoCaseLawRecord):
     summary: {
       ...updated.training_report.summary,
       guardrail_count: updated.guardrails.length,
+      antibody_count: updated.antibodies.length,
     },
     evidence_refs: [...new Set([...updated.training_report.evidence_refs, ...record.evidence_refs])],
     readiness_decision: `Case law ${record.case_id} ${record.status}; governance review recorded.`,
   };
   updated.last_trained_at = record.updated_at;
   return updated;
+}
+
+function guardrailForCaseLawRecord(record: DojoCaseLawRecord): DojoSkill["guardrails"][number] {
+  return {
+    guardrail_id: `guard_${hashId(`${record.case_id}:${record.rule_created}`)}`,
+    title: `${record.title} guardrail`,
+    rule: record.rule_created,
+    blocks_actions: record.applies_to.length > 0 ? [...record.applies_to] : ["run_workflow"],
+    source_case_id: record.case_id,
+    severity: "high",
+  };
+}
+
+function antibodyForCaseLawRecord(
+  record: DojoCaseLawRecord,
+  guardrail: DojoSkill["guardrails"][number],
+  createdAt: string
+): DojoSkill["antibodies"][number] {
+  return {
+    antibody_id: `antibody_${hashId(`${record.case_id}:${guardrail.guardrail_id}`)}`,
+    case_id: record.case_id,
+    guardrail_id: guardrail.guardrail_id,
+    trigger: record.finding,
+    response: record.rule_created,
+    applies_to: [...record.applies_to],
+    binding_scope: skillCaseBindingScopeFromRecord(record),
+    evidence_refs: [...record.evidence_refs],
+    created_at: createdAt,
+  };
 }
 
 function skillCaseBindingScopeFromRecord(record: DojoCaseLawRecord): DojoSkill["case_law"][number]["binding_scope"] {
@@ -2851,10 +2884,6 @@ function stringArrayOpt(value: unknown): string[] {
   return Array.isArray(value)
     ? [...new Set(value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()))]
     : [];
-}
-
-function severityOpt(value: unknown): DojoSkill["guardrails"][number]["severity"] {
-  return value === "low" || value === "medium" || value === "critical" ? value : "high";
 }
 
 function bindingScopeOpt(value: unknown): DojoSkill["case_law"][number]["binding_scope"] {

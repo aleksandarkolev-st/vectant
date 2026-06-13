@@ -1155,11 +1155,13 @@ describe("Agent Dojo MCP tools", () => {
       finding: "A unit test discovered an unsafe action boundary",
       rule: "Require a verified context boundary before workflow execution",
       applies_to: ["workflow_execution"],
+      evidence_refs: ["evidence:recorded-case"],
     });
     expect(recordedCase?.structuredContent).toEqual(expect.objectContaining({
-      case_law: expect.objectContaining({ status: "binding" }),
-      case_law_record: expect.objectContaining({ status: "approved" }),
-      guardrail: expect.objectContaining({ blocks_actions: ["run_workflow"] }),
+      case_law: expect.objectContaining({ status: "proposed" }),
+      case_law_record: expect.objectContaining({ status: "proposed" }),
+      guardrail_binding_status: "review_required",
+      guardrail_proposal: expect.objectContaining({ blocks_actions: ["workflow_execution"] }),
     }));
     const recordedCaseId = (recordedCase?.structuredContent as {
       case_law_record: { case_id: string };
@@ -1167,7 +1169,7 @@ describe("Agent Dojo MCP tools", () => {
     const listedCaseLaw = await dispatchDojoTool("synthi_dojo_get_case_law", { skill_id: published.skill.skill_id });
     expect(listedCaseLaw?.structuredContent).toEqual(expect.objectContaining({
       case_law_records: expect.arrayContaining([
-        expect.objectContaining({ case_id: recordedCaseId, status: "approved" }),
+        expect.objectContaining({ case_id: recordedCaseId, status: "proposed" }),
       ]),
     }));
     const reviewedCaseMissingActorType = await dispatchDojoTool("synthi_dojo_review_case_law", {
@@ -1179,6 +1181,38 @@ describe("Agent Dojo MCP tools", () => {
     expect(reviewedCaseMissingActorType?.isError).toBe(true);
     expect(reviewedCaseMissingActorType?.structuredContent).toEqual(expect.objectContaining({
       error: "dojo_case_law_reviewer_actor_type_required",
+    }));
+    const reviewedCaseMissingEvidence = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      case_id: recordedCaseId,
+      skill_id: published.skill.skill_id,
+      decision: "approved",
+      reviewer_actor_id: "case-reviewer-a",
+      reviewer_actor_type: "human",
+      decided_at: "2026-06-11T00:04:50.000Z",
+    });
+    expect(reviewedCaseMissingEvidence?.isError).toBe(true);
+    expect(reviewedCaseMissingEvidence?.structuredContent).toEqual(expect.objectContaining({
+      error: "case_law_review_evidence_required",
+      review: expect.objectContaining({ blocked_by: ["review_evidence_missing"] }),
+    }));
+    const reviewedCase = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      case_id: recordedCaseId,
+      skill_id: published.skill.skill_id,
+      decision: "approved",
+      reviewer_actor_id: "case-reviewer-a",
+      reviewer_actor_type: "human",
+      evidence_refs: ["evidence:case-approval"],
+      decided_at: "2026-06-11T00:04:55.000Z",
+    });
+    expect(reviewedCase?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      case_law_record: expect.objectContaining({
+        case_id: recordedCaseId,
+        status: "approved",
+        reviewer: "case-reviewer-a",
+        evidence_refs: expect.arrayContaining(["evidence:case-approval", "evidence:recorded-case"]),
+      }),
+      skill: expect.objectContaining({ skill_id: published.skill.skill_id }),
     }));
     const reviewedCaseAgain = await dispatchDojoTool("synthi_dojo_review_case_law", {
       case_id: recordedCaseId,
