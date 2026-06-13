@@ -279,7 +279,7 @@ spec:
                   name: synthi-config
                   key: WORKSPACE_NODE_TAINT_EFFECT
             - name: IDLE_TIMEOUT_MS
-              value: "600000"   # 10 min
+              value: "300000"   # 5 min
             - name: MAX_WORKSPACE_PODS
               value: "10"
             - name: POD_READY_TIMEOUT_MS
