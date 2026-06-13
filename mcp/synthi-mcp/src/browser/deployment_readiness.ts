@@ -246,17 +246,13 @@ function checkDojoExternalSigning(
     && provider !== "external-command"
     && keyId
     && !isDojoDefaultLocalProofSigningKey(env);
-  const hasEd25519Signer = provider === "ed25519-local"
-    && keyId
-    && nonEmpty(env[DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV])
-    && publicKey;
-  if (config.require_external_signing && (hasExternalCommandSigner || hasExternalSigner || hasEd25519Signer)) {
-    return pass("dojo_external_signing", "Dojo proof signing is configured without the default local signing key.", required, configured);
+  if (config.require_external_signing && (hasExternalCommandSigner || hasExternalSigner)) {
+    return pass("dojo_external_signing", "Dojo proof signing is configured through a non-local signing provider.", required, configured);
   }
   return {
     id: "dojo_external_signing",
     status: production ? "fail" : "warn",
-    message: "Dojo proof signing is not production-ready; external signer identity and a non-default signing key are required.",
+    message: "Dojo proof signing is not production-ready; an external signer or non-local signing provider is required.",
     required_env: required,
     configured_env: configured,
   };

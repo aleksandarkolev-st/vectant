@@ -147,7 +147,7 @@ describe("browser workflow deployment readiness", () => {
     ]));
   });
 
-  it("passes production readiness with explicit Ed25519 proof signing material", () => {
+  it("fails production readiness with local Ed25519 proof signing material when external signing is required", () => {
     const readiness = browserWorkflowDeploymentReadiness({}, {
       ...productionReadyEnv(),
       SYNTHI_DOJO_PROOF_SIGNING_PROVIDER: "ed25519-local",
@@ -157,11 +157,11 @@ describe("browser workflow deployment readiness", () => {
       SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM: "-----BEGIN PUBLIC KEY-----\nredacted\n-----END PUBLIC KEY-----",
     });
 
-    expect(readiness.ok).toBe(true);
+    expect(readiness.ok).toBe(false);
     expect(readiness.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: "dojo_external_signing",
-        status: "pass",
+        status: "fail",
         configured_env: expect.arrayContaining([
           "SYNTHI_DOJO_PROOF_SIGNING_PROVIDER",
           "SYNTHI_DOJO_PROOF_SIGNING_KEY_ID",
