@@ -13,6 +13,8 @@ import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
+import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "../../scripts/dojo-compliance-export-self-check.mjs";
+import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "../../scripts/dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "../../scripts/dojo-security-abuse-self-check.mjs";
 import {
   validateDojoProofSelfCheckForRelease,
@@ -691,6 +693,21 @@ describe("Dojo release gate artifact verifier", () => {
       "compliance_export_pending_tests:1",
     ]));
 
+    const driftedPath = await writeComplianceExportEvidenceFixture({
+      dir,
+      basename: "drifted-compliance",
+      evidence: complianceExportEvidenceFixture({
+        configured_capabilities: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.filter((capability) => capability !== "source_ref_redaction"),
+        tested_capabilities: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.filter((capability) => capability !== "source_ref_redaction"),
+        capability_count: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.length - 1,
+      }),
+    });
+    expect((await verifyDojoComplianceExportEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "compliance_export_required_capabilities_missing:source_ref_redaction",
+      "compliance_export_required_capabilities_untested:source_ref_redaction",
+    ]));
+
     const tamperedJson = path.join(dir, "tampered-compliance.vitest.json");
     await writeFile(tamperedJson, JSON.stringify({ success: false, numFailedTests: 1 }), "utf8");
     const expectedComplianceJson = complianceExportJsonReportFixtureText();
@@ -747,6 +764,21 @@ describe("Dojo release gate artifact verifier", () => {
       "privacy_redaction_missing_capabilities:screenshot_consent_boundary",
       "privacy_redaction_budget_not_ok",
       "privacy_redaction_pending_tests:1",
+    ]));
+
+    const driftedPath = await writePrivacyRedactionEvidenceFixture({
+      dir,
+      basename: "drifted-privacy",
+      evidence: privacyRedactionEvidenceFixture({
+        configured_capabilities: DOJO_PRIVACY_REDACTION_CAPABILITIES.filter((capability) => capability !== "broker_audit_redaction"),
+        tested_capabilities: DOJO_PRIVACY_REDACTION_CAPABILITIES.filter((capability) => capability !== "broker_audit_redaction"),
+        capability_count: DOJO_PRIVACY_REDACTION_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_PRIVACY_REDACTION_CAPABILITIES.length - 1,
+      }),
+    });
+    expect((await verifyDojoPrivacyRedactionEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "privacy_redaction_required_capabilities_missing:broker_audit_redaction",
+      "privacy_redaction_required_capabilities_untested:broker_audit_redaction",
     ]));
 
     const tamperedJson = path.join(dir, "tampered-privacy.vitest.json");
@@ -1737,22 +1769,16 @@ async function writeComplianceExportEvidenceFixture({
 function complianceExportEvidenceFixture(overrides = {}) {
   const stdout = "compliance suite passed\n";
   const stderr = "";
-  const capabilities = [
-    "tool_authorized_compliance_export",
-    "compliance_pack_view_model",
-    "control_plane_audit_export",
-    "redacted_evidence_export",
-    "redaction_fail_closed",
-    "source_ref_redaction",
-  ];
   return {
     schema_version: "synthi.dojo.complianceExportEvidence.v1",
     generated_at: "2026-06-11T00:00:00.000Z",
     ok: true,
     exit_code: 0,
-    configured_capabilities: capabilities,
-    tested_capabilities: capabilities,
+    configured_capabilities: DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
+    tested_capabilities: DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
     missing_capabilities: [],
+    capability_count: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.length,
+    configured_capability_count: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.length,
     capability_coverage_complete: true,
     test_file_count: 3,
     reported_test_file_count: 3,
@@ -1826,24 +1852,16 @@ async function writePrivacyRedactionEvidenceFixture({
 function privacyRedactionEvidenceFixture(overrides = {}) {
   const stdout = "privacy suite passed\n";
   const stderr = "";
-  const capabilities = [
-    "evidence_redaction_manifest",
-    "redacted_evidence_export",
-    "auth_checkpoint_secret_custody",
-    "browser_origin_privacy_boundary",
-    "screenshot_consent_boundary",
-    "private_tool_secret_minimization",
-    "broker_audit_redaction",
-    "operator_queue_screenshot_minimization",
-  ];
   return {
     schema_version: "synthi.dojo.privacyRedactionEvidence.v1",
     generated_at: "2026-06-11T00:00:00.000Z",
     ok: true,
     exit_code: 0,
-    configured_capabilities: capabilities,
-    tested_capabilities: capabilities,
+    configured_capabilities: DOJO_PRIVACY_REDACTION_CAPABILITIES,
+    tested_capabilities: DOJO_PRIVACY_REDACTION_CAPABILITIES,
     missing_capabilities: [],
+    capability_count: DOJO_PRIVACY_REDACTION_CAPABILITIES.length,
+    configured_capability_count: DOJO_PRIVACY_REDACTION_CAPABILITIES.length,
     capability_coverage_complete: true,
     test_file_count: 7,
     reported_test_file_count: 7,

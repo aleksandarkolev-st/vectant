@@ -22,6 +22,8 @@ import {
   buildConformanceReleaseGateSummary,
   redactConformanceReport,
 } from "./dojo-mcp-host-conformance.mjs";
+import { DOJO_COMPLIANCE_EXPORT_CAPABILITIES } from "./dojo-compliance-export-self-check.mjs";
+import { DOJO_PRIVACY_REDACTION_CAPABILITIES } from "./dojo-privacy-redaction-self-check.mjs";
 import { DOJO_SECURITY_ABUSE_CLASSES } from "./dojo-security-abuse-self-check.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -868,6 +870,12 @@ export async function verifyDojoComplianceExportEvidenceArtifact({ evidencePath,
 
 export function validateDojoComplianceExportEvidenceForRelease(evidence) {
   const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
   if (evidence?.schema_version !== "synthi.dojo.complianceExportEvidence.v1") {
     errors.push(`compliance_export_schema_mismatch:${evidence?.schema_version || "missing"}`);
   }
@@ -876,6 +884,22 @@ export function validateDojoComplianceExportEvidenceForRelease(evidence) {
   if (evidence?.capability_coverage_complete !== true) errors.push("compliance_export_coverage_incomplete");
   if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
     errors.push(`compliance_export_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_COMPLIANCE_EXPORT_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`compliance_export_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  const untestedRequiredCapabilities = DOJO_COMPLIANCE_EXPORT_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`compliance_export_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`compliance_export_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`compliance_export_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("compliance_export_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -911,6 +935,12 @@ export async function verifyDojoPrivacyRedactionEvidenceArtifact({ evidencePath,
 
 export function validateDojoPrivacyRedactionEvidenceForRelease(evidence) {
   const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
   if (evidence?.schema_version !== "synthi.dojo.privacyRedactionEvidence.v1") {
     errors.push(`privacy_redaction_schema_mismatch:${evidence?.schema_version || "missing"}`);
   }
@@ -919,6 +949,22 @@ export function validateDojoPrivacyRedactionEvidenceForRelease(evidence) {
   if (evidence?.capability_coverage_complete !== true) errors.push("privacy_redaction_coverage_incomplete");
   if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
     errors.push(`privacy_redaction_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_PRIVACY_REDACTION_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`privacy_redaction_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  const untestedRequiredCapabilities = DOJO_PRIVACY_REDACTION_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`privacy_redaction_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`privacy_redaction_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`privacy_redaction_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("privacy_redaction_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -2539,22 +2585,16 @@ async function writeComplianceExportEvidenceForSelfCheck({
   await writeFile(stdoutPath, stdout, "utf8");
   await writeFile(stderrPath, stderr, "utf8");
   await writeFile(jsonReportPath, jsonReport, "utf8");
-  const configuredCapabilities = [
-    "tool_authorized_compliance_export",
-    "compliance_pack_view_model",
-    "control_plane_audit_export",
-    "redacted_evidence_export",
-    "redaction_fail_closed",
-    "source_ref_redaction",
-  ];
   const evidence = {
     schema_version: "synthi.dojo.complianceExportEvidence.v1",
     generated_at: new Date().toISOString(),
     ok: true,
     exit_code: 0,
-    configured_capabilities: configuredCapabilities,
-    tested_capabilities: configuredCapabilities,
+    configured_capabilities: DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
+    tested_capabilities: DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
     missing_capabilities: [],
+    capability_count: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.length,
+    configured_capability_count: DOJO_COMPLIANCE_EXPORT_CAPABILITIES.length,
     capability_coverage_complete: true,
     test_file_count: 3,
     reported_test_file_count: 3,
@@ -2609,24 +2649,16 @@ async function writePrivacyRedactionEvidenceForSelfCheck({
   await writeFile(stdoutPath, stdout, "utf8");
   await writeFile(stderrPath, stderr, "utf8");
   await writeFile(jsonReportPath, jsonReport, "utf8");
-  const configuredCapabilities = [
-    "evidence_redaction_manifest",
-    "redacted_evidence_export",
-    "auth_checkpoint_secret_custody",
-    "browser_origin_privacy_boundary",
-    "screenshot_consent_boundary",
-    "private_tool_secret_minimization",
-    "broker_audit_redaction",
-    "operator_queue_screenshot_minimization",
-  ];
   const evidence = {
     schema_version: "synthi.dojo.privacyRedactionEvidence.v1",
     generated_at: new Date().toISOString(),
     ok: true,
     exit_code: 0,
-    configured_capabilities: configuredCapabilities,
-    tested_capabilities: configuredCapabilities,
+    configured_capabilities: DOJO_PRIVACY_REDACTION_CAPABILITIES,
+    tested_capabilities: DOJO_PRIVACY_REDACTION_CAPABILITIES,
     missing_capabilities: [],
+    capability_count: DOJO_PRIVACY_REDACTION_CAPABILITIES.length,
+    configured_capability_count: DOJO_PRIVACY_REDACTION_CAPABILITIES.length,
     capability_coverage_complete: true,
     test_file_count: 7,
     reported_test_file_count: 7,
