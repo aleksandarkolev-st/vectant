@@ -80,7 +80,7 @@
     "live:browser:private-tool-host-conformance": "node scripts/private-tool-stdio-acceptance.mjs --require-custom-mcp-command --require-non-loopback-runtime --require-external-private-tool-store",
     "live:browser:private-tool-codex": "node scripts/private-tool-codex-acceptance.mjs",
     "live:browser:private-tool-codex-host-conformance": "node scripts/private-tool-codex-acceptance.mjs --require-non-loopback-runtime --require-external-private-tool-store",
-    "live:dojo:mcp-host-conformance": "node scripts/dojo-mcp-host-conformance.mjs --require-non-loopback-mcp-host",
+    "live:dojo:mcp-host-conformance": "node scripts/dojo-mcp-host-conformance.mjs --require-non-loopback-mcp-host --execute-production --require-external-control-plane-store --require-external-proof-signing --require-bridge-token --require-no-local-cdp --require-licensed-skill-filtering",
     "live:browser:install": "npx playwright-core install chromium",
     "proof:dojo": "node scripts/dojo-proof-self-check.mjs",
     "proof:dojo:self-check": "node scripts/dojo-proof-self-check.mjs",

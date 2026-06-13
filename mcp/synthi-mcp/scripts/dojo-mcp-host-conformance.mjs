@@ -51,6 +51,34 @@ const REVOKED_PROOF_BLOCK_MARKERS = [
   "revoked",
 ];
 
+export const DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS = [
+  {
+    id: "external_control_plane_store",
+    requiredField: "require_external_control_plane_store",
+    observedField: "external_control_plane_store",
+  },
+  {
+    id: "external_proof_signing",
+    requiredField: "require_external_proof_signing",
+    observedField: "external_proof_signing",
+  },
+  {
+    id: "bridge_token_required",
+    requiredField: "require_bridge_token",
+    observedField: "bridge_token_required",
+  },
+  {
+    id: "no_local_cdp_leakage",
+    requiredField: "require_no_local_cdp",
+    observedField: "no_local_cdp_leakage",
+  },
+  {
+    id: "licensed_skill_filtering",
+    requiredField: "require_licensed_skill_filtering",
+    observedField: "licensed_skill_filtering",
+  },
+];
+
 const args = parseArgs(process.argv.slice(2));
 
 if (isDirectRun()) {
@@ -85,6 +113,18 @@ async function main() {
       evidence_record_count: config.evidenceRecordIds.length,
       ledger_checkpoint_hash_configured: Boolean(config.ledgerCheckpointHash),
       require_verified_evidence: config.requireVerifiedEvidence,
+    },
+    deployment_claims: {
+      require_external_control_plane_store: config.requireExternalControlPlaneStore,
+      external_control_plane_store: config.externalControlPlaneStore,
+      require_external_proof_signing: config.requireExternalProofSigning,
+      external_proof_signing: config.externalProofSigning,
+      require_bridge_token: config.requireBridgeToken,
+      bridge_token_required: config.bridgeTokenRequired,
+      require_no_local_cdp: config.requireNoLocalCdp,
+      no_local_cdp_leakage: config.noLocalCdpLeakage,
+      require_licensed_skill_filtering: config.requireLicensedSkillFiltering,
+      licensed_skill_filtering: config.licensedSkillFiltering,
     },
     steps: [],
   };
@@ -255,6 +295,14 @@ async function main() {
     log("ok", "revoked proof run blocked");
 
     report.release_gate = buildConformanceReleaseGateSummary(report);
+    assert.equal(
+      report.release_gate.ok,
+      true,
+      `dojo_mcp_host_conformance_release_gate_failed:${report.release_gate.checks
+        .filter((check) => check.ok !== true)
+        .map((check) => check.id)
+        .join(",")}`,
+    );
     const artifacts = await writeConformanceArtifacts(config.outDir, report);
     log("ok", `Dojo MCP host conformance passed - report=${artifacts.report_path} manifest=${artifacts.manifest_path}`);
   } finally {
@@ -296,6 +344,16 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
     rawToolArgs: parseJsonObjectArgument(args["raw-tool-args-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_RAW_TOOL_ARGS_JSON || "{}", "raw_tool_args"),
     executeProduction: parseBooleanFlag(args["execute-production"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EXECUTE_PRODUCTION),
     skipRawBackingToolCheck: parseBooleanFlag(args["skip-raw-backing-tool-check"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_SKIP_RAW_BACKING_TOOL_CHECK),
+    requireExternalControlPlaneStore: parseBooleanFlag(args["require-external-control-plane-store"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUIRE_EXTERNAL_CONTROL_PLANE_STORE),
+    externalControlPlaneStore: parseBooleanFlag(args["external-control-plane-store"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE),
+    requireExternalProofSigning: parseBooleanFlag(args["require-external-proof-signing"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUIRE_EXTERNAL_PROOF_SIGNING),
+    externalProofSigning: parseBooleanFlag(args["external-proof-signing"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING),
+    requireBridgeToken: parseBooleanFlag(args["require-bridge-token"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUIRE_BRIDGE_TOKEN),
+    bridgeTokenRequired: parseBooleanFlag(args["bridge-token-required"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED),
+    requireNoLocalCdp: parseBooleanFlag(args["require-no-local-cdp"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUIRE_NO_LOCAL_CDP),
+    noLocalCdpLeakage: parseBooleanFlag(args["no-local-cdp-leakage"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE),
+    requireLicensedSkillFiltering: parseBooleanFlag(args["require-licensed-skill-filtering"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUIRE_LICENSED_SKILL_FILTERING),
+    licensedSkillFiltering: parseBooleanFlag(args["licensed-skill-filtering"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING),
     revocationReason: normalizeOptionalText(args["revocation-reason"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_REASON) || "dojo_mcp_host_conformance",
     revocationActorId: normalizeOptionalText(args["revocation-actor-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_ACTOR_ID) || "dojo-mcp-host-conformance",
     revocationActorType: normalizeActorType(args["revocation-actor-type"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_ACTOR_TYPE) || "service",
@@ -641,6 +699,9 @@ export function buildConformanceReleaseGateSummary(report) {
   const steps = Array.isArray(report?.steps) ? report.steps : [];
   const hasStep = (name) => steps.some((step) => step?.name === name && step?.ok === true);
   const rawBackingRequired = report?.config?.raw_backing_tool_required !== false;
+  const deploymentClaims = report?.deployment_claims && typeof report.deployment_claims === "object"
+    ? report.deployment_claims
+    : {};
   const checks = [
     { id: "mcp_initialize", ok: hasStep("initialize") },
     { id: "required_dojo_tool_surface", ok: hasStep("required Dojo tool surface advertised") },
@@ -658,6 +719,14 @@ export function buildConformanceReleaseGateSummary(report) {
     { id: "revoked_proof_validation_blocked", ok: hasStep("revoked proof validation blocked") },
     { id: "revoked_proof_run_blocked", ok: hasStep("revoked proof run blocked") },
   ];
+  for (const requirement of DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS) {
+    if (deploymentClaims[requirement.requiredField] === true) {
+      checks.push({
+        id: requirement.id,
+        ok: deploymentClaims[requirement.observedField] === true,
+      });
+    }
+  }
   return {
     ok: checks.every((check) => check.ok === true),
     passed: checks.filter((check) => check.ok === true && !check.skipped).length,
@@ -681,6 +750,20 @@ export function buildConformanceEvidenceManifest({ report, reportPath, serialize
     mcp_host_class: report?.conformance?.mcp_host_class ?? null,
     non_loopback_mcp_host: report?.conformance?.non_loopback_mcp_host === true,
     raw_backing_tool_required: report?.config?.raw_backing_tool_required !== false,
+    deployment_claims: report?.deployment_claims && typeof report.deployment_claims === "object"
+      ? {
+          require_external_control_plane_store: report.deployment_claims.require_external_control_plane_store === true,
+          external_control_plane_store: report.deployment_claims.external_control_plane_store === true,
+          require_external_proof_signing: report.deployment_claims.require_external_proof_signing === true,
+          external_proof_signing: report.deployment_claims.external_proof_signing === true,
+          require_bridge_token: report.deployment_claims.require_bridge_token === true,
+          bridge_token_required: report.deployment_claims.bridge_token_required === true,
+          require_no_local_cdp: report.deployment_claims.require_no_local_cdp === true,
+          no_local_cdp_leakage: report.deployment_claims.no_local_cdp_leakage === true,
+          require_licensed_skill_filtering: report.deployment_claims.require_licensed_skill_filtering === true,
+          licensed_skill_filtering: report.deployment_claims.licensed_skill_filtering === true,
+        }
+      : {},
   };
 }
 
@@ -741,6 +824,18 @@ async function runSelfCheck({ outDir }) {
     },
     config: {
       raw_backing_tool_required: true,
+    },
+    deployment_claims: {
+      require_external_control_plane_store: true,
+      external_control_plane_store: true,
+      require_external_proof_signing: true,
+      external_proof_signing: true,
+      require_bridge_token: true,
+      bridge_token_required: true,
+      require_no_local_cdp: true,
+      no_local_cdp_leakage: true,
+      require_licensed_skill_filtering: true,
+      licensed_skill_filtering: true,
     },
     steps: [
       { name: "initialize", ok: true },

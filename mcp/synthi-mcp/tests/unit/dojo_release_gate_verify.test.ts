@@ -127,6 +127,30 @@ describe("Dojo release gate artifact verifier", () => {
       "conformance_execute_production_missing",
       "conformance_production_execution_step_missing",
     ]));
+
+    const missingDeploymentClaims = buildConformanceReport({
+      deploymentClaims: {
+        ...mcpHostDeploymentClaimsFixture(),
+        require_external_proof_signing: false,
+        external_proof_signing: false,
+        no_local_cdp_leakage: false,
+      },
+    });
+    expect(validateDojoMcpHostConformanceReportForRelease(missingDeploymentClaims).errors).toEqual(expect.arrayContaining([
+      "conformance_external_proof_signing_requirement_missing",
+      "conformance_external_proof_signing_missing",
+      "conformance_no_local_cdp_leakage_missing",
+    ]));
+
+    const missingRevocationPropagation = buildConformanceReport({
+      steps: buildConformanceSteps()
+        .filter((step) => step.name !== "revoked proof validation blocked"),
+    });
+    expect(validateDojoMcpHostConformanceReportForRelease(missingRevocationPropagation).errors).toEqual(expect.arrayContaining([
+      "conformance_release_gate_not_ok",
+      "conformance_release_gate_failed:1",
+      "conformance_revoked_validation_block_step_missing",
+    ]));
   });
 
   it("verifies Dojo proof self-check production proof consumption and runtime custody", async () => {
@@ -2226,6 +2250,8 @@ function sha256(value) {
 function buildConformanceReport({
   schemaVersion = "synthi.dojo.mcpHostConformance.v1",
   executeProduction = true,
+  deploymentClaims = mcpHostDeploymentClaimsFixture(),
+  steps,
 } = {}) {
   const report = {
     schema_version: schemaVersion,
@@ -2241,25 +2267,45 @@ function buildConformanceReport({
       execute_production: executeProduction,
       raw_backing_tool_required: true,
     },
-    steps: [
-      { name: "initialize", ok: true },
-      { name: "required Dojo tool surface advertised", ok: true },
-      { name: "select published Dojo competency", ok: true },
-      { name: "issue proof capsule", ok: true },
-      { name: "validate proof capsule", ok: true },
-      {
-        name: executeProduction ? "execute proof-gated Dojo skill" : "dry-run proof-gated Dojo skill",
-        ok: true,
-        dry_run: !executeProduction,
-      },
-      { name: "raw backing tool blocked outside Dojo proof path", ok: true },
-      { name: "revoke proof capsule", ok: true },
-      { name: "revoked proof validation blocked", ok: true },
-      { name: "revoked proof run blocked", ok: true },
-    ],
+    deployment_claims: deploymentClaims,
+    steps: steps || buildConformanceSteps({ executeProduction }),
   };
   report.release_gate = buildConformanceReleaseGateSummary(report);
   return report;
+}
+
+function buildConformanceSteps({ executeProduction = true } = {}) {
+  return [
+    { name: "initialize", ok: true },
+    { name: "required Dojo tool surface advertised", ok: true },
+    { name: "select published Dojo competency", ok: true },
+    { name: "issue proof capsule", ok: true },
+    { name: "validate proof capsule", ok: true },
+    {
+      name: executeProduction ? "execute proof-gated Dojo skill" : "dry-run proof-gated Dojo skill",
+      ok: true,
+      dry_run: !executeProduction,
+    },
+    { name: "raw backing tool blocked outside Dojo proof path", ok: true },
+    { name: "revoke proof capsule", ok: true },
+    { name: "revoked proof validation blocked", ok: true },
+    { name: "revoked proof run blocked", ok: true },
+  ];
+}
+
+function mcpHostDeploymentClaimsFixture() {
+  return {
+    require_external_control_plane_store: true,
+    external_control_plane_store: true,
+    require_external_proof_signing: true,
+    external_proof_signing: true,
+    require_bridge_token: true,
+    bridge_token_required: true,
+    require_no_local_cdp: true,
+    no_local_cdp_leakage: true,
+    require_licensed_skill_filtering: true,
+    licensed_skill_filtering: true,
+  };
 }
 
 function buildVisualReport({ screenshotPath, bytes, screenshotSha256, schemaVersion = "synthi.dojo.visualProof.v1" }) {

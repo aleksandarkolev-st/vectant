@@ -5,6 +5,7 @@ import {
   buildConformanceReleaseGateSummary,
   buildDojoMcpHostConformanceConfig,
   classifyMcpHost,
+  DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS,
   isExpectedBlockedToolCall,
   mcpHostConformance,
   redactConformanceReport,
@@ -94,6 +95,16 @@ describe("Dojo MCP host conformance harness", () => {
         "ledger-checkpoint-hash": "a".repeat(64),
         "evidence-max-age-ms": "60000",
         "require-verified-evidence": "1",
+        "require-external-control-plane-store": "1",
+        "external-control-plane-store": "1",
+        "require-external-proof-signing": "1",
+        "external-proof-signing": "1",
+        "require-bridge-token": "1",
+        "bridge-token-required": "1",
+        "require-no-local-cdp": "1",
+        "no-local-cdp-leakage": "1",
+        "require-licensed-skill-filtering": "1",
+        "licensed-skill-filtering": "1",
         "revocation-evidence-refs": "evidence-a,evidence-b",
       },
       env: {
@@ -114,6 +125,16 @@ describe("Dojo MCP host conformance harness", () => {
     expect(config.ledgerCheckpointHash).toBe("a".repeat(64));
     expect(config.evidenceMaxAgeMs).toBe(60000);
     expect(config.requireVerifiedEvidence).toBe(true);
+    expect(config.requireExternalControlPlaneStore).toBe(true);
+    expect(config.externalControlPlaneStore).toBe(true);
+    expect(config.requireExternalProofSigning).toBe(true);
+    expect(config.externalProofSigning).toBe(true);
+    expect(config.requireBridgeToken).toBe(true);
+    expect(config.bridgeTokenRequired).toBe(true);
+    expect(config.requireNoLocalCdp).toBe(true);
+    expect(config.noLocalCdpLeakage).toBe(true);
+    expect(config.requireLicensedSkillFiltering).toBe(true);
+    expect(config.licensedSkillFiltering).toBe(true);
     expect(config.revocationActorId).toBe("host-conformance-operator");
     expect(config.revocationActorType).toBe("service");
     expect(config.revocationEvidenceRefs).toEqual(["evidence-a", "evidence-b"]);
@@ -163,6 +184,7 @@ describe("Dojo MCP host conformance harness", () => {
   it("summarizes release-gate steps and skipped raw backing checks", () => {
     const requiredGate = buildConformanceReleaseGateSummary({
       config: { raw_backing_tool_required: true },
+      deployment_claims: fullDeploymentClaims(),
       steps: [
         { name: "initialize", ok: true },
         { name: "required Dojo tool surface advertised", ok: true },
@@ -185,8 +207,10 @@ describe("Dojo MCP host conformance harness", () => {
 
     const skippedGate = buildConformanceReleaseGateSummary({
       config: { raw_backing_tool_required: false },
+      deployment_claims: fullDeploymentClaims(),
       steps: requiredGate.checks
         .filter((check) => check.id !== "raw_backing_tool_blocked")
+        .filter((check) => !DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS.some((requirement) => requirement.id === check.id))
         .map((check) => ({ name: nameForGateCheck(check.id), ok: true })),
     });
     expect(skippedGate.ok).toBe(true);
@@ -196,12 +220,42 @@ describe("Dojo MCP host conformance harness", () => {
     ]));
   });
 
+  it("fails release-gate summary when required deployment claims are missing", () => {
+    const gate = buildConformanceReleaseGateSummary({
+      config: { raw_backing_tool_required: true },
+      deployment_claims: {
+        ...fullDeploymentClaims(),
+        external_proof_signing: false,
+        licensed_skill_filtering: false,
+      },
+      steps: [
+        { name: "initialize", ok: true },
+        { name: "required Dojo tool surface advertised", ok: true },
+        { name: "select published Dojo competency", ok: true },
+        { name: "issue proof capsule", ok: true },
+        { name: "validate proof capsule", ok: true },
+        { name: "execute proof-gated Dojo skill", ok: true },
+        { name: "raw backing tool blocked outside Dojo proof path", ok: true },
+        { name: "revoke proof capsule", ok: true },
+        { name: "revoked proof validation blocked", ok: true },
+        { name: "revoked proof run blocked", ok: true },
+      ],
+    });
+
+    expect(gate.ok).toBe(false);
+    expect(gate.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "external_proof_signing", ok: false }),
+      expect.objectContaining({ id: "licensed_skill_filtering", ok: false }),
+    ]));
+  });
+
   it("builds a digest evidence manifest for redacted conformance reports", () => {
     const report = {
       release_gate: { ok: true, failed: 0 },
       steps: [{ name: "initialize", ok: true }],
       conformance: { mcp_host_class: "remote", non_loopback_mcp_host: true },
       config: { raw_backing_tool_required: true },
+      deployment_claims: fullDeploymentClaims(),
     };
     const serialized = JSON.stringify(report, null, 2);
     const manifest = buildConformanceEvidenceManifest({
@@ -220,10 +274,26 @@ describe("Dojo MCP host conformance harness", () => {
       mcp_host_class: "remote",
       non_loopback_mcp_host: true,
       raw_backing_tool_required: true,
+      deployment_claims: fullDeploymentClaims(),
     }));
     expect(manifest.report_sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 });
+
+function fullDeploymentClaims(): Record<string, boolean> {
+  return {
+    require_external_control_plane_store: true,
+    external_control_plane_store: true,
+    require_external_proof_signing: true,
+    external_proof_signing: true,
+    require_bridge_token: true,
+    bridge_token_required: true,
+    require_no_local_cdp: true,
+    no_local_cdp_leakage: true,
+    require_licensed_skill_filtering: true,
+    licensed_skill_filtering: true,
+  };
+}
 
 function nameForGateCheck(id: string): string {
   const names: Record<string, string> = {

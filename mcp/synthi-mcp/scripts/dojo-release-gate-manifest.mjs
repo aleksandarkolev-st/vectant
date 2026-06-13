@@ -143,6 +143,19 @@ export const DOJO_DEPLOYED_PRIVATE_TOOL_HOST_REQUIREMENTS = Object.freeze({
   require_private_tool_call: true,
 });
 
+export const DOJO_MCP_HOST_CONFORMANCE_REQUIREMENTS = Object.freeze({
+  reject_self_check_schema: true,
+  require_non_loopback_mcp_host: true,
+  require_production_execution: true,
+  require_raw_backing_tool_block: true,
+  require_revocation_propagation: true,
+  require_external_control_plane_store: true,
+  require_external_proof_signing: true,
+  require_bridge_token: true,
+  require_no_local_cdp: true,
+  require_licensed_skill_filtering: true,
+});
+
 export const DOJO_RELEASE_GATE_COMMANDS = [
   {
     id: "mcp_typecheck",
@@ -400,12 +413,16 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     default_report_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.json",
     default_evidence_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.evidence.json",
     release_artifact_requirements: {
-      reject_self_check_schema: true,
-      require_non_loopback_mcp_host: true,
-      require_production_execution: true,
-      require_raw_backing_tool_block: true,
+      ...DOJO_MCP_HOST_CONFORMANCE_REQUIREMENTS,
     },
-    requires_env: ["SYNTHI_DOJO_MCP_HOST_URL"],
+    requires_env: [
+      "SYNTHI_DOJO_MCP_HOST_URL",
+      "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE",
+      "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
+      "SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED",
+      "SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE",
+      "SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING",
+    ],
   },
   {
     id: "private_tool_stdio_host_conformance",
@@ -832,6 +849,31 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!mcpHostConformanceGate.release_artifact_requirements?.require_non_loopback_mcp_host) {
       errors.push("mcp_host_conformance_missing_non_loopback_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_raw_backing_tool_block", "mcp_host_conformance_missing_raw_backing_tool_requirement"],
+      ["require_revocation_propagation", "mcp_host_conformance_missing_revocation_requirement"],
+      ["require_external_control_plane_store", "mcp_host_conformance_missing_external_store_requirement"],
+      ["require_external_proof_signing", "mcp_host_conformance_missing_external_signing_requirement"],
+      ["require_bridge_token", "mcp_host_conformance_missing_bridge_token_requirement"],
+      ["require_no_local_cdp", "mcp_host_conformance_missing_no_local_cdp_requirement"],
+      ["require_licensed_skill_filtering", "mcp_host_conformance_missing_licensed_skill_filtering_requirement"],
+    ]) {
+      if (!mcpHostConformanceGate.release_artifact_requirements?.[requirement]) {
+        errors.push(errorCode);
+      }
+    }
+    for (const requiredEnv of [
+      "SYNTHI_DOJO_MCP_HOST_URL",
+      "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE",
+      "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
+      "SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED",
+      "SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE",
+      "SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING",
+    ]) {
+      if (!Array.isArray(mcpHostConformanceGate.requires_env) || !mcpHostConformanceGate.requires_env.includes(requiredEnv)) {
+        errors.push(`mcp_host_conformance_missing_env:${requiredEnv}`);
+      }
     }
   }
   const privateToolHostConformanceGates = gates.filter((gate) => {

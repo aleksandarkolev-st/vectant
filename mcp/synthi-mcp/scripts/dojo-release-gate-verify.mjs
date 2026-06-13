@@ -20,6 +20,7 @@ import {
 import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
+  DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS,
   redactConformanceReport,
 } from "./dojo-mcp-host-conformance.mjs";
 import {
@@ -890,6 +891,21 @@ export function validateDojoMcpHostConformanceReportForRelease(report) {
   if (!productionRun || productionRun.dry_run === true) errors.push("conformance_production_execution_step_missing");
   const rawBlocked = steps.find((step) => step?.name === "raw backing tool blocked outside Dojo proof path" && step.ok === true);
   if (!rawBlocked) errors.push("conformance_raw_backing_tool_block_step_missing");
+  const revokedValidationBlocked = steps.find((step) => step?.name === "revoked proof validation blocked" && step.ok === true);
+  if (!revokedValidationBlocked) errors.push("conformance_revoked_validation_block_step_missing");
+  const revokedRunBlocked = steps.find((step) => step?.name === "revoked proof run blocked" && step.ok === true);
+  if (!revokedRunBlocked) errors.push("conformance_revoked_run_block_step_missing");
+  const deploymentClaims = report?.deployment_claims && typeof report.deployment_claims === "object"
+    ? report.deployment_claims
+    : {};
+  for (const requirement of DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS) {
+    if (deploymentClaims[requirement.requiredField] !== true) {
+      errors.push(`conformance_${requirement.id}_requirement_missing`);
+    }
+    if (deploymentClaims[requirement.observedField] !== true) {
+      errors.push(`conformance_${requirement.id}_missing`);
+    }
+  }
   return {
     ok: errors.length === 0,
     errors,
@@ -1982,6 +1998,18 @@ function buildReleaseCandidateConformanceReport({
       requested_action: "run_workflow",
       execute_production: executeProduction,
       raw_backing_tool_required: true,
+    },
+    deployment_claims: {
+      require_external_control_plane_store: true,
+      external_control_plane_store: true,
+      require_external_proof_signing: true,
+      external_proof_signing: true,
+      require_bridge_token: true,
+      bridge_token_required: true,
+      require_no_local_cdp: true,
+      no_local_cdp_leakage: true,
+      require_licensed_skill_filtering: true,
+      licensed_skill_filtering: true,
     },
     steps: [
       { name: "initialize", ok: true },
