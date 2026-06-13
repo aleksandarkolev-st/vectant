@@ -203,6 +203,8 @@ class CollabSessionService extends EventTarget {
     }
 
     const stored = loadHostSessionRecord(slug, hostId);
+    if (!stored?.sessionId) return null;
+
     const res = await fetchWithTimeout(
       `${COLLAB_URL}/session/host/${encodeURIComponent(hostId)}?slug=${encodeURIComponent(slug)}`
     ).catch(() => null);

@@ -328,6 +328,7 @@ function previewSidecarScript() {
     "function upstreamHeaders(headers, port) {",
     "  const next = { ...headers, host: 'localhost:' + port };",
     "  delete next['proxy-connection'];",
+    "  next['accept-encoding'] = 'identity';",
     "  return next;",
     "}",
     "function proxyHttp(req, res) {",

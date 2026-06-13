@@ -26,6 +26,7 @@ const http = require('http');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const { URL } = require('url');
 const { runtimeResourceId } = require('./runtimeIdentity');
 
@@ -376,6 +377,7 @@ function proxyHttpRequest(clientReq, clientRes) {
     headers: {
       ...clientReq.headers,
       host: `localhost:${port}`,   // Use 'localhost' so dev servers (Vite, etc.) accept it
+      'accept-encoding': 'identity',
     },
     timeout: PROXY_TIMEOUT_MS,
   };
@@ -398,12 +400,20 @@ function proxyHttpRequest(clientReq, clientRes) {
       const chunks = [];
       proxyRes.on('data', (chunk) => chunks.push(chunk));
       proxyRes.on('end', () => {
-        const body = Buffer.concat(chunks).toString('utf8');
-        const rewritten = rewriteRootAbsoluteUrls(body, port, runtimeScope, publicMountPrefix);
-        delete headers['content-length'];
-        delete headers['content-encoding'];
-        clientRes.writeHead(proxyRes.statusCode, headers);
-        clientRes.end(rewritten);
+        const encodedBody = Buffer.concat(chunks);
+        decodeProxyBody(encodedBody, headers['content-encoding'], (err, bodyBuffer) => {
+          if (err) {
+            clientRes.writeHead(proxyRes.statusCode, headers);
+            clientRes.end(encodedBody);
+            return;
+          }
+          const body = bodyBuffer.toString('utf8');
+          const rewritten = rewriteRootAbsoluteUrls(body, port, runtimeScope, publicMountPrefix);
+          delete headers['content-length'];
+          delete headers['content-encoding'];
+          clientRes.writeHead(proxyRes.statusCode, headers);
+          clientRes.end(rewritten);
+        });
       });
       return;
     }
@@ -433,13 +443,33 @@ function proxyHttpRequest(clientReq, clientRes) {
 }
 
 function shouldRewriteBody(headers) {
-  if (headers['content-encoding']) return false;
   const contentType = String(headers['content-type'] || '').toLowerCase();
   return (
     contentType.includes('text/html') ||
     contentType.includes('javascript') ||
     contentType.includes('text/css')
   );
+}
+
+function decodeProxyBody(buffer, contentEncoding, callback) {
+  const encoding = String(contentEncoding || 'identity').toLowerCase().trim();
+  if (!encoding || encoding === 'identity') {
+    callback(null, buffer);
+    return;
+  }
+  if (encoding === 'gzip' || encoding === 'x-gzip') {
+    zlib.gunzip(buffer, callback);
+    return;
+  }
+  if (encoding === 'br') {
+    zlib.brotliDecompress(buffer, callback);
+    return;
+  }
+  if (encoding === 'deflate') {
+    zlib.inflate(buffer, callback);
+    return;
+  }
+  callback(new Error(`Unsupported preview response encoding: ${encoding}`));
 }
 
 function rewriteProxyHeaders(headers, port, runtimeScope = null, publicMountPrefix = '') {
