@@ -100,21 +100,28 @@ export class DojoVivariumRunner {
       });
     }
 
-    const graphResult = await runtime.execute({
-      graph: input.graph,
-      run_id: runId,
-      mode: "checkride",
-      now: startedAt,
-      inputs: {
-        ...input.materialized.definition.input_overrides,
-        ...fixtureInputs(input.materialized.fixture),
-        ...(input.inputs ?? {}),
-      },
-      evidence_writer: (event) => {
-        graphEvents.push(event);
-        return `dojo-graph://${event.run_id}/${event.node_id}`;
-      },
-    });
+    let graphResult: DojoGraphRunResult;
+    try {
+      graphResult = await runtime.execute({
+        graph: input.graph,
+        run_id: runId,
+        mode: "checkride",
+        now: startedAt,
+        inputs: {
+          ...input.materialized.definition.input_overrides,
+          ...fixtureInputs(input.materialized.fixture),
+          ...(input.inputs ?? {}),
+        },
+        evidence_writer: (event) => {
+          graphEvents.push(event);
+          return `dojo-graph://${event.run_id}/${event.node_id}`;
+        },
+      });
+    } catch {
+      graphResult = blockedGraphRunResult(runId, ["dojo_graph_runtime_failed"], [
+        `dojo-graph-runtime://${runId}/failed`,
+      ]);
+    }
     const observedEvidence = observedEvidenceForRun(input.materialized, graphResult, graphEvents, input.observed_evidence ?? []);
     const oracleResult = evaluateDojoScenarioOracle({
       definition: input.materialized.definition,
@@ -173,15 +180,7 @@ function blockedScenarioRunResult(input: {
   blocked_by: string[];
   observed_evidence: string[];
 }): DojoScenarioRunResult {
-  const graphResult: DojoGraphRunResult = {
-    ok: false,
-    status: "blocked",
-    mode: "checkride",
-    run_id: input.run_id,
-    node_results: [],
-    blocked_by: [...input.blocked_by],
-    evidence_refs: [`dojo-budget://${input.run_id}`],
-  };
+  const graphResult = blockedGraphRunResult(input.run_id, input.blocked_by, [`dojo-budget://${input.run_id}`]);
   const observedEvidence = observedEvidenceForRun(input.materialized, graphResult, [], [
     ...input.observed_evidence,
     "scenario_budget_state",
@@ -209,6 +208,18 @@ function blockedScenarioRunResult(input: {
     started_at: input.started_at,
     completed_at: input.completed_at,
     budget: input.budget,
+  };
+}
+
+function blockedGraphRunResult(runId: string, blockedBy: string[], evidenceRefs: string[]): DojoGraphRunResult {
+  return {
+    ok: false,
+    status: "blocked",
+    mode: "checkride",
+    run_id: runId,
+    node_results: [],
+    blocked_by: [...blockedBy],
+    evidence_refs: [...evidenceRefs],
   };
 }
 

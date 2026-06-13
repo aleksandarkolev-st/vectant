@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DojoVivariumRunner } from "../../src/dojo/vivarium/runner.js";
 import { toDojoScenarioDefinition } from "../../src/dojo/vivarium/scenario_dsl.js";
+import type { DojoSkillGraphRuntime } from "../../src/dojo/graph/runtime.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
 import type { DojoScenario } from "../../src/browser/dojo.js";
 
@@ -185,6 +186,43 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("classifies runtime execution failures as blocked scenario runs", async () => {
+    const runner = new DojoVivariumRunner();
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: toDojoScenarioDefinition(scenarioFixture({
+        mutation_kind: "baseline",
+        layer: "skill",
+        risk_tags: ["baseline"],
+      })),
+      seed: "runtime-failure-seed",
+    });
+
+    await expect(runner.run({
+      materialized,
+      graph: graphFixture(),
+      runtime: throwingRuntime(),
+      run_id: "scenario-run-runtime-failed",
+      now: "2026-06-11T00:00:01.000Z",
+    })).resolves.toEqual(expect.objectContaining({
+      status: "blocked",
+      expectation_met: false,
+      graph_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["dojo_graph_runtime_failed"],
+        evidence_refs: ["dojo-graph-runtime://scenario-run-runtime-failed/failed"],
+      }),
+      oracle_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["dojo_graph_runtime_failed"],
+      }),
+      evidence_refs: expect.arrayContaining([
+        "dojo-graph-runtime://scenario-run-runtime-failed/failed",
+        "dojo-oracle://scenario-run-runtime-failed/oracle_seed-a_scenario_baseline",
+      ]),
+    }));
+  });
+
   it("proves fixture reset is deterministic for the materialized scenario seed", () => {
     const runner = new DojoVivariumRunner();
     const materialized = runner.materialize({
@@ -247,6 +285,15 @@ function graphFixture(): DojoSkillGraph {
       },
     ],
   };
+}
+
+function throwingRuntime(): DojoSkillGraphRuntime {
+  return {
+    validateGraph: () => ({ ok: true, issues: [] }),
+    execute: async () => {
+      throw new Error("graph runtime unavailable");
+    },
+  } as DojoSkillGraphRuntime;
 }
 
 function safeNode(
