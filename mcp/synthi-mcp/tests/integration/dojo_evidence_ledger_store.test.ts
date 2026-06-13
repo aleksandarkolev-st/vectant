@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { resolveDojoEvidenceLedgerRecords } from "../../src/dojo/evidence/ledger_resolver.js";
+import { createHmacDojoEvidenceRecordSigner } from "../../src/dojo/evidence/ledger_record.js";
 import { PostgresDojoEvidenceLedgerStore } from "../../src/dojo/evidence/ledger_store.js";
 import { applyDojoPostgresMigrations } from "../../src/dojo/store/postgres_proof_store.js";
 
@@ -89,6 +90,59 @@ describeWithPostgres("PostgresDojoEvidenceLedgerStore", () => {
       failed_record_id: "evidence_tamper",
       blocked_by: ["evidence_record_hash_mismatch"],
     }));
+  });
+
+  it("signs appended records and detects invalid signatures when required", async () => {
+    const signer = createHmacDojoEvidenceRecordSigner({
+      signer_key_id: "ledger-key-a",
+      secret: "ledger-secret-a",
+    });
+    const store = new PostgresDojoEvidenceLedgerStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+      signer,
+      require_signed_records: true,
+    });
+
+    const record = await store.append({
+      ...evidenceInput("evidence_signed", skillId, "run_signed", "9".repeat(64), "2026-06-11T00:01:00.000Z"),
+      signer_key_id: undefined,
+    });
+
+    expect(record.signer_key_id).toBe("ledger-key-a");
+    expect(record.signature).toMatch(/^hmac-sha256:[a-f0-9]{64}$/);
+    expect(await store.verifyRecordChain("2026-06-11T00:02:00.000Z")).toEqual(expect.objectContaining({
+      ok: true,
+      ledger_head_hash: record.record_hash,
+      blocked_by: [],
+    }));
+
+    await pool.query(
+      `UPDATE dojo_evidence_records
+      SET signature = $4
+      WHERE tenant_id = $1 AND workspace_id = $2 AND record_id = $3`,
+      [tenantId, workspaceId, "evidence_signed", `hmac-sha256:${"0".repeat(64)}`]
+    );
+
+    expect(await store.verifyRecordChain("2026-06-11T00:03:00.000Z")).toEqual(expect.objectContaining({
+      ok: false,
+      failed_record_id: "evidence_signed",
+      blocked_by: ["dojo_evidence_signature_invalid"],
+    }));
+  });
+
+  it("requires signatures when signed-record mode is enabled", async () => {
+    const store = new PostgresDojoEvidenceLedgerStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+      require_signed_records: true,
+    });
+
+    await expect(store.append(evidenceInput("evidence_requires_signature", skillId, "run_signed", "8".repeat(64), "2026-06-11T00:01:00.000Z"))).rejects.toThrow(
+      "dojo_evidence_signature_required"
+    );
   });
 
   it("fails chain verification when the verification timestamp is malformed", async () => {

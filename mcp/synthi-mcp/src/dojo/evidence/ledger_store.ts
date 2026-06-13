@@ -4,6 +4,11 @@ import type { DojoPostgresClient, DojoPostgresConnectable } from "../store/postg
 import {
   buildDojoEvidenceLedgerRecord,
   buildDojoLedgerCheckpoint,
+  verifyDojoEvidenceLedgerRecordSignature,
+} from "./ledger_record.js";
+import type {
+  DojoEvidenceRecordSignatureVerifier,
+  DojoEvidenceRecordSigner,
 } from "./ledger_record.js";
 import type {
   DojoEvidenceArtifactKind,
@@ -20,6 +25,9 @@ export interface PostgresDojoEvidenceLedgerStoreOptions {
   tenant_id: string;
   workspace_id: string;
   queryable: DojoPostgresConnectable;
+  signer?: DojoEvidenceRecordSigner;
+  signature_verifiers?: readonly DojoEvidenceRecordSignatureVerifier[];
+  require_signed_records?: boolean;
 }
 
 interface EvidenceRecordRow extends QueryResultRow {
@@ -55,11 +63,17 @@ export class PostgresDojoEvidenceLedgerStore {
   private readonly tenantId: string;
   private readonly workspaceId: string;
   private readonly queryable: DojoPostgresConnectable;
+  private readonly signer?: DojoEvidenceRecordSigner;
+  private readonly signatureVerifiers: readonly DojoEvidenceRecordSignatureVerifier[];
+  private readonly requireSignedRecords: boolean;
 
   constructor(options: PostgresDojoEvidenceLedgerStoreOptions) {
     this.tenantId = requiredId(options.tenant_id, "tenant_id");
     this.workspaceId = requiredId(options.workspace_id, "workspace_id");
     this.queryable = options.queryable;
+    this.signer = options.signer;
+    this.signatureVerifiers = options.signature_verifiers ?? (options.signer && isSignatureVerifier(options.signer) ? [options.signer] : []);
+    this.requireSignedRecords = options.require_signed_records === true;
   }
 
   async append(input: Omit<DojoEvidenceRecordInput, "tenant_id" | "workspace_id" | "previous_hash">): Promise<DojoEvidenceLedgerRecord> {
@@ -71,6 +85,9 @@ export class PostgresDojoEvidenceLedgerStore {
         tenant_id: this.tenantId,
         workspace_id: this.workspaceId,
         previous_hash: checkpoint?.ledger_head_hash ?? ZERO_HASH,
+      }, {
+        signer: this.signer,
+        require_signature: this.requireSignedRecords,
       });
       await client.query(
         `INSERT INTO dojo_evidence_records (
@@ -197,6 +214,18 @@ export class PostgresDojoEvidenceLedgerStore {
           blocked_by: ["evidence_record_hash_mismatch"],
         };
       }
+      if (this.requireSignedRecords || record.signature) {
+        const signatureVerification = verifyDojoEvidenceLedgerRecordSignature(record, this.signatureVerifiers);
+        if (!signatureVerification.ok) {
+          return {
+            ok: false,
+            checked_at: checkedAt,
+            ledger_head_hash: headHash,
+            failed_record_id: record.record_id,
+            blocked_by: signatureVerification.blocked_by,
+          };
+        }
+      }
       previousHash = record.record_hash;
       headHash = record.ledger_head_hash;
     }
@@ -316,6 +345,10 @@ function requiredId(value: string, field: string): string {
   const trimmed = value.trim();
   if (!trimmed) throw new Error(`dojo_evidence_${field}_required`);
   return trimmed;
+}
+
+function isSignatureVerifier(value: DojoEvidenceRecordSigner): value is DojoEvidenceRecordSigner & DojoEvidenceRecordSignatureVerifier {
+  return typeof (value as { verify?: unknown }).verify === "function";
 }
 
 function iso(value: Date | string): string {
