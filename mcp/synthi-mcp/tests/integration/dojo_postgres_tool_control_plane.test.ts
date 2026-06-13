@@ -13,10 +13,12 @@ import { PostgresDojoLicenseStore } from "../../src/dojo/store/postgres_license_
 import { applyDojoPostgresMigrations } from "../../src/dojo/store/postgres_proof_store.js";
 import { PostgresDojoProofStore } from "../../src/dojo/store/postgres_proof_store.js";
 import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_record.js";
+import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
 import { PostgresDojoAuditStore } from "../../src/dojo/store/audit_store.js";
 import { PostgresDojoGhostShadowEvidenceStore } from "../../src/dojo/store/postgres_ghost_shadow_evidence_store.js";
 import { PostgresDojoGovernanceStore } from "../../src/dojo/store/postgres_governance_store.js";
 import { PostgresDojoGraphRunStore } from "../../src/dojo/store/postgres_graph_run_store.js";
+import { PostgresDojoProofKeyRegistry } from "../../src/dojo/store/postgres_proof_key_registry.js";
 import { PostgresDojoSkillStore } from "../../src/dojo/store/postgres_skill_store.js";
 import { dispatchDojoTool } from "../../src/tools/dojo.js";
 
@@ -933,13 +935,19 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
   });
 
-  it("uses Postgres skill and proof records for production validation, consumption, and replay after local process loss", async () => {
+  it("uses Postgres skill, proof, and proof-key records for production validation, consumption, and replay after local process loss", async () => {
     const tenantId = `tenant_proof_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_proof_${Math.random().toString(16).slice(2)}`;
+    const proofKeyPair = generateEd25519DojoProofKeyPair(`ed25519-postgres-proof-${Date.now()}-${Math.random().toString(16).slice(2)}`);
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
     process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING = "1";
     process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
     process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+    process.env.SYNTHI_DOJO_PROOF_SIGNING_PROVIDER = "ed25519-local";
+    process.env.SYNTHI_DOJO_PROOF_SIGNING_KEY_ID = proofKeyPair.key_id;
+    process.env.SYNTHI_DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM = proofKeyPair.private_key_pem;
+    process.env.SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM = proofKeyPair.public_key_pem;
 
     recordOpenDetailsWorkflowForToolTest(workspaceId);
     const tenant = productionTenantContextArgs({
@@ -985,10 +993,20 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(issue?.isError).toBeUndefined();
     const issued = issue?.structuredContent as {
       control_plane_source: string;
-      proof_capsule: { capsule_id: string };
+      proof_key: { key_id: string; issuer: string; algorithm: string; status: string };
+      proof_capsule: { capsule_id: string; key_id: string; signature_algorithm: string };
       proof_record: { status: string };
     };
     expect(issued.control_plane_source).toBe("postgres");
+    expect(issued.proof_key).toEqual(expect.objectContaining({
+      key_id: proofKeyPair.key_id,
+      algorithm: "ed25519",
+      status: "active",
+    }));
+    expect(issued.proof_capsule).toEqual(expect.objectContaining({
+      key_id: proofKeyPair.key_id,
+      signature_algorithm: "ed25519",
+    }));
     expect(issued.proof_record).toEqual(expect.objectContaining({ status: "issued" }));
 
     const proofStore = new PostgresDojoProofStore({
@@ -1000,7 +1018,40 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       capsule_id: issued.proof_capsule.capsule_id,
       status: "issued",
       skill_id: published.skill.skill_id,
+      key_id: proofKeyPair.key_id,
+      signature_algorithm: "ed25519",
     }));
+    const proofKeyRegistry = new PostgresDojoProofKeyRegistry({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(proofKeyRegistry.get({
+      tenant_id: tenantId,
+      key_id: proofKeyPair.key_id,
+    })).resolves.toEqual(expect.objectContaining({
+      key_id: proofKeyPair.key_id,
+      issuer: issued.proof_key.issuer,
+      algorithm: "ed25519",
+      public_key_pem: proofKeyPair.public_key_pem.trim(),
+      status: "active",
+    }));
+    const proofKeyAuditStore = new PostgresDojoAuditStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(proofKeyAuditStore.listAuditEvents({
+      event_type: "proof_key_upserted",
+      entity_kind: "proof_key",
+      entity_id: proofKeyPair.key_id,
+    })).resolves.toEqual([
+      expect.objectContaining({
+        event_type: "proof_key_upserted",
+        entity_kind: "proof_key",
+        entity_id: proofKeyPair.key_id,
+      }),
+    ]);
 
     const skillStore = new PostgresDojoSkillStore({
       tenant_id: tenantId,
@@ -1011,6 +1062,9 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(savedSkill).toBeTruthy();
     dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
     dojoSkillRegistry.resetForTests();
+    delete process.env.SYNTHI_DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM;
+    delete process.env.SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM;
+    process.env.SYNTHI_DOJO_PROOF_SIGNING_KEY_ID = `lost-local-key-${proofKeyPair.key_id}`;
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
     expect(dojoSkillRegistry.getProofRecord(issued.proof_capsule.capsule_id)).toBeNull();
 
@@ -1050,6 +1104,11 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(validate?.structuredContent).toEqual(expect.objectContaining({
       ok: true,
       control_plane_source: "postgres",
+      proof_key: expect.objectContaining({
+        key_id: proofKeyPair.key_id,
+        algorithm: "ed25519",
+        status: "active",
+      }),
       proof_record: expect.objectContaining({
         capsule_id: issued.proof_capsule.capsule_id,
         status: "issued",
@@ -1105,6 +1164,11 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(run?.structuredContent).toEqual(expect.objectContaining({
       ok: true,
       control_plane_source: "postgres",
+      proof_key: expect.objectContaining({
+        key_id: proofKeyPair.key_id,
+        algorithm: "ed25519",
+        status: "active",
+      }),
       proof_consume: expect.objectContaining({ ok: true, status: "used" }),
       proof_record: expect.objectContaining({
         capsule_id: issued.proof_capsule.capsule_id,

@@ -7,6 +7,7 @@ import {
 import type { DojoSkillRegistry } from "./dojo.js";
 import type { DojoProofCapsuleRecord, DojoProofConsumeResult } from "./dojo_store.js";
 import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/proof/errors.js";
+import type { DojoProofVerifier } from "../dojo/proof/signing.js";
 
 export interface DojoLicenseKernelDecision {
   ok: boolean;
@@ -41,11 +42,22 @@ export function evaluateDojoLicenseKernel(input: {
   tool_args?: Record<string, unknown>;
   dry_run?: boolean;
   now?: string;
+  proof_validation_options?: {
+    now?: string;
+    issuer?: string;
+    expected_key_id?: string;
+    verifier?: DojoProofVerifier | null;
+  };
 }): DojoLicenseKernelDecision {
   const now = input.now ?? new Date().toISOString();
   const dryRun = input.dry_run === true;
   const toolArgs = input.tool_args ?? {};
-  const validation = validateDojoProofCapsule(input.skill, input.proof_capsule, input.requested_action, now);
+  const validation = validateDojoProofCapsule(
+    input.skill,
+    input.proof_capsule,
+    input.requested_action,
+    input.proof_validation_options ?? now
+  );
   const approval = evaluateApprovalContext(input.skill, input.requested_action, validation, toolArgs);
   const tenantId = stringOpt(toolArgs["tenant_id"]) ?? stringOpt(toolArgs["tenant"]);
   const organizationId = stringOpt(toolArgs["organization_id"]) ?? stringOpt(toolArgs["organization"]);

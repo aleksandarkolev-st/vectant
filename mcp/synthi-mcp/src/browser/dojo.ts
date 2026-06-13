@@ -1355,8 +1355,17 @@ export function validateDojoProofCapsule(
   skill: DojoSkill,
   capsule: DojoProofCarryingSkillCapsule,
   requestedAction: string,
-  now: string = new Date().toISOString()
+  nowOrOptions: string | {
+    now?: string;
+    issuer?: string;
+    expected_key_id?: string;
+    verifier?: DojoProofVerifier | null;
+  } = new Date().toISOString()
 ): DojoProofValidation {
+  const options = typeof nowOrOptions === "string" ? { now: nowOrOptions } : nowOrOptions;
+  const now = options.now ?? new Date().toISOString();
+  const expectedIssuer = options.issuer ?? dojoProofIssuer();
+  const expectedKeyId = options.expected_key_id ?? dojoProofKeyId();
   const blockedBy: string[] = [];
   const license = skill.permission_license;
 
@@ -1365,8 +1374,8 @@ export function validateDojoProofCapsule(
   if (capsule.skill_version !== skill.skill_version) blockedBy.push("proof_capsule_skill_version_mismatch");
   if (capsule.license_version !== license.license_version) blockedBy.push("proof_capsule_license_version_mismatch");
   if (capsule.requested_action !== requestedAction) blockedBy.push("proof_capsule_action_mismatch");
-  if (capsule.issuer !== dojoProofIssuer()) blockedBy.push("proof_capsule_issuer_mismatch");
-  if (capsule.key_id !== dojoProofKeyId()) blockedBy.push("proof_capsule_key_mismatch");
+  if (capsule.issuer !== expectedIssuer) blockedBy.push("proof_capsule_issuer_mismatch");
+  if (capsule.key_id !== expectedKeyId) blockedBy.push("proof_capsule_key_mismatch");
   if (capsule.signature_algorithm !== "hmac-sha256" && capsule.signature_algorithm !== "ed25519") {
     blockedBy.push("proof_capsule_signature_algorithm_mismatch");
   }
@@ -1390,7 +1399,7 @@ export function validateDojoProofCapsule(
   if (expiresAtMs !== undefined && validationTimeMs !== undefined && expiresAtMs <= validationTimeMs) {
     blockedBy.push("proof_capsule_expired");
   }
-  if (!verifyCapsuleSignature(capsule)) blockedBy.push("proof_capsule_signature_invalid");
+  if (!verifyCapsuleSignature(capsule, options.verifier)) blockedBy.push("proof_capsule_signature_invalid");
 
   const blockedAction = license.blocked_actions.find((action) => action.action === requestedAction);
   if (blockedAction) blockedBy.push(`blocked_action:${blockedAction.action}`);
@@ -3489,8 +3498,8 @@ function signatureForCapsule(capsule: Omit<DojoProofCarryingSkillCapsule, "signa
   return encodeDojoProofSignatureEnvelope(signer.sign(canonicalDojoProofPayload(capsule)));
 }
 
-function verifyCapsuleSignature(capsule: DojoProofCarryingSkillCapsule): boolean {
-  const verifier = dojoProofVerifierForCapsule(capsule);
+function verifyCapsuleSignature(capsule: DojoProofCarryingSkillCapsule, verifierOverride?: DojoProofVerifier | null): boolean {
+  const verifier = verifierOverride ?? dojoProofVerifierForCapsule(capsule);
   if (!verifier) return false;
   try {
     return verifier.verify(

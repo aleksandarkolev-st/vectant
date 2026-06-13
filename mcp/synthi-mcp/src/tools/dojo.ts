@@ -45,6 +45,7 @@ import {
   normalizeDojoGuardrailPredicate,
 } from "../dojo/graph/guardrail_predicates.js";
 import {
+  DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
   resolveDojoControlPlaneStoreConfig,
   resolveDojoEnforcementConfig,
   resolveDojoEvidenceLedgerStoreConfig,
@@ -52,6 +53,8 @@ import {
 import { createDojoControlPlaneStoresFromEnv } from "../dojo/store/control_plane_resolver.js";
 import { resolveDojoEvidenceLedgerRecords } from "../dojo/evidence/ledger_resolver.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
+import { buildDojoProofKeyRecord } from "../dojo/proof/key_registry.js";
+import type { DojoProofVerifier } from "../dojo/proof/signing.js";
 import { normalizeDojoProofErrorCodes } from "../dojo/proof/errors.js";
 import {
   type DojoHostedRuntimeActionDecision,
@@ -404,6 +407,9 @@ type DojoDurableProofRegistryContext =
     proof_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
       ? T extends { ok: true; proof_store: infer Store } ? Store : never
       : never;
+    proof_key_registry: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
+      ? T extends { ok: true; proof_key_registry: infer Store } ? Store : never
+      : never;
     skill_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
       ? T extends { ok: true; skill_store: infer Store } ? Store : never
       : never;
@@ -478,9 +484,156 @@ async function durableProofRegistryForTenantIfRequired(input: {
       required: true,
       source: "postgres",
       proof_store: resolution.proof_store,
+      proof_key_registry: resolution.proof_key_registry,
       skill_store: resolution.skill_store,
       close: resolution.close,
     },
+  };
+}
+
+type DojoProofValidationOptions = {
+  now?: string;
+  issuer?: string;
+  expected_key_id?: string;
+  verifier?: DojoProofVerifier | null;
+};
+
+async function persistDurableProofKeyForCapsule(input: {
+  context: DojoDurableProofRegistryContext;
+  tenant: DojoTenantContext;
+  capsule: DojoProofCarryingSkillCapsule;
+  operation: string;
+}): Promise<{ ok: true; proof_key?: ReturnType<typeof proofKeyPublicView> } | { ok: false; error: ToolResponse }> {
+  if (!input.context.required) return { ok: true };
+  if (input.capsule.signature_algorithm !== "ed25519") return { ok: true };
+
+  const publicKeyPem = process.env[DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV]?.trim();
+  if (!publicKeyPem) {
+    const blockedBy = ["proof_key_public_key_missing"];
+    return {
+      ok: false,
+      error: errorResponse("dojo_proof_key_public_key_required", {
+        ok: false,
+        operation: input.operation,
+        capsule_id: input.capsule.capsule_id,
+        key_id: input.capsule.key_id,
+        signature_algorithm: input.capsule.signature_algorithm,
+        blocked_by: blockedBy,
+        error_codes: normalizeDojoProofErrorCodes(blockedBy),
+      }),
+    };
+  }
+
+  try {
+    const proofKey = await input.context.proof_key_registry.upsert(buildDojoProofKeyRecord({
+      tenant_id: input.tenant.tenant_id,
+      key_id: input.capsule.key_id,
+      issuer: input.capsule.issuer,
+      algorithm: input.capsule.signature_algorithm,
+      public_key_pem: publicKeyPem,
+      status: "active",
+      created_at: input.capsule.issued_at,
+    }));
+    return {
+      ok: true,
+      proof_key: proofKeyPublicView(proofKey),
+    };
+  } catch (err) {
+    const blockedBy = ["proof_key_registry_write_failed"];
+    return {
+      ok: false,
+      error: errorResponse("dojo_proof_key_registry_write_failed", {
+        ok: false,
+        operation: input.operation,
+        capsule_id: input.capsule.capsule_id,
+        key_id: input.capsule.key_id,
+        blocked_by: blockedBy,
+        error_codes: normalizeDojoProofErrorCodes(blockedBy),
+        message: err instanceof Error ? err.message : String(err),
+      }),
+    };
+  }
+}
+
+async function durableProofValidationOptionsForCapsule(input: {
+  context: DojoDurableProofRegistryContext;
+  tenant: DojoTenantContext;
+  capsule: DojoProofCarryingSkillCapsule;
+  operation: string;
+  now?: string;
+  allow_forensic_verification?: boolean;
+}): Promise<
+  | { ok: true; options: DojoProofValidationOptions; proof_key?: ReturnType<typeof proofKeyPublicView> }
+  | { ok: false; error: ToolResponse }
+> {
+  if (!input.context.required || input.capsule.signature_algorithm !== "ed25519") {
+    return { ok: true, options: { now: input.now } };
+  }
+
+  const resolution = await input.context.proof_key_registry.resolveVerifier({
+    tenant_id: input.tenant.tenant_id,
+    key_id: input.capsule.key_id,
+    allow_forensic_verification: input.allow_forensic_verification,
+  });
+  if (!resolution.ok || !resolution.key || !resolution.verifier) {
+    const blockedBy = resolution.blocked_by.length > 0
+      ? resolution.blocked_by
+      : ["proof_key_public_verifier_unavailable"];
+    return {
+      ok: false,
+      error: errorResponse("dojo_proof_key_verifier_unavailable", {
+        ok: false,
+        operation: input.operation,
+        capsule_id: input.capsule.capsule_id,
+        key_id: input.capsule.key_id,
+        signature_algorithm: input.capsule.signature_algorithm,
+        proof_key: resolution.key ? proofKeyPublicView(resolution.key) : null,
+        blocked_by: blockedBy,
+        error_codes: normalizeDojoProofErrorCodes(blockedBy),
+      }),
+    };
+  }
+
+  return {
+    ok: true,
+    options: {
+      now: input.now,
+      issuer: resolution.key.issuer,
+      expected_key_id: resolution.key.key_id,
+      verifier: resolution.verifier,
+    },
+    proof_key: proofKeyPublicView(resolution.key),
+  };
+}
+
+function proofKeyPublicView(record: {
+  key_id: string;
+  issuer: string;
+  algorithm: string;
+  status: string;
+  created_at: string;
+  rotated_at?: string;
+  revoked_at?: string;
+  retain_for_forensic_verification?: boolean;
+}): {
+  key_id: string;
+  issuer: string;
+  algorithm: string;
+  status: string;
+  created_at: string;
+  rotated_at?: string;
+  revoked_at?: string;
+  retain_for_forensic_verification: boolean;
+} {
+  return {
+    key_id: record.key_id,
+    issuer: record.issuer,
+    algorithm: record.algorithm,
+    status: record.status,
+    created_at: record.created_at,
+    ...(record.rotated_at ? { rotated_at: record.rotated_at } : {}),
+    ...(record.revoked_at ? { revoked_at: record.revoked_at } : {}),
+    retain_for_forensic_verification: record.retain_for_forensic_verification === true,
   };
 }
 
@@ -3141,6 +3294,22 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   });
   if (!durableProofRegistry.ok) return durableProofRegistry.error;
   try {
+    const proofKeyPersistence = await persistDurableProofKeyForCapsule({
+      context: durableProofRegistry.context,
+      tenant,
+      capsule,
+      operation: "synthi_dojo_issue_proof_capsule",
+    });
+    if (!proofKeyPersistence.ok) return proofKeyPersistence.error;
+    const validationOptions = await durableProofValidationOptionsForCapsule({
+      context: durableProofRegistry.context,
+      tenant,
+      capsule,
+      operation: "synthi_dojo_issue_proof_capsule",
+      now: stringOpt(a["now"]),
+    });
+    if (!validationOptions.ok) return validationOptions.error;
+    const validation = validateDojoProofCapsule(skill.skill, capsule, requestedAction, validationOptions.options);
     let proofRecord: DojoProofCapsuleRecord;
     if (durableProofRegistry.context.required) {
       proofRecord = await durableProofRegistry.context.proof_store.saveProofRecord(proofRecordForCapsule({
@@ -3159,7 +3328,6 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
         issued_by: issuedBy,
       });
     }
-    const validation = validateDojoProofCapsule(skill.skill, capsule, requestedAction, stringOpt(a["now"]));
     return jsonResponse({
       ok: validation.ok,
       skill_id: skill.skill.skill_id,
@@ -3167,6 +3335,7 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
       enforcement_mode: enforcement.enforcement_mode,
       require_verified_evidence: requireVerifiedEvidence,
       control_plane_source: durableProofRegistry.context.required ? durableProofRegistry.context.source : "compatibility_registry",
+      proof_key: proofKeyPersistence.proof_key ?? validationOptions.proof_key ?? null,
       proof_capsule: capsule,
       proof_record: proofRecord,
       validation,
@@ -3206,6 +3375,14 @@ async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse
     const durableProofRecord = durableProofRegistry.context.required
       ? await durableProofRegistry.context.proof_store.getProofRecord(capsule.capsule_id)
       : undefined;
+    const validationOptions = await durableProofValidationOptionsForCapsule({
+      context: durableProofRegistry.context,
+      tenant,
+      capsule,
+      operation: "synthi_dojo_validate_proof_capsule",
+      now,
+    });
+    if (!validationOptions.ok) return validationOptions.error;
     const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, objectOpt(a["tool_args"]) ?? {});
     const decision = evaluateDojoLicenseKernel({
       skill: skill.skill,
@@ -3216,6 +3393,7 @@ async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse
       tool_args: licenseToolArgs,
       dry_run: true,
       now,
+      proof_validation_options: validationOptions.options,
     });
     const proofRecord = decision.ok
       ? durableProofRegistry.context.required
@@ -3230,6 +3408,7 @@ async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse
       skill_id: skill.skill.skill_id,
       requested_action: requestedAction,
       control_plane_source: durableProofRegistry.context.required ? durableProofRegistry.context.source : "compatibility_registry",
+      proof_key: validationOptions.proof_key ?? null,
       proof_record: proofRecord,
       license_kernel: licenseKernel,
     });
@@ -3412,6 +3591,14 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
     const durableProofRecord = durableProofRegistry.context.required
       ? await durableProofRegistry.context.proof_store.getProofRecord(capsule.capsule_id)
       : undefined;
+    const validationOptions = await durableProofValidationOptionsForCapsule({
+      context: durableProofRegistry.context,
+      tenant,
+      capsule,
+      operation: "synthi_dojo_run_with_proof_capsule",
+      now,
+    });
+    if (!validationOptions.ok) return validationOptions.error;
     const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, toolArgs);
     let decision: ReturnType<typeof evaluateDojoLicenseKernel> | undefined;
     let proofConsume: DojoProofConsumeResult | undefined;
@@ -3431,6 +3618,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
           tool_args: licenseToolArgs,
           dry_run: dryRun,
           now,
+          proof_validation_options: validationOptions.options,
         });
         return {
           ok: decision.ok,
@@ -3496,6 +3684,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
         skill_id: skill.skill.skill_id,
         requested_action: requestedAction,
         control_plane_source: durableProofRegistry.context.required ? durableProofRegistry.context.source : "compatibility_registry",
+        proof_key: validationOptions.proof_key ?? null,
         validation: licenseDecision.validation,
         license_kernel: licenseDecision,
         skill_bus: skillBusPreflight,
@@ -3576,6 +3765,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       requested_action: requestedAction,
       run_id: runId,
       control_plane_source: durableProofRegistry.context.required ? durableProofRegistry.context.source : "compatibility_registry",
+      proof_key: validationOptions.proof_key ?? null,
       validation: licenseDecision.validation,
       license_kernel: executionLicenseDecision,
       skill_bus: skillBusExecution,

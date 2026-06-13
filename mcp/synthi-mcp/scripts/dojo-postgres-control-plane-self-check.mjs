@@ -75,6 +75,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES = [
   "tool_control_plane_vivarium_path",
   "tool_control_plane_wind_tunnel_path",
   "tool_control_plane_proof_lifecycle_path",
+  "tool_control_plane_proof_key_validation_path",
   "postgres_evidence_proof_issuance",
 ];
 
@@ -422,7 +423,10 @@ function capabilityMatchers(capability) {
       "dojo tool postgres control plane wiring persists wind tunnel scenario runs through postgres after local reset",
     ],
     tool_control_plane_proof_lifecycle_path: [
-      "dojo tool postgres control plane wiring uses postgres skill and proof records for production validation consumption and replay after local process loss",
+      "dojo tool postgres control plane wiring uses postgres skill proof and proof key records for production validation consumption and replay after local process loss",
+    ],
+    tool_control_plane_proof_key_validation_path: [
+      "dojo tool postgres control plane wiring uses postgres skill proof and proof key records for production validation consumption and replay after local process loss",
     ],
     postgres_evidence_proof_issuance: ["issues a production proof capsule from evidence record ids resolved through postgres"],
   };
