@@ -82,5 +82,26 @@ describe("Dojo production enforcement config", () => {
       inline_records_allowed: false,
       blocked_by: [],
     }));
+
+    expect(resolveDojoEvidenceLedgerStoreConfig({
+      SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL: "postgres://dojo-evidence-ledger",
+    })).toEqual(expect.objectContaining({
+      store_kind: "postgres",
+      configured: true,
+      production_capable: true,
+      inline_records_allowed: false,
+      configured_env: ["SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL"],
+      blocked_by: [],
+    }));
+
+    expect(resolveDojoEvidenceLedgerStoreConfig({
+      SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "postgres",
+    })).toEqual(expect.objectContaining({
+      store_kind: "postgres",
+      configured: true,
+      production_capable: false,
+      inline_records_allowed: false,
+      blocked_by: ["evidence_ledger_postgres_url_missing"],
+    }));
   });
 });

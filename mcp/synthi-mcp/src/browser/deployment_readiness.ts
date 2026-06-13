@@ -4,6 +4,7 @@ import {
   configuredDojoEvidenceLedgerEnv,
   configuredDojoExternalSigningEnv,
   configuredDojoStoreEnv,
+  DOJO_EVIDENCE_LEDGER_POSTGRES_URL_ENV,
   DOJO_EVIDENCE_LEDGER_STORE_ENV,
   DOJO_PRODUCTION_ENFORCEMENT_ENV,
   DOJO_PROOF_SIGNING_COMMAND_ENV,
@@ -264,7 +265,11 @@ function checkDojoEvidenceLedger(
   env: NodeJS.ProcessEnv,
   production: boolean
 ): BrowserWorkflowDeploymentCheck {
-  const required = [DOJO_REQUIRE_EVIDENCE_LEDGER_ENV, DOJO_EVIDENCE_LEDGER_STORE_ENV];
+  const required = [
+    DOJO_REQUIRE_EVIDENCE_LEDGER_ENV,
+    DOJO_EVIDENCE_LEDGER_STORE_ENV,
+    `${DOJO_EVIDENCE_LEDGER_POSTGRES_URL_ENV} when ${DOJO_EVIDENCE_LEDGER_STORE_ENV}=postgres`,
+  ];
   const ledgerEnv = configuredDojoEvidenceLedgerEnv(env);
   const configured = [
     ...(config.require_evidence_ledger ? [DOJO_REQUIRE_EVIDENCE_LEDGER_ENV] : []),

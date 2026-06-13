@@ -1243,6 +1243,50 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("fails production proof issuance by evidence record ID when the configured ledger cannot resolve records", async () => {
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE = "postgres";
+
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
+      ...productionTenantContextArgs({
+        actor_id: "unit-publisher",
+        actor_type: "human",
+        request_id: "req-production-proof-id-publish",
+        correlation_id: "corr-production-proof-id-publish",
+      }),
+    }));
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+
+    const response = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      ...productionTenantContextArgs({
+        actor_id: "proof-issuer-a",
+        request_id: "req-proof-id-resolution",
+      }),
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      evidence_record_ids: ["evidence-production-proof-001"],
+      ledger_checkpoint_hash: "a".repeat(64),
+      now: "2026-06-11T00:05:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_evidence_ledger_resolution_failed",
+      ok: false,
+      enforcement_mode: "production",
+      require_verified_evidence: true,
+      evidence_record_ids: ["evidence-production-proof-001"],
+      evidence_ledger_store_kind: "postgres",
+      blocked_by: expect.arrayContaining(["evidence_ledger_postgres_url_missing"]),
+      error_codes: ["proof_evidence_claim_unverified"],
+    }));
+  });
+
   it("returns structured proof errors when proof issuance receives invalid timestamps", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());

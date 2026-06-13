@@ -163,6 +163,39 @@ describe("browser workflow deployment readiness", () => {
     ]));
   });
 
+  it("fails production readiness when the Dojo Postgres evidence ledger lacks a connection URL", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "postgres",
+      SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL: undefined,
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "dojo_evidence_ledger",
+        status: "fail",
+      }),
+    ]));
+  });
+
+  it("passes production readiness when the Dojo Postgres evidence ledger URL is configured separately", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: undefined,
+      SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL: "postgres://dojo-evidence-ledger",
+    });
+
+    expect(readiness.ok).toBe(true);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "dojo_evidence_ledger",
+        status: "pass",
+        configured_env: expect.arrayContaining(["SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL"]),
+      }),
+    ]));
+  });
+
   it("fails production readiness with local Ed25519 proof signing material when external signing is required", () => {
     const readiness = browserWorkflowDeploymentReadiness({}, {
       ...productionReadyEnv(),

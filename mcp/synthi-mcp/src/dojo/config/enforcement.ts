@@ -13,6 +13,7 @@ export const DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV = "SYNTHI_DOJO_PROOF_SIGNING_
 export const DOJO_PROOF_SIGNING_COMMAND_ENV = "SYNTHI_DOJO_PROOF_SIGNING_COMMAND";
 export const DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV = "SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS";
 export const DOJO_EVIDENCE_LEDGER_STORE_ENV = "SYNTHI_DOJO_EVIDENCE_LEDGER_STORE";
+export const DOJO_EVIDENCE_LEDGER_POSTGRES_URL_ENV = "SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL";
 export const DOJO_DEFAULT_LOCAL_PROOF_SIGNING_KEY = "synthi-dojo-local-development-signing-key";
 
 export type DojoEnforcementMode = "development" | "production";
@@ -94,12 +95,24 @@ export function configuredDojoExternalSigningEnv(env: NodeJS.ProcessEnv = proces
 }
 
 export function configuredDojoEvidenceLedgerEnv(env: NodeJS.ProcessEnv = process.env): string[] {
-  return [DOJO_EVIDENCE_LEDGER_STORE_ENV].filter((name) => nonEmpty(env[name]));
+  return [DOJO_EVIDENCE_LEDGER_STORE_ENV, DOJO_EVIDENCE_LEDGER_POSTGRES_URL_ENV].filter((name) => nonEmpty(env[name]));
 }
 
 export function resolveDojoEvidenceLedgerStoreConfig(env: NodeJS.ProcessEnv = process.env): DojoEvidenceLedgerStoreConfig {
   const rawStore = nonEmpty(env[DOJO_EVIDENCE_LEDGER_STORE_ENV]);
+  const rawPostgresUrl = nonEmpty(env[DOJO_EVIDENCE_LEDGER_POSTGRES_URL_ENV]);
   if (!rawStore) {
+    if (rawPostgresUrl) {
+      return {
+        schema_version: "synthi.dojo.evidenceLedgerStoreConfig.v1",
+        store_kind: "postgres",
+        configured: true,
+        production_capable: true,
+        inline_records_allowed: false,
+        configured_env: configuredDojoEvidenceLedgerEnv(env),
+        blocked_by: [],
+      };
+    }
     return {
       schema_version: "synthi.dojo.evidenceLedgerStoreConfig.v1",
       store_kind: "unconfigured",
@@ -112,14 +125,21 @@ export function resolveDojoEvidenceLedgerStoreConfig(env: NodeJS.ProcessEnv = pr
   }
   const storeKind = classifyDojoEvidenceLedgerStore(rawStore);
   const inline = storeKind === "inline";
+  const postgresUrlConfigured = storeKind === "postgres"
+    && (isPostgresUrl(rawStore) || Boolean(rawPostgresUrl));
+  const productionCapable = storeKind === "external" || (storeKind === "postgres" && postgresUrlConfigured);
+  const blockedBy = [
+    ...(inline ? ["evidence_ledger_store_inline_not_production_capable"] : []),
+    ...(storeKind === "postgres" && !postgresUrlConfigured ? ["evidence_ledger_postgres_url_missing"] : []),
+  ];
   return {
     schema_version: "synthi.dojo.evidenceLedgerStoreConfig.v1",
     store_kind: storeKind,
     configured: true,
-    production_capable: !inline,
+    production_capable: productionCapable,
     inline_records_allowed: inline,
-    configured_env: [DOJO_EVIDENCE_LEDGER_STORE_ENV],
-    blocked_by: inline ? ["evidence_ledger_store_inline_not_production_capable"] : [],
+    configured_env: configuredDojoEvidenceLedgerEnv(env),
+    blocked_by: blockedBy,
   };
 }
 
@@ -145,10 +165,14 @@ function classifyDojoEvidenceLedgerStore(value: string): DojoEvidenceLedgerStore
   if (
     normalized === "postgres"
     || normalized === "postgresql"
-    || normalized.startsWith("postgres://")
-    || normalized.startsWith("postgresql://")
+    || isPostgresUrl(normalized)
   ) {
     return "postgres";
   }
   return "external";
+}
+
+function isPostgresUrl(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized.startsWith("postgres://") || normalized.startsWith("postgresql://");
 }

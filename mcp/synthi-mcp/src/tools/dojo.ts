@@ -45,6 +45,7 @@ import {
   normalizeDojoGuardrailPredicate,
 } from "../dojo/graph/guardrail_predicates.js";
 import { resolveDojoEnforcementConfig, resolveDojoEvidenceLedgerStoreConfig } from "../dojo/config/enforcement.js";
+import { resolveDojoEvidenceLedgerRecords } from "../dojo/evidence/ledger_resolver.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { normalizeDojoProofErrorCodes } from "../dojo/proof/errors.js";
 import {
@@ -653,6 +654,7 @@ export const DOJO_TOOLS = [
         context_claims: { type: "object" },
         evidence_claims: { type: "array", items: { type: "object" } },
         evidence_ledger_records: { type: "array", items: { type: "object" } },
+        evidence_record_ids: { type: "array", items: { type: "string" } },
         evidence_max_age_ms: { type: "number" },
         ledger_checkpoint_hash: { type: "string" },
         require_verified_evidence: { type: "boolean" },
@@ -882,7 +884,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoExportCompliancePackTool(args);
         break;
       case "synthi_dojo_issue_proof_capsule":
-        response = dojoIssueProofCapsuleTool(args);
+        response = await dojoIssueProofCapsuleTool(args);
         break;
       case "synthi_dojo_validate_proof_capsule":
         response = dojoValidateProofCapsuleTool(args);
@@ -2040,7 +2042,7 @@ async function dojoExportCompliancePackTool(args: unknown): Promise<ToolResponse
   });
 }
 
-function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
+async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
@@ -2063,7 +2065,8 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
     ? { actor_id: tenant.actor_id, actor_type: tenant.actor_type }
     : (issuerActorId && issuerActorType ? { actor_id: issuerActorId, actor_type: issuerActorType } : undefined);
   const scopedTenantId = tenant.tenant_id;
-  const evidenceLedgerRecords = evidenceLedgerRecordsOpt(a["evidence_ledger_records"]);
+  let evidenceLedgerRecords = evidenceLedgerRecordsOpt(a["evidence_ledger_records"]);
+  const requestedEvidenceRecordIds = stringArrayOpt(a["evidence_record_ids"] ?? a["evidenceRecordIds"]);
   const requireVerifiedEvidence = boolOpt(a["require_verified_evidence"])
     || enforcement.production_enforcement
     || enforcement.require_evidence_ledger;
@@ -2083,6 +2086,34 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
       error_codes: ["proof_evidence_claim_unverified"],
       message: "Production proof issuance must resolve evidence from the configured evidence ledger instead of caller-supplied inline records.",
     });
+  }
+  if (enforcement.production_enforcement && enforcement.require_evidence_ledger && requestedEvidenceRecordIds.length > 0) {
+    const resolved = await resolveDojoEvidenceLedgerRecords({
+      tenant_id: scopedTenantId,
+      workspace_id: tenant.workspace_id,
+      record_ids: requestedEvidenceRecordIds,
+      ledger_checkpoint_hash: stringOpt(a["ledger_checkpoint_hash"]),
+      checked_at: stringOpt(a["now"]),
+    });
+    if (!resolved.ok) {
+      return errorResponse("dojo_proof_evidence_ledger_resolution_failed", {
+        ok: false,
+        skill_id: skill.skill.skill_id,
+        requested_action: requestedAction,
+        enforcement_mode: enforcement.enforcement_mode,
+        require_verified_evidence: requireVerifiedEvidence,
+        evidence_record_ids: requestedEvidenceRecordIds,
+        evidence_record_count: resolved.records.length,
+        missing_evidence_record_ids: resolved.missing_record_ids,
+        ledger_checkpoint_hash: resolved.ledger_checkpoint_hash,
+        evidence_ledger_store_kind: resolved.store_kind,
+        configured_env: resolved.configured_env,
+        verification: resolved.verification,
+        blocked_by: resolved.blocked_by,
+        error_codes: ["proof_evidence_claim_unverified"],
+      });
+    }
+    evidenceLedgerRecords = resolved.records;
   }
   let capsule: DojoProofCarryingSkillCapsule;
   try {

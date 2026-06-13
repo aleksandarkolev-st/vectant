@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
+import { resolveDojoEvidenceLedgerRecords } from "../../src/dojo/evidence/ledger_resolver.js";
 import { PostgresDojoEvidenceLedgerStore } from "../../src/dojo/evidence/ledger_store.js";
 import { applyDojoPostgresMigrations } from "../../src/dojo/store/postgres_proof_store.js";
 
@@ -51,6 +52,25 @@ describeWithPostgres("PostgresDojoEvidenceLedgerStore", () => {
       ledger_head_hash: second.record_hash,
       blocked_by: [],
     });
+
+    await expect(resolveDojoEvidenceLedgerRecords({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      record_ids: ["evidence_b"],
+      ledger_checkpoint_hash: second.record_hash,
+      checked_at: "2026-06-11T00:03:00.000Z",
+      env: {
+        SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "postgres",
+        SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL: postgresUrl,
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      store_kind: "postgres",
+      ledger_checkpoint_hash: second.record_hash,
+      missing_record_ids: [],
+      blocked_by: [],
+      records: [expect.objectContaining({ record_id: "evidence_b" })],
+    }));
   });
 
   it("detects tampered evidence records", async () => {
