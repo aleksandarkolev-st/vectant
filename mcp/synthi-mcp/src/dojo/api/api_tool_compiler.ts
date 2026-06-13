@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { reviewDojoApiEndpointCandidate } from "./endpoint_inference.js";
 import { type DojoApiCandidateReviewIssue, type DojoApiEndpointCandidate, isMutationCandidate } from "./types.js";
+import { evaluateDojoGuardrailPredicate, type DojoGuardrailPredicateResult } from "../graph/guardrail_runtime.js";
 
 export interface DojoApiBackedMcpTool {
   schema_version: "synthi.dojo.apiBackedMcpTool.v1";
@@ -39,6 +40,49 @@ export interface DojoApiToolCompileResult {
 export interface DojoApiToolInvocationValidation {
   ok: boolean;
   blocked_by: string[];
+}
+
+export interface DojoApiToolHttpRequest {
+  method: DojoApiEndpointCandidate["method"];
+  path: string;
+  headers: Record<string, string>;
+  query: Record<string, string>;
+  body: unknown;
+}
+
+export interface DojoApiToolHttpResponse {
+  status: number;
+  headers?: Record<string, string>;
+  body?: unknown;
+}
+
+export interface DojoApiToolExecutionEvidence {
+  schema_version: "synthi.dojo.apiToolExecutionEvidence.v1";
+  tool_name: string;
+  tool_version: string;
+  skill_id: string;
+  license_id: string;
+  license_version: string;
+  action: string;
+  candidate_id: string;
+  request_digest: string;
+  response_digest: string;
+  proof_capsule_id: string;
+  idempotency_key?: string;
+  postcondition?: string;
+  postcondition_ok?: boolean;
+  blocked_by: string[];
+}
+
+export interface DojoApiToolExecutionResult {
+  ok: boolean;
+  status: "executed" | "blocked";
+  blocked_by: string[];
+  validation: DojoApiToolInvocationValidation;
+  request?: DojoApiToolHttpRequest;
+  response?: DojoApiToolHttpResponse;
+  postcondition?: DojoGuardrailPredicateResult;
+  evidence_record_id?: string;
 }
 
 export interface DojoApiToolLicenseContext {
@@ -90,6 +134,102 @@ export function compileDojoApiBackedMcpTool(input: {
     },
   };
   return { ok: true, tool, issues: [] };
+}
+
+export async function executeDojoApiBackedToolInvocation(input: {
+  tool: DojoApiBackedMcpTool;
+  args: Record<string, unknown>;
+  license_context: DojoApiToolLicenseContext;
+  transport: (request: DojoApiToolHttpRequest) => DojoApiToolHttpResponse | Promise<DojoApiToolHttpResponse>;
+  write_evidence: (evidence: DojoApiToolExecutionEvidence) => string | Promise<string>;
+}): Promise<DojoApiToolExecutionResult> {
+  const validation = validateDojoApiBackedToolInvocation({
+    tool: input.tool,
+    args: input.args,
+    license_context: input.license_context,
+  });
+  if (!validation.ok) {
+    return { ok: false, status: "blocked", blocked_by: validation.blocked_by, validation };
+  }
+
+  const request = buildHttpRequest(input.tool, input.args);
+  let response: DojoApiToolHttpResponse;
+  try {
+    response = await input.transport(request);
+  } catch {
+    return { ok: false, status: "blocked", blocked_by: ["api_tool_transport_failed"], validation, request };
+  }
+
+  const blockedBy: string[] = [];
+  if (!Number.isInteger(response.status) || response.status < 200 || response.status >= 400) {
+    blockedBy.push("api_tool_http_status_failed");
+  }
+  const postcondition = input.tool.postcondition
+    ? evaluateDojoGuardrailPredicate(
+        input.tool.postcondition,
+        apiPostconditionContext(input.tool.postcondition, response)
+      )
+    : undefined;
+  if (postcondition && !postcondition.ok) {
+    blockedBy.push(...postcondition.blocked_by.map((reason) => `api_tool_postcondition_${reason}`));
+  }
+
+  const proofCapsule = objectRecord(input.args["proof_capsule"]);
+  const idempotencyKey = typeof input.args["idempotency_key"] === "string" ? input.args["idempotency_key"] : undefined;
+  const evidence: DojoApiToolExecutionEvidence = {
+    schema_version: "synthi.dojo.apiToolExecutionEvidence.v1",
+    tool_name: input.tool.tool_name,
+    tool_version: input.tool.tool_version,
+    skill_id: input.tool.skill_id,
+    license_id: input.tool.license_id,
+    license_version: input.tool.license_version,
+    action: input.tool.action,
+    candidate_id: input.tool.candidate_id,
+    request_digest: digestObject(request),
+    response_digest: digestObject(response),
+    proof_capsule_id: typeof proofCapsule?.["capsule_id"] === "string" ? proofCapsule["capsule_id"] : "",
+    ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+    ...(input.tool.postcondition ? { postcondition: input.tool.postcondition } : {}),
+    ...(postcondition ? { postcondition_ok: postcondition.ok } : {}),
+    blocked_by: blockedBy,
+  };
+
+  let evidenceRecordId: string;
+  try {
+    evidenceRecordId = await input.write_evidence(evidence);
+  } catch {
+    return {
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_evidence_write_failed"],
+      validation,
+      request,
+      response,
+      ...(postcondition ? { postcondition } : {}),
+    };
+  }
+  if (!evidenceRecordId.trim()) {
+    return {
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_evidence_record_id_required"],
+      validation,
+      request,
+      response,
+      ...(postcondition ? { postcondition } : {}),
+    };
+  }
+
+  return {
+    ok: blockedBy.length === 0,
+    status: blockedBy.length === 0 ? "executed" : "blocked",
+    blocked_by: blockedBy,
+    validation,
+    request,
+    response,
+    ...(postcondition ? { postcondition } : {}),
+    evidence_record_id: evidenceRecordId,
+  };
 }
 
 export function validateDojoApiBackedToolInvocation(input: {
@@ -155,6 +295,28 @@ export function validateDojoApiBackedToolInvocation(input: {
     ok: blockedBy.length === 0,
     blocked_by: blockedBy,
   };
+}
+
+function buildHttpRequest(tool: DojoApiBackedMcpTool, args: Record<string, unknown>): DojoApiToolHttpRequest {
+  const requestBody = cloneJson(args["request"] ?? {});
+  const request: DojoApiToolHttpRequest = {
+    method: tool.method,
+    path: tool.path,
+    headers: {},
+    query: {},
+    body: requestBody,
+  };
+  const idempotencyKey = typeof args["idempotency_key"] === "string" ? args["idempotency_key"] : undefined;
+  if (idempotencyKey && tool.idempotency_key_location) {
+    if (tool.idempotency_key_location === "header") {
+      request.headers["Idempotency-Key"] = idempotencyKey;
+    } else if (tool.idempotency_key_location === "query") {
+      request.query["idempotency_key"] = idempotencyKey;
+    } else if (request.body && typeof request.body === "object" && !Array.isArray(request.body)) {
+      request.body = { ...(request.body as Record<string, unknown>), idempotency_key: idempotencyKey };
+    }
+  }
+  return request;
 }
 
 function buildToolInputSchema(candidate: DojoApiEndpointCandidate, mutation: boolean): Record<string, unknown> {
@@ -261,6 +423,46 @@ function parseProofEvidenceClaims(value: unknown): Array<{ claim: string; satisf
       evidence_refs: refs,
     }];
   });
+}
+
+function apiPostconditionContext(
+  postcondition: string,
+  response: DojoApiToolHttpResponse
+): Record<string, unknown> {
+  const context: Record<string, unknown> = {
+    "http.status": response.status,
+    "response.status": response.status,
+    status_code: response.status,
+  };
+  if (response.body && typeof response.body === "object" && !Array.isArray(response.body)) {
+    const flattened = flattenObject(response.body as Record<string, unknown>);
+    Object.assign(context, flattened);
+    for (const [path, value] of Object.entries(flattened)) {
+      context[`response.${path}`] = value;
+    }
+  }
+  const key = postcondition.match(/^([a-zA-Z0-9_.-]+)\s*(?:==|!=|<=|>=|<|>|\s+in\s+)/)?.[1];
+  if (key && context[key] === undefined && key.includes(".")) {
+    const suffix = key.split(".").slice(1).join(".");
+    if (suffix && context[suffix] !== undefined) context[key] = context[suffix];
+  }
+  return context;
+}
+
+function flattenObject(value: Record<string, unknown>, prefix = ""): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, nested]) => {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+        return [[path, nested], ...Object.entries(flattenObject(nested as Record<string, unknown>, path))];
+      }
+      return [[path, nested]];
+    })
+  );
+}
+
+function cloneJson(value: unknown): unknown {
+  return JSON.parse(JSON.stringify(value ?? null)) as unknown;
 }
 
 function canonicalJson(value: unknown): string {

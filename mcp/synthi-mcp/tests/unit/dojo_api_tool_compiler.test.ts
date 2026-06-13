@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   compileDojoApiBackedMcpTool,
+  executeDojoApiBackedToolInvocation,
   validateDojoApiBackedToolInvocation,
+  type DojoApiToolExecutionEvidence,
+  type DojoApiToolHttpRequest,
 } from "../../src/dojo/api/api_tool_compiler.js";
 import { inferDojoApiEndpointCandidateFromTrace } from "../../src/dojo/api/endpoint_inference.js";
 
@@ -183,6 +186,152 @@ describe("Dojo API-backed MCP tool compiler", () => {
       ],
     });
   });
+
+  it("executes approved API-backed tools with idempotency, postcondition, and evidence", async () => {
+    const tool = compileDojoApiBackedMcpTool({
+      candidate: approvedMutationCandidate(),
+      skill_id: "dojo_save_invoice",
+      license_id: "license_save_invoice",
+      license_version: "1.0.0",
+      action: "run_workflow",
+      tool_name: "synthi_api_save_invoice",
+    }).tool!;
+    const requests: DojoApiToolHttpRequest[] = [];
+    const evidenceRecords: DojoApiToolExecutionEvidence[] = [];
+
+    const result = await executeDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: proofCapsuleFixture(),
+        request: { client_id: "client-a", amount: 42 },
+        idempotency_key: "idem-a",
+      },
+      license_context: licenseContext(),
+      transport: (request) => {
+        requests.push(request);
+        return { status: 201, body: { invoice_id: "invoice-a", status: "saved" } };
+      },
+      write_evidence: (evidence) => {
+        evidenceRecords.push(evidence);
+        return "evidence:api-tool-a";
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      status: "executed",
+      blocked_by: [],
+      evidence_record_id: "evidence:api-tool-a",
+      postcondition: expect.objectContaining({
+        ok: true,
+        predicate: "invoice.status == 'saved'",
+        actual: "saved",
+      }),
+    }));
+    expect(requests).toEqual([
+      expect.objectContaining({
+        method: "POST",
+        path: "/api/invoices",
+        headers: { "Idempotency-Key": "idem-a" },
+        query: {},
+        body: { client_id: "client-a", amount: 42 },
+      }),
+    ]);
+    expect(evidenceRecords).toEqual([
+      expect.objectContaining({
+        schema_version: "synthi.dojo.apiToolExecutionEvidence.v1",
+        tool_name: "synthi_api_save_invoice",
+        proof_capsule_id: "capsule-a",
+        idempotency_key: "idem-a",
+        postcondition: "invoice.status == 'saved'",
+        postcondition_ok: true,
+        blocked_by: [],
+        request_digest: expect.stringMatching(/^sha256:/),
+        response_digest: expect.stringMatching(/^sha256:/),
+      }),
+    ]);
+  });
+
+  it("does not call the API transport when proof or license validation fails", async () => {
+    const tool = compileDojoApiBackedMcpTool({
+      candidate: approvedMutationCandidate(),
+      skill_id: "dojo_save_invoice",
+      license_id: "license_save_invoice",
+      license_version: "1.0.0",
+      action: "run_workflow",
+    }).tool!;
+    const requests: DojoApiToolHttpRequest[] = [];
+    const evidenceRecords: DojoApiToolExecutionEvidence[] = [];
+
+    const result = await executeDojoApiBackedToolInvocation({
+      tool,
+      args: { request: { amount: 42 } },
+      license_context: licenseContext(),
+      transport: (request) => {
+        requests.push(request);
+        return { status: 201, body: { status: "saved" } };
+      },
+      write_evidence: (evidence) => {
+        evidenceRecords.push(evidence);
+        return "evidence:api-tool-a";
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: expect.arrayContaining([
+        "api_tool_proof_capsule_required",
+        "api_tool_idempotency_key_required",
+      ]),
+    }));
+    expect(requests).toEqual([]);
+    expect(evidenceRecords).toEqual([]);
+  });
+
+  it("blocks execution when API postconditions fail while preserving evidence", async () => {
+    const tool = compileDojoApiBackedMcpTool({
+      candidate: approvedMutationCandidate(),
+      skill_id: "dojo_save_invoice",
+      license_id: "license_save_invoice",
+      license_version: "1.0.0",
+      action: "run_workflow",
+    }).tool!;
+    const evidenceRecords: DojoApiToolExecutionEvidence[] = [];
+
+    const result = await executeDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: proofCapsuleFixture(),
+        request: { amount: 42 },
+        idempotency_key: "idem-a",
+      },
+      license_context: licenseContext(),
+      transport: () => ({ status: 200, body: { status: "draft" } }),
+      write_evidence: (evidence) => {
+        evidenceRecords.push(evidence);
+        return "evidence:api-tool-failed-postcondition";
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_postcondition_guardrail_comparison_failed"],
+      evidence_record_id: "evidence:api-tool-failed-postcondition",
+      postcondition: expect.objectContaining({
+        ok: false,
+        actual: "draft",
+        expected: "saved",
+      }),
+    }));
+    expect(evidenceRecords).toEqual([
+      expect.objectContaining({
+        postcondition_ok: false,
+        blocked_by: ["api_tool_postcondition_guardrail_comparison_failed"],
+      }),
+    ]);
+  });
 });
 
 function proofCapsuleFixture() {
@@ -217,5 +366,15 @@ function approvedMutationCandidate() {
     postcondition: "invoice.status == 'saved'",
     proof_claim_mapping: { workspace_verified: "tenant.workspace_id", checkride_passed: "dojo.checkride" },
     review_status: "approved" as const,
+  };
+}
+
+function licenseContext() {
+  return {
+    skill_id: "dojo_save_invoice",
+    license_id: "license_save_invoice",
+    license_version: "1.0.0",
+    action: "run_workflow",
+    auth_scopes: ["invoice:write"],
   };
 }
