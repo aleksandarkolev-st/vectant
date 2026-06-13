@@ -90,7 +90,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const visualResults = [];
-  if (truthy(args["include-visual-defaults"])) {
+  if (truthy(args["release-candidate"]) || truthy(args["include-visual-defaults"])) {
     for (const gate of manifest?.gates || []) {
       if (gate.evidence_kind !== "visual_report" || !gate.default_report_path) continue;
       visualResults.push(await verifyVisualProofArtifact({

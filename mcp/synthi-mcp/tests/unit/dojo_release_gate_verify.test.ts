@@ -152,6 +152,14 @@ describe("Dojo release gate artifact verifier", () => {
     const selfCheckGate = manifest.gates.find((gate) => gate.id === "dojo_self_check");
     selfCheckGate.default_report_path = selfCheck.summaryPath;
     selfCheckGate.default_evidence_path = selfCheck.productionEvidencePath;
+    for (const gate of manifest.gates.filter((item) => item.evidence_kind === "visual_report")) {
+      const visual = await writeVisualReportFixture({
+        dir,
+        basename: gate.id,
+        schemaVersion: gate.report_schema_version,
+      });
+      gate.default_report_path = visual.reportPath;
+    }
     const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
     const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
     await writeManifestPair({ manifest, manifestPath, evidencePath });
@@ -177,6 +185,8 @@ describe("Dojo release gate artifact verifier", () => {
         evidence_path: selfCheck.productionEvidencePath,
       }),
     ]);
+    expect(verified.visual_reports).toHaveLength(2);
+    expect(verified.visual_reports.every((report) => report.ok)).toBe(true);
   });
 
   it("verifies MCP host conformance evidence hashes before release promotion", async () => {
@@ -444,6 +454,22 @@ async function writeConformancePair({ report, reportPath, evidencePath }) {
   });
   await writeFile(reportPath, serialized, "utf8");
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2), "utf8");
+}
+
+async function writeVisualReportFixture({ dir, basename, schemaVersion }) {
+  const screenshotPath = path.join(dir, `${basename}.png`);
+  const imageBytes = Buffer.from(`${basename}:visual-proof-fixture`);
+  await writeFile(screenshotPath, imageBytes);
+  const reportPath = path.join(dir, `${basename}.json`);
+  await writeFile(reportPath, JSON.stringify(buildVisualReport({
+    screenshotPath,
+    bytes: imageBytes.length,
+    schemaVersion,
+  }), null, 2), "utf8");
+  return {
+    screenshotPath,
+    reportPath,
+  };
 }
 
 async function writeProofSelfCheckFixture({
@@ -801,9 +827,9 @@ function buildConformanceReport({
   return report;
 }
 
-function buildVisualReport({ screenshotPath, bytes }) {
+function buildVisualReport({ screenshotPath, bytes, schemaVersion = "synthi.dojo.visualProof.v1" }) {
   return {
-    schema_version: "synthi.dojo.visualProof.v1",
+    schema_version: schemaVersion,
     ok: true,
     screenshots: [screenshotPath],
     results: [
