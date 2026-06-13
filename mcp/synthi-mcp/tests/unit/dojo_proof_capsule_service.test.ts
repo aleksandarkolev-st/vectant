@@ -208,6 +208,141 @@ describe("Dojo proof capsule service", () => {
     });
   });
 
+  it("fails closed when the proof store cannot persist issued capsules", async () => {
+    const skill = skillFixture();
+    const tenant = tenantFixture(skill.workspace_id);
+    const service = createDojoProofCapsuleService({
+      proof_store: throwingProofStore({ save: true }),
+    });
+
+    const result = await service.issue({
+      tenant,
+      skill,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill, { tenant_id: tenant.tenant_id }),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      proof_record: null,
+      blocked_by: ["proof_record_persist_failed"],
+      validation: expect.objectContaining({
+        ok: false,
+        error_codes: ["proof_capsule_registry_mismatch"],
+      }),
+    }));
+    expect(result.proof_capsule).toBeUndefined();
+  });
+
+  it("fails closed when the proof store cannot be read during validation", async () => {
+    const skill = skillFixture();
+    const tenant = tenantFixture(skill.workspace_id);
+    const backing = new InMemoryDojoSkillStore();
+    const issued = await createDojoProofCapsuleService({ proof_store: backing }).issue({
+      tenant,
+      skill,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill, { tenant_id: tenant.tenant_id }),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(issued.ok).toBe(true);
+
+    const service = createDojoProofCapsuleService({
+      proof_store: throwingProofStore({ get: true }),
+    });
+    const validation = await service.validate({
+      tenant,
+      skill,
+      proof_capsule: issued.proof_capsule!,
+      requested_action: "run_workflow",
+      validation_options: { now: "2026-06-11T00:01:00.000Z" },
+    });
+
+    expect(validation).toEqual(expect.objectContaining({
+      ok: false,
+      proof_record: null,
+      blocked_by: ["proof_record_lookup_failed"],
+      validation: expect.objectContaining({
+        error_codes: ["proof_capsule_registry_mismatch"],
+      }),
+    }));
+  });
+
+  it("fails closed when the proof store cannot mark validation", async () => {
+    const skill = skillFixture();
+    const tenant = tenantFixture(skill.workspace_id);
+    const backing = new InMemoryDojoSkillStore();
+    const service = createDojoProofCapsuleService({
+      proof_store: {
+        saveProofRecord(record) {
+          return backing.saveProofRecord(record);
+        },
+        getProofRecord(capsuleId) {
+          return backing.getProofRecord(capsuleId);
+        },
+        markProofCapsuleValidated() {
+          throw new Error("store_unavailable");
+        },
+        markProofCapsuleUsed(capsuleId, runId, now) {
+          return backing.markProofCapsuleUsed(capsuleId, runId, now);
+        },
+      },
+    });
+
+    const issued = await service.issue({
+      tenant,
+      skill,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill, { tenant_id: tenant.tenant_id }),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(issued.ok).toBe(true);
+
+    const validation = await service.validate({
+      tenant,
+      skill,
+      proof_capsule: issued.proof_capsule!,
+      requested_action: "run_workflow",
+      validation_options: { now: "2026-06-11T00:01:00.000Z" },
+    });
+
+    expect(validation).toEqual(expect.objectContaining({
+      ok: false,
+      proof_record: expect.objectContaining({ capsule_id: issued.proof_capsule!.capsule_id }),
+      blocked_by: ["proof_record_validate_failed"],
+      validation: expect.objectContaining({
+        error_codes: ["proof_capsule_registry_mismatch"],
+      }),
+    }));
+  });
+
+  it("fails closed when the proof store cannot atomically consume a capsule", async () => {
+    const service = createDojoProofCapsuleService({
+      proof_store: throwingProofStore({ consume: true }),
+    });
+
+    const result = await service.consume({
+      tenant: tenantFixture("workspace-a"),
+      capsule_id: "capsule-a",
+      run_id: "run-a",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      record: null,
+      status: "missing",
+      blocked_by: ["proof_record_consume_failed"],
+    });
+  });
+
   it("supports maybe-promise proof stores for durable Postgres-compatible implementations", async () => {
     const skill = skillFixture();
     const tenant = tenantFixture(skill.workspace_id);
@@ -273,6 +408,33 @@ function tenantFixture(workspaceId: string): DojoTenantContext {
     roles: ["dojo.operator"],
     request_id: "request-a",
     correlation_id: "correlation-a",
+  };
+}
+
+function throwingProofStore(failures: {
+  save?: boolean;
+  get?: boolean;
+  validate?: boolean;
+  consume?: boolean;
+}): DojoProofRecordStore {
+  const backing = new InMemoryDojoSkillStore();
+  return {
+    saveProofRecord(record) {
+      if (failures.save) throw new Error("store_unavailable");
+      return backing.saveProofRecord(record);
+    },
+    getProofRecord(capsuleId) {
+      if (failures.get) throw new Error("store_unavailable");
+      return backing.getProofRecord(capsuleId);
+    },
+    markProofCapsuleValidated(capsuleId, now) {
+      if (failures.validate) throw new Error("store_unavailable");
+      return backing.markProofCapsuleValidated(capsuleId, now);
+    },
+    markProofCapsuleUsed(capsuleId, runId, now) {
+      if (failures.consume) throw new Error("store_unavailable");
+      return backing.markProofCapsuleUsed(capsuleId, runId, now);
+    },
   };
 }
 

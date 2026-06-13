@@ -192,9 +192,21 @@ class DefaultDojoProofCapsuleService implements DojoProofCapsuleService {
       capsule,
       issued_by: input.issued_by,
     });
-    const savedRecord = this.proofStore
-      ? await this.proofStore.saveProofRecord(record)
-      : record;
+    let savedRecord: DojoProofCapsuleRecord | void;
+    try {
+      savedRecord = this.proofStore
+        ? await this.proofStore.saveProofRecord(record)
+        : record;
+    } catch {
+      const blockedBy = ["proof_record_persist_failed"];
+      return {
+        ok: false,
+        proof_record: null,
+        validation: mergeProofValidationBlocks(validation, blockedBy),
+        evidence_claim_results: evidenceResultsFromCapsule(capsule, now),
+        blocked_by: blockedBy,
+      };
+    }
     return {
       ok: true,
       proof_capsule: capsule,
@@ -216,9 +228,21 @@ class DefaultDojoProofCapsuleService implements DojoProofCapsuleService {
         now,
       }
     );
-    const record = this.proofStore
-      ? await this.proofStore.getProofRecord(input.proof_capsule.capsule_id)
-      : null;
+    let record: DojoProofCapsuleRecord | null = null;
+    if (this.proofStore) {
+      try {
+        record = await this.proofStore.getProofRecord(input.proof_capsule.capsule_id);
+      } catch {
+        const validation = mergeProofValidationBlocks(structuralValidation, ["proof_record_lookup_failed"]);
+        return {
+          ok: false,
+          validation,
+          proof_record: null,
+          dry_run: input.dry_run === true,
+          blocked_by: validation.blocked_by,
+        };
+      }
+    }
     const registryBlockedBy = this.proofStore
       ? proofRegistryBlockedBy(input.proof_capsule, record, {
         tenant: input.tenant,
@@ -228,9 +252,31 @@ class DefaultDojoProofCapsuleService implements DojoProofCapsuleService {
     const validation = registryBlockedBy.length > 0
       ? mergeProofValidationBlocks(structuralValidation, registryBlockedBy)
       : structuralValidation;
-    const markedRecord = validation.ok && !input.dry_run && this.proofStore
-      ? await this.proofStore.markProofCapsuleValidated(input.proof_capsule.capsule_id, now)
-      : record;
+    let markedRecord = record;
+    if (validation.ok && !input.dry_run && this.proofStore) {
+      try {
+        markedRecord = await this.proofStore.markProofCapsuleValidated(input.proof_capsule.capsule_id, now);
+      } catch {
+        const failedValidation = mergeProofValidationBlocks(validation, ["proof_record_validate_failed"]);
+        return {
+          ok: false,
+          validation: failedValidation,
+          proof_record: record,
+          dry_run: false,
+          blocked_by: failedValidation.blocked_by,
+        };
+      }
+      if (!markedRecord) {
+        const failedValidation = mergeProofValidationBlocks(validation, ["proof_capsule_not_issued"]);
+        return {
+          ok: false,
+          validation: failedValidation,
+          proof_record: null,
+          dry_run: false,
+          blocked_by: failedValidation.blocked_by,
+        };
+      }
+    }
     return {
       ok: validation.ok,
       validation,
@@ -249,7 +295,16 @@ class DefaultDojoProofCapsuleService implements DojoProofCapsuleService {
         blocked_by: ["proof_capsule_store_missing"],
       };
     }
-    return this.proofStore.markProofCapsuleUsed(input.capsule_id, input.run_id, input.now);
+    try {
+      return await this.proofStore.markProofCapsuleUsed(input.capsule_id, input.run_id, input.now);
+    } catch {
+      return {
+        ok: false,
+        record: null,
+        status: "missing",
+        blocked_by: ["proof_record_consume_failed"],
+      };
+    }
   }
 }
 
