@@ -38,6 +38,7 @@ describe("browser workflow deployment readiness", () => {
       expect.objectContaining({ id: "hosted_browser_origin_policy", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_session_policy", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_tenant_policy", status: "pass" }),
+      expect.objectContaining({ id: "hosted_browser_redaction_policy", status: "pass" }),
     ]));
     expect(JSON.stringify(readiness)).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret|dojo-manifest-secret|manifest-redacted|BEGIN PRIVATE KEY|BEGIN PUBLIC KEY/);
     expect(JSON.stringify(readiness)).not.toMatch(/SYNTHI_BROWSER_CDP_URL/);
@@ -97,6 +98,23 @@ describe("browser workflow deployment readiness", () => {
       expect.objectContaining({
         id: "hosted_browser_tenant_policy",
         status: "fail",
+      }),
+    ]));
+  });
+
+  it("fails production readiness when hosted runtime screenshot redaction is disabled", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS: "false",
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.hosted_runtime.redact_screenshots).toBe(false);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "hosted_browser_redaction_policy",
+        status: "fail",
+        configured_env: ["SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS"],
       }),
     ]));
   });

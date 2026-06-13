@@ -92,6 +92,7 @@ export function browserWorkflowDeploymentReadiness(
   checks.push(checkHostedRuntimeOriginPolicy(hostedRuntime, production));
   checks.push(checkHostedRuntimeSessionPolicy(hostedRuntime, production));
   checks.push(checkHostedRuntimeTenantPolicy(hostedRuntime, production));
+  checks.push(checkHostedRuntimeRedactionPolicy(hostedRuntime, env, production));
   checks.push(checkWorkspaceScope(workspaceId, production));
   checks.push(checkStorePair({
     id: "private_workflow_tool_store",
@@ -445,6 +446,32 @@ function checkHostedRuntimeTenantPolicy(
     id: "hosted_browser_tenant_policy",
     status: production ? "fail" : "warn",
     message: `Hosted runtime session scope is missing ${missing.join(", ")}.`,
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkHostedRuntimeRedactionPolicy(
+  runtime: ReturnType<typeof resolveHostedBrowserRuntime>,
+  env: NodeJS.ProcessEnv,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = ["SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS not false"];
+  const configured = nonEmpty(env["SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS"])
+    ? ["SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS"]
+    : [];
+  if (runtime.redact_screenshots) {
+    return pass(
+      "hosted_browser_redaction_policy",
+      "Hosted runtime screenshot capture uses the privacy filter by default.",
+      required,
+      configured
+    );
+  }
+  return {
+    id: "hosted_browser_redaction_policy",
+    status: production ? "fail" : "warn",
+    message: "Hosted runtime screenshot privacy filtering is disabled; production runtime evidence must be filtered before export or audit.",
     required_env: required,
     configured_env: configured,
   };
