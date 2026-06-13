@@ -63,6 +63,8 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     reason === "proof_validator_missing" ||
     reason === "api_tool_proof_validator_required" ||
     reason === "api_tool_proof_validation_failed" ||
+    reason === "api_tool_graph_proof_required" ||
+    reason === "api_tool_graph_proof_mismatch" ||
     reason === "api_tool_proof_capsule_id_required" ||
     reason === "api_tool_proof_nonce_required" ||
     reason === "api_tool_proof_skill_required" ||

@@ -43,6 +43,8 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("proof_validator_missing")).toBe("proof_capsule_invalid");
     expect(normalizeDojoProofErrorCode("api_tool_proof_capsule_required")).toBe("proof_capsule_missing");
     expect(normalizeDojoProofErrorCode("api_tool_proof_validator_required")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("api_tool_graph_proof_required")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("api_tool_graph_proof_mismatch")).toBe("proof_capsule_invalid");
     expect(normalizeDojoProofErrorCode("api_tool_proof_evidence_claim_unverified:checkride_passed")).toBe("proof_evidence_claim_unverified");
     expect(normalizeDojoProofErrorCode("api_tool_proof_evidence_records_required")).toBe("proof_evidence_claim_unverified");
     expect(normalizeDojoProofErrorCode("api_tool_auth_scope_missing")).toBe("action_not_licensed");

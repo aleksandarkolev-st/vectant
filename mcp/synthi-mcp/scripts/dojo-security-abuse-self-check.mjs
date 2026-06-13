@@ -292,7 +292,7 @@ function abuseClassMatchers(abuseClass) {
     fake_success_oracle: ["classifies fake success as failed from observed fixture state instead of visual success"],
     guardrail_failure: ["guardrail fails", "guardrail failed", "block-severity guardrail fails"],
     case_law_binding_enforcement: ["case law nodes only when referenced cases are binding", "case-law nodes when binding state is missing or inactive"],
-    api_tool_proof_enforcement: ["reusable proof validation blocks execution", "api transport when reusable proof validation blocks", "proof validator callbacks"],
+    api_tool_proof_enforcement: ["reusable proof validation blocks execution", "api transport when reusable proof validation blocks", "proof validator callbacks", "graph proof and api proof do not match"],
     rollback_unavailable_human_review: ["rollback nodes when rollback is unavailable without human review", "rollback unavailable human review"],
     prompt_injection_scanning: ["ignore previous instructions", "prompt injection", "instructions are not quarantined"],
     untrusted_document_instruction_quarantine: ["document instructions are quarantined", "unquarantined prompt injection document scenarios"],

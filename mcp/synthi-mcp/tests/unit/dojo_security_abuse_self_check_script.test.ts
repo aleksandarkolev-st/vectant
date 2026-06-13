@@ -205,6 +205,7 @@ function vitestJsonReportFixture(input = {}) {
     "Dojo graph runtime executes case-law nodes only when referenced cases are binding",
     "Dojo API-backed MCP tool compiler does not call the API transport when reusable proof validation blocks execution",
     "Dojo substrate executor rejects compiled API production execution without transport, evidence writer, and proof validator callbacks",
+    "Dojo substrate executor does not execute compiled API transport when graph proof and API proof do not match",
     "Dojo graph runtime blocks rollback nodes when rollback is unavailable without human review",
     "security patterns flags `ignore previous instructions`",
     "Dojo Vivarium runner passes prompt injection scenarios only when document instructions are quarantined",

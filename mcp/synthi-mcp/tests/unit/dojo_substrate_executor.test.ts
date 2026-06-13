@@ -18,7 +18,7 @@ describe("Dojo substrate executor", () => {
         license_allowed_substrates: ["api"],
         assertion_results: { assert_submission_state: true },
       },
-      proof_capsule: { capsule_id: "capsule-a" },
+      proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor(),
     })).resolves.toEqual(expect.objectContaining({
@@ -39,7 +39,7 @@ describe("Dojo substrate executor", () => {
         client_id_verified: true,
         assertion_results: { assert_submission_state: true },
       },
-      proof_capsule: { capsule_id: "capsule-a" },
+      proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
@@ -60,7 +60,7 @@ describe("Dojo substrate executor", () => {
         license_allowed_substrates: ["api", "mcp"],
         assertion_results: { assert_submission_state: true },
       },
-      proof_capsule: { capsule_id: "capsule-a" },
+      proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
@@ -82,7 +82,7 @@ describe("Dojo substrate executor", () => {
         license_allowed_substrates: ["api"],
         assertion_results: { assert_submission_state: true },
       },
-      proof_capsule: { capsule_id: "capsule-a" },
+      proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
     })).resolves.toEqual(expect.objectContaining({
       ok: true,
@@ -353,7 +353,7 @@ describe("Dojo substrate executor", () => {
         },
         assertion_results: { assert_submission_state: true },
       },
-      proof_capsule: { capsule_id: "capsule-a" },
+      proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor(),
     })).resolves.toEqual(expect.objectContaining({
@@ -395,7 +395,7 @@ describe("Dojo substrate executor", () => {
         },
         assertion_results: { assert_submission_state: true },
       },
-      proof_capsule: { capsule_id: "capsule-a" },
+      proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor({
         validate_api_proof: validApiProofValidator,
@@ -441,6 +441,65 @@ describe("Dojo substrate executor", () => {
     ]);
   });
 
+  it("does not execute compiled API transport when graph proof and API proof do not match", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const tool = compiledApiTool();
+    const requests: unknown[] = [];
+    const evidenceRecords: unknown[] = [];
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: tool.candidate_id } }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["api"],
+        compiled_api_tool: tool,
+        api_tool_args: {
+          proof_capsule: proofCapsuleFixture(),
+          request: { amount: 42 },
+          idempotency_key: "idem-a",
+        },
+        license_context: {
+          skill_id: "skill-a",
+          license_id: "license-a",
+          license_version: "1.0.0",
+          action: "run_workflow",
+          auth_scopes: ["invoice:write"],
+        },
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { ...proofCapsuleFixture(), capsule_id: "capsule-other", nonce: "nonce-other" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor({
+        validate_api_proof: validApiProofValidator,
+        api_transport: (request) => {
+          requests.push(request);
+          return { status: 201, body: { status: "saved" } };
+        },
+        write_api_evidence: (evidence) => {
+          evidenceRecords.push(evidence);
+          return "evidence:api-substrate-a";
+        },
+      }),
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_graph_proof_mismatch"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          substrate_result: expect.objectContaining({
+            ok: false,
+            substrate: "api",
+            evidence_refs: [],
+          }),
+        }),
+      ]),
+    }));
+    expect(requests).toEqual([]);
+    expect(evidenceRecords).toEqual([]);
+  });
+
   it("does not execute compiled API transport when reusable proof validation blocks", async () => {
     const runtime = new DojoSkillGraphRuntime();
     const tool = compiledApiTool();
@@ -469,7 +528,7 @@ describe("Dojo substrate executor", () => {
         },
         assertion_results: { assert_submission_state: true },
       },
-      proof_capsule: { capsule_id: "capsule-a" },
+      proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor({
         validate_api_proof: () => ({ ok: false, blocked_by: ["proof_capsule_replay_detected"] }),
@@ -533,7 +592,7 @@ describe("Dojo substrate executor", () => {
         },
         assertion_results: { assert_submission_state: true },
       },
-      proof_capsule: { capsule_id: "capsule-a" },
+      proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor({
         validate_api_proof: validApiProofValidator,
