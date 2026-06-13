@@ -772,7 +772,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = dojoRunTimeMachineDebuggerTool(args);
         break;
       case "synthi_dojo_run_ghost_mode":
-        response = dojoRunGhostModeTool(args);
+        response = await dojoRunGhostModeTool(args);
         break;
       case "synthi_dojo_request_permission_upgrade":
         response = dojoPermissionUpgradeTool(args);
@@ -1172,7 +1172,7 @@ function dojoRunTimeMachineDebuggerTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoRunGhostModeTool(args: unknown): ToolResponse {
+async function dojoRunGhostModeTool(args: unknown): Promise<ToolResponse> {
   const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
   const a = obj(args);
@@ -1235,6 +1235,35 @@ function dojoRunGhostModeTool(args: unknown): ToolResponse {
     },
   };
   const recordedShadowEvidence = dojoSkillRegistry.recordGhostShadowEvidence(shadowEvidence);
+  const shadowEvidenceAuditEvent = await dojoSkillRegistry.recordAuditEvent({
+    tenant_id: skill.tenant.tenant_id,
+    workspace_id: skill.tenant.workspace_id,
+    actor: {
+      actor_id: skill.tenant.actor_id,
+      actor_type: skill.tenant.actor_type,
+    },
+    event_type: "ghost_shadow_evidence_recorded",
+    request_id: skill.tenant.request_id,
+    correlation_id: skill.tenant.correlation_id,
+    entity_kind: "ghost_shadow_evidence",
+    entity_id: recordedShadowEvidence.evidence_id,
+    details: {
+      skill_id: skill.skill.skill_id,
+      workflow_id: skill.skill.workflow_id,
+      run_id: runId,
+      license_id: skill.skill.permission_license.license_id,
+      license_status: licenseStatus,
+      action_matches: actionMatches,
+      observed_label: observedLabel,
+      planned_label: plannedLabel,
+      production_mutations_executed: false,
+      guardrail_refs: guardrailsTriggered.map((guardrail) => guardrail.guardrail_id),
+      evidence_refs: evidenceRefs,
+      entrustment_upgrade_allowed: entrustmentImpact.upgrade_allowed,
+      recommended_entrustment: entrustmentImpact.recommended_entrustment,
+    },
+    created_at: now,
+  });
   const run = {
     run_id: runId,
     skill_id: skill.skill.skill_id,
@@ -1248,6 +1277,7 @@ function dojoRunGhostModeTool(args: unknown): ToolResponse {
     guardrails_triggered: guardrailsTriggered.map((guardrail) => guardrail.guardrail_id),
     production_mutations_executed: false,
     shadow_evidence_id: recordedShadowEvidence.evidence_id,
+    shadow_evidence_audit_event_id: shadowEvidenceAuditEvent.audit_event_id,
     evidence_refs: evidenceRefs,
     entrustment_impact: entrustmentImpact,
     explanation: actionMatches
@@ -1260,6 +1290,7 @@ function dojoRunGhostModeTool(args: unknown): ToolResponse {
     ghost_run: run,
     shadow_evidence: recordedShadowEvidence,
     shadow_evidence_recorded: true,
+    shadow_evidence_audit_event: shadowEvidenceAuditEvent,
     guardrails: guardrailsTriggered,
   });
 }

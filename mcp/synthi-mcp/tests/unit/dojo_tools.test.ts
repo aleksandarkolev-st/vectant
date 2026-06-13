@@ -1818,6 +1818,7 @@ describe("Agent Dojo MCP tools", () => {
         would_execute: false,
         production_mutations_executed: false,
         shadow_evidence_id: expect.stringMatching(/^ghost_evidence_/),
+        shadow_evidence_audit_event_id: expect.stringMatching(/^audit_/),
         evidence_refs: expect.arrayContaining([
           `skill:${published.skill.skill_id}`,
           expect.stringMatching(/^ghost:ghost_/),
@@ -1848,8 +1849,24 @@ describe("Agent Dojo MCP tools", () => {
         }),
       }),
       shadow_evidence_recorded: true,
+      shadow_evidence_audit_event: expect.objectContaining({
+        audit_event_id: expect.stringMatching(/^audit_/),
+        event_type: "ghost_shadow_evidence_recorded",
+        entity_kind: "ghost_shadow_evidence",
+        entity_id: expect.stringMatching(/^ghost_evidence_/),
+        details: expect.objectContaining({
+          skill_id: published.skill.skill_id,
+          workflow_id: published.skill.workflow_id,
+          action_matches: false,
+          observed_label: "open details",
+          planned_label: "delete details",
+          production_mutations_executed: false,
+          recommended_entrustment: "EX",
+        }),
+      }),
     }));
     const shadowEvidence = (ghostMode?.structuredContent as { shadow_evidence: { evidence_id: string } } | undefined)?.shadow_evidence;
+    const shadowEvidenceAuditEvent = (ghostMode?.structuredContent as { shadow_evidence_audit_event: { audit_event_id: string } } | undefined)?.shadow_evidence_audit_event;
     expect(dojoSkillRegistry.listGhostShadowEvidence({ evidence_id: shadowEvidence?.evidence_id })).toEqual([
       expect.objectContaining({
         evidence_id: shadowEvidence?.evidence_id,
@@ -1857,6 +1874,21 @@ describe("Agent Dojo MCP tools", () => {
         workflow_id: published.skill.workflow_id,
         production_mutations_executed: false,
         action_matches: false,
+      }),
+    ]);
+    expect(dojoSkillRegistry.listAuditEvents({
+      event_type: "ghost_shadow_evidence_recorded",
+      entity_kind: "ghost_shadow_evidence",
+      entity_id: shadowEvidence?.evidence_id,
+    })).toEqual([
+      expect.objectContaining({
+        audit_event_id: shadowEvidenceAuditEvent?.audit_event_id,
+        actor: expect.objectContaining({ actor_type: "agent" }),
+        details: expect.objectContaining({
+          skill_id: published.skill.skill_id,
+          run_id: expect.stringMatching(/^ghost_/),
+          production_mutations_executed: false,
+        }),
       }),
     ]);
     const upgradeMissingActor = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
