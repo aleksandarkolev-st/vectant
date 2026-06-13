@@ -16,6 +16,7 @@ import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_re
 import { PostgresDojoAuditStore } from "../../src/dojo/store/audit_store.js";
 import { PostgresDojoGhostShadowEvidenceStore } from "../../src/dojo/store/postgres_ghost_shadow_evidence_store.js";
 import { PostgresDojoGovernanceStore } from "../../src/dojo/store/postgres_governance_store.js";
+import { PostgresDojoGraphRunStore } from "../../src/dojo/store/postgres_graph_run_store.js";
 import { PostgresDojoSkillStore } from "../../src/dojo/store/postgres_skill_store.js";
 import { dispatchDojoTool } from "../../src/tools/dojo.js";
 
@@ -737,6 +738,199 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     ]);
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
     expect(dojoSkillRegistry.listGhostShadowEvidence({ evidence_id: ghostContent.shadow_evidence.evidence_id })).toEqual([]);
+  });
+
+  it("persists Vivarium scenario runs through Postgres after local reset", async () => {
+    const tenantId = `tenant_vivarium_tool_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_vivarium_tool_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-vivarium-publish",
+      correlation_id: "corr-postgres-vivarium-publish",
+      actor_id: "postgres-vivarium-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_vivarium_publish",
+      evidence_refs: ["evidence:integration-postgres-vivarium-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+    };
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+
+    const vivarium = await dispatchDojoTool("synthi_dojo_run_vivarium_scenario", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      actor_id: "postgres-vivarium-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-vivarium-run",
+      correlation_id: "corr-postgres-vivarium-run",
+      now: "2026-06-11T04:00:00.000Z",
+    });
+    expect(vivarium?.isError).toBeUndefined();
+    expect(vivarium?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      skill_id: published.skill.skill_id,
+      control_plane_persistence: expect.objectContaining({
+        ok: true,
+        store_kind: "postgres",
+        operation: "synthi_dojo_run_vivarium_scenario",
+        persisted_run_count: 1,
+      }),
+      vivarium_run: expect.objectContaining({
+        skill_id: published.skill.skill_id,
+        workflow_id: published.skill.workflow_id,
+        materialized_fixture: expect.objectContaining({ synthetic_data_only: true }),
+      }),
+    }));
+    const vivariumContent = vivarium?.structuredContent as {
+      vivarium_run: { run: { run_id: string }; scenario: { scenario_id: string } };
+    };
+
+    const graphRunStore = new PostgresDojoGraphRunStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(graphRunStore.getScenarioRun(vivariumContent.vivarium_run.run.run_id)).resolves.toEqual(expect.objectContaining({
+      scenario_run_id: vivariumContent.vivarium_run.run.run_id,
+      scenario_id: vivariumContent.vivarium_run.scenario.scenario_id,
+      skill_id: published.skill.skill_id,
+      result: expect.objectContaining({
+        schema_version: "synthi.dojo.vivariumScenarioRun.v1",
+        run: expect.objectContaining({ run_id: vivariumContent.vivarium_run.run.run_id }),
+      }),
+    }));
+    const skillStore = new PostgresDojoSkillStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(skillStore.getSkill(published.skill.skill_id)).resolves.toEqual(expect.objectContaining({
+      skill_id: published.skill.skill_id,
+      training_runs: expect.arrayContaining([
+        expect.objectContaining({ run_id: vivariumContent.vivarium_run.run.run_id }),
+      ]),
+    }));
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+  });
+
+  it("persists Wind Tunnel scenario runs through Postgres after local reset", async () => {
+    const tenantId = `tenant_wind_tool_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_wind_tool_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-wind-publish",
+      correlation_id: "corr-postgres-wind-publish",
+      actor_id: "postgres-wind-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_wind_publish",
+      evidence_refs: ["evidence:integration-postgres-wind-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+    };
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+
+    const windTunnel = await dispatchDojoTool("synthi_dojo_run_wind_tunnel", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      max_scenarios: 2,
+      actor_id: "postgres-wind-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-wind-run",
+      correlation_id: "corr-postgres-wind-run",
+      now: "2026-06-11T04:30:00.000Z",
+    });
+    expect(windTunnel?.isError).toBeUndefined();
+    expect(windTunnel?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      skill_id: published.skill.skill_id,
+      control_plane_persistence: expect.objectContaining({
+        ok: true,
+        store_kind: "postgres",
+        operation: "synthi_dojo_run_wind_tunnel",
+        persisted_run_count: 2,
+      }),
+      wind_tunnel_execution: expect.objectContaining({
+        skill_id: published.skill.skill_id,
+        workflow_id: published.skill.workflow_id,
+        run_count: 2,
+      }),
+    }));
+    const windContent = windTunnel?.structuredContent as {
+      wind_tunnel_execution: { runs: { run: { run_id: string } }[] };
+      control_plane_persistence: { scenario_run_ids: string[] };
+    };
+    expect(windContent.control_plane_persistence.scenario_run_ids).toHaveLength(2);
+
+    const graphRunStore = new PostgresDojoGraphRunStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    for (const runId of windContent.control_plane_persistence.scenario_run_ids) {
+      await expect(graphRunStore.getScenarioRun(runId)).resolves.toEqual(expect.objectContaining({
+        scenario_run_id: runId,
+        skill_id: published.skill.skill_id,
+        result: expect.objectContaining({
+          schema_version: "synthi.dojo.vivariumScenarioRun.v1",
+        }),
+      }));
+    }
+    const skillStore = new PostgresDojoSkillStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(skillStore.getSkill(published.skill.skill_id)).resolves.toEqual(expect.objectContaining({
+      skill_id: published.skill.skill_id,
+      training_runs: expect.arrayContaining(
+        windContent.wind_tunnel_execution.runs.map((run) => expect.objectContaining({ run_id: run.run.run_id }))
+      ),
+      wind_tunnel: expect.objectContaining({
+        run_count: 2,
+        runs: expect.arrayContaining(
+          windContent.wind_tunnel_execution.runs.map((run) => expect.objectContaining({ run_id: run.run.run_id }))
+        ),
+      }),
+    }));
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
   });
 
   it("uses Postgres skill and proof records for production validation, consumption, and replay after local process loss", async () => {

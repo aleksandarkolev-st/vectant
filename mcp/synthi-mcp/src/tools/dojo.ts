@@ -321,6 +321,81 @@ async function persistPublishedSkillToDurableControlPlaneIfRequired(input: {
   }
 }
 
+async function persistVivariumRunsToDurableControlPlaneIfRequired(input: {
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  updated_skill: DojoSkill;
+  runs: Awaited<ReturnType<typeof runDojoVivariumScenario>>[];
+  operation: string;
+  now: string;
+}): Promise<{ ok: true; persistence?: Record<string, unknown> } | { ok: false; error: ToolResponse }> {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_durable_store) {
+    return { ok: true };
+  }
+
+  const resolution = await createDojoControlPlaneStoresFromEnv({
+    tenant: input.tenant,
+    app_origin: input.skill.app_origin,
+  });
+  if (!resolution.ok) {
+    return {
+      ok: false,
+      error: controlPlaneResolutionError(input.operation, resolution),
+    };
+  }
+
+  try {
+    const scenarioRecords = [];
+    for (const run of input.runs) {
+      scenarioRecords.push(await resolution.graph_run_store.saveVivariumScenarioRun(run, {
+        skill_id: input.skill.skill_id,
+        started_at: run.run.started_at,
+        completed_at: run.run.finished_at,
+        created_by: input.tenant.actor_id,
+      }));
+    }
+    const skillRecord = await resolution.skill_store.saveSkill(input.updated_skill, {
+      status: "published",
+      created_by: {
+        actor_id: input.tenant.actor_id,
+        actor_type: input.tenant.actor_type,
+      },
+      now: input.now,
+    });
+    return {
+      ok: true,
+      persistence: {
+        ok: true,
+        store_kind: "postgres",
+        operation: input.operation,
+        skill_id: skillRecord.skill_id,
+        skill_version: skillRecord.current_skill_version,
+        workflow_id: skillRecord.workflow_id,
+        workspace_id: skillRecord.workspace_id,
+        scenario_run_ids: scenarioRecords.map((record) => record.scenario_run_id),
+        persisted_run_count: scenarioRecords.length,
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_control_plane_persistence_failed", {
+        ok: false,
+        operation: input.operation,
+        store_kind: "postgres",
+        skill_id: input.skill.skill_id,
+        workflow_id: input.skill.workflow_id,
+        message: err instanceof Error ? err.message : String(err),
+        blocked_by: ["dojo_control_plane_postgres_persistence_failed"],
+        error_codes: ["dojo_control_plane_persistence_failed"],
+      }),
+    };
+  } finally {
+    await resolution.close?.();
+  }
+}
+
 type DojoDurableProofRegistryContext =
   | { required: false }
   | {
@@ -2214,9 +2289,9 @@ function dojoGenerateVivariumScenariosTool(args: unknown): ToolResponse {
 }
 
 async function dojoRunVivariumScenarioTool(args: unknown): Promise<ToolResponse> {
-  const skill = requiredAuthorizedSkill(args);
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_run_vivarium_scenario");
   if (!skill.ok) return skill.error;
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_vivarium_scenario");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_vivarium_scenario", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const a = obj(args);
   const scenarioRun = await runDojoVivariumScenario(skill.skill, {
@@ -2225,20 +2300,36 @@ async function dojoRunVivariumScenarioTool(args: unknown): Promise<ToolResponse>
     now: stringOpt(a["now"]),
     tenant_context: skill.tenant,
   });
-  const updated = persistDojoRuns(skill.skill, [scenarioRun.run]);
+  const updated = skillWithDojoRuns(skill.skill, [scenarioRun.run], undefined, {
+    now: scenarioRun.run.finished_at,
+  });
+  const durablePersistence = await persistVivariumRunsToDurableControlPlaneIfRequired({
+    tenant: skill.tenant,
+    skill: skill.skill,
+    updated_skill: updated,
+    runs: [scenarioRun],
+    operation: "synthi_dojo_run_vivarium_scenario",
+    now: scenarioRun.run.finished_at,
+  });
+  if (!durablePersistence.ok) return durablePersistence.error;
+  const persisted = skill.control_plane_source === "compatibility_registry"
+    ? dojoSkillRegistry.publish(updated)
+    : updated;
   return jsonResponse({
     ok: true,
-    skill_id: updated.skill_id,
+    control_plane_source: durablePersistence.persistence ? "postgres" : skill.control_plane_source,
+    skill_id: persisted.skill_id,
     vivarium_run: scenarioRun,
-    persisted_skill: skillListItem(updated),
-    license_health: licenseHealthFor(updated),
+    persisted_skill: skillListItem(persisted),
+    control_plane_persistence: durablePersistence.persistence ?? null,
+    license_health: licenseHealthFor(persisted),
   });
 }
 
 async function dojoRunWindTunnelTool(args: unknown): Promise<ToolResponse> {
-  const skill = requiredAuthorizedSkill(args);
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_run_wind_tunnel");
   if (!skill.ok) return skill.error;
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_wind_tunnel");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_wind_tunnel", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const a = obj(args);
   const tunnel = await runDojoWindTunnel(skill.skill, {
@@ -2246,13 +2337,33 @@ async function dojoRunWindTunnelTool(args: unknown): Promise<ToolResponse> {
     now: stringOpt(a["now"]),
     tenant_context: skill.tenant,
   });
-  const updated = persistDojoRuns(skill.skill, tunnel.runs.map((run) => run.run), tunnel);
+  const completedAt = tunnel.runs
+    .map((run) => run.run.finished_at)
+    .sort()
+    .at(-1) ?? new Date().toISOString();
+  const updated = skillWithDojoRuns(skill.skill, tunnel.runs.map((run) => run.run), tunnel, {
+    now: completedAt,
+  });
+  const durablePersistence = await persistVivariumRunsToDurableControlPlaneIfRequired({
+    tenant: skill.tenant,
+    skill: skill.skill,
+    updated_skill: updated,
+    runs: tunnel.runs,
+    operation: "synthi_dojo_run_wind_tunnel",
+    now: completedAt,
+  });
+  if (!durablePersistence.ok) return durablePersistence.error;
+  const persisted = skill.control_plane_source === "compatibility_registry"
+    ? dojoSkillRegistry.publish(updated)
+    : updated;
   return jsonResponse({
     ok: true,
-    skill_id: updated.skill_id,
+    control_plane_source: durablePersistence.persistence ? "postgres" : skill.control_plane_source,
+    skill_id: persisted.skill_id,
     wind_tunnel_execution: tunnel,
-    persisted_skill: skillListItem(updated),
-    license_health: licenseHealthFor(updated),
+    persisted_skill: skillListItem(persisted),
+    control_plane_persistence: durablePersistence.persistence ?? null,
+    license_health: licenseHealthFor(persisted),
   });
 }
 
@@ -4601,8 +4712,19 @@ function persistDojoRuns(
   runs: DojoSkill["training_runs"],
   windTunnelExecution?: Awaited<ReturnType<typeof runDojoWindTunnel>>
 ): DojoSkill {
+  const updated = skillWithDojoRuns(skill, runs, windTunnelExecution);
+  return updated === skill ? skill : dojoSkillRegistry.publish(updated);
+}
+
+function skillWithDojoRuns(
+  skill: DojoSkill,
+  runs: DojoSkill["training_runs"],
+  windTunnelExecution?: Awaited<ReturnType<typeof runDojoWindTunnel>>,
+  options: { now?: string } = {}
+): DojoSkill {
   if (runs.length === 0) return skill;
   const updated = cloneJson(skill);
+  const now = options.now ?? new Date().toISOString();
   const runById = new Map(updated.training_runs.map((run) => [run.run_id, run]));
   for (const run of runs) runById.set(run.run_id, cloneJson(run));
   updated.training_runs = [...runById.values()];
@@ -4622,7 +4744,7 @@ function persistDojoRuns(
   if (windTunnelExecution) {
     updated.wind_tunnel = {
       ...updated.wind_tunnel,
-      generated_at: new Date().toISOString(),
+      generated_at: now,
       run_count: windTunnelExecution.run_count,
       runs: windTunnelExecution.runs.map((run) => run.run),
       summary: {
@@ -4634,8 +4756,8 @@ function persistDojoRuns(
       },
     };
   }
-  updated.last_trained_at = new Date().toISOString();
-  return dojoSkillRegistry.publish(updated);
+  updated.last_trained_at = now;
+  return updated;
 }
 
 function licenseHealthFor(skill: DojoSkill): Record<string, unknown> {

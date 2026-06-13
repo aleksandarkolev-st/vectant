@@ -120,11 +120,39 @@ export interface DojoScenarioRunRecord {
   fixture_sha256?: string;
   oracle_status: DojoPersistedOracleStatus;
   evidence_record_ids: string[];
-  result: DojoExecutableCheckrideScenarioResult;
+  result: DojoStoredScenarioRunResult;
   started_at: string;
   completed_at?: string;
   created_by: string;
 }
+
+export interface DojoVivariumScenarioRunLike {
+  skill_id: string;
+  workflow_id: string;
+  scenario: {
+    scenario_id: string;
+    mutation_kind: string;
+  };
+  result: {
+    status: "passed" | "failed" | "blocked";
+  };
+  materialized_fixture: {
+    simulator_tier: number;
+    synthetic_data_only: true;
+    tissues: Record<string, unknown>;
+    input_overrides: Record<string, unknown>;
+    expected_behavior: string;
+  };
+  run: {
+    run_id: string;
+    started_at: string;
+    finished_at?: string;
+    evidence_refs: string[];
+  };
+  evidence_refs: string[];
+}
+
+export type DojoStoredScenarioRunResult = DojoExecutableCheckrideScenarioResult | DojoVivariumScenarioRunLike;
 
 export interface SaveDojoScenarioRunOptions {
   checkride_run_id?: string;
@@ -556,6 +584,67 @@ export class PostgresDojoGraphRunStore {
     return saved;
   }
 
+  async saveVivariumScenarioRun(
+    result: DojoVivariumScenarioRunLike,
+    options: SaveDojoScenarioRunOptions
+  ): Promise<DojoScenarioRunRecord> {
+    const scenarioRunId = result.run.run_id;
+    const evidenceRecordIds = uniqueStrings([
+      ...(options.evidence_record_ids ?? []),
+      ...result.evidence_refs
+        .filter((ref) => ref.startsWith("evidence:"))
+        .map((ref) => ref.replace(/^evidence:/, "")),
+    ]);
+    await this.queryable.query(
+      `INSERT INTO dojo_scenario_runs (
+        tenant_id,
+        workspace_id,
+        scenario_run_id,
+        scenario_id,
+        skill_id,
+        checkride_run_id,
+        mutation_kind,
+        status,
+        fixture_sha256,
+        oracle_status,
+        evidence_record_ids,
+        result_json,
+        started_at,
+        completed_at,
+        created_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text[], $12::jsonb, $13::timestamptz, $14::timestamptz, $15)
+      ON CONFLICT (tenant_id, workspace_id, scenario_run_id) DO UPDATE SET
+        checkride_run_id = EXCLUDED.checkride_run_id,
+        status = EXCLUDED.status,
+        fixture_sha256 = EXCLUDED.fixture_sha256,
+        oracle_status = EXCLUDED.oracle_status,
+        evidence_record_ids = EXCLUDED.evidence_record_ids,
+        result_json = EXCLUDED.result_json,
+        completed_at = EXCLUDED.completed_at,
+        created_by = EXCLUDED.created_by`,
+      [
+        this.tenantId,
+        this.workspaceId,
+        scenarioRunId,
+        result.scenario.scenario_id,
+        options.skill_id,
+        options.checkride_run_id ?? null,
+        result.scenario.mutation_kind,
+        scenarioRunStatusForVivariumStatus(result.result.status),
+        vivariumFixtureHash(result),
+        oracleStatusForVivariumStatus(result.result.status),
+        evidenceRecordIds,
+        JSON.stringify(result),
+        options.started_at,
+        options.completed_at ?? null,
+        options.created_by,
+      ]
+    );
+    const saved = await this.getScenarioRun(scenarioRunId);
+    if (!saved) throw new Error("dojo_postgres_vivarium_scenario_run_save_failed");
+    return saved;
+  }
+
   async getScenarioRun(scenarioRunId: string): Promise<DojoScenarioRunRecord | null> {
     const result = await this.queryable.query<ScenarioRunRow>(
       `SELECT tenant_id, workspace_id, scenario_run_id, scenario_id, skill_id,
@@ -658,7 +747,7 @@ function rowToScenarioRun(row: ScenarioRunRow | undefined): DojoScenarioRunRecor
     ...(row.fixture_sha256 ? { fixture_sha256: row.fixture_sha256 } : {}),
     oracle_status: row.oracle_status,
     evidence_record_ids: [...row.evidence_record_ids],
-    result: normalizeJsonObject<DojoExecutableCheckrideScenarioResult>(row.result_json),
+    result: normalizeJsonObject<DojoStoredScenarioRunResult>(row.result_json),
     started_at: iso(row.started_at),
     completed_at: isoOpt(row.completed_at),
     created_by: row.created_by,
@@ -689,6 +778,27 @@ function oracleStatusForScenarioStatus(status: DojoExecutableCheckrideScenarioRe
   if (status === "failed") return "fail";
   if (status === "needs_human") return "needs_human";
   return "block";
+}
+
+function scenarioRunStatusForVivariumStatus(status: DojoVivariumScenarioRunLike["result"]["status"]): DojoPersistedScenarioRunStatus {
+  if (status === "passed") return "passed";
+  if (status === "failed") return "failed";
+  return "blocked";
+}
+
+function oracleStatusForVivariumStatus(status: DojoVivariumScenarioRunLike["result"]["status"]): DojoPersistedOracleStatus {
+  if (status === "passed") return "pass";
+  if (status === "failed") return "fail";
+  return "block";
+}
+
+function vivariumFixtureHash(result: DojoVivariumScenarioRunLike): string {
+  const fixture = result.materialized_fixture.tissues["fixture"];
+  if (fixture && typeof fixture === "object" && !Array.isArray(fixture)) {
+    const declared = (fixture as Record<string, unknown>)["materialization_hash"];
+    if (typeof declared === "string" && /^[a-f0-9]{64}$/i.test(declared)) return declared;
+  }
+  return sha256Hex(canonicalJson(result.materialized_fixture));
 }
 
 function checkrideScoreJson(report: DojoExecutableCheckrideReport): Record<string, unknown> {

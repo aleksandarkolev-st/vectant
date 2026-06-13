@@ -114,6 +114,8 @@ function postgresVitestReportFixture() {
       "Dojo tool Postgres control-plane wiring persists permission upgrade request and review through Postgres after local reset",
       "Dojo tool Postgres control-plane wiring persists case law proposal and review through Postgres after local reset",
       "Dojo tool Postgres control-plane wiring records Ghost Mode shadow evidence through Postgres after local reset",
+      "Dojo tool Postgres control-plane wiring persists Vivarium scenario runs through Postgres after local reset",
+      "Dojo tool Postgres control-plane wiring persists Wind Tunnel scenario runs through Postgres after local reset",
       "Dojo tool Postgres control-plane wiring uses Postgres skill and proof records for production validation, consumption, and replay after local process loss",
     ],
     [

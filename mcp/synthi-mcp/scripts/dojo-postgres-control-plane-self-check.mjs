@@ -69,6 +69,8 @@ export const DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES = [
   "tool_control_plane_case_law_path",
   "ghost_shadow_evidence_repository",
   "tool_control_plane_ghost_mode_path",
+  "tool_control_plane_vivarium_path",
+  "tool_control_plane_wind_tunnel_path",
   "tool_control_plane_proof_lifecycle_path",
   "postgres_evidence_proof_issuance",
 ];
@@ -401,6 +403,12 @@ function capabilityMatchers(capability) {
     ],
     tool_control_plane_ghost_mode_path: [
       "dojo tool postgres control plane wiring records ghost mode shadow evidence through postgres after local reset",
+    ],
+    tool_control_plane_vivarium_path: [
+      "dojo tool postgres control plane wiring persists vivarium scenario runs through postgres after local reset",
+    ],
+    tool_control_plane_wind_tunnel_path: [
+      "dojo tool postgres control plane wiring persists wind tunnel scenario runs through postgres after local reset",
     ],
     tool_control_plane_proof_lifecycle_path: [
       "dojo tool postgres control plane wiring uses postgres skill and proof records for production validation consumption and replay after local process loss",
