@@ -7,6 +7,14 @@ export const DEFAULT_VISUAL_PROOF_THRESHOLDS = Object.freeze({
   min_selector_visible_area_px: 900,
 });
 
+export function buildVisualProofDevServerEnv(baseEnv = process.env) {
+  return {
+    ...baseEnv,
+    NEXT_TELEMETRY_DISABLED: "1",
+    NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "1",
+  };
+}
+
 export async function analyzeScreenshotVisualEvidence({
   sharp,
   screenshotPath,

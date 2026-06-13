@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   analyzeScreenshotVisualEvidence,
+  buildVisualProofDevServerEnv,
   collectRouteLayoutMetrics,
   evaluateVisualProofCapture,
 } from "./dojo-visual-proof-utils.mjs";
@@ -646,7 +647,7 @@ async function startDevServer({ port }) {
   const nextCli = path.join(SYNTHI_ROOT, "node_modules", "next", "dist", "bin", "next");
   const child = spawn(process.execPath, [nextCli, "dev", "--turbopack", "--hostname", HOST, "--port", String(port)], {
     cwd: SYNTHI_ROOT,
-    env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1" },
+    env: buildVisualProofDevServerEnv(),
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });

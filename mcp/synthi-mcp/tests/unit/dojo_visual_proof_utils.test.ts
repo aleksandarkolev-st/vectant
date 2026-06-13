@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildVisualProofDevServerEnv,
   evaluateVisualProofCapture,
 } from "../../../../synthi/scripts/dojo-visual-proof-utils.mjs";
 
@@ -43,6 +44,17 @@ function validLayoutMetrics(overrides: Record<string, unknown> = {}) {
 }
 
 describe("dojo visual proof utility", () => {
+  it("builds a reproducible local visual proof dev-server environment", () => {
+    const env = buildVisualProofDevServerEnv({
+      PATH: "local-path",
+      NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "0",
+    });
+
+    expect(env.PATH).toBe("local-path");
+    expect(env.NEXT_TELEMETRY_DISABLED).toBe("1");
+    expect(env.NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS).toBe("1");
+  });
+
   it("accepts a route capture with text, layout, and pixel evidence", () => {
     const decision = evaluateVisualProofCapture({
       checks: { has_heading: true, has_skill: true },
