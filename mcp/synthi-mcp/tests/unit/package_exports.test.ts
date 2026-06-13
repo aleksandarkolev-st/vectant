@@ -25,6 +25,10 @@ describe("package exports", () => {
         import: "./dist/dojo/proof/public_verification_export.js",
         types: "./dist/dojo/proof/public_verification_export.d.ts",
       }),
+      "./dojo/proof/capsule-service": expect.objectContaining({
+        import: "./dist/dojo/proof/capsule_service.js",
+        types: "./dist/dojo/proof/capsule_service.d.ts",
+      }),
     }));
   });
 });

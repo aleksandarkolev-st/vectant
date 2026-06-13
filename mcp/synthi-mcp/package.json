@@ -26,6 +26,10 @@
       "types": "./dist/dojo/proof/public_verification_export.d.ts",
       "import": "./dist/dojo/proof/public_verification_export.js"
     },
+    "./dojo/proof/capsule-service": {
+      "types": "./dist/dojo/proof/capsule_service.d.ts",
+      "import": "./dist/dojo/proof/capsule_service.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
