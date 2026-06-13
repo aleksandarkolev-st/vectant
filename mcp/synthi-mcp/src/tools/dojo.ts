@@ -2407,9 +2407,19 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
 }
 
 async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
-  const existing = skillByArgs(args);
   const a = obj(args);
+  let existing = skillByArgs(args);
+  let existingControlPlaneSource: "compatibility_registry" | "postgres" = "compatibility_registry";
   let tenant: DojoTenantContext | null = null;
+  const enforcement = resolveDojoEnforcementConfig();
+  const hasExplicitSkillSelection = Boolean(stringOpt(a["skill_id"]) || stringOpt(a["workflow_id"]));
+  if (!existing && hasExplicitSkillSelection && enforcement.production_enforcement && enforcement.require_durable_store) {
+    const durableSkill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_recertify_skill");
+    if (!durableSkill.ok) return durableSkill.error;
+    existing = durableSkill.skill;
+    existingControlPlaneSource = durableSkill.control_plane_source;
+    tenant = durableSkill.tenant;
+  }
   if (existing) {
     const authorization = authorizeTenantForDojoSkill(args, existing);
     if (!authorization.ok) return authorization.error;
@@ -2433,17 +2443,20 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
   if (!actorId) return errorResponse("dojo_recertification_actor_required");
   const actorType = actorTypeInputOpt(a["actor_type"]);
   if (!actorType) return errorResponse("dojo_recertification_actor_type_required");
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_recertify_skill");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_recertify_skill", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const previousLicenseVersion = existing?.permission_license.license_version ?? null;
   const manifest = generatePrivateWorkflowToolManifest(workflow.artifact.workflow.contract);
   const publishedToolName = existing?.published_tool_name;
-  const recertified = dojoSkillRegistry.publish(buildDojoSkill(workflow.artifact.workflow.contract, {
+  let recertified = buildDojoSkill(workflow.artifact.workflow.contract, {
     workspace_id: workspaceId,
     now,
     private_tool_manifest: manifest,
     ...(publishedToolName ? { published_tool_name: publishedToolName } : {}),
-  }));
+  });
+  if (previousLicenseVersion) {
+    recertified = skillWithLicenseVersion(recertified, bumpVersion(previousLicenseVersion));
+  }
   const auditEvent = {
     event_type: "checkride_run_completed" as const,
     actor: {
@@ -2458,8 +2471,75 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
     reason,
     evidence_refs: evidenceRefs,
   };
+  let controlPlaneSource: "compatibility_registry" | "postgres" = "compatibility_registry";
+  let controlPlanePersistence: Record<string, unknown> = {
+    ok: true,
+    store_kind: "compatibility_registry",
+  };
+  let durableAuditEvent: DojoAuditEventRecord | null = null;
+  if (enforcement.production_enforcement && enforcement.require_durable_store) {
+    const resolution = await createDojoControlPlaneStoresFromEnv({
+      tenant,
+      app_origin: recertified.app_origin,
+    });
+    if (!resolution.ok) return controlPlaneResolutionError("synthi_dojo_recertify_skill", resolution);
+    try {
+      const actor = {
+        actor_id: actorId,
+        actor_type: actorType,
+      };
+      const skillRecord = await resolution.skill_store.saveSkill(recertified, {
+        status: "published",
+        created_by: actor,
+        now,
+      });
+      const licenseRecord = await resolution.license_store.saveLicense(recertified.permission_license, {
+        readiness_level: recertified.skill_readiness_level,
+        status: "active",
+        expires_at: recertified.license_expires_at,
+        created_by: actor,
+        now,
+      });
+      durableAuditEvent = await resolution.audit_store.appendAuditEvent({
+        tenant_id: tenant.tenant_id,
+        workspace_id: recertified.workspace_id,
+        actor,
+        event_type: "checkride_run_completed",
+        request_id: tenant.request_id,
+        correlation_id: tenant.correlation_id,
+        entity_kind: "skill",
+        entity_id: recertified.skill_id,
+        details: {
+          skill_id: recertified.skill_id,
+          workflow_id: recertified.workflow_id,
+          license_id: recertified.permission_license.license_id,
+          license_version: recertified.permission_license.license_version,
+          reason,
+          evidence_refs: evidenceRefs,
+        },
+        created_at: now,
+      });
+      controlPlaneSource = "postgres";
+      controlPlanePersistence = {
+        ok: true,
+        store_kind: "postgres",
+        skill_id: skillRecord.skill_id,
+        workflow_id: skillRecord.workflow_id,
+        skill_version: skillRecord.current_skill_version,
+        license_id: licenseRecord.license_id,
+        license_version: licenseRecord.license_version,
+        audit_event_id: durableAuditEvent.audit_event_id,
+      };
+    } finally {
+      await resolution.close?.();
+    }
+  }
+  if (existingControlPlaneSource === "compatibility_registry") {
+    recertified = dojoSkillRegistry.publish(recertified);
+  }
   return jsonResponse({
     ok: true,
+    control_plane_source: controlPlaneSource,
     skill: skillListItem(recertified),
     mcp_skill_manifest: buildDojoMcpSkillManifest(recertified),
     recertification: {
@@ -2472,11 +2552,13 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
       previous_license_version: previousLicenseVersion,
       license_version: recertified.permission_license.license_version,
       audit_event: auditEvent,
+      control_plane_persistence: controlPlanePersistence,
+      ...(durableAuditEvent ? { durable_audit_event: durableAuditEvent } : {}),
     },
     checkride: recertified.checkride,
     license: recertified.permission_license,
     license_health: licenseHealthFor(recertified),
-    governance_service: await governanceServiceViewForTenant(tenant, now),
+    governance_service: await governanceServiceViewForTenant(tenant, now, [recertified]),
     assurance_case: recertified.assurance_case,
     repo_artifacts: artifactSummary(exportDojoRepoArtifacts(recertified)),
   });
@@ -4567,6 +4649,15 @@ function bumpVersion(version: string): string {
   const minor = Number.isFinite(parts[1]) ? parts[1] : 0;
   const patch = Number.isFinite(parts[2]) ? parts[2] ?? 0 : 0;
   return `${major}.${minor}.${patch + 1}`;
+}
+
+function skillWithLicenseVersion(skill: DojoSkill, licenseVersion: string): DojoSkill {
+  const updated = cloneJson(skill);
+  updated.permission_license = {
+    ...updated.permission_license,
+    license_version: licenseVersion,
+  };
+  return updated;
 }
 
 function titleFromFinding(finding: string): string {
