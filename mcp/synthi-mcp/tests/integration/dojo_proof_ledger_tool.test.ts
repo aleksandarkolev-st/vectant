@@ -80,7 +80,10 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       skill_json: skill!,
     });
 
-    const requiredClaims = skill!.permission_license.proof_requirements.required_evidence_claims;
+    const requiredClaims = [...new Set([
+      ...skill!.permission_license.proof_requirements.required_evidence_claims,
+      ...skill!.permission_license.proof_requirements.required_context_claims,
+    ])];
     expect(requiredClaims.length).toBeGreaterThan(0);
     const createdAt = "2026-06-11T00:00:00.000Z";
     const checkedAt = "2026-06-11T00:05:00.000Z";

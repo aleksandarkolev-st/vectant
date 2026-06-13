@@ -17,7 +17,10 @@ export function dojoEvidenceRecordForProof(
 ): DojoEvidenceLedgerRecord {
   const createdAt = options.created_at ?? "2026-06-11T00:00:00.000Z";
   const recordId = options.record_id ?? `evidence-${skill.skill_id}`;
-  const claimIds = options.claim_ids ?? skill.permission_license.proof_requirements.required_evidence_claims;
+  const claimIds = options.claim_ids ?? [...new Set([
+    ...skill.permission_license.proof_requirements.required_evidence_claims,
+    ...skill.permission_license.proof_requirements.required_context_claims,
+  ])];
   const artifactUri = `memory://dojo/tests/${skill.skill_id}/checkride`;
   const artifactPayload = JSON.stringify({
     claim_ids: claimIds,

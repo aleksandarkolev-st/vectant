@@ -1330,6 +1330,7 @@ export function issueDojoProofCapsule(
   if (expiresAtMs <= issuedAtMs) throw new Error("proof_capsule_expires_at_not_after_issued_at");
   const evidence = evidenceClaimsForProofIssue(skill, input, now);
   const signer = dojoProofSigner();
+  const contextClaims = contextClaimsForProofIssue(skill, input, evidence);
   const capsuleWithoutSignature = {
     schema_version: "synthi.dojo.proofCapsule.v1" as const,
     capsule_id: `capsule_${randomUUID()}`,
@@ -1341,7 +1342,7 @@ export function issueDojoProofCapsule(
     issuer: dojoProofIssuer(),
     key_id: signer.key_id,
     nonce: randomUUID(),
-    context_claims: input.context_claims ?? {},
+    context_claims: contextClaims,
     evidence_claims: evidence.claims,
     evidence_record_ids: evidence.recordIds,
     ...(evidence.ledgerCheckpointHash ? { ledger_checkpoint_hash: evidence.ledgerCheckpointHash } : {}),
@@ -3281,6 +3282,7 @@ function evidenceClaimsForProofIssue(
     .filter((claim) => claim.trim().length > 0);
   const requiredClaims = [...new Set([
     ...skill.permission_license.proof_requirements.required_evidence_claims,
+    ...skill.permission_license.proof_requirements.required_context_claims,
     ...requestedClaims,
   ])];
   const results = resolveDojoEvidenceClaims({
@@ -3321,6 +3323,31 @@ function evidenceClaimsForProofIssue(
     recordIds,
     ledgerCheckpointHash,
   };
+}
+
+function contextClaimsForProofIssue(
+  skill: DojoSkill,
+  input: {
+    context_claims?: Record<string, unknown>;
+    evidence_ledger_records?: DojoEvidenceLedgerRecord[];
+    require_verified_evidence?: boolean;
+  },
+  evidence: { claims: DojoEvidenceClaim[]; recordIds: string[] }
+): Record<string, unknown> {
+  const contextClaims: Record<string, unknown> = {
+    ...(input.context_claims ?? {}),
+  };
+  const strictContext = input.require_verified_evidence === true || (input.evidence_ledger_records?.length ?? 0) > 0;
+  if (!strictContext) return contextClaims;
+  const verifiedEvidenceClaims = new Set(
+    evidence.claims
+      .filter((claim) => claim.satisfied)
+      .map((claim) => claim.claim)
+  );
+  for (const claim of skill.permission_license.proof_requirements.required_context_claims) {
+    contextClaims[claim] = verifiedEvidenceClaims.has(claim);
+  }
+  return contextClaims;
 }
 
 function latestLedgerHeadForEvidenceRecords(records: DojoEvidenceLedgerRecord[], recordIds: string[]): string | undefined {

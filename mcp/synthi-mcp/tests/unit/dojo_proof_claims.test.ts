@@ -13,7 +13,8 @@ import type { BrowserTraceEvent } from "../../src/browser/types.js";
 describe("Dojo proof issuance evidence claims", () => {
   it("signs verified evidence record IDs and ledger checkpoint into strict proof capsules", () => {
     const skill = skillFixture();
-    const record = evidenceRecord("evidence-a", skill.skill_id, skill.permission_license.proof_requirements.required_evidence_claims, "2026-06-11T00:00:00.000Z");
+    const requiredClaims = proofEvidenceClaimIds(skill);
+    const record = evidenceRecord("evidence-a", skill.skill_id, requiredClaims, "2026-06-11T00:00:00.000Z");
 
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
@@ -25,8 +26,9 @@ describe("Dojo proof issuance evidence claims", () => {
 
     expect(capsule.evidence_record_ids).toEqual(["evidence-a"]);
     expect(capsule.ledger_checkpoint_hash).toBe(record.ledger_head_hash);
+    expect(capsule.context_claims).toEqual(expect.objectContaining({ workspace_verified: true }));
     expect(capsule.evidence_claims).toEqual(
-      skill.permission_license.proof_requirements.required_evidence_claims.map((claim) => ({
+      requiredClaims.map((claim) => ({
         claim,
         satisfied: true,
         evidence_refs: ["evidence:evidence-a"],
@@ -50,12 +52,42 @@ describe("Dojo proof issuance evidence claims", () => {
     })).toThrow(/dojo_proof_evidence_claim_unverified:/);
   });
 
+  it("blocks strict proof issuance when a required context claim is only caller asserted", () => {
+    const skill = skillFixture();
+    const record = evidenceRecord(
+      "evidence-context-missing",
+      skill.skill_id,
+      skill.permission_license.proof_requirements.required_evidence_claims,
+      "2026-06-11T00:00:00.000Z"
+    );
+
+    const error = captureProofIssueError(() => issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: [record],
+      require_verified_evidence: true,
+      now: "2026-06-11T00:05:00.000Z",
+    }));
+
+    expect(error).toBeInstanceOf(DojoProofEvidenceClaimError);
+    expect(error).toEqual(expect.objectContaining({
+      code: "dojo_proof_evidence_claim_unverified",
+      failed_results: expect.arrayContaining([
+        expect.objectContaining({
+          claim_id: "workspace_verified",
+          ok: false,
+          status: "missing",
+          blocked_by: ["evidence_claim_missing:workspace_verified"],
+        }),
+      ]),
+    }));
+  });
+
   it("blocks strict proof issuance when the supplied ledger checkpoint does not match verified evidence", () => {
     const skill = skillFixture();
     const record = evidenceRecord(
       "evidence-checkpoint",
       skill.skill_id,
-      skill.permission_license.proof_requirements.required_evidence_claims,
+      proofEvidenceClaimIds(skill),
       "2026-06-11T00:00:00.000Z"
     );
 
@@ -87,7 +119,7 @@ describe("Dojo proof issuance evidence claims", () => {
     const record = evidenceRecord(
       "evidence-tampered",
       skill.skill_id,
-      skill.permission_license.proof_requirements.required_evidence_claims,
+      proofEvidenceClaimIds(skill),
       "2026-06-11T00:00:00.000Z"
     );
     const tampered = {
@@ -119,7 +151,7 @@ describe("Dojo proof issuance evidence claims", () => {
 
   it("blocks strict proof issuance when backing evidence is stale", () => {
     const skill = skillFixture();
-    const record = evidenceRecord("evidence-old", skill.skill_id, skill.permission_license.proof_requirements.required_evidence_claims, "2026-06-10T00:00:00.000Z");
+    const record = evidenceRecord("evidence-old", skill.skill_id, proofEvidenceClaimIds(skill), "2026-06-10T00:00:00.000Z");
 
     expect(() => issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
@@ -135,7 +167,7 @@ describe("Dojo proof issuance evidence claims", () => {
     const record = evidenceRecord(
       "evidence-other-skill",
       "skill-other",
-      skill.permission_license.proof_requirements.required_evidence_claims,
+      proofEvidenceClaimIds(skill),
       "2026-06-11T00:00:00.000Z"
     );
 
@@ -155,7 +187,7 @@ describe("Dojo proof issuance evidence claims", () => {
     const record = evidenceRecord(
       "evidence-other-workspace",
       skill.skill_id,
-      skill.permission_license.proof_requirements.required_evidence_claims,
+      proofEvidenceClaimIds(skill),
       "2026-06-11T00:00:00.000Z",
       { workspace_id: "workspace-other" }
     );
@@ -332,6 +364,13 @@ function skillFixture() {
     workspace_id: "workspace-a",
     now: "2026-06-11T00:00:00.000Z",
   });
+}
+
+function proofEvidenceClaimIds(skill: ReturnType<typeof skillFixture>): string[] {
+  return [...new Set([
+    ...skill.permission_license.proof_requirements.required_evidence_claims,
+    ...skill.permission_license.proof_requirements.required_context_claims,
+  ])];
 }
 
 function evidenceRecord(

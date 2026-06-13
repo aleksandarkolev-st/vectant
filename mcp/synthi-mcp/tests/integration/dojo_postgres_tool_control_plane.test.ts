@@ -1369,7 +1369,10 @@ function evidenceLedgerRecordsForProof(
   }
 ): ReturnType<typeof buildDojoEvidenceLedgerRecord>[] {
   const createdAt = options.created_at ?? "2026-06-11T00:00:00.000Z";
-  const claimIds = skill.permission_license.proof_requirements.required_evidence_claims;
+  const claimIds = [...new Set([
+    ...skill.permission_license.proof_requirements.required_evidence_claims,
+    ...skill.permission_license.proof_requirements.required_context_claims,
+  ])];
   const artifactPayload = JSON.stringify({
     claim_ids: claimIds,
     created_at: createdAt,

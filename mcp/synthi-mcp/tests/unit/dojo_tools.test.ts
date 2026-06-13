@@ -198,7 +198,7 @@ describe("Agent Dojo core", () => {
       }),
     ]);
     const skill = buildDojoSkill(workflow.contract, { workspace_id: "workspace-a", now: "2026-06-11T00:00:00.000Z" });
-    const missingWorkspaceClaim = issueDojoProofCapsule(skill, "run_workflow", {
+    const derivedWorkspaceClaim = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: {},
       evidence_ledger_records: evidenceLedgerRecordsForProof(skill),
       require_verified_evidence: true,
@@ -214,11 +214,9 @@ describe("Agent Dojo core", () => {
     });
     const tampered = { ...valid, context_claims: { workspace_verified: false } };
 
-    expect(validateDojoProofCapsule(skill, missingWorkspaceClaim, "run_workflow", "2026-06-11T00:01:00.000Z")).toEqual(
-      expect.objectContaining({
-        ok: false,
-        blocked_by: expect.arrayContaining(["missing_context_claim:workspace_verified"]),
-      })
+    expect(derivedWorkspaceClaim.context_claims).toEqual(expect.objectContaining({ workspace_verified: true }));
+    expect(validateDojoProofCapsule(skill, derivedWorkspaceClaim, "run_workflow", "2026-06-11T00:01:00.000Z")).toEqual(
+      expect.objectContaining({ ok: true, status: "allowed" })
     );
     expect(validateDojoProofCapsule(skill, valid, "run_workflow", "2026-06-11T00:01:00.000Z")).toEqual(
       expect.objectContaining({ ok: true, status: "allowed" })
@@ -3240,7 +3238,10 @@ function evidenceLedgerRecordsForProof(
 ): ReturnType<typeof buildDojoEvidenceLedgerRecord>[] {
   const recordId = options.record_id ?? `evidence-${skill.skill_id}`;
   const createdAt = options.created_at ?? "2026-06-11T00:00:00.000Z";
-  const claimIds = skill.permission_license.proof_requirements.required_evidence_claims;
+  const claimIds = [...new Set([
+    ...skill.permission_license.proof_requirements.required_evidence_claims,
+    ...skill.permission_license.proof_requirements.required_context_claims,
+  ])];
   const artifactPayload = JSON.stringify({
     claim_ids: claimIds,
     created_at: createdAt,
