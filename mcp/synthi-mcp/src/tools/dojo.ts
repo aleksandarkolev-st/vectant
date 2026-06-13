@@ -1380,6 +1380,13 @@ function dojoReviewPermissionUpgradeTool(args: unknown): ToolResponse {
   });
   const storedRequest = dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestId, limit: 1 })[0];
   if (!storedRequest) return errorResponse("dojo_permission_upgrade_request_not_found", { request_id: requestId });
+  const skill = dojoSkillRegistry.get(storedRequest.skill_id);
+  if (!skill) return errorResponse("dojo_permission_upgrade_skill_not_found", {
+    request_id: requestId,
+    skill_id: storedRequest.skill_id,
+  });
+  const authorization = authorizeTenantForDojoSkill(args, skill);
+  if (!authorization.ok) return authorization.error;
   const reviewerActorId = stringOpt(a["reviewer_actor_id"]) ?? stringOpt(a["actor_id"]);
   if (!reviewerActorId) return errorResponse("dojo_permission_upgrade_reviewer_required");
   const reviewerActorType = actorTypeInputOpt(a["reviewer_actor_type"] ?? a["actor_type"]);
@@ -1404,7 +1411,6 @@ function dojoReviewPermissionUpgradeTool(args: unknown): ToolResponse {
   }
 
   const updatedRequest = dojoSkillRegistry.recordPermissionUpgradeRequest(review.request);
-  const skill = dojoSkillRegistry.get(updatedRequest.skill_id);
   return jsonResponse({
     ok: true,
     request_id: requestId,
@@ -1412,8 +1418,8 @@ function dojoReviewPermissionUpgradeTool(args: unknown): ToolResponse {
     permission_upgrade_request: updatedRequest,
     review,
     governance_service: buildDojoGovernanceServiceView({
-      skills: skill ? [skill] : [],
-      case_law_records: dojoSkillRegistry.listCaseLawRecords(),
+      skills: [skill],
+      case_law_records: visibleDojoCaseLawRecordsForTenant(authorization.tenant, [skill]),
       permission_upgrade_requests: [updatedRequest],
       now: updatedRequest.reviewed_at,
     }),
@@ -1440,6 +1446,8 @@ function dojoReviewCaseLawTool(args: unknown): ToolResponse {
     : undefined;
   const record = storedRecord ?? (skillLocalRecord ? dojoSkillRegistry.recordCaseLawRecord(skillLocalRecord) : null);
   if (!record) return errorResponse("dojo_case_law_not_found", { case_id: caseId });
+  const authorization = authorizeTenantForCaseLawRecord(args, record, selectedSkill);
+  if (!authorization.ok) return authorization.error;
 
   const review = decideDojoCaseLawReview({
     case_law: record,
@@ -1461,12 +1469,11 @@ function dojoReviewCaseLawTool(args: unknown): ToolResponse {
   }
 
   const updatedRecord = dojoSkillRegistry.recordCaseLawRecord(review.case_law);
-  const scopedSkill = selectedSkill
-    ?? (updatedRecord.binding_scope.kind === "skill" ? dojoSkillRegistry.get(updatedRecord.binding_scope.id) : null);
+  const scopedSkill = selectedSkill ?? authorization.scopedSkill;
   const updatedSkill = scopedSkill?.case_law.some((item) => item.case_id === updatedRecord.case_id)
     ? dojoSkillRegistry.publish(applyCaseLawReviewToSkill(scopedSkill, updatedRecord))
     : scopedSkill;
-  const governanceSkills = updatedSkill ? [updatedSkill] : dojoSkillRegistry.list();
+  const governanceSkills = updatedSkill ? [updatedSkill] : authorization.visibleSkills;
   return jsonResponse({
     ok: true,
     case_id: caseId,
@@ -1476,8 +1483,8 @@ function dojoReviewCaseLawTool(args: unknown): ToolResponse {
     ...(updatedSkill ? { skill_id: updatedSkill.skill_id, skill: skillListItem(updatedSkill) } : {}),
     governance_service: buildDojoGovernanceServiceView({
       skills: governanceSkills,
-      case_law_records: dojoSkillRegistry.listCaseLawRecords(),
-      permission_upgrade_requests: dojoSkillRegistry.listPermissionUpgradeRequests(),
+      case_law_records: visibleDojoCaseLawRecordsForTenant(authorization.tenant, governanceSkills),
+      permission_upgrade_requests: visibleDojoPermissionUpgradeRequestsForSkills(governanceSkills),
       now: updatedRecord.updated_at,
     }),
   });
@@ -2442,6 +2449,54 @@ function authorizeTenantForDojoSkill(
   return { ok: true, tenant };
 }
 
+function authorizeTenantForCaseLawRecord(
+  args: unknown,
+  record: DojoCaseLawRecord,
+  selectedSkill: DojoSkill | null
+): { ok: true; tenant: DojoTenantContext; scopedSkill: DojoSkill | null; visibleSkills: DojoSkill[] } | { ok: false; error: ToolResponse } {
+  const inferredSkill = selectedSkill ?? skillForCaseLawRecord(record);
+  const tenantContext = dojoTenantContextResultFromArgs(args, {
+    development_defaults: inferredSkill ? { workspace_id: inferredSkill.workspace_id } : undefined,
+  });
+  if (!tenantContext.ok) return tenantContext;
+
+  const tenant = tenantContext.tenant;
+  if (selectedSkill && !isTenantAuthorizedForDojoSkill(tenant, selectedSkill)) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_skill_not_authorized", {
+        ok: false,
+        skill_id: selectedSkill.skill_id,
+        workspace_id: selectedSkill.workspace_id,
+        tenant_workspace_id: tenant.workspace_id,
+        actor_id: tenant.actor_id,
+        blocked_by: ["dojo_skill_workspace_mismatch"],
+      }),
+    };
+  }
+
+  const visibleSkills = visibleDojoSkillsForTenant(tenant);
+  const visibleRecords = visibleDojoCaseLawRecordsForTenant(tenant, visibleSkills);
+  if (!visibleRecords.some((visible) => visible.case_id === record.case_id)) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_case_law_not_authorized", {
+        ok: false,
+        case_id: record.case_id,
+        binding_scope: record.binding_scope,
+        tenant_workspace_id: tenant.workspace_id,
+        actor_id: tenant.actor_id,
+        blocked_by: ["dojo_case_law_scope_mismatch"],
+      }),
+    };
+  }
+
+  const scopedSkill = selectedSkill
+    ?? visibleSkills.find((skill) => caseLawRecordAppliesToSkill(record, skill))
+    ?? null;
+  return { ok: true, tenant, scopedSkill, visibleSkills };
+}
+
 function isTenantAuthorizedForDojoSkill(tenant: DojoTenantContext, skill: DojoSkill): boolean {
   const enforcement = resolveDojoEnforcementConfig();
   if (!enforcement.production_enforcement && tenant.roles.includes("dojo:legacy")) return true;
@@ -2462,6 +2517,9 @@ function visibleDojoCaseLawRecordsForTenant(tenant: DojoTenantContext, skills: D
   }
   return dojoSkillRegistry.listCaseLawRecords()
     .filter((record) => {
+      if (record.binding_scope.kind === "tenant") {
+        return record.binding_scope.id === tenant.tenant_id || record.binding_scope.id === `tenant:${tenant.tenant_id}`;
+      }
       if (record.binding_scope.kind === "skill") return skillIds.has(record.binding_scope.id);
       if (record.binding_scope.kind === "workspace") return workspaceIds.has(record.binding_scope.id);
       if (record.binding_scope.kind === "organization") return organizationIds.has(record.binding_scope.id);
@@ -2486,6 +2544,22 @@ function governanceServiceViewForTenant(tenant: DojoTenantContext, now: string) 
     permission_upgrade_requests: visibleDojoPermissionUpgradeRequestsForSkills(skills),
     now,
   });
+}
+
+function skillForCaseLawRecord(record: DojoCaseLawRecord): DojoSkill | null {
+  return dojoSkillRegistry.list()
+    .sort((left, right) => left.skill_id.localeCompare(right.skill_id))
+    .find((skill) => caseLawRecordAppliesToSkill(record, skill))
+    ?? null;
+}
+
+function caseLawRecordAppliesToSkill(record: DojoCaseLawRecord, skill: DojoSkill): boolean {
+  if (record.binding_scope.kind === "skill") return record.binding_scope.id === skill.skill_id;
+  if (record.binding_scope.kind === "workspace") return record.binding_scope.id === skill.workspace_id;
+  if (record.binding_scope.kind === "organization") {
+    return record.binding_scope.id === bindingScopeIdForSkillCase(skill, "organization");
+  }
+  return false;
 }
 
 function skillByArgs(args: unknown): DojoSkill | null {

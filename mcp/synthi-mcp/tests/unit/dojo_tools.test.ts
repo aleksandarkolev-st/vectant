@@ -652,6 +652,135 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("requires tenant authorization for production governance reviews", async () => {
+    const { visibleSkillId, hiddenSkill } = await publishTwoWorkspaceSkillsForDojoToolTest();
+    const hiddenUpgrade = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
+      skill_id: hiddenSkill.skill_id,
+      requested_action: "commit_mutation",
+      actor_id: "hidden-requester",
+      actor_type: "agent",
+      request_id: "hidden-upgrade-review-test",
+      correlation_id: "hidden-upgrade-review-test-correlation",
+    });
+    expect(hiddenUpgrade?.isError).toBeUndefined();
+
+    const hiddenCase = await dispatchDojoTool("synthi_dojo_record_case_law", {
+      skill_id: hiddenSkill.skill_id,
+      title: "Hidden workspace case",
+      finding: "Hidden workspace case-law review should stay scoped.",
+      rule: "Only authorized workspace actors may review case law.",
+      applies_to: ["commit_mutation"],
+      evidence_refs: ["evidence:hidden-case"],
+    });
+    expect(hiddenCase?.isError).toBeUndefined();
+    const hiddenCaseId = (hiddenCase?.structuredContent as {
+      case_law_record: { case_id: string };
+    }).case_law_record.case_id;
+
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    const workspaceAReviewer = productionTenantContextArgs({
+      request_id: "req-review-hidden-workspace",
+      correlation_id: "corr-review-hidden-workspace",
+      actor_id: "workspace-a-reviewer",
+      roles: ["dojo:reviewer"],
+    });
+
+    const blockedUpgradeReview = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      ...workspaceAReviewer,
+      request_id: "hidden-upgrade-review-test",
+      decision: "approved",
+      reviewer_actor_id: "workspace-a-reviewer",
+      reviewer_actor_type: "human",
+      reason: "Attempted cross-workspace permission approval.",
+      evidence_refs: ["evidence:review-hidden-upgrade"],
+    });
+    expect(blockedUpgradeReview?.isError).toBe(true);
+    expect(blockedUpgradeReview?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_skill_not_authorized",
+      skill_id: hiddenSkill.skill_id,
+      workspace_id: "workspace-b",
+      tenant_workspace_id: "workspace-a",
+    }));
+
+    const blockedCaseReviewById = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      case_id: hiddenCaseId,
+      decision: "approved",
+      reviewer_actor_id: "workspace-a-reviewer",
+      reviewer_actor_type: "human",
+      reason: "Attempted cross-workspace case-law approval.",
+      evidence_refs: ["evidence:review-hidden-case"],
+      ...workspaceAReviewer,
+    });
+    expect(blockedCaseReviewById?.isError).toBe(true);
+    expect(blockedCaseReviewById?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_case_law_not_authorized",
+      case_id: hiddenCaseId,
+      tenant_workspace_id: "workspace-a",
+      blocked_by: ["dojo_case_law_scope_mismatch"],
+    }));
+
+    const blockedCaseReviewWithSkill = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      skill_id: hiddenSkill.skill_id,
+      case_id: hiddenCaseId,
+      decision: "approved",
+      reviewer_actor_id: "workspace-a-reviewer",
+      reviewer_actor_type: "human",
+      reason: "Attempted cross-workspace case-law approval.",
+      evidence_refs: ["evidence:review-hidden-case"],
+      ...workspaceAReviewer,
+    });
+    expect(blockedCaseReviewWithSkill?.isError).toBe(true);
+    expect(blockedCaseReviewWithSkill?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_skill_not_authorized",
+      skill_id: hiddenSkill.skill_id,
+      workspace_id: "workspace-b",
+      tenant_workspace_id: "workspace-a",
+    }));
+
+    const visibleUpgrade = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
+      skill_id: visibleSkillId,
+      requested_action: "commit_mutation",
+      ...productionTenantContextArgs({
+        actor_id: "workspace-a-requester",
+        request_id: "visible-upgrade-review-test",
+        correlation_id: "visible-upgrade-review-test-correlation",
+        roles: ["dojo:reviewer"],
+      }),
+    });
+    expect(visibleUpgrade?.isError).toBeUndefined();
+
+    const visibleReview = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      ...productionTenantContextArgs({
+        request_id: "req-review-visible-upgrade",
+        correlation_id: "corr-review-visible-upgrade",
+        actor_id: "workspace-a-reviewer",
+        roles: ["dojo:reviewer"],
+      }),
+      request_id: "visible-upgrade-review-test",
+      decision: "approved",
+      reviewer_actor_id: "workspace-a-reviewer",
+      reviewer_actor_type: "human",
+      reason: "Workspace reviewer approved visible request.",
+      evidence_refs: ["evidence:review-visible-upgrade"],
+    });
+    expect(visibleReview?.isError).toBeUndefined();
+    expect(visibleReview?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      request_id: "visible-upgrade-review-test",
+      permission_upgrade_request: expect.objectContaining({
+        skill_id: visibleSkillId,
+        workspace_id: "workspace-a",
+        status: "approved",
+      }),
+      governance_service: expect.objectContaining({
+        skill_registry: [
+          expect.objectContaining({ skill_id: visibleSkillId }),
+        ],
+        approval_queue: [],
+      }),
+    }));
+  });
+
   it("advertises the static Dojo tool surface to strict MCP clients", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createSynthiServer({ defaultSignalingUrl: "ws://localhost:9000" });
