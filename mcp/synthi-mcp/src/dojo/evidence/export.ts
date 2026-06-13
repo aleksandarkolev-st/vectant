@@ -84,6 +84,9 @@ function buildExportItem(input: {
   if (!verification.ok) {
     throw new Error(`dojo_evidence_export_redaction_manifest_invalid:${verification.blocked_by.join(",")}`);
   }
+  if (!input.artifact.evidence_record && requiresEvidenceRecord(input.artifact.artifact_uri)) {
+    throw new Error("dojo_evidence_export_record_required");
+  }
 
   const originalArtifactSha256 = dojoRedactionDigestHex(redaction.manifest.original_sha256);
   const redactedArtifactSha256 = dojoRedactionDigestHex(redaction.manifest.redacted_sha256);
@@ -107,7 +110,10 @@ function buildExportItem(input: {
     redaction_id: redaction.manifest.redaction_id,
     redaction_count: redaction.manifest.redaction_count,
     rules_applied: redaction.manifest.rules_applied,
-    source_refs: [...new Set(input.artifact.source_refs ?? input.artifact.evidence_record?.source_refs ?? [])].sort(),
+    source_refs: redactedSourceRefs(
+      input.artifact.source_refs ?? input.artifact.evidence_record?.source_refs ?? [],
+      input.generated_at
+    ),
   };
 }
 
@@ -119,6 +125,29 @@ function redactedArtifactUri(value: string | null, generatedAt: string): string 
     created_at: generatedAt,
   });
   return typeof redaction.redacted_content === "string" ? redaction.redacted_content : value;
+}
+
+function redactedSourceRefs(values: string[], generatedAt: string): string[] {
+  return [...new Set(values.map((value) => redactedEvidenceString(value, generatedAt)))].sort();
+}
+
+function redactedEvidenceString(value: string, generatedAt: string): string {
+  const redaction = redactDojoEvidenceArtifact({
+    artifact_kind: "file_name",
+    content: value,
+    created_at: generatedAt,
+  });
+  return typeof redaction.redacted_content === "string" ? redaction.redacted_content : "[REDACTED]";
+}
+
+function requiresEvidenceRecord(artifactUri: string | undefined): boolean {
+  if (!artifactUri?.trim()) return true;
+  try {
+    const protocol = new URL(artifactUri).protocol;
+    return !new Set(["dojo-artifact:", "memory:", "sha256:"]).has(protocol);
+  } catch {
+    return true;
+  }
 }
 
 function validateEvidenceRecordBinding(input: {

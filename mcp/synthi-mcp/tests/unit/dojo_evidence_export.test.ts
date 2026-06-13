@@ -137,6 +137,50 @@ describe("Dojo redacted evidence export", () => {
     })).toThrow("dojo_evidence_export_tenant_scope_mismatch");
   });
 
+  it("requires a ledger evidence record for external artifact URIs", () => {
+    expect(() => buildDojoRedactedEvidenceExportManifest({
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      generated_at: NOW,
+      artifacts: [{
+        artifact_id: "trace-a",
+        artifact_kind: "trace",
+        content: sensitiveTrace(),
+        artifact_uri: "https://evidence.example.test/trace-a.json",
+      }],
+    })).toThrow("dojo_evidence_export_record_required");
+  });
+
+  it("allows local generated artifacts while redacting source refs", () => {
+    const manifest = buildDojoRedactedEvidenceExportManifest({
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      generated_at: NOW,
+      artifacts: [{
+        artifact_id: "local-trace-a",
+        artifact_kind: "trace",
+        content: sensitiveTrace(),
+        artifact_uri: "dojo-artifact://open-details/trace.json",
+        source_refs: [
+          "mailto:person@example.test",
+          "C:\\Users\\polek\\Downloads\\invoice.pdf",
+          "https://app.example.test/callback?token=secret-token&state=kept",
+        ],
+      }],
+    });
+
+    const serialized = JSON.stringify(manifest);
+    expect(manifest.artifacts[0]?.evidence_record_id).toBeNull();
+    expect(manifest.artifacts[0]?.source_refs).toEqual([
+      "C:\\Users\\[REDACTED_USER]\\Downloads\\invoice.pdf",
+      "https://app.example.test/callback?token=[REDACTED]&state=kept",
+      "mailto:[REDACTED_EMAIL]",
+    ]);
+    expect(serialized).not.toContain("person@example.test");
+    expect(serialized).not.toContain("polek");
+    expect(serialized).not.toContain("secret-token");
+  });
+
   it("normalizes prefixed redaction digests to ledger-compatible raw SHA-256 values", () => {
     expect(dojoRedactionDigestHex(`sha256:${"A".repeat(64)}`)).toBe("a".repeat(64));
     expect(dojoRedactionDigestHex("b".repeat(64))).toBe("b".repeat(64));
