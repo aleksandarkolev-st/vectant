@@ -34,6 +34,18 @@ export interface DojoEnforcementConfig {
   invalid_env: DojoInvalidEnforcementEnv[];
 }
 
+export type DojoEvidenceLedgerStoreKind = "unconfigured" | "inline" | "postgres" | "external";
+
+export interface DojoEvidenceLedgerStoreConfig {
+  schema_version: "synthi.dojo.evidenceLedgerStoreConfig.v1";
+  store_kind: DojoEvidenceLedgerStoreKind;
+  configured: boolean;
+  production_capable: boolean;
+  inline_records_allowed: boolean;
+  configured_env: string[];
+  blocked_by: string[];
+}
+
 const TRUE_VALUES = ["1", "true", "yes", "on"];
 const FALSE_VALUES = ["0", "false", "no", "off"];
 const ACCEPTED_BOOLEAN_VALUES = [...TRUE_VALUES, ...FALSE_VALUES];
@@ -85,6 +97,32 @@ export function configuredDojoEvidenceLedgerEnv(env: NodeJS.ProcessEnv = process
   return [DOJO_EVIDENCE_LEDGER_STORE_ENV].filter((name) => nonEmpty(env[name]));
 }
 
+export function resolveDojoEvidenceLedgerStoreConfig(env: NodeJS.ProcessEnv = process.env): DojoEvidenceLedgerStoreConfig {
+  const rawStore = nonEmpty(env[DOJO_EVIDENCE_LEDGER_STORE_ENV]);
+  if (!rawStore) {
+    return {
+      schema_version: "synthi.dojo.evidenceLedgerStoreConfig.v1",
+      store_kind: "unconfigured",
+      configured: false,
+      production_capable: false,
+      inline_records_allowed: true,
+      configured_env: [],
+      blocked_by: ["evidence_ledger_store_unconfigured"],
+    };
+  }
+  const storeKind = classifyDojoEvidenceLedgerStore(rawStore);
+  const inline = storeKind === "inline";
+  return {
+    schema_version: "synthi.dojo.evidenceLedgerStoreConfig.v1",
+    store_kind: storeKind,
+    configured: true,
+    production_capable: !inline,
+    inline_records_allowed: inline,
+    configured_env: [DOJO_EVIDENCE_LEDGER_STORE_ENV],
+    blocked_by: inline ? ["evidence_ledger_store_inline_not_production_capable"] : [],
+  };
+}
+
 function readBooleanFlag(
   env: NodeJS.ProcessEnv,
   name: string
@@ -99,4 +137,18 @@ function readBooleanFlag(
 
 function nonEmpty(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function classifyDojoEvidenceLedgerStore(value: string): DojoEvidenceLedgerStoreKind {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "inline" || normalized === "memory" || normalized === "in-memory") return "inline";
+  if (
+    normalized === "postgres"
+    || normalized === "postgresql"
+    || normalized.startsWith("postgres://")
+    || normalized.startsWith("postgresql://")
+  ) {
+    return "postgres";
+  }
+  return "external";
 }

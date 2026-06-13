@@ -44,7 +44,7 @@ import {
   contextKeyForDojoGuardrailPredicate,
   normalizeDojoGuardrailPredicate,
 } from "../dojo/graph/guardrail_predicates.js";
-import { resolveDojoEnforcementConfig } from "../dojo/config/enforcement.js";
+import { resolveDojoEnforcementConfig, resolveDojoEvidenceLedgerStoreConfig } from "../dojo/config/enforcement.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { normalizeDojoProofErrorCodes } from "../dojo/proof/errors.js";
 import {
@@ -2067,6 +2067,23 @@ function dojoIssueProofCapsuleTool(args: unknown): ToolResponse {
   const requireVerifiedEvidence = boolOpt(a["require_verified_evidence"])
     || enforcement.production_enforcement
     || enforcement.require_evidence_ledger;
+  const evidenceLedgerStore = resolveDojoEvidenceLedgerStoreConfig();
+  if (enforcement.production_enforcement && enforcement.require_evidence_ledger && evidenceLedgerRecords.length > 0) {
+    return errorResponse("dojo_proof_evidence_ledger_inline_records_forbidden", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      requested_action: requestedAction,
+      enforcement_mode: enforcement.enforcement_mode,
+      require_verified_evidence: requireVerifiedEvidence,
+      evidence_record_count: evidenceLedgerRecords.length,
+      evidence_ledger_store_kind: evidenceLedgerStore.store_kind,
+      evidence_ledger_configured: evidenceLedgerStore.configured,
+      configured_env: evidenceLedgerStore.configured_env,
+      blocked_by: ["evidence_ledger_inline_records_forbidden_in_production"],
+      error_codes: ["proof_evidence_claim_unverified"],
+      message: "Production proof issuance must resolve evidence from the configured evidence ledger instead of caller-supplied inline records.",
+    });
+  }
   let capsule: DojoProofCarryingSkillCapsule;
   try {
     capsule = issueDojoProofCapsule(skill.skill, requestedAction, {

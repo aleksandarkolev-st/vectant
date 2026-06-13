@@ -20,6 +20,7 @@ import {
   DOJO_STORE_KEY_ENV,
   DOJO_STORE_SCOPE_ENV,
   isDojoDefaultLocalProofSigningKey,
+  resolveDojoEvidenceLedgerStoreConfig,
   resolveDojoEnforcementConfig,
   type DojoEnforcementConfig,
 } from "../dojo/config/enforcement.js";
@@ -269,7 +270,8 @@ function checkDojoEvidenceLedger(
     ...(config.require_evidence_ledger ? [DOJO_REQUIRE_EVIDENCE_LEDGER_ENV] : []),
     ...ledgerEnv,
   ];
-  if (config.require_evidence_ledger && ledgerEnv.length === 1) {
+  const ledgerStore = resolveDojoEvidenceLedgerStoreConfig(env);
+  if (config.require_evidence_ledger && ledgerStore.production_capable) {
     return pass(
       "dojo_evidence_ledger",
       "Dojo evidence ledger requirement is enabled and ledger store configuration is present.",
@@ -280,7 +282,9 @@ function checkDojoEvidenceLedger(
   return {
     id: "dojo_evidence_ledger",
     status: production ? "fail" : "warn",
-    message: "Dojo evidence ledger is not configured; production proof claims cannot be treated as evidence-backed.",
+    message: ledgerStore.configured
+      ? "Dojo evidence ledger is configured with a development-only inline store; production proof claims require an external evidence ledger."
+      : "Dojo evidence ledger is not configured; production proof claims cannot be treated as evidence-backed.",
     required_env: required,
     configured_env: configured,
   };

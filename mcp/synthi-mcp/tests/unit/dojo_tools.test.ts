@@ -1208,28 +1208,22 @@ describe("Agent Dojo MCP tools", () => {
     expect(wrongScope?.isError).toBe(true);
     const requiredClaims = storedSkill?.permission_license.proof_requirements.required_evidence_claims ?? [];
     expect(requiredClaims.length).toBeGreaterThan(0);
-    const expectedClaim = requiredClaims[0]!;
     expect(wrongScope?.structuredContent).toEqual(expect.objectContaining({
-      error: "dojo_proof_evidence_claim_unverified",
+      error: "dojo_proof_evidence_ledger_inline_records_forbidden",
       ok: false,
-      failed_evidence_claims: expect.arrayContaining(requiredClaims),
-      blocked_by: expect.arrayContaining([`evidence_claim_scope_mismatch:${expectedClaim}`]),
-      failed_evidence_claim_results: expect.arrayContaining([
-        expect.objectContaining({
-          claim_id: expectedClaim,
-          ok: false,
-          status: "failed",
-          evidence_record_ids: ["evidence-production-proof-wrong-workspace"],
-          blocked_by: expect.arrayContaining([`evidence_claim_scope_mismatch:${expectedClaim}`]),
-        }),
-      ]),
+      enforcement_mode: "production",
+      require_verified_evidence: true,
+      evidence_record_count: 1,
+      evidence_ledger_store_kind: "unconfigured",
+      blocked_by: ["evidence_ledger_inline_records_forbidden_in_production"],
+      error_codes: ["proof_evidence_claim_unverified"],
     }));
 
-    const issued = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+    const inlineEvidence = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
       ...productionTenantContextArgs({
         actor_id: "proof-issuer-a",
-        request_id: "req-proof-issued",
+        request_id: "req-proof-inline-evidence",
       }),
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
@@ -1237,34 +1231,15 @@ describe("Agent Dojo MCP tools", () => {
       now: "2026-06-11T00:05:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
-    expect(issued?.isError).toBeUndefined();
-    expect(issued?.structuredContent).toEqual(expect.objectContaining({
-      ok: true,
+    expect(inlineEvidence?.isError).toBe(true);
+    expect(inlineEvidence?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_evidence_ledger_inline_records_forbidden",
+      ok: false,
       enforcement_mode: "production",
       require_verified_evidence: true,
-      proof_capsule: expect.objectContaining({
-        evidence_record_ids: ["evidence-production-proof-001"],
-        ledger_checkpoint_hash: evidenceRecord.ledger_head_hash,
-        evidence_claims: storedSkill?.permission_license.proof_requirements.required_evidence_claims.map((claim) => ({
-          claim,
-          satisfied: true,
-          evidence_refs: ["evidence:evidence-production-proof-001"],
-        })),
-      }),
-      proof_record: expect.objectContaining({
-        tenant_id: "tenant-a",
-        workspace_id: "workspace-a",
-        skill_id: skillId,
-        license_id: storedSkill?.permission_license.license_id,
-        license_version: storedSkill?.permission_license.license_version,
-        key_id: expect.any(String),
-        signature_algorithm: expect.any(String),
-        substrate_claim: storedSkill?.preferred_substrate,
-        evidence_record_ids: ["evidence-production-proof-001"],
-        ledger_checkpoint_hash: evidenceRecord.ledger_head_hash,
-        issued_by: { actor_id: "proof-issuer-a", actor_type: "agent" },
-        status: "issued",
-      }),
+      evidence_record_count: 1,
+      blocked_by: ["evidence_ledger_inline_records_forbidden_in_production"],
+      message: expect.stringContaining("configured evidence ledger"),
     }));
   });
 

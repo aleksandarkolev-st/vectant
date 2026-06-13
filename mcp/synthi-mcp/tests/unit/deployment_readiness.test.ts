@@ -147,6 +147,22 @@ describe("browser workflow deployment readiness", () => {
     ]));
   });
 
+  it("fails production readiness when the Dojo evidence ledger is inline-only", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "inline",
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "dojo_evidence_ledger",
+        status: "fail",
+        message: expect.stringContaining("development-only inline store"),
+      }),
+    ]));
+  });
+
   it("fails production readiness with local Ed25519 proof signing material when external signing is required", () => {
     const readiness = browserWorkflowDeploymentReadiness({}, {
       ...productionReadyEnv(),

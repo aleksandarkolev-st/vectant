@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DOJO_DEFAULT_LOCAL_PROOF_SIGNING_KEY,
   isDojoDefaultLocalProofSigningKey,
+  resolveDojoEvidenceLedgerStoreConfig,
   resolveDojoEnforcementConfig,
 } from "../../src/dojo/config/enforcement.js";
 
@@ -59,5 +60,27 @@ describe("Dojo production enforcement config", () => {
     expect(isDojoDefaultLocalProofSigningKey({
       SYNTHI_DOJO_PROOF_SIGNING_KEY: "prod-specific-signing-secret",
     })).toBe(false);
+  });
+
+  it("classifies inline evidence ledger stores as development-only", () => {
+    expect(resolveDojoEvidenceLedgerStoreConfig({
+      SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "inline",
+    })).toEqual(expect.objectContaining({
+      store_kind: "inline",
+      configured: true,
+      production_capable: false,
+      inline_records_allowed: true,
+      blocked_by: ["evidence_ledger_store_inline_not_production_capable"],
+    }));
+
+    expect(resolveDojoEvidenceLedgerStoreConfig({
+      SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "postgres://dojo-evidence-ledger",
+    })).toEqual(expect.objectContaining({
+      store_kind: "postgres",
+      configured: true,
+      production_capable: true,
+      inline_records_allowed: false,
+      blocked_by: [],
+    }));
   });
 });
