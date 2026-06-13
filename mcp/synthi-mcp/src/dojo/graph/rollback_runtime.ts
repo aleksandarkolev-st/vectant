@@ -32,6 +32,14 @@ export interface DojoRollbackDecision {
 }
 
 export function decideDojoRollbackForAssertionFailure(node: DojoGraphNode): DojoRollbackDecision {
+  return decideRollbackFromNodePolicy(node);
+}
+
+export function decideDojoRollbackNodeExecution(node: DojoGraphNode): DojoRollbackDecision {
+  return decideRollbackFromNodePolicy(node);
+}
+
+function decideRollbackFromNodePolicy(node: DojoGraphNode): DojoRollbackDecision {
   const policy = rollbackPolicyForNode(node);
   if (!policy) {
     return {

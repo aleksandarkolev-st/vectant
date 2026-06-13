@@ -6,7 +6,7 @@ import {
 } from "../../src/dojo/graph/runtime.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
 
-describe("Dojo graph runtime skeleton", () => {
+describe("Dojo graph runtime", () => {
   it("executes a valid production graph when proof and preconditions are satisfied", async () => {
     const runtime = new DojoSkillGraphRuntime();
 
@@ -431,6 +431,138 @@ describe("Dojo graph runtime skeleton", () => {
     }));
   });
 
+  it("executes case-law nodes only when referenced cases are binding", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const events: DojoGraphEvidenceEvent[] = [];
+
+    await expect(runtime.execute({
+      graph: caseLawGraphFixture(),
+      mode: "practice",
+      run_id: "case-law-run-1",
+      inputs: {
+        case_law_bindings: {
+          case_duplicate_client: "approved",
+          case_fake_success: true,
+        },
+      },
+      evidence_writer: (event) => {
+        events.push(event);
+        return `ledger://${event.run_id}/${event.node_id}`;
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({ node_id: "case_law_gate", status: "completed" }),
+        expect.objectContaining({ node_id: "action_after_case_law", status: "completed" }),
+      ]),
+    }));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        node_id: "case_law_gate",
+        case_law_refs: ["case_duplicate_client", "case_fake_success"],
+      }),
+    ]));
+  });
+
+  it("blocks case-law nodes when binding state is missing or inactive", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: caseLawGraphFixture(),
+      mode: "practice",
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["case_law_binding_state_missing"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "case_law_gate",
+          status: "blocked",
+          blocked_by: ["case_law_binding_state_missing"],
+        }),
+      ]),
+    }));
+
+    await expect(runtime.execute({
+      graph: caseLawGraphFixture(),
+      mode: "practice",
+      inputs: {
+        case_law_bindings: {
+          case_duplicate_client: "proposed",
+        },
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: [
+        "case_law_not_binding:case_duplicate_client",
+        "case_law_binding_missing:case_fake_success",
+      ],
+    }));
+  });
+
+  it("executes rollback nodes with an available rollback policy", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const events: DojoGraphEvidenceEvent[] = [];
+
+    await expect(runtime.execute({
+      graph: rollbackNodeGraphFixture({ strategy: "same_session_restore", checkpoints: ["pre_submit"] }),
+      mode: "practice",
+      run_id: "rollback-run-1",
+      evidence_writer: (event) => {
+        events.push(event);
+        return `ledger://${event.run_id}/${event.node_id}`;
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "rollback_submit",
+          status: "completed",
+          rollback_decision: expect.objectContaining({
+            status: "rollback_available",
+            strategy: "same_session_restore",
+            checkpoints: ["pre_submit"],
+          }),
+        }),
+      ]),
+    }));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        node_id: "rollback_submit",
+        rollback_status: "rollback_available",
+        rollback_strategy: "same_session_restore",
+        rollback_requires_human_review: false,
+        rollback_checkpoints: ["pre_submit"],
+      }),
+    ]));
+  });
+
+  it("blocks rollback nodes when rollback is unavailable without human review", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: rollbackNodeGraphFixture({ strategy: "none", checkpoints: ["pre_submit"] }),
+      mode: "practice",
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["rollback_unavailable_human_review_required"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "rollback_submit",
+          status: "blocked",
+          rollback_decision: expect.objectContaining({
+            status: "needs_human",
+            requires_human_review: true,
+          }),
+        }),
+      ]),
+    }));
+  });
+
   it("pauses at a human node and returns resume state when approval is missing", async () => {
     const runtime = new DojoSkillGraphRuntime();
 
@@ -723,6 +855,79 @@ function retryGraphFixture(): DojoSkillGraph {
         edge_id: "edge_retry_action",
         from_node_id: "retry_submit",
         to_node_id: "action_submit",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function caseLawGraphFixture(): DojoSkillGraph {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-case-law",
+    skill_id: "skill-case-law",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "practice",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      safeNode("trigger", "Trigger", "Skill invocation"),
+      {
+        ...safeNode("case_law_gate", "CaseLaw", "Apply binding case law"),
+        case_law_refs: ["case_duplicate_client"],
+        metadata: { required_case_law_refs: ["case_fake_success"] },
+      },
+      safeNode("action_after_case_law", "Action", "Continue after case law"),
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_case_law",
+        from_node_id: "trigger",
+        to_node_id: "case_law_gate",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_case_law_action",
+        from_node_id: "case_law_gate",
+        to_node_id: "action_after_case_law",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function rollbackNodeGraphFixture(rollbackPolicy?: Record<string, unknown>): DojoSkillGraph {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-rollback",
+    skill_id: "skill-rollback",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "practice",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      safeNode("trigger", "Trigger", "Skill invocation"),
+      {
+        ...safeNode("rollback_submit", "Rollback", "Restore pre-submit checkpoint"),
+        ...(rollbackPolicy ? { metadata: { rollback_policy: rollbackPolicy } } : {}),
+      },
+      safeNode("action_after_rollback", "Action", "Continue after rollback"),
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_rollback",
+        from_node_id: "trigger",
+        to_node_id: "rollback_submit",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_rollback_action",
+        from_node_id: "rollback_submit",
+        to_node_id: "action_after_rollback",
         confidence: 1,
         observed_variants: [],
       },

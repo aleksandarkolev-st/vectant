@@ -8,7 +8,12 @@ import {
 } from "./types.js";
 import { evaluateDojoGuardrailPredicate } from "./guardrail_runtime.js";
 import { evaluateDojoGraphAssertions, type DojoAssertionRuntimeResult } from "./assertion_runtime.js";
-import { decideDojoRollbackForAssertionFailure, noRollbackRequired, type DojoRollbackDecision } from "./rollback_runtime.js";
+import {
+  decideDojoRollbackForAssertionFailure,
+  decideDojoRollbackNodeExecution,
+  noRollbackRequired,
+  type DojoRollbackDecision,
+} from "./rollback_runtime.js";
 import {
   createFakeDojoSubstrateExecutor,
   type DojoSubstrateExecutionResult,
@@ -86,6 +91,10 @@ export interface DojoGraphEvidenceEvent {
   proof_required: boolean;
   proof_claims: string[];
   case_law_refs: string[];
+  rollback_status?: DojoRollbackDecision["status"];
+  rollback_strategy?: DojoRollbackDecision["strategy"];
+  rollback_requires_human_review?: boolean;
+  rollback_checkpoints?: string[];
   assertion_ids: string[];
   substrate_status?: DojoSubstrateExecutionResult["status"];
   substrate?: DojoSubstrateExecutionResult["substrate"];
@@ -239,6 +248,34 @@ export class DojoSkillGraphRuntime {
             run_id: runId,
             node_results: nodeResults,
             blocked_by: humanDecision.blocked_by,
+            evidence_refs: evidenceRefs,
+          };
+        }
+      }
+
+      if (node.kind === "Rollback") {
+        const rollbackDecision = decideDojoRollbackNodeExecution(node);
+        const rollbackBlockedBy = rollbackDecision.status === "rollback_available"
+          ? []
+          : rollbackDecision.blocked_by.length > 0
+            ? rollbackDecision.blocked_by
+            : [`rollback_unavailable:${rollbackDecision.strategy}`];
+        const rollbackNodeResult: DojoGraphNodeRunResult = {
+          ...result,
+          status: rollbackBlockedBy.length > 0 ? "blocked" : "completed",
+          blocked_by: rollbackBlockedBy,
+          rollback_decision: rollbackDecision,
+        };
+        nodeResults[nodeResults.length - 1] = rollbackNodeResult;
+        if (rollbackBlockedBy.length > 0) {
+          evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, rollbackNodeResult));
+          return {
+            ok: false,
+            status: "blocked",
+            mode,
+            run_id: runId,
+            node_results: nodeResults,
+            blocked_by: rollbackBlockedBy,
             evidence_refs: evidenceRefs,
           };
         }
@@ -402,7 +439,11 @@ async function emitGraphNodeEvidence(
     guardrail_ids: node.guardrails.map((guardrail) => guardrail.guardrail_id),
     proof_required: node.proof?.required === true,
     proof_claims: [...(node.proof?.required_claims ?? [])],
-    case_law_refs: [...node.case_law_refs],
+    case_law_refs: requiredCaseLawRefsForNode(node),
+    rollback_status: result.rollback_decision.status,
+    rollback_strategy: result.rollback_decision.strategy,
+    rollback_requires_human_review: result.rollback_decision.requires_human_review,
+    rollback_checkpoints: [...result.rollback_decision.checkpoints],
     assertion_ids: result.assertion_results.map((assertion) => assertion.assertion_id),
     ...(result.substrate_result ? { substrate_status: result.substrate_result.status } : {}),
     ...(result.substrate_result?.substrate ? { substrate: result.substrate_result.substrate } : {}),
@@ -428,6 +469,9 @@ function blockedByForNode(
   const retryBlockedBy = retryBlockedByForNode(node, inputs);
   if (retryBlockedBy.length > 0) return retryBlockedBy;
 
+  const caseLawBlockedBy = caseLawBlockedByForNode(node, inputs);
+  if (caseLawBlockedBy.length > 0) return caseLawBlockedBy;
+
   const blockedBy = node.preconditions
     .filter((condition) => !evaluateStaticCondition(condition, inputs))
     .map((condition) => `precondition_failed:${condition}`);
@@ -439,6 +483,57 @@ function blockedByForNode(
     }
   }
   return blockedBy;
+}
+
+function caseLawBlockedByForNode(node: DojoGraphNode, inputs: Record<string, unknown>): string[] {
+  if (node.kind !== "CaseLaw") return [];
+
+  const requiredCaseIds = requiredCaseLawRefsForNode(node);
+  if (requiredCaseIds.length === 0) return ["case_law_refs_missing"];
+
+  const bindings = parseCaseLawBindingState(inputs["case_law_bindings"]);
+  if (!bindings) return ["case_law_binding_state_missing"];
+
+  const blockedBy: string[] = [];
+  for (const caseId of requiredCaseIds) {
+    if (!bindings.has(caseId)) {
+      blockedBy.push(`case_law_binding_missing:${caseId}`);
+      continue;
+    }
+    if (bindings.get(caseId) !== true) {
+      blockedBy.push(`case_law_not_binding:${caseId}`);
+    }
+  }
+  return blockedBy;
+}
+
+function requiredCaseLawRefsForNode(node: DojoGraphNode): string[] {
+  return uniqueStrings([
+    ...node.case_law_refs,
+    ...stringArrayMetadata(node, "required_case_law_refs"),
+  ]);
+}
+
+function parseCaseLawBindingState(value: unknown): Map<string, boolean> | null {
+  if (Array.isArray(value)) {
+    const activeIds = uniqueStrings(value.filter((item): item is string => typeof item === "string"));
+    if (activeIds.length === 0) return null;
+    return new Map(activeIds.map((caseId) => [caseId, true]));
+  }
+  if (!value || typeof value !== "object") return null;
+  const bindings = new Map<string, boolean>();
+  for (const [rawCaseId, rawStatus] of Object.entries(value as Record<string, unknown>)) {
+    const caseId = rawCaseId.trim();
+    if (!caseId) continue;
+    bindings.set(caseId, isActiveCaseLawBindingStatus(rawStatus));
+  }
+  return bindings.size > 0 ? bindings : null;
+}
+
+function isActiveCaseLawBindingStatus(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value !== "string") return false;
+  return ["active", "approved", "binding", "bound"].includes(value.trim().toLowerCase());
 }
 
 function expiryBlockedByForNode(node: DojoGraphNode, expiryState?: DojoGraphExpiryState): string[] {
@@ -524,6 +619,15 @@ function integerMetadata(node: DojoGraphNode, key: string): number | undefined {
 function stringMetadata(node: DojoGraphNode, key: string): string | undefined {
   const value = node.metadata?.[key];
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function stringArrayMetadata(node: DojoGraphNode, key: string): string[] {
+  const value = node.metadata?.[key];
+  return Array.isArray(value) ? uniqueStrings(value.filter((item): item is string => typeof item === "string")) : [];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort();
 }
 
 type DojoBranchDecision =
