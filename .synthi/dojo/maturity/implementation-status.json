@@ -56,6 +56,7 @@
     "synthi_dojo_generate_vivarium_scenarios": "deterministic_projection",
     "synthi_dojo_run_vivarium_scenario": "executable",
     "synthi_dojo_run_wind_tunnel": "executable",
+    "synthi_dojo_run_evil_twin": "executable",
     "synthi_dojo_run_checkride": "executable",
     "synthi_dojo_publish_skill": "executable",
     "synthi_dojo_recertify_skill": "deterministic_projection",

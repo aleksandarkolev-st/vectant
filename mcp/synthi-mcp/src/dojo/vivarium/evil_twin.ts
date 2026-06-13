@@ -1,7 +1,7 @@
 import type { DojoSkillGraph } from "../graph/types.js";
 import type { DojoSkillGraphRuntime } from "../graph/runtime.js";
 import type { DojoSubstrateExecutor } from "../graph/substrate_executor.js";
-import { DojoVivariumRunner, type DojoScenarioRunResult } from "./runner.js";
+import { DojoVivariumRunner, type DojoMaterializedScenario, type DojoScenarioRunResult } from "./runner.js";
 import type { DojoScenarioBudget, DojoScenarioDefinition } from "./scenario_dsl.js";
 
 export type DojoEvilTwinAssumptionKind =
@@ -66,6 +66,11 @@ export async function runDojoEvilTwin(input: {
   max_attacks?: number;
   base_inputs?: Record<string, unknown>;
   scenario_inputs?: Record<string, Record<string, unknown>>;
+  build_inputs?: (input: {
+    scenario: DojoScenarioDefinition;
+    materialized: DojoMaterializedScenario;
+    base_inputs: Record<string, unknown>;
+  }) => Record<string, unknown> | Promise<Record<string, unknown>>;
   budget_by_scenario?: Record<string, DojoScenarioBudget>;
   model_calls_used_by_scenario?: Record<string, number>;
   observed_evidence_by_scenario?: Record<string, string[]>;
@@ -86,6 +91,12 @@ export async function runDojoEvilTwin(input: {
       scenario,
       now: input.now,
     });
+    const baseInputs = input.base_inputs ?? {};
+    const builtInputs = await input.build_inputs?.({
+      scenario,
+      materialized,
+      base_inputs: baseInputs,
+    }) ?? {};
     const scenarioRun = await runner.run({
       materialized,
       graph: input.graph,
@@ -94,7 +105,8 @@ export async function runDojoEvilTwin(input: {
       substrate_executor: input.scenario_substrate_executors?.[scenario.scenario_id] ?? input.substrate_executor,
       budget: input.budget_by_scenario?.[scenario.scenario_id],
       inputs: {
-        ...(input.base_inputs ?? {}),
+        ...baseInputs,
+        ...builtInputs,
         ...(input.scenario_inputs?.[scenario.scenario_id] ?? {}),
       },
       observed_evidence: input.observed_evidence_by_scenario?.[scenario.scenario_id] ?? ["graph_run_result", "oracle_result"],
@@ -175,7 +187,21 @@ export async function hardenDojoEvilTwinAttacks(input: {
   graph: DojoSkillGraph;
   scenarios: DojoScenarioDefinition[];
   runner?: DojoVivariumRunner;
+  runtime?: DojoSkillGraphRuntime;
+  substrate_executor?: DojoSubstrateExecutor;
+  scenario_runtimes?: Record<string, DojoSkillGraphRuntime>;
+  scenario_substrate_executors?: Record<string, DojoSubstrateExecutor>;
   max_attacks?: number;
+  base_inputs?: Record<string, unknown>;
+  scenario_inputs?: Record<string, Record<string, unknown>>;
+  build_inputs?: (input: {
+    scenario: DojoScenarioDefinition;
+    materialized: DojoMaterializedScenario;
+    base_inputs: Record<string, unknown>;
+  }) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  budget_by_scenario?: Record<string, DojoScenarioBudget>;
+  model_calls_used_by_scenario?: Record<string, number>;
+  observed_evidence_by_scenario?: Record<string, string[]>;
   now?: string;
 }): Promise<DojoEvilTwinHardeningReport> {
   const before = await runDojoEvilTwin(input);

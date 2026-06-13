@@ -29,7 +29,12 @@ import {
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
 import { privateWorkflowToolDefinition, privateWorkflowToolRegistry } from "../browser/private_tool_registry.js";
 import { evaluateDojoLicenseKernel, markDojoProofExecution } from "../dojo/license/kernel.js";
-import { runDojoVivariumScenario, runDojoWindTunnel } from "../browser/dojo_vivarium.js";
+import {
+  buildDojoVivariumGraphInputsForFixture,
+  runDojoVivariumScenario,
+  runDojoWindTunnel,
+} from "../browser/dojo_vivarium.js";
+import type { DojoMaterializedScenario } from "../dojo/vivarium/runner.js";
 import { explainDojoRuntimeRefusal } from "../dojo/case_law/refusal.js";
 import { bindCaseLawGuardrailsToGraph } from "../dojo/case_law/guardrail_synthesizer.js";
 import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
@@ -69,6 +74,7 @@ import {
   type DojoHostedRuntimeGatewayResolution,
 } from "../dojo/runtime/hosted_runtime_gateway_resolver.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
+import { hardenDojoEvilTwinAttacks, runDojoEvilTwin } from "../dojo/vivarium/evil_twin.js";
 import { toDojoScenarioDefinitions, validateDojoScenarioDefinition } from "../dojo/vivarium/scenario_dsl.js";
 import type {
   DojoAuditActor,
@@ -132,6 +138,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_generate_vivarium_scenarios",
   "synthi_dojo_run_vivarium_scenario",
   "synthi_dojo_run_wind_tunnel",
+  "synthi_dojo_run_evil_twin",
   "synthi_dojo_run_checkride",
   "synthi_dojo_publish_skill",
   "synthi_dojo_recertify_skill",
@@ -1278,6 +1285,20 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_run_evil_twin",
+    description: "Run targeted Evil Twin attacks against a skill's executable graph inside materialized Vivarium fixtures.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
+        max_attacks: { type: "number" },
+        harden: { type: "boolean" },
+        now: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
     name: "synthi_dojo_run_checkride",
     description:
       "Run the Dojo checkride for the current or saved workflow, including compatibility scoring plus executable graph/Vivarium/oracle evidence.",
@@ -1601,6 +1622,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         break;
       case "synthi_dojo_run_wind_tunnel":
         response = await dojoRunWindTunnelTool(args);
+        break;
+      case "synthi_dojo_run_evil_twin":
+        response = await dojoRunEvilTwinTool(args);
         break;
       case "synthi_dojo_run_checkride":
         response = await dojoRunCheckrideTool(args);
@@ -2574,6 +2598,43 @@ async function dojoRunWindTunnelTool(args: unknown): Promise<ToolResponse> {
     persisted_skill: skillListItem(persisted),
     control_plane_persistence: durablePersistence.persistence ?? null,
     license_health: await licenseHealthFor(persisted, skill.tenant),
+  });
+}
+
+async function dojoRunEvilTwinTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_run_evil_twin");
+  if (!skill.ok) return skill.error;
+  const a = obj(args);
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
+  const runtimeSkill = withExecutableCheckrideGuardrails(skill.skill);
+  const compiledGraph = compileDojoSkillGraphForSkill(runtimeSkill, {
+    mode: "checkride",
+    created_at: now,
+  });
+  const scenarioDefinitions = toDojoScenarioDefinitions(runtimeSkill.scenarios, {
+    target_graph_node_ids: ["action"],
+  });
+  const buildInputs = ({ materialized }: { materialized: DojoMaterializedScenario }) =>
+    buildDojoVivariumGraphInputsForFixture(runtimeSkill, materialized.fixture);
+  const runtimeInput = {
+    graph: compiledGraph.graph,
+    scenarios: scenarioDefinitions,
+    max_attacks: numberOpt(a["max_attacks"]),
+    build_inputs: buildInputs,
+    now,
+  };
+  const evilTwinRuntime = await runDojoEvilTwin(runtimeInput);
+  const hardening = boolOpt(a["harden"])
+    ? await hardenDojoEvilTwinAttacks(runtimeInput)
+    : null;
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill_id: skill.skill.skill_id,
+    graph_validation: compiledGraph.validation,
+    evil_twin_runtime: evilTwinRuntime,
+    hardening,
+    license_health: await licenseHealthFor(skill.skill, skill.tenant),
   });
 }
 

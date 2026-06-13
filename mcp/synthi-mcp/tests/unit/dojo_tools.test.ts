@@ -1001,6 +1001,7 @@ describe("Agent Dojo MCP tools", () => {
         expect.objectContaining({ name: "synthi_dojo_get_universe_dossier" }),
         expect.objectContaining({ name: "synthi_dojo_run_vivarium_scenario" }),
         expect.objectContaining({ name: "synthi_dojo_run_wind_tunnel" }),
+        expect.objectContaining({ name: "synthi_dojo_run_evil_twin" }),
         expect.objectContaining({ name: "synthi_dojo_get_agent_ready_ui_contract" }),
         expect.objectContaining({ name: "synthi_dojo_explain_failure" }),
         expect.objectContaining({ name: "synthi_dojo_publish_skill" }),
@@ -1055,6 +1056,7 @@ describe("Agent Dojo MCP tools", () => {
         "synthi_dojo_generate_vivarium_scenarios",
         "synthi_dojo_run_vivarium_scenario",
         "synthi_dojo_run_wind_tunnel",
+        "synthi_dojo_run_evil_twin",
         "synthi_dojo_run_checkride",
         "synthi_dojo_publish_skill",
         "synthi_dojo_recertify_skill",
@@ -2155,6 +2157,42 @@ describe("Agent Dojo MCP tools", () => {
           }),
         ]),
       }),
+    }));
+    const evilTwin = await dispatchDojoTool("synthi_dojo_run_evil_twin", {
+      skill_id: published.skill.skill_id,
+      max_attacks: 2,
+      harden: true,
+      tenant_id: "tenant-vivarium",
+      organization_id: "org-vivarium",
+      workspace_id: "workspace-a",
+      actor_id: "evil-twin-tester",
+      actor_type: "agent",
+      request_id: "evil-twin-tool-test",
+      correlation_id: "evil-twin-tool-test-correlation",
+    });
+    expect(evilTwin?.structuredContent).toEqual(expect.objectContaining({
+      implementation_status: "executable",
+      runtime_enforced: true,
+      runtime_scope: "synthetic_fixture_runtime",
+      production_runtime: false,
+      simulation_backing: "materialized_synthetic_fixture",
+      evil_twin_runtime: expect.objectContaining({
+        schema_version: "synthi.dojo.evilTwinRuntimeReport.v1",
+        skill_id: published.skill.skill_id,
+        attack_count: 2,
+        attacks: expect.arrayContaining([
+          expect.objectContaining({
+            scenario_run: expect.objectContaining({
+              schema_version: "synthi.dojo.scenarioRunResult.v1",
+              observed_evidence: expect.arrayContaining(["graph_run_result", "graph_node_evidence", "oracle_result"]),
+            }),
+          }),
+        ]),
+      }),
+      hardening: expect.objectContaining({
+        schema_version: "synthi.dojo.evilTwinHardeningReport.v1",
+      }),
+      license_health: expect.objectContaining({ schema_version: "synthi.dojo.licenseHealth.v1" }),
     }));
     const health = await dispatchDojoTool("synthi_dojo_get_license_health", { skill_id: published.skill.skill_id });
     expect(health?.structuredContent).toEqual(expect.objectContaining({

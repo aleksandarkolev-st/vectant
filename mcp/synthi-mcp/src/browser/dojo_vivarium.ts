@@ -155,7 +155,7 @@ async function executeMaterializedScenario(
     mode: "checkride",
     created_at: now,
   });
-  const graphInputs = graphInputsForScenario(skill, materialized.fixture);
+  const graphInputs = buildDojoVivariumGraphInputsForFixture(skill, materialized.fixture);
   const requestedObservedEvidence = observedEvidenceForScenario(materialized.fixture, graphInputs);
   const scenarioRun = await runner.run({
     materialized,
@@ -263,7 +263,10 @@ function syntheticInputOverridesFor(skill: DojoSkill, scenario: DojoScenario): R
   ]));
 }
 
-function graphInputsForScenario(skill: DojoSkill, fixture: DojoMaterializedFixture): Record<string, unknown> {
+export function buildDojoVivariumGraphInputsForFixture(
+  skill: DojoSkill,
+  fixture: DojoMaterializedFixture
+): Record<string, unknown> {
   const workspaceVerified = workspaceVerifiedForFixture(fixture);
   const clientIdVerified = clientIdentityVerifiedForFixture(fixture);
   const lineItemsTotalVerified = lineItemsTotalVerifiedForFixture(fixture);

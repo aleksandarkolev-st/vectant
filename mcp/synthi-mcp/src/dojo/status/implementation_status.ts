@@ -94,6 +94,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_generate_vivarium_scenarios: deterministic("Generates scenario catalog data from a Skill Seed."),
   synthi_dojo_run_vivarium_scenario: syntheticRuntime("Materializes a synthetic fixture, runs the Skill Graph in checkride mode, and evaluates the oracle from observed evidence."),
   synthi_dojo_run_wind_tunnel: syntheticRuntime("Runs a budgeted set of materialized Vivarium scenarios through the graph runtime and oracle evaluator."),
+  synthi_dojo_run_evil_twin: syntheticRuntime("Runs targeted Evil Twin attacks through materialized Vivarium fixtures, graph runtime execution, and oracle-derived attack classification."),
   synthi_dojo_run_checkride: syntheticRuntime("Runs compatibility checkride scoring and an executable graph/Vivarium/oracle checkride with scenario evidence records."),
   synthi_dojo_publish_skill: executable("Builds, stores, and publishes a Dojo skill and backing private tool manifest."),
   synthi_dojo_recertify_skill: deterministic("Rebuilds skill artifacts using the current deterministic checkride and report builders."),
