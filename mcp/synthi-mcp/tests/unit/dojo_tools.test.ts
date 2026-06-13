@@ -345,6 +345,130 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("requires tenant authorization for production workflow certification tools", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const missingScenarioContext = await dispatchDojoTool("synthi_dojo_generate_vivarium_scenarios", {
+      workspace_id: "workspace-a",
+      reason: "production_scenario_projection",
+      actor_id: "scenario-author",
+      actor_type: "human",
+      evidence_refs: ["evidence:scenario-projection"],
+    });
+    expect(missingScenarioContext?.isError).toBe(true);
+    expect(missingScenarioContext?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_tenant_context_required",
+      blocked_by: expect.arrayContaining(["tenant_context_tenant_id_missing"]),
+    }));
+
+    const missingCheckrideContext = await dispatchDojoTool("synthi_dojo_run_checkride", {
+      workspace_id: "workspace-a",
+    });
+    expect(missingCheckrideContext?.isError).toBe(true);
+    expect(missingCheckrideContext?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_tenant_context_required",
+      blocked_by: expect.arrayContaining(["tenant_context_actor_id_missing"]),
+    }));
+
+    const missingPublishContext = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(missingPublishContext?.isError).toBe(true);
+    expect(missingPublishContext?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_tenant_context_required",
+      blocked_by: expect.arrayContaining(["tenant_context_roles_missing"]),
+    }));
+
+    const workspaceMismatch = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
+      ...productionTenantContextArgs({
+        workspace_id: "workspace-b",
+        request_id: "req-production-publish-source-mismatch",
+        correlation_id: "corr-production-publish-source-mismatch",
+      }),
+    }));
+    expect(workspaceMismatch?.isError).toBe(true);
+    expect(workspaceMismatch?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_workflow_workspace_mismatch",
+      source_workspace_id: "workspace-a",
+      requested_workspace_id: "workspace-b",
+      tenant_workspace_id: "workspace-b",
+      blocked_by: ["dojo_workflow_source_workspace_mismatch"],
+    }));
+
+    const scenarioProjection = await dispatchDojoTool("synthi_dojo_generate_vivarium_scenarios", {
+      reason: "production_scenario_projection",
+      evidence_refs: ["evidence:scenario-projection"],
+      ...productionTenantContextArgs({
+        actor_id: "scenario-author",
+        actor_type: "human",
+        request_id: "req-production-scenario-projection",
+        correlation_id: "corr-production-scenario-projection",
+      }),
+    });
+    expect(scenarioProjection?.isError).toBeUndefined();
+    expect(scenarioProjection?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      tenant_context: expect.objectContaining({
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        actor_id: "scenario-author",
+      }),
+      skill_seed: expect.objectContaining({ workspace_id: "workspace-a" }),
+    }));
+
+    const checkride = await dispatchDojoTool("synthi_dojo_run_checkride", productionTenantContextArgs({
+      actor_id: "checkride-tester",
+      actor_type: "human",
+      request_id: "req-production-workflow-checkride",
+      correlation_id: "corr-production-workflow-checkride",
+      now: "2026-06-11T00:00:00.000Z",
+    }));
+    expect(checkride?.isError).toBeUndefined();
+    expect(checkride?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      tenant_context: expect.objectContaining({
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        actor_id: "checkride-tester",
+      }),
+      executable_checkride: expect.objectContaining({
+        results: expect.arrayContaining([
+          expect.objectContaining({
+            evidence_record: expect.objectContaining({
+              tenant_id: "tenant-a",
+              workspace_id: "workspace-a",
+              created_by: "checkride-tester",
+            }),
+          }),
+        ]),
+      }),
+    }));
+
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
+      ...productionTenantContextArgs({
+        actor_id: "unit-publisher",
+        actor_type: "human",
+        request_id: "req-production-publish-workflow",
+        correlation_id: "corr-production-publish-workflow",
+      }),
+    }));
+    expect(publish?.isError).toBeUndefined();
+    expect(publish?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      mcp_skill_manifest: expect.objectContaining({
+        skill: expect.objectContaining({ workspace_id: "workspace-a" }),
+      }),
+      publication: expect.objectContaining({
+        audit_event: expect.objectContaining({
+          tenant_context: expect.objectContaining({
+            tenant_id: "tenant-a",
+            workspace_id: "workspace-a",
+            actor_id: "unit-publisher",
+          }),
+        }),
+      }),
+    }));
+  });
+
   it("requires tenant authorization for production skill report surfaces", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
@@ -919,8 +1043,11 @@ describe("Agent Dojo MCP tools", () => {
         "synthi_dojo_request_permission_upgrade",
         "synthi_dojo_review_permission_upgrade",
         "synthi_dojo_review_case_law",
+        "synthi_dojo_generate_vivarium_scenarios",
         "synthi_dojo_run_vivarium_scenario",
         "synthi_dojo_run_wind_tunnel",
+        "synthi_dojo_run_checkride",
+        "synthi_dojo_publish_skill",
         "synthi_dojo_recertify_skill",
         "synthi_dojo_get_license_health",
         "synthi_dojo_revoke_license",
@@ -957,7 +1084,14 @@ describe("Agent Dojo MCP tools", () => {
     process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
 
     recordOpenDetailsWorkflowForDojoToolTest();
-    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
+      ...productionTenantContextArgs({
+        actor_id: "unit-publisher",
+        actor_type: "human",
+        request_id: "req-production-proof-publish",
+        correlation_id: "corr-production-proof-publish",
+      }),
+    }));
     expect(publish?.isError).toBeUndefined();
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
 

@@ -460,11 +460,9 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
+        ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
         workflow_id: { type: "string" },
-        workspace_id: { type: "string" },
         reason: { type: "string" },
-        actor_id: { type: "string" },
-        actor_type: { type: "string", enum: ["human", "agent", "service"] },
         evidence_refs: { type: "array", items: { type: "string" } },
         now: { type: "string" },
       },
@@ -504,8 +502,9 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
+        ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
         workflow_id: { type: "string" },
-        workspace_id: { type: "string" },
+        now: { type: "string" },
       },
       required: [],
     },
@@ -517,8 +516,11 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
+        ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
         workflow_id: { type: "string" },
-        workspace_id: { type: "string" },
+        reason: { type: "string" },
+        evidence_refs: { type: "array", items: { type: "string" } },
+        now: { type: "string" },
       },
       required: [],
     },
@@ -1422,14 +1424,14 @@ function dojoReviewCaseLawTool(args: unknown): ToolResponse {
 }
 
 function dojoGenerateVivariumScenariosTool(args: unknown): ToolResponse {
-  const artifact = requiredWorkflowArtifact(args);
-  if (!artifact.ok) return artifact.error;
-  const workspaceId = stringOpt(obj(args)["workspace_id"]);
-  const seed = extractDojoSkillSeed(artifact.artifact.workflow.contract, { workspace_id: workspaceId });
+  const workflow = requiredAuthorizedWorkflowArtifact(args);
+  if (!workflow.ok) return workflow.error;
+  const seed = extractDojoSkillSeed(workflow.artifact.workflow.contract, { workspace_id: workflow.workspace_id });
   const scenarios = generateDojoVivariumScenarios(seed);
   return jsonResponse({
     ok: true,
-    workflow_id: artifact.artifact.workflow_id,
+    workflow_id: workflow.artifact.workflow_id,
+    tenant_context: workflow.tenant,
     skill_seed: seed,
     organoid: {
       schema_version: "synthi.dojo.workspaceOrganoid.v1",
@@ -1442,7 +1444,7 @@ function dojoGenerateVivariumScenariosTool(args: unknown): ToolResponse {
         ui: { surfaces: seed.touched_surfaces },
         data: { models: seed.touched_data_models, inputs: seed.input_schema },
         policy: { clues: seed.policy_clues },
-        identity: { auth_required: artifact.artifact.workflow.contract.authPlan.required },
+        identity: { auth_required: workflow.artifact.workflow.contract.authPlan.required },
         document: { synthetic_only: true },
         api: { anchors: seed.source_or_api_anchors.filter((anchor) => anchor.kind === "api") },
         failure: { modes: seed.candidate_failure_modes },
@@ -1498,11 +1500,11 @@ async function dojoRunWindTunnelTool(args: unknown): Promise<ToolResponse> {
 }
 
 async function dojoRunCheckrideTool(args: unknown): Promise<ToolResponse> {
-  const artifact = requiredWorkflowArtifact(args);
-  if (!artifact.ok) return artifact.error;
+  const workflow = requiredAuthorizedWorkflowArtifact(args);
+  if (!workflow.ok) return workflow.error;
   const a = obj(args);
-  const contract = artifact.artifact.workflow.contract;
-  const workspaceId = stringOpt(a["workspace_id"]);
+  const contract = workflow.artifact.workflow.contract;
+  const workspaceId = workflow.workspace_id;
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const seed = extractDojoSkillSeed(contract, { workspace_id: workspaceId, now });
   const scenarios = generateDojoVivariumScenarios(seed);
@@ -1529,18 +1531,19 @@ async function dojoRunCheckrideTool(args: unknown): Promise<ToolResponse> {
     scenarios: scenarioDefinitions,
     base_inputs: checkrideRuntimeInputsFor(runtimeSkill),
     evidence_context: {
-      tenant_id: stringOpt(a["tenant_id"]) ?? "local-tenant",
-      workspace_id: workspaceId ?? runtimeSkill.workspace_id,
+      tenant_id: workflow.tenant.tenant_id,
+      workspace_id: workflow.tenant.workspace_id,
       skill_id: runtimeSkill.skill_id,
       created_at: now,
-      created_by: stringOpt(a["actor_id"]) ?? "synthi_dojo_run_checkride",
+      created_by: workflow.tenant.actor_id,
       run_id_prefix: `checkride_${hashId(`${runtimeSkill.skill_id}:${now}`)}`,
     },
     now,
   });
   return jsonResponse({
     ok: true,
-    workflow_id: artifact.artifact.workflow_id,
+    workflow_id: workflow.artifact.workflow_id,
+    tenant_context: workflow.tenant,
     skill_seed: seed,
     scenarios,
     checkride,
@@ -1604,10 +1607,10 @@ function checkrideRuntimeInputsFor(skill: DojoSkill): Record<string, unknown> {
 }
 
 function dojoPublishSkillTool(args: unknown): ToolResponse {
-  const artifact = requiredWorkflowArtifact(args);
-  if (!artifact.ok) return artifact.error;
+  const workflow = requiredAuthorizedWorkflowArtifact(args);
+  if (!workflow.ok) return workflow.error;
   const a = obj(args);
-  const workspaceId = stringOpt(a["workspace_id"]);
+  const workspaceId = workflow.workspace_id;
   const reason = stringOpt(a["reason"]);
   if (!reason) return errorResponse("dojo_skill_publication_reason_required");
   const actorId = stringOpt(a["actor_id"]);
@@ -1617,9 +1620,9 @@ function dojoPublishSkillTool(args: unknown): ToolResponse {
   const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
   if (evidenceRefs.length === 0) return errorResponse("dojo_skill_publication_evidence_required");
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
-  const contract = artifact.artifact.workflow.contract;
+  const contract = workflow.artifact.workflow.contract;
   const manifest = generatePrivateWorkflowToolManifest(contract);
-  const publishedTool = publishBackingPrivateTool(manifest, artifact.artifact);
+  const publishedTool = publishBackingPrivateTool(manifest, workflow.artifact);
   const skill = dojoSkillRegistry.publish(buildDojoSkill(contract, {
     workspace_id: workspaceId,
     now,
@@ -1636,6 +1639,7 @@ function dojoPublishSkillTool(args: unknown): ToolResponse {
     workspace_id: skill.workspace_id,
     skill_id: skill.skill_id,
     license_id: skill.permission_license.license_id,
+    tenant_context: workflow.tenant,
     reason,
     evidence_refs: evidenceRefs,
   };
@@ -2351,6 +2355,56 @@ function requiredAuthorizedSkill(
   return { ok: true, skill: skill.skill, tenant: authorization.tenant };
 }
 
+function requiredAuthorizedWorkflowArtifact(
+  args: unknown
+): { ok: true; artifact: BrowserWorkflowArtifact; tenant: DojoTenantContext; workspace_id: string } | { ok: false; error: ToolResponse } {
+  const artifact = requiredWorkflowArtifact(args);
+  if (!artifact.ok) return artifact;
+  const workspaceId = workflowWorkspaceIdForDojoTool(args, artifact.artifact);
+  const tenantContext = dojoTenantContextResultFromArgs(args, {
+    development_defaults: { workspace_id: workspaceId },
+  });
+  if (!tenantContext.ok) return tenantContext;
+  const tenant = tenantContext.tenant;
+  const sourceWorkspaceId = sourceWorkspaceIdForWorkflowArtifact(artifact.artifact);
+  const requestedWorkspaceId = stringOpt(obj(args)["workspace_id"]);
+  if (
+    sourceWorkspaceId
+    && requestedWorkspaceId
+    && sourceWorkspaceId !== requestedWorkspaceId
+    && !isTenantElevatedDojoOperator(tenant)
+  ) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_workflow_workspace_mismatch", {
+        ok: false,
+        workflow_id: artifact.artifact.workflow_id,
+        source_workspace_id: sourceWorkspaceId,
+        requested_workspace_id: requestedWorkspaceId,
+        tenant_workspace_id: tenant.workspace_id,
+        actor_id: tenant.actor_id,
+        blocked_by: ["dojo_workflow_source_workspace_mismatch"],
+        required_roles: ["dojo:admin", "dojo:operator"],
+      }),
+    };
+  }
+  if (!isTenantAuthorizedForWorkspace(tenant, workspaceId)) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_workflow_not_authorized", {
+        ok: false,
+        workflow_id: artifact.artifact.workflow_id,
+        workspace_id: workspaceId,
+        tenant_workspace_id: tenant.workspace_id,
+        actor_id: tenant.actor_id,
+        blocked_by: ["dojo_workflow_workspace_mismatch"],
+        required_roles: ["dojo:admin", "dojo:operator"],
+      }),
+    };
+  }
+  return { ok: true, artifact: artifact.artifact, tenant, workspace_id: workspaceId };
+}
+
 function authorizeTenantForDojoSkill(
   args: unknown,
   skill: DojoSkill
@@ -2426,10 +2480,30 @@ function authorizeTenantForCaseLawRecord(
 }
 
 function isTenantAuthorizedForDojoSkill(tenant: DojoTenantContext, skill: DojoSkill): boolean {
+  return isTenantAuthorizedForWorkspace(tenant, skill.workspace_id);
+}
+
+function isTenantAuthorizedForWorkspace(tenant: DojoTenantContext, workspaceId: string): boolean {
   const enforcement = resolveDojoEnforcementConfig();
   if (!enforcement.production_enforcement && tenant.roles.includes("dojo:legacy")) return true;
-  if (tenant.roles.some((role) => role === "admin" || role === "dojo:admin" || role === "dojo:operator")) return true;
-  return tenant.workspace_id === skill.workspace_id;
+  if (isTenantElevatedDojoOperator(tenant)) return true;
+  return tenant.workspace_id === workspaceId;
+}
+
+function isTenantElevatedDojoOperator(tenant: DojoTenantContext): boolean {
+  return tenant.roles.some((role) => role === "admin" || role === "dojo:admin" || role === "dojo:operator");
+}
+
+function workflowWorkspaceIdForDojoTool(args: unknown, artifact: BrowserWorkflowArtifact): string {
+  return stringOpt(obj(args)["workspace_id"]) ?? sourceWorkspaceIdForWorkflowArtifact(artifact) ?? "unknown-workspace";
+}
+
+function sourceWorkspaceIdForWorkflowArtifact(artifact: BrowserWorkflowArtifact): string | null {
+  for (const step of artifact.workflow.contract.steps) {
+    const workspaceId = step.sourcePlan.workspaceId;
+    if (workspaceId) return workspaceId;
+  }
+  return null;
 }
 
 function visibleDojoSkillsForTenant(tenant: DojoTenantContext, skills: DojoSkill[] = dojoSkillRegistry.list()): DojoSkill[] {
