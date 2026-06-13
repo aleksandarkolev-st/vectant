@@ -1,11 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { buildDojoSkill, exportDojoRepoArtifacts } from "../../src/browser/dojo.js";
 import { compileDojoSkillGraphForSkill } from "../../src/dojo/graph/compiler.js";
 import { isParseableDojoGuardrailPredicate } from "../../src/dojo/graph/guardrail_predicates.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
+import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
 
 describe("Dojo graph compiler", () => {
+  beforeEach(() => {
+    sourceIdentityRegistry.resetForTests();
+  });
+
   it("compiles a Dojo skill into a validated graph IR", () => {
     const skill = skillFixture();
     const compiled = compileDojoSkillGraphForSkill(skill, { created_at: "2026-06-11T00:00:00.000Z" });
@@ -65,6 +70,71 @@ describe("Dojo graph compiler", () => {
     }));
   });
 
+  it("preserves source and API bindings on compiled action nodes", () => {
+    sourceIdentityRegistry.register({
+      workspaceId: "workspace-a",
+      filePath: "src/features/invoices/SaveInvoiceButton.tsx",
+      adapter: "unit-test",
+      transformVersion: "unit_source_identity_v1",
+      tokens: [{
+        token: "invoice.save",
+        file: "src/features/invoices/SaveInvoiceButton.tsx",
+        line: 42,
+        column: 7,
+        tag: "button",
+      }],
+    });
+    const skill = skillFixture({
+      saveSourceId: "invoice.save",
+    });
+    const apiAnchor = {
+      anchor_id: "api_invoice_create",
+      kind: "api" as const,
+      label: "Create invoice API candidate",
+      source_step_id: "save",
+      api_candidate_id: "api_candidate_invoice_create",
+      method: "POST",
+      path: "/api/invoices",
+      proof_claim_mapping: { workspace_verified: "claim:workspace_verified" },
+    };
+    skill.skill_seed.source_or_api_anchors.push(apiAnchor);
+    skill.source_links.push(apiAnchor);
+    skill.execution_substrates = [...new Set([...skill.execution_substrates, "api"])];
+
+    const graph = compileDojoSkillGraphForSkill(skill).graph;
+    const action = graph.nodes.find((node) => node.node_id === "action");
+
+    expect(action).toEqual(expect.objectContaining({
+      source_bindings: expect.arrayContaining([
+        expect.objectContaining({
+          anchor_id: expect.stringMatching(/^source_/),
+          kind: "source",
+          source_step_id: "save",
+          source_id: "invoice.save",
+          file_path: "src/features/invoices/SaveInvoiceButton.tsx",
+          line: 42,
+        }),
+      ]),
+      api_bindings: [
+        expect.objectContaining({
+          anchor_id: "api_invoice_create",
+          kind: "api",
+          source_step_id: "save",
+          api_candidate_id: "api_candidate_invoice_create",
+          method: "POST",
+          path: "/api/invoices",
+          proof_claim_mapping: { workspace_verified: "claim:workspace_verified" },
+        }),
+      ],
+      metadata: expect.objectContaining({
+        source_anchor_ids: expect.arrayContaining([expect.stringMatching(/^source_/)]),
+        api_anchor_ids: ["api_invoice_create"],
+        api_candidate_id: "api_candidate_invoice_create",
+        api_candidate_ids: ["api_candidate_invoice_create"],
+      }),
+    }));
+  });
+
   it("adapts existing repo graph artifacts to the compiled IR", () => {
     const skill = skillFixture();
     const graphArtifact = exportDojoRepoArtifacts(skill)
@@ -82,14 +152,14 @@ describe("Dojo graph compiler", () => {
   });
 });
 
-function skillFixture() {
+function skillFixture(input: { clientSourceId?: string; saveSourceId?: string } = {}) {
   return buildDojoSkill(compileWorkflowContract([
     event({
       event_id: "client",
       event_seq: 1,
       action: "fill",
       value: "Acme",
-      detail: { element: { role: "textbox", label: "Client name" } },
+      detail: { element: { role: "textbox", label: "Client name", ...(input.clientSourceId ? { source_id: input.clientSourceId } : {}) } },
       locator_candidates: [
         { kind: "label", locator: "page.getByLabel(\"Client name\")", confidence: 0.94, reason: "form_label" },
       ],
@@ -98,7 +168,7 @@ function skillFixture() {
       event_id: "save",
       event_seq: 2,
       action: "click",
-      detail: { element: { role: "button", name: "Save invoice" } },
+      detail: { element: { role: "button", name: "Save invoice", ...(input.saveSourceId ? { source_id: input.saveSourceId } : {}) } },
       locator_candidates: [
         { kind: "role", locator: "page.getByRole(\"button\", { name: \"Save invoice\" })", confidence: 0.96, reason: "role" },
       ],

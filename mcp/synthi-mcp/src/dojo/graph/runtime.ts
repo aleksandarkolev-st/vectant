@@ -91,6 +91,8 @@ export interface DojoGraphEvidenceEvent {
   proof_required: boolean;
   proof_claims: string[];
   case_law_refs: string[];
+  source_binding_ids: string[];
+  api_binding_ids: string[];
   rollback_status?: DojoRollbackDecision["status"];
   rollback_strategy?: DojoRollbackDecision["strategy"];
   rollback_requires_human_review?: boolean;
@@ -547,6 +549,8 @@ async function emitGraphNodeEvidence(
       proof_required: node.proof?.required === true,
       proof_claims: [...(node.proof?.required_claims ?? [])],
       case_law_refs: requiredCaseLawRefsForNode(node),
+      source_binding_ids: (node.source_bindings ?? []).map((binding) => binding.binding_id),
+      api_binding_ids: (node.api_bindings ?? []).map((binding) => binding.binding_id),
       rollback_status: result.rollback_decision.status,
       rollback_strategy: result.rollback_decision.strategy,
       rollback_requires_human_review: result.rollback_decision.requires_human_review,

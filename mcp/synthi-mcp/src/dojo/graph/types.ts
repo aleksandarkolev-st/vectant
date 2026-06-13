@@ -43,6 +43,29 @@ export interface DojoGraphAssertionRequirement {
   required: boolean;
 }
 
+export interface DojoGraphSourceBinding {
+  binding_id: string;
+  anchor_id: string;
+  kind: "source";
+  label: string;
+  source_step_id?: string;
+  source_id?: string;
+  file_path?: string;
+  line?: number;
+}
+
+export interface DojoGraphApiBinding {
+  binding_id: string;
+  anchor_id: string;
+  kind: "api";
+  label: string;
+  source_step_id?: string;
+  api_candidate_id?: string;
+  method?: string;
+  path?: string;
+  proof_claim_mapping?: Record<string, string>;
+}
+
 export interface DojoGraphNode {
   node_id: string;
   kind: DojoGraphNodeKind;
@@ -58,6 +81,8 @@ export interface DojoGraphNode {
   evidence_policy: string[];
   case_law_refs: string[];
   expiry_triggers: string[];
+  source_bindings?: DojoGraphSourceBinding[];
+  api_bindings?: DojoGraphApiBinding[];
   metadata?: Record<string, unknown>;
 }
 
@@ -145,6 +170,41 @@ export function validateDojoSkillGraph(graph: DojoSkillGraph): DojoGraphValidati
             `Production proof requires guardrail ${guardrailId}, but it is not a blocking guardrail on node ${node.node_id}.`,
             node.node_id
           ));
+        }
+      }
+    }
+    for (const binding of node.source_bindings ?? []) {
+      if (!binding.binding_id.trim()) {
+        issues.push(errorIssue("source_binding_id_required", `Source binding on node ${node.node_id} is missing binding_id.`, node.node_id));
+      }
+      if (!binding.anchor_id.trim()) {
+        issues.push(errorIssue("source_binding_anchor_required", `Source binding ${binding.binding_id || "(unknown)"} on node ${node.node_id} is missing anchor_id.`, node.node_id));
+      }
+      if (binding.kind !== "source") {
+        issues.push(errorIssue("source_binding_kind_invalid", `Source binding ${binding.binding_id || "(unknown)"} on node ${node.node_id} must have kind source.`, node.node_id));
+      }
+      if (!binding.label.trim()) {
+        issues.push(errorIssue("source_binding_label_required", `Source binding ${binding.binding_id || "(unknown)"} on node ${node.node_id} is missing label.`, node.node_id));
+      }
+    }
+    for (const binding of node.api_bindings ?? []) {
+      if (!binding.binding_id.trim()) {
+        issues.push(errorIssue("api_binding_id_required", `API binding on node ${node.node_id} is missing binding_id.`, node.node_id));
+      }
+      if (!binding.anchor_id.trim()) {
+        issues.push(errorIssue("api_binding_anchor_required", `API binding ${binding.binding_id || "(unknown)"} on node ${node.node_id} is missing anchor_id.`, node.node_id));
+      }
+      if (binding.kind !== "api") {
+        issues.push(errorIssue("api_binding_kind_invalid", `API binding ${binding.binding_id || "(unknown)"} on node ${node.node_id} must have kind api.`, node.node_id));
+      }
+      if (!binding.label.trim()) {
+        issues.push(errorIssue("api_binding_label_required", `API binding ${binding.binding_id || "(unknown)"} on node ${node.node_id} is missing label.`, node.node_id));
+      }
+      if (binding.proof_claim_mapping !== undefined) {
+        for (const [claimId, evidenceRef] of Object.entries(binding.proof_claim_mapping)) {
+          if (!claimId.trim() || !evidenceRef.trim()) {
+            issues.push(errorIssue("api_binding_proof_mapping_invalid", `API binding ${binding.binding_id || "(unknown)"} on node ${node.node_id} has an invalid proof claim mapping.`, node.node_id));
+          }
         }
       }
     }

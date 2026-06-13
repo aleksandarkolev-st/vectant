@@ -136,8 +136,13 @@ export interface DojoSourceAnchor {
   kind: "source" | "api" | "ui";
   label: string;
   source_step_id?: string;
+  source_id?: string;
   file_path?: string;
   line?: number;
+  api_candidate_id?: string;
+  method?: string;
+  path?: string;
+  proof_claim_mapping?: Record<string, string>;
 }
 
 export interface DojoOpenQuestion {
@@ -3804,6 +3809,7 @@ function sourceAnchorsFor(contract: WorkflowContractV7): DojoSourceAnchor[] {
       kind: "source",
       label: step.sourcePlan.filePath ?? step.label,
       source_step_id: step.stepId,
+      ...(step.sourcePlan.sourceId ? { source_id: step.sourcePlan.sourceId } : {}),
       ...(step.sourcePlan.filePath ? { file_path: step.sourcePlan.filePath } : {}),
       ...(step.sourcePlan.line ? { line: step.sourcePlan.line } : {}),
     });

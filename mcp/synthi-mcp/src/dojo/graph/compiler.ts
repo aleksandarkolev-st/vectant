@@ -1,9 +1,11 @@
-import type { DojoAssertion, DojoGuardrail, DojoSkill } from "../../browser/dojo.js";
+import type { DojoAssertion, DojoGuardrail, DojoSkill, DojoSourceAnchor } from "../../browser/dojo.js";
 import type { WorkflowContractV7 } from "../../browser/workflow.js";
 import {
   type DojoGraphEdge,
+  type DojoGraphApiBinding,
   type DojoGraphNode,
   type DojoGraphNodeRisk,
+  type DojoGraphSourceBinding,
   type DojoSkillGraph,
   validateDojoSkillGraph,
 } from "./types.js";
@@ -130,6 +132,8 @@ function actionNode(skill: DojoSkill): DojoGraphNode {
       severity: "block" as const,
     };
   });
+  const sourceBindings = sourceBindingsForSkill(skill);
+  const apiBindings = apiBindingsForSkill(skill);
   return {
     ...baseNode("action", "Action", skill.published_tool_name ?? "Workflow replay", risk),
     action: "run_workflow",
@@ -146,14 +150,62 @@ function actionNode(skill: DojoSkill): DojoGraphNode {
     evidence_policy: ["append_action_trace", "append_postcondition_evidence"],
     case_law_refs: skill.case_law.map((item) => item.case_id),
     expiry_triggers: skill.permission_license.expiry_policy.expires_on,
+    source_bindings: sourceBindings,
+    api_bindings: apiBindings,
     metadata: {
       rollback_policy: skill.rollback_policy,
       guardrail_predicates: guardrails.map((guardrail) => ({
         guardrail_id: guardrail.guardrail_id,
         predicate: guardrail.predicate,
       })),
+      source_anchor_ids: sourceBindings.map((binding) => binding.anchor_id),
+      api_anchor_ids: apiBindings.map((binding) => binding.anchor_id),
+      ...(apiBindings.length === 1 && apiBindings[0]?.api_candidate_id ? { api_candidate_id: apiBindings[0].api_candidate_id } : {}),
+      ...(apiBindings.length > 0
+        ? { api_candidate_ids: apiBindings.map((binding) => binding.api_candidate_id).filter(isNonEmptyString) }
+        : {}),
     },
   };
+}
+
+function sourceBindingsForSkill(skill: DojoSkill): DojoGraphSourceBinding[] {
+  return uniqueAnchorsForSkill(skill)
+    .filter((anchor) => anchor.kind === "source")
+    .map((anchor) => ({
+      binding_id: `source_binding_${anchor.anchor_id}`,
+      anchor_id: anchor.anchor_id,
+      kind: "source" as const,
+      label: anchor.label,
+      ...(anchor.source_step_id ? { source_step_id: anchor.source_step_id } : {}),
+      ...(anchor.source_id ? { source_id: anchor.source_id } : {}),
+      ...(anchor.file_path ? { file_path: anchor.file_path } : {}),
+      ...(anchor.line ? { line: anchor.line } : {}),
+    }));
+}
+
+function apiBindingsForSkill(skill: DojoSkill): DojoGraphApiBinding[] {
+  return uniqueAnchorsForSkill(skill)
+    .filter((anchor) => anchor.kind === "api")
+    .map((anchor) => ({
+      binding_id: `api_binding_${anchor.anchor_id}`,
+      anchor_id: anchor.anchor_id,
+      kind: "api" as const,
+      label: anchor.label,
+      ...(anchor.source_step_id ? { source_step_id: anchor.source_step_id } : {}),
+      ...(anchor.api_candidate_id ? { api_candidate_id: anchor.api_candidate_id } : {}),
+      ...(anchor.method ? { method: anchor.method } : {}),
+      ...(anchor.path ? { path: anchor.path } : {}),
+      ...(anchor.proof_claim_mapping ? { proof_claim_mapping: { ...anchor.proof_claim_mapping } } : {}),
+    }));
+}
+
+function uniqueAnchorsForSkill(skill: DojoSkill): DojoSourceAnchor[] {
+  const byId = new Map<string, DojoSourceAnchor>();
+  for (const anchor of [...skill.skill_seed.source_or_api_anchors, ...skill.source_links]) {
+    if (!anchor.anchor_id.trim()) continue;
+    byId.set(anchor.anchor_id, anchor);
+  }
+  return [...byId.values()];
 }
 
 function assertionNode(assertions: DojoAssertion[]): DojoGraphNode {
@@ -233,4 +285,8 @@ function actionRisk(skill: DojoSkill): DojoGraphNodeRisk {
   return skill.permission_license.gated_actions.length > 0 || skill.permission_license.blocked_actions.length > 0
     ? "dangerous"
     : "mutation";
+}
+
+function isNonEmptyString(value: string | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
