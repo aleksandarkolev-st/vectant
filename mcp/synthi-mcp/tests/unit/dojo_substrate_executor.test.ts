@@ -41,6 +41,7 @@ describe("Dojo substrate executor", () => {
       },
       proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -62,6 +63,7 @@ describe("Dojo substrate executor", () => {
       },
       proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -136,6 +138,7 @@ describe("Dojo substrate executor", () => {
       },
       proof_capsule: { capsule_id: "capsule-a" },
       proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
     })).resolves.toEqual(expect.objectContaining({
       ok: true,
       node_results: expect.arrayContaining([
@@ -160,6 +163,7 @@ describe("Dojo substrate executor", () => {
       },
       proof_capsule: { capsule_id: "capsule-a" },
       proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
     })).resolves.toEqual(expect.objectContaining({
       ok: true,
       node_results: expect.arrayContaining([

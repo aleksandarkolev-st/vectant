@@ -4,6 +4,7 @@ import {
   evaluateStaticCondition,
   type DojoGraphEvidenceEvent,
 } from "../../src/dojo/graph/runtime.js";
+import { createFakeDojoSubstrateExecutor } from "../../src/dojo/graph/substrate_executor.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
 
 describe("Dojo graph runtime", () => {
@@ -20,6 +21,7 @@ describe("Dojo graph runtime", () => {
       },
       proof_capsule: { capsule_id: "capsule-a" },
       proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
     })).resolves.toEqual(expect.objectContaining({
       ok: true,
       status: "completed",
@@ -46,6 +48,7 @@ describe("Dojo graph runtime", () => {
       },
       proof_capsule: { capsule_id: "capsule-a" },
       proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
     });
 
     expect(result).toEqual(expect.objectContaining({
@@ -70,6 +73,7 @@ describe("Dojo graph runtime", () => {
       },
       proof_capsule: { capsule_id: "capsule-a" },
       proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
       evidence_writer: (event) => {
         events.push(event);
         return `ledger://${event.run_id}/${event.node_id}`;
@@ -162,6 +166,33 @@ describe("Dojo graph runtime", () => {
           node_id: "action_submit",
           status: "blocked",
           blocked_by: ["proof_capsule_signature_invalid"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks production action execution without an explicit substrate executor", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["substrate_executor_required"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["substrate_executor_required"],
         }),
       ]),
     }));

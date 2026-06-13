@@ -144,7 +144,7 @@ export class DojoSkillGraphRuntime {
     }
 
     const inputs = input.inputs ?? {};
-    const substrateExecutor = input.substrate_executor ?? createFakeDojoSubstrateExecutor();
+    const substrateExecutor = input.substrate_executor ?? (mode === "production" ? undefined : createFakeDojoSubstrateExecutor());
     const nodeResults: DojoGraphNodeRunResult[] = [];
     const evidenceRefs: string[] = [];
     const skippedNodes = new Map<string, string[]>();
@@ -282,6 +282,24 @@ export class DojoSkillGraphRuntime {
       }
 
       if (node.kind === "Action") {
+        if (!substrateExecutor) {
+          const substrateNodeResult: DojoGraphNodeRunResult = {
+            ...result,
+            status: "blocked",
+            blocked_by: ["substrate_executor_required"],
+          };
+          nodeResults[nodeResults.length - 1] = substrateNodeResult;
+          evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, substrateNodeResult));
+          return {
+            ok: false,
+            status: "blocked",
+            mode,
+            run_id: runId,
+            node_results: nodeResults,
+            blocked_by: ["substrate_executor_required"],
+            evidence_refs: evidenceRefs,
+          };
+        }
         const substrateResult = await substrateExecutor.execute({ node, mode, inputs, proof_capsule: input.proof_capsule });
         if (!substrateResult.ok) {
           const substrateNodeResult: DojoGraphNodeRunResult = {

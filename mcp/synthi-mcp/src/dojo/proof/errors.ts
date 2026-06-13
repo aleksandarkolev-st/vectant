@@ -151,7 +151,8 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     reason === "api_tool_transport_failed" ||
     reason === "api_tool_evidence_writer_required" ||
     reason === "api_tool_evidence_write_failed" ||
-    reason === "api_tool_evidence_record_id_required"
+    reason === "api_tool_evidence_record_id_required" ||
+    reason === "substrate_executor_required"
   ) {
     return "dojo_execution_policy_blocked";
   }
