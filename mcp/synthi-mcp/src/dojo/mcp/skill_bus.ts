@@ -1,4 +1,5 @@
 import type { DojoProofCarryingSkillCapsule, DojoSkill } from "../../browser/dojo.js";
+import type { DojoProofCapsuleService } from "../proof/capsule_service.js";
 import type { DojoAuditStore } from "../store/interfaces.js";
 import type { DojoTenantContext } from "./execution_policy_gate.js";
 import {
@@ -127,6 +128,7 @@ export interface InProcessDojoMcpSkillBusOptions {
     requested_action: string;
     args: Record<string, unknown>;
   }) => DojoSkillBusProofValidation | Promise<DojoSkillBusProofValidation>;
+  proofService?: DojoProofCapsuleService;
   executeTool?: (input: {
     tenant: DojoTenantContext;
     skill: DojoSkill;
@@ -186,7 +188,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
   constructor(options: InProcessDojoMcpSkillBusOptions) {
     this.env = options.env ?? process.env;
     this.listSkillsFn = options.listSkills;
-    this.validateProof = options.validateProof;
+    this.validateProof = options.validateProof ?? proofServiceValidator(options.proofService, options.now);
     this.executeTool = options.executeTool;
     this.rateLimiter = options.rateLimiter;
     this.auditStore = options.auditStore;
@@ -447,6 +449,31 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       audit_event_id: audit.audit_event_id,
     };
   }
+}
+
+function proofServiceValidator(
+  proofService: DojoProofCapsuleService | undefined,
+  nowFn: (() => Date) | undefined
+): InProcessDojoMcpSkillBusOptions["validateProof"] | undefined {
+  if (!proofService) return undefined;
+  return async ({ tenant, skill, proof_capsule, requested_action }) => {
+    const result = await proofService.validate({
+      tenant,
+      skill,
+      proof_capsule,
+      requested_action,
+      dry_run: true,
+      validation_options: {
+        now: (nowFn ?? (() => new Date()))().toISOString(),
+      },
+    });
+    return {
+      ok: result.validation.ok,
+      status: result.validation.status,
+      blocked_by: [...result.validation.blocked_by],
+      error_codes: [...result.validation.error_codes],
+    };
+  };
 }
 
 interface InMemoryRateLimitBucket {

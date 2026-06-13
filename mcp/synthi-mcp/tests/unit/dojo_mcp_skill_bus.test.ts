@@ -4,6 +4,7 @@ import { generatePrivateWorkflowToolManifest } from "../../src/browser/private_t
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import { validateDojoMcpSkillManifest } from "../../src/dojo/mcp/manifest_signing.js";
+import { createDojoProofCapsuleService } from "../../src/dojo/proof/capsule_service.js";
 import {
   blockDojoMcpSkillBusExecution,
   createInMemoryDojoMcpSkillBusRateLimiter,
@@ -11,6 +12,7 @@ import {
   createLegacyDojoTenantContext,
   type DojoSkillBusProofValidation,
 } from "../../src/dojo/mcp/skill_bus.js";
+import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import type { DojoTenantContext } from "../../src/dojo/mcp/execution_policy_gate.js";
 import type {
   DojoAuditEventInput,
@@ -151,6 +153,76 @@ describe("Dojo MCP skill bus", () => {
       result: expect.objectContaining({ ok: true, tool_name: skill.published_tool_name }),
     }));
     expect(executions).toEqual([skill.published_tool_name]);
+  });
+
+  it("can validate dispatch proofs through the reusable proof capsule service", async () => {
+    const skill = skillFixture("workspace-a", "Open details");
+    const caller = tenant("workspace-a");
+    const proofStore = new InMemoryDojoSkillStore();
+    const proofService = createDojoProofCapsuleService({ proof_store: proofStore });
+    const issued = await proofService.issue({
+      tenant: caller,
+      skill,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill, { tenant_id: caller.tenant_id }),
+      substrate_claim: "mcp",
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(issued.ok).toBe(true);
+    const executions: string[] = [];
+    const bus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skill],
+      env: manifestEnv(),
+      proofService,
+      now: () => new Date("2026-06-11T00:01:00.000Z"),
+      executeTool: ({ tool_name }) => {
+        executions.push(tool_name);
+        return { ok: true, tool_name };
+      },
+    });
+
+    await expect(bus.dispatch({
+      tenant: caller,
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: issued.proof_capsule,
+      dry_run: true,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: true,
+      validation: expect.objectContaining({
+        ok: true,
+        status: "allowed",
+      }),
+    }));
+    expect(proofStore.getProofRecord(issued.proof_capsule!.capsule_id)?.status).toBe("issued");
+
+    await expect(proofService.consume({
+      tenant: caller,
+      capsule_id: issued.proof_capsule!.capsule_id,
+      run_id: "run-a",
+      now: "2026-06-11T00:02:00.000Z",
+    })).resolves.toEqual(expect.objectContaining({ ok: true, status: "used" }));
+
+    await expect(bus.dispatch({
+      tenant: caller,
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: issued.proof_capsule,
+      dry_run: true,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["proof_capsule_replay_detected"],
+      validation: expect.objectContaining({
+        ok: false,
+        error_codes: ["proof_capsule_replay_detected"],
+      }),
+    }));
+    expect(executions).toEqual([]);
   });
 
   it("requires proof from full manifest constraints even when passport metadata is stale", async () => {
