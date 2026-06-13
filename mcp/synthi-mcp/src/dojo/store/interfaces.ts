@@ -44,6 +44,7 @@ export interface DojoProofCapsuleRecord {
   revoked_at?: string;
   revoked_reason?: string;
   revoked_by?: DojoAuditActor;
+  revocation_evidence_refs?: string[];
 }
 
 export type DojoProofConsumeStatus = "used" | "missing" | "already_used" | "revoked";
@@ -115,7 +116,13 @@ export interface DojoProofStore {
   listProofRecords(): DojoProofCapsuleRecord[];
   markProofCapsuleValidated(capsuleId: string, now?: string): DojoProofCapsuleRecord | null;
   markProofCapsuleUsed(capsuleId: string, runId: string, now?: string): DojoProofConsumeResult;
-  revokeProofCapsule(capsuleId: string, reason: string, now?: string, revokedBy?: DojoAuditActor): DojoProofCapsuleRecord | null;
+  revokeProofCapsule(
+    capsuleId: string,
+    reason: string,
+    now?: string,
+    revokedBy?: DojoAuditActor,
+    evidenceRefs?: string[]
+  ): DojoProofCapsuleRecord | null;
 }
 
 export interface DojoControlPlaneStore extends DojoSkillStore, DojoProofStore, DojoApprovalStore, DojoCaseLawStore, DojoTransactionalStore {

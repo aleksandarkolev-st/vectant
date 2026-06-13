@@ -197,6 +197,11 @@ async function main() {
     const revokeCall = await client.toolCall("synthi_dojo_revoke_proof_capsule", {
       capsule_id: proofCapsule.capsule_id,
       reason: config.revocationReason,
+      actor_id: config.revocationActorId,
+      actor_type: config.revocationActorType,
+      evidence_refs: config.revocationEvidenceRefs.length
+        ? config.revocationEvidenceRefs
+        : [`proof:${proofCapsule.capsule_id}`],
     });
     assertToolOk(revokeCall, "revoke proof capsule");
     report.steps.push({
@@ -281,7 +286,22 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
     executeProduction: parseBooleanFlag(args["execute-production"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EXECUTE_PRODUCTION),
     skipRawBackingToolCheck: parseBooleanFlag(args["skip-raw-backing-tool-check"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_SKIP_RAW_BACKING_TOOL_CHECK),
     revocationReason: normalizeOptionalText(args["revocation-reason"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_REASON) || "dojo_mcp_host_conformance",
+    revocationActorId: normalizeOptionalText(args["revocation-actor-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_ACTOR_ID) || "dojo-mcp-host-conformance",
+    revocationActorType: normalizeActorType(args["revocation-actor-type"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_ACTOR_TYPE) || "service",
+    revocationEvidenceRefs: parseStringList(args["revocation-evidence-refs"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_EVIDENCE_REFS),
   };
+}
+
+function normalizeActorType(value) {
+  const normalized = normalizeOptionalText(value);
+  return normalized === "human" || normalized === "agent" || normalized === "service" ? normalized : "";
+}
+
+function parseStringList(value) {
+  if (Array.isArray(value)) return value.map((item) => normalizeOptionalText(item)).filter(Boolean);
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return [];
+  return normalized.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
 export function resolveMcpCommandSpec({

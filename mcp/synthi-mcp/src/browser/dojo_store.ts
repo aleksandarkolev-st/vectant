@@ -143,15 +143,23 @@ export class InMemoryDojoSkillStore implements DojoControlPlaneStore {
     return filterCaseLawRecords([...this.caseLawRecords.values()], filter).map(cloneJson);
   }
 
-  revokeProofCapsule(capsuleId: string, reason: string, now: string = new Date().toISOString(), revokedBy?: DojoAuditActor): DojoProofCapsuleRecord | null {
+  revokeProofCapsule(
+    capsuleId: string,
+    reason: string,
+    now: string = new Date().toISOString(),
+    revokedBy?: DojoAuditActor,
+    evidenceRefs: string[] = []
+  ): DojoProofCapsuleRecord | null {
     const record = this.proofRecords.get(capsuleId);
     if (!record) return null;
+    const revocationEvidenceRefs = compactUniqueStrings(evidenceRefs);
     const revoked = {
       ...record,
       status: "revoked" as const,
       revoked_at: now,
       revoked_reason: reason,
       revoked_by: revokedBy ? cloneJson(revokedBy) : record.revoked_by,
+      ...(revocationEvidenceRefs.length ? { revocation_evidence_refs: revocationEvidenceRefs } : {}),
     };
     this.proofRecords.set(capsuleId, cloneJson(revoked));
     return cloneJson(revoked);
@@ -343,17 +351,25 @@ export class EncryptedFileDojoSkillStore implements DojoControlPlaneStore {
     return filterCaseLawRecords(Object.values(this.scope().case_law_records), filter).map(cloneJson);
   }
 
-  revokeProofCapsule(capsuleId: string, reason: string, now: string = new Date().toISOString(), revokedBy?: DojoAuditActor): DojoProofCapsuleRecord | null {
+  revokeProofCapsule(
+    capsuleId: string,
+    reason: string,
+    now: string = new Date().toISOString(),
+    revokedBy?: DojoAuditActor,
+    evidenceRefs: string[] = []
+  ): DojoProofCapsuleRecord | null {
     let revoked: DojoProofCapsuleRecord | null = null;
     this.updateScope((scope) => {
       const record = scope.proof_records[capsuleId];
       if (!record) return;
+      const revocationEvidenceRefs = compactUniqueStrings(evidenceRefs);
       revoked = {
         ...record,
         status: "revoked",
         revoked_at: now,
         revoked_reason: reason,
         revoked_by: revokedBy ? cloneJson(revokedBy) : record.revoked_by,
+        ...(revocationEvidenceRefs.length ? { revocation_evidence_refs: revocationEvidenceRefs } : {}),
       };
       scope.proof_records[capsuleId] = cloneJson(revoked);
     });
@@ -502,6 +518,10 @@ function normalizeScopeId(scopeId: string | undefined): string {
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function compactUniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function proofConsumeBlocked(

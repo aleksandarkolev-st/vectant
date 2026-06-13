@@ -171,18 +171,24 @@ export class PostgresDojoProofStore {
     capsuleId: string,
     reason: string,
     now: string = new Date().toISOString(),
-    revokedBy?: DojoAuditActor
+    revokedBy?: DojoAuditActor,
+    evidenceRefs: string[] = []
   ): Promise<DojoProofCapsuleRecord | null> {
+    const revocationEvidenceRefs = [...new Set(evidenceRefs.map((ref) => ref.trim()).filter(Boolean))];
     const result = await this.queryable.query<ProofRecordRow>(
       `UPDATE dojo_proof_records
       SET status = 'revoked',
         revoked_at = $4::timestamptz,
         revoked_reason = $5,
+        proof_json = CASE
+          WHEN cardinality($6::text[]) > 0 THEN jsonb_set(COALESCE(proof_json, '{}'::jsonb), '{revocation_evidence_refs}', to_jsonb($6::text[]), true)
+          ELSE proof_json
+        END,
         updated_at = now()
       WHERE tenant_id = $1 AND workspace_id = $2 AND capsule_id = $3
       RETURNING tenant_id, workspace_id, capsule_id, skill_id, license_id, requested_action, nonce, proof_json,
         issued_at, expires_at, status, first_used_at, last_validated_at, revoked_at, revoked_reason`,
-      [this.tenantId, this.workspaceId, capsuleId, now, reason]
+      [this.tenantId, this.workspaceId, capsuleId, now, reason, revocationEvidenceRefs]
     );
     const revoked = rowToProofRecord(result.rows[0]);
     if (revoked) {
@@ -191,6 +197,7 @@ export class PostgresDojoProofStore {
         proof_status: revoked.status,
         revoked_reason: reason,
         ...(revokedBy ? { revoked_by: revokedBy } : {}),
+        evidence_refs: revocationEvidenceRefs,
       });
     }
     return revoked;
@@ -356,6 +363,7 @@ function proofRecordJson(record: DojoProofCapsuleRecord): Record<string, unknown
     signature_algorithm: record.signature_algorithm,
     substrate_claim: record.substrate_claim,
     evidence_record_ids: record.evidence_record_ids,
+    revocation_evidence_refs: record.revocation_evidence_refs,
     ledger_checkpoint_hash: record.ledger_checkpoint_hash,
   });
 }
@@ -369,6 +377,7 @@ function proofRecordMetadata(value: unknown): Partial<DojoProofCapsuleRecord> {
     signature_algorithm: stringOpt(object["signature_algorithm"]),
     substrate_claim: stringOpt(object["substrate_claim"]),
     evidence_record_ids: stringArrayOpt(object["evidence_record_ids"]),
+    revocation_evidence_refs: stringArrayOpt(object["revocation_evidence_refs"]),
     ledger_checkpoint_hash: stringOpt(object["ledger_checkpoint_hash"]),
   });
 }

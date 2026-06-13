@@ -356,6 +356,7 @@ function normalizeProofCapsule(dojo) {
     substrate: proof.substrateClaim || proof.substrate_claim || '',
     replayState: proof.replayState || proof.replay_state || proof.status || '',
     revocationReason: proof.revocationReason || proof.revocation_reason || '',
+    revocationEvidenceRefs: compactStrings(proof.revocationEvidenceRefs || proof.revocation_evidence_refs),
     revokedAt: proof.revokedAt || proof.revoked_at || '',
     revokedBy: proof.revokedBy || proof.revoked_by || null,
     blockedBy: compactStrings(validation.blocked_by || validation.blockedBy || proof.blockedBy || proof.blocked_by),
@@ -365,6 +366,19 @@ function normalizeProofCapsule(dojo) {
     guardrailsActive: compactStrings(proof.guardrails_active || proof.guardrailsActive),
     validationTimeline: timeline,
   };
+}
+
+function proofAuditEvidenceRefs(proof, explicitEvidenceRefs = []) {
+  const refs = [];
+  refs.push(...compactStrings(explicitEvidenceRefs));
+  refs.push(...compactStrings(proof?.evidenceRefs || proof?.evidence_refs));
+  refs.push(...compactStrings(proof?.evidenceRecordIds || proof?.evidence_record_ids));
+  refs.push(...compactStrings(proof?.revocationEvidenceRefs || proof?.revocation_evidence_refs));
+  for (const claim of asArray(proof?.evidenceClaims || proof?.evidence_claims)) {
+    refs.push(...compactStrings(claim?.evidenceRecordIds || claim?.evidence_record_ids || claim?.recordIds || claim?.record_ids));
+    refs.push(...compactStrings(claim?.evidenceRefs || claim?.evidence_refs));
+  }
+  return [...new Set(refs)];
 }
 
 function normalizeCaseLawRefs(values) {
@@ -1473,6 +1487,7 @@ export async function revokeDojoProofCapsule({
   proof,
   workspaceSlug = '',
   reason = '',
+  evidenceRefs = [],
   actorId,
   actorType = 'human',
   signal,
@@ -1485,6 +1500,8 @@ export async function revokeDojoProofCapsule({
   if (!resolvedReason) throw new Error('dojo_proof_capsule_revocation_reason_required');
   const actor = resolveGovernanceActor({ actorId, actorType });
   if (!actor.actorId) throw new Error('dojo_governance_actor_required');
+  const resolvedEvidenceRefs = proofAuditEvidenceRefs(proof, evidenceRefs);
+  if (!resolvedEvidenceRefs.length) throw new Error('dojo_proof_capsule_revocation_evidence_required');
   const body = await callAgentWorkflowTool({
     url,
     token,
@@ -1495,6 +1512,7 @@ export async function revokeDojoProofCapsule({
       reason: resolvedReason,
       actor_id: actor.actorId,
       actor_type: actor.actorType,
+      evidence_refs: resolvedEvidenceRefs,
     },
   });
   assertBridgeToolActionOk(body, 'dojo_proof_capsule_revoke_failed');

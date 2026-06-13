@@ -56,6 +56,13 @@ export default function ProofCapsuleDrawer({ proof, requirements = [], onRevoke,
         </div>
       ) : null}
 
+      {proof.revocationEvidenceRefs?.length ? (
+        <div className="mt-2 rounded-md border px-3 py-2 text-xs" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}>
+          <span className="font-semibold" style={{ color: 'var(--text-secondary)' }}>Revocation evidence</span>
+          <div className="mt-1 truncate">{proof.revocationEvidenceRefs.join(', ')}</div>
+        </div>
+      ) : null}
+
       <section className="mt-4 rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
         <h3 className="flex items-center gap-2 text-xs font-semibold">
           <ShieldOff size={13} aria-hidden="true" />

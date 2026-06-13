@@ -84,7 +84,13 @@ describeWithPostgres("PostgresDojoAuditStore", () => {
     await proofStore.markProofCapsuleUsed("capsule_a", "run_1", "2026-06-11T00:02:00.000Z");
     await proofStore.markProofCapsuleUsed("capsule_a", "run_2", "2026-06-11T00:03:00.000Z");
     await proofStore.saveProofRecord(proofRecord("capsule_b", skillId));
-    await proofStore.revokeProofCapsule("capsule_b", "operator_revoked", "2026-06-11T00:04:00.000Z");
+    await proofStore.revokeProofCapsule(
+      "capsule_b",
+      "operator_revoked",
+      "2026-06-11T00:04:00.000Z",
+      undefined,
+      ["evidence:audit-proof-revocation"]
+    );
 
     const events = await auditStore.listAuditEvents({ correlation_id: "corr_proof" });
     expect(events.map((event) => event.event_type)).toEqual([
@@ -116,7 +122,10 @@ describeWithPostgres("PostgresDojoAuditStore", () => {
       expect.objectContaining({
         event_type: "proof_revoked",
         entity_id: "capsule_b",
-        details: expect.objectContaining({ revoked_reason: "operator_revoked" }),
+        details: expect.objectContaining({
+          revoked_reason: "operator_revoked",
+          evidence_refs: ["evidence:audit-proof-revocation"],
+        }),
       }),
     ]));
   });

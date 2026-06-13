@@ -812,8 +812,14 @@ export class DojoSkillRegistry {
     return this.consumeProofCapsule(capsuleId, { now }).record;
   }
 
-  revokeProofCapsule(capsuleId: string, reason: string, now?: string, revokedBy?: DojoAuditActor): DojoProofCapsuleRecord | null {
-    return this.store.revokeProofCapsule(capsuleId, reason, now, revokedBy);
+  revokeProofCapsule(
+    capsuleId: string,
+    reason: string,
+    now?: string,
+    revokedBy?: DojoAuditActor,
+    evidenceRefs?: string[]
+  ): DojoProofCapsuleRecord | null {
+    return this.store.revokeProofCapsule(capsuleId, reason, now, revokedBy, evidenceRefs);
   }
 
   listProofRecords(): DojoProofCapsuleRecord[] {

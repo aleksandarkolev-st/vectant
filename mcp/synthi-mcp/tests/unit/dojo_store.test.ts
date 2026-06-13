@@ -131,11 +131,18 @@ describe("EncryptedFileDojoSkillStore", () => {
       }),
     ]);
 
-    const revoked = reopened.revokeProofCapsule(capsule.capsule_id, "unit_test_revoked", "2026-06-11T00:01:00.000Z");
+    const revoked = reopened.revokeProofCapsule(
+      capsule.capsule_id,
+      "unit_test_revoked",
+      "2026-06-11T00:01:00.000Z",
+      undefined,
+      ["evidence:encrypted-store-revocation"]
+    );
     expect(revoked).toEqual(expect.objectContaining({
       capsule_id: capsule.capsule_id,
       status: "revoked",
       revoked_reason: "unit_test_revoked",
+      revocation_evidence_refs: ["evidence:encrypted-store-revocation"],
     }));
     expect(reopened.markProofCapsuleUsed(
       capsule.capsule_id,

@@ -595,6 +595,7 @@ function updateBridgeState(
         nonce: stringOpt(record?.["nonce"]) ?? stringOpt(previousCapsule?.["nonce"]) ?? "",
         status: stringOpt(record?.["status"]) ?? "revoked",
         revocation_reason: stringOpt(record?.["revoked_reason"]) ?? "",
+        revocation_evidence_refs: Array.isArray(record?.["revocation_evidence_refs"]) ? record?.["revocation_evidence_refs"] : [],
         revoked_at: stringOpt(record?.["revoked_at"]) ?? "",
         revoked_by: record?.["revoked_by"] ?? null,
       },
@@ -1264,6 +1265,11 @@ function proofPanelState(payload: Record<string, unknown> | undefined): Record<s
     revokedAt: stringOpt(record?.["revoked_at"]) ?? stringOpt(proofSource?.["revoked_at"]) ?? null,
     revokedBy: record?.["revoked_by"] ?? proofSource?.["revoked_by"] ?? null,
     revocationReason: stringOpt(record?.["revoked_reason"]) ?? stringOpt(proofSource?.["revocation_reason"]) ?? null,
+    revocationEvidenceRefs: Array.isArray(record?.["revocation_evidence_refs"])
+      ? record?.["revocation_evidence_refs"]
+      : Array.isArray(proofSource?.["revocation_evidence_refs"])
+      ? proofSource?.["revocation_evidence_refs"]
+      : [],
     blockedBy: Array.isArray(validation?.["blocked_by"]) ? validation?.["blocked_by"] : [],
     errorCodes: Array.isArray(validation?.["error_codes"]) ? validation?.["error_codes"] : [],
   };

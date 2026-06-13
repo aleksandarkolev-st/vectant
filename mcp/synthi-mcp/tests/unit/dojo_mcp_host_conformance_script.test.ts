@@ -90,11 +90,13 @@ describe("Dojo MCP host conformance harness", () => {
         "tool-args-json": "{\"workspace_id\":\"acme\"}",
         "context-claims-json": "{\"workspace_verified\":true}",
         "evidence-claims-json": "[{\"claim\":\"checkride_passed\",\"satisfied\":true}]",
+        "revocation-evidence-refs": "evidence-a,evidence-b",
       },
       env: {
         SYNTHI_DOJO_MCP_HOST_URL: "https://mcp.example.test/mcp",
         SYNTHI_DOJO_MCP_BEARER_TOKEN: "test-token",
         SYNTHI_DOJO_MCP_CONFORMANCE_REQUIRE_NON_LOOPBACK_HOST: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_ACTOR_ID: "host-conformance-operator",
       },
     });
 
@@ -104,6 +106,9 @@ describe("Dojo MCP host conformance harness", () => {
     expect(config.contextClaims).toEqual({ workspace_verified: true });
     expect(config.toolArgs).toEqual({ workspace_id: "acme" });
     expect(config.evidenceClaims).toEqual([{ claim: "checkride_passed", satisfied: true }]);
+    expect(config.revocationActorId).toBe("host-conformance-operator");
+    expect(config.revocationActorType).toBe("service");
+    expect(config.revocationEvidenceRefs).toEqual(["evidence-a", "evidence-b"]);
   });
 
   it("selects an unambiguous published Dojo competency for conformance", () => {

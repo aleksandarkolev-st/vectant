@@ -107,6 +107,21 @@ describe('Proof and refusal drawers', () => {
     }));
   });
 
+  it('renders proof revocation evidence refs when present', () => {
+    const view = render(<ProofCapsuleDrawer
+      proof={{
+        ...proofFixture(),
+        status: 'revoked',
+        revocationReason: 'manual key rotation',
+        revocationEvidenceRefs: ['ev-001', 'ev-002'],
+      }}
+      requirements={['workspace_verified']}
+    />);
+    const text = view.querySelector('[data-testid="proof-capsule-drawer"]')?.textContent || '';
+    expect(text).toContain('Revocation evidence');
+    expect(text).toContain('ev-001, ev-002');
+  });
+
   it('renders refusal rule, case law, and next steps', () => {
     const view = render(<RefusalExplainerDrawer refusal={refusalFixture()} />);
     const text = view.querySelector('[data-testid="refusal-explainer-drawer"]')?.textContent || '';
@@ -237,6 +252,7 @@ describe('Proof and refusal drawers', () => {
             status: 'revoked',
             revoked_reason: 'manual key rotation',
             revoked_by: { actor_id: 'proof-operator-a', actor_type: 'human' },
+            revocation_evidence_refs: ['ev-001', 'ev-002'],
           },
         },
         state: {
@@ -258,7 +274,7 @@ describe('Proof and refusal drawers', () => {
 
     try {
       const result = await revokeDojoProofCapsule({
-        proof: { capsuleId: 'capsule-001', revocationReason: 'manual key rotation' },
+        proof: { ...proofFixture(), revocationReason: 'manual key rotation' },
         workspaceSlug: 'workspace-a',
       });
       const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
@@ -269,6 +285,7 @@ describe('Proof and refusal drawers', () => {
           reason: 'manual key rotation',
           actor_id: 'proof-operator-a',
           actor_type: 'human',
+          evidence_refs: ['ev-001', 'ev-002'],
         },
       });
       expect(result.message).toBe('Proof revoked: capsule-001');
@@ -279,6 +296,23 @@ describe('Proof and refusal drawers', () => {
       }));
     } finally {
       global.fetch = originalFetch;
+    }
+  });
+
+  it('blocks bridge-backed proof revocation when no evidence refs are available', async () => {
+    const originalFetch = global.fetch;
+    localStorage.setItem(USER_ID_KEY, 'proof-operator-a');
+    global.fetch = vi.fn();
+
+    try {
+      await expect(revokeDojoProofCapsule({
+        proof: { capsuleId: 'capsule-001', revocationReason: 'manual key rotation' },
+        workspaceSlug: 'workspace-a',
+      })).rejects.toThrow('dojo_proof_capsule_revocation_evidence_required');
+      expect(global.fetch).not.toHaveBeenCalled();
+    } finally {
+      global.fetch = originalFetch;
+      localStorage.removeItem(USER_ID_KEY);
     }
   });
 });

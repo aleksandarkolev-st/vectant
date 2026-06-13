@@ -67,12 +67,19 @@ describeWithPostgres("PostgresDojoProofStore", () => {
     }));
     expect(await store.markProofCapsuleValidated("capsule_missing", "2026-06-11T00:04:30.000Z")).toBeNull();
 
-    const revoked = await store.revokeProofCapsule("capsule_a", "unit_test_revoked", "2026-06-11T00:05:00.000Z");
+    const revoked = await store.revokeProofCapsule(
+      "capsule_a",
+      "unit_test_revoked",
+      "2026-06-11T00:05:00.000Z",
+      undefined,
+      ["evidence:postgres-proof-revocation"]
+    );
     expect(revoked).toEqual(expect.objectContaining({
       capsule_id: "capsule_a",
       status: "revoked",
       revoked_reason: "unit_test_revoked",
       revoked_at: "2026-06-11T00:05:00.000Z",
+      revocation_evidence_refs: ["evidence:postgres-proof-revocation"],
     }));
   });
 

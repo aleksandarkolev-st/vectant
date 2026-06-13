@@ -832,11 +832,22 @@ describe("Agent Dojo MCP tools", () => {
     expect(revokedProofMissingActorType?.structuredContent).toEqual(expect.objectContaining({
       error: "dojo_proof_capsule_revocation_actor_type_required",
     }));
+    const revokedProofMissingEvidence = await dispatchDojoTool("synthi_dojo_revoke_proof_capsule", {
+      capsule_id: secondCapsule.capsule_id,
+      reason: "unit_test_revocation",
+      actor_id: "proof-reviewer-a",
+      actor_type: "human",
+    });
+    expect(revokedProofMissingEvidence?.isError).toBe(true);
+    expect(revokedProofMissingEvidence?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_revocation_evidence_required",
+    }));
     const revokedProof = await dispatchDojoTool("synthi_dojo_revoke_proof_capsule", {
       capsule_id: secondCapsule.capsule_id,
       reason: "unit_test_revocation",
       actor_id: "proof-reviewer-a",
       actor_type: "human",
+      evidence_refs: ["evidence:proof-revocation"],
       now: "2026-06-11T00:01:30.000Z",
     });
     expect(revokedProof?.structuredContent).toEqual(expect.objectContaining({
@@ -845,6 +856,7 @@ describe("Agent Dojo MCP tools", () => {
         revoked_at: "2026-06-11T00:01:30.000Z",
         revoked_reason: "unit_test_revocation",
         revoked_by: { actor_id: "proof-reviewer-a", actor_type: "human" },
+        revocation_evidence_refs: ["evidence:proof-revocation"],
       }),
     }));
     const revokedProofValidation = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {

@@ -622,6 +622,7 @@ describe("browser workflow bridge", () => {
           reason: "operator requested key rotation",
           actor_id: "proof-operator-a",
           actor_type: "human",
+          evidence_refs: ["evidence:bridge-proof-revocation"],
           now: "2026-06-11T00:01:30.000Z",
         },
       }),
@@ -635,6 +636,7 @@ describe("browser workflow bridge", () => {
           status: string;
           revoked_reason: string;
           revoked_by: { actor_id: string; actor_type: string };
+          revocation_evidence_refs: string[];
         };
       };
       state: {
@@ -644,6 +646,7 @@ describe("browser workflow bridge", () => {
             status: string;
             replayState: string;
             revocationReason: string;
+            revocationEvidenceRefs: string[];
             revokedBy: { actor_id: string; actor_type: string };
             errorCodes: string[];
           };
@@ -658,12 +661,14 @@ describe("browser workflow bridge", () => {
       status: "revoked",
       revoked_reason: "operator requested key rotation",
       revoked_by: { actor_id: "proof-operator-a", actor_type: "human" },
+      revocation_evidence_refs: ["evidence:bridge-proof-revocation"],
     }));
     expect(revokeBody.state.dojo.proof).toEqual(expect.objectContaining({
       capsuleId,
       status: "revoked",
       replayState: "revoked",
       revocationReason: "operator requested key rotation",
+      revocationEvidenceRefs: ["evidence:bridge-proof-revocation"],
       revokedBy: { actor_id: "proof-operator-a", actor_type: "human" },
       errorCodes: ["proof_capsule_revoked"],
     }));
