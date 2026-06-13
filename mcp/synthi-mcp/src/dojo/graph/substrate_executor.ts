@@ -8,6 +8,7 @@ import {
   type DojoApiToolHttpRequest,
   type DojoApiToolHttpResponse,
   type DojoApiToolLicenseContext,
+  type DojoApiToolProofValidator,
 } from "../api/api_tool_compiler.js";
 
 export type DojoExecutionSubstrate = "vision" | "dom" | "source" | "api" | "mcp";
@@ -35,6 +36,7 @@ export interface DojoSubstrateExecutor {
 export interface DojoSubstrateExecutorOptions {
   api_transport?: (request: DojoApiToolHttpRequest) => DojoApiToolHttpResponse | Promise<DojoApiToolHttpResponse>;
   write_api_evidence?: (evidence: DojoApiToolExecutionEvidence) => string | Promise<string>;
+  validate_api_proof?: DojoApiToolProofValidator;
 }
 
 export class FakeDojoSubstrateExecutor implements DojoSubstrateExecutor {
@@ -149,6 +151,7 @@ function compiledApiToolApproved(
       tool,
       args: objectOpt(inputs["api_tool_args"]) ?? {},
       license_context: licenseContext,
+      validate_proof: options.validate_api_proof,
       transport: options.api_transport,
       write_evidence: options.write_api_evidence,
     }).then((execution) => ({

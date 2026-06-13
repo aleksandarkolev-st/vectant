@@ -198,6 +198,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
     }).tool!;
     const requests: DojoApiToolHttpRequest[] = [];
     const evidenceRecords: DojoApiToolExecutionEvidence[] = [];
+    const proofValidations: string[] = [];
 
     const result = await executeDojoApiBackedToolInvocation({
       tool,
@@ -207,6 +208,10 @@ describe("Dojo API-backed MCP tool compiler", () => {
         idempotency_key: "idem-a",
       },
       license_context: licenseContext(),
+      validate_proof: ({ proof_capsule, requested_action }) => {
+        proofValidations.push(`${proof_capsule["capsule_id"]}:${requested_action}`);
+        return { ok: true, blocked_by: [] };
+      },
       transport: (request) => {
         requests.push(request);
         return { status: 201, body: { invoice_id: "invoice-a", status: "saved" } };
@@ -250,6 +255,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
         response_digest: expect.stringMatching(/^sha256:/),
       }),
     ]);
+    expect(proofValidations).toEqual(["capsule-a:run_workflow"]);
   });
 
   it("does not call the API transport when proof or license validation fails", async () => {
@@ -267,6 +273,9 @@ describe("Dojo API-backed MCP tool compiler", () => {
       tool,
       args: { request: { amount: 42 } },
       license_context: licenseContext(),
+      validate_proof: () => {
+        throw new Error("proof validator must not run after local validation failure");
+      },
       transport: (request) => {
         requests.push(request);
         return { status: 201, body: { status: "saved" } };
@@ -284,6 +293,49 @@ describe("Dojo API-backed MCP tool compiler", () => {
         "api_tool_proof_capsule_required",
         "api_tool_idempotency_key_required",
       ]),
+    }));
+    expect(requests).toEqual([]);
+    expect(evidenceRecords).toEqual([]);
+  });
+
+  it("does not call the API transport when reusable proof validation blocks execution", async () => {
+    const tool = compileDojoApiBackedMcpTool({
+      candidate: approvedMutationCandidate(),
+      skill_id: "dojo_save_invoice",
+      license_id: "license_save_invoice",
+      license_version: "1.0.0",
+      action: "run_workflow",
+    }).tool!;
+    const requests: DojoApiToolHttpRequest[] = [];
+    const evidenceRecords: DojoApiToolExecutionEvidence[] = [];
+
+    const result = await executeDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: proofCapsuleFixture(),
+        request: { amount: 42 },
+        idempotency_key: "idem-a",
+      },
+      license_context: licenseContext(),
+      validate_proof: () => ({ ok: false, blocked_by: ["proof_capsule_replay_detected"] }),
+      transport: (request) => {
+        requests.push(request);
+        return { status: 201, body: { status: "saved" } };
+      },
+      write_evidence: (evidence) => {
+        evidenceRecords.push(evidence);
+        return "evidence:api-tool-a";
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["proof_capsule_replay_detected"],
+      proof_validation: {
+        ok: false,
+        blocked_by: ["proof_capsule_replay_detected"],
+      },
     }));
     expect(requests).toEqual([]);
     expect(evidenceRecords).toEqual([]);
@@ -307,6 +359,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
         idempotency_key: "idem-a",
       },
       license_context: licenseContext(),
+      validate_proof: () => ({ ok: true, blocked_by: [] }),
       transport: () => ({ status: 200, body: { status: "draft" } }),
       write_evidence: (evidence) => {
         evidenceRecords.push(evidence);

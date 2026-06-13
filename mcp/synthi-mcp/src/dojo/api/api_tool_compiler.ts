@@ -42,6 +42,14 @@ export interface DojoApiToolInvocationValidation {
   blocked_by: string[];
 }
 
+export type DojoApiToolProofValidator = (input: {
+  tool: DojoApiBackedMcpTool;
+  proof_capsule: Record<string, unknown>;
+  requested_action: string;
+  license_context: DojoApiToolLicenseContext;
+  args: Record<string, unknown>;
+}) => DojoApiToolInvocationValidation | Promise<DojoApiToolInvocationValidation>;
+
 export interface DojoApiToolHttpRequest {
   method: DojoApiEndpointCandidate["method"];
   path: string;
@@ -79,6 +87,7 @@ export interface DojoApiToolExecutionResult {
   status: "executed" | "blocked";
   blocked_by: string[];
   validation: DojoApiToolInvocationValidation;
+  proof_validation?: DojoApiToolInvocationValidation;
   request?: DojoApiToolHttpRequest;
   response?: DojoApiToolHttpResponse;
   postcondition?: DojoGuardrailPredicateResult;
@@ -140,6 +149,7 @@ export async function executeDojoApiBackedToolInvocation(input: {
   tool: DojoApiBackedMcpTool;
   args: Record<string, unknown>;
   license_context: DojoApiToolLicenseContext;
+  validate_proof?: DojoApiToolProofValidator;
   transport: (request: DojoApiToolHttpRequest) => DojoApiToolHttpResponse | Promise<DojoApiToolHttpResponse>;
   write_evidence: (evidence: DojoApiToolExecutionEvidence) => string | Promise<string>;
 }): Promise<DojoApiToolExecutionResult> {
@@ -152,12 +162,42 @@ export async function executeDojoApiBackedToolInvocation(input: {
     return { ok: false, status: "blocked", blocked_by: validation.blocked_by, validation };
   }
 
+  const proofCapsule = objectRecord(input.args["proof_capsule"]);
+  if (!proofCapsule) {
+    const proofValidation = { ok: false, blocked_by: ["api_tool_proof_capsule_required"] };
+    return { ok: false, status: "blocked", blocked_by: proofValidation.blocked_by, validation, proof_validation: proofValidation };
+  }
+  const proofValidation = await validateApiToolProof({
+    tool: input.tool,
+    proof_capsule: proofCapsule,
+    requested_action: input.tool.action,
+    license_context: input.license_context,
+    args: input.args,
+    validate_proof: input.validate_proof,
+  });
+  if (!proofValidation.ok) {
+    return {
+      ok: false,
+      status: "blocked",
+      blocked_by: proofValidation.blocked_by,
+      validation,
+      proof_validation: proofValidation,
+    };
+  }
+
   const request = buildHttpRequest(input.tool, input.args);
   let response: DojoApiToolHttpResponse;
   try {
     response = await input.transport(request);
   } catch {
-    return { ok: false, status: "blocked", blocked_by: ["api_tool_transport_failed"], validation, request };
+    return {
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_transport_failed"],
+      validation,
+      proof_validation: proofValidation,
+      request,
+    };
   }
 
   const blockedBy: string[] = [];
@@ -174,7 +214,6 @@ export async function executeDojoApiBackedToolInvocation(input: {
     blockedBy.push(...postcondition.blocked_by.map((reason) => `api_tool_postcondition_${reason}`));
   }
 
-  const proofCapsule = objectRecord(input.args["proof_capsule"]);
   const idempotencyKey = typeof input.args["idempotency_key"] === "string" ? input.args["idempotency_key"] : undefined;
   const evidence: DojoApiToolExecutionEvidence = {
     schema_version: "synthi.dojo.apiToolExecutionEvidence.v1",
@@ -203,6 +242,7 @@ export async function executeDojoApiBackedToolInvocation(input: {
       status: "blocked",
       blocked_by: ["api_tool_evidence_write_failed"],
       validation,
+      proof_validation: proofValidation,
       request,
       response,
       ...(postcondition ? { postcondition } : {}),
@@ -214,6 +254,7 @@ export async function executeDojoApiBackedToolInvocation(input: {
       status: "blocked",
       blocked_by: ["api_tool_evidence_record_id_required"],
       validation,
+      proof_validation: proofValidation,
       request,
       response,
       ...(postcondition ? { postcondition } : {}),
@@ -225,11 +266,42 @@ export async function executeDojoApiBackedToolInvocation(input: {
     status: blockedBy.length === 0 ? "executed" : "blocked",
     blocked_by: blockedBy,
     validation,
+    proof_validation: proofValidation,
     request,
     response,
     ...(postcondition ? { postcondition } : {}),
     evidence_record_id: evidenceRecordId,
   };
+}
+
+async function validateApiToolProof(input: {
+  tool: DojoApiBackedMcpTool;
+  proof_capsule: Record<string, unknown>;
+  requested_action: string;
+  license_context: DojoApiToolLicenseContext;
+  args: Record<string, unknown>;
+  validate_proof?: DojoApiToolProofValidator;
+}): Promise<DojoApiToolInvocationValidation> {
+  if (!input.validate_proof) {
+    return { ok: false, blocked_by: ["api_tool_proof_validator_required"] };
+  }
+  try {
+    const result = await input.validate_proof({
+      tool: input.tool,
+      proof_capsule: input.proof_capsule,
+      requested_action: input.requested_action,
+      license_context: input.license_context,
+      args: input.args,
+    });
+    const blockedBy = [...(result.blocked_by ?? [])];
+    if (!result.ok && blockedBy.length === 0) blockedBy.push("api_tool_proof_validation_failed");
+    return {
+      ok: result.ok === true && blockedBy.length === 0,
+      blocked_by: blockedBy,
+    };
+  } catch {
+    return { ok: false, blocked_by: ["api_tool_proof_validation_failed"] };
+  }
 }
 
 export function validateDojoApiBackedToolInvocation(input: {
