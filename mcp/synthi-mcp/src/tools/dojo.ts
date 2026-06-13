@@ -555,7 +555,7 @@ export const DOJO_TOOLS = [
         evidence_refs: { type: "array", items: { type: "string" } },
         now: { type: "string" },
       },
-      required: ["reason", "actor_id", "actor_type"],
+      required: ["reason", "actor_id", "actor_type", "evidence_refs"],
     },
   },
   {
@@ -1739,6 +1739,8 @@ function dojoRevokeLicenseTool(args: unknown): ToolResponse {
   if (!actorId) return errorResponse("dojo_license_revocation_actor_required");
   const actorType = actorTypeInputOpt(a["actor_type"]);
   if (!actorType) return errorResponse("dojo_license_revocation_actor_type_required");
+  const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
+  if (evidenceRefs.length === 0) return errorResponse("dojo_license_revocation_evidence_required");
   const revocation = revokeDojoSkillLicense({
     skill: skill.skill,
     reason,
@@ -1747,7 +1749,7 @@ function dojoRevokeLicenseTool(args: unknown): ToolResponse {
       actor_id: actorId,
       actor_type: actorType,
     },
-    evidence_refs: stringArrayOpt(a["evidence_refs"]),
+    evidence_refs: evidenceRefs,
   });
   const saved = dojoSkillRegistry.publish(revocation.skill);
   return jsonResponse({

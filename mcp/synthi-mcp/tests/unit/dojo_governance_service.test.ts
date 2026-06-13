@@ -404,6 +404,13 @@ describe("Dojo governance service", () => {
       reason: "policy_review",
       revoked_by: { actor_id: "operator-a", actor_type: undefined as never },
     })).toThrow("dojo_license_revocation_actor_type_required");
+
+    expect(() => revokeDojoSkillLicense({
+      skill,
+      reason: "policy_review",
+      revoked_by: { actor_id: "operator-a", actor_type: "human" },
+      evidence_refs: [],
+    })).toThrow("dojo_license_revocation_evidence_required");
   });
 
   it("builds approval queue items from gated actions and explicit requirements", () => {

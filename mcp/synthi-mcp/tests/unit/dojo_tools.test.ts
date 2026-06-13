@@ -1388,6 +1388,16 @@ describe("Agent Dojo MCP tools", () => {
     expect(revokeMissingActor?.structuredContent).toEqual(expect.objectContaining({
       error: "dojo_license_revocation_actor_required",
     }));
+    const revokeMissingEvidence = await dispatchDojoTool("synthi_dojo_revoke_license", {
+      skill_id: published.skill.skill_id,
+      reason: "unit_test_policy_change",
+      actor_id: "unit-reviewer",
+      actor_type: "human",
+    });
+    expect(revokeMissingEvidence?.isError).toBe(true);
+    expect(revokeMissingEvidence?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_license_revocation_evidence_required",
+    }));
 
     const proposedRuntimeCase = await dispatchDojoTool("synthi_dojo_record_case_law", {
       skill_id: published.skill.skill_id,

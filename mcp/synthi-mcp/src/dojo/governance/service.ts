@@ -302,6 +302,7 @@ export function revokeDojoSkillLicense(input: {
     throw new Error("dojo_license_revocation_actor_type_required");
   }
   const evidenceRefs = uniqueStrings(input.evidence_refs ?? []);
+  if (evidenceRefs.length === 0) throw new Error("dojo_license_revocation_evidence_required");
   const skill = cloneJson(input.skill);
   const previousLicenseVersion = skill.permission_license.license_version;
   const blockedByAction = new Map<string, string[]>();
