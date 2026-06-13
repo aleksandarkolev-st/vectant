@@ -27,7 +27,28 @@ describe("Dojo API endpoint candidate contract", () => {
       properties: expect.objectContaining({
         amount: { type: "number" },
       }),
+      required: ["amount", "client_id"],
+      additionalProperties: false,
     }));
+  });
+
+  it("infers reviewed query parameters separately from endpoint path", () => {
+    const candidate = inferDojoApiEndpointCandidateFromTrace({
+      method: "GET",
+      url: "https://app.example.test/api/search?q=invoice&page=2",
+      response_body: { count: 1 },
+    });
+
+    expect(candidate.path).toBe("/api/search");
+    expect(candidate.query_schema).toEqual({
+      type: "object",
+      properties: {
+        page: { type: "string" },
+        q: { type: "string" },
+      },
+      required: ["page", "q"],
+      additionalProperties: false,
+    });
   });
 
   it("does not promote mutation candidates without idempotency, rollback, auth, postcondition, and proof mapping", () => {

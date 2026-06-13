@@ -21,12 +21,16 @@ export function inferDojoApiEndpointCandidateFromTrace(
   input: DojoNetworkTraceEndpointInput
 ): DojoApiEndpointCandidate {
   const method = normalizeMethod(input.method);
-  const path = pathFromUrl(input.url);
+  const parsedUrl = parsedUrlFromInput(input.url);
+  const path = parsedUrl.pathname;
+  const query = queryObjectFromUrl(parsedUrl);
+  const querySchema = inferShape(query);
   return {
     schema_version: "synthi.dojo.apiEndpointCandidate.v1",
-    candidate_id: `api_candidate_${shortHash(`${method}:${path}:${JSON.stringify(input.request_body ?? {})}`)}`,
+    candidate_id: `api_candidate_${shortHash(`${method}:${path}:${canonicalJson(query)}:${canonicalJson(input.request_body ?? {})}`)}`,
     method,
     path,
+    ...(hasObjectProperties(querySchema) ? { query_schema: querySchema } : {}),
     request_schema: inferShape(input.request_body),
     response_schema: inferShape(input.response_body),
     mutation_class: mutationClassFor(method, path),
@@ -63,12 +67,25 @@ function normalizeMethod(method: string): DojoApiMethod {
   throw new Error("dojo_api_method_unsupported");
 }
 
-function pathFromUrl(url: string): string {
+function parsedUrlFromInput(url: string): URL {
   try {
-    return new URL(url, "https://synthetic.local").pathname;
+    return new URL(url, "https://synthetic.local");
   } catch {
     throw new Error("dojo_api_url_invalid");
   }
+}
+
+function queryObjectFromUrl(url: URL): Record<string, unknown> {
+  const query: Record<string, unknown> = {};
+  for (const key of [...new Set(url.searchParams.keys())].sort()) {
+    const values = url.searchParams.getAll(key);
+    if (values.length === 1) {
+      query[key] = values[0] ?? "";
+    } else if (values.length > 1) {
+      query[key] = values;
+    }
+  }
+  return query;
 }
 
 function mutationClassFor(method: DojoApiMethod, path: string): DojoApiMutationClass {
@@ -81,19 +98,35 @@ function mutationClassFor(method: DojoApiMethod, path: string): DojoApiMutationC
 }
 
 function inferShape(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return { type: typeof value };
+  if (Array.isArray(value)) {
+    const first = value[0];
+    return {
+      type: "array",
+      ...(first !== undefined ? { items: inferShape(first) } : {}),
+    };
+  }
+  if (typeof value !== "object" || value === null) return { type: typeName(value) };
+  const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right));
   return {
     type: "object",
     properties: Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, { type: typeName(nested) }])
+      entries.map(([key, nested]) => [key, inferShape(nested)])
     ),
+    required: entries.map(([key]) => key),
+    additionalProperties: false,
   };
 }
 
 function typeName(value: unknown): string {
   if (Array.isArray(value)) return "array";
   if (value === null) return "null";
+  if (value === undefined) return "null";
   return typeof value;
+}
+
+function hasObjectProperties(schema: Record<string, unknown>): boolean {
+  const properties = schema["properties"];
+  return Boolean(properties && typeof properties === "object" && !Array.isArray(properties) && Object.keys(properties).length > 0);
 }
 
 function errorIssue(issueId: string, message: string): DojoApiCandidateReviewIssue {
@@ -102,4 +135,18 @@ function errorIssue(issueId: string, message: string): DojoApiCandidateReviewIss
 
 function shortHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortValue(value));
+}
+
+function sortValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortValue);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => [key, sortValue(nested)])
+  );
 }

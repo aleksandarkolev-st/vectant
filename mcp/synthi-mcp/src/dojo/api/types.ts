@@ -7,6 +7,7 @@ export interface DojoApiEndpointCandidate {
   candidate_id: string;
   method: DojoApiMethod;
   path: string;
+  query_schema?: Record<string, unknown>;
   request_schema: Record<string, unknown>;
   response_schema: Record<string, unknown>;
   auth_scope?: string;

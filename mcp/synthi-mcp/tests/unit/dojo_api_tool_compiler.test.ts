@@ -83,7 +83,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
 
     expect(validateDojoApiBackedToolInvocation({
       tool,
-      args: { request: { amount: 42 } },
+      args: { request: { client_id: "client-a", amount: 42 } },
       license_context: {
         skill_id: "dojo_save_invoice",
         license_id: "wrong-license",
@@ -104,7 +104,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
       tool,
       args: {
         proof_capsule: proofCapsuleFixture(),
-        request: { amount: 42 },
+        request: { client_id: "client-a", amount: 42 },
         idempotency_key: "idem-a",
       },
       license_context: {
@@ -120,7 +120,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
       tool,
       args: {
         proof_capsule: { ...proofCapsuleFixture(), requested_action: "delete_invoice" },
-        request: { amount: 42 },
+        request: { client_id: "client-a", amount: 42 },
         idempotency_key: "idem-a",
       },
       license_context: {
@@ -139,7 +139,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
       tool,
       args: {
         proof_capsule: proofCapsuleFixture(),
-        request: { amount: 42 },
+        request: { client_id: "client-a", amount: 42 },
         idempotency_key: "idem-a",
       },
       license_context: {
@@ -166,7 +166,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
             { claim: "checkride_passed", satisfied: false, evidence_refs: ["evidence:checkride"] },
           ],
         },
-        request: { amount: 42 },
+        request: { client_id: "client-a", amount: 42 },
         idempotency_key: "idem-a",
       },
       license_context: {
@@ -197,7 +197,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
             { claim: "checkride_passed", satisfied: true, evidence_refs: ["external-checkride-record"] },
           ],
         },
-        request: { amount: 42 },
+        request: { client_id: "client-a", amount: 42 },
         idempotency_key: "idem-a",
       },
       license_context: {
@@ -252,6 +252,84 @@ describe("Dojo API-backed MCP tool compiler", () => {
         "api_tool_request_schema_type_mismatch:request.amount",
       ],
     });
+  });
+
+  it("validates and forwards reviewed API query parameters", async () => {
+    const tool = compileDojoApiBackedMcpTool({
+      candidate: {
+        ...approvedMutationCandidate(),
+        ...inferDojoApiEndpointCandidateFromTrace({
+          method: "POST",
+          url: "/api/invoices/search?workspace=workspace-a",
+          request_body: { client_id: "client-a", amount: 42 },
+          response_body: { invoice_id: "invoice-a", status: "saved" },
+        }),
+        auth_scope: "invoice:write",
+        idempotency_key_location: "header" as const,
+        rollback_strategy: "compensating_call" as const,
+        postcondition: "invoice.status == 'saved'",
+        proof_claim_mapping: { workspace_verified: "tenant.workspace_id", checkride_passed: "dojo.checkride" },
+        review_status: "approved" as const,
+      },
+      skill_id: "dojo_save_invoice",
+      license_id: "license_save_invoice",
+      license_version: "1.0.0",
+      action: "run_workflow",
+      tool_name: "synthi_api_search_invoice",
+    }).tool!;
+
+    expect(validateDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: proofCapsuleFixture(),
+        request: { client_id: "client-a", amount: 42 },
+        idempotency_key: "idem-a",
+      },
+      license_context: licenseContext(),
+    })).toEqual({
+      ok: false,
+      blocked_by: ["api_tool_query_schema_type_mismatch:query"],
+    });
+
+    expect(validateDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: proofCapsuleFixture(),
+        request: { client_id: "client-a", amount: 42 },
+        query: { workspace: "workspace-a", debug: "1" },
+        idempotency_key: "idem-a",
+      },
+      license_context: licenseContext(),
+    })).toEqual({
+      ok: false,
+      blocked_by: ["api_tool_query_schema_additional_property:query.debug"],
+    });
+
+    const requests: DojoApiToolHttpRequest[] = [];
+    const result = await executeDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: proofCapsuleFixture(),
+        request: { client_id: "client-a", amount: 42 },
+        query: { workspace: "workspace-a" },
+        idempotency_key: "idem-a",
+      },
+      license_context: licenseContext(),
+      validate_proof: () => ({ ok: true, blocked_by: [] }),
+      transport: (request) => {
+        requests.push(request);
+        return { status: 201, body: { invoice_id: "invoice-a", status: "saved" } };
+      },
+      write_evidence: () => "evidence:api-tool-query",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(requests).toEqual([
+      expect.objectContaining({
+        path: "/api/invoices/search",
+        query: { workspace: "workspace-a" },
+      }),
+    ]);
   });
 
   it("executes approved API-backed tools with idempotency, postcondition, and evidence", async () => {
@@ -338,7 +416,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
 
     const result = await executeDojoApiBackedToolInvocation({
       tool,
-      args: { request: { amount: 42 } },
+      args: { request: { client_id: "client-a", amount: 42 } },
       license_context: licenseContext(),
       validate_proof: () => {
         throw new Error("proof validator must not run after local validation failure");
@@ -380,7 +458,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
       tool,
       args: {
         proof_capsule: proofCapsuleFixture(),
-        request: { amount: 42 },
+        request: { client_id: "client-a", amount: 42 },
         idempotency_key: "idem-a",
       },
       license_context: licenseContext(),
@@ -422,7 +500,7 @@ describe("Dojo API-backed MCP tool compiler", () => {
       tool,
       args: {
         proof_capsule: proofCapsuleFixture(),
-        request: { amount: 42 },
+        request: { client_id: "client-a", amount: 42 },
         idempotency_key: "idem-a",
       },
       license_context: licenseContext(),

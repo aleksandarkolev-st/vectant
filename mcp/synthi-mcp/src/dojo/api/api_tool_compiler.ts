@@ -17,6 +17,7 @@ export interface DojoApiBackedMcpTool {
   auth_scope: string | null;
   proof_required: true;
   proof_claim_mapping: Record<string, string>;
+  query_schema: Record<string, unknown> | null;
   idempotency_key_location: DojoApiEndpointCandidate["idempotency_key_location"] | null;
   rollback_strategy: DojoApiEndpointCandidate["rollback_strategy"] | null;
   postcondition: string | null;
@@ -129,6 +130,7 @@ export function compileDojoApiBackedMcpTool(input: {
     auth_scope: input.candidate.auth_scope ?? null,
     proof_required: true,
     proof_claim_mapping: { ...input.candidate.proof_claim_mapping },
+    query_schema: input.candidate.query_schema ?? null,
     idempotency_key_location: input.candidate.idempotency_key_location ?? null,
     rollback_strategy: input.candidate.rollback_strategy ?? null,
     postcondition: input.candidate.postcondition ?? null,
@@ -386,6 +388,10 @@ function validateToolInputSchema(schema: Record<string, unknown>, args: Record<s
   if (requestSchema) {
     blockedBy.push(...validateJsonSchemaSubset(requestSchema, args["request"], "request", "api_tool_request_schema"));
   }
+  const querySchema = objectRecord(schemaProperties["query"]);
+  if (querySchema) {
+    blockedBy.push(...validateJsonSchemaSubset(querySchema, args["query"], "query", "api_tool_query_schema"));
+  }
   return [...new Set(blockedBy)];
 }
 
@@ -451,7 +457,7 @@ function buildHttpRequest(tool: DojoApiBackedMcpTool, args: Record<string, unkno
     method: tool.method,
     path: tool.path,
     headers: {},
-    query: {},
+    query: queryRecordFromArgs(args["query"]),
     body: requestBody,
   };
   const idempotencyKey = typeof args["idempotency_key"] === "string" ? args["idempotency_key"] : undefined;
@@ -468,6 +474,13 @@ function buildHttpRequest(tool: DojoApiBackedMcpTool, args: Record<string, unkno
 }
 
 function buildToolInputSchema(candidate: DojoApiEndpointCandidate, mutation: boolean): Record<string, unknown> {
+  const queryRequired = hasSchemaProperties(candidate.query_schema);
+  const required = [
+    "proof_capsule",
+    "request",
+    ...(queryRequired ? ["query"] : []),
+    ...(mutation ? ["idempotency_key"] : []),
+  ];
   return {
     type: "object",
     properties: {
@@ -476,6 +489,7 @@ function buildToolInputSchema(candidate: DojoApiEndpointCandidate, mutation: boo
         description: "Proof capsule validated by the Dojo skill bus before this API-backed tool executes.",
       },
       request: candidate.request_schema,
+      ...(candidate.query_schema ? { query: candidate.query_schema } : {}),
       ...(mutation
         ? {
             idempotency_key: {
@@ -485,7 +499,7 @@ function buildToolInputSchema(candidate: DojoApiEndpointCandidate, mutation: boo
           }
         : {}),
     },
-    required: mutation ? ["proof_capsule", "request", "idempotency_key"] : ["proof_capsule", "request"],
+    required,
     additionalProperties: false,
   };
 }
@@ -506,6 +520,22 @@ function digestObject(value: unknown): string {
 function objectRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function queryRecordFromArgs(value: unknown): Record<string, string> {
+  const record = objectRecord(value);
+  if (!record) return {};
+  return Object.fromEntries(
+    Object.entries(record)
+      .filter(([, nested]) => typeof nested === "string" || typeof nested === "number" || typeof nested === "boolean")
+      .map(([key, nested]): [string, string] => [key, String(nested)])
+      .sort(([left], [right]) => left.localeCompare(right))
+  );
+}
+
+function hasSchemaProperties(schema: Record<string, unknown> | undefined): boolean {
+  const properties = schema ? objectRecord(schema["properties"]) : null;
+  return Boolean(properties && Object.keys(properties).length > 0);
 }
 
 function schemaType(schema: Record<string, unknown>): string | null {
