@@ -43,6 +43,8 @@ export function inferDojoApiEndpointCandidateFromTrace(
 export function reviewDojoApiEndpointCandidate(candidate: DojoApiEndpointCandidate): DojoApiCandidateReview {
   const issues: DojoApiCandidateReviewIssue[] = [];
   if (!candidate.path.trim()) issues.push(errorIssue("api_candidate_path_required", "API candidate requires a path."));
+  issues.push(...strictSchemaIssues("request", candidate.request_schema));
+  if (candidate.query_schema) issues.push(...strictSchemaIssues("query", candidate.query_schema));
   if (candidate.review_status !== "approved") {
     issues.push(errorIssue("api_candidate_review_approval_required", "API candidate requires explicit approval before promotion."));
   }
@@ -59,6 +61,48 @@ export function reviewDojoApiEndpointCandidate(candidate: DojoApiEndpointCandida
     ok_to_promote: issues.every((issue) => issue.severity !== "error"),
     issues,
   };
+}
+
+function strictSchemaIssues(
+  field: "request" | "query",
+  schema: Record<string, unknown>,
+  path: string = field
+): DojoApiCandidateReviewIssue[] {
+  const issues: DojoApiCandidateReviewIssue[] = [];
+  const type = schema["type"];
+  if (type === "object") {
+    if (schema["additionalProperties"] !== false) {
+      issues.push(errorIssue(
+        `api_candidate_${field}_schema_strict_required`,
+        `API ${field} schema object at ${path} must set additionalProperties=false.`
+      ));
+    }
+    const properties = schema["properties"];
+    if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+      issues.push(errorIssue(
+        `api_candidate_${field}_schema_properties_required`,
+        `API ${field} schema object at ${path} must declare properties.`
+      ));
+    } else {
+      for (const [property, nested] of Object.entries(properties as Record<string, unknown>)) {
+        if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+          issues.push(...strictSchemaIssues(field, nested as Record<string, unknown>, `${path}.${property}`));
+        }
+      }
+    }
+  }
+  if (type === "array") {
+    const items = schema["items"];
+    if (!items || typeof items !== "object" || Array.isArray(items)) {
+      issues.push(errorIssue(
+        `api_candidate_${field}_schema_items_required`,
+        `API ${field} schema array at ${path} must declare item shape.`
+      ));
+    } else {
+      issues.push(...strictSchemaIssues(field, items as Record<string, unknown>, `${path}[]`));
+    }
+  }
+  return issues;
 }
 
 function normalizeMethod(method: string): DojoApiMethod {

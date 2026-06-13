@@ -89,6 +89,60 @@ describe("Dojo API endpoint candidate contract", () => {
     expect(reviewDojoApiEndpointCandidate(candidate)).toEqual({ ok_to_promote: true, issues: [] });
   });
 
+  it("does not promote approved candidates with permissive request schemas", () => {
+    const candidate = {
+      ...inferDojoApiEndpointCandidateFromTrace({
+        method: "POST",
+        url: "/api/invoices",
+        request_body: { amount: 42 },
+      }),
+      request_schema: {
+        type: "object",
+        properties: {
+          invoice: {
+            type: "object",
+            properties: { amount: { type: "number" } },
+          },
+        },
+        required: ["invoice"],
+      },
+      auth_scope: "invoice:write",
+      idempotency_key_location: "header" as const,
+      rollback_strategy: "compensating_call" as const,
+      postcondition: "invoice.amount == request.invoice.amount",
+      proof_claim_mapping: { workspace_verified: "tenant.workspace_id" },
+      review_status: "approved" as const,
+    };
+
+    expect(reviewDojoApiEndpointCandidate(candidate)).toEqual(expect.objectContaining({
+      ok_to_promote: false,
+      issues: expect.arrayContaining([
+        expect.objectContaining({ issue_id: "api_candidate_request_schema_strict_required" }),
+      ]),
+    }));
+  });
+
+  it("does not promote approved candidates with permissive query schemas", () => {
+    const candidate = {
+      ...inferDojoApiEndpointCandidateFromTrace({
+        method: "GET",
+        url: "/api/invoices?workspace=west",
+      }),
+      query_schema: {
+        type: "object",
+        properties: { workspace: { type: "string" } },
+      },
+      review_status: "approved" as const,
+    };
+
+    expect(reviewDojoApiEndpointCandidate(candidate)).toEqual(expect.objectContaining({
+      ok_to_promote: false,
+      issues: expect.arrayContaining([
+        expect.objectContaining({ issue_id: "api_candidate_query_schema_strict_required" }),
+      ]),
+    }));
+  });
+
   it("does not require mutation safety fields for approved read candidates", () => {
     const candidate = {
       ...inferDojoApiEndpointCandidateFromTrace({
