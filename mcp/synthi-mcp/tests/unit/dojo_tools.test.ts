@@ -245,6 +245,50 @@ describe("Agent Dojo MCP tools", () => {
     );
   });
 
+  it("requires complete tenant context before listing production competencies", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const missingContext = await dispatchDojoTool("synthi_dojo_list_competencies", {});
+    expect(missingContext?.isError).toBe(true);
+    expect(missingContext?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_tenant_context_required",
+      enforcement_mode: "production",
+      missing_fields: expect.arrayContaining([
+        "tenant_id",
+        "organization_id",
+        "workspace_id",
+        "actor_id",
+        "actor_type",
+        "roles",
+        "request_id",
+        "correlation_id",
+      ]),
+      blocked_by: expect.arrayContaining([
+        "tenant_context_tenant_id_missing",
+        "tenant_context_actor_id_missing",
+      ]),
+    }));
+
+    const listed = await dispatchDojoTool("synthi_dojo_list_competencies", productionTenantContextArgs({
+      request_id: "req-production-list",
+    }));
+    expect(listed?.isError).toBeUndefined();
+    const listedContent = listed?.structuredContent as {
+      count: number;
+      competencies: Array<{ skill_id: string; mcp_skill_manifest: DojoMcpSkillManifestV1 }>;
+    };
+    expect(listedContent).toEqual(expect.objectContaining({ ok: true, count: 1 }));
+    expect(listedContent.competencies).toHaveLength(1);
+    const competency = listedContent.competencies[0]!;
+    expect(competency.skill_id).toBe(skillId);
+    expect(competency.mcp_skill_manifest.skill.workspace_id).toBe("workspace-a");
+    expect(competency.mcp_skill_manifest.manifest_digest).toMatch(/^sha256:/);
+  });
+
   it("advertises the static Dojo tool surface to strict MCP clients", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = createSynthiServer({ defaultSignalingUrl: "ws://localhost:9000" });

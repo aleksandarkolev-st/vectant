@@ -891,9 +891,11 @@ function withDojoImplementationMetadata(toolName: string, response: ToolResponse
 }
 
 async function dojoListCompetenciesTool(args: unknown): Promise<ToolResponse> {
+  const tenantContext = dojoTenantContextResultFromArgs(args);
+  if (!tenantContext.ok) return tenantContext.error;
   const skills = dojoSkillRegistry.list();
   const skillBus = createInProcessDojoMcpSkillBus({ listSkills: () => skills });
-  const visible = await skillBus.listCompetencies({ tenant: dojoTenantContextFromArgs(args) });
+  const visible = await skillBus.listCompetencies({ tenant: tenantContext.tenant });
   const visibleSkillIds = new Set(visible.map((item) => item.skill_id));
   return jsonResponse({
     ok: true,
