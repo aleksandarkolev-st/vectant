@@ -123,6 +123,16 @@ const DOJO_TENANT_CONTEXT_INPUT_PROPERTIES = {
   correlation_id: { type: "string" },
 } as const;
 
+const DOJO_SKILL_SELECTION_INPUT_PROPERTIES = {
+  skill_id: { type: "string" },
+  workflow_id: { type: "string" },
+} as const;
+
+const DOJO_SKILL_SCOPED_INPUT_PROPERTIES = {
+  ...DOJO_SKILL_SELECTION_INPUT_PROPERTIES,
+  ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
+} as const;
+
 export const DOJO_TOOLS = [
   {
     name: "synthi_dojo_list_competencies",
@@ -149,16 +159,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
-        tenant_id: { type: "string" },
-        organization_id: { type: "string" },
-        workspace_id: { type: "string" },
-        actor_id: { type: "string" },
-        actor_type: { type: "string", enum: ["human", "agent", "service"] },
-        roles: { type: "array", items: { type: "string" } },
-        request_id: { type: "string" },
-        correlation_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
       },
       required: [],
     },
@@ -166,61 +167,61 @@ export const DOJO_TOOLS = [
   {
     name: "synthi_dojo_get_skill_cortex",
     description: "Return the source-aware Skill Cortex graph: typed workflow nodes, learned transitions, guardrail refs, node memory, and expiry nodes.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_workspace_organoid",
     description: "Return the synthetic Workspace Organoid manifest used by Dojo to practice this skill without production data.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_wind_tunnel_report",
     description: "Return the Workflow Wind Tunnel runs and scenario summary for a Dojo skill.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_counterfactual_twin",
     description: "Return counterfactual twin variants, observed outcomes, and promoted scenarios for a Dojo skill.",
     inputSchema: {
       type: "object",
-      properties: { skill_id: { type: "string" }, workflow_id: { type: "string" }, scenario_id: { type: "string" }, mutation_kind: { type: "string" } },
+      properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES, scenario_id: { type: "string" }, mutation_kind: { type: "string" } },
       required: [],
     },
   },
   {
     name: "synthi_dojo_get_evil_twin_report",
     description: "Return adversarial Evil Twin attacks, caught/escaped status, hardened guardrails, and attack success rate.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_training_report",
     description: "Return the Dojo training report that ties wind-tunnel runs, checkride, evil twin, guardrails, antibodies, and readiness decision together.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_skill_passport",
     description: "Return the compact Skill Passport for UI badges and agent preflight checks.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_skill_genome",
     description: "Return the shareable Skill Genome pattern without raw screenshots, secrets, workspace data, or production payloads.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_antibodies",
     description: "Return negative-memory antibodies derived from failed or blocked scenarios and their guardrail responses.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_agent_ready_ui_contract",
     description: "Return the agent-ready UI contract: stable locators, source anchors, required inputs, proof claims, and refusal contracts.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_cost_policy",
     description: "Return the Dojo cost-control policy for scenario budgets, tier use, stop conditions, and recertification triggers.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_universe_dossier",
@@ -229,8 +230,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         question: { type: "string" },
         mutation_kind: { type: "string" },
       },
@@ -240,12 +240,12 @@ export const DOJO_TOOLS = [
   {
     name: "synthi_dojo_get_lifecycle",
     description: "Return revocable entrustment lifecycle state, expiry, recertification triggers, and release gates for a Dojo skill.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_governance_report",
     description: "Return approval queue, policy gates, audit report, compliance exports, and review workflows for a Dojo skill.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_metrics",
@@ -263,7 +263,7 @@ export const DOJO_TOOLS = [
   {
     name: "synthi_dojo_get_source_affordance_pr_plan",
     description: "Return a reviewable generated PR plan for adding stable Agent-Ready UI affordances and proof hooks to source files.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_get_registry",
@@ -280,8 +280,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
       },
       required: [],
     },
@@ -292,8 +291,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
       },
       required: [],
     },
@@ -304,8 +302,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
       },
       required: [],
     },
@@ -316,8 +313,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
       },
       required: [],
     },
@@ -328,8 +324,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
       },
       required: [],
     },
@@ -340,8 +335,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         requested_action: { type: "string", default: "run_workflow" },
         proof_capsule: { type: "object" },
       },
@@ -354,8 +348,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         scenario_id: { type: "string" },
         case_id: { type: "string" },
         guardrail_id: { type: "string" },
@@ -370,17 +363,9 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         scenario_id: { type: "string" },
         mutation_kind: { type: "string" },
-        tenant_id: { type: "string" },
-        organization_id: { type: "string" },
-        workspace_id: { type: "string" },
-        actor_id: { type: "string" },
-        actor_type: { type: "string", enum: ["human", "agent", "service"] },
-        request_id: { type: "string" },
-        correlation_id: { type: "string" },
         now: { type: "string" },
       },
       required: [],
@@ -393,8 +378,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         scenario_id: { type: "string" },
         mutation_kind: { type: "string" },
         question: { type: "string" },
@@ -408,8 +392,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         observed_human_action: { type: "object" },
         agent_planned_action: { type: "object" },
         now: { type: "string" },
@@ -424,13 +407,8 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         requested_action: { type: "string", default: "run_workflow" },
-        actor_id: { type: "string" },
-        actor_type: { type: "string", enum: ["human", "agent", "service"] },
-        request_id: { type: "string" },
-        correlation_id: { type: "string" },
         now: { type: "string" },
       },
       required: [],
@@ -443,6 +421,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
+        ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
         request_id: { type: "string" },
         decision: { type: "string", enum: ["approved", "denied"] },
         reviewer_actor_id: { type: "string" },
@@ -461,9 +440,8 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         case_id: { type: "string" },
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
         decision: { type: "string", enum: ["approved", "deprecated"] },
         reviewer_actor_id: { type: "string" },
         reviewer_actor_type: { type: "string", enum: ["human", "agent", "service"] },
@@ -499,8 +477,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         scenario_id: { type: "string" },
         mutation_kind: { type: "string" },
       },
@@ -513,16 +490,8 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         max_scenarios: { type: "number" },
-        tenant_id: { type: "string" },
-        organization_id: { type: "string" },
-        workspace_id: { type: "string" },
-        actor_id: { type: "string" },
-        actor_type: { type: "string", enum: ["human", "agent", "service"] },
-        request_id: { type: "string" },
-        correlation_id: { type: "string" },
         now: { type: "string" },
       },
       required: [],
@@ -560,12 +529,8 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
-        workspace_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         reason: { type: "string" },
-        actor_id: { type: "string" },
-        actor_type: { type: "string", enum: ["human", "agent", "service"] },
         evidence_refs: { type: "array", items: { type: "string" } },
         now: { type: "string" },
       },
@@ -575,7 +540,7 @@ export const DOJO_TOOLS = [
   {
     name: "synthi_dojo_get_license_health",
     description: "Return combined license lifecycle, governance, proof-record, expiry, and recertification health for a Dojo skill.",
-    inputSchema: { type: "object", properties: { skill_id: { type: "string" }, workflow_id: { type: "string" } }, required: [] },
+    inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
     name: "synthi_dojo_revoke_license",
@@ -583,11 +548,8 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         reason: { type: "string" },
-        actor_id: { type: "string" },
-        actor_type: { type: "string", enum: ["human", "agent", "service"] },
         evidence_refs: { type: "array", items: { type: "string" } },
         now: { type: "string" },
       },
@@ -600,8 +562,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         title: { type: "string" },
         finding: { type: "string" },
         impact: { type: "string" },
@@ -622,8 +583,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
       },
       required: [],
     },
@@ -635,8 +595,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         now: { type: "string" },
       },
       required: [],
@@ -649,16 +608,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
-        tenant_id: { type: "string" },
-        organization_id: { type: "string" },
-        workspace_id: { type: "string" },
-        actor_id: { type: "string" },
-        actor_type: { type: "string", enum: ["human", "agent", "service"] },
-        roles: { type: "array", items: { type: "string" } },
-        request_id: { type: "string" },
-        correlation_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         requested_action: { type: "string", default: "run_workflow" },
         context_claims: { type: "object" },
         evidence_claims: { type: "array", items: { type: "object" } },
@@ -680,16 +630,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
-        tenant_id: { type: "string" },
-        organization_id: { type: "string" },
-        workspace_id: { type: "string" },
-        actor_id: { type: "string" },
-        actor_type: { type: "string", enum: ["human", "agent", "service"] },
-        roles: { type: "array", items: { type: "string" } },
-        request_id: { type: "string" },
-        correlation_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         requested_action: { type: "string", default: "run_workflow" },
         proof_capsule: { type: "object" },
         tool_args: { type: "object" },
@@ -707,10 +648,9 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
+        ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
         capsule_id: { type: "string" },
         reason: { type: "string" },
-        actor_id: { type: "string" },
-        actor_type: { type: "string", enum: ["human", "agent", "service"] },
         evidence_refs: { type: "array", items: { type: "string" } },
         now: { type: "string" },
       },
@@ -724,16 +664,7 @@ export const DOJO_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        skill_id: { type: "string" },
-        workflow_id: { type: "string" },
-        tenant_id: { type: "string" },
-        organization_id: { type: "string" },
-        workspace_id: { type: "string" },
-        actor_id: { type: "string" },
-        actor_type: { type: "string", enum: ["human", "agent", "service"] },
-        roles: { type: "array", items: { type: "string" } },
-        request_id: { type: "string" },
-        correlation_id: { type: "string" },
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         requested_action: { type: "string", default: "run_workflow" },
         proof_capsule: { type: "object" },
         tool_args: { type: "object" },

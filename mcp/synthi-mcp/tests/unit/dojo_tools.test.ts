@@ -889,6 +889,63 @@ describe("Agent Dojo MCP tools", () => {
       expect(reviewCaseLaw?.inputSchema).toEqual(expect.objectContaining({
         required: expect.arrayContaining(["evidence_refs"]),
       }));
+      const tenantScopedToolNames = [
+        "synthi_dojo_get_skill",
+        "synthi_dojo_get_skill_cortex",
+        "synthi_dojo_get_workspace_organoid",
+        "synthi_dojo_get_wind_tunnel_report",
+        "synthi_dojo_get_counterfactual_twin",
+        "synthi_dojo_get_evil_twin_report",
+        "synthi_dojo_get_training_report",
+        "synthi_dojo_get_skill_passport",
+        "synthi_dojo_get_skill_genome",
+        "synthi_dojo_get_antibodies",
+        "synthi_dojo_get_agent_ready_ui_contract",
+        "synthi_dojo_get_cost_policy",
+        "synthi_dojo_get_universe_dossier",
+        "synthi_dojo_get_lifecycle",
+        "synthi_dojo_get_governance_report",
+        "synthi_dojo_get_source_affordance_pr_plan",
+        "synthi_dojo_get_skill_assurance_case",
+        "synthi_dojo_get_entrustment_level",
+        "synthi_dojo_get_license",
+        "synthi_dojo_get_guardrails",
+        "synthi_dojo_get_case_law",
+        "synthi_dojo_explain_block",
+        "synthi_dojo_explain_failure",
+        "synthi_dojo_debug_counterfactual",
+        "synthi_dojo_run_time_machine_debugger",
+        "synthi_dojo_run_ghost_mode",
+        "synthi_dojo_request_permission_upgrade",
+        "synthi_dojo_review_permission_upgrade",
+        "synthi_dojo_review_case_law",
+        "synthi_dojo_run_vivarium_scenario",
+        "synthi_dojo_run_wind_tunnel",
+        "synthi_dojo_recertify_skill",
+        "synthi_dojo_get_license_health",
+        "synthi_dojo_revoke_license",
+        "synthi_dojo_record_case_law",
+        "synthi_dojo_export_artifacts",
+        "synthi_dojo_export_compliance_pack",
+        "synthi_dojo_issue_proof_capsule",
+        "synthi_dojo_validate_proof_capsule",
+        "synthi_dojo_revoke_proof_capsule",
+        "synthi_dojo_run_with_proof_capsule",
+      ];
+      for (const toolName of tenantScopedToolNames) {
+        const tool = listed.tools.find((candidate) => candidate.name === toolName);
+        const schema = tool?.inputSchema as { properties?: Record<string, unknown> } | undefined;
+        expect(schema?.properties, toolName).toEqual(expect.objectContaining({
+          tenant_id: { type: "string" },
+          organization_id: { type: "string" },
+          workspace_id: { type: "string" },
+          actor_id: { type: "string" },
+          actor_type: { type: "string", enum: ["human", "agent", "service"] },
+          roles: { type: "array", items: { type: "string" } },
+          request_id: { type: "string" },
+          correlation_id: { type: "string" },
+        }));
+      }
     } finally {
       await client.close();
       await server.close();
