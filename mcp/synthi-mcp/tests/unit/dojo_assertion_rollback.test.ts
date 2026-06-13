@@ -29,6 +29,34 @@ describe("Dojo assertion and rollback runtime", () => {
     ]);
   });
 
+  it("resolves assertion IDs from observed dotted-path context", () => {
+    expect(evaluateDojoGraphAssertions([
+      { assertion_id: "api_response.body.durable_success", description: "API durable state committed.", required: true },
+      { assertion_id: "api_response.body.visual_success", description: "Visual success shown.", required: true },
+    ], {
+      api_response: {
+        body: {
+          durable_success: false,
+          visual_success: true,
+        },
+      },
+    })).toEqual([
+      expect.objectContaining({
+        assertion_id: "api_response.body.durable_success",
+        ok: false,
+        status: "failed",
+        blocked_by: ["assertion_failed:api_response.body.durable_success"],
+        observed: false,
+      }),
+      expect.objectContaining({
+        assertion_id: "api_response.body.visual_success",
+        ok: true,
+        status: "passed",
+        observed: true,
+      }),
+    ]);
+  });
+
   it("creates a rollback decision when required assertion failure has no rollback path", () => {
     expect(decideDojoRollbackForAssertionFailure(actionNode({ strategy: "none", checkpoints: ["pre_mutation"] }))).toEqual(
       expect.objectContaining({
@@ -63,6 +91,7 @@ describe("Dojo assertion and rollback runtime", () => {
       proof_capsule: { capsule_id: "capsule-a" },
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: (event) => `dojo-graph://${event.run_id}/${event.node_id}`,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -77,6 +106,69 @@ describe("Dojo assertion and rollback runtime", () => {
           rollback_decision: expect.objectContaining({
             status: "needs_human",
             requires_human_review: true,
+          }),
+        }),
+      ]),
+    }));
+  });
+
+  it("evaluates action assertions against observed API substrate response fields", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: apiAssertionGraphFixture(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["api"],
+      },
+      proof_capsule: { capsule_id: "capsule-api" },
+      proof_validator: validProofValidator,
+      evidence_writer: (event) => `dojo-graph://${event.run_id}/${event.node_id}`,
+      substrate_executor: {
+        execute: async () => ({
+          ok: true,
+          status: "executed",
+          substrate: "api",
+          blocked_by: [],
+          evidence_refs: ["api-evidence:durable-state-check"],
+          api_tool_execution: {
+            ok: true,
+            status: "executed",
+            blocked_by: [],
+            validation: { ok: true, blocked_by: [] },
+            response: {
+              status: 200,
+              body: {
+                visual_success: true,
+                durable_success: false,
+              },
+            },
+            evidence_record_id: "api-evidence:durable-state-check",
+          },
+        }),
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: [
+        "assertion_failed:api_response.body.durable_success",
+        "rollback_unavailable_human_review_required",
+      ],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          assertion_results: [
+            expect.objectContaining({
+              assertion_id: "api_response.body.durable_success",
+              status: "failed",
+              observed: false,
+            }),
+          ],
+          substrate_result: expect.objectContaining({
+            ok: true,
+            substrate: "api",
           }),
         }),
       ]),
@@ -97,6 +189,25 @@ function graphFixture(rollbackPolicy: Record<string, unknown>): DojoSkillGraph {
     created_at: "2026-06-11T00:00:00.000Z",
     nodes: [actionNode(rollbackPolicy)],
     edges: [],
+  };
+}
+
+function apiAssertionGraphFixture(): DojoSkillGraph {
+  return {
+    ...graphFixture({ strategy: "none", checkpoints: ["pre_mutation"] }),
+    nodes: [
+      {
+        ...actionNode({ strategy: "none", checkpoints: ["pre_mutation"] }),
+        assertions: [
+          {
+            assertion_id: "api_response.body.durable_success",
+            description: "API response confirms durable success.",
+            required: true,
+          },
+        ],
+        substrate_options: ["api"],
+      },
+    ],
   };
 }
 

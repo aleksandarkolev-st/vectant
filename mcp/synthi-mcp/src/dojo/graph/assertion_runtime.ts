@@ -68,9 +68,20 @@ function assertionValueFor(assertionId: string, context: Record<string, unknown>
   }
   const namespacedKey = `assertion:${assertionId}`;
   if (namespacedKey in context) return context[namespacedKey];
-  return context[assertionId];
+  if (assertionId in context) return context[assertionId];
+  if (assertionId.includes(".")) return valueAtPath(context, assertionId);
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function valueAtPath(context: Record<string, unknown>, path: string): unknown {
+  let cursor: unknown = context;
+  for (const segment of path.split(".").filter(Boolean)) {
+    if (!isRecord(cursor) || !(segment in cursor)) return undefined;
+    cursor = cursor[segment];
+  }
+  return cursor;
 }

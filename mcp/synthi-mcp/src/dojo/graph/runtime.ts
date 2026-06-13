@@ -403,12 +403,17 @@ export class DojoSkillGraphRuntime {
         };
       }
 
-      const assertionResults = evaluateDojoGraphAssertions(node.assertions, inputs);
+      const assertionResults = evaluateDojoGraphAssertions(
+        node.assertions,
+        assertionContextForNode(inputs, nodeResults[nodeResults.length - 1])
+      );
       const assertionBlockedBy = assertionResults.flatMap((assertion) => assertion.blocked_by);
       if (assertionBlockedBy.length > 0) {
         const rollbackDecision = decideDojoRollbackForAssertionFailure(node);
         const blockedWithRollback = [...assertionBlockedBy, ...rollbackDecision.blocked_by];
+        const previousNodeResult = nodeResults[nodeResults.length - 1];
         const assertionResult: DojoGraphNodeRunResult = {
+          ...(previousNodeResult ?? {}),
           node_id: node.node_id,
           kind: node.kind,
           status: "blocked",
@@ -522,6 +527,36 @@ function executionNodesForGraph(graph: DojoSkillGraph): DojoGraphNode[] {
     if (!visited.has(node.node_id)) ordered.push(node);
   }
   return ordered;
+}
+
+function assertionContextForNode(
+  inputs: Record<string, unknown>,
+  nodeResult: DojoGraphNodeRunResult | undefined
+): Record<string, unknown> {
+  if (!nodeResult?.substrate_result) return inputs;
+  const substrateResult = nodeResult.substrate_result;
+  const apiExecution = substrateResult.api_tool_execution;
+  const apiResponse = apiExecution?.response
+    ? {
+        status: apiExecution.response.status,
+        headers: { ...(apiExecution.response.headers ?? {}) },
+        body: apiExecution.response.body,
+      }
+    : undefined;
+  return {
+    ...inputs,
+    substrate_executed: substrateResult.ok,
+    substrate_status: substrateResult.status,
+    substrate: substrateResult.substrate,
+    substrate_evidence_refs: [...substrateResult.evidence_refs],
+    ...(apiExecution ? {
+      api_tool_executed: apiExecution.ok,
+      api_tool_status: apiExecution.status,
+      api_tool_blocked_by: [...apiExecution.blocked_by],
+      api_postcondition_ok: apiExecution.postcondition?.ok,
+      api_response: apiResponse,
+    } : {}),
+  };
 }
 
 async function emitGraphNodeEvidence(
