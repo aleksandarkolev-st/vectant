@@ -457,6 +457,24 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
   },
   {
+    id: "privacy_redaction_suite",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:privacy-redaction:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:privacy-redaction:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.privacyRedactionEvidence.v1",
+    default_evidence_path: "tmp/dojo-privacy-redaction/dojo-privacy-redaction.evidence.json",
+    release_artifact_requirements: {
+      require_all_privacy_capabilities_covered: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "dojo_chaos_performance_self_check",
     tier: "T8",
     working_directory: "mcp/synthi-mcp",
@@ -527,6 +545,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "private_tool_codex_host_conformance",
   "security_abuse_suite",
   "compliance_export_suite",
+  "privacy_redaction_suite",
 ];
 
 const args = parseArgs(process.argv.slice(2));
@@ -782,6 +801,25 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       errors.push("compliance_export_missing_json_report_digest_requirement");
     }
   }
+  const privacyRedactionGate = gates.find((gate) => gate.id === "privacy_redaction_suite");
+  if (privacyRedactionGate) {
+    if (privacyRedactionGate.evidence_schema_version !== "synthi.dojo.privacyRedactionEvidence.v1") {
+      errors.push("privacy_redaction_missing_evidence_schema");
+    }
+    if (privacyRedactionGate.package_script !== "proof:dojo:privacy-redaction:self-check") {
+      errors.push("privacy_redaction_missing_package_script");
+    }
+    if (!privacyRedactionGate.default_evidence_path) errors.push("privacy_redaction_missing_default_evidence_path");
+    if (!privacyRedactionGate.release_artifact_requirements?.require_all_privacy_capabilities_covered) {
+      errors.push("privacy_redaction_missing_capability_requirement");
+    }
+    if (!privacyRedactionGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("privacy_redaction_missing_digest_requirement");
+    }
+    if (!privacyRedactionGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("privacy_redaction_missing_json_report_digest_requirement");
+    }
+  }
   const chaosPerformanceGate = gates.find((gate) => gate.id === "dojo_chaos_performance_self_check");
   if (chaosPerformanceGate) {
     if (chaosPerformanceGate.evidence_schema_version !== "synthi.dojo.chaosPerformanceEvidence.v1") {
@@ -938,6 +976,7 @@ export async function runSelfCheck({ outDir }) {
   assert(manifest.release_gate_ids.includes("dojo_mcp_host_conformance"));
   assert(manifest.release_gate_ids.includes("security_abuse_suite"));
   assert(manifest.release_gate_ids.includes("compliance_export_suite"));
+  assert(manifest.release_gate_ids.includes("privacy_redaction_suite"));
   assert(manifest.gates.some((gate) => gate.id === "dojo_chaos_performance_self_check" && gate.tier === "T8"));
   assert(manifest.gates.some((gate) => gate.tier === "T8"));
   return writeDojoReleaseGateArtifacts({ outDir, manifest });

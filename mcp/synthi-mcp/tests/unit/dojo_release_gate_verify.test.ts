@@ -25,6 +25,7 @@ import {
   validateDojoWorkflowPipelineE2EForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
   validateDojoComplianceExportEvidenceForRelease,
+  validateDojoPrivacyRedactionEvidenceForRelease,
   validateDojoSecurityAbuseEvidenceForRelease,
   validateDojoSoakPerformanceSummary,
   verifyDojoChaosPerformanceEvidenceArtifact,
@@ -39,6 +40,7 @@ import {
   verifyDojoProofSelfCheckArtifacts,
   verifyDojoReleaseGateArtifactsFromArgs,
   verifyDojoReleaseGateManifestArtifacts,
+  verifyDojoPrivacyRedactionEvidenceArtifact,
   verifyDojoSecurityAbuseEvidenceArtifact,
   verifyDojoSoakPerformanceArtifacts,
   verifyDojoWorkflowPipelineE2EArtifact,
@@ -411,6 +413,7 @@ describe("Dojo release gate artifact verifier", () => {
     });
     const securityEvidencePath = await writeSecurityEvidenceFixture({ dir });
     const complianceEvidencePath = await writeComplianceExportEvidenceFixture({ dir });
+    const privacyEvidencePath = await writePrivacyRedactionEvidenceFixture({ dir });
     const workflowE2E = await writeWorkflowE2EFixture({ dir });
     const stdioAcceptance = await writePrivateToolStdioAcceptanceFixture({ dir });
     const codexAcceptance = await writePrivateToolCodexAcceptanceFixture({ dir });
@@ -452,6 +455,7 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "dojo_postgres_control_plane_self_check").default_evidence_path = postgresEvidencePath;
     manifest.gates.find((gate) => gate.id === "docker_integration").default_evidence_path = dockerEvidencePath;
     manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
+    manifest.gates.find((gate) => gate.id === "privacy_redaction_suite").default_evidence_path = privacyEvidencePath;
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
     manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioAcceptance.transcriptPath;
     manifest.gates.find((gate) => gate.id === "private_tool_codex_acceptance").default_report_path = codexAcceptance.transcriptPath;
@@ -524,6 +528,13 @@ describe("Dojo release gate artifact verifier", () => {
         id: "compliance_export_suite",
         ok: true,
         evidence_path: complianceEvidencePath,
+      }),
+    ]);
+    expect(verified.privacy_redaction).toEqual([
+      expect.objectContaining({
+        id: "privacy_redaction_suite",
+        ok: true,
+        evidence_path: privacyEvidencePath,
       }),
     ]);
   });
@@ -675,6 +686,64 @@ describe("Dojo release gate artifact verifier", () => {
       writeLogs: false,
     });
     const tamperedJsonResult = await verifyDojoComplianceExportEvidenceArtifact({ evidencePath: tamperedJsonPath });
+    expect(tamperedJsonResult.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^json_report_sha256_mismatch:/),
+      expect.stringMatching(/^json_report_bytes_mismatch:/),
+    ]));
+  });
+
+  it("verifies privacy redaction evidence coverage and referenced log digests", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-privacy-redaction-verify-"));
+    const evidencePath = await writePrivacyRedactionEvidenceFixture({ dir });
+
+    expect(validateDojoPrivacyRedactionEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoPrivacyRedactionEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = privacyRedactionEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["screenshot_consent_boundary"],
+      budget_evaluation: { ok: false },
+      test_summary: {
+        ...privacyRedactionEvidenceFixture().test_summary,
+        pending_tests: 1,
+      },
+    });
+    const incompletePath = await writePrivacyRedactionEvidenceFixture({ dir, basename: "incomplete-privacy", evidence: incomplete });
+    const rejected = await verifyDojoPrivacyRedactionEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "privacy_redaction_not_ok",
+      "privacy_redaction_coverage_incomplete",
+      "privacy_redaction_missing_capabilities:screenshot_consent_boundary",
+      "privacy_redaction_budget_not_ok",
+      "privacy_redaction_pending_tests:1",
+    ]));
+
+    const tamperedJson = path.join(dir, "tampered-privacy.vitest.json");
+    await writeFile(tamperedJson, JSON.stringify({ success: false, numFailedTests: 1 }), "utf8");
+    const expectedPrivacyJson = privacyRedactionJsonReportFixtureText();
+    const tamperedJsonPath = await writePrivacyRedactionEvidenceFixture({
+      dir,
+      basename: "tampered-privacy-json",
+      evidence: privacyRedactionEvidenceFixture({
+        json_report_path: tamperedJson,
+        json_report_sha256: sha256(expectedPrivacyJson),
+        json_report_bytes: Buffer.byteLength(expectedPrivacyJson),
+      }),
+      writeLogs: false,
+    });
+    const tamperedJsonResult = await verifyDojoPrivacyRedactionEvidenceArtifact({ evidencePath: tamperedJsonPath });
     expect(tamperedJsonResult.errors).toEqual(expect.arrayContaining([
       expect.stringMatching(/^json_report_sha256_mismatch:/),
       expect.stringMatching(/^json_report_bytes_mismatch:/),
@@ -1671,6 +1740,97 @@ function complianceExportJsonReportFixtureText() {
     success: true,
     numTotalTests: 12,
     numPassedTests: 12,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    testResults: [],
+  }, null, 2);
+}
+
+async function writePrivacyRedactionEvidenceFixture({
+  dir,
+  basename = "dojo-privacy-redaction",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "privacy suite passed\n";
+  const stderr = "";
+  const jsonReport = privacyRedactionJsonReportFixtureText();
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  } else {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+  }
+  const body = evidence ?? privacyRedactionEvidenceFixture({ stdout_path: stdoutPath, stderr_path: stderrPath, json_report_path: jsonReportPath });
+  const withLogDefaults = {
+    ...body,
+    stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
+    stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
+    json_report_path: body.json_report_path && body.json_report_path !== "vitest.json" ? body.json_report_path : jsonReportPath,
+    json_report_sha256: body.json_report_sha256 && body.json_report_sha256 !== "json-report-sha256" ? body.json_report_sha256 : sha256(jsonReport),
+    json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
+      ? body.json_report_bytes
+      : Buffer.byteLength(jsonReport),
+  };
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
+  return evidencePath;
+}
+
+function privacyRedactionEvidenceFixture(overrides = {}) {
+  const stdout = "privacy suite passed\n";
+  const stderr = "";
+  const capabilities = [
+    "evidence_redaction_manifest",
+    "redacted_evidence_export",
+    "auth_checkpoint_secret_custody",
+    "browser_origin_privacy_boundary",
+    "screenshot_consent_boundary",
+    "private_tool_secret_minimization",
+    "broker_audit_redaction",
+    "operator_queue_screenshot_minimization",
+  ];
+  return {
+    schema_version: "synthi.dojo.privacyRedactionEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: capabilities,
+    tested_capabilities: capabilities,
+    missing_capabilities: [],
+    capability_coverage_complete: true,
+    test_file_count: 7,
+    reported_test_file_count: 7,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: 16,
+      passed_tests: 16,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: "stdout.log",
+    stderr_path: "stderr.log",
+    json_report_path: "vitest.json",
+    json_report_sha256: "json-report-sha256",
+    json_report_bytes: undefined,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+}
+
+function privacyRedactionJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: 16,
+    numPassedTests: 16,
     numFailedTests: 0,
     numPendingTests: 0,
     testResults: [],

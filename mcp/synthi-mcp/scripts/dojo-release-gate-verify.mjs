@@ -40,6 +40,7 @@ const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-pos
 const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-integration");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_COMPLIANCE_EXPORT_DIR = path.join(REPO_ROOT, "tmp", "dojo-compliance-export");
+const DEFAULT_PRIVACY_REDACTION_DIR = path.join(REPO_ROOT, "tmp", "dojo-privacy-redaction");
 const DEFAULT_CHAOS_PERFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-chaos-performance");
 const DEFAULT_SOAK_DIR = path.join(MCP_ROOT, ".soak");
 
@@ -213,6 +214,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
+  const privacyRedactionResults = [];
+  if (truthy(args["release-candidate"]) || args["privacy-redaction-evidence"]) {
+    const privacyGate = findGate(manifest, "privacy_redaction_suite") || {};
+    privacyRedactionResults.push(await verifyDojoPrivacyRedactionEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["privacy-redaction-evidence"]
+        || privacyGate.default_evidence_path
+        || path.join(DEFAULT_PRIVACY_REDACTION_DIR, "dojo-privacy-redaction.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
   const chaosPerformanceResults = [];
   if (truthy(args["enterprise-release"]) || truthy(args["include-chaos-performance"]) || args["chaos-performance-evidence"]) {
     chaosPerformanceResults.push(await verifyDojoChaosPerformanceEvidenceArtifact({
@@ -231,7 +243,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceResults, ...securityResults, ...complianceExportResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -247,6 +259,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
     compliance_export: complianceExportResults.map(summarizeSection),
+    privacy_redaction: privacyRedactionResults.map(summarizeSection),
     chaos_performance: chaosPerformanceResults.map(summarizeSection),
     soak_performance: soakPerformanceResults.map(summarizeSection),
   };
@@ -847,6 +860,49 @@ export function validateDojoComplianceExportEvidenceForRelease(evidence) {
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("compliance_export_no_reported_tests");
   if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
     errors.push(`compliance_export_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoPrivacyRedactionEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoPrivacyRedactionEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "privacy_redaction_suite",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+    result_count: Number(evidence?.test_summary?.total_tests || 0),
+  };
+}
+
+export function validateDojoPrivacyRedactionEvidenceForRelease(evidence) {
+  const errors = [];
+  if (evidence?.schema_version !== "synthi.dojo.privacyRedactionEvidence.v1") {
+    errors.push(`privacy_redaction_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("privacy_redaction_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`privacy_redaction_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("privacy_redaction_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`privacy_redaction_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("privacy_redaction_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`privacy_redaction_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`privacy_redaction_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("privacy_redaction_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`privacy_redaction_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
   }
   return {
     ok: errors.length === 0,
@@ -1568,6 +1624,31 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedCompliance.errors.includes("compliance_export_coverage_incomplete"));
   assert(rejectedCompliance.errors.includes("compliance_export_missing_capabilities:redacted_evidence_export"));
 
+  const privacyDir = path.join(outDir, "privacy-redaction");
+  await mkdir(privacyDir, { recursive: true });
+  const privacyArtifacts = await writePrivacyRedactionEvidenceForSelfCheck({ outDir: privacyDir });
+  const privacyResult = await verifyDojoPrivacyRedactionEvidenceArtifact({
+    evidencePath: privacyArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(privacyResult.ok, true, privacyResult.errors.join(";"));
+  const rejectedPrivacyArtifacts = await writePrivacyRedactionEvidenceForSelfCheck({
+    outDir: privacyDir,
+    basename: "dojo-privacy-redaction-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["screenshot_consent_boundary"],
+      budget_evaluation: { ok: false },
+    },
+  });
+  const rejectedPrivacy = await verifyDojoPrivacyRedactionEvidenceArtifact({
+    evidencePath: rejectedPrivacyArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedPrivacy.errors.includes("privacy_redaction_coverage_incomplete"));
+  assert(rejectedPrivacy.errors.includes("privacy_redaction_missing_capabilities:screenshot_consent_boundary"));
+
   const chaosDir = path.join(outDir, "chaos");
   await mkdir(chaosDir, { recursive: true });
   const chaosArtifacts = await writeChaosEvidenceForSelfCheck({ outDir: chaosDir });
@@ -1634,6 +1715,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(visualResult),
       summarizeSection(securityResult),
       summarizeSection(complianceResult),
+      summarizeSection(privacyResult),
       summarizeSection(chaosResult),
       summarizeSection(soakResult),
     ],
@@ -1646,6 +1728,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedStdioHost),
       summarizeSection(rejectedSecurity),
       summarizeSection(rejectedCompliance),
+      summarizeSection(rejectedPrivacy),
       summarizeSection(rejectedChaos),
       summarizeSection(rejectedSoak),
     ],
@@ -2433,6 +2516,78 @@ async function writeComplianceExportEvidenceForSelfCheck({
     test_summary: {
       total_tests: 12,
       passed_tests: 12,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writePrivacyRedactionEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-privacy-redaction",
+  overrides = {},
+}) {
+  const stdout = "privacy redaction focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({ success: true, numTotalTests: 16, numPassedTests: 16, numFailedTests: 0, numPendingTests: 0, testResults: [] }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const configuredCapabilities = [
+    "evidence_redaction_manifest",
+    "redacted_evidence_export",
+    "auth_checkpoint_secret_custody",
+    "browser_origin_privacy_boundary",
+    "screenshot_consent_boundary",
+    "private_tool_secret_minimization",
+    "broker_audit_redaction",
+    "operator_queue_screenshot_minimization",
+  ];
+  const evidence = {
+    schema_version: "synthi.dojo.privacyRedactionEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: configuredCapabilities,
+    tested_capabilities: configuredCapabilities,
+    missing_capabilities: [],
+    capability_coverage_complete: true,
+    test_file_count: 7,
+    reported_test_file_count: 7,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_spawn_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: 16,
+      passed_tests: 16,
       failed_tests: 0,
       pending_tests: 0,
     },

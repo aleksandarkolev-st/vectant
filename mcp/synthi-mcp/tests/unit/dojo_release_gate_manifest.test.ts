@@ -25,6 +25,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:affordance-codemod:self-check": "node scripts/dojo-affordance-codemod-self-check.mjs",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
     "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
+    "proof:dojo:privacy-redaction:self-check": "node scripts/dojo-privacy-redaction-self-check.mjs",
     "proof:dojo:chaos-performance:self-check": "node scripts/dojo-chaos-performance-self-check.mjs",
     "live:browser:workflow-pipeline": "node scripts/workflow-pipeline-e2e.mjs",
     "live:browser:private-tool-stdio": "node scripts/private-tool-stdio-acceptance.mjs",
@@ -241,6 +242,21 @@ describe("Dojo release gate manifest", () => {
         }),
       }),
       expect.objectContaining({
+        id: "privacy_redaction_suite",
+        tier: "T7",
+        package_script: "proof:dojo:privacy-redaction:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.privacyRedactionEvidence.v1",
+        default_evidence_path: "tmp/dojo-privacy-redaction/dojo-privacy-redaction.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          require_all_privacy_capabilities_covered: true,
+          require_no_failed_tests: true,
+          require_no_skipped_tests: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "dojo_chaos_performance_self_check",
         tier: "T8",
         package_script: "proof:dojo:chaos-performance:self-check",
@@ -298,6 +314,7 @@ describe("Dojo release gate manifest", () => {
       "dojo_mcp_host_conformance",
       "security_abuse_suite",
       "compliance_export_suite",
+      "privacy_redaction_suite",
     ]));
   });
 
@@ -325,7 +342,7 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 12,
+      proof_artifact_gate_count: 13,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
@@ -334,6 +351,7 @@ describe("Dojo release gate manifest", () => {
         "workflow_e2e_hosted",
         "dojo_mcp_host_conformance",
         "compliance_export_suite",
+        "privacy_redaction_suite",
       ]),
     }));
     expect(evidence.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);

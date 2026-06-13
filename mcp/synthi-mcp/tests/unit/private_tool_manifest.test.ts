@@ -880,7 +880,7 @@ describe("private browser workflow MCP tool manifest", () => {
     expect(replay).not.toHaveBeenCalled();
   });
 
-  it("persists published private tools with encrypted workflow artifacts for later MCP discovery", async () => {
+  it("persists published private tools with encrypted workflow artifacts and redacted secret-shaped parameters", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-private-tools-"));
     const filePath = path.join(directory, "private-tools.enc.json");
     privateWorkflowToolRegistry.useStoreForTests(new EncryptedFilePrivateWorkflowToolStore({
