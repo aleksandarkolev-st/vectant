@@ -13,6 +13,7 @@ import { PostgresDojoLicenseStore } from "../../src/dojo/store/postgres_license_
 import { applyDojoPostgresMigrations } from "../../src/dojo/store/postgres_proof_store.js";
 import { PostgresDojoProofStore } from "../../src/dojo/store/postgres_proof_store.js";
 import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_record.js";
+import { PostgresDojoGovernanceStore } from "../../src/dojo/store/postgres_governance_store.js";
 import { PostgresDojoSkillStore } from "../../src/dojo/store/postgres_skill_store.js";
 import { dispatchDojoTool } from "../../src/tools/dojo.js";
 
@@ -259,6 +260,113 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       }),
     }));
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+  });
+
+  it("persists permission upgrade request and review through Postgres after local reset", async () => {
+    const tenantId = `tenant_upgrade_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_upgrade_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-upgrade-publish",
+      correlation_id: "corr-postgres-upgrade-publish",
+      actor_id: "postgres-upgrade-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_upgrade_publish",
+      evidence_refs: ["evidence:integration-postgres-upgrade-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+    };
+
+    const request = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      requested_action: "delete_record",
+      actor_id: "postgres-upgrade-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-upgrade-request",
+      correlation_id: "corr-postgres-upgrade-request",
+      now: "2026-06-11T02:00:00.000Z",
+    });
+    expect(request?.isError).toBeUndefined();
+    expect(request?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      permission_upgrade_request: expect.objectContaining({
+        requested_action: "delete_record",
+        status: "pending",
+        required_steps: expect.arrayContaining(["rerun_checkride_for_requested_action"]),
+      }),
+    }));
+    const requestContent = request?.structuredContent as {
+      permission_upgrade_request: { request_id: string };
+    };
+
+    const governanceStore = new PostgresDojoGovernanceStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(governanceStore.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).resolves.toEqual([
+      expect.objectContaining({
+        request_id: requestContent.permission_upgrade_request.request_id,
+        status: "pending",
+        requested_action: "delete_record",
+      }),
+    ]);
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+    expect(dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).toEqual([]);
+
+    const review = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      ...tenant,
+      request_id: requestContent.permission_upgrade_request.request_id,
+      decision: "approved",
+      reviewer_actor_id: "postgres-upgrade-reviewer",
+      reviewer_actor_type: "human",
+      reason: "Evidence reviewed in durable control plane.",
+      evidence_refs: ["evidence:integration-postgres-upgrade-review"],
+      actor_id: "postgres-upgrade-reviewer",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      correlation_id: "corr-postgres-upgrade-review",
+      decided_at: "2026-06-11T02:05:00.000Z",
+    });
+    expect(review?.isError).toBeUndefined();
+    expect(review?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      permission_upgrade_request: expect.objectContaining({
+        status: "approved",
+        reviewed_at: "2026-06-11T02:05:00.000Z",
+        decision_evidence_refs: ["evidence:integration-postgres-upgrade-review"],
+      }),
+    }));
+    await expect(governanceStore.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).resolves.toEqual([
+      expect.objectContaining({
+        request_id: requestContent.permission_upgrade_request.request_id,
+        status: "approved",
+        reviewed_by: { actor_id: "postgres-upgrade-reviewer", actor_type: "human" },
+      }),
+    ]);
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+    expect(dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).toEqual([]);
   });
 
   it("uses Postgres skill and proof records for production validation, consumption, and replay after local process loss", async () => {

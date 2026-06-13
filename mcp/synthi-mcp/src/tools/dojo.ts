@@ -335,6 +335,17 @@ type DojoDurableProofRegistryContext =
     close?: () => Promise<void>;
   };
 
+type DojoDurablePermissionUpgradeReviewContext = {
+  source: "postgres";
+  tenant: DojoTenantContext;
+  request: DojoPermissionUpgradeRequestRecord;
+  skill: DojoSkill;
+  governance_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
+    ? T extends { ok: true; governance_store: infer Store } ? Store : never
+    : never;
+  close?: () => Promise<void>;
+};
+
 async function durableProofRegistryForTenantIfRequired(input: {
   tenant: DojoTenantContext;
   operation: string;
@@ -382,6 +393,91 @@ async function durableProofRegistryForTenantIfRequired(input: {
       close: resolution.close,
     },
   };
+}
+
+async function permissionUpgradeReviewContextFromDurableControlPlaneIfRequired(
+  args: unknown,
+  requestId: string
+): Promise<
+  | { ok: true; context?: DojoDurablePermissionUpgradeReviewContext }
+  | { ok: false; error: ToolResponse }
+> {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_durable_store) {
+    return { ok: true };
+  }
+
+  const tenantContext = dojoTenantContextResultFromArgs(args);
+  if (!tenantContext.ok) return tenantContext;
+  const resolution = await createDojoControlPlaneStoresFromEnv({
+    tenant: tenantContext.tenant,
+  });
+  if (!resolution.ok) {
+    return {
+      ok: false,
+      error: controlPlaneResolutionError("synthi_dojo_review_permission_upgrade", resolution),
+    };
+  }
+
+  try {
+    const request = (await resolution.governance_store.listPermissionUpgradeRequests({
+      request_id: requestId,
+      limit: 1,
+    }))[0];
+    if (!request) {
+      await resolution.close?.();
+      return {
+        ok: false,
+        error: errorResponse("dojo_permission_upgrade_request_not_found", {
+          request_id: requestId,
+          control_plane_source: "postgres",
+        }),
+      };
+    }
+    const skill = await resolution.skill_store.getSkill(request.skill_id);
+    if (!skill) {
+      await resolution.close?.();
+      return {
+        ok: false,
+        error: errorResponse("dojo_permission_upgrade_skill_not_found", {
+          request_id: requestId,
+          skill_id: request.skill_id,
+          control_plane_source: "postgres",
+        }),
+      };
+    }
+    if (!isTenantAuthorizedForDojoSkill(tenantContext.tenant, skill)) {
+      await resolution.close?.();
+      return {
+        ok: false,
+        error: errorResponse("dojo_skill_not_authorized", {
+          ok: false,
+          skill_id: skill.skill_id,
+          workspace_id: skill.workspace_id,
+          tenant_workspace_id: tenantContext.tenant.workspace_id,
+          actor_id: tenantContext.tenant.actor_id,
+          control_plane_source: "postgres",
+          blocked_by: ["dojo_skill_workspace_mismatch"],
+          required_roles: ["dojo:admin", "dojo:operator"],
+        }),
+      };
+    }
+
+    return {
+      ok: true,
+      context: {
+        source: "postgres",
+        tenant: tenantContext.tenant,
+        request,
+        skill,
+        governance_store: resolution.governance_store,
+        close: resolution.close,
+      },
+    };
+  } catch (err) {
+    await resolution.close?.();
+    throw err;
+  }
 }
 
 function proofRecordForCapsule(input: {
@@ -1117,10 +1213,10 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoRunGhostModeTool(args);
         break;
       case "synthi_dojo_request_permission_upgrade":
-        response = dojoPermissionUpgradeTool(args);
+        response = await dojoPermissionUpgradeTool(args);
         break;
       case "synthi_dojo_review_permission_upgrade":
-        response = dojoReviewPermissionUpgradeTool(args);
+        response = await dojoReviewPermissionUpgradeTool(args);
         break;
       case "synthi_dojo_review_case_law":
         response = dojoReviewCaseLawTool(args);
@@ -1652,16 +1748,16 @@ async function dojoRunGhostModeTool(args: unknown): Promise<ToolResponse> {
   });
 }
 
-function dojoPermissionUpgradeTool(args: unknown): ToolResponse {
+async function dojoPermissionUpgradeTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
-  const skill = requiredAuthorizedSkill(args);
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_request_permission_upgrade");
   if (!skill.ok) return skill.error;
   const actorId = stringOpt(a["actor_id"]);
   if (!actorId) return errorResponse("dojo_permission_upgrade_actor_required");
   const actorType = actorTypeInputOpt(a["actor_type"]);
   if (!actorType) return errorResponse("dojo_permission_upgrade_actor_type_required");
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_request_permission_upgrade");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_request_permission_upgrade", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const requiredSteps = permissionUpgradeSteps(skill.skill, requestedAction);
@@ -1691,9 +1787,28 @@ function dojoPermissionUpgradeTool(args: unknown): ToolResponse {
       correlation_id: stringOpt(a["correlation_id"]) ?? `upgrade-${hashId(`${requestId}:${skill.skill.workflow_id}`)}`,
     },
   };
-  const storedRequest = dojoSkillRegistry.recordPermissionUpgradeRequest(requestRecord);
+  const enforcement = resolveDojoEnforcementConfig();
+  let storedRequest = requestRecord;
+  let controlPlaneSource: "compatibility_registry" | "postgres" = "compatibility_registry";
+  if (enforcement.production_enforcement && enforcement.require_durable_store) {
+    const resolution = await createDojoControlPlaneStoresFromEnv({
+      tenant: skill.tenant,
+      app_origin: skill.skill.app_origin,
+    });
+    if (!resolution.ok) return controlPlaneResolutionError("synthi_dojo_request_permission_upgrade", resolution);
+    try {
+      await resolution.governance_store.savePermissionUpgradeRequest(requestRecord);
+      controlPlaneSource = "postgres";
+    } finally {
+      await resolution.close?.();
+    }
+  }
+  if (skill.control_plane_source === "compatibility_registry") {
+    storedRequest = dojoSkillRegistry.recordPermissionUpgradeRequest(requestRecord);
+  }
   return jsonResponse({
     ok: true,
+    control_plane_source: controlPlaneSource,
     skill_id: skill.skill.skill_id,
     requested_action: requestedAction,
     current_entrustment_level: skill.skill.entrustment_level,
@@ -1708,7 +1823,7 @@ function dojoPermissionUpgradeTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoReviewPermissionUpgradeTool(args: unknown): ToolResponse {
+async function dojoReviewPermissionUpgradeTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const requestId = stringOpt(a["request_id"]);
   if (!requestId) return errorResponse("dojo_permission_upgrade_request_id_required");
@@ -1716,21 +1831,28 @@ function dojoReviewPermissionUpgradeTool(args: unknown): ToolResponse {
   if (!decision) return errorResponse("dojo_permission_upgrade_decision_required", {
     allowed_decisions: ["approved", "denied"],
   });
-  const storedRequest = dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestId, limit: 1 })[0];
-  if (!storedRequest) return errorResponse("dojo_permission_upgrade_request_not_found", { request_id: requestId });
-  const skill = dojoSkillRegistry.get(storedRequest.skill_id);
-  if (!skill) return errorResponse("dojo_permission_upgrade_skill_not_found", {
-    request_id: requestId,
-    skill_id: storedRequest.skill_id,
-  });
-  const authorization = authorizeTenantForDojoSkill(args, skill);
-  if (!authorization.ok) return authorization.error;
   const reviewerActorId = stringOpt(a["reviewer_actor_id"]) ?? stringOpt(a["actor_id"]);
   if (!reviewerActorId) return errorResponse("dojo_permission_upgrade_reviewer_required");
   const reviewerActorType = actorTypeInputOpt(a["reviewer_actor_type"] ?? a["actor_type"]);
   if (!reviewerActorType) return errorResponse("dojo_permission_upgrade_reviewer_actor_type_required");
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_review_permission_upgrade");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_review_permission_upgrade", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
+
+  const durableResolution = await permissionUpgradeReviewContextFromDurableControlPlaneIfRequired(args, requestId);
+  if (!durableResolution.ok) return durableResolution.error;
+
+  const storedRequest = durableResolution.context?.request
+    ?? dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestId, limit: 1 })[0];
+  if (!storedRequest) return errorResponse("dojo_permission_upgrade_request_not_found", { request_id: requestId });
+  const skill = durableResolution.context?.skill ?? dojoSkillRegistry.get(storedRequest.skill_id);
+  if (!skill) return errorResponse("dojo_permission_upgrade_skill_not_found", {
+    request_id: requestId,
+    skill_id: storedRequest.skill_id,
+  });
+  const authorization = durableResolution.context
+    ? { ok: true as const, tenant: durableResolution.context.tenant }
+    : authorizeTenantForDojoSkill(args, skill);
+  if (!authorization.ok) return authorization.error;
 
   const review = decideDojoPermissionUpgradeRequest({
     request: storedRequest,
@@ -1744,15 +1866,29 @@ function dojoReviewPermissionUpgradeTool(args: unknown): ToolResponse {
     evidence_refs: stringArrayOpt(a["evidence_refs"]),
   });
   if (!review.ok) {
+    await durableResolution.context?.close?.();
     return errorResponse(review.error ?? "dojo_permission_upgrade_review_rejected", {
       request_id: requestId,
       review,
     });
   }
 
-  const updatedRequest = dojoSkillRegistry.recordPermissionUpgradeRequest(review.request);
+  let updatedRequest = review.request;
+  let controlPlaneSource: "compatibility_registry" | "postgres" = "compatibility_registry";
+  try {
+    if (durableResolution.context) {
+      await durableResolution.context.governance_store.savePermissionUpgradeRequest(review.request);
+      controlPlaneSource = durableResolution.context.source;
+    }
+  } finally {
+    await durableResolution.context?.close?.();
+  }
+  if (!durableResolution.context) {
+    updatedRequest = dojoSkillRegistry.recordPermissionUpgradeRequest(review.request);
+  }
   return jsonResponse({
     ok: true,
+    control_plane_source: controlPlaneSource,
     request_id: requestId,
     decision,
     permission_upgrade_request: updatedRequest,
