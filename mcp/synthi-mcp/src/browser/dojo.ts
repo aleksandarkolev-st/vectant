@@ -3270,7 +3270,13 @@ function evidenceClaimsForProofIssue(
     throw new DojoProofEvidenceClaimError(integrityFailures);
   }
 
-  const requiredClaims = skill.permission_license.proof_requirements.required_evidence_claims;
+  const requestedClaims = (input.evidence_claims ?? [])
+    .map((claim) => claim.claim)
+    .filter((claim) => claim.trim().length > 0);
+  const requiredClaims = [...new Set([
+    ...skill.permission_license.proof_requirements.required_evidence_claims,
+    ...requestedClaims,
+  ])];
   const results = resolveDojoEvidenceClaims({
     claim_ids: requiredClaims,
     records,

@@ -8,6 +8,7 @@ import type { DojoSkillRegistry } from "./dojo.js";
 import type { DojoProofCapsuleRecord, DojoProofConsumeResult } from "./dojo_store.js";
 import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/proof/errors.js";
 import type { DojoProofVerifier } from "../dojo/proof/signing.js";
+import type { DojoEvidenceClaimResult } from "../dojo/evidence/claims.js";
 
 export interface DojoLicenseKernelDecision {
   ok: boolean;
@@ -30,6 +31,8 @@ export interface DojoLicenseKernelDecision {
     correlation_id?: string;
     approval_id?: string;
     approval_evidence_ref?: string;
+    approval_evidence_verified?: boolean;
+    approval_evidence_record_ids?: string[];
   };
 }
 
@@ -42,6 +45,8 @@ export function evaluateDojoLicenseKernel(input: {
   tool_args?: Record<string, unknown>;
   dry_run?: boolean;
   now?: string;
+  evidence_claim_results?: DojoEvidenceClaimResult[];
+  require_verified_approval_evidence?: boolean;
   proof_validation_options?: {
     now?: string;
     issuer?: string;
@@ -58,7 +63,15 @@ export function evaluateDojoLicenseKernel(input: {
     input.requested_action,
     input.proof_validation_options ?? now
   );
-  const approval = evaluateApprovalContext(input.skill, input.requested_action, validation, toolArgs);
+  const approval = evaluateApprovalContext({
+    skill: input.skill,
+    requested_action: input.requested_action,
+    proof_capsule: input.proof_capsule,
+    validation,
+    tool_args: toolArgs,
+    evidence_claim_results: input.evidence_claim_results ?? [],
+    require_verified_approval_evidence: input.require_verified_approval_evidence === true,
+  });
   const tenantId = stringOpt(toolArgs["tenant_id"]) ?? stringOpt(toolArgs["tenant"]);
   const organizationId = stringOpt(toolArgs["organization_id"]) ?? stringOpt(toolArgs["organization"]);
   const requestId = stringOpt(toolArgs["request_id"]);
@@ -148,16 +161,21 @@ export function evaluateDojoLicenseKernel(input: {
       ...(correlationId ? { correlation_id: correlationId } : {}),
       ...(approval.approval_id ? { approval_id: approval.approval_id } : {}),
       ...(approval.approval_evidence_ref ? { approval_evidence_ref: approval.approval_evidence_ref } : {}),
+      ...(approval.evidence_verified ? { approval_evidence_verified: true } : {}),
+      ...(approval.evidence_record_ids.length ? { approval_evidence_record_ids: approval.evidence_record_ids } : {}),
     },
   };
 }
 
-function evaluateApprovalContext(
-  skill: DojoSkill,
-  requestedAction: string,
-  validation: DojoProofValidation,
-  toolArgs: Record<string, unknown>
-): {
+function evaluateApprovalContext(input: {
+  skill: DojoSkill;
+  requested_action: string;
+  proof_capsule: DojoProofCarryingSkillCapsule;
+  validation: DojoProofValidation;
+  tool_args: Record<string, unknown>;
+  evidence_claim_results: DojoEvidenceClaimResult[];
+  require_verified_approval_evidence: boolean;
+}): {
   required: boolean;
   satisfied: boolean;
   blocked_by: string[];
@@ -165,15 +183,22 @@ function evaluateApprovalContext(
   actor_type?: "human" | "agent" | "service";
   approval_id?: string;
   approval_evidence_ref?: string;
+  evidence_verified: boolean;
+  evidence_record_ids: string[];
 } {
-  const required = validation.status === "approval_required"
-    || skill.permission_license.approval_requirements.includes(requestedAction)
-    || skill.permission_license.gated_actions.some((action) => action.action === requestedAction);
-  const actorId = stringOpt(toolArgs["actor_id"]) ?? stringOpt(toolArgs["actor"]);
-  const actorType = actorTypeOpt(toolArgs["actor_type"]);
-  const approvalId = stringOpt(toolArgs["approval_id"]);
-  const approvalEvidenceRef = stringOpt(toolArgs["approval_evidence_ref"]);
-  const approvalStatus = approvalStatusOpt(toolArgs);
+  const required = input.validation.status === "approval_required"
+    || input.skill.permission_license.approval_requirements.includes(input.requested_action)
+    || input.skill.permission_license.gated_actions.some((action) => action.action === input.requested_action);
+  const actorId = stringOpt(input.tool_args["actor_id"]) ?? stringOpt(input.tool_args["actor"]);
+  const actorType = actorTypeOpt(input.tool_args["actor_type"]);
+  const approvalId = stringOpt(input.tool_args["approval_id"]);
+  const approvalEvidenceRef = stringOpt(input.tool_args["approval_evidence_ref"]);
+  const approvalStatus = approvalStatusOpt(input.tool_args);
+  const verifiedEvidence = verifiedApprovalEvidence({
+    proof_capsule: input.proof_capsule,
+    evidence_claim_results: input.evidence_claim_results,
+    approval_evidence_ref: approvalEvidenceRef,
+  });
   const blockedBy: string[] = [];
 
   if (!required) {
@@ -185,14 +210,20 @@ function evaluateApprovalContext(
       ...(actorType ? { actor_type: actorType } : {}),
       ...(approvalId ? { approval_id: approvalId } : {}),
       ...(approvalEvidenceRef ? { approval_evidence_ref: approvalEvidenceRef } : {}),
+      evidence_verified: false,
+      evidence_record_ids: [],
     };
   }
 
   if (!approvalId) blockedBy.push("approval_required");
-  if (approvalStatus !== "approved") blockedBy.push("approval_not_granted");
+  const approvedByVerifiedEvidence = input.require_verified_approval_evidence && verifiedEvidence.satisfied;
+  if (approvalStatus !== "approved" && !approvedByVerifiedEvidence) blockedBy.push("approval_not_granted");
   if (!actorId) blockedBy.push("approval_actor_required");
   if (!actorType) blockedBy.push("approval_actor_type_required");
   if (!approvalEvidenceRef) blockedBy.push("approval_evidence_required");
+  if (input.require_verified_approval_evidence && !verifiedEvidence.satisfied) {
+    blockedBy.push("approval_evidence_claim_unverified");
+  }
 
   return {
     required: true,
@@ -202,6 +233,30 @@ function evaluateApprovalContext(
     ...(actorType ? { actor_type: actorType } : {}),
     ...(approvalId ? { approval_id: approvalId } : {}),
     ...(approvalEvidenceRef ? { approval_evidence_ref: approvalEvidenceRef } : {}),
+    evidence_verified: verifiedEvidence.satisfied,
+    evidence_record_ids: verifiedEvidence.evidence_record_ids,
+  };
+}
+
+function verifiedApprovalEvidence(input: {
+  proof_capsule: DojoProofCarryingSkillCapsule;
+  evidence_claim_results: DojoEvidenceClaimResult[];
+  approval_evidence_ref?: string;
+}): {
+  satisfied: boolean;
+  evidence_record_ids: string[];
+} {
+  const requiredRecordId = evidenceRecordIdFromRef(input.approval_evidence_ref);
+  const resultRecordIds = input.evidence_claim_results
+    .filter((claim) => claim.claim_id === "approval_granted" && claim.ok)
+    .flatMap((claim) => claim.evidence_record_ids);
+  const capsuleRecordIds = input.proof_capsule.evidence_claims
+    .filter((claim) => claim.claim === "approval_granted" && claim.satisfied)
+    .flatMap((claim) => evidenceRecordIdsFromRefs(claim.evidence_refs));
+  const evidenceRecordIds = uniqueStrings([...resultRecordIds, ...capsuleRecordIds]);
+  return {
+    satisfied: requiredRecordId ? evidenceRecordIds.includes(requiredRecordId) : evidenceRecordIds.length > 0,
+    evidence_record_ids: evidenceRecordIds,
   };
 }
 
@@ -259,6 +314,22 @@ function sameStringSet(left: string[], right: string[]): boolean {
   const normalizedRight = [...right].sort();
   if (normalizedLeft.length !== normalizedRight.length) return false;
   return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+}
+
+function evidenceRecordIdFromRef(ref: string | undefined): string | undefined {
+  if (!ref?.startsWith("evidence:")) return undefined;
+  const recordId = ref.slice("evidence:".length).trim();
+  return recordId.length > 0 ? recordId : undefined;
+}
+
+function evidenceRecordIdsFromRefs(refs: string[] | undefined): string[] {
+  return uniqueStrings((refs ?? [])
+    .map(evidenceRecordIdFromRef)
+    .filter((recordId): recordId is string => Boolean(recordId)));
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
 }
 
 function normalizedLicenseKernelErrorCodes(

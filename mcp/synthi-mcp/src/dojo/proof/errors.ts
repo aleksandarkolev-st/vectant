@@ -137,6 +137,7 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     reason === "approval_actor_required" ||
     reason === "approval_actor_type_required" ||
     reason === "approval_evidence_required" ||
+    reason === "approval_evidence_claim_unverified" ||
     reason.startsWith("approval_constraint:")
   ) {
     return "approval_required";

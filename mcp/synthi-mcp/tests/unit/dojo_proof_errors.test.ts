@@ -10,6 +10,7 @@ import {
   validateDojoProofCapsule,
 } from "../../src/browser/dojo.js";
 import { createDojoLicenseKernel, evaluateDojoLicenseKernel } from "../../src/dojo/license/kernel.js";
+import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_record.js";
 import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
@@ -38,6 +39,7 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("approval_constraint:human_confirmation_required")).toBe("approval_required");
     expect(normalizeDojoProofErrorCode("approval_not_granted")).toBe("approval_required");
     expect(normalizeDojoProofErrorCode("approval_evidence_required")).toBe("approval_required");
+    expect(normalizeDojoProofErrorCode("approval_evidence_claim_unverified")).toBe("approval_required");
     expect(normalizeDojoProofErrorCode("license_expiry_invalid")).toBe("license_expired");
     expect(normalizeDojoProofErrorCode("proof_self_attestation_not_allowed_in_production")).toBe("proof_capsule_invalid");
     expect(normalizeDojoProofErrorCode("proof_validator_missing")).toBe("proof_capsule_invalid");
@@ -314,6 +316,81 @@ describe("Dojo proof error taxonomy", () => {
       status: "allowed",
       blocked_by: [],
       error_codes: [],
+    }));
+
+    const strictSelfAttestedApproval = evaluateDojoLicenseKernel({
+      skill: gatedSkill,
+      registry: dojoSkillRegistry,
+      proof_capsule: capsule,
+      requested_action: "run_workflow",
+      tool_args: {
+        approval_id: "approval-a",
+        approval_status: "approved",
+        actor_id: "reviewer-a",
+        actor_type: "human",
+        approval_evidence_ref: "evidence:approval-a",
+      },
+      now: "2026-06-11T00:02:00.000Z",
+      require_verified_approval_evidence: true,
+    });
+
+    expect(strictSelfAttestedApproval).toEqual(expect.objectContaining({
+      ok: false,
+      status: "approval_required",
+      blocked_by: expect.arrayContaining(["approval_evidence_claim_unverified"]),
+      error_codes: ["approval_required"],
+    }));
+
+    const baseEvidence = verifiedProofEvidenceInput(gatedSkill).evidence_ledger_records[0]!;
+    const approvalEvidence = buildDojoEvidenceLedgerRecord({
+      record_id: "approval-a",
+      tenant_id: "legacy-local-tenant",
+      workspace_id: gatedSkill.workspace_id,
+      skill_id: gatedSkill.skill_id,
+      run_id: `approval-${gatedSkill.skill_id}`,
+      kind: "audit",
+      artifact_uri: "memory://dojo/tests/approval-a",
+      artifact_sha256: "d".repeat(64),
+      claim_ids: ["approval_granted"],
+      previous_hash: baseEvidence.record_hash,
+      created_at: "2026-06-11T00:00:30.000Z",
+      created_by: "dojo-test-fixture",
+      retention_class: "ephemeral",
+    });
+    const approvalCapsule = issueDojoProofCapsule(gatedSkill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      evidence_claims: [{ claim: "approval_granted", satisfied: true, evidence_refs: ["evidence:approval-a"] }],
+      evidence_ledger_records: [baseEvidence, approvalEvidence],
+      require_verified_evidence: true,
+      now: "2026-06-11T00:01:00.000Z",
+      expires_at: "2026-06-11T00:16:00.000Z",
+    });
+    dojoSkillRegistry.recordProofCapsule(approvalCapsule);
+
+    const verifiedApproval = evaluateDojoLicenseKernel({
+      skill: gatedSkill,
+      registry: dojoSkillRegistry,
+      proof_capsule: approvalCapsule,
+      requested_action: "run_workflow",
+      tool_args: {
+        approval_id: "approval-a",
+        actor_id: "reviewer-a",
+        actor_type: "human",
+        approval_evidence_ref: "evidence:approval-a",
+      },
+      now: "2026-06-11T00:02:00.000Z",
+      require_verified_approval_evidence: true,
+    });
+
+    expect(verifiedApproval).toEqual(expect.objectContaining({
+      ok: true,
+      status: "allowed",
+      blocked_by: [],
+      error_codes: [],
+      runtime_claims: expect.objectContaining({
+        approval_evidence_verified: true,
+        approval_evidence_record_ids: ["approval-a"],
+      }),
     }));
   });
 });

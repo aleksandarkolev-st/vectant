@@ -3417,6 +3417,7 @@ async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse
     });
     if (!validationOptions.ok) return validationOptions.error;
     const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, objectOpt(a["tool_args"]) ?? {});
+    const enforcement = resolveDojoEnforcementConfig();
     const decision = evaluateDojoLicenseKernel({
       skill: skill.skill,
       registry: dojoSkillRegistry,
@@ -3426,6 +3427,7 @@ async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse
       tool_args: licenseToolArgs,
       dry_run: true,
       now,
+      require_verified_approval_evidence: enforcement.production_enforcement,
       proof_validation_options: validationOptions.options,
     });
     const proofRecord = decision.ok
@@ -3651,6 +3653,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
           tool_args: licenseToolArgs,
           dry_run: dryRun,
           now,
+          require_verified_approval_evidence: resolveDojoEnforcementConfig().production_enforcement,
           proof_validation_options: validationOptions.options,
         });
         return {
