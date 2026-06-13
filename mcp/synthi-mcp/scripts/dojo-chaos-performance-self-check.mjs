@@ -25,6 +25,7 @@ export const DOJO_CHAOS_PERFORMANCE_TEST_FILES = [
   "tests/integration/dojo_vivarium_runner.test.ts",
   "tests/integration/dojo_checkride_runner.test.ts",
   "tests/integration/dojo_evil_twin_runner.test.ts",
+  "tests/unit/dojo_tools.test.ts",
 ];
 
 export const DOJO_CHAOS_SCENARIOS = [
@@ -37,6 +38,8 @@ export const DOJO_CHAOS_SCENARIOS = [
   "prompt_injection_fixture",
   "runtime_oracle_classification",
   "evil_twin_attack_hardening",
+  "hosted_runtime_preflight_fail_closed",
+  "proof_not_consumed_on_failed_preflight",
 ];
 
 const args = parseArgs(process.argv.slice(2));
@@ -293,6 +296,8 @@ function scenarioMatchers(scenario) {
     prompt_injection_fixture: ["prompt injection"],
     runtime_oracle_classification: ["oracle", "classifies"],
     evil_twin_attack_hardening: ["evil twin", "attack hardening", "hardening"],
+    hosted_runtime_preflight_fail_closed: ["authorizes hosted runtime sessions before consuming production proof capsules", "runtime session not found"],
+    proof_not_consumed_on_failed_preflight: ["proof not consumed", "before consuming production proof capsules"],
   };
   return [...new Set([normalized, ...(aliases[scenario] ?? [])].map(normalizeScenarioText))];
 }

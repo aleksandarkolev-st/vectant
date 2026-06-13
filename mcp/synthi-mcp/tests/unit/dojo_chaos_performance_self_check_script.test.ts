@@ -13,8 +13,8 @@ const VITEST_REPORT = {
   numTotalTestSuites: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
   numPassedTestSuites: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
   numFailedTestSuites: 0,
-  numTotalTests: 9,
-  numPassedTests: 9,
+  numTotalTests: 10,
+  numPassedTests: 10,
   numFailedTests: 0,
   numPendingTests: 0,
   testResults: [
@@ -107,6 +107,19 @@ const VITEST_REPORT = {
         },
       ],
     },
+    {
+      name: "tests/unit/dojo_tools.test.ts",
+      startTime: 1400,
+      endTime: 1580,
+      assertionResults: [
+        {
+          fullName: "Agent Dojo MCP tools authorizes hosted runtime sessions before consuming production proof capsules",
+          title: "authorizes hosted runtime sessions before consuming production proof capsules",
+          status: "passed",
+          duration: 45,
+        },
+      ],
+    },
   ],
 };
 
@@ -118,12 +131,15 @@ describe("Dojo chaos performance self-check script", () => {
       "tests/integration/dojo_vivarium_runner.test.ts",
       "tests/integration/dojo_checkride_runner.test.ts",
       "tests/integration/dojo_evil_twin_runner.test.ts",
+      "tests/unit/dojo_tools.test.ts",
     ]);
     expect(DOJO_CHAOS_SCENARIOS).toEqual(expect.arrayContaining([
       "api_timeout",
       "partial_write",
       "fake_success_ui",
       "evil_twin_attack_hardening",
+      "hosted_runtime_preflight_fail_closed",
+      "proof_not_consumed_on_failed_preflight",
     ]));
   });
 
@@ -164,16 +180,16 @@ describe("Dojo chaos performance self-check script", () => {
         "evil_twin_attack_hardening",
       ]),
       test_summary: expect.objectContaining({
-        total_tests: 9,
-        passed_tests: 9,
+        total_tests: 10,
+        passed_tests: 10,
         failed_tests: 0,
         assertion_duration_p95_ms: 60,
-        test_file_duration_p95_ms: 130,
+        test_file_duration_p95_ms: 180,
       }),
       performance_metrics: expect.objectContaining({
         self_check_duration_ms: 2345.679,
         test_case_duration_p95_ms: 60,
-        test_file_duration_p95_ms: 130,
+        test_file_duration_p95_ms: 180,
       }),
       budget_evaluation: expect.objectContaining({
         ok: true,
@@ -228,11 +244,11 @@ describe("Dojo chaos performance self-check script", () => {
     const summary = summarizeVitestJsonReport(VITEST_REPORT);
     expect(summary).toEqual(expect.objectContaining({
       success: true,
-      total_tests: 9,
-      passed_tests: 9,
+      total_tests: 10,
+      passed_tests: 10,
       failed_tests: 0,
       assertion_duration_p95_ms: 60,
-      test_file_duration_p95_ms: 130,
+      test_file_duration_p95_ms: 180,
     }));
 
     const coverage = buildScenarioCoverage({
@@ -253,6 +269,19 @@ describe("Dojo chaos performance self-check script", () => {
         evidence_titles: expect.arrayContaining([
           "Dojo synthetic fixture materializer materializes prompt injection document fixtures as quarantined synthetic tissue",
         ]),
+      }),
+    ]);
+    expect(buildScenarioCoverage({
+      scenarios: ["hosted_runtime_preflight_fail_closed", "proof_not_consumed_on_failed_preflight"],
+      jsonReport: VITEST_REPORT,
+    })).toEqual([
+      expect.objectContaining({
+        scenario: "hosted_runtime_preflight_fail_closed",
+        covered: true,
+      }),
+      expect.objectContaining({
+        scenario: "proof_not_consumed_on_failed_preflight",
+        covered: true,
       }),
     ]);
   });
