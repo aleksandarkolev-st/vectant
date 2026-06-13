@@ -892,6 +892,12 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!gate.release_artifact_requirements?.require_visual_proof) {
       errors.push(`private_tool_host_conformance_missing_visual_proof:${gate.id}`);
     }
+    if (!gate.release_artifact_requirements?.require_no_local_attach) {
+      errors.push(`private_tool_host_conformance_missing_no_local_attach:${gate.id}`);
+    }
+    if (!gate.release_artifact_requirements?.require_private_tool_call) {
+      errors.push(`private_tool_host_conformance_missing_private_tool_call:${gate.id}`);
+    }
     if (!Array.isArray(gate.requires_env) || !gate.requires_env.includes("SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE")) {
       errors.push(`private_tool_host_conformance_missing_store_env:${gate.id}`);
     }

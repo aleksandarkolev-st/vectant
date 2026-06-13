@@ -229,6 +229,8 @@ describe("Dojo release gate manifest", () => {
         release_artifact_requirements: expect.objectContaining({
           require_non_loopback_runtime: true,
           require_external_private_tool_store: true,
+          require_no_local_attach: true,
+          require_private_tool_call: true,
           require_custom_mcp_command: true,
           require_strict_schema: true,
           require_visual_proof: true,
@@ -250,6 +252,8 @@ describe("Dojo release gate manifest", () => {
         release_artifact_requirements: expect.objectContaining({
           require_non_loopback_runtime: true,
           require_external_private_tool_store: true,
+          require_no_local_attach: true,
+          require_private_tool_call: true,
           require_agent_mcp_only: true,
           require_no_shell_commands: true,
           require_visual_proof: true,
@@ -407,6 +411,16 @@ describe("Dojo release gate manifest", () => {
       "mcp_host_conformance_missing_external_signing_requirement",
       "mcp_host_conformance_missing_no_local_cdp_requirement",
       "mcp_host_conformance_missing_env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
+    ]));
+
+    const brokenPrivateToolHostConformance = JSON.parse(JSON.stringify(manifest));
+    const privateHostGate = brokenPrivateToolHostConformance.gates
+      .find((gate) => gate.id === "private_tool_stdio_host_conformance");
+    privateHostGate.release_artifact_requirements.require_no_local_attach = false;
+    privateHostGate.release_artifact_requirements.require_private_tool_call = false;
+    expect(validateDojoReleaseGateManifest(brokenPrivateToolHostConformance, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "private_tool_host_conformance_missing_no_local_attach:private_tool_stdio_host_conformance",
+      "private_tool_host_conformance_missing_private_tool_call:private_tool_stdio_host_conformance",
     ]));
 
     const brokenSecurity = JSON.parse(JSON.stringify(manifest));
