@@ -109,6 +109,7 @@ function postgresVitestReportFixture() {
     ],
     [
       "Dojo tool Postgres control-plane wiring persists production durable skill publication and lists competencies from Postgres after local reset",
+      "Dojo tool Postgres control-plane wiring revokes production licenses through Postgres and reads revoked license health after local reset",
       "Dojo tool Postgres control-plane wiring uses Postgres skill and proof records for production validation, consumption, and replay after local process loss",
     ],
     [

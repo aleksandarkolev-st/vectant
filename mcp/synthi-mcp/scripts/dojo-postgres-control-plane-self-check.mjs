@@ -62,6 +62,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES = [
   "skill_repository",
   "license_repository",
   "tool_control_plane_publish_read_path",
+  "tool_control_plane_license_revocation_path",
   "tool_control_plane_proof_lifecycle_path",
   "postgres_evidence_proof_issuance",
 ];
@@ -375,6 +376,9 @@ function capabilityMatchers(capability) {
     ],
     tool_control_plane_publish_read_path: [
       "dojo tool postgres control plane wiring persists production durable skill publication and lists competencies from postgres after local reset",
+    ],
+    tool_control_plane_license_revocation_path: [
+      "dojo tool postgres control plane wiring revokes production licenses through postgres and reads revoked license health after local reset",
     ],
     tool_control_plane_proof_lifecycle_path: [
       "dojo tool postgres control plane wiring uses postgres skill and proof records for production validation consumption and replay after local process loss",

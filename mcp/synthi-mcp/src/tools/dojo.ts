@@ -1144,10 +1144,10 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoRecertifySkillTool(args);
         break;
       case "synthi_dojo_get_license_health":
-        response = dojoGetLicenseHealthTool(args);
+        response = await dojoGetLicenseHealthTool(args);
         break;
       case "synthi_dojo_revoke_license":
-        response = dojoRevokeLicenseTool(args);
+        response = await dojoRevokeLicenseTool(args);
         break;
       case "synthi_dojo_record_case_law":
         response = dojoRecordCaseLawTool(args);
@@ -2171,18 +2171,19 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
   });
 }
 
-function dojoGetLicenseHealthTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetLicenseHealthTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_license_health");
   if (!skill.ok) return skill.error;
   return jsonResponse({
     ok: true,
+    control_plane_source: skill.control_plane_source,
     skill_id: skill.skill.skill_id,
     license_health: licenseHealthFor(skill.skill),
   });
 }
 
-function dojoRevokeLicenseTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoRevokeLicenseTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_revoke_license");
   if (!skill.ok) return skill.error;
   const a = obj(args);
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
@@ -2194,22 +2195,82 @@ function dojoRevokeLicenseTool(args: unknown): ToolResponse {
   if (!actorType) return errorResponse("dojo_license_revocation_actor_type_required");
   const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
   if (evidenceRefs.length === 0) return errorResponse("dojo_license_revocation_evidence_required");
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_revoke_license");
+  const revokedBy = {
+    actor_id: actorId,
+    actor_type: actorType,
+  };
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_revoke_license", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const revocation = revokeDojoSkillLicense({
     skill: skill.skill,
     reason,
     revoked_at: now,
-    revoked_by: {
-      actor_id: actorId,
-      actor_type: actorType,
-    },
+    revoked_by: revokedBy,
     evidence_refs: evidenceRefs,
   });
-  const saved = dojoSkillRegistry.publish(revocation.skill);
+  const enforcement = resolveDojoEnforcementConfig();
+  let saved = revocation.skill;
+  let controlPlanePersistence: Record<string, unknown> = {
+    ok: true,
+    store_kind: "compatibility_registry",
+  };
+  if (enforcement.production_enforcement && enforcement.require_durable_store) {
+    const resolution = await createDojoControlPlaneStoresFromEnv({
+      tenant: skill.tenant,
+      app_origin: skill.skill.app_origin,
+    });
+    if (!resolution.ok) {
+      return controlPlaneResolutionError("synthi_dojo_revoke_license", resolution);
+    }
+    try {
+      const licenseRecord = await resolution.license_store.revokeLicense(
+        skill.skill.permission_license.license_id,
+        reason,
+        now,
+        revokedBy,
+        {
+          revoked_license: revocation.skill.permission_license,
+          readiness_level: revocation.skill.skill_readiness_level,
+          expires_at: revocation.skill.license_expires_at,
+        }
+      );
+      if (!licenseRecord) {
+        return errorResponse("dojo_license_not_found", {
+          ok: false,
+          skill_id: skill.skill.skill_id,
+          license_id: skill.skill.permission_license.license_id,
+          control_plane_source: "postgres",
+          blocked_by: ["license_record_not_found"],
+          required_tool: "synthi_dojo_publish_skill",
+        });
+      }
+      const skillRecord = await resolution.skill_store.saveSkill(revocation.skill, {
+        status: "revoked",
+        created_by: revokedBy,
+        now,
+      });
+      controlPlanePersistence = {
+        ok: true,
+        store_kind: "postgres",
+        skill_id: skillRecord.skill_id,
+        skill_status: skillRecord.status,
+        license_id: licenseRecord.license_id,
+        license_version: licenseRecord.license_version,
+        license_status: licenseRecord.status,
+        revoked_at: licenseRecord.revoked_at,
+      };
+    } finally {
+      await resolution.close?.();
+    }
+  }
+  if (skill.control_plane_source === "compatibility_registry") {
+    saved = dojoSkillRegistry.publish(revocation.skill);
+  }
   return jsonResponse({
     ok: true,
     skill_id: saved.skill_id,
+    control_plane_source: controlPlanePersistence.store_kind,
+    control_plane_persistence: controlPlanePersistence,
     reason,
     revocation,
     license: saved.permission_license,

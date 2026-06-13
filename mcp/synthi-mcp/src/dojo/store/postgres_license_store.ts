@@ -259,11 +259,34 @@ export class PostgresDojoLicenseStore implements DojoLicenseStore {
     licenseId: string,
     reason: string,
     now: string = new Date().toISOString(),
-    revokedBy: DojoAuditActor = this.auditActor
+    revokedBy: DojoAuditActor = this.auditActor,
+    options: {
+      revoked_license?: DojoPermissionLicense;
+      readiness_level?: DojoSkillReadinessLevel;
+      expires_at?: string;
+    } = {}
   ): Promise<DojoPermissionLicenseRecord | null> {
+    const revokedLicense = options.revoked_license;
+    if (revokedLicense) {
+      assertLicenseShape(revokedLicense);
+      if (revokedLicense.license_id !== licenseId) {
+        throw new Error("dojo_postgres_license_revocation_license_id_mismatch");
+      }
+      if (options.readiness_level === undefined) {
+        throw new Error("dojo_postgres_license_revocation_readiness_level_required");
+      }
+    }
+    const readinessLevel = options.readiness_level === undefined
+      ? null
+      : normalizedReadinessLevel(options.readiness_level);
     const result = await this.queryable.query<LicenseRow>(
       `UPDATE dojo_licenses
       SET status = 'revoked',
+        license_version = COALESCE($6, license_version),
+        entrustment_level = COALESCE($7, entrustment_level),
+        readiness_level = COALESCE($8, readiness_level),
+        license_json = COALESCE($9::jsonb, license_json),
+        expires_at = COALESCE($10::timestamptz, expires_at),
         revoked_at = $4::timestamptz,
         revoked_reason = $5,
         updated_at = $4::timestamptz
@@ -271,16 +294,63 @@ export class PostgresDojoLicenseStore implements DojoLicenseStore {
       RETURNING tenant_id, workspace_id, license_id, skill_id, license_version,
         status, entrustment_level, readiness_level, license_json, expires_at,
         revoked_at, revoked_reason, created_at, updated_at`,
-      [this.tenantId, this.workspaceId, licenseId, now, requiredId(reason, "revoked_reason")]
+      [
+        this.tenantId,
+        this.workspaceId,
+        licenseId,
+        now,
+        requiredId(reason, "revoked_reason"),
+        revokedLicense?.license_version ?? null,
+        revokedLicense?.entrustment_level ?? null,
+        readinessLevel,
+        revokedLicense ? JSON.stringify(revokedLicense) : null,
+        options.expires_at ?? null,
+      ]
     );
     const revoked = rowToLicense(result.rows[0]);
     if (!revoked) return null;
     await this.queryable.query(
       `UPDATE dojo_license_versions
       SET status = 'revoked'
-      WHERE tenant_id = $1 AND workspace_id = $2 AND license_id = $3 AND license_version = $4`,
-      [this.tenantId, this.workspaceId, revoked.license_id, revoked.license_version]
+      WHERE tenant_id = $1 AND workspace_id = $2 AND license_id = $3`,
+      [this.tenantId, this.workspaceId, revoked.license_id]
     );
+    if (revokedLicense) {
+      await this.queryable.query(
+        `INSERT INTO dojo_license_versions (
+          tenant_id,
+          workspace_id,
+          license_id,
+          license_version,
+          skill_id,
+          status,
+          entrustment_level,
+          readiness_level,
+          license_json,
+          created_at,
+          created_by
+        ) VALUES ($1, $2, $3, $4, $5, 'revoked', $6, $7, $8::jsonb, $9::timestamptz, $10)
+        ON CONFLICT (tenant_id, workspace_id, license_id, license_version) DO UPDATE SET
+          skill_id = EXCLUDED.skill_id,
+          status = 'revoked',
+          entrustment_level = EXCLUDED.entrustment_level,
+          readiness_level = EXCLUDED.readiness_level,
+          license_json = EXCLUDED.license_json,
+          created_by = EXCLUDED.created_by`,
+        [
+          this.tenantId,
+          this.workspaceId,
+          revokedLicense.license_id,
+          revokedLicense.license_version,
+          revokedLicense.skill_id,
+          revokedLicense.entrustment_level,
+          readinessLevel,
+          JSON.stringify(revokedLicense),
+          now,
+          revokedBy.actor_id,
+        ]
+      );
+    }
     await this.appendLicenseAudit("license_revoked", revoked, revokedBy, { revoked_reason: reason });
     return revoked;
   }

@@ -296,7 +296,12 @@ export interface DojoLicenseStore {
     licenseId: string,
     reason: string,
     now?: string,
-    revokedBy?: DojoAuditActor
+    revokedBy?: DojoAuditActor,
+    options?: {
+      revoked_license?: DojoPermissionLicense;
+      readiness_level?: DojoSkillReadinessLevel;
+      expires_at?: string;
+    }
   ): MaybePromise<DojoPermissionLicenseRecord | null>;
 }
 

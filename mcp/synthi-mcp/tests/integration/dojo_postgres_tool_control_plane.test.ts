@@ -135,6 +135,132 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     }));
   });
 
+  it("revokes production licenses through Postgres and reads revoked license health after local reset", async () => {
+    const tenantId = `tenant_revoke_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_revoke_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-revoke-publish",
+      correlation_id: "corr-postgres-revoke-publish",
+      actor_id: "postgres-revoke-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_revoke_publish",
+      evidence_refs: ["evidence:integration-postgres-revoke-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+      license: { license_id: string; license_version: string };
+    };
+
+    const revoke = await dispatchDojoTool("synthi_dojo_revoke_license", {
+      skill_id: published.skill.skill_id,
+      reason: "integration_policy_change",
+      actor_id: "postgres-license-reviewer",
+      actor_type: "human",
+      evidence_refs: ["evidence:integration-postgres-license-revocation"],
+      ...tenant,
+      request_id: "req-postgres-revoke-license",
+      correlation_id: "corr-postgres-revoke-license",
+      now: "2026-06-11T01:00:00.000Z",
+    });
+    expect(revoke?.isError).toBeUndefined();
+    expect(revoke?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      control_plane_persistence: expect.objectContaining({
+        ok: true,
+        store_kind: "postgres",
+        skill_id: published.skill.skill_id,
+        skill_status: "revoked",
+        license_status: "revoked",
+        revoked_at: "2026-06-11T01:00:00.000Z",
+      }),
+      license: expect.objectContaining({
+        license_id: published.license.license_id,
+        entrustment_level: "EX",
+        autonomy_level: "blocked",
+      }),
+      revocation: expect.objectContaining({
+        previous_license_version: published.license.license_version,
+        audit_event: expect.objectContaining({
+          reason: "integration_policy_change",
+          evidence_refs: ["evidence:integration-postgres-license-revocation"],
+        }),
+      }),
+    }));
+    const revokedContent = revoke?.structuredContent as {
+      license: { license_id: string; license_version: string; autonomy_level: string };
+    };
+
+    const licenseStore = new PostgresDojoLicenseStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(licenseStore.getLicense(published.license.license_id)).resolves.toEqual(expect.objectContaining({
+      status: "revoked",
+      license_version: revokedContent.license.license_version,
+      revoked_at: "2026-06-11T01:00:00.000Z",
+      revoked_reason: "integration_policy_change",
+      license_json: expect.objectContaining({
+        autonomy_level: "blocked",
+        entrustment_level: "EX",
+      }),
+    }));
+
+    const skillStore = new PostgresDojoSkillStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(skillStore.getSkill(published.skill.skill_id)).resolves.toEqual(expect.objectContaining({
+      skill_id: published.skill.skill_id,
+      entrustment_level: "EX",
+      permission_license: expect.objectContaining({
+        autonomy_level: "blocked",
+        license_version: revokedContent.license.license_version,
+      }),
+    }));
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+
+    const health = await dispatchDojoTool("synthi_dojo_get_license_health", {
+      skill_id: published.skill.skill_id,
+      ...tenant,
+      actor_id: "postgres-revoke-reader",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-revoked-health",
+      correlation_id: "corr-postgres-revoked-health",
+    });
+    expect(health?.isError).toBeUndefined();
+    expect(health?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      skill_id: published.skill.skill_id,
+      license_health: expect.objectContaining({
+        status: "blocked",
+        entrustment_level: "EX",
+      }),
+    }));
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+  });
+
   it("uses Postgres skill and proof records for production validation, consumption, and replay after local process loss", async () => {
     const tenantId = `tenant_proof_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_proof_${Math.random().toString(16).slice(2)}`;
