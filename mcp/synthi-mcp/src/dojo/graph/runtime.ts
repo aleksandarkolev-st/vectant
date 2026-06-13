@@ -283,11 +283,14 @@ export class DojoSkillGraphRuntime {
       }
 
       if (node.kind === "Action") {
-        if (!substrateExecutor) {
+        const actionSubstrateExecutor = substrateExecutor;
+        const actionPreflightBlockedBy = productionActionEvidenceBlockedBy(node, mode, input);
+        if (!actionSubstrateExecutor) actionPreflightBlockedBy.push("substrate_executor_required");
+        if (actionPreflightBlockedBy.length > 0) {
           const substrateNodeResult: DojoGraphNodeRunResult = {
             ...result,
             status: "blocked",
-            blocked_by: ["substrate_executor_required"],
+            blocked_by: actionPreflightBlockedBy,
           };
           nodeResults[nodeResults.length - 1] = substrateNodeResult;
           evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, substrateNodeResult));
@@ -297,11 +300,14 @@ export class DojoSkillGraphRuntime {
             mode,
             run_id: runId,
             node_results: nodeResults,
-            blocked_by: ["substrate_executor_required"],
+            blocked_by: actionPreflightBlockedBy,
             evidence_refs: evidenceRefs,
           };
         }
-        const substrateResult = await substrateExecutor.execute({ node, mode, inputs, proof_capsule: input.proof_capsule });
+        if (!actionSubstrateExecutor) {
+          throw new Error("dojo_graph_action_substrate_executor_missing_after_preflight");
+        }
+        const substrateResult = await actionSubstrateExecutor.execute({ node, mode, inputs, proof_capsule: input.proof_capsule });
         if (!substrateResult.ok) {
           const substrateNodeResult: DojoGraphNodeRunResult = {
             ...result,
@@ -502,6 +508,16 @@ function blockedByForNode(
     }
   }
   return blockedBy;
+}
+
+function productionActionEvidenceBlockedBy(
+  node: DojoGraphNode,
+  mode: DojoGraphMode,
+  input: DojoSkillGraphRuntimeInput
+): string[] {
+  if (mode !== "production" || node.kind !== "Action") return [];
+  if (node.evidence_policy.length === 0) return [];
+  return input.evidence_writer ? [] : ["graph_evidence_writer_required"];
 }
 
 function caseLawBlockedByForNode(node: DojoGraphNode, inputs: Record<string, unknown>): string[] {

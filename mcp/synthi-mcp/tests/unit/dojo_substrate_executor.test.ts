@@ -21,6 +21,7 @@ describe("Dojo substrate executor", () => {
       proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -42,6 +43,7 @@ describe("Dojo substrate executor", () => {
       proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -64,6 +66,7 @@ describe("Dojo substrate executor", () => {
       proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -116,6 +119,7 @@ describe("Dojo substrate executor", () => {
       proof_capsule: { capsule_id: "capsule-a" },
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -139,6 +143,7 @@ describe("Dojo substrate executor", () => {
       proof_capsule: { capsule_id: "capsule-a" },
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
     })).resolves.toEqual(expect.objectContaining({
       ok: true,
       node_results: expect.arrayContaining([
@@ -164,6 +169,7 @@ describe("Dojo substrate executor", () => {
       proof_capsule: { capsule_id: "capsule-a" },
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
     })).resolves.toEqual(expect.objectContaining({
       ok: true,
       node_results: expect.arrayContaining([
@@ -360,6 +366,7 @@ describe("Dojo substrate executor", () => {
       proof_capsule: proofCapsuleFixture(),
       proof_validator: validProofValidator,
       substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -412,6 +419,7 @@ describe("Dojo substrate executor", () => {
           return "evidence:api-substrate-a";
         },
       }),
+      evidence_writer: graphEvidenceWriter,
     })).resolves.toEqual(expect.objectContaining({
       ok: true,
       node_results: expect.arrayContaining([
@@ -486,6 +494,7 @@ describe("Dojo substrate executor", () => {
           return "evidence:api-substrate-a";
         },
       }),
+      evidence_writer: graphEvidenceWriter,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -545,6 +554,7 @@ describe("Dojo substrate executor", () => {
           return "evidence:api-substrate-a";
         },
       }),
+      evidence_writer: graphEvidenceWriter,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -603,6 +613,7 @@ describe("Dojo substrate executor", () => {
         api_transport: () => ({ status: 200, body: { status: "draft" } }),
         write_api_evidence: () => "evidence:api-substrate-failed-postcondition",
       }),
+      evidence_writer: graphEvidenceWriter,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
@@ -626,6 +637,7 @@ describe("Dojo substrate executor", () => {
 
 const validProofValidator = () => ({ ok: true, blocked_by: [] });
 const validApiProofValidator = () => ({ ok: true, blocked_by: [] });
+const graphEvidenceWriter = (event: { run_id: string; node_id: string }) => `ledger://${event.run_id}/${event.node_id}`;
 
 function graphFixture(input: { substrate_options: string[]; metadata?: Record<string, unknown> }): DojoSkillGraph {
   return {
