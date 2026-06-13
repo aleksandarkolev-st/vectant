@@ -61,7 +61,7 @@
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
-    "test:dojo:postgres-control-plane": "vitest run tests/integration/dojo_postgres_schema.test.ts tests/integration/dojo_postgres_proof_store.test.ts tests/integration/dojo_evidence_ledger_store.test.ts tests/integration/dojo_audit_store.test.ts tests/integration/dojo_proof_ledger_tool.test.ts",
+    "test:dojo:postgres-control-plane": "vitest run tests/integration/dojo_postgres_schema.test.ts tests/integration/dojo_postgres_proof_store.test.ts tests/integration/dojo_evidence_ledger_store.test.ts tests/integration/dojo_audit_store.test.ts tests/integration/dojo_postgres_governance_store.test.ts tests/integration/dojo_proof_ledger_tool.test.ts",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/release-smoke.mjs --command dist/index.js",
     "smoke:image": "node scripts/release-smoke.mjs",

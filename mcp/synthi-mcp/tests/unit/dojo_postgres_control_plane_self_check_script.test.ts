@@ -100,6 +100,10 @@ function postgresVitestReportFixture() {
       "PostgresDojoAuditStore persists audit actor, request, correlation, entity, and details",
     ],
     [
+      "PostgresDojoGovernanceStore persists permission-upgrade requests, filters them by governance fields, and emits audit events",
+      "PostgresDojoGovernanceStore persists case law records, filters by binding scope and action, and emits audit events",
+    ],
+    [
       "Dojo proof issuance from Postgres evidence ledger issues a production proof capsule from evidence record IDs resolved through Postgres",
     ],
   ];

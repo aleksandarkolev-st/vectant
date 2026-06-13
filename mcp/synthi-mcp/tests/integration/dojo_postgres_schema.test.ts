@@ -157,6 +157,7 @@ describe("Dojo Postgres schema migration", () => {
     const approvals = normalizedStatements()["dojo_approvals"];
 
     expect(caseLaw).toContain("primary key (tenant_id, workspace_id, case_id)");
+    expect(caseLaw).toContain("applies_to text[] not null default array[]::text[]");
     expect(caseLaw).toContain("check (binding_scope_kind in ('tenant', 'organization', 'workspace', 'skill'))");
     expect(caseLaw).toContain("check (status in ('proposed', 'approved', 'deprecated'))");
     expect(caseLaw).toContain("check (cardinality(evidence_refs) > 0)");
@@ -166,9 +167,14 @@ describe("Dojo Postgres schema migration", () => {
     );
     expect(antibodies).toContain("guardrail_predicate text not null");
     expect(approvals).toContain("primary key (tenant_id, workspace_id, approval_id)");
+    expect(approvals).toContain("workflow_id text not null");
+    expect(approvals).toContain("license_version text not null");
+    expect(approvals).toContain("current_entrustment_level text not null");
     expect(approvals).toContain("check (status in ('pending', 'approved', 'denied', 'superseded'))");
     expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_case_law_scope_idx");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_case_law_applies_to_idx");
     expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_approvals_status_idx");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_approvals_workflow_idx");
   });
 
   it("defines MCP skill-bus registration, invocation, and conformance custody", () => {

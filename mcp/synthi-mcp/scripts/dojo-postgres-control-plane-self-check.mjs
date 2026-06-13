@@ -26,6 +26,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES = [
   "tests/integration/dojo_postgres_proof_store.test.ts",
   "tests/integration/dojo_evidence_ledger_store.test.ts",
   "tests/integration/dojo_audit_store.test.ts",
+  "tests/integration/dojo_postgres_governance_store.test.ts",
   "tests/integration/dojo_proof_ledger_tool.test.ts",
 ];
 
@@ -39,6 +40,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES = [
   "graph_registry_schema",
   "executable_run_registry_schema",
   "governance_registry_schema",
+  "governance_repository",
   "mcp_skill_bus_registry_schema",
   "evidence_ledger_append_verify",
   "evidence_tamper_detection",
@@ -316,6 +318,10 @@ function capabilityMatchers(capability) {
     graph_registry_schema: ["defines graph node memory and license version registries"],
     executable_run_registry_schema: ["defines executable checkride and scenario run registries"],
     governance_registry_schema: ["defines governance case law antibody and approval registries"],
+    governance_repository: [
+      "postgresdojogovernancestore persists permission upgrade requests",
+      "postgresdojogovernancestore persists case law records",
+    ],
     mcp_skill_bus_registry_schema: ["defines mcp skill bus registration invocation and conformance custody"],
     evidence_ledger_append_verify: ["appends evidence records advances checkpoints and verifies the chain"],
     evidence_tamper_detection: ["detects tampered evidence records", "detects tampered ledger checkpoint"],
