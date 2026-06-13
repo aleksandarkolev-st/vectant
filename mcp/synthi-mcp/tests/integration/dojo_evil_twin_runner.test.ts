@@ -73,6 +73,83 @@ describe("Dojo Evil Twin runtime", () => {
     }));
   });
 
+  it("passes substrate executor hooks through targeted attack runs", async () => {
+    const scenarios = [
+      toDojoScenarioDefinition(scenarioFixture({
+        mutation_kind: "fake_success",
+        risk_tags: ["fake_success", "evidence_required"],
+      })),
+    ];
+
+    const report = await runDojoEvilTwin({
+      graph: apiGraphFixture(),
+      scenarios,
+      base_inputs: {
+        license_allowed_substrates: ["api"],
+      },
+      substrate_executor: {
+        execute: async () => ({
+          ok: true,
+          status: "executed",
+          substrate: "api",
+          blocked_by: [],
+          evidence_refs: ["api-evidence:evil-twin"],
+          api_tool_execution: {
+            ok: true,
+            status: "executed",
+            blocked_by: [],
+            validation: { ok: true, blocked_by: [] },
+            response: {
+              status: 200,
+              body: {
+                visual_success: true,
+                durable_success: false,
+              },
+            },
+            evidence_record_id: "api-evidence:evil-twin",
+          },
+        }),
+      },
+      now: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(report).toEqual(expect.objectContaining({
+      attack_count: 1,
+      attack_success_rate: 0,
+    }));
+    expect(report.attacks[0]).toEqual(expect.objectContaining({
+      mutation_kind: "fake_success",
+      status: "caught",
+      attack_succeeded: false,
+      blocked_by: ["assertion_failed:api_response.body.durable_success", "rollback_human_review_required"],
+      scenario_run: expect.objectContaining({
+        graph_result: expect.objectContaining({
+          node_results: [
+            expect.objectContaining({
+              substrate_result: expect.objectContaining({
+                ok: true,
+                substrate: "api",
+                evidence_refs: ["api-evidence:evil-twin"],
+                api_tool_execution: expect.objectContaining({
+                  response: expect.objectContaining({
+                    body: expect.objectContaining({ durable_success: false }),
+                  }),
+                }),
+              }),
+              assertion_results: [
+                expect.objectContaining({
+                  assertion_id: "api_response.body.durable_success",
+                  status: "failed",
+                  observed: false,
+                }),
+              ],
+            }),
+          ],
+        }),
+      }),
+    }));
+  });
+
   it("reruns attacks after guardrail hardening and reduces attack success rate", async () => {
     const scenarios = [
       toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "duplicate_entity", risk_tags: ["ambiguous_entity_match"] })),
@@ -141,6 +218,32 @@ function graphFixture(input: { requireAuth?: boolean } = {}): DojoSkillGraph {
       },
     ],
     edges: [],
+  };
+}
+
+function apiGraphFixture(): DojoSkillGraph {
+  const base = graphFixture();
+  return {
+    ...base,
+    nodes: [
+      {
+        ...base.nodes[0]!,
+        assertions: [
+          {
+            assertion_id: "api_response.body.durable_success",
+            description: "API response confirms durable success.",
+            required: true,
+          },
+        ],
+        substrate_options: ["api"],
+        metadata: {
+          rollback_policy: {
+            strategy: "human_checkpoint",
+            checkpoints: ["pre_mutation_confirmation"],
+          },
+        },
+      },
+    ],
   };
 }
 

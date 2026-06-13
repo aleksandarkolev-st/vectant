@@ -1,6 +1,8 @@
 import type { DojoSkillGraph } from "../graph/types.js";
+import type { DojoSkillGraphRuntime } from "../graph/runtime.js";
+import type { DojoSubstrateExecutor } from "../graph/substrate_executor.js";
 import { DojoVivariumRunner, type DojoScenarioRunResult } from "./runner.js";
-import type { DojoScenarioDefinition } from "./scenario_dsl.js";
+import type { DojoScenarioBudget, DojoScenarioDefinition } from "./scenario_dsl.js";
 
 export type DojoEvilTwinAssumptionKind =
   | "entity_uniqueness"
@@ -57,7 +59,15 @@ export async function runDojoEvilTwin(input: {
   graph: DojoSkillGraph;
   scenarios: DojoScenarioDefinition[];
   runner?: DojoVivariumRunner;
+  runtime?: DojoSkillGraphRuntime;
+  substrate_executor?: DojoSubstrateExecutor;
+  scenario_runtimes?: Record<string, DojoSkillGraphRuntime>;
+  scenario_substrate_executors?: Record<string, DojoSubstrateExecutor>;
   max_attacks?: number;
+  base_inputs?: Record<string, unknown>;
+  scenario_inputs?: Record<string, Record<string, unknown>>;
+  budget_by_scenario?: Record<string, DojoScenarioBudget>;
+  model_calls_used_by_scenario?: Record<string, number>;
   observed_evidence_by_scenario?: Record<string, string[]>;
   now?: string;
 }): Promise<DojoEvilTwinRuntimeReport> {
@@ -80,7 +90,15 @@ export async function runDojoEvilTwin(input: {
       materialized,
       graph: input.graph,
       run_id: `evil_twin_${scenario.scenario_id}`,
+      runtime: input.scenario_runtimes?.[scenario.scenario_id] ?? input.runtime,
+      substrate_executor: input.scenario_substrate_executors?.[scenario.scenario_id] ?? input.substrate_executor,
+      budget: input.budget_by_scenario?.[scenario.scenario_id],
+      inputs: {
+        ...(input.base_inputs ?? {}),
+        ...(input.scenario_inputs?.[scenario.scenario_id] ?? {}),
+      },
       observed_evidence: input.observed_evidence_by_scenario?.[scenario.scenario_id] ?? ["graph_run_result", "oracle_result"],
+      model_calls_used: input.model_calls_used_by_scenario?.[scenario.scenario_id],
       now: input.now,
     });
     attacks.push(attackRunForScenario(assumption, scenarioRun));
