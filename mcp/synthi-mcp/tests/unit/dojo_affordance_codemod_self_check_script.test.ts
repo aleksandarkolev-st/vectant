@@ -26,6 +26,11 @@ describe("Dojo affordance codemod self-check script", () => {
           { kind: "contract_test", path: "src/__tests__/InvoiceForm.dojo-affordance.test.ts" },
         ],
       },
+      generated_pr_stale_apply_result: {
+        ok: false,
+        issues: [{ issue_id: "source_patch_writer:source_patch_stale_source" }],
+        applied_files: [],
+      },
       generated_pr_branch_apply_result: {
         ok: true,
         applied_files: [
@@ -81,6 +86,7 @@ describe("Dojo affordance codemod self-check script", () => {
       patch_write_file_count: 2,
       generated_pr_branch_plan_ready: true,
       generated_pr_branch_plan_file_count: 2,
+      generated_pr_stale_apply_rejected: true,
       generated_pr_branch_apply_ok: true,
       generated_pr_branch_apply_file_count: 2,
       generated_pr_git_branch_ok: true,
@@ -110,6 +116,7 @@ describe("Dojo affordance codemod self-check script", () => {
         source_patch_bundle: { ok: true, modified_files: [], generated_tests: [] },
         generated_pr_metadata: { review_requirements: [] },
         generated_pr_branch_plan: { ready_to_apply: false, file_writes: [] },
+        generated_pr_stale_apply_result: { ok: true, issues: [] },
         generated_pr_branch_apply_result: { ok: false, applied_files: [] },
         generated_pr_git_branch_result: { ok: false, commands: [], applied_files: [] },
         source_patch_write_result: { ok: true, written_files: [] },

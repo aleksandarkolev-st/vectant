@@ -114,6 +114,17 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
   assert.equal(wrongTargetContract.ok, false, "generated affordance contract should fail when affordances are on the wrong target");
   const wrongTargetRun = await runGeneratedVitest({ testPath, fixtureDir, configPath: vitestConfigPath });
   assert.equal(wrongTargetRun.ok, false, "generated Vitest contract should fail when affordances are on the wrong target");
+  const staleApplyResult = await modules.applyDojoGeneratedPrBranchPlan({
+    branch_plan: generatedPrBranchPlan,
+    patch_bundle: sourcePatchBundle,
+    workspace_root: fixtureDir,
+  });
+  assert.equal(staleApplyResult.ok, false, "generated PR branch applicator should reject stale source before overwriting");
+  assert(
+    staleApplyResult.issues.some((issue) => issue.issue_id === "source_patch_writer:source_patch_stale_source"),
+    "generated PR branch applicator should preserve stale source refusal evidence"
+  );
+  await writeFile(sourcePath, originalSource);
 
   const branchApplyResult = await modules.applyDojoGeneratedPrBranchPlan({
     branch_plan: generatedPrBranchPlan,
@@ -159,6 +170,7 @@ export async function runAffordanceCodemodSelfCheck({ outDir }) {
     source_patch_bundle: summarizeSourcePatchBundle(sourcePatchBundle),
     generated_pr_metadata: summarizeGeneratedPrMetadata(generatedPrMetadata),
     generated_pr_branch_plan: summarizeGeneratedPrBranchPlan(generatedPrBranchPlan),
+    generated_pr_stale_apply_result: summarizeGeneratedPrBranchApplyResult(staleApplyResult),
     generated_pr_branch_apply_result: summarizeGeneratedPrBranchApplyResult(branchApplyResult),
     generated_pr_git_branch_result: summarizeGeneratedPrGitBranchResult(gitBranchResult),
     source_patch_write_result: summarizeSourcePatchWriteResult(patchWriteResult),
@@ -204,6 +216,9 @@ export function buildAffordanceCodemodEvidenceManifest({ report, reportPath, ser
     generated_pr_branch_plan_file_count: Array.isArray(report?.generated_pr_branch_plan?.file_writes)
       ? report.generated_pr_branch_plan.file_writes.length
       : 0,
+    generated_pr_stale_apply_rejected: report?.generated_pr_stale_apply_result?.ok === false
+      && Array.isArray(report?.generated_pr_stale_apply_result?.issues)
+      && report.generated_pr_stale_apply_result.issues.some((issue) => issue.issue_id === "source_patch_writer:source_patch_stale_source"),
     generated_pr_branch_apply_ok: report?.generated_pr_branch_apply_result?.ok === true,
     generated_pr_branch_apply_file_count: Array.isArray(report?.generated_pr_branch_apply_result?.applied_files)
       ? report.generated_pr_branch_apply_result.applied_files.length
@@ -469,6 +484,11 @@ function summarizeGeneratedPrBranchApplyResult(result) {
     dry_run: result.dry_run,
     ok: result.ok,
     issue_count: result.issues.length,
+    issues: result.issues.map((issue) => ({
+      issue_id: issue.issue_id,
+      severity: issue.severity,
+      ...(issue.path ? { path: issue.path } : {}),
+    })),
     applied_files: result.applied_files.map((file) => ({
       kind: file.kind,
       path: file.path,

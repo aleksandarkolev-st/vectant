@@ -46,6 +46,36 @@ export async function createDojoGeneratedPrGitBranch(input: {
   const commands: DojoGeneratedPrGitCommandResult[] = [];
   const issues: DojoGeneratedPrGitBranchIssue[] = [];
 
+  const repoCheck = await runGit(gitBin, ["rev-parse", "--show-toplevel"], repositoryRoot);
+  commands.push(repoCheck);
+  if (repoCheck.exit_code !== 0) {
+    issues.push(errorIssue("generated_pr_git_repository_invalid", "Repository root is not inside a git worktree."));
+    return result({ repositoryRoot, branchPlan: input.branch_plan, dryRun, commands, issues });
+  }
+  const actualRoot = path.resolve(repoCheck.stdout_tail.trim());
+  if (!samePath(actualRoot, repositoryRoot)) {
+    issues.push(errorIssue(
+      "generated_pr_git_repository_root_mismatch",
+      `Repository root resolved to ${actualRoot}, not ${repositoryRoot}.`
+    ));
+    return result({ repositoryRoot, branchPlan: input.branch_plan, dryRun, commands, issues });
+  }
+
+  const previousRefResult = await runGit(gitBin, ["rev-parse", "--abbrev-ref", "HEAD"], repositoryRoot);
+  commands.push(previousRefResult);
+  const previousRef = previousRefResult.exit_code === 0 ? previousRefResult.stdout_tail.trim() : undefined;
+
+  const dirtyResult = await runGit(gitBin, ["status", "--porcelain"], repositoryRoot);
+  commands.push(dirtyResult);
+  if (dirtyResult.exit_code !== 0) {
+    issues.push(errorIssue("generated_pr_git_status_failed", "Could not inspect git worktree status."));
+    return result({ repositoryRoot, branchPlan: input.branch_plan, dryRun, commands, issues, previousRef });
+  }
+  if (dirtyResult.stdout_tail.trim() && input.allow_dirty_worktree !== true) {
+    issues.push(errorIssue("generated_pr_git_worktree_dirty", "Generated PR branch creation requires a clean worktree unless explicitly allowed."));
+    return result({ repositoryRoot, branchPlan: input.branch_plan, dryRun, commands, issues, previousRef });
+  }
+
   const preflightApply = await applyDojoGeneratedPrBranchPlan({
     branch_plan: input.branch_plan,
     patch_bundle: input.patch_bundle,
@@ -58,36 +88,6 @@ export async function createDojoGeneratedPrGitBranch(input: {
       severity: issue.severity,
       message: issue.path ? `${issue.path}: ${issue.message}` : issue.message,
     })));
-    return result({ repositoryRoot, branchPlan: input.branch_plan, dryRun, commands, issues, applyResult: preflightApply });
-  }
-
-  const repoCheck = await runGit(gitBin, ["rev-parse", "--show-toplevel"], repositoryRoot);
-  commands.push(repoCheck);
-  if (repoCheck.exit_code !== 0) {
-    issues.push(errorIssue("generated_pr_git_repository_invalid", "Repository root is not inside a git worktree."));
-    return result({ repositoryRoot, branchPlan: input.branch_plan, dryRun, commands, issues, applyResult: preflightApply });
-  }
-  const actualRoot = path.resolve(repoCheck.stdout_tail.trim());
-  if (!samePath(actualRoot, repositoryRoot)) {
-    issues.push(errorIssue(
-      "generated_pr_git_repository_root_mismatch",
-      `Repository root resolved to ${actualRoot}, not ${repositoryRoot}.`
-    ));
-    return result({ repositoryRoot, branchPlan: input.branch_plan, dryRun, commands, issues, applyResult: preflightApply });
-  }
-
-  const previousRefResult = await runGit(gitBin, ["rev-parse", "--abbrev-ref", "HEAD"], repositoryRoot);
-  commands.push(previousRefResult);
-  const previousRef = previousRefResult.exit_code === 0 ? previousRefResult.stdout_tail.trim() : undefined;
-
-  const dirtyResult = await runGit(gitBin, ["status", "--porcelain"], repositoryRoot);
-  commands.push(dirtyResult);
-  if (dirtyResult.exit_code !== 0) {
-    issues.push(errorIssue("generated_pr_git_status_failed", "Could not inspect git worktree status."));
-    return result({ repositoryRoot, branchPlan: input.branch_plan, dryRun, commands, issues, previousRef, applyResult: preflightApply });
-  }
-  if (dirtyResult.stdout_tail.trim() && input.allow_dirty_worktree !== true) {
-    issues.push(errorIssue("generated_pr_git_worktree_dirty", "Generated PR branch creation requires a clean worktree unless explicitly allowed."));
     return result({ repositoryRoot, branchPlan: input.branch_plan, dryRun, commands, issues, previousRef, applyResult: preflightApply });
   }
 
