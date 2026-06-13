@@ -191,7 +191,7 @@ describe("Dojo implementation status registry", () => {
         runtime_enforced: true,
         runtime_scope: "proof_validation",
         production_runtime: false,
-        summary: expect.stringContaining("external command signing"),
+        summary: expect.stringContaining("managed-key-service signing"),
         maturity_blockers: expect.arrayContaining(["managed_kms_hsm_provider_not_configured_by_default"]),
       })
     );

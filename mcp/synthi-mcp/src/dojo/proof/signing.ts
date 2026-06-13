@@ -50,6 +50,23 @@ export interface ExternalCommandDojoProofSignerResponse {
   signature: string;
 }
 
+export interface ManagedKeyServiceDojoProofSignerRequest {
+  schema_version: "synthi.dojo.managedKeySignerRequest.v1";
+  algorithm: "ed25519";
+  key_id: string;
+  key_uri: string;
+  payload: string;
+}
+
+export interface ManagedKeyServiceDojoProofSignerResponse {
+  schema_version: "synthi.dojo.managedKeySignerResponse.v1";
+  algorithm: "ed25519";
+  key_id: string;
+  key_uri: string;
+  key_custody: "managed";
+  signature: string;
+}
+
 export function canonicalDojoProofPayload(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalDojoProofPayload).join(",")}]`;
@@ -175,6 +192,60 @@ export function createExternalCommandDojoProofSigner(input: {
   };
 }
 
+export function createManagedKeyServiceDojoProofSigner(input: {
+  key_id: string;
+  key_uri: string;
+  command: string;
+  args?: string[];
+  timeout_ms?: number;
+  env?: NodeJS.ProcessEnv;
+}): DojoProofSigner {
+  const command = input.command.trim();
+  const keyUri = input.key_uri.trim();
+  if (!command) throw new Error("dojo_managed_key_signing_command_required");
+  if (!keyUri) throw new Error("dojo_managed_key_uri_required");
+  const args = input.args ?? [];
+  if (!args.every((arg) => typeof arg === "string")) throw new Error("dojo_managed_key_signing_args_invalid");
+  return {
+    algorithm: "ed25519",
+    key_id: input.key_id,
+    local_development_only: false,
+    sign(payload: string): DojoProofSignatureEnvelope {
+      const request: ManagedKeyServiceDojoProofSignerRequest = {
+        schema_version: "synthi.dojo.managedKeySignerRequest.v1",
+        algorithm: "ed25519",
+        key_id: input.key_id,
+        key_uri: keyUri,
+        payload,
+      };
+      const result = spawnSync(command, args, {
+        input: JSON.stringify(request),
+        encoding: "utf8",
+        env: input.env ?? process.env,
+        timeout: input.timeout_ms ?? 5000,
+        windowsHide: true,
+      });
+      if (result.error) throw new Error(`dojo_managed_key_signer_failed:${result.error.message}`);
+      if (result.status !== 0) {
+        const stderr = String(result.stderr ?? "").trim();
+        throw new Error(`dojo_managed_key_signer_failed:${stderr || `exit_${result.status ?? "unknown"}`}`);
+      }
+      const response = parseManagedKeyServiceSignerResponse(String(result.stdout ?? ""));
+      if (response.key_id !== input.key_id) throw new Error("dojo_managed_key_signer_key_mismatch");
+      if (response.key_uri !== keyUri) throw new Error("dojo_managed_key_signer_uri_mismatch");
+      if (response.key_custody !== "managed") throw new Error("dojo_managed_key_signer_custody_invalid");
+      const signature = response.signature.startsWith("ed25519:")
+        ? response.signature
+        : `ed25519:${response.signature}`;
+      return {
+        algorithm: "ed25519",
+        key_id: input.key_id,
+        signature,
+      };
+    },
+  };
+}
+
 export function encodeDojoProofSignatureEnvelope(envelope: DojoProofSignatureEnvelope): string {
   if (envelope.algorithm === "hmac-sha256") return envelope.signature;
   const signatureValue = envelope.signature.startsWith(`${envelope.algorithm}:`)
@@ -246,6 +317,39 @@ function parseExternalCommandSignerResponse(raw: string): ExternalCommandDojoPro
     schema_version: response.schema_version,
     algorithm: response.algorithm,
     key_id: response.key_id,
+    signature: response.signature,
+  };
+}
+
+function parseManagedKeyServiceSignerResponse(raw: string): ManagedKeyServiceDojoProofSignerResponse {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("dojo_managed_key_signer_response_invalid");
+  }
+  if (!parsed || typeof parsed !== "object") throw new Error("dojo_managed_key_signer_response_invalid");
+  const response = parsed as Partial<ManagedKeyServiceDojoProofSignerResponse>;
+  if (response.schema_version !== "synthi.dojo.managedKeySignerResponse.v1") {
+    throw new Error("dojo_managed_key_signer_response_schema_invalid");
+  }
+  if (response.algorithm !== "ed25519") throw new Error("dojo_managed_key_signer_algorithm_invalid");
+  if (typeof response.key_id !== "string" || !response.key_id.trim()) {
+    throw new Error("dojo_managed_key_signer_key_id_invalid");
+  }
+  if (typeof response.key_uri !== "string" || !response.key_uri.trim()) {
+    throw new Error("dojo_managed_key_signer_key_uri_invalid");
+  }
+  if (response.key_custody !== "managed") throw new Error("dojo_managed_key_signer_custody_invalid");
+  if (typeof response.signature !== "string" || !response.signature.trim()) {
+    throw new Error("dojo_managed_key_signer_signature_invalid");
+  }
+  return {
+    schema_version: response.schema_version,
+    algorithm: response.algorithm,
+    key_id: response.key_id,
+    key_uri: response.key_uri,
+    key_custody: response.key_custody,
     signature: response.signature,
   };
 }

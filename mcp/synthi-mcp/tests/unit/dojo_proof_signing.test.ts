@@ -5,6 +5,7 @@ import {
   createEd25519DojoProofVerifier,
   createExternalCommandDojoProofSigner,
   createLocalHmacDojoProofSigner,
+  createManagedKeyServiceDojoProofSigner,
   encodeDojoProofSignatureEnvelope,
   generateEd25519DojoProofKeyPair,
   parseDojoProofSignatureEnvelope,
@@ -83,6 +84,59 @@ describe("Dojo proof signing", () => {
       signature: expect.stringMatching(/^ed25519:/),
     }));
     expect(verifier.verify(payload(), signature)).toBe(true);
+  });
+
+  it("signs through a managed key service signer with explicit key custody", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("managed-ed-key-a");
+    const keyUri = "kms://tenant-a/proof/managed-ed-key-a";
+    const signer = createManagedKeyServiceDojoProofSigner({
+      key_id: keyPair.key_id,
+      key_uri: keyUri,
+      command: process.execPath,
+      args: ["-e", managedKeySignerCommandSource()],
+      env: {
+        ...process.env,
+        DOJO_TEST_PRIVATE_KEY_PEM: keyPair.private_key_pem,
+      },
+    });
+    const verifier = createEd25519DojoProofVerifier({
+      key_id: keyPair.key_id,
+      public_key_pem: keyPair.public_key_pem,
+    });
+    const signature = signer.sign(payload());
+
+    expect(signer.local_development_only).toBe(false);
+    expect(signature).toEqual(expect.objectContaining({
+      algorithm: "ed25519",
+      key_id: keyPair.key_id,
+      signature: expect.stringMatching(/^ed25519:/),
+    }));
+    expect(verifier.verify(payload(), signature)).toBe(true);
+  });
+
+  it("fails closed when a managed key service returns mismatched custody metadata", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("managed-ed-key-a");
+    expect(() => createManagedKeyServiceDojoProofSigner({
+      key_id: keyPair.key_id,
+      key_uri: "kms://tenant-a/proof/managed-ed-key-a",
+      command: process.execPath,
+      args: ["-e", managedKeySignerCommandSource({ wrong_key_uri: "kms://tenant-b/proof/managed-ed-key-a" })],
+      env: {
+        ...process.env,
+        DOJO_TEST_PRIVATE_KEY_PEM: keyPair.private_key_pem,
+      },
+    }).sign(payload())).toThrow("dojo_managed_key_signer_uri_mismatch");
+
+    expect(() => createManagedKeyServiceDojoProofSigner({
+      key_id: keyPair.key_id,
+      key_uri: "kms://tenant-a/proof/managed-ed-key-a",
+      command: process.execPath,
+      args: ["-e", managedKeySignerCommandSource({ key_custody: "local" })],
+      env: {
+        ...process.env,
+        DOJO_TEST_PRIVATE_KEY_PEM: keyPair.private_key_pem,
+      },
+    }).sign(payload())).toThrow("dojo_managed_key_signer_custody_invalid");
   });
 
   it("fails closed when an external command signer exits or returns the wrong key", () => {
@@ -168,6 +222,28 @@ function externalSignerCommandSource(input: { wrong_key_id?: string } = {}): str
         schema_version: "synthi.dojo.externalSignerResponse.v1",
         algorithm: "ed25519",
         key_id: ${JSON.stringify(input.wrong_key_id)} || request.key_id,
+        signature
+      }));
+    });
+  `;
+}
+
+function managedKeySignerCommandSource(input: { wrong_key_id?: string; wrong_key_uri?: string; key_custody?: string } = {}): string {
+  return `
+    const { sign } = require("node:crypto");
+    let body = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { body += chunk; });
+    process.stdin.on("end", () => {
+      const request = JSON.parse(body);
+      if (request.schema_version !== "synthi.dojo.managedKeySignerRequest.v1") process.exit(8);
+      const signature = sign(null, Buffer.from(request.payload, "utf8"), process.env.DOJO_TEST_PRIVATE_KEY_PEM).toString("base64url");
+      process.stdout.write(JSON.stringify({
+        schema_version: "synthi.dojo.managedKeySignerResponse.v1",
+        algorithm: "ed25519",
+        key_id: ${JSON.stringify(input.wrong_key_id)} || request.key_id,
+        key_uri: ${JSON.stringify(input.wrong_key_uri)} || request.key_uri,
+        key_custody: ${JSON.stringify(input.key_custody)} || "managed",
         signature
       }));
     });

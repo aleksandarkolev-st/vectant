@@ -12,6 +12,7 @@ import {
   DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV,
   DOJO_PROOF_SIGNING_KEY_ENV,
   DOJO_PROOF_SIGNING_KEY_ID_ENV,
+  DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV,
   DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
   DOJO_PROOF_SIGNING_PROVIDER_ENV,
   DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
@@ -251,6 +252,7 @@ function checkDojoExternalSigning(
     DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
     DOJO_PROOF_SIGNING_COMMAND_ENV,
     DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV,
+    DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV,
   ];
   const configured = [
     ...(config.require_external_signing ? [DOJO_REQUIRE_EXTERNAL_SIGNING_ENV] : []),
@@ -260,23 +262,34 @@ function checkDojoExternalSigning(
   const keyId = nonEmpty(env[DOJO_PROOF_SIGNING_KEY_ID_ENV]);
   const command = nonEmpty(env[DOJO_PROOF_SIGNING_COMMAND_ENV]);
   const publicKey = nonEmpty(env[DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV]);
+  const managedKeyUri = nonEmpty(env[DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV]);
   const hasExternalCommandSigner = provider === "external-command"
     && keyId
     && command
     && publicKey;
+  const hasManagedKeyServiceSigner = provider === "managed-key-service"
+    && keyId
+    && command
+    && managedKeyUri
+    && publicKey
+    && !nonEmpty(env[DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV]);
+  if (config.require_external_signing && hasManagedKeyServiceSigner) {
+    return pass("dojo_external_signing", "Dojo proof signing is configured through a managed-key-service provider with public verifier material.", required, configured);
+  }
   if (config.require_external_signing && hasExternalCommandSigner) {
     return pass("dojo_external_signing", "Dojo proof signing is configured through an implemented external-command signing provider.", required, configured);
   }
   const unsupportedProvider = provider
     && provider !== "hmac-local"
     && provider !== "ed25519-local"
-    && provider !== "external-command";
+    && provider !== "external-command"
+    && provider !== "managed-key-service";
   return {
     id: "dojo_external_signing",
     status: production ? "fail" : "warn",
     message: unsupportedProvider
-      ? "Dojo proof signing provider is not supported by the runtime; configure external-command signing or a supported provider."
-      : "Dojo proof signing is not production-ready; an external-command signing provider is required.",
+      ? "Dojo proof signing provider is not supported by the runtime; configure managed-key-service, external-command signing, or a supported provider."
+      : "Dojo proof signing is not production-ready; managed-key-service or external-command signing is required.",
     required_env: required,
     configured_env: configured,
   };

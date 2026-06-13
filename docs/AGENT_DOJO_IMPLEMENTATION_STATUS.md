@@ -61,7 +61,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - materialized synthetic Vivarium fixtures and oracle-backed scenario runs
 - runtime-backed Wind Tunnel and checkride runner foundations
 - durable proof replay repository and append-only evidence ledger store modules
-- license and proof capsule issuance/validation with strict evidence-claim mode, Ed25519 signing support, and an external command signer adapter
+- license and proof capsule issuance/validation with strict evidence-claim mode, Ed25519 signing support, external command signing, and managed-key-service signing with explicit key-custody metadata
 - proof-gated backing private workflow tool and raw workflow boundary checks
 - hosted runtime session authorization before production proof-gated execution consumes a proof capsule
 - case-law records that can bind guardrail predicates

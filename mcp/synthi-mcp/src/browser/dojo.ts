@@ -45,6 +45,7 @@ import {
   DOJO_PROOF_SIGNING_COMMAND_ENV,
   DOJO_PROOF_SIGNING_KEY_ENV,
   DOJO_PROOF_SIGNING_KEY_ID_ENV,
+  DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV,
   DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
   DOJO_PROOF_SIGNING_PROVIDER_ENV,
   DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
@@ -55,6 +56,7 @@ import {
   createEd25519DojoProofVerifier,
   createExternalCommandDojoProofSigner,
   createLocalHmacDojoProofSigner,
+  createManagedKeyServiceDojoProofSigner,
   encodeDojoProofSignatureEnvelope,
   parseDojoProofSignatureEnvelope,
   assertProductionDojoProofSigner,
@@ -3574,7 +3576,7 @@ function dojoProofSigningKey(): string {
 
 function dojoProofKeyId(): string {
   const provider = dojoProofSigningProvider();
-  if (provider === "ed25519-local" || provider === "external-command") {
+  if (provider === "ed25519-local" || provider === "external-command" || provider === "managed-key-service") {
     const keyId = process.env[DOJO_PROOF_SIGNING_KEY_ID_ENV]?.trim();
     if (!keyId) throw new Error("dojo_proof_signing_key_id_required");
     return keyId;
@@ -3600,6 +3602,18 @@ function dojoProofSigner(): DojoProofSigner {
     if (!command) throw new Error("dojo_external_proof_signing_command_required");
     return createExternalCommandDojoProofSigner({
       key_id: dojoProofKeyId(),
+      command,
+      args: dojoProofSigningCommandArgs(),
+    });
+  }
+  if (provider === "managed-key-service") {
+    const command = process.env[DOJO_PROOF_SIGNING_COMMAND_ENV]?.trim();
+    if (!command) throw new Error("dojo_managed_key_signing_command_required");
+    const keyUri = process.env[DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV]?.trim();
+    if (!keyUri) throw new Error("dojo_managed_key_uri_required");
+    return createManagedKeyServiceDojoProofSigner({
+      key_id: dojoProofKeyId(),
+      key_uri: keyUri,
       command,
       args: dojoProofSigningCommandArgs(),
     });
