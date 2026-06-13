@@ -30,7 +30,7 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
 spec:
   iap:
-    enabled: false
+    enabled: true
   timeoutSec: 300
   connectionDraining:
     drainingTimeoutSec: 30
@@ -52,7 +52,7 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
 spec:
   iap:
-    enabled: false
+    enabled: true
   timeoutSec: 3600
   connectionDraining:
     drainingTimeoutSec: 30
@@ -74,7 +74,7 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
 spec:
   iap:
-    enabled: false
+    enabled: true
   timeoutSec: 3600
   connectionDraining:
     drainingTimeoutSec: 30
@@ -96,7 +96,7 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
 spec:
   iap:
-    enabled: false
+    enabled: true
   timeoutSec: 3600
   connectionDraining:
     drainingTimeoutSec: 30
