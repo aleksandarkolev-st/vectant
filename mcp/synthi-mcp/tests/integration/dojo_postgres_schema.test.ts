@@ -48,6 +48,9 @@ describe("Dojo Postgres schema migration", () => {
     expect(proofRecords).toContain("requested_action text not null");
     expect(proofRecords).toContain("issued_at timestamptz not null");
     expect(proofRecords).toContain("expires_at timestamptz not null");
+    expect(proofRecords).toContain(
+      "foreign key (tenant_id, license_id) references dojo_licenses(tenant_id, license_id) on delete restrict"
+    );
   });
 
   it("requires audit actor and correlation context", () => {
@@ -91,6 +94,100 @@ describe("Dojo Postgres schema migration", () => {
     expect(runtimeSessions).toContain("check (status in ('active', 'revoked', 'expired'))");
     expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_runtime_sessions_skill_idx");
     expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_runtime_sessions_run_idx");
+  });
+
+  it("defines release-scoped source snapshot custody", () => {
+    const appReleases = normalizedStatements()["dojo_app_releases"];
+    const sourceSnapshots = normalizedStatements()["dojo_source_snapshots"];
+    const sourceTokens = normalizedStatements()["dojo_source_tokens"];
+
+    expect(appReleases).toContain("primary key (tenant_id, workspace_id, app_release_id)");
+    expect(appReleases).toContain("unique (tenant_id, workspace_id, app_origin, app_version)");
+    expect(sourceSnapshots).toContain(
+      "foreign key (tenant_id, workspace_id, app_release_id) references dojo_app_releases(tenant_id, workspace_id, app_release_id) on delete restrict"
+    );
+    expect(sourceSnapshots).toContain("signer_key_id text not null");
+    expect(sourceSnapshots).toContain("signature text not null");
+    expect(sourceTokens).toContain("primary key (tenant_id, workspace_id, snapshot_id, token_id)");
+    expect(sourceTokens).toContain("foreign key (tenant_id, workspace_id, snapshot_id) references dojo_source_snapshots(tenant_id, workspace_id, snapshot_id) on delete cascade");
+    expect(sourceTokens).toContain("check (allowed_substrate in ('vision', 'dom', 'source', 'api', 'mcp'))");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_source_snapshots_release_idx");
+  });
+
+  it("defines graph, node-memory, and license-version registries", () => {
+    const skillGraphs = normalizedStatements()["dojo_skill_graphs"];
+    const nodeMemories = normalizedStatements()["dojo_node_memories"];
+    const licenseVersions = normalizedStatements()["dojo_license_versions"];
+
+    expect(skillGraphs).toContain("primary key (tenant_id, workspace_id, graph_id)");
+    expect(skillGraphs).toContain(
+      "foreign key (tenant_id, skill_id, skill_version) references dojo_skill_versions(tenant_id, skill_id, skill_version) on delete cascade"
+    );
+    expect(skillGraphs).toContain("check (status in ('draft', 'checkride', 'licensed', 'expired', 'revoked'))");
+    expect(nodeMemories).toContain("primary key (tenant_id, workspace_id, graph_id, node_id)");
+    expect(nodeMemories).toContain(
+      "foreign key (tenant_id, workspace_id, graph_id) references dojo_skill_graphs(tenant_id, workspace_id, graph_id) on delete cascade"
+    );
+    expect(nodeMemories).toContain("check (confidence is null or (confidence >= 0 and confidence <= 1))");
+    expect(licenseVersions).toContain("primary key (tenant_id, workspace_id, license_id, license_version)");
+    expect(licenseVersions).toContain("check (readiness_level >= 0 and readiness_level <= 9)");
+  });
+
+  it("defines executable checkride and scenario run registries", () => {
+    const checkrideRuns = normalizedStatements()["dojo_checkride_runs"];
+    const scenarioRuns = normalizedStatements()["dojo_scenario_runs"];
+
+    expect(checkrideRuns).toContain("primary key (tenant_id, workspace_id, checkride_run_id)");
+    expect(checkrideRuns).toContain(
+      "foreign key (tenant_id, skill_id, skill_version) references dojo_skill_versions(tenant_id, skill_id, skill_version) on delete restrict"
+    );
+    expect(checkrideRuns).toContain("check (status in ('queued', 'running', 'passed', 'failed', 'blocked', 'canceled'))");
+    expect(scenarioRuns).toContain("primary key (tenant_id, workspace_id, scenario_run_id)");
+    expect(scenarioRuns).toContain(
+      "foreign key (tenant_id, workspace_id, checkride_run_id) references dojo_checkride_runs(tenant_id, workspace_id, checkride_run_id) on delete restrict"
+    );
+    expect(scenarioRuns).toContain("check (oracle_status in ('pass', 'fail', 'block', 'needs_human'))");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_checkride_runs_skill_idx");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_scenario_runs_checkride_idx");
+  });
+
+  it("defines governance case-law, antibody, and approval registries", () => {
+    const caseLaw = normalizedStatements()["dojo_case_law"];
+    const antibodies = normalizedStatements()["dojo_antibodies"];
+    const approvals = normalizedStatements()["dojo_approvals"];
+
+    expect(caseLaw).toContain("primary key (tenant_id, workspace_id, case_id)");
+    expect(caseLaw).toContain("check (binding_scope_kind in ('tenant', 'organization', 'workspace', 'skill'))");
+    expect(caseLaw).toContain("check (status in ('proposed', 'approved', 'deprecated'))");
+    expect(caseLaw).toContain("check (cardinality(evidence_refs) > 0)");
+    expect(antibodies).toContain("primary key (tenant_id, workspace_id, antibody_id)");
+    expect(antibodies).toContain(
+      "foreign key (tenant_id, workspace_id, source_case_id) references dojo_case_law(tenant_id, workspace_id, case_id) on delete restrict"
+    );
+    expect(antibodies).toContain("guardrail_predicate text not null");
+    expect(approvals).toContain("primary key (tenant_id, workspace_id, approval_id)");
+    expect(approvals).toContain("check (status in ('pending', 'approved', 'denied', 'superseded'))");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_case_law_scope_idx");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_approvals_status_idx");
+  });
+
+  it("defines MCP skill-bus registration, invocation, and conformance custody", () => {
+    const toolRegistrations = normalizedStatements()["dojo_tool_registrations"];
+    const toolInvocations = normalizedStatements()["dojo_tool_invocations"];
+    const conformanceResults = normalizedStatements()["dojo_mcp_host_conformance_results"];
+
+    expect(toolRegistrations).toContain("primary key (tenant_id, workspace_id, tool_registration_id)");
+    expect(toolRegistrations).toContain("unique (tenant_id, workspace_id, tool_name, tool_version)");
+    expect(toolRegistrations).toContain("proof_required boolean not null default true");
+    expect(toolRegistrations).toContain("check (direct_call_policy in ('blocked', 'dojo_dispatcher_only', 'practice_only'))");
+    expect(toolInvocations).toContain("primary key (tenant_id, workspace_id, invocation_id)");
+    expect(toolInvocations).toContain(
+      "foreign key (tenant_id, workspace_id, tool_registration_id) references dojo_tool_registrations(tenant_id, workspace_id, tool_registration_id) on delete restrict"
+    );
+    expect(toolInvocations).toContain("check (status in ('allowed', 'blocked', 'failed', 'completed'))");
+    expect(conformanceResults).toContain("primary key (tenant_id, workspace_id, conformance_result_id)");
+    expect(conformanceResults).toContain("check (host_kind in ('local_loopback', 'deployed_non_loopback'))");
+    expect(conformanceResults).toContain("check (report_sha256 ~ '^[a-fa-f0-9]{64}$')");
   });
 
   it("rejects duplicate migration identifiers before SQL generation", () => {
