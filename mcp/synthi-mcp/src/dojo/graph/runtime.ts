@@ -150,7 +150,8 @@ export class DojoSkillGraphRuntime {
     const evidenceRefs: string[] = [];
     const skippedNodes = new Map<string, string[]>();
     const resumeCompletedNodeIds = new Set(input.resume_state?.completed_node_ids ?? []);
-    for (const node of executionNodesForGraph(graph)) {
+    try {
+      for (const node of executionNodesForGraph(graph)) {
       if (resumeCompletedNodeIds.has(node.node_id)) {
         const skippedResult: DojoGraphNodeRunResult = {
           node_id: node.node_id,
@@ -397,6 +398,12 @@ export class DojoSkillGraphRuntime {
         assertion_results: assertionResults,
       };
       evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, nodeResults[nodeResults.length - 1]!));
+      }
+    } catch (error) {
+      if (error instanceof DojoGraphEvidenceWriteError) {
+        return blockedByEvidenceWriteFailure(error, mode, runId, nodeResults, evidenceRefs);
+      }
+      throw error;
     }
 
     return {
@@ -409,6 +416,45 @@ export class DojoSkillGraphRuntime {
       evidence_refs: evidenceRefs,
     };
   }
+}
+
+class DojoGraphEvidenceWriteError extends Error {
+  readonly node_id: string;
+  readonly blocked_by: string[];
+
+  constructor(nodeId: string, blockedBy: string[]) {
+    super(`dojo_graph_evidence_write_failed:${nodeId}`);
+    this.node_id = nodeId;
+    this.blocked_by = blockedBy;
+  }
+}
+
+function blockedByEvidenceWriteFailure(
+  error: DojoGraphEvidenceWriteError,
+  mode: DojoGraphMode,
+  runId: string,
+  nodeResults: DojoGraphNodeRunResult[],
+  evidenceRefs: string[]
+): DojoGraphRunResult {
+  for (let index = nodeResults.length - 1; index >= 0; index -= 1) {
+    const result = nodeResults[index];
+    if (!result || result.node_id !== error.node_id) continue;
+    nodeResults[index] = {
+      ...result,
+      status: "blocked",
+      blocked_by: [...new Set([...result.blocked_by, ...error.blocked_by])],
+    };
+    break;
+  }
+  return {
+    ok: false,
+    status: "blocked",
+    mode,
+    run_id: runId,
+    node_results: nodeResults,
+    blocked_by: error.blocked_by,
+    evidence_refs: evidenceRefs,
+  };
 }
 
 function executionNodesForGraph(graph: DojoSkillGraph): DojoGraphNode[] {
@@ -450,32 +496,36 @@ async function emitGraphNodeEvidence(
   result: DojoGraphNodeRunResult
 ): Promise<string> {
   const fallbackRef = `dojo-graph://${runId}/${node.node_id}`;
-  const emittedRef = await input.evidence_writer?.({
-    schema_version: "synthi.dojo.graphEvidenceEvent.v1",
-    run_id: runId,
-    graph_id: graph.graph_id,
-    skill_id: graph.skill_id,
-    graph_version: graph.graph_version,
-    node_id: node.node_id,
-    node_kind: node.kind,
-    status: result.status,
-    blocked_by: result.blocked_by,
-    evidence_policy: [...node.evidence_policy],
-    guardrail_ids: node.guardrails.map((guardrail) => guardrail.guardrail_id),
-    proof_required: node.proof?.required === true,
-    proof_claims: [...(node.proof?.required_claims ?? [])],
-    case_law_refs: requiredCaseLawRefsForNode(node),
-    rollback_status: result.rollback_decision.status,
-    rollback_strategy: result.rollback_decision.strategy,
-    rollback_requires_human_review: result.rollback_decision.requires_human_review,
-    rollback_checkpoints: [...result.rollback_decision.checkpoints],
-    assertion_ids: result.assertion_results.map((assertion) => assertion.assertion_id),
-    ...(result.substrate_result ? { substrate_status: result.substrate_result.status } : {}),
-    ...(result.substrate_result?.substrate ? { substrate: result.substrate_result.substrate } : {}),
-    substrate_evidence_refs: [...(result.substrate_result?.evidence_refs ?? [])],
-    created_at: input.now ?? new Date().toISOString(),
-  });
-  return typeof emittedRef === "string" && emittedRef.trim() ? emittedRef : fallbackRef;
+  try {
+    const emittedRef = await input.evidence_writer?.({
+      schema_version: "synthi.dojo.graphEvidenceEvent.v1",
+      run_id: runId,
+      graph_id: graph.graph_id,
+      skill_id: graph.skill_id,
+      graph_version: graph.graph_version,
+      node_id: node.node_id,
+      node_kind: node.kind,
+      status: result.status,
+      blocked_by: result.blocked_by,
+      evidence_policy: [...node.evidence_policy],
+      guardrail_ids: node.guardrails.map((guardrail) => guardrail.guardrail_id),
+      proof_required: node.proof?.required === true,
+      proof_claims: [...(node.proof?.required_claims ?? [])],
+      case_law_refs: requiredCaseLawRefsForNode(node),
+      rollback_status: result.rollback_decision.status,
+      rollback_strategy: result.rollback_decision.strategy,
+      rollback_requires_human_review: result.rollback_decision.requires_human_review,
+      rollback_checkpoints: [...result.rollback_decision.checkpoints],
+      assertion_ids: result.assertion_results.map((assertion) => assertion.assertion_id),
+      ...(result.substrate_result ? { substrate_status: result.substrate_result.status } : {}),
+      ...(result.substrate_result?.substrate ? { substrate: result.substrate_result.substrate } : {}),
+      substrate_evidence_refs: [...(result.substrate_result?.evidence_refs ?? [])],
+      created_at: input.now ?? new Date().toISOString(),
+    });
+    return typeof emittedRef === "string" && emittedRef.trim() ? emittedRef : fallbackRef;
+  } catch {
+    throw new DojoGraphEvidenceWriteError(node.node_id, ["graph_evidence_write_failed"]);
+  }
 }
 
 function createGraphRunId(graph: DojoSkillGraph): string {

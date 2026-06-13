@@ -117,6 +117,41 @@ describe("Dojo graph runtime", () => {
     ]);
   });
 
+  it("returns a blocked run when graph evidence writing fails", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      run_id: "graph-run-evidence-fail",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: (event) => {
+        if (event.node_id === "action_submit") throw new Error("ledger unavailable");
+        return `ledger://${event.run_id}/${event.node_id}`;
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      run_id: "graph-run-evidence-fail",
+      blocked_by: ["graph_evidence_write_failed"],
+      evidence_refs: ["ledger://graph-run-evidence-fail/trigger"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["graph_evidence_write_failed"],
+        }),
+      ]),
+    }));
+  });
+
   it("blocks a node when static preconditions fail", async () => {
     const runtime = new DojoSkillGraphRuntime();
 
