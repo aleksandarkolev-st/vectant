@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { evaluateDojoGraphAssertions } from "../../src/dojo/graph/assertion_runtime.js";
 import { decideDojoRollbackForAssertionFailure } from "../../src/dojo/graph/rollback_runtime.js";
 import { DojoSkillGraphRuntime } from "../../src/dojo/graph/runtime.js";
+import { createFakeDojoSubstrateExecutor } from "../../src/dojo/graph/substrate_executor.js";
 import type { DojoGraphNode, DojoSkillGraph } from "../../src/dojo/graph/types.js";
 
 describe("Dojo assertion and rollback runtime", () => {
@@ -61,6 +62,7 @@ describe("Dojo assertion and rollback runtime", () => {
       },
       proof_capsule: { capsule_id: "capsule-a" },
       proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
