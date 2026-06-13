@@ -242,6 +242,67 @@ describe("browser workflow deployment readiness", () => {
     ]));
   });
 
+  it("fails production readiness when the Dojo control plane uses only the legacy encrypted file store", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_CONTROL_PLANE_STORE: undefined,
+      SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL: undefined,
+      SYNTHI_DOJO_STORE_FILE: "/var/lib/synthi/dojo.enc.json",
+      SYNTHI_DOJO_STORE_KEY: "dojo-store-secret",
+      SYNTHI_DOJO_STORE_SCOPE: "tenant-a:workspace-a",
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "dojo_durable_store",
+        status: "fail",
+        message: expect.stringContaining("control_plane_store_encrypted_file_not_production_capable"),
+        configured_env: expect.arrayContaining([
+          "SYNTHI_DOJO_STORE_FILE",
+          "SYNTHI_DOJO_STORE_KEY",
+          "SYNTHI_DOJO_STORE_SCOPE",
+        ]),
+      }),
+    ]));
+    expect(JSON.stringify(readiness)).not.toMatch(/dojo-store-secret|\/var\/lib\/synthi\/dojo\.enc\.json/);
+  });
+
+  it("fails production readiness when the Dojo control plane requests Postgres without a URL", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_CONTROL_PLANE_STORE: "postgres",
+      SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL: undefined,
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "dojo_durable_store",
+        status: "fail",
+        message: expect.stringContaining("control_plane_postgres_url_missing"),
+      }),
+    ]));
+  });
+
+  it("passes production readiness when the Dojo Postgres control-plane URL is configured separately", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_CONTROL_PLANE_STORE: undefined,
+      SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL: "postgres://dojo-control-plane",
+    });
+
+    expect(readiness.ok).toBe(true);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "dojo_durable_store",
+        status: "pass",
+        configured_env: expect.arrayContaining(["SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL"]),
+      }),
+    ]));
+    expect(JSON.stringify(readiness)).not.toMatch(/dojo-control-plane/);
+  });
+
   it("fails production readiness with local Ed25519 proof signing material when external signing is required", () => {
     const readiness = browserWorkflowDeploymentReadiness({}, {
       ...productionReadyEnv(),
@@ -385,9 +446,8 @@ function productionReadyEnv(): NodeJS.ProcessEnv {
     SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN: "bridge-secret",
     SYNTHI_DOJO_PRODUCTION_ENFORCEMENT: "1",
     SYNTHI_DOJO_REQUIRE_DURABLE_STORE: "1",
-    SYNTHI_DOJO_STORE_FILE: "/var/lib/synthi/dojo.enc.json",
-    SYNTHI_DOJO_STORE_KEY: "dojo-store-secret",
-    SYNTHI_DOJO_STORE_SCOPE: "tenant-a:workspace-a",
+    SYNTHI_DOJO_CONTROL_PLANE_STORE: "postgres",
+    SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL: "postgres://dojo-control-plane",
     SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING: "1",
     SYNTHI_DOJO_PROOF_SIGNING_PROVIDER: "external-command",
     SYNTHI_DOJO_PROOF_SIGNING_KEY_ID: "external-ed-key-a",

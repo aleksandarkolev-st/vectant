@@ -3,7 +3,8 @@ import { replayIsolationProfiles } from "./safety.js";
 import {
   configuredDojoEvidenceLedgerEnv,
   configuredDojoExternalSigningEnv,
-  configuredDojoStoreEnv,
+  DOJO_CONTROL_PLANE_POSTGRES_URL_ENV,
+  DOJO_CONTROL_PLANE_STORE_ENV,
   DOJO_EVIDENCE_LEDGER_POSTGRES_URL_ENV,
   DOJO_EVIDENCE_LEDGER_STORE_ENV,
   DOJO_PRODUCTION_ENFORCEMENT_ENV,
@@ -20,7 +21,7 @@ import {
   DOJO_STORE_FILE_ENV,
   DOJO_STORE_KEY_ENV,
   DOJO_STORE_SCOPE_ENV,
-  isDojoDefaultLocalProofSigningKey,
+  resolveDojoControlPlaneStoreConfig,
   resolveDojoEvidenceLedgerStoreConfig,
   resolveDojoEnforcementConfig,
   type DojoEnforcementConfig,
@@ -200,20 +201,38 @@ function checkDojoDurableStore(
   env: NodeJS.ProcessEnv,
   production: boolean
 ): BrowserWorkflowDeploymentCheck {
-  const required = [DOJO_REQUIRE_DURABLE_STORE_ENV, DOJO_STORE_FILE_ENV, DOJO_STORE_KEY_ENV, DOJO_STORE_SCOPE_ENV];
-  const storeEnv = configuredDojoStoreEnv(env);
+  const required = [
+    DOJO_REQUIRE_DURABLE_STORE_ENV,
+    `${DOJO_CONTROL_PLANE_STORE_ENV}=postgres`,
+    `${DOJO_CONTROL_PLANE_POSTGRES_URL_ENV} when ${DOJO_CONTROL_PLANE_STORE_ENV}=postgres`,
+  ];
+  const optional = [
+    `${DOJO_STORE_FILE_ENV}, ${DOJO_STORE_KEY_ENV}, ${DOJO_STORE_SCOPE_ENV} for local development only`,
+  ];
+  const storeConfig = resolveDojoControlPlaneStoreConfig(env);
   const configured = [
     ...(config.require_durable_store ? [DOJO_REQUIRE_DURABLE_STORE_ENV] : []),
-    ...storeEnv,
+    ...storeConfig.configured_env,
   ];
-  if (config.require_durable_store && storeEnv.length === 3) {
-    return pass("dojo_durable_store", "Dojo durable store is required and configured.", required, configured);
+  if (config.require_durable_store && storeConfig.production_capable) {
+    return {
+      ...pass(
+        "dojo_durable_store",
+        "Dojo durable control-plane store is required and configured with a production-capable backend.",
+        required,
+        configured
+      ),
+      optional_env: optional,
+    };
   }
   return {
     id: "dojo_durable_store",
     status: production ? "fail" : "warn",
-    message: "Dojo durable store is not fully configured; production proof, license, and skill state must not be process-local.",
+    message: storeConfig.configured
+      ? `Dojo control-plane store is not production-capable; production proof, license, and skill state require a Postgres-backed control plane. Blocked by: ${storeConfig.blocked_by.join(", ")}.`
+      : "Dojo durable control-plane store is not configured; production proof, license, and skill state must not be process-local.",
     required_env: required,
+    optional_env: optional,
     configured_env: configured,
   };
 }
