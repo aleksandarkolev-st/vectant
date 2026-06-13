@@ -10,6 +10,7 @@ import {
   validateDojoReleaseGateManifest,
   validateDojoVisualProofReport,
 } from "../../scripts/dojo-release-gate-manifest.mjs";
+import { DOJO_SECURITY_ABUSE_CLASSES } from "../../scripts/dojo-security-abuse-self-check.mjs";
 
 const PACKAGE_SCRIPTS = {
   "mcp/synthi-mcp/package.json": {
@@ -222,6 +223,10 @@ describe("Dojo release gate manifest", () => {
         package_script: "proof:dojo:security-abuse:self-check",
         script_exists: true,
         release_artifact_requirements: expect.objectContaining({
+          require_all_abuse_classes_covered: true,
+          required_abuse_classes: DOJO_SECURITY_ABUSE_CLASSES,
+          require_no_failed_tests: true,
+          require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -296,6 +301,15 @@ describe("Dojo release gate manifest", () => {
     }).errors).toEqual(expect.arrayContaining([
       "missing_package_script:mcp/synthi-mcp/package.json:typecheck",
       "missing_package_script:mcp/synthi-mcp/package.json:proof:dojo:self-check",
+    ]));
+
+    const brokenSecurity = JSON.parse(JSON.stringify(manifest));
+    const securityGate = brokenSecurity.gates.find((gate) => gate.id === "security_abuse_suite");
+    securityGate.release_artifact_requirements.required_abuse_classes = DOJO_SECURITY_ABUSE_CLASSES.filter((abuseClass) => abuseClass !== "fake_success_oracle");
+    securityGate.release_artifact_requirements.require_no_skipped_tests = false;
+    expect(validateDojoReleaseGateManifest(brokenSecurity, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "security_abuse_missing_required_classes:fake_success_oracle",
+      "security_abuse_missing_no_skipped_requirement",
     ]));
   });
 

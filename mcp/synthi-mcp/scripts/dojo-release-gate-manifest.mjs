@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { DOJO_SECURITY_ABUSE_CLASSES } from "./dojo-security-abuse-self-check.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -432,7 +433,9 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     default_evidence_path: "tmp/dojo-security-abuse/dojo-security-abuse.evidence.json",
     release_artifact_requirements: {
       require_all_abuse_classes_covered: true,
+      required_abuse_classes: [...DOJO_SECURITY_ABUSE_CLASSES],
       require_no_failed_tests: true,
+      require_no_skipped_tests: true,
       require_budget_ok: true,
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
@@ -774,6 +777,16 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!securityAbuseGate.default_evidence_path) errors.push("security_abuse_missing_default_evidence_path");
     if (!securityAbuseGate.release_artifact_requirements?.require_all_abuse_classes_covered) {
       errors.push("security_abuse_missing_coverage_requirement");
+    }
+    const requiredAbuseClasses = Array.isArray(securityAbuseGate.release_artifact_requirements?.required_abuse_classes)
+      ? securityAbuseGate.release_artifact_requirements.required_abuse_classes
+      : [];
+    const missingAbuseClasses = DOJO_SECURITY_ABUSE_CLASSES.filter((abuseClass) => !requiredAbuseClasses.includes(abuseClass));
+    if (missingAbuseClasses.length > 0) {
+      errors.push(`security_abuse_missing_required_classes:${missingAbuseClasses.join(",")}`);
+    }
+    if (!securityAbuseGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("security_abuse_missing_no_skipped_requirement");
     }
     if (!securityAbuseGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
       errors.push("security_abuse_missing_digest_requirement");
