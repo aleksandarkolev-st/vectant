@@ -57,6 +57,10 @@ import {
   DOJO_GRAPH_RUNTIME_TEST_FILES,
 } from "./dojo-graph-runtime-self-check.mjs";
 import {
+  DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES,
+  DOJO_GHOST_MODE_EVIDENCE_TEST_FILES,
+} from "./dojo-ghost-mode-evidence-self-check.mjs";
+import {
   DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "./dojo-hosted-runtime-gateway-self-check.mjs";
@@ -111,6 +115,7 @@ const DEFAULT_MCP_SKILL_BUS_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-skill-bu
 const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-integration");
 const DEFAULT_GOVERNANCE_LIFECYCLE_DIR = path.join(REPO_ROOT, "tmp", "dojo-governance-lifecycle");
 const DEFAULT_GRAPH_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-graph-runtime");
+const DEFAULT_GHOST_MODE_EVIDENCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-ghost-mode-evidence");
 const DEFAULT_HOSTED_RUNTIME_GATEWAY_DIR = path.join(REPO_ROOT, "tmp", "dojo-hosted-runtime-gateway");
 const DEFAULT_MANAGED_KEY_SIGNING_DIR = path.join(REPO_ROOT, "tmp", "dojo-managed-key-signing");
 const DEFAULT_CASE_LAW_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-case-law-runtime");
@@ -359,6 +364,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
+  const ghostModeEvidenceResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-ghost-mode-evidence"]) || args["ghost-mode-evidence"]) {
+    const ghostModeGate = findGate(manifest, "dojo_ghost_mode_evidence_self_check") || {};
+    ghostModeEvidenceResults.push(await verifyDojoGhostModeEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["ghost-mode-evidence"]
+        || ghostModeGate.default_evidence_path
+        || path.join(DEFAULT_GHOST_MODE_EVIDENCE_DIR, "dojo-ghost-mode-evidence.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
   const vivariumRuntimeResults = [];
   if (truthy(args["release-candidate"]) || truthy(args["include-vivarium-runtime"]) || args["vivarium-runtime-evidence"]) {
     const vivariumRuntimeGate = findGate(manifest, "dojo_vivarium_runtime_self_check") || {};
@@ -440,7 +456,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...vivariumRuntimeResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...vivariumRuntimeResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -460,6 +476,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     managed_key_signing: managedKeySigningResults.map(summarizeSection),
     governance_lifecycle: governanceLifecycleResults.map(summarizeSection),
     graph_runtime: graphRuntimeResults.map(summarizeSection),
+    ghost_mode_evidence: ghostModeEvidenceResults.map(summarizeSection),
     vivarium_runtime: vivariumRuntimeResults.map(summarizeSection),
     case_law_runtime: caseLawRuntimeResults.map(summarizeSection),
     hosted_runtime_gateway: hostedRuntimeGatewayResults.map(summarizeSection),
@@ -1942,6 +1959,89 @@ export function validateDojoGraphRuntimeEvidenceForRelease(evidence) {
   };
 }
 
+export async function verifyDojoGhostModeEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoGhostModeEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_ghost_mode_evidence_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoGhostModeEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.ghostModeEvidence.v1") {
+    errors.push(`ghost_mode_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("ghost_mode_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`ghost_mode_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("ghost_mode_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`ghost_mode_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`ghost_mode_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_GHOST_MODE_EVIDENCE_TEST_FILES,
+    prefix: "ghost_mode",
+  }));
+  const untestedRequiredCapabilities = DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`ghost_mode_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`ghost_mode_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`ghost_mode_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.ghost_mode_contract || {};
+  for (const [field, errorCode] of [
+    ["non_mutating_shadow_run_required", "ghost_mode_non_mutating_requirement_missing"],
+    ["shadow_evidence_record_required", "ghost_mode_shadow_evidence_requirement_missing"],
+    ["audit_custody_required", "ghost_mode_audit_requirement_missing"],
+    ["mismatch_entrustment_block_required", "ghost_mode_entrustment_block_requirement_missing"],
+    ["compliance_pack_visibility_required", "ghost_mode_compliance_requirement_missing"],
+    ["durable_shadow_evidence_store_required", "ghost_mode_durable_store_requirement_missing"],
+    ["tenant_boundary_required", "ghost_mode_tenant_boundary_requirement_missing"],
+    ["production_mutation_rejection_required", "ghost_mode_mutation_rejection_requirement_missing"],
+    ["operational_filtering_required", "ghost_mode_filtering_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("ghost_mode_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`ghost_mode_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`ghost_mode_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("ghost_mode_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`ghost_mode_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
 export async function verifyDojoVivariumRuntimeEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
   const evidence = await readJsonFile(evidencePath);
   const errors = validateDojoVivariumRuntimeEvidenceForRelease(evidence).errors;
@@ -3360,6 +3460,37 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedGraphRuntime.errors.includes("graph_runtime_rollback_requirement_missing"));
   assert(rejectedGraphRuntime.errors.includes("graph_runtime_proof_gate_requirement_missing"));
 
+  const ghostModeDir = path.join(outDir, "ghost-mode-evidence");
+  await mkdir(ghostModeDir, { recursive: true });
+  const ghostModeArtifacts = await writeGhostModeEvidenceForSelfCheck({ outDir: ghostModeDir });
+  const ghostModeResult = await verifyDojoGhostModeEvidenceArtifact({
+    evidencePath: ghostModeArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(ghostModeResult.ok, true, ghostModeResult.errors.join(";"));
+  const rejectedGhostModeArtifacts = await writeGhostModeEvidenceForSelfCheck({
+    outDir: ghostModeDir,
+    basename: "dojo-ghost-mode-evidence-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["ghost_mode_runs_without_production_mutation"],
+      ghost_mode_contract: {
+        ...ghostModeArtifacts.evidence.ghost_mode_contract,
+        non_mutating_shadow_run_required: false,
+        tenant_boundary_required: false,
+      },
+    },
+  });
+  const rejectedGhostMode = await verifyDojoGhostModeEvidenceArtifact({
+    evidencePath: rejectedGhostModeArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedGhostMode.errors.includes("ghost_mode_coverage_incomplete"));
+  assert(rejectedGhostMode.errors.includes("ghost_mode_missing_capabilities:ghost_mode_runs_without_production_mutation"));
+  assert(rejectedGhostMode.errors.includes("ghost_mode_non_mutating_requirement_missing"));
+  assert(rejectedGhostMode.errors.includes("ghost_mode_tenant_boundary_requirement_missing"));
+
   const vivariumRuntimeDir = path.join(outDir, "vivarium-runtime");
   await mkdir(vivariumRuntimeDir, { recursive: true });
   const vivariumRuntimeArtifacts = await writeVivariumRuntimeEvidenceForSelfCheck({ outDir: vivariumRuntimeDir });
@@ -3603,6 +3734,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(managedKeySigningResult),
       summarizeSection(governanceLifecycleResult),
       summarizeSection(graphRuntimeResult),
+      summarizeSection(ghostModeResult),
       summarizeSection(vivariumRuntimeResult),
       summarizeSection(caseLawRuntimeResult),
       summarizeSection(hostedRuntimeGatewayResult),
@@ -3627,6 +3759,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedManagedKeySigning),
       summarizeSection(rejectedGovernanceLifecycle),
       summarizeSection(rejectedGraphRuntime),
+      summarizeSection(rejectedGhostMode),
       summarizeSection(rejectedVivariumRuntime),
       summarizeSection(rejectedCaseLawRuntime),
       summarizeSection(rejectedHostedRuntimeGateway),
@@ -5051,6 +5184,104 @@ async function writeGraphRuntimeEvidenceForSelfCheck({
     test_summary: {
       total_tests: DOJO_GRAPH_RUNTIME_CAPABILITIES.length,
       passed_tests: DOJO_GRAPH_RUNTIME_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeGhostModeEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-ghost-mode-evidence",
+  overrides = {},
+}) {
+  const stdout = "ghost mode evidence focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES.length,
+    numPassedTests: DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_GHOST_MODE_EVIDENCE_TEST_FILES.length,
+    numPassedTestSuites: DOJO_GHOST_MODE_EVIDENCE_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.ghostModeEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES],
+    tested_capabilities: [...DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES.length,
+    configured_capability_count: DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    ghost_mode_contract: {
+      non_mutating_shadow_run_required: true,
+      shadow_evidence_record_required: true,
+      audit_custody_required: true,
+      mismatch_entrustment_block_required: true,
+      compliance_pack_visibility_required: true,
+      durable_shadow_evidence_store_required: true,
+      tenant_boundary_required: true,
+      production_mutation_rejection_required: true,
+      operational_filtering_required: true,
+    },
+    test_files: [...DOJO_GHOST_MODE_EVIDENCE_TEST_FILES],
+    test_file_count: DOJO_GHOST_MODE_EVIDENCE_TEST_FILES.length,
+    reported_test_file_count: DOJO_GHOST_MODE_EVIDENCE_TEST_FILES.length,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_report_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        all_test_files_reported: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES.length,
+      passed_tests: DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES.length,
       failed_tests: 0,
       pending_tests: 0,
     },

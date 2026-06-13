@@ -46,6 +46,10 @@ import {
   DOJO_GRAPH_RUNTIME_TEST_FILES,
 } from "./dojo-graph-runtime-self-check.mjs";
 import {
+  DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES,
+  DOJO_GHOST_MODE_EVIDENCE_TEST_FILES,
+} from "./dojo-ghost-mode-evidence-self-check.mjs";
+import {
   DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "./dojo-hosted-runtime-gateway-self-check.mjs";
@@ -753,6 +757,36 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
   },
   {
+    id: "dojo_ghost_mode_evidence_self_check",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:ghost-mode-evidence:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_ghost_mode_tool.test.ts tests/integration/dojo_postgres_ghost_shadow_evidence_store.test.ts -- --reporter=json --outputFile ../../tmp/dojo-ghost-mode-evidence/dojo-ghost-mode-evidence.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:ghost-mode-evidence:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.ghostModeEvidence.v1",
+    default_evidence_path: "tmp/dojo-ghost-mode-evidence/dojo-ghost-mode-evidence.evidence.json",
+    release_artifact_requirements: {
+      require_all_ghost_mode_capabilities_covered: true,
+      required_ghost_mode_capabilities: [...DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES],
+      required_test_files: [...DOJO_GHOST_MODE_EVIDENCE_TEST_FILES],
+      require_non_mutating_shadow_run: true,
+      require_shadow_evidence_record: true,
+      require_audit_custody: true,
+      require_mismatch_entrustment_block: true,
+      require_compliance_pack_visibility: true,
+      require_durable_shadow_evidence_store: true,
+      require_tenant_boundary: true,
+      require_production_mutation_rejection: true,
+      require_operational_filtering: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+    requires_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
+  },
+  {
     id: "dojo_vivarium_runtime_self_check",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -1001,6 +1035,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "dojo_managed_key_signing_self_check",
   "dojo_governance_lifecycle_self_check",
   "dojo_graph_runtime_self_check",
+  "dojo_ghost_mode_evidence_self_check",
   "dojo_vivarium_runtime_self_check",
   "dojo_case_law_runtime_self_check",
   "dojo_hosted_runtime_gateway_self_check",
@@ -1709,6 +1744,60 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!graphRuntimeGate.release_artifact_requirements?.require_json_report_digest_match) {
       errors.push("graph_runtime_missing_json_report_digest_requirement");
+    }
+  }
+  const ghostModeGate = gates.find((gate) => gate.id === "dojo_ghost_mode_evidence_self_check");
+  if (ghostModeGate) {
+    if (ghostModeGate.evidence_schema_version !== "synthi.dojo.ghostModeEvidence.v1") {
+      errors.push("ghost_mode_missing_evidence_schema");
+    }
+    if (ghostModeGate.package_script !== "proof:dojo:ghost-mode-evidence:self-check") {
+      errors.push("ghost_mode_missing_package_script");
+    }
+    if (!ghostModeGate.default_evidence_path) errors.push("ghost_mode_missing_default_evidence_path");
+    if (!ghostModeGate.release_artifact_requirements?.require_all_ghost_mode_capabilities_covered) {
+      errors.push("ghost_mode_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_non_mutating_shadow_run", "ghost_mode_missing_non_mutating_requirement"],
+      ["require_shadow_evidence_record", "ghost_mode_missing_shadow_evidence_requirement"],
+      ["require_audit_custody", "ghost_mode_missing_audit_requirement"],
+      ["require_mismatch_entrustment_block", "ghost_mode_missing_entrustment_block_requirement"],
+      ["require_compliance_pack_visibility", "ghost_mode_missing_compliance_requirement"],
+      ["require_durable_shadow_evidence_store", "ghost_mode_missing_durable_store_requirement"],
+      ["require_tenant_boundary", "ghost_mode_missing_tenant_boundary_requirement"],
+      ["require_production_mutation_rejection", "ghost_mode_missing_mutation_rejection_requirement"],
+      ["require_operational_filtering", "ghost_mode_missing_filtering_requirement"],
+    ]) {
+      if (!ghostModeGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredGhostModeCapabilities = Array.isArray(ghostModeGate.release_artifact_requirements?.required_ghost_mode_capabilities)
+      ? ghostModeGate.release_artifact_requirements.required_ghost_mode_capabilities
+      : [];
+    const missingGhostModeCapabilities = DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES
+      .filter((capability) => !requiredGhostModeCapabilities.includes(capability));
+    if (missingGhostModeCapabilities.length > 0) {
+      errors.push(`ghost_mode_missing_required_capabilities:${missingGhostModeCapabilities.join(",")}`);
+    }
+    const missingGhostModeTestFiles = missingRequiredEntries(
+      DOJO_GHOST_MODE_EVIDENCE_TEST_FILES,
+      ghostModeGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingGhostModeTestFiles.length > 0) {
+      errors.push(`ghost_mode_missing_required_test_files:${missingGhostModeTestFiles.join(",")}`);
+    }
+    if (!ghostModeGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("ghost_mode_missing_no_skipped_requirement");
+    }
+    if (!ghostModeGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("ghost_mode_missing_digest_requirement");
+    }
+    if (!ghostModeGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("ghost_mode_missing_json_report_digest_requirement");
+    }
+    if (!Array.isArray(ghostModeGate.requires_env)
+      || !ghostModeGate.requires_env.includes("SYNTHI_DOJO_POSTGRES_TEST_URL")) {
+      errors.push("ghost_mode_missing_postgres_env");
     }
   }
   const vivariumRuntimeGate = gates.find((gate) => gate.id === "dojo_vivarium_runtime_self_check");
