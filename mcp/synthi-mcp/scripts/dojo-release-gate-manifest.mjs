@@ -110,6 +110,13 @@ export const DOJO_LIVE_HOSTED_RUNTIME_REQUIREMENTS = Object.freeze({
   require_successful_steps: true,
 });
 
+export const DOJO_DEPLOYED_PRIVATE_TOOL_HOST_REQUIREMENTS = Object.freeze({
+  ...DOJO_LIVE_HOSTED_RUNTIME_REQUIREMENTS,
+  require_external_private_tool_store: true,
+  require_no_local_attach: true,
+  require_private_tool_call: true,
+});
+
 export const DOJO_RELEASE_GATE_COMMANDS = [
   {
     id: "mcp_typecheck",
@@ -340,20 +347,46 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T6",
     working_directory: "mcp/synthi-mcp",
     package_script: "live:browser:private-tool-host-conformance",
-    command: "npm --prefix mcp/synthi-mcp run live:browser:private-tool-host-conformance",
+    command: "npm --prefix mcp/synthi-mcp run live:browser:private-tool-host-conformance -- --out-dir tmp/private-tool-stdio-host-conformance",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
-    requires_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
+    report_schema_version: "synthi.dojo.privateToolStdioAcceptance.v1",
+    default_report_path: "tmp/private-tool-stdio-host-conformance/mcp-stdio-private-tool-acceptance.json",
+    release_artifact_requirements: {
+      ...DOJO_DEPLOYED_PRIVATE_TOOL_HOST_REQUIREMENTS,
+      require_custom_mcp_command: true,
+      require_strict_schema: true,
+    },
+    requires_env: [
+      "SYNTHI_HOSTED_BROWSER_CDP_URL",
+      "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
+      "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
+      "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+    ],
   },
   {
     id: "private_tool_codex_host_conformance",
     tier: "T6",
     working_directory: "mcp/synthi-mcp",
     package_script: "live:browser:private-tool-codex-host-conformance",
-    command: "npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex-host-conformance",
+    command: "npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex-host-conformance -- --out-dir tmp/private-tool-codex-host-conformance",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
-    requires_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
+    report_schema_version: "synthi.dojo.privateToolCodexAcceptance.v1",
+    default_report_path: "tmp/private-tool-codex-host-conformance/codex-private-tool-acceptance.json",
+    release_artifact_requirements: {
+      ...DOJO_DEPLOYED_PRIVATE_TOOL_HOST_REQUIREMENTS,
+      require_agent_mcp_only: true,
+      require_no_shell_commands: true,
+    },
+    requires_env: [
+      "SYNTHI_HOSTED_BROWSER_CDP_URL",
+      "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
+      "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
+      "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+    ],
   },
   {
     id: "security_abuse_suite",
@@ -582,6 +615,29 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!mcpHostConformanceGate.release_artifact_requirements?.require_non_loopback_mcp_host) {
       errors.push("mcp_host_conformance_missing_non_loopback_requirement");
+    }
+  }
+  const privateToolHostConformanceGates = gates.filter((gate) => {
+    return gate.id === "private_tool_stdio_host_conformance" || gate.id === "private_tool_codex_host_conformance";
+  });
+  for (const gate of privateToolHostConformanceGates) {
+    if (gate.evidence_kind !== "proof_artifact") errors.push(`private_tool_host_conformance_missing_artifact_contract:${gate.id}`);
+    if (!gate.report_schema_version) errors.push(`private_tool_host_conformance_missing_schema:${gate.id}`);
+    if (!gate.default_report_path) errors.push(`private_tool_host_conformance_missing_report_path:${gate.id}`);
+    if (!gate.release_artifact_requirements?.require_non_loopback_runtime) {
+      errors.push(`private_tool_host_conformance_missing_non_loopback_runtime:${gate.id}`);
+    }
+    if (!gate.release_artifact_requirements?.require_external_private_tool_store) {
+      errors.push(`private_tool_host_conformance_missing_external_store:${gate.id}`);
+    }
+    if (!gate.release_artifact_requirements?.require_visual_proof) {
+      errors.push(`private_tool_host_conformance_missing_visual_proof:${gate.id}`);
+    }
+    if (!Array.isArray(gate.requires_env) || !gate.requires_env.includes("SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE")) {
+      errors.push(`private_tool_host_conformance_missing_store_env:${gate.id}`);
+    }
+    if (!Array.isArray(gate.requires_env) || !gate.requires_env.includes("SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL")) {
+      errors.push(`private_tool_host_conformance_missing_target_env:${gate.id}`);
     }
   }
   const securityAbuseGate = gates.find((gate) => gate.id === "security_abuse_suite");

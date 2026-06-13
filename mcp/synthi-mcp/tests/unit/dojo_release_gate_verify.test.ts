@@ -17,7 +17,9 @@ import {
   validateDojoProofSelfCheckForRelease,
   validateDojoMcpHostConformanceReportForRelease,
   validateDojoPrivateToolCodexAcceptanceForRelease,
+  validateDojoPrivateToolCodexHostConformanceForRelease,
   validateDojoPrivateToolStdioAcceptanceForRelease,
+  validateDojoPrivateToolStdioHostConformanceForRelease,
   validateDojoWorkflowPipelineE2EForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
   validateDojoSecurityAbuseEvidenceForRelease,
@@ -25,7 +27,9 @@ import {
   verifyDojoChaosPerformanceEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoPrivateToolCodexAcceptanceArtifact,
+  verifyDojoPrivateToolCodexHostConformanceArtifact,
   verifyDojoPrivateToolStdioAcceptanceArtifact,
+  verifyDojoPrivateToolStdioHostConformanceArtifact,
   verifyDojoProofSelfCheckArtifacts,
   verifyDojoReleaseGateArtifactsFromArgs,
   verifyDojoReleaseGateManifestArtifacts,
@@ -206,6 +210,85 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("requires deployed private-tool host conformance to use external stores and non-loopback targets", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-private-tool-host-conformance-verify-"));
+    const stdioScreenshotPath = path.join(dir, "private-tool-stdio-host.png");
+    const stdio = await writePrivateToolStdioAcceptanceFixture({
+      dir,
+      basename: "private-tool-stdio-host",
+      transcript: privateToolStdioAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+        screenshotPath: stdioScreenshotPath,
+        conformance: {
+          require_custom_mcp_command: true,
+          custom_mcp_command: true,
+        },
+        mcp_server: {
+          command: "node",
+          cwd: "/opt/synthi/mcp",
+          args_count: 2,
+          default_repo_dist: false,
+        },
+      })),
+    });
+    const codexScreenshotPath = path.join(dir, "private-tool-codex-host.png");
+    const codex = await writePrivateToolCodexAcceptanceFixture({
+      dir,
+      basename: "private-tool-codex-host",
+      transcript: privateToolCodexAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+        screenshotPath: codexScreenshotPath,
+      })),
+    });
+
+    expect(validateDojoPrivateToolStdioHostConformanceForRelease(stdio.transcript)).toEqual({ ok: true, errors: [] });
+    expect(await verifyDojoPrivateToolStdioHostConformanceArtifact({
+      transcriptPath: stdio.transcriptPath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "private_tool_stdio_host_conformance",
+      ok: true,
+      errors: [],
+    }));
+
+    expect(validateDojoPrivateToolCodexHostConformanceForRelease(codex.transcript)).toEqual({ ok: true, errors: [] });
+    expect(await verifyDojoPrivateToolCodexHostConformanceArtifact({
+      transcriptPath: codex.transcriptPath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "private_tool_codex_host_conformance",
+      ok: true,
+      errors: [],
+    }));
+
+    const weakStdio = privateToolStdioAcceptanceFixture({
+      target_url: "http://127.0.0.1:3000/private-tool",
+      conformance: {
+        require_non_loopback_runtime: true,
+        non_loopback_runtime: true,
+        runtime_host_class: "remote",
+        require_external_private_tool_store: true,
+        external_private_tool_store: false,
+        require_custom_mcp_command: true,
+        custom_mcp_command: false,
+      },
+      private_tool_store: {
+        external: false,
+        file: "redacted-private-tools.enc.json",
+        scope: "acceptance-fixture",
+      },
+      mcp_server: {
+        command: "node",
+        cwd: MCP_ROOT,
+        args_count: 1,
+        default_repo_dist: true,
+      },
+    });
+    expect(validateDojoPrivateToolStdioHostConformanceForRelease(weakStdio).errors).toEqual(expect.arrayContaining([
+      "private_tool_stdio_host_external_store_missing",
+      "private_tool_stdio_host_custom_mcp_command_missing",
+      "private_tool_stdio_host_target_not_remote:loopback",
+    ]));
+  });
+
   it("includes manifest-declared Dojo proof self-check artifacts in release candidate verification", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-candidate-self-check-"));
     const selfCheck = await writeProofSelfCheckFixture({ dir });
@@ -220,6 +303,32 @@ describe("Dojo release gate artifact verifier", () => {
     const workflowE2E = await writeWorkflowE2EFixture({ dir });
     const stdioAcceptance = await writePrivateToolStdioAcceptanceFixture({ dir });
     const codexAcceptance = await writePrivateToolCodexAcceptanceFixture({ dir });
+    const stdioHostScreenshotPath = path.join(dir, "private-tool-stdio-host-conformance.png");
+    const stdioHostConformance = await writePrivateToolStdioAcceptanceFixture({
+      dir,
+      basename: "private-tool-stdio-host-conformance",
+      transcript: privateToolStdioAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+        screenshotPath: stdioHostScreenshotPath,
+        conformance: {
+          require_custom_mcp_command: true,
+          custom_mcp_command: true,
+        },
+        mcp_server: {
+          command: "node",
+          cwd: "/opt/synthi/mcp",
+          args_count: 2,
+          default_repo_dist: false,
+        },
+      })),
+    });
+    const codexHostScreenshotPath = path.join(dir, "private-tool-codex-host-conformance.png");
+    const codexHostConformance = await writePrivateToolCodexAcceptanceFixture({
+      dir,
+      basename: "private-tool-codex-host-conformance",
+      transcript: privateToolCodexAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+        screenshotPath: codexHostScreenshotPath,
+      })),
+    });
 
     const packageScripts = await readPackageScripts();
     const manifest = buildDojoReleaseGateManifest({
@@ -232,6 +341,8 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
     manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioAcceptance.transcriptPath;
     manifest.gates.find((gate) => gate.id === "private_tool_codex_acceptance").default_report_path = codexAcceptance.transcriptPath;
+    manifest.gates.find((gate) => gate.id === "private_tool_stdio_host_conformance").default_report_path = stdioHostConformance.transcriptPath;
+    manifest.gates.find((gate) => gate.id === "private_tool_codex_host_conformance").default_report_path = codexHostConformance.transcriptPath;
     for (const gate of manifest.gates.filter((item) => item.evidence_kind === "visual_report")) {
       const visual = await writeVisualReportFixture({
         dir,
@@ -274,6 +385,12 @@ describe("Dojo release gate artifact verifier", () => {
       "private_tool_codex_acceptance",
     ]);
     expect(verified.live_hosted_runtime.every((report) => report.ok)).toBe(true);
+    expect(verified.mcp_host_conformance.map((report) => report.id)).toEqual([
+      "dojo_mcp_host_conformance",
+      "private_tool_stdio_host_conformance",
+      "private_tool_codex_host_conformance",
+    ]);
+    expect(verified.mcp_host_conformance.every((report) => report.ok)).toBe(true);
   });
 
   it("verifies MCP host conformance evidence hashes before release promotion", async () => {
@@ -842,6 +959,36 @@ function privateToolAcceptanceBaseFixture(overrides = {}) {
     },
     steps: [],
     ...overrides,
+  };
+}
+
+function deployedPrivateToolHostFixtureOverrides(overrides = {}) {
+  const base = {
+    target_url: "https://workspace.example.test/private-tool",
+    conformance: {
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: true,
+      runtime_host_class: "remote",
+      require_external_private_tool_store: true,
+      external_private_tool_store: true,
+    },
+    private_tool_store: {
+      external: true,
+      file: "redacted-external-private-tools.enc.json",
+      scope: "external-acceptance-fixture",
+    },
+  };
+  return {
+    ...base,
+    ...overrides,
+    conformance: {
+      ...base.conformance,
+      ...(overrides.conformance || {}),
+    },
+    private_tool_store: {
+      ...base.private_tool_store,
+      ...(overrides.private_tool_store || {}),
+    },
   };
 }
 

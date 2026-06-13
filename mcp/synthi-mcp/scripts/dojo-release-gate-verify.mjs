@@ -34,6 +34,8 @@ const DEFAULT_WORKFLOW_PIPELINE_E2E_DIR = path.join(REPO_ROOT, "tmp", "workflow-
 const DEFAULT_PRIVATE_TOOL_STDIO_ACCEPTANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-stdio-acceptance");
 const DEFAULT_PRIVATE_TOOL_CODEX_ACCEPTANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-acceptance");
 const DEFAULT_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-host-conformance");
+const DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-stdio-host-conformance");
+const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-host-conformance");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_CHAOS_PERFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-chaos-performance");
 const DEFAULT_SOAK_DIR = path.join(MCP_ROOT, ".soak");
@@ -141,10 +143,28 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const conformanceResults = [];
-  if (truthy(args["release-candidate"]) || args["mcp-host-conformance-report"]) {
+  const shouldVerifyDeployedHostConformance = truthy(args["release-candidate"])
+    || args["mcp-host-conformance-report"]
+    || args["private-tool-stdio-host-conformance"]
+    || args["private-tool-codex-host-conformance"];
+  if (shouldVerifyDeployedHostConformance) {
+    const stdioHostGate = findGate(manifest, "private_tool_stdio_host_conformance") || {};
+    const codexHostGate = findGate(manifest, "private_tool_codex_host_conformance") || {};
     conformanceResults.push(await verifyDojoMcpHostConformanceArtifacts({
       reportPath: resolveRepoPath(args["mcp-host-conformance-report"] || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.json")),
       evidencePath: resolveRepoPath(args["mcp-host-conformance-evidence"] || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+    conformanceResults.push(await verifyDojoPrivateToolStdioHostConformanceArtifact({
+      transcriptPath: resolveRepoPath(args["private-tool-stdio-host-conformance"]
+        || stdioHostGate.default_report_path
+        || path.join(DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR, "mcp-stdio-private-tool-acceptance.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+    conformanceResults.push(await verifyDojoPrivateToolCodexHostConformanceArtifact({
+      transcriptPath: resolveRepoPath(args["private-tool-codex-host-conformance"]
+        || codexHostGate.default_report_path
+        || path.join(DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR, "codex-private-tool-acceptance.json")),
       releaseCandidate: truthy(args["release-candidate"]),
     }));
   }
@@ -378,6 +398,25 @@ export async function verifyDojoPrivateToolStdioAcceptanceArtifact({ transcriptP
   };
 }
 
+export async function verifyDojoPrivateToolStdioHostConformanceArtifact({ transcriptPath, releaseCandidate = false }) {
+  const transcript = await readJsonFile(transcriptPath);
+  const errors = validateDojoPrivateToolStdioHostConformanceForRelease(transcript).errors;
+  errors.push(...await validateTranscriptVisualStepArtifact({
+    id: "private_tool_stdio_host_conformance",
+    transcript,
+    transcriptPath,
+  }));
+  return {
+    id: "private_tool_stdio_host_conformance",
+    ok: errors.length === 0,
+    errors,
+    artifact_path: transcriptPath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: transcript?.schema_version ?? null,
+    result_count: Array.isArray(transcript?.steps) ? transcript.steps.length : 0,
+  };
+}
+
 export function validateDojoPrivateToolStdioAcceptanceForRelease(transcript) {
   const errors = validateCommonPrivateToolAcceptanceTranscript(transcript, {
     schemaVersion: "synthi.dojo.privateToolStdioAcceptance.v1",
@@ -427,6 +466,20 @@ export function validateDojoPrivateToolStdioAcceptanceForRelease(transcript) {
   };
 }
 
+export function validateDojoPrivateToolStdioHostConformanceForRelease(transcript) {
+  const errors = [
+    ...validateDojoPrivateToolStdioAcceptanceForRelease(transcript).errors,
+    ...validateDeployedPrivateToolHostConformance(transcript, {
+      errorPrefix: "private_tool_stdio_host",
+      requireCustomMcpCommand: true,
+    }),
+  ];
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
 export async function verifyDojoPrivateToolCodexAcceptanceArtifact({ transcriptPath, releaseCandidate = false }) {
   const transcript = await readJsonFile(transcriptPath);
   const errors = validateDojoPrivateToolCodexAcceptanceForRelease(transcript).errors;
@@ -437,6 +490,25 @@ export async function verifyDojoPrivateToolCodexAcceptanceArtifact({ transcriptP
   }));
   return {
     id: "private_tool_codex_acceptance",
+    ok: errors.length === 0,
+    errors,
+    artifact_path: transcriptPath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: transcript?.schema_version ?? null,
+    result_count: Array.isArray(transcript?.steps) ? transcript.steps.length : 0,
+  };
+}
+
+export async function verifyDojoPrivateToolCodexHostConformanceArtifact({ transcriptPath, releaseCandidate = false }) {
+  const transcript = await readJsonFile(transcriptPath);
+  const errors = validateDojoPrivateToolCodexHostConformanceForRelease(transcript).errors;
+  errors.push(...await validateTranscriptVisualStepArtifact({
+    id: "private_tool_codex_host_conformance",
+    transcript,
+    transcriptPath,
+  }));
+  return {
+    id: "private_tool_codex_host_conformance",
     ok: errors.length === 0,
     errors,
     artifact_path: transcriptPath,
@@ -474,6 +546,20 @@ export function validateDojoPrivateToolCodexAcceptanceForRelease(transcript) {
   if (!Number.isFinite(stepsRun) || stepsRun < expectedSteps) {
     errors.push(`private_tool_codex_steps_run_below_expected:${stepsRun}:${expectedSteps}`);
   }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export function validateDojoPrivateToolCodexHostConformanceForRelease(transcript) {
+  const errors = [
+    ...validateDojoPrivateToolCodexAcceptanceForRelease(transcript).errors,
+    ...validateDeployedPrivateToolHostConformance(transcript, {
+      errorPrefix: "private_tool_codex_host",
+      requireCustomMcpCommand: false,
+    }),
+  ];
   return {
     ok: errors.length === 0,
     errors,
@@ -708,6 +794,38 @@ function validateCommonPrivateToolAcceptanceTranscript(transcript, {
   return errors;
 }
 
+function validateDeployedPrivateToolHostConformance(transcript, {
+  errorPrefix,
+  requireCustomMcpCommand = false,
+}) {
+  const errors = [];
+  const conformance = transcript?.conformance || {};
+  if (conformance.require_non_loopback_runtime !== true) {
+    errors.push(`${errorPrefix}_non_loopback_requirement_missing`);
+  }
+  if (conformance.non_loopback_runtime !== true) {
+    errors.push(`${errorPrefix}_runtime_not_remote:${conformance.runtime_host_class || "missing"}`);
+  }
+  if (conformance.require_external_private_tool_store !== true) {
+    errors.push(`${errorPrefix}_external_store_requirement_missing`);
+  }
+  if (conformance.external_private_tool_store !== true || transcript?.private_tool_store?.external !== true) {
+    errors.push(`${errorPrefix}_external_store_missing`);
+  }
+  if (classifyUrlHost(transcript?.target_url) !== "remote") {
+    errors.push(`${errorPrefix}_target_not_remote:${classifyUrlHost(transcript?.target_url)}`);
+  }
+  if (requireCustomMcpCommand) {
+    if (conformance.require_custom_mcp_command !== true) {
+      errors.push(`${errorPrefix}_custom_mcp_requirement_missing`);
+    }
+    if (conformance.custom_mcp_command !== true || transcript?.mcp_server?.default_repo_dist === true) {
+      errors.push(`${errorPrefix}_custom_mcp_command_missing`);
+    }
+  }
+  return errors;
+}
+
 async function validateTranscriptVisualStepArtifact({ id, transcript, transcriptPath }) {
   const errors = [];
   const step = findPassingStep(transcript, "visual proof snapshot");
@@ -728,6 +846,24 @@ async function validateTranscriptVisualStepArtifact({ id, transcript, transcript
     errors.push(`${id}_visual_screenshot_missing:${screenshotPath}`);
   }
   return errors;
+}
+
+function classifyUrlHost(value) {
+  let host = "";
+  try {
+    host = new URL(String(value || "")).hostname;
+  } catch {
+    return "invalid";
+  }
+  const normalized = host.toLowerCase();
+  if (!normalized) return "invalid";
+  if (normalized === "localhost" || normalized.startsWith("127.") || normalized === "::1" || normalized === "[::1]") {
+    return "loopback";
+  }
+  if (normalized === "0.0.0.0" || normalized === "::" || normalized === "[::]") {
+    return "local-bind";
+  }
+  return "remote";
 }
 
 function hasPassingResult(results, name) {
@@ -1007,6 +1143,37 @@ async function runSelfCheck({ outDir }) {
     releaseCandidate: true,
   });
   assert.equal(conformanceResult.ok, true, conformanceResult.errors.join(";"));
+  const stdioHostTranscriptPath = await writeStdioAcceptanceTranscriptForSelfCheck({
+    outDir: conformanceDir,
+    basename: "mcp-stdio-private-tool-host-conformance",
+    overrides: deployedPrivateToolHostTranscriptOverrides({
+      conformance: {
+        require_custom_mcp_command: true,
+        custom_mcp_command: true,
+      },
+      mcp_server: {
+        command: "node",
+        cwd: "/opt/synthi/mcp",
+        args_count: 2,
+        default_repo_dist: false,
+      },
+    }),
+  });
+  const stdioHostConformanceResult = await verifyDojoPrivateToolStdioHostConformanceArtifact({
+    transcriptPath: stdioHostTranscriptPath,
+    releaseCandidate: true,
+  });
+  assert.equal(stdioHostConformanceResult.ok, true, stdioHostConformanceResult.errors.join(";"));
+  const codexHostTranscriptPath = await writeCodexAcceptanceTranscriptForSelfCheck({
+    outDir: conformanceDir,
+    basename: "codex-private-tool-host-conformance",
+    overrides: deployedPrivateToolHostTranscriptOverrides(),
+  });
+  const codexHostConformanceResult = await verifyDojoPrivateToolCodexHostConformanceArtifact({
+    transcriptPath: codexHostTranscriptPath,
+    releaseCandidate: true,
+  });
+  assert.equal(codexHostConformanceResult.ok, true, codexHostConformanceResult.errors.join(";"));
 
   const selfCheckReport = buildReleaseCandidateConformanceReport({
     schemaVersion: "synthi.dojo.mcpHostConformance.selfCheck.v1",
@@ -1036,6 +1203,40 @@ async function runSelfCheck({ outDir }) {
   });
   assert(rejectedDryRun.errors.includes("conformance_execute_production_missing"));
   assert(rejectedDryRun.errors.includes("conformance_production_execution_step_missing"));
+  const rejectedStdioHostTranscriptPath = await writeStdioAcceptanceTranscriptForSelfCheck({
+    outDir: conformanceDir,
+    basename: "mcp-stdio-private-tool-host-conformance-rejected",
+    overrides: {
+      target_url: "http://127.0.0.1/private-tool",
+      conformance: {
+        require_non_loopback_runtime: true,
+        non_loopback_runtime: true,
+        runtime_host_class: "remote",
+        require_external_private_tool_store: true,
+        external_private_tool_store: false,
+        require_custom_mcp_command: true,
+        custom_mcp_command: false,
+      },
+      private_tool_store: {
+        external: false,
+        file: "redacted-private-tools.enc.json",
+        scope: "self-check-rejected",
+      },
+      mcp_server: {
+        command: "node",
+        cwd: MCP_ROOT,
+        args_count: 1,
+        default_repo_dist: true,
+      },
+    },
+  });
+  const rejectedStdioHost = await verifyDojoPrivateToolStdioHostConformanceArtifact({
+    transcriptPath: rejectedStdioHostTranscriptPath,
+    releaseCandidate: true,
+  });
+  assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_external_store_missing"));
+  assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_custom_mcp_command_missing"));
+  assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_target_not_remote:loopback"));
 
   const visualDir = path.join(outDir, "visual");
   await mkdir(visualDir, { recursive: true });
@@ -1130,6 +1331,8 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(stdioAcceptanceResult),
       summarizeSection(codexAcceptanceResult),
       summarizeSection(conformanceResult),
+      summarizeSection(stdioHostConformanceResult),
+      summarizeSection(codexHostConformanceResult),
       summarizeSection(visualResult),
       summarizeSection(securityResult),
       summarizeSection(chaosResult),
@@ -1139,6 +1342,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedSelfCheck),
       summarizeSection(rejectedCodexAcceptance),
       summarizeSection(rejectedDryRun),
+      summarizeSection(rejectedStdioHost),
       summarizeSection(rejectedSecurity),
       summarizeSection(rejectedChaos),
       summarizeSection(rejectedSoak),
@@ -1200,6 +1404,36 @@ async function writeLiveHostedRuntimeArtifactsForSelfCheck({ outDir }) {
     workflow_summary_path: workflowSummaryPath,
     stdio_transcript_path: stdioTranscriptPath,
     codex_transcript_path: codexTranscriptPath,
+  };
+}
+
+function deployedPrivateToolHostTranscriptOverrides(overrides = {}) {
+  const base = {
+    target_url: "https://workspace.example.test/private-tool",
+    conformance: {
+      require_non_loopback_runtime: true,
+      non_loopback_runtime: true,
+      runtime_host_class: "remote",
+      require_external_private_tool_store: true,
+      external_private_tool_store: true,
+    },
+    private_tool_store: {
+      external: true,
+      file: "redacted-external-private-tools.enc.json",
+      scope: "external-self-check",
+    },
+  };
+  return {
+    ...base,
+    ...overrides,
+    conformance: {
+      ...base.conformance,
+      ...(overrides.conformance || {}),
+    },
+    private_tool_store: {
+      ...base.private_tool_store,
+      ...(overrides.private_tool_store || {}),
+    },
   };
 }
 
