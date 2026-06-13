@@ -4,10 +4,16 @@
 **Date:** 2026-06-11  
 **Scope:** current Agent Dojo implementation in `mcp/synthi-mcp`
 
-This document prevents current scaffolded Vivarium Cortex artifacts from being mistaken for mature runtime subsystems. The machine-readable source lives in:
+This document prevents current scaffolded Vivarium Cortex artifacts from being mistaken for mature runtime subsystems. The implementation-status registry lives in:
 
 ```text
 mcp/synthi-mcp/src/dojo/status/implementation_status.ts
+```
+
+The compact machine-readable maturity manifest lives in:
+
+```text
+.synthi/dojo/maturity/implementation-status.json
 ```
 
 ## Status Classes
@@ -32,7 +38,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - license and proof capsule issuance/validation with strict evidence-claim mode, Ed25519 signing support, and an external command signer adapter
 - proof-gated backing private workflow tool and raw workflow boundary checks
 - case-law records that can bind guardrail predicates
-- non-mutating Ghost Mode shadow evidence records
+- non-mutating Ghost Mode shadow evidence records with control-plane audit events
 - source/API contract, linter, candidate, substrate, and React codemod foundations
 - dedicated Dojo product UX surfaces and governance view models
 - repo artifact export
@@ -74,7 +80,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_get_entrustment_level` | `deterministic_projection` |
 | `synthi_dojo_get_license` | `executable` |
 | `synthi_dojo_get_guardrails` | `deterministic_projection` |
-| `synthi_dojo_get_case_law` | `deterministic_projection` |
+| `synthi_dojo_get_case_law` | `report_only` |
 | `synthi_dojo_explain_block` | `report_only` |
 | `synthi_dojo_explain_failure` | `report_only` |
 | `synthi_dojo_debug_counterfactual` | `deterministic_projection` |
