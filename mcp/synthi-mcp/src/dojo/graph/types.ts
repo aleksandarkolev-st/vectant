@@ -248,10 +248,54 @@ export function validateDojoSkillGraph(graph: DojoSkillGraph): DojoGraphValidati
     }
   }
 
+  for (const unreachableNodeId of unreachableNodeIds(graph, nodeIds)) {
+    issues.push(errorIssue(
+      "graph_node_unreachable",
+      `Graph node ${unreachableNodeId} is not reachable from an execution root.`,
+      unreachableNodeId
+    ));
+  }
+
   return {
     ok: issues.every((issue) => issue.severity !== "error"),
     issues,
   };
+}
+
+function unreachableNodeIds(graph: DojoSkillGraph, nodeIds: Set<string>): string[] {
+  if (graph.nodes.length === 0) return [];
+  const incomingNodeIds = new Set(
+    graph.edges
+      .map((edge) => edge.to_node_id)
+      .filter((nodeId) => nodeIds.has(nodeId))
+  );
+  const triggerNodeIds = graph.nodes
+    .filter((node) => node.kind === "Trigger")
+    .map((node) => node.node_id);
+  const rootNodeIds = triggerNodeIds.length > 0
+    ? triggerNodeIds
+    : graph.nodes.filter((node) => !incomingNodeIds.has(node.node_id)).map((node) => node.node_id);
+  const fallbackRootNodeId = graph.nodes[0]?.node_id;
+  const queue = rootNodeIds.length > 0
+    ? [...rootNodeIds]
+    : fallbackRootNodeId
+      ? [fallbackRootNodeId]
+      : [];
+  const reachable = new Set<string>();
+  while (queue.length > 0) {
+    const nodeId = queue.shift();
+    if (!nodeId || reachable.has(nodeId) || !nodeIds.has(nodeId)) continue;
+    reachable.add(nodeId);
+    for (const edge of graph.edges) {
+      if (edge.from_node_id === nodeId && nodeIds.has(edge.to_node_id) && !reachable.has(edge.to_node_id)) {
+        queue.push(edge.to_node_id);
+      }
+    }
+  }
+  return graph.nodes
+    .map((node) => node.node_id)
+    .filter((nodeId) => !reachable.has(nodeId))
+    .sort();
 }
 
 function errorIssue(

@@ -175,6 +175,22 @@ describe("Dojo Skill Graph IR", () => {
       }),
     ]));
   });
+
+  it("rejects graph nodes that are not reachable from the execution root", () => {
+    const graph = minimalGraph();
+    graph.nodes.push({
+      ...graph.nodes.find((node) => node.node_id === "action_submit")!,
+      node_id: "action_orphan",
+      label: "Orphan action",
+    });
+
+    expect(validateDojoSkillGraph(graph).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issue_id: "graph_node_unreachable",
+        node_id: "action_orphan",
+      }),
+    ]));
+  });
 });
 
 function minimalGraph(): DojoSkillGraph {

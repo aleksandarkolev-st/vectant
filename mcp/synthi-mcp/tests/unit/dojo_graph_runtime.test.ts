@@ -878,6 +878,35 @@ describe("Dojo graph runtime", () => {
     }));
   });
 
+  it("blocks unreachable action nodes instead of executing unvisited nodes", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const invalid = graphFixture();
+    invalid.nodes.push({
+      ...invalid.nodes.find((node) => node.node_id === "action_submit")!,
+      node_id: "action_orphan",
+      label: "Orphan action",
+    });
+
+    await expect(runtime.execute({
+      graph: invalid,
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      node_results: [],
+      blocked_by: expect.arrayContaining(["graph_node_unreachable"]),
+    }));
+  });
+
   it("evaluates simple equality preconditions", () => {
     expect(evaluateStaticCondition("workspace_verified == true", { workspace_verified: true })).toBe(true);
     expect(evaluateStaticCondition("amount == 50", { amount: 50 })).toBe(true);
