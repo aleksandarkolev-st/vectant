@@ -39,6 +39,10 @@ import {
   DOJO_GENERATED_PR_TEST_FILES,
 } from "../../scripts/dojo-generated-pr-self-check.mjs";
 import {
+  DOJO_MCP_SKILL_BUS_CAPABILITIES,
+  DOJO_MCP_SKILL_BUS_TEST_FILES,
+} from "../../scripts/dojo-mcp-skill-bus-self-check.mjs";
+import {
   DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "../../scripts/dojo-governance-lifecycle-self-check.mjs";
@@ -85,6 +89,7 @@ import {
   validateDojoPrivateToolStdioHostConformanceForRelease,
   validateDojoDockerIntegrationEvidenceForMilestone,
   validateDojoGeneratedPrEvidenceForRelease,
+  validateDojoMcpSkillBusEvidenceForRelease,
   validateDojoGovernanceLifecycleEvidenceForRelease,
   validateDojoGraphRuntimeEvidenceForRelease,
   validateDojoHostedRuntimeGatewayEvidenceForRelease,
@@ -106,6 +111,7 @@ import {
   verifyDojoSourceDriftEvidenceArtifact,
   verifyDojoDockerIntegrationEvidenceArtifact,
   verifyDojoGeneratedPrEvidenceArtifact,
+  verifyDojoMcpSkillBusEvidenceArtifact,
   verifyDojoGovernanceLifecycleEvidenceArtifact,
   verifyDojoGraphRuntimeEvidenceArtifact,
   verifyDojoHostedRuntimeGatewayEvidenceArtifact,
@@ -642,6 +648,71 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("verifies MCP Skill Bus evidence before certified competency release", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-mcp-skill-bus-verify-"));
+    const evidencePath = await writeMcpSkillBusEvidenceFixture({ dir });
+
+    expect(validateDojoMcpSkillBusEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoMcpSkillBusEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_mcp_skill_bus_self_check",
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = mcpSkillBusEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["mcp_skill_bus_consumes_proof_before_non_dry_dispatch"],
+      mcp_skill_bus_contract: {
+        ...mcpSkillBusEvidenceFixture().mcp_skill_bus_contract,
+        proof_consume_required: false,
+        tenant_boundary_required: false,
+      },
+    });
+    const incompletePath = await writeMcpSkillBusEvidenceFixture({
+      dir,
+      basename: "incomplete-mcp-skill-bus",
+      evidence: incomplete,
+    });
+    const rejected = await verifyDojoMcpSkillBusEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "mcp_skill_bus_not_ok",
+      "mcp_skill_bus_coverage_incomplete",
+      "mcp_skill_bus_missing_capabilities:mcp_skill_bus_consumes_proof_before_non_dry_dispatch",
+      "mcp_skill_bus_proof_consume_requirement_missing",
+      "mcp_skill_bus_tenant_boundary_requirement_missing",
+    ]));
+
+    const driftedPath = await writeMcpSkillBusEvidenceFixture({
+      dir,
+      basename: "drifted-mcp-skill-bus",
+      evidence: mcpSkillBusEvidenceFixture({
+        configured_capabilities: DOJO_MCP_SKILL_BUS_CAPABILITIES
+          .filter((capability) => capability !== "mcp_manifest_ed25519_public_verification"),
+        tested_capabilities: DOJO_MCP_SKILL_BUS_CAPABILITIES
+          .filter((capability) => capability !== "mcp_manifest_ed25519_public_verification"),
+        capability_count: DOJO_MCP_SKILL_BUS_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_MCP_SKILL_BUS_CAPABILITIES.length - 1,
+        test_files: [],
+        test_file_count: 0,
+        reported_test_file_count: 0,
+      }),
+    });
+    expect((await verifyDojoMcpSkillBusEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "mcp_skill_bus_required_capabilities_missing:mcp_manifest_ed25519_public_verification",
+      "mcp_skill_bus_required_capabilities_untested:mcp_manifest_ed25519_public_verification",
+      `mcp_skill_bus_required_test_files_missing:${DOJO_MCP_SKILL_BUS_TEST_FILES.join(",")}`,
+    ]));
+  });
+
   it("verifies source drift evidence before source/API promotion", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-source-drift-verify-"));
     const evidencePath = await writeSourceDriftEvidenceFixture({ dir });
@@ -985,6 +1056,7 @@ describe("Dojo release gate artifact verifier", () => {
     const sourceDriftEvidencePath = await writeSourceDriftEvidenceFixture({ dir });
     const apiToolCompilerEvidencePath = await writeApiToolCompilerEvidenceFixture({ dir });
     const generatedPrEvidencePath = await writeGeneratedPrEvidenceFixture({ dir });
+    const mcpSkillBusEvidencePath = await writeMcpSkillBusEvidenceFixture({ dir });
     const conformanceReportPath = path.join(dir, "dojo-mcp-host-conformance.json");
     const conformanceEvidencePath = path.join(dir, "dojo-mcp-host-conformance.evidence.json");
     await writeConformancePair({
@@ -1047,6 +1119,7 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "dojo_source_drift_self_check").default_evidence_path = sourceDriftEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_api_tool_compiler_self_check").default_evidence_path = apiToolCompilerEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_generated_pr_self_check").default_evidence_path = generatedPrEvidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_mcp_skill_bus_self_check").default_evidence_path = mcpSkillBusEvidencePath;
     manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path = managedKeySigningEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check").default_evidence_path = governanceLifecycleEvidencePath;
@@ -1089,6 +1162,7 @@ describe("Dojo release gate artifact verifier", () => {
         "source-drift-evidence": sourceDriftEvidencePath,
         "api-tool-compiler-evidence": apiToolCompilerEvidencePath,
         "generated-pr-evidence": generatedPrEvidencePath,
+        "mcp-skill-bus-evidence": mcpSkillBusEvidencePath,
       },
     });
 
@@ -1139,6 +1213,13 @@ describe("Dojo release gate artifact verifier", () => {
         id: "dojo_generated_pr_self_check",
         ok: true,
         evidence_path: generatedPrEvidencePath,
+      }),
+    ]);
+    expect(verified.mcp_skill_bus).toEqual([
+      expect.objectContaining({
+        id: "dojo_mcp_skill_bus_self_check",
+        ok: true,
+        evidence_path: mcpSkillBusEvidencePath,
       }),
     ]);
     expect(verified.visual_reports).toHaveLength(2);
@@ -3110,6 +3191,106 @@ function generatedPrJsonReportFixtureText() {
     success: true,
     numTotalTests: DOJO_GENERATED_PR_CAPABILITIES.length,
     numPassedTests: DOJO_GENERATED_PR_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    testResults: [],
+  }, null, 2);
+}
+
+async function writeMcpSkillBusEvidenceFixture({
+  dir,
+  basename = "dojo-mcp-skill-bus",
+  evidence,
+  writeLogs = true,
+}) {
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  const stdoutPath = path.join(dir, `${basename}.stdout.txt`);
+  const stderrPath = path.join(dir, `${basename}.stderr.txt`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  const stdout = "MCP Skill Bus suite passed\n";
+  const stderr = "";
+  const jsonReport = mcpSkillBusJsonReportFixtureText();
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? mcpSkillBusEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  await writeFile(evidencePath, JSON.stringify(body, null, 2), "utf8");
+  return evidencePath;
+}
+
+function mcpSkillBusEvidenceFixture(overrides = {}) {
+  const stdout = "MCP Skill Bus suite passed\n";
+  const stderr = "";
+  const jsonReport = mcpSkillBusJsonReportFixtureText();
+  return {
+    schema_version: "synthi.dojo.mcpSkillBusEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_MCP_SKILL_BUS_CAPABILITIES],
+    tested_capabilities: [...DOJO_MCP_SKILL_BUS_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_MCP_SKILL_BUS_CAPABILITIES.length,
+    configured_capability_count: DOJO_MCP_SKILL_BUS_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    mcp_skill_bus_contract: {
+      certified_competency_listing_required: true,
+      tenant_authorization_required: true,
+      signed_manifest_required: true,
+      manifest_signature_verification_required: true,
+      manifest_tamper_rejection_required: true,
+      manifest_production_readiness_required: true,
+      version_pinning_required: true,
+      ambiguous_tool_block_required: true,
+      proof_validation_required: true,
+      proof_consume_required: true,
+      proof_binding_required: true,
+      dry_run_side_effect_free_required: true,
+      fail_closed_required: true,
+      executor_block_propagation_required: true,
+      rate_limit_required: true,
+      audit_events_required: true,
+      durable_registration_required: true,
+      revocation_required: true,
+      durable_invocation_custody_required: true,
+      tenant_boundary_required: true,
+      direct_call_policy_required: true,
+      postgres_registry_required: true,
+    },
+    test_files: [...DOJO_MCP_SKILL_BUS_TEST_FILES],
+    test_file_count: DOJO_MCP_SKILL_BUS_TEST_FILES.length,
+    reported_test_file_count: DOJO_MCP_SKILL_BUS_TEST_FILES.length,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: DOJO_MCP_SKILL_BUS_CAPABILITIES.length,
+      passed_tests: DOJO_MCP_SKILL_BUS_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: path.join(tmpdir(), "dojo-mcp-skill-bus.stdout.txt"),
+    stdout_sha256: sha256(stdout),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_path: path.join(tmpdir(), "dojo-mcp-skill-bus.stderr.txt"),
+    stderr_sha256: sha256(stderr),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_path: path.join(tmpdir(), "dojo-mcp-skill-bus.vitest.json"),
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function mcpSkillBusJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_MCP_SKILL_BUS_CAPABILITIES.length,
+    numPassedTests: DOJO_MCP_SKILL_BUS_CAPABILITIES.length,
     numFailedTests: 0,
     numPendingTests: 0,
     testResults: [],

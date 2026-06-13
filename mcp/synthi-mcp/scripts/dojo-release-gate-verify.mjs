@@ -65,6 +65,10 @@ import {
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "./dojo-managed-key-signing-self-check.mjs";
 import {
+  DOJO_MCP_SKILL_BUS_CAPABILITIES,
+  DOJO_MCP_SKILL_BUS_TEST_FILES,
+} from "./dojo-mcp-skill-bus-self-check.mjs";
+import {
   DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
   DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
 } from "./dojo-postgres-control-plane-self-check.mjs";
@@ -103,6 +107,7 @@ const DEFAULT_AFFORDANCE_CODEMOD_DIR = path.join(REPO_ROOT, "tmp", "dojo-afforda
 const DEFAULT_SOURCE_DRIFT_DIR = path.join(REPO_ROOT, "tmp", "dojo-source-drift");
 const DEFAULT_API_TOOL_COMPILER_DIR = path.join(REPO_ROOT, "tmp", "dojo-api-tool-compiler");
 const DEFAULT_GENERATED_PR_DIR = path.join(REPO_ROOT, "tmp", "dojo-generated-pr");
+const DEFAULT_MCP_SKILL_BUS_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-skill-bus");
 const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-integration");
 const DEFAULT_GOVERNANCE_LIFECYCLE_DIR = path.join(REPO_ROOT, "tmp", "dojo-governance-lifecycle");
 const DEFAULT_GRAPH_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-graph-runtime");
@@ -250,6 +255,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       evidencePath: resolveRepoPath(args["generated-pr-evidence"]
         || generatedPrGate.default_evidence_path
         || path.join(DEFAULT_GENERATED_PR_DIR, "dojo-generated-pr.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
+  const mcpSkillBusResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-mcp-skill-bus"]) || args["mcp-skill-bus-evidence"]) {
+    const mcpSkillBusGate = findGate(manifest, "dojo_mcp_skill_bus_self_check") || {};
+    mcpSkillBusResults.push(await verifyDojoMcpSkillBusEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["mcp-skill-bus-evidence"]
+        || mcpSkillBusGate.default_evidence_path
+        || path.join(DEFAULT_MCP_SKILL_BUS_DIR, "dojo-mcp-skill-bus.evidence.json")),
       releaseCandidate: truthy(args["release-candidate"]),
     }));
   }
@@ -424,7 +440,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...vivariumRuntimeResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...vivariumRuntimeResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -438,6 +454,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     docker_integration: dockerIntegrationResults.map(summarizeSection),
     source_api: sourceApiResults.map(summarizeSection),
     generated_pr: generatedPrResults.map(summarizeSection),
+    mcp_skill_bus: mcpSkillBusResults.map(summarizeSection),
     live_hosted_runtime: liveHostedRuntimeResults.map(summarizeSection),
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     managed_key_signing: managedKeySigningResults.map(summarizeSection),
@@ -1156,6 +1173,102 @@ export function validateDojoGeneratedPrEvidenceForRelease(evidence) {
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("generated_pr_no_reported_tests");
   if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
     errors.push(`generated_pr_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoMcpSkillBusEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoMcpSkillBusEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_mcp_skill_bus_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoMcpSkillBusEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.mcpSkillBusEvidence.v1") {
+    errors.push(`mcp_skill_bus_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("mcp_skill_bus_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`mcp_skill_bus_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("mcp_skill_bus_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`mcp_skill_bus_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_MCP_SKILL_BUS_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`mcp_skill_bus_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_MCP_SKILL_BUS_TEST_FILES,
+    prefix: "mcp_skill_bus",
+  }));
+  const untestedRequiredCapabilities = DOJO_MCP_SKILL_BUS_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`mcp_skill_bus_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`mcp_skill_bus_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`mcp_skill_bus_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.mcp_skill_bus_contract || {};
+  for (const [field, errorCode] of [
+    ["certified_competency_listing_required", "mcp_skill_bus_competency_listing_requirement_missing"],
+    ["tenant_authorization_required", "mcp_skill_bus_tenant_authorization_requirement_missing"],
+    ["signed_manifest_required", "mcp_skill_bus_signed_manifest_requirement_missing"],
+    ["manifest_signature_verification_required", "mcp_skill_bus_manifest_signature_requirement_missing"],
+    ["manifest_tamper_rejection_required", "mcp_skill_bus_manifest_tamper_requirement_missing"],
+    ["manifest_production_readiness_required", "mcp_skill_bus_manifest_readiness_requirement_missing"],
+    ["version_pinning_required", "mcp_skill_bus_version_pinning_requirement_missing"],
+    ["ambiguous_tool_block_required", "mcp_skill_bus_ambiguous_tool_requirement_missing"],
+    ["proof_validation_required", "mcp_skill_bus_proof_validation_requirement_missing"],
+    ["proof_consume_required", "mcp_skill_bus_proof_consume_requirement_missing"],
+    ["proof_binding_required", "mcp_skill_bus_proof_binding_requirement_missing"],
+    ["dry_run_side_effect_free_required", "mcp_skill_bus_dry_run_requirement_missing"],
+    ["fail_closed_required", "mcp_skill_bus_fail_closed_requirement_missing"],
+    ["executor_block_propagation_required", "mcp_skill_bus_executor_block_requirement_missing"],
+    ["rate_limit_required", "mcp_skill_bus_rate_limit_requirement_missing"],
+    ["audit_events_required", "mcp_skill_bus_audit_requirement_missing"],
+    ["durable_registration_required", "mcp_skill_bus_durable_registration_requirement_missing"],
+    ["revocation_required", "mcp_skill_bus_revocation_requirement_missing"],
+    ["durable_invocation_custody_required", "mcp_skill_bus_invocation_custody_requirement_missing"],
+    ["tenant_boundary_required", "mcp_skill_bus_tenant_boundary_requirement_missing"],
+    ["direct_call_policy_required", "mcp_skill_bus_direct_call_policy_requirement_missing"],
+    ["postgres_registry_required", "mcp_skill_bus_postgres_registry_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("mcp_skill_bus_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`mcp_skill_bus_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`mcp_skill_bus_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("mcp_skill_bus_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`mcp_skill_bus_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
   }
   return {
     ok: errors.length === 0,
@@ -2975,6 +3088,37 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedGeneratedPr.errors.includes("generated_pr_git_branch_requirement_missing"));
   assert(rejectedGeneratedPr.errors.includes("generated_pr_contract_tests_requirement_missing"));
 
+  const mcpSkillBusDir = path.join(outDir, "mcp-skill-bus");
+  await mkdir(mcpSkillBusDir, { recursive: true });
+  const mcpSkillBusArtifacts = await writeMcpSkillBusEvidenceForSelfCheck({ outDir: mcpSkillBusDir });
+  const mcpSkillBusResult = await verifyDojoMcpSkillBusEvidenceArtifact({
+    evidencePath: mcpSkillBusArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(mcpSkillBusResult.ok, true, mcpSkillBusResult.errors.join(";"));
+  const rejectedMcpSkillBusArtifacts = await writeMcpSkillBusEvidenceForSelfCheck({
+    outDir: mcpSkillBusDir,
+    basename: "dojo-mcp-skill-bus-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["mcp_skill_bus_consumes_proof_before_non_dry_dispatch"],
+      mcp_skill_bus_contract: {
+        ...mcpSkillBusArtifacts.evidence.mcp_skill_bus_contract,
+        proof_consume_required: false,
+        tenant_boundary_required: false,
+      },
+    },
+  });
+  const rejectedMcpSkillBus = await verifyDojoMcpSkillBusEvidenceArtifact({
+    evidencePath: rejectedMcpSkillBusArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedMcpSkillBus.errors.includes("mcp_skill_bus_coverage_incomplete"));
+  assert(rejectedMcpSkillBus.errors.includes("mcp_skill_bus_missing_capabilities:mcp_skill_bus_consumes_proof_before_non_dry_dispatch"));
+  assert(rejectedMcpSkillBus.errors.includes("mcp_skill_bus_proof_consume_requirement_missing"));
+  assert(rejectedMcpSkillBus.errors.includes("mcp_skill_bus_tenant_boundary_requirement_missing"));
+
   const liveHostedDir = path.join(outDir, "live-hosted-runtime");
   await mkdir(liveHostedDir, { recursive: true });
   const liveHostedArtifacts = await writeLiveHostedRuntimeArtifactsForSelfCheck({ outDir: liveHostedDir });
@@ -3465,6 +3609,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(sourceDriftResult),
       summarizeSection(apiToolCompilerResult),
       summarizeSection(generatedPrResult),
+      summarizeSection(mcpSkillBusResult),
       summarizeSection(visualResult),
       summarizeSection(securityResult),
       summarizeSection(complianceResult),
@@ -3488,6 +3633,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedSourceDrift),
       summarizeSection(rejectedApiToolCompiler),
       summarizeSection(rejectedGeneratedPr),
+      summarizeSection(rejectedMcpSkillBus),
       summarizeSection(rejectedSecurity),
       summarizeSection(rejectedCompliance),
       summarizeSection(rejectedPrivacy),
@@ -5122,6 +5268,117 @@ async function writeGeneratedPrEvidenceForSelfCheck({
     test_summary: {
       total_tests: DOJO_GENERATED_PR_CAPABILITIES.length,
       passed_tests: DOJO_GENERATED_PR_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeMcpSkillBusEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-mcp-skill-bus",
+  overrides = {},
+}) {
+  const stdout = "MCP Skill Bus focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_MCP_SKILL_BUS_CAPABILITIES.length,
+    numPassedTests: DOJO_MCP_SKILL_BUS_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_MCP_SKILL_BUS_TEST_FILES.length,
+    numPassedTestSuites: DOJO_MCP_SKILL_BUS_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_MCP_SKILL_BUS_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.mcpSkillBusEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_MCP_SKILL_BUS_CAPABILITIES],
+    tested_capabilities: [...DOJO_MCP_SKILL_BUS_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_MCP_SKILL_BUS_CAPABILITIES.length,
+    configured_capability_count: DOJO_MCP_SKILL_BUS_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    mcp_skill_bus_contract: {
+      certified_competency_listing_required: true,
+      tenant_authorization_required: true,
+      signed_manifest_required: true,
+      manifest_signature_verification_required: true,
+      manifest_tamper_rejection_required: true,
+      manifest_production_readiness_required: true,
+      version_pinning_required: true,
+      ambiguous_tool_block_required: true,
+      proof_validation_required: true,
+      proof_consume_required: true,
+      proof_binding_required: true,
+      dry_run_side_effect_free_required: true,
+      fail_closed_required: true,
+      executor_block_propagation_required: true,
+      rate_limit_required: true,
+      audit_events_required: true,
+      durable_registration_required: true,
+      revocation_required: true,
+      durable_invocation_custody_required: true,
+      tenant_boundary_required: true,
+      direct_call_policy_required: true,
+      postgres_registry_required: true,
+    },
+    test_files: [...DOJO_MCP_SKILL_BUS_TEST_FILES],
+    test_file_count: DOJO_MCP_SKILL_BUS_TEST_FILES.length,
+    reported_test_file_count: DOJO_MCP_SKILL_BUS_TEST_FILES.length,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_report_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        all_test_files_reported: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: DOJO_MCP_SKILL_BUS_CAPABILITIES.length,
+      passed_tests: DOJO_MCP_SKILL_BUS_CAPABILITIES.length,
       failed_tests: 0,
       pending_tests: 0,
     },

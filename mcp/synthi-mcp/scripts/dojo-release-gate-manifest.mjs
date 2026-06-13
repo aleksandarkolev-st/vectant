@@ -54,6 +54,10 @@ import {
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "./dojo-managed-key-signing-self-check.mjs";
 import {
+  DOJO_MCP_SKILL_BUS_CAPABILITIES,
+  DOJO_MCP_SKILL_BUS_TEST_FILES,
+} from "./dojo-mcp-skill-bus-self-check.mjs";
+import {
   DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
   DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
 } from "./dojo-postgres-control-plane-self-check.mjs";
@@ -614,6 +618,49 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
   },
   {
+    id: "dojo_mcp_skill_bus_self_check",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:mcp-skill-bus:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_mcp_manifest_signing.test.ts tests/unit/dojo_mcp_skill_bus.test.ts tests/integration/dojo_postgres_mcp_skill_bus_store.test.ts -- --reporter=json --outputFile ../../tmp/dojo-mcp-skill-bus/dojo-mcp-skill-bus.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:mcp-skill-bus:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.mcpSkillBusEvidence.v1",
+    default_evidence_path: "tmp/dojo-mcp-skill-bus/dojo-mcp-skill-bus.evidence.json",
+    release_artifact_requirements: {
+      require_all_mcp_skill_bus_capabilities_covered: true,
+      required_mcp_skill_bus_capabilities: [...DOJO_MCP_SKILL_BUS_CAPABILITIES],
+      required_test_files: [...DOJO_MCP_SKILL_BUS_TEST_FILES],
+      require_certified_competency_listing: true,
+      require_tenant_authorization: true,
+      require_signed_manifest: true,
+      require_manifest_signature_verification: true,
+      require_manifest_tamper_rejection: true,
+      require_manifest_production_readiness: true,
+      require_version_pinning: true,
+      require_ambiguous_tool_block: true,
+      require_proof_validation: true,
+      require_proof_consume: true,
+      require_proof_binding: true,
+      require_dry_run_side_effect_free: true,
+      require_fail_closed: true,
+      require_executor_block_propagation: true,
+      require_rate_limit: true,
+      require_audit_events: true,
+      require_durable_registration: true,
+      require_revocation: true,
+      require_durable_invocation_custody: true,
+      require_tenant_boundary: true,
+      require_direct_call_policy: true,
+      require_postgres_registry: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+    requires_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
+  },
+  {
     id: "dojo_managed_key_signing_self_check",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -950,6 +997,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "private_tool_stdio_host_conformance",
   "private_tool_codex_host_conformance",
   "dojo_generated_pr_self_check",
+  "dojo_mcp_skill_bus_self_check",
   "dojo_managed_key_signing_self_check",
   "dojo_governance_lifecycle_self_check",
   "dojo_graph_runtime_self_check",
@@ -1281,6 +1329,73 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!generatedPrGate.release_artifact_requirements?.require_json_report_digest_match) {
       errors.push("generated_pr_missing_json_report_digest_requirement");
+    }
+  }
+  const mcpSkillBusGate = gates.find((gate) => gate.id === "dojo_mcp_skill_bus_self_check");
+  if (mcpSkillBusGate) {
+    if (mcpSkillBusGate.evidence_schema_version !== "synthi.dojo.mcpSkillBusEvidence.v1") {
+      errors.push("mcp_skill_bus_missing_evidence_schema");
+    }
+    if (mcpSkillBusGate.package_script !== "proof:dojo:mcp-skill-bus:self-check") {
+      errors.push("mcp_skill_bus_missing_package_script");
+    }
+    if (!mcpSkillBusGate.default_evidence_path) errors.push("mcp_skill_bus_missing_default_evidence_path");
+    if (!mcpSkillBusGate.release_artifact_requirements?.require_all_mcp_skill_bus_capabilities_covered) {
+      errors.push("mcp_skill_bus_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_certified_competency_listing", "mcp_skill_bus_missing_competency_listing_requirement"],
+      ["require_tenant_authorization", "mcp_skill_bus_missing_tenant_authorization_requirement"],
+      ["require_signed_manifest", "mcp_skill_bus_missing_signed_manifest_requirement"],
+      ["require_manifest_signature_verification", "mcp_skill_bus_missing_manifest_signature_requirement"],
+      ["require_manifest_tamper_rejection", "mcp_skill_bus_missing_manifest_tamper_requirement"],
+      ["require_manifest_production_readiness", "mcp_skill_bus_missing_manifest_readiness_requirement"],
+      ["require_version_pinning", "mcp_skill_bus_missing_version_pinning_requirement"],
+      ["require_ambiguous_tool_block", "mcp_skill_bus_missing_ambiguous_tool_requirement"],
+      ["require_proof_validation", "mcp_skill_bus_missing_proof_validation_requirement"],
+      ["require_proof_consume", "mcp_skill_bus_missing_proof_consume_requirement"],
+      ["require_proof_binding", "mcp_skill_bus_missing_proof_binding_requirement"],
+      ["require_dry_run_side_effect_free", "mcp_skill_bus_missing_dry_run_requirement"],
+      ["require_fail_closed", "mcp_skill_bus_missing_fail_closed_requirement"],
+      ["require_executor_block_propagation", "mcp_skill_bus_missing_executor_block_requirement"],
+      ["require_rate_limit", "mcp_skill_bus_missing_rate_limit_requirement"],
+      ["require_audit_events", "mcp_skill_bus_missing_audit_requirement"],
+      ["require_durable_registration", "mcp_skill_bus_missing_durable_registration_requirement"],
+      ["require_revocation", "mcp_skill_bus_missing_revocation_requirement"],
+      ["require_durable_invocation_custody", "mcp_skill_bus_missing_invocation_custody_requirement"],
+      ["require_tenant_boundary", "mcp_skill_bus_missing_tenant_boundary_requirement"],
+      ["require_direct_call_policy", "mcp_skill_bus_missing_direct_call_policy_requirement"],
+      ["require_postgres_registry", "mcp_skill_bus_missing_postgres_registry_requirement"],
+    ]) {
+      if (!mcpSkillBusGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredMcpSkillBusCapabilities = Array.isArray(mcpSkillBusGate.release_artifact_requirements?.required_mcp_skill_bus_capabilities)
+      ? mcpSkillBusGate.release_artifact_requirements.required_mcp_skill_bus_capabilities
+      : [];
+    const missingMcpSkillBusCapabilities = DOJO_MCP_SKILL_BUS_CAPABILITIES
+      .filter((capability) => !requiredMcpSkillBusCapabilities.includes(capability));
+    if (missingMcpSkillBusCapabilities.length > 0) {
+      errors.push(`mcp_skill_bus_missing_required_capabilities:${missingMcpSkillBusCapabilities.join(",")}`);
+    }
+    const missingMcpSkillBusTestFiles = missingRequiredEntries(
+      DOJO_MCP_SKILL_BUS_TEST_FILES,
+      mcpSkillBusGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingMcpSkillBusTestFiles.length > 0) {
+      errors.push(`mcp_skill_bus_missing_required_test_files:${missingMcpSkillBusTestFiles.join(",")}`);
+    }
+    if (!mcpSkillBusGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("mcp_skill_bus_missing_no_skipped_requirement");
+    }
+    if (!mcpSkillBusGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("mcp_skill_bus_missing_digest_requirement");
+    }
+    if (!mcpSkillBusGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("mcp_skill_bus_missing_json_report_digest_requirement");
+    }
+    if (!Array.isArray(mcpSkillBusGate.requires_env)
+      || !mcpSkillBusGate.requires_env.includes("SYNTHI_DOJO_POSTGRES_TEST_URL")) {
+      errors.push("mcp_skill_bus_missing_postgres_env");
     }
   }
   const dockerIntegrationGate = gates.find((gate) => gate.id === "docker_integration");

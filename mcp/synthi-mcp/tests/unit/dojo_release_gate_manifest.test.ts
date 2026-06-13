@@ -39,6 +39,10 @@ import {
   DOJO_GENERATED_PR_TEST_FILES,
 } from "../../scripts/dojo-generated-pr-self-check.mjs";
 import {
+  DOJO_MCP_SKILL_BUS_CAPABILITIES,
+  DOJO_MCP_SKILL_BUS_TEST_FILES,
+} from "../../scripts/dojo-mcp-skill-bus-self-check.mjs";
+import {
   DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "../../scripts/dojo-governance-lifecycle-self-check.mjs";
@@ -89,6 +93,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:affordance-codemod:self-check": "node scripts/dojo-affordance-codemod-self-check.mjs",
     "proof:dojo:api-tool-compiler:self-check": "node scripts/dojo-api-tool-compiler-self-check.mjs",
     "proof:dojo:generated-pr:self-check": "node scripts/dojo-generated-pr-self-check.mjs",
+    "proof:dojo:mcp-skill-bus:self-check": "node scripts/dojo-mcp-skill-bus-self-check.mjs",
     "proof:dojo:source-drift:self-check": "node scripts/dojo-source-drift-self-check.mjs",
     "proof:dojo:managed-key-signing:self-check": "node scripts/dojo-managed-key-signing-self-check.mjs",
     "proof:dojo:governance-lifecycle:self-check": "node scripts/dojo-governance-lifecycle-self-check.mjs",
@@ -395,6 +400,46 @@ describe("Dojo release gate manifest", () => {
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
+      }),
+      expect.objectContaining({
+        id: "dojo_mcp_skill_bus_self_check",
+        tier: "T7",
+        package_script: "proof:dojo:mcp-skill-bus:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.mcpSkillBusEvidence.v1",
+        default_evidence_path: "tmp/dojo-mcp-skill-bus/dojo-mcp-skill-bus.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          require_all_mcp_skill_bus_capabilities_covered: true,
+          required_mcp_skill_bus_capabilities: DOJO_MCP_SKILL_BUS_CAPABILITIES,
+          required_test_files: DOJO_MCP_SKILL_BUS_TEST_FILES,
+          require_certified_competency_listing: true,
+          require_tenant_authorization: true,
+          require_signed_manifest: true,
+          require_manifest_signature_verification: true,
+          require_manifest_tamper_rejection: true,
+          require_manifest_production_readiness: true,
+          require_version_pinning: true,
+          require_ambiguous_tool_block: true,
+          require_proof_validation: true,
+          require_proof_consume: true,
+          require_proof_binding: true,
+          require_dry_run_side_effect_free: true,
+          require_fail_closed: true,
+          require_executor_block_propagation: true,
+          require_rate_limit: true,
+          require_audit_events: true,
+          require_durable_registration: true,
+          require_revocation: true,
+          require_durable_invocation_custody: true,
+          require_tenant_boundary: true,
+          require_direct_call_policy: true,
+          require_postgres_registry: true,
+          require_no_failed_tests: true,
+          require_no_skipped_tests: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+        requires_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
       }),
       expect.objectContaining({
         id: "dojo_managed_key_signing_self_check",
@@ -797,6 +842,24 @@ describe("Dojo release gate manifest", () => {
       `generated_pr_missing_required_test_files:${missingGeneratedPrTestFile}`,
     ]));
 
+    const brokenMcpSkillBus = JSON.parse(JSON.stringify(manifest));
+    const mcpSkillBusGate = brokenMcpSkillBus.gates.find((gate) => gate.id === "dojo_mcp_skill_bus_self_check");
+    const missingMcpSkillBusTestFile = DOJO_MCP_SKILL_BUS_TEST_FILES[0];
+    mcpSkillBusGate.release_artifact_requirements.required_mcp_skill_bus_capabilities = DOJO_MCP_SKILL_BUS_CAPABILITIES
+      .filter((capability) => capability !== "mcp_skill_bus_consumes_proof_before_non_dry_dispatch");
+    mcpSkillBusGate.release_artifact_requirements.required_test_files = DOJO_MCP_SKILL_BUS_TEST_FILES
+      .filter((file) => file !== missingMcpSkillBusTestFile);
+    mcpSkillBusGate.release_artifact_requirements.require_proof_consume = false;
+    mcpSkillBusGate.release_artifact_requirements.require_tenant_boundary = false;
+    mcpSkillBusGate.requires_env = [];
+    expect(validateDojoReleaseGateManifest(brokenMcpSkillBus, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "mcp_skill_bus_missing_proof_consume_requirement",
+      "mcp_skill_bus_missing_tenant_boundary_requirement",
+      "mcp_skill_bus_missing_postgres_env",
+      "mcp_skill_bus_missing_required_capabilities:mcp_skill_bus_consumes_proof_before_non_dry_dispatch",
+      `mcp_skill_bus_missing_required_test_files:${missingMcpSkillBusTestFile}`,
+    ]));
+
     const brokenManagedKeySigning = JSON.parse(JSON.stringify(manifest));
     const managedKeySigningGate = brokenManagedKeySigning.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check");
     const missingManagedKeySigningTestFile = DOJO_MANAGED_KEY_SIGNING_TEST_FILES[0];
@@ -966,6 +1029,7 @@ describe("Dojo release gate manifest", () => {
       "workflow_e2e_hosted",
       "dojo_mcp_host_conformance",
       "dojo_generated_pr_self_check",
+      "dojo_mcp_skill_bus_self_check",
       "dojo_managed_key_signing_self_check",
       "dojo_governance_lifecycle_self_check",
       "dojo_graph_runtime_self_check",
@@ -1002,7 +1066,7 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 22,
+      proof_artifact_gate_count: 23,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
@@ -1013,6 +1077,7 @@ describe("Dojo release gate manifest", () => {
         "workflow_e2e_hosted",
         "dojo_mcp_host_conformance",
         "dojo_generated_pr_self_check",
+        "dojo_mcp_skill_bus_self_check",
         "dojo_managed_key_signing_self_check",
         "dojo_governance_lifecycle_self_check",
         "dojo_graph_runtime_self_check",
