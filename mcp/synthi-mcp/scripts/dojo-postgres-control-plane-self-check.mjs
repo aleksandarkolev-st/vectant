@@ -27,6 +27,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES = [
   "tests/integration/dojo_evidence_ledger_store.test.ts",
   "tests/integration/dojo_audit_store.test.ts",
   "tests/integration/dojo_postgres_governance_store.test.ts",
+  "tests/integration/dojo_postgres_source_registry_store.test.ts",
   "tests/integration/dojo_proof_ledger_tool.test.ts",
 ];
 
@@ -37,6 +38,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES = [
   "tenant_isolation",
   "maturity_control_plane_schema",
   "source_snapshot_registry_schema",
+  "source_registry_repository",
   "graph_registry_schema",
   "executable_run_registry_schema",
   "governance_registry_schema",
@@ -315,6 +317,10 @@ function capabilityMatchers(capability) {
     tenant_isolation: ["prevents cross tenant proof reads", "isolates ledger reads by tenant"],
     maturity_control_plane_schema: ["emits repeat safe ddl for each required foundation table"],
     source_snapshot_registry_schema: ["defines release scoped source snapshot custody"],
+    source_registry_repository: [
+      "postgresdojosourceregistrystore persists verified app releases source snapshots source tokens and audit events",
+      "postgresdojosourceregistrystore rejects tampered or unverified source snapshots",
+    ],
     graph_registry_schema: ["defines graph node memory and license version registries"],
     executable_run_registry_schema: ["defines executable checkride and scenario run registries"],
     governance_registry_schema: ["defines governance case law antibody and approval registries"],

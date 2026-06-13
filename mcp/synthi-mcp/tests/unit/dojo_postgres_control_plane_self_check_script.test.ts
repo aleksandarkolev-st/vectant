@@ -104,6 +104,10 @@ function postgresVitestReportFixture() {
       "PostgresDojoGovernanceStore persists case law records, filters by binding scope and action, and emits audit events",
     ],
     [
+      "PostgresDojoSourceRegistryStore persists verified app releases, source snapshots, source tokens, and audit events",
+      "PostgresDojoSourceRegistryStore rejects tampered or unverified source snapshots before writing registry rows",
+    ],
+    [
       "Dojo proof issuance from Postgres evidence ledger issues a production proof capsule from evidence record IDs resolved through Postgres",
     ],
   ];

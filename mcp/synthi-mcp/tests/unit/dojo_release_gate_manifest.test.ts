@@ -43,7 +43,7 @@ const PACKAGE_SCRIPTS = {
     build: "tsc",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
-    "test:dojo:postgres-control-plane": "vitest run tests/integration/dojo_postgres_schema.test.ts tests/integration/dojo_postgres_proof_store.test.ts tests/integration/dojo_evidence_ledger_store.test.ts tests/integration/dojo_audit_store.test.ts tests/integration/dojo_postgres_governance_store.test.ts tests/integration/dojo_proof_ledger_tool.test.ts",
+    "test:dojo:postgres-control-plane": "vitest run tests/integration/dojo_postgres_schema.test.ts tests/integration/dojo_postgres_proof_store.test.ts tests/integration/dojo_evidence_ledger_store.test.ts tests/integration/dojo_audit_store.test.ts tests/integration/dojo_postgres_governance_store.test.ts tests/integration/dojo_postgres_source_registry_store.test.ts tests/integration/dojo_proof_ledger_tool.test.ts",
     "proof:dojo:self-check": "node scripts/dojo-proof-self-check.mjs",
     "proof:dojo:mcp-host-conformance:self-check": "node scripts/dojo-mcp-host-conformance.mjs --self-check",
     "proof:dojo:docker-integration:self-check": "node scripts/dojo-docker-integration-self-check.mjs",

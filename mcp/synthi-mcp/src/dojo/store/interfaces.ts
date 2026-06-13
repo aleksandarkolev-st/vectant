@@ -1,5 +1,6 @@
 import type { DojoSkill } from "../../browser/dojo.js";
 import type { DojoCaseLawBindingScope, DojoCaseLawRecord, DojoCaseLawStatus } from "../case_law/registry.js";
+import type { DojoSourceSnapshot } from "../source/source_snapshot.js";
 import type { DojoPublishedWorkflowBinding } from "./published_workflow_index.js";
 
 export type MaybePromise<T> = T | Promise<T>;
@@ -270,6 +271,73 @@ export interface DojoCaseLawStore {
   listCaseLawRecords(filter?: DojoCaseLawRecordFilter): DojoCaseLawRecord[];
 }
 
+export type DojoStoredSourceRisk = "safe" | "low" | "medium" | "high" | "critical";
+export type DojoStoredSourceSubstrate = "vision" | "dom" | "source" | "api" | "mcp";
+export type DojoSourceCompatibilityStatus = "current" | "drifted" | "deprecated" | "blocked";
+
+export interface DojoAppReleaseRecord {
+  tenant_id: string;
+  workspace_id: string;
+  app_release_id: string;
+  app_origin: string;
+  app_version: string;
+  commit_sha: string;
+  source_map_sha256?: string;
+  framework_adapter?: string;
+  status: "active" | "superseded" | "revoked";
+  created_at: string;
+  created_by?: string;
+}
+
+export interface DojoStoredSourceTokenRecord {
+  tenant_id: string;
+  workspace_id: string;
+  snapshot_id: string;
+  token_id: string;
+  component_path: string;
+  route: string;
+  stable_action_name: string;
+  source_locator: string;
+  risk: DojoStoredSourceRisk;
+  proof_required: boolean;
+  allowed_substrate: DojoStoredSourceSubstrate;
+  compatibility_status: DojoSourceCompatibilityStatus;
+  token_json: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface DojoSourceSnapshotListFilter {
+  app_release_id?: string;
+  app_origin?: string;
+  app_version?: string;
+  commit_sha?: string;
+  limit?: number;
+}
+
+export interface DojoSourceTokenListFilter {
+  snapshot_id?: string;
+  token_id?: string;
+  route?: string;
+  stable_action_name?: string;
+  risk?: DojoStoredSourceRisk;
+  allowed_substrate?: DojoStoredSourceSubstrate;
+  compatibility_status?: DojoSourceCompatibilityStatus;
+  limit?: number;
+}
+
 export interface DojoSourceContractStore {
   readonly store_contract_kind?: "source_contract";
+  saveSourceSnapshot(
+    snapshot: DojoSourceSnapshot,
+    options: {
+      signing_keys_by_id: Record<string, string>;
+      source_map_sha256?: string;
+      framework_adapter?: string;
+      created_by?: DojoAuditActor;
+    }
+  ): MaybePromise<DojoSourceSnapshot>;
+  getSourceSnapshot(snapshotId: string): MaybePromise<DojoSourceSnapshot | null>;
+  listSourceSnapshots(filter?: DojoSourceSnapshotListFilter): MaybePromise<DojoSourceSnapshot[]>;
+  getSourceToken(snapshotId: string, tokenId: string): MaybePromise<DojoStoredSourceTokenRecord | null>;
+  listSourceTokens(filter?: DojoSourceTokenListFilter): MaybePromise<DojoStoredSourceTokenRecord[]>;
 }
