@@ -9,6 +9,7 @@ import type { DojoProofCapsuleRecord, DojoProofConsumeResult } from "./dojo_stor
 import { normalizeDojoProofErrorCodes, type DojoProofErrorCode } from "../dojo/proof/errors.js";
 import type { DojoProofVerifier } from "../dojo/proof/signing.js";
 import type { DojoEvidenceClaimResult } from "../dojo/evidence/claims.js";
+import type { DojoPermissionLicenseRecord } from "../dojo/store/interfaces.js";
 
 export interface DojoLicenseKernelDecision {
   ok: boolean;
@@ -17,6 +18,7 @@ export interface DojoLicenseKernelDecision {
   blocked_by: string[];
   error_codes: DojoProofErrorCode[];
   proof_record?: DojoProofCapsuleRecord | null;
+  license_record?: DojoPermissionLicenseRecord | null;
   runtime_claims: {
     tenant_id?: string;
     organization_id?: string;
@@ -40,6 +42,8 @@ export function evaluateDojoLicenseKernel(input: {
   skill: DojoSkill;
   registry: DojoSkillRegistry;
   proof_record?: DojoProofCapsuleRecord | null;
+  license_record?: DojoPermissionLicenseRecord | null;
+  require_durable_license?: boolean;
   proof_capsule: DojoProofCarryingSkillCapsule;
   requested_action: string;
   tool_args?: Record<string, unknown>;
@@ -95,6 +99,12 @@ export function evaluateDojoLicenseKernel(input: {
     if (record.nonce && record.nonce !== input.proof_capsule.nonce) hardBlockedBy.push("proof_record_nonce_mismatch");
     hardBlockedBy.push(...proofRecordMetadataMismatches(record, input.skill, input.proof_capsule, toolArgs));
   }
+  hardBlockedBy.push(...durableLicenseRecordFailures({
+    license_record: input.license_record,
+    require_durable_license: input.require_durable_license === true,
+    skill: input.skill,
+    now,
+  }));
 
   const licenseExpiresAtMs = parseTimestamp(input.skill.license_expires_at);
   const nowMs = parseTimestamp(now);
@@ -147,6 +157,7 @@ export function evaluateDojoLicenseKernel(input: {
     blocked_by: blockedBy,
     error_codes: errorCodes,
     proof_record: record,
+    license_record: input.license_record,
     runtime_claims: {
       ...(tenantId ? { tenant_id: tenantId } : {}),
       ...(organizationId ? { organization_id: organizationId } : {}),
@@ -306,6 +317,33 @@ function proofRecordMetadataMismatches(
     blockedBy.push("proof_record_evidence_mismatch");
   }
 
+  return blockedBy;
+}
+
+function durableLicenseRecordFailures(input: {
+  license_record?: DojoPermissionLicenseRecord | null;
+  require_durable_license: boolean;
+  skill: DojoSkill;
+  now: string;
+}): string[] {
+  const record = input.license_record;
+  if (!record) return input.require_durable_license ? ["license_record_missing"] : [];
+  const blockedBy: string[] = [];
+  const skillLicense = input.skill.permission_license;
+  if (record.skill_id !== input.skill.skill_id) blockedBy.push("license_record_skill_mismatch");
+  if (record.workspace_id !== input.skill.workspace_id) blockedBy.push("license_record_workspace_mismatch");
+  if (record.license_id !== skillLicense.license_id) blockedBy.push("license_record_license_mismatch");
+  if (record.license_version !== skillLicense.license_version) blockedBy.push("license_record_license_version_mismatch");
+  if (record.status === "revoked") blockedBy.push("license_revoked");
+  if (record.status === "expired") blockedBy.push("license_expired");
+  if (record.status === "superseded") blockedBy.push("license_superseded");
+  const nowMs = parseTimestamp(input.now);
+  const recordExpiresAt = record.expires_at;
+  const recordExpiresAtMs = recordExpiresAt ? parseTimestamp(recordExpiresAt) : undefined;
+  if (recordExpiresAt && recordExpiresAtMs === undefined) blockedBy.push("license_record_expiry_invalid");
+  if (nowMs !== undefined && recordExpiresAtMs !== undefined && recordExpiresAtMs <= nowMs) {
+    blockedBy.push("license_expired");
+  }
   return blockedBy;
 }
 

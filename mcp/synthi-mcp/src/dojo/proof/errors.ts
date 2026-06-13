@@ -110,8 +110,13 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
   ) {
     return "proof_evidence_claim_unverified";
   }
-  if (reason === "license_expired" || reason === "license_expiry_invalid") return "license_expired";
-  if (reason === "license_revoked") return "license_revoked";
+  if (reason === "license_expired" || reason === "license_expiry_invalid" || reason === "license_record_expiry_invalid") return "license_expired";
+  if (
+    reason === "license_revoked" ||
+    reason === "license_superseded" ||
+    reason === "license_record_missing" ||
+    reason.startsWith("license_record_")
+  ) return "license_revoked";
   if (
     reason.startsWith("blocked_action:") ||
     reason.startsWith("action_not_licensed:") ||

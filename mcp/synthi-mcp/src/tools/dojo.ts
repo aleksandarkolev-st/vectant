@@ -416,6 +416,9 @@ type DojoDurableProofRegistryContext =
     skill_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
       ? T extends { ok: true; skill_store: infer Store } ? Store : never
       : never;
+    license_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
+      ? T extends { ok: true; license_store: infer Store } ? Store : never
+      : never;
     close?: () => Promise<void>;
   };
 
@@ -489,6 +492,7 @@ async function durableProofRegistryForTenantIfRequired(input: {
       proof_store: resolution.proof_store,
       proof_key_registry: resolution.proof_key_registry,
       skill_store: resolution.skill_store,
+      license_store: resolution.license_store,
       close: resolution.close,
     },
   };
@@ -3408,6 +3412,9 @@ async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse
     const durableProofRecord = durableProofRegistry.context.required
       ? await durableProofRegistry.context.proof_store.getProofRecord(capsule.capsule_id)
       : undefined;
+    const durableLicenseRecord = durableProofRegistry.context.required
+      ? await durableProofRegistry.context.license_store.getLicense(skill.skill.permission_license.license_id)
+      : undefined;
     const validationOptions = await durableProofValidationOptionsForCapsule({
       context: durableProofRegistry.context,
       tenant,
@@ -3422,6 +3429,8 @@ async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse
       skill: skill.skill,
       registry: dojoSkillRegistry,
       proof_record: durableProofRecord,
+      license_record: durableLicenseRecord,
+      require_durable_license: durableProofRegistry.context.required,
       proof_capsule: capsule,
       requested_action: requestedAction,
       tool_args: licenseToolArgs,
@@ -3626,6 +3635,9 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
     const durableProofRecord = durableProofRegistry.context.required
       ? await durableProofRegistry.context.proof_store.getProofRecord(capsule.capsule_id)
       : undefined;
+    const durableLicenseRecord = durableProofRegistry.context.required
+      ? await durableProofRegistry.context.license_store.getLicense(skill.skill.permission_license.license_id)
+      : undefined;
     const validationOptions = await durableProofValidationOptionsForCapsule({
       context: durableProofRegistry.context,
       tenant,
@@ -3648,6 +3660,8 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
           skill: resolvedSkill,
           registry: dojoSkillRegistry,
           proof_record: durableProofRecord,
+          license_record: durableLicenseRecord,
+          require_durable_license: durableProofRegistry.context.required,
           proof_capsule: proofCapsule,
           requested_action: action,
           tool_args: licenseToolArgs,

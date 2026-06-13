@@ -14,6 +14,7 @@ import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_re
 import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
+import type { DojoPermissionLicenseRecord } from "../../src/dojo/store/interfaces.js";
 import { verifiedProofEvidenceInput } from "./dojo_test_fixtures.js";
 
 beforeEach(() => {
@@ -40,6 +41,9 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("approval_not_granted")).toBe("approval_required");
     expect(normalizeDojoProofErrorCode("approval_evidence_required")).toBe("approval_required");
     expect(normalizeDojoProofErrorCode("approval_evidence_claim_unverified")).toBe("approval_required");
+    expect(normalizeDojoProofErrorCode("license_record_missing")).toBe("license_revoked");
+    expect(normalizeDojoProofErrorCode("license_superseded")).toBe("license_revoked");
+    expect(normalizeDojoProofErrorCode("license_record_expiry_invalid")).toBe("license_expired");
     expect(normalizeDojoProofErrorCode("license_expiry_invalid")).toBe("license_expired");
     expect(normalizeDojoProofErrorCode("proof_self_attestation_not_allowed_in_production")).toBe("proof_capsule_invalid");
     expect(normalizeDojoProofErrorCode("proof_validator_missing")).toBe("proof_capsule_invalid");
@@ -393,6 +397,73 @@ describe("Dojo proof error taxonomy", () => {
       }),
     }));
   });
+
+  it("honors durable license record status when required", () => {
+    const skill = buildDojoSkill(workflowContract(), {
+      workspace_id: "workspace-a",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    dojoSkillRegistry.publish(skill);
+    const capsule = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    dojoSkillRegistry.recordProofCapsule(capsule);
+    const activeLicenseRecord = licenseRecordFor(skill, "active");
+
+    expect(evaluateDojoLicenseKernel({
+      skill,
+      registry: dojoSkillRegistry,
+      proof_capsule: capsule,
+      requested_action: "run_workflow",
+      license_record: activeLicenseRecord,
+      require_durable_license: true,
+      now: "2026-06-11T00:01:00.000Z",
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      status: "allowed",
+      blocked_by: [],
+      error_codes: [],
+      license_record: expect.objectContaining({ status: "active" }),
+    }));
+
+    expect(evaluateDojoLicenseKernel({
+      skill,
+      registry: dojoSkillRegistry,
+      proof_capsule: capsule,
+      requested_action: "run_workflow",
+      license_record: null,
+      require_durable_license: true,
+      now: "2026-06-11T00:01:00.000Z",
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: expect.arrayContaining(["license_record_missing"]),
+      error_codes: ["license_revoked"],
+    }));
+
+    expect(evaluateDojoLicenseKernel({
+      skill,
+      registry: dojoSkillRegistry,
+      proof_capsule: capsule,
+      requested_action: "run_workflow",
+      license_record: {
+        ...activeLicenseRecord,
+        status: "revoked",
+        revoked_at: "2026-06-11T00:00:30.000Z",
+        revoked_reason: "operator_policy_change",
+      },
+      require_durable_license: true,
+      now: "2026-06-11T00:01:00.000Z",
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: expect.arrayContaining(["license_revoked"]),
+      error_codes: ["license_revoked"],
+    }));
+  });
 });
 
 function workflowContract() {
@@ -425,5 +496,22 @@ function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {
     locator_candidates: [],
     confidence: 0.99,
     ...overrides,
+  };
+}
+
+function licenseRecordFor(skill: ReturnType<typeof buildDojoSkill>, status: DojoPermissionLicenseRecord["status"]): DojoPermissionLicenseRecord {
+  return {
+    tenant_id: "legacy-local-tenant",
+    workspace_id: skill.workspace_id,
+    license_id: skill.permission_license.license_id,
+    skill_id: skill.skill_id,
+    license_version: skill.permission_license.license_version,
+    status,
+    entrustment_level: skill.permission_license.entrustment_level,
+    readiness_level: skill.readiness_level,
+    license_json: skill.permission_license,
+    expires_at: skill.license_expires_at,
+    created_at: "2026-06-11T00:00:00.000Z",
+    updated_at: "2026-06-11T00:00:00.000Z",
   };
 }
