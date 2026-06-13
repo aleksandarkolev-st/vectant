@@ -56,6 +56,12 @@ export interface DojoSkillBusProofValidation {
   error_codes?: string[];
 }
 
+export interface DojoMcpSkillBusExecutionBlock {
+  kind: "dojoMcpSkillBusExecutionBlock";
+  blocked_by: string[];
+  validation?: DojoSkillBusProofValidation;
+}
+
 export interface DojoMcpSkillBus {
   listCompetencies(input: { tenant: DojoTenantContext }): Promise<DojoCompetencySummary[]>;
   resolveTool(input: { tenant: DojoTenantContext; tool_name: string; tool_version?: string }): Promise<DojoToolResolution>;
@@ -86,11 +92,22 @@ export interface InProcessDojoMcpSkillBusOptions {
     tool_name: string;
     args: Record<string, unknown>;
     proof_capsule: DojoProofCarryingSkillCapsule;
-  }) => unknown | Promise<unknown>;
+  }) => unknown | DojoMcpSkillBusExecutionBlock | Promise<unknown | DojoMcpSkillBusExecutionBlock>;
 }
 
 export function createInProcessDojoMcpSkillBus(options: InProcessDojoMcpSkillBusOptions): DojoMcpSkillBus {
   return new InProcessDojoMcpSkillBus(options);
+}
+
+export function blockDojoMcpSkillBusExecution(
+  blockedBy: string[],
+  validation?: DojoSkillBusProofValidation
+): DojoMcpSkillBusExecutionBlock {
+  return {
+    kind: "dojoMcpSkillBusExecutionBlock",
+    blocked_by: [...blockedBy],
+    ...(validation ? { validation } : {}),
+  };
 }
 
 export function createLegacyDojoTenantContext(workspaceId = "legacy-workspace"): DojoTenantContext {
@@ -279,6 +296,9 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       args: input.args,
       proof_capsule: input.proof_capsule,
     });
+    if (isDojoMcpSkillBusExecutionBlock(result)) {
+      return blockedDispatch(input, resolution, result.blocked_by, result.validation ?? validation);
+    }
     if (result === null || typeof result === "undefined") {
       return blockedDispatch(input, resolution, ["dojo_mcp_skill_executor_unavailable"], validation);
     }
@@ -360,6 +380,13 @@ function blockedDispatch(
     resolution: summarizeResolution(resolution),
     validation,
   };
+}
+
+function isDojoMcpSkillBusExecutionBlock(value: unknown): value is DojoMcpSkillBusExecutionBlock {
+  return Boolean(value)
+    && typeof value === "object"
+    && (value as { kind?: unknown }).kind === "dojoMcpSkillBusExecutionBlock"
+    && Array.isArray((value as { blocked_by?: unknown }).blocked_by);
 }
 
 function validateProofCapsuleBinding(

@@ -5,6 +5,7 @@ import type { BrowserTraceEvent } from "../../src/browser/types.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import { validateDojoMcpSkillManifest } from "../../src/dojo/mcp/manifest_signing.js";
 import {
+  blockDojoMcpSkillBusExecution,
   createInProcessDojoMcpSkillBus,
   createLegacyDojoTenantContext,
   type DojoSkillBusProofValidation,
@@ -212,6 +213,43 @@ describe("Dojo MCP skill bus", () => {
     }));
     expect(validations).toEqual([]);
     expect(executions).toEqual([]);
+  });
+
+  it("propagates executor-level blocks without treating them as successful tool results", async () => {
+    const skill = skillFixture("workspace-a", "Open details");
+    const proof = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
+      substrate_claim: "mcp",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const bus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skill],
+      env: manifestEnv(),
+      validateProof: (): DojoSkillBusProofValidation => ({ ok: true, status: "allowed", blocked_by: [] }),
+      executeTool: () => blockDojoMcpSkillBusExecution(["proof_capsule_replay_detected"], {
+        ok: false,
+        status: "blocked",
+        blocked_by: ["proof_capsule_replay_detected"],
+        error_codes: ["proof_capsule_replay_detected"],
+      }),
+    });
+
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: proof,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["proof_capsule_replay_detected"],
+      validation: expect.objectContaining({
+        ok: false,
+        error_codes: ["proof_capsule_replay_detected"],
+      }),
+    }));
   });
 });
 
