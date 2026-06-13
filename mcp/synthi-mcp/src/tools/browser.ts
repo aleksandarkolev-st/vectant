@@ -48,6 +48,13 @@ import { errorFromException, errorResponse, jsonResponse, type ToolResponse } fr
 const DOJO_ARTIFACT_EXECUTION_MODE_ENV = "SYNTHI_DOJO_ARTIFACT_EXECUTION_MODE";
 const DOJO_ARTIFACT_ALLOWED_EXECUTION_MODES = ["practice", "test", "ci"] as const;
 
+export interface DojoValidatedBrowserWorkflowContext {
+  proof_capsule_id: string;
+  skill_id: string;
+  requested_action: string;
+  run_id?: string;
+}
+
 browserPlaywrightAdapter.setTeachEventSink((event) => {
   if (event.action === "navigate") {
     browserBroker.handleOriginChange(event.tab_id, event.url, event.detail);
@@ -933,8 +940,12 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
   }
 }
 
-export async function dispatchBrowserPrivateWorkflowToolAfterDojoProof(toolName: string, args: unknown): Promise<ToolResponse> {
-  return await browserRunPublishedPrivateTool(toolName, args);
+export async function dispatchBrowserPrivateWorkflowToolAfterDojoProof(
+  toolName: string,
+  args: unknown,
+  dojoContext: DojoValidatedBrowserWorkflowContext
+): Promise<ToolResponse> {
+  return await browserRunPublishedPrivateTool(toolName, args, dojoContext);
 }
 
 async function browserDirectPrivateWorkflowTool(
@@ -1673,7 +1684,10 @@ function browserReleaseLeaseTool(args: unknown): ToolResponse {
   return jsonResponse({ ok: true, ...result });
 }
 
-async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
+async function browserRunWorkflowTool(
+  args: unknown,
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): Promise<ToolResponse> {
   const a = obj(args);
   const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
   const leaseId = requiredString(a, "lease_id");
@@ -1686,7 +1700,7 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
   const parameters = stringParameters(a["parameters"]);
   const replay = browserBroker.workflowReplayPlanFor(stringOpt(a["workflow_id"]), mode);
   if (!replay.ok) return errorResponse(replay.error, replay.workflow_id ? { workflow_id: replay.workflow_id } : undefined);
-  const dojoGate = await browserWorkflowReplayDojoGate(args, replay.artifact.workflow_id);
+  const dojoGate = await browserWorkflowReplayDojoGate(args, replay.artifact.workflow_id, dojoContext);
   if (dojoGate) return dojoGate;
   const coldAuthStorage = mode === "coldSession" && replay.artifact.workflow.contract.authPlan.required
     ? await authStorageStateForColdReplay(replay.artifact.workflow.contract)
@@ -1975,7 +1989,11 @@ async function browserRunWorkflowTool(args: unknown): Promise<ToolResponse> {
   });
 }
 
-async function browserRunPublishedPrivateTool(toolName: string, args: unknown): Promise<ToolResponse> {
+async function browserRunPublishedPrivateTool(
+  toolName: string,
+  args: unknown,
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): Promise<ToolResponse> {
   const registration = privateWorkflowToolRegistry.get(toolName);
   if (!registration) return errorResponse("private_workflow_tool_not_found", { tool_name: toolName });
   const manifest = registration.manifest;
@@ -2123,8 +2141,9 @@ async function browserRunPublishedPrivateTool(toolName: string, args: unknown): 
       workflow_id: registration.workflow_id,
       mode,
       parameters,
+      ...dojoTenantReplayArgs(a),
       ...(stringOpt(a["tab_id"]) ? { tab_id: stringOpt(a["tab_id"]) } : {}),
-    });
+    }, dojoContext);
     const structuredContent = {
       ...(response.structuredContent ?? {}),
       private_tool: {
@@ -2235,7 +2254,11 @@ function dojoTenantContext(args: unknown, workflowId: string): DojoTenantContext
   };
 }
 
-async function browserWorkflowReplayDojoGate(args: unknown, workflowId: string): Promise<ToolResponse | null> {
+async function browserWorkflowReplayDojoGate(
+  args: unknown,
+  workflowId: string,
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): Promise<ToolResponse | null> {
   const resolution = await resolveDojoPublishedWorkflowBinding(args, { workflow_id: workflowId });
   const binding = policyBindingForResolution(resolution);
   const gate = createDojoExecutionPolicyGate({
@@ -2248,6 +2271,8 @@ async function browserWorkflowReplayDojoGate(args: unknown, workflowId: string):
     entrypoint: "browser_workflow",
     workflow_id: workflowId,
     requested_action: "run_workflow",
+    proof_capsule_id: dojoContext?.proof_capsule_id,
+    validated_dojo_execution_context: Boolean(dojoContext?.proof_capsule_id),
   });
   if (decision.ok) return null;
   return errorResponse(binding?.status === "published" ? "dojo_proof_capsule_required" : "dojo_execution_policy_blocked", {
@@ -2259,6 +2284,24 @@ async function browserWorkflowReplayDojoGate(args: unknown, workflowId: string):
     dojo_execution_policy: decision,
     dojo_binding_resolution: bindingResolutionSummary(resolution),
   });
+}
+
+function dojoTenantReplayArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const replayArgs: Record<string, unknown> = {};
+  for (const key of [
+    "tenant_id",
+    "organization_id",
+    "workspace_id",
+    "actor_id",
+    "actor_type",
+    "roles",
+    "request_id",
+    "correlation_id",
+    "data_region",
+  ]) {
+    if (args[key] !== undefined) replayArgs[key] = args[key];
+  }
+  return replayArgs;
 }
 
 type DojoPublishedWorkflowBindingResolution =

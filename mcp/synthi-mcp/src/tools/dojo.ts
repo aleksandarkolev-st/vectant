@@ -3697,7 +3697,12 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
         }
         return requestedAction === "run_prefix_validation"
           ? await dispatchSafetyTool("synthi_safety_run_prefix_validation", executionArgs)
-          : await dispatchBackingSkillTool(resolvedSkill, executionArgs);
+          : await dispatchBackingSkillTool(resolvedSkill, executionArgs, {
+              proof_capsule_id: proofCapsule.capsule_id,
+              skill_id: resolvedSkill.skill_id,
+              requested_action: requestedAction,
+              run_id: runId,
+            });
       },
     });
     const skillBusPreflight = await skillBus.dispatch({
@@ -3947,9 +3952,18 @@ async function authorizeHostedRuntimeForProductionRun(input: {
   };
 }
 
-async function dispatchBackingSkillTool(skill: DojoSkill, args: Record<string, unknown>): Promise<ToolResponse | null> {
+async function dispatchBackingSkillTool(
+  skill: DojoSkill,
+  args: Record<string, unknown>,
+  dojoContext: {
+    proof_capsule_id: string;
+    skill_id: string;
+    requested_action: string;
+    run_id: string;
+  }
+): Promise<ToolResponse | null> {
   if (!skill.published_tool_name) return null;
-  return await dispatchBrowserPrivateWorkflowToolAfterDojoProof(skill.published_tool_name, args);
+  return await dispatchBrowserPrivateWorkflowToolAfterDojoProof(skill.published_tool_name, args, dojoContext);
 }
 
 function publishBackingPrivateTool(

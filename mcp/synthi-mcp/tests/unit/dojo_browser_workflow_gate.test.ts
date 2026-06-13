@@ -3,14 +3,18 @@ import { browserBroker } from "../../src/browser/broker.js";
 import { buildDojoSkill, dojoSkillRegistry } from "../../src/browser/dojo.js";
 import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
-import type { BrowserTraceEvent } from "../../src/browser/types.js";
-import { dispatchBrowserTool } from "../../src/tools/browser.js";
+import { InMemoryPrivateWorkflowToolStore, privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
+import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
+import { dispatchBrowserPrivateWorkflowToolAfterDojoProof, dispatchBrowserTool } from "../../src/tools/browser.js";
 
 const originalEnv = { ...process.env };
 
 beforeEach(() => {
   process.env = { ...originalEnv };
   browserBroker.resetForTests();
+  privateWorkflowToolRegistry.useStoreForTests(new InMemoryPrivateWorkflowToolStore());
+  privateWorkflowToolRegistry.resetForTests();
+  sourceIdentityRegistry.resetForTests();
   dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
   dojoSkillRegistry.resetForTests();
   vi.restoreAllMocks();
@@ -123,6 +127,88 @@ describe("Dojo raw browser workflow replay gate", () => {
     }));
     expect(action).toHaveBeenCalledTimes(1);
   });
+
+  it("allows only internal Dojo proof context to replay a published workflow", async () => {
+    const workflowId = teachWorkflow();
+    const privateTool = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});
+    expect(privateTool?.isError).toBeUndefined();
+    const publishedPrivateTool = privateTool?.structuredContent as {
+      tool_name: string;
+      dojo_skill: { skill_id: string };
+    };
+    const toolName = publishedPrivateTool.tool_name;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      actor_id: "agent-a",
+      runtime_id: "runtime-a",
+      session_id: "session-a",
+      workspace_url: "https://app.example.test/settings",
+      adapter: "unit-hosted-runtime",
+      expires_at: Date.now() + 60_000,
+      origin_allowlist: ["https://app.example.test"],
+      egress_policy: { local_network_allowed: false },
+      redaction_policy: { screenshots: true },
+    });
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "app",
+      url: "https://app.example.test/settings",
+    });
+
+    const lease = browserBroker.acquireLease("agent", 5000, "dojo-raw-workflow-gate");
+    const rawReplay = await dispatchBrowserTool("synthi_browser_run_workflow", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      workflow_id: workflowId,
+      mode: "sameSession",
+    });
+    browserBroker.releaseLease(lease.lease_id, "dojo-raw-workflow-gate:done");
+
+    expect(rawReplay?.isError).toBe(true);
+    expect(rawReplay?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_required",
+      workflow_id: workflowId,
+    }));
+    expect(replay).not.toHaveBeenCalled();
+
+    const dojoReplay = await dispatchBrowserPrivateWorkflowToolAfterDojoProof(
+      toolName,
+      {
+        tab_id: "app",
+        run_mode: "sameSession",
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        actor_id: "agent-a",
+        actor_type: "agent",
+        roles: ["agent"],
+        request_id: "req-dojo-proof-replay",
+        correlation_id: "corr-dojo-proof-replay",
+      },
+      {
+        proof_capsule_id: "proof_123",
+        skill_id: publishedPrivateTool.dojo_skill.skill_id,
+        requested_action: "run_workflow",
+        run_id: "dojo_run_123",
+      }
+    );
+
+    expect(dojoReplay?.isError).toBeUndefined();
+    expect(dojoReplay?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      workflow_id: workflowId,
+      replay: expect.objectContaining({ steps_run: 1 }),
+      private_tool: expect.objectContaining({
+        tool_name: toolName,
+        workflow_id: workflowId,
+        run_mode: "sameSession",
+      }),
+    }));
+    expect(replay).toHaveBeenCalledTimes(1);
+  });
 });
 
 function teachWorkflow(): string {
@@ -131,28 +217,27 @@ function teachWorkflow(): string {
   browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
   browserBroker.selectTab("app");
   expect(browserBroker.startTeachMode("app").ok).toBe(true);
-  expect(browserBroker.recordHumanAction(event({
-    event_id: "open",
+  registerSourceToken("details.open");
+  expect(browserBroker.recordHumanAction({
+    tab_id: "app",
+    url,
+    origin: "https://app.example.test",
     action: "click",
-    detail: { element: { role: "button", name: "Open details", source_id: "details.open" } },
+    element: { role: "button", name: "Open details", source_id: "details.open" },
     locator_candidates: [
       { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
     ],
-  })).ok).toBe(true);
+  }).ok).toBe(true);
   return browserBroker.compiledWorkflow().contract.workflowId;
 }
 
-function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {
-  return {
-    event_id: "evt",
-    trace_id: "trace",
-    trace_version: 1,
-    event_seq: 1,
-    ts: 1,
-    tab_id: "app",
-    origin: "https://app.example.test",
-    url: "https://app.example.test/settings",
-    kind: "human_action",
-    ...overrides,
-  };
+function registerSourceToken(token: string): void {
+  const filePath = `src/${token}.tsx`;
+  sourceIdentityRegistry.register({
+    workspaceId: "workspace-a",
+    filePath,
+    adapter: "unit-test",
+    transformVersion: "unit_source_identity_v1",
+    tokens: [{ token, file: filePath, tag: "button", line: 1, column: 1 }],
+  });
 }
