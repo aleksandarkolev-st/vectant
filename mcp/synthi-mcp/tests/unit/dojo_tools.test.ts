@@ -2851,6 +2851,76 @@ describe("Agent Dojo MCP tools", () => {
       credentials: { credential_id: string; credential_secret: string };
     }).credentials;
 
+    const workflowCapsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, {
+        record_id: "evidence-hosted-runtime-workflow-proof",
+        tenant_id: "tenant-a",
+      }),
+      require_verified_evidence: true,
+      ...productionTenantContextArgs({
+        actor_id: "hosted-runtime-agent-a",
+        request_id: "req-hosted-runtime-workflow-proof-issue",
+        correlation_id: "corr-hosted-runtime-workflow-proof-issue",
+      }),
+      now: "2026-06-11T00:01:40.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(workflowCapsuleResponse?.isError).toBeUndefined();
+    const workflowCapsule = (workflowCapsuleResponse?.structuredContent as {
+      proof_capsule: { capsule_id: string };
+    }).proof_capsule;
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      actor_id: "hosted-runtime-agent-a",
+      runtime_id: "runtime-a",
+      session_id: "different-attached-session",
+      workspace_url: "https://app.example.test/settings",
+      adapter: "unit-hosted-runtime",
+      expires_at: Date.parse("2026-06-11T00:10:00.000Z"),
+      origin_allowlist: ["https://app.example.test"],
+      egress_policy: { local_network_allowed: false },
+      redaction_policy: { screenshots: true },
+    });
+    const mismatchedRuntimeRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: workflowCapsule,
+      run_id: "hosted-runtime-run-authorized",
+      runtime_session_id: runtimeSession.session_id,
+      runtime_credential_id: credentials.credential_id,
+      runtime_credential_secret: credentials.credential_secret,
+      runtime_action_url: "https://app.example.test/settings",
+      now: "2026-06-11T00:02:00.000Z",
+      ...productionTenantContextArgs({
+        actor_id: "hosted-runtime-agent-a",
+        request_id: "req-hosted-runtime-mismatch-run",
+        correlation_id: "corr-hosted-runtime-mismatch-run",
+      }),
+    });
+    expect(mismatchedRuntimeRun?.isError).toBe(true);
+    expect(mismatchedRuntimeRun?.structuredContent).toEqual(expect.objectContaining({
+      proof_consume: null,
+      runtime_authorization: expect.objectContaining({
+        ok: true,
+        session_id: runtimeSession.session_id,
+      }),
+      skill_bus: expect.objectContaining({
+        ok: false,
+        blocked_by: expect.arrayContaining(["runtime_session_attachment_mismatch"]),
+      }),
+      validation: expect.objectContaining({
+        blocked_by: expect.arrayContaining(["runtime_session_attachment_mismatch"]),
+      }),
+    }));
+    expect(dojoSkillRegistry.getProofRecord(workflowCapsule.capsule_id)).toEqual(expect.objectContaining({
+      status: "issued",
+    }));
+
     const authorizedRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
       skill_id: skillId,
       requested_action: "run_prefix_validation",

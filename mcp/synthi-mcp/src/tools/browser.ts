@@ -53,7 +53,17 @@ export interface DojoValidatedBrowserWorkflowContext {
   skill_id: string;
   requested_action: string;
   run_id?: string;
+  tenant_id?: string;
+  workspace_id?: string;
+  runtime_session_id?: string;
+  runtime_action_url?: string;
+  runtime_authorization_evidence_record_ids?: string[];
+  now?: string;
 }
+
+export type DojoBrowserRuntimeBindingValidation =
+  | { ok: true; binding?: Record<string, unknown> }
+  | { ok: false; blocked_by: string[]; error: ToolResponse };
 
 browserPlaywrightAdapter.setTeachEventSink((event) => {
   if (event.action === "navigate") {
@@ -1702,6 +1712,10 @@ async function browserRunWorkflowTool(
   if (!replay.ok) return errorResponse(replay.error, replay.workflow_id ? { workflow_id: replay.workflow_id } : undefined);
   const dojoGate = await browserWorkflowReplayDojoGate(args, replay.artifact.workflow_id, dojoContext);
   if (dojoGate) return dojoGate;
+  const dojoRuntimeBinding = dojoContext
+    ? validateBrowserRuntimeAttachmentForDojoProof(args, dojoContext)
+    : { ok: true as const, binding: undefined };
+  if (!dojoRuntimeBinding.ok) return dojoRuntimeBinding.error;
   const coldAuthStorage = mode === "coldSession" && replay.artifact.workflow.contract.authPlan.required
     ? await authStorageStateForColdReplay(replay.artifact.workflow.contract)
     : { ok: true as const, storageState: undefined };
@@ -1984,6 +1998,7 @@ async function browserRunWorkflowTool(
       trace_tab_map: Object.fromEntries(replayTabByTraceTab),
       replay_targets: replayTargetsForPlan(plan.events, replayTabByTraceTab, replayTab.tab_id),
       stopped_before_step_id: plan.stoppedBeforeStepId ?? null,
+      ...(dojoRuntimeBinding.binding ? { browser_runtime_binding: dojoRuntimeBinding.binding } : {}),
       ...(replayTabRefreshError ? { replay_tab_refresh_error: replayTabRefreshError } : {}),
     },
   });
@@ -2284,6 +2299,106 @@ async function browserWorkflowReplayDojoGate(
     dojo_execution_policy: decision,
     dojo_binding_resolution: bindingResolutionSummary(resolution),
   });
+}
+
+export function validateBrowserRuntimeAttachmentForDojoProof(
+  args: unknown,
+  dojoContext: DojoValidatedBrowserWorkflowContext
+): DojoBrowserRuntimeBindingValidation {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement) {
+    return {
+      ok: true,
+      binding: {
+        enforcement_mode: enforcement.enforcement_mode,
+        status: "not_required",
+      },
+    };
+  }
+
+  const blockedBy: string[] = [];
+  if (!dojoContext.runtime_session_id) blockedBy.push("runtime_session_context_missing");
+
+  const runtime = browserBroker.runtimeAttachment();
+  if (!runtime) {
+    blockedBy.push("runtime_attachment_missing");
+  } else if (runtime.kind !== "hosted") {
+    blockedBy.push("runtime_attachment_not_hosted");
+  }
+
+  if (runtime?.kind === "hosted") {
+    if (dojoContext.runtime_session_id && runtime.session_id !== dojoContext.runtime_session_id) {
+      blockedBy.push("runtime_session_attachment_mismatch");
+    }
+    if (dojoContext.tenant_id && runtime.tenant_id !== dojoContext.tenant_id) {
+      blockedBy.push("runtime_tenant_mismatch");
+    }
+    if (dojoContext.workspace_id && runtime.workspace_id !== dojoContext.workspace_id) {
+      blockedBy.push("runtime_workspace_mismatch");
+    }
+    if (runtime.revoked_at) blockedBy.push("runtime_session_revoked");
+
+    const nowMs = dojoRuntimeBindingNowMs(args, dojoContext);
+    if (typeof runtime.expires_at === "number" && runtime.expires_at <= nowMs) {
+      blockedBy.push("runtime_session_expired");
+    }
+
+    const actionOrigin = originForUrl(dojoContext.runtime_action_url);
+    if (actionOrigin && Array.isArray(runtime.origin_allowlist) && runtime.origin_allowlist.length > 0) {
+      const allowedOrigins = new Set(runtime.origin_allowlist.map((origin) => originForUrl(origin) ?? origin));
+      if (!allowedOrigins.has(actionOrigin)) blockedBy.push("runtime_action_origin_not_allowed");
+    }
+  }
+
+  const binding = {
+    enforcement_mode: enforcement.enforcement_mode,
+    proof_capsule_id: dojoContext.proof_capsule_id,
+    skill_id: dojoContext.skill_id,
+    requested_action: dojoContext.requested_action,
+    run_id: dojoContext.run_id ?? null,
+    expected_runtime_session_id: dojoContext.runtime_session_id ?? null,
+    attached_runtime_session_id: runtime?.session_id ?? null,
+    attached_runtime_kind: runtime?.kind ?? null,
+    tenant_id: dojoContext.tenant_id ?? null,
+    attached_tenant_id: runtime?.tenant_id ?? null,
+    workspace_id: dojoContext.workspace_id ?? null,
+    attached_workspace_id: runtime?.workspace_id ?? null,
+    runtime_action_origin: originForUrl(dojoContext.runtime_action_url),
+    runtime_authorization_evidence_record_ids: dojoContext.runtime_authorization_evidence_record_ids ?? [],
+  };
+
+  if (blockedBy.length === 0) {
+    return {
+      ok: true,
+      binding: {
+        ...binding,
+        status: "bound",
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    blocked_by: [...new Set(blockedBy)],
+    error: errorResponse("dojo_hosted_runtime_binding_failed", {
+      ok: false,
+      proof_not_consumed: true,
+      blocked_by: [...new Set(blockedBy)],
+      browser_runtime_binding: {
+        ...binding,
+        status: "blocked",
+      },
+    }),
+  };
+}
+
+function dojoRuntimeBindingNowMs(args: unknown, dojoContext: DojoValidatedBrowserWorkflowContext): number {
+  const rawNow = dojoContext.now ?? stringOpt(obj(args)["now"]);
+  if (rawNow) {
+    const parsed = Date.parse(rawNow);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
 }
 
 function dojoTenantReplayArgs(args: Record<string, unknown>): Record<string, unknown> {

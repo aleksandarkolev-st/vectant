@@ -88,7 +88,11 @@ import {
 import type { DojoTenantContext } from "../dojo/mcp/execution_policy_gate.js";
 import type { BrowserWorkflowArtifact } from "../browser/broker.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
-import { dispatchBrowserPrivateWorkflowToolAfterDojoProof } from "./browser.js";
+import {
+  dispatchBrowserPrivateWorkflowToolAfterDojoProof,
+  validateBrowserRuntimeAttachmentForDojoProof,
+  type DojoValidatedBrowserWorkflowContext,
+} from "./browser.js";
 import { dispatchSafetyTool } from "./safety.js";
 import { errorFromException, errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
@@ -3713,6 +3717,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
     const skillBusSkills = localSkillBusSkills.some((registered) => registered.skill_id === skill.skill.skill_id)
       ? localSkillBusSkills
       : [skill.skill, ...localSkillBusSkills];
+    let browserRuntimeExecutionContext: Partial<DojoValidatedBrowserWorkflowContext> = {};
     const skillBus = createInProcessDojoMcpSkillBus({
       listSkills: () => skillBusSkills,
       proofConsumptionMode: "external_executor",
@@ -3739,6 +3744,25 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
         };
       },
       executeTool: async ({ skill: resolvedSkill, args: executionArgs, proof_capsule: proofCapsule }) => {
+        const browserWorkflowContext: DojoValidatedBrowserWorkflowContext = {
+          proof_capsule_id: proofCapsule.capsule_id,
+          skill_id: resolvedSkill.skill_id,
+          requested_action: requestedAction,
+          run_id: runId,
+          ...browserRuntimeExecutionContext,
+        };
+        if (requestedAction !== "run_prefix_validation") {
+          const runtimeBinding = validateBrowserRuntimeAttachmentForDojoProof(executionArgs, browserWorkflowContext);
+          if (!runtimeBinding.ok) {
+            const blockedBy = [...(decision?.blocked_by ?? []), ...runtimeBinding.blocked_by];
+            return blockDojoMcpSkillBusExecution(blockedBy, {
+              ok: false,
+              status: "blocked",
+              blocked_by: blockedBy,
+              error_codes: normalizeDojoProofErrorCodes(blockedBy),
+            });
+          }
+        }
         proofConsume = durableProofRegistry.context.required
           ? await durableProofRegistry.context.proof_store.markProofCapsuleUsed(proofCapsule.capsule_id, runId, now)
           : markDojoProofExecution({
@@ -3758,12 +3782,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
         }
         return requestedAction === "run_prefix_validation"
           ? await dispatchSafetyTool("synthi_safety_run_prefix_validation", executionArgs)
-          : await dispatchBackingSkillTool(resolvedSkill, executionArgs, {
-              proof_capsule_id: proofCapsule.capsule_id,
-              skill_id: resolvedSkill.skill_id,
-              requested_action: requestedAction,
-              run_id: runId,
-            });
+          : await dispatchBackingSkillTool(resolvedSkill, executionArgs, browserWorkflowContext);
       },
     });
     const skillBusPreflight = await skillBus.dispatch({
@@ -3819,6 +3838,14 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       now,
     });
     if (!runtimeAuthorization.ok) return runtimeAuthorization.error;
+    browserRuntimeExecutionContext = {
+      tenant_id: tenant.tenant_id,
+      workspace_id: tenant.workspace_id,
+      runtime_session_id: runtimeAuthorization.decision?.session_id,
+      runtime_action_url: stringOpt(a["runtime_action_url"]),
+      runtime_authorization_evidence_record_ids: runtimeAuthorization.decision?.evidence_record_ids ?? [],
+      now,
+    };
 
     const skillBusExecution = await skillBus.dispatch({
       tenant,
@@ -4016,12 +4043,7 @@ async function authorizeHostedRuntimeForProductionRun(input: {
 async function dispatchBackingSkillTool(
   skill: DojoSkill,
   args: Record<string, unknown>,
-  dojoContext: {
-    proof_capsule_id: string;
-    skill_id: string;
-    requested_action: string;
-    run_id: string;
-  }
+  dojoContext: DojoValidatedBrowserWorkflowContext
 ): Promise<ToolResponse | null> {
   if (!skill.published_tool_name) return null;
   return await dispatchBrowserPrivateWorkflowToolAfterDojoProof(skill.published_tool_name, args, dojoContext);

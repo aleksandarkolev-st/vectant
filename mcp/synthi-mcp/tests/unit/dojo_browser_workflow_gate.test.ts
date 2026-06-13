@@ -175,6 +175,44 @@ describe("Dojo raw browser workflow replay gate", () => {
     }));
     expect(replay).not.toHaveBeenCalled();
 
+    const mismatchedDojoReplay = await dispatchBrowserPrivateWorkflowToolAfterDojoProof(
+      toolName,
+      {
+        tab_id: "app",
+        run_mode: "sameSession",
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        actor_id: "agent-a",
+        actor_type: "agent",
+        roles: ["agent"],
+        request_id: "req-dojo-proof-replay-mismatch",
+        correlation_id: "corr-dojo-proof-replay-mismatch",
+      },
+      {
+        proof_capsule_id: "proof_123",
+        skill_id: publishedPrivateTool.dojo_skill.skill_id,
+        requested_action: "run_workflow",
+        run_id: "dojo_run_123",
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        runtime_session_id: "session-b",
+        runtime_action_url: "https://app.example.test/settings",
+      }
+    );
+
+    expect(mismatchedDojoReplay?.isError).toBe(true);
+    expect(mismatchedDojoReplay?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_hosted_runtime_binding_failed",
+      proof_not_consumed: true,
+      blocked_by: ["runtime_session_attachment_mismatch"],
+      browser_runtime_binding: expect.objectContaining({
+        status: "blocked",
+        expected_runtime_session_id: "session-b",
+        attached_runtime_session_id: "session-a",
+      }),
+    }));
+    expect(replay).not.toHaveBeenCalled();
+
     const dojoReplay = await dispatchBrowserPrivateWorkflowToolAfterDojoProof(
       toolName,
       {
@@ -193,6 +231,10 @@ describe("Dojo raw browser workflow replay gate", () => {
         skill_id: publishedPrivateTool.dojo_skill.skill_id,
         requested_action: "run_workflow",
         run_id: "dojo_run_123",
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        runtime_session_id: "session-a",
+        runtime_action_url: "https://app.example.test/settings",
       }
     );
 
@@ -200,7 +242,14 @@ describe("Dojo raw browser workflow replay gate", () => {
     expect(dojoReplay?.structuredContent).toEqual(expect.objectContaining({
       ok: true,
       workflow_id: workflowId,
-      replay: expect.objectContaining({ steps_run: 1 }),
+      replay: expect.objectContaining({
+        steps_run: 1,
+        browser_runtime_binding: expect.objectContaining({
+          status: "bound",
+          expected_runtime_session_id: "session-a",
+          attached_runtime_session_id: "session-a",
+        }),
+      }),
       private_tool: expect.objectContaining({
         tool_name: toolName,
         workflow_id: workflowId,
