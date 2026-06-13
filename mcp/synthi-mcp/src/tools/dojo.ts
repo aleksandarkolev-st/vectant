@@ -70,6 +70,8 @@ import type {
   DojoAuditStore,
   DojoGhostShadowEvidenceRecord,
   DojoPermissionUpgradeRequestRecord,
+  DojoProofCapsuleRecord,
+  DojoProofConsumeResult,
 } from "../dojo/store/interfaces.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
 import {
@@ -317,6 +319,96 @@ async function persistPublishedSkillToDurableControlPlaneIfRequired(input: {
   } finally {
     await resolution.close?.();
   }
+}
+
+type DojoDurableProofRegistryContext =
+  | { required: false }
+  | {
+    required: true;
+    source: "postgres";
+    proof_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
+      ? T extends { ok: true; proof_store: infer Store } ? Store : never
+      : never;
+    skill_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
+      ? T extends { ok: true; skill_store: infer Store } ? Store : never
+      : never;
+    close?: () => Promise<void>;
+  };
+
+async function durableProofRegistryForTenantIfRequired(input: {
+  tenant: DojoTenantContext;
+  operation: string;
+  app_origin?: string;
+}): Promise<{ ok: true; context: DojoDurableProofRegistryContext } | { ok: false; error: ToolResponse }> {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_durable_store) {
+    return { ok: true, context: { required: false } };
+  }
+
+  let resolution: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>>;
+  try {
+    resolution = await createDojoControlPlaneStoresFromEnv({
+      tenant: input.tenant,
+      app_origin: input.app_origin,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_control_plane_store_not_runtime_wired", {
+        ok: false,
+        operation: input.operation,
+        store_kind: "postgres",
+        production_capable: true,
+        blocked_by: ["dojo_control_plane_store_resolution_failed"],
+        error_codes: ["dojo_control_plane_store_not_runtime_wired"],
+        message: err instanceof Error ? err.message : String(err),
+      }),
+    };
+  }
+  if (!resolution.ok) {
+    return {
+      ok: false,
+      error: controlPlaneResolutionError(input.operation, resolution),
+    };
+  }
+
+  return {
+    ok: true,
+    context: {
+      required: true,
+      source: "postgres",
+      proof_store: resolution.proof_store,
+      skill_store: resolution.skill_store,
+      close: resolution.close,
+    },
+  };
+}
+
+function proofRecordForCapsule(input: {
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  capsule: DojoProofCarryingSkillCapsule;
+  issued_by?: DojoAuditActor;
+}): DojoProofCapsuleRecord {
+  return {
+    tenant_id: input.tenant.tenant_id,
+    workspace_id: input.skill.workspace_id,
+    capsule_id: input.capsule.capsule_id,
+    skill_id: input.capsule.skill_id,
+    license_id: input.skill.permission_license.license_id,
+    license_version: input.capsule.license_version,
+    requested_action: input.capsule.requested_action,
+    nonce: input.capsule.nonce,
+    key_id: input.capsule.key_id,
+    signature_algorithm: input.capsule.signature_algorithm,
+    substrate_claim: input.capsule.substrate_claim,
+    evidence_record_ids: [...input.capsule.evidence_record_ids],
+    ...(input.capsule.ledger_checkpoint_hash ? { ledger_checkpoint_hash: input.capsule.ledger_checkpoint_hash } : {}),
+    issued_at: input.capsule.issued_at,
+    expires_at: input.capsule.expires_at,
+    status: "issued",
+    ...(input.issued_by ? { issued_by: input.issued_by } : {}),
+  };
 }
 
 function controlPlaneResolutionError(
@@ -1070,10 +1162,10 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoIssueProofCapsuleTool(args);
         break;
       case "synthi_dojo_validate_proof_capsule":
-        response = dojoValidateProofCapsuleTool(args);
+        response = await dojoValidateProofCapsuleTool(args);
         break;
       case "synthi_dojo_revoke_proof_capsule":
-        response = dojoRevokeProofCapsuleTool(args);
+        response = await dojoRevokeProofCapsuleTool(args);
         break;
       case "synthi_dojo_create_hosted_runtime_session":
         response = await dojoCreateHostedRuntimeSessionTool(args);
@@ -2282,7 +2374,7 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
       blocked_by: ["proof_issuer_actor_type_invalid"],
     });
   }
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_issue_proof_capsule");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_issue_proof_capsule", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const issuedBy = enforcement.production_enforcement
     ? { actor_id: tenant.actor_id, actor_type: tenant.actor_type }
@@ -2411,24 +2503,51 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
     }
     throw err;
   }
-  const proofRecord = dojoSkillRegistry.recordProofCapsule(capsule, {
-    tenant_id: scopedTenantId,
-    issued_by: issuedBy,
+  const durableProofRegistry = await durableProofRegistryForTenantIfRequired({
+    tenant,
+    operation: "synthi_dojo_issue_proof_capsule",
+    app_origin: skill.skill.app_origin,
   });
-  const validation = validateDojoProofCapsule(skill.skill, capsule, requestedAction, stringOpt(a["now"]));
-  return jsonResponse({
-    ok: validation.ok,
-    skill_id: skill.skill.skill_id,
-    requested_action: requestedAction,
-    enforcement_mode: enforcement.enforcement_mode,
-    require_verified_evidence: requireVerifiedEvidence,
-    proof_capsule: capsule,
-    proof_record: proofRecord,
-    validation,
-  });
+  if (!durableProofRegistry.ok) return durableProofRegistry.error;
+  try {
+    let proofRecord: DojoProofCapsuleRecord;
+    if (durableProofRegistry.context.required) {
+      proofRecord = await durableProofRegistry.context.proof_store.saveProofRecord(proofRecordForCapsule({
+        tenant,
+        skill: skill.skill,
+        capsule,
+        issued_by: issuedBy,
+      }));
+      dojoSkillRegistry.recordProofCapsule(capsule, {
+        tenant_id: scopedTenantId,
+        issued_by: issuedBy,
+      });
+    } else {
+      proofRecord = dojoSkillRegistry.recordProofCapsule(capsule, {
+        tenant_id: scopedTenantId,
+        issued_by: issuedBy,
+      });
+    }
+    const validation = validateDojoProofCapsule(skill.skill, capsule, requestedAction, stringOpt(a["now"]));
+    return jsonResponse({
+      ok: validation.ok,
+      skill_id: skill.skill.skill_id,
+      requested_action: requestedAction,
+      enforcement_mode: enforcement.enforcement_mode,
+      require_verified_evidence: requireVerifiedEvidence,
+      control_plane_source: durableProofRegistry.context.required ? durableProofRegistry.context.source : "compatibility_registry",
+      proof_capsule: capsule,
+      proof_record: proofRecord,
+      validation,
+    });
+  } finally {
+    if (durableProofRegistry.context.required) {
+      await durableProofRegistry.context.close?.();
+    }
+  }
 }
 
-function dojoValidateProofCapsuleTool(args: unknown): ToolResponse {
+async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
@@ -2443,35 +2562,54 @@ function dojoValidateProofCapsuleTool(args: unknown): ToolResponse {
     });
   }
   const now = stringOpt(a["now"]);
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_validate_proof_capsule");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_validate_proof_capsule", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const tenant = skill.tenant;
-  const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, objectOpt(a["tool_args"]) ?? {});
-  const decision = evaluateDojoLicenseKernel({
-    skill: skill.skill,
-    registry: dojoSkillRegistry,
-    proof_capsule: capsule,
-    requested_action: requestedAction,
-    tool_args: licenseToolArgs,
-    dry_run: true,
-    now,
+  const durableProofRegistry = await durableProofRegistryForTenantIfRequired({
+    tenant,
+    operation: "synthi_dojo_validate_proof_capsule",
+    app_origin: skill.skill.app_origin,
   });
-  const proofRecord = decision.ok
-    ? dojoSkillRegistry.markProofCapsuleValidated(capsule.capsule_id, now) ?? decision.proof_record ?? null
-    : decision.proof_record ?? null;
-  const licenseKernel = proofRecord
-    ? { ...decision, proof_record: proofRecord }
-    : decision;
-  return jsonResponse({
-    ok: decision.ok,
-    skill_id: skill.skill.skill_id,
-    requested_action: requestedAction,
-    proof_record: proofRecord,
-    license_kernel: licenseKernel,
-  });
+  if (!durableProofRegistry.ok) return durableProofRegistry.error;
+  try {
+    const durableProofRecord = durableProofRegistry.context.required
+      ? await durableProofRegistry.context.proof_store.getProofRecord(capsule.capsule_id)
+      : undefined;
+    const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, objectOpt(a["tool_args"]) ?? {});
+    const decision = evaluateDojoLicenseKernel({
+      skill: skill.skill,
+      registry: dojoSkillRegistry,
+      proof_record: durableProofRecord,
+      proof_capsule: capsule,
+      requested_action: requestedAction,
+      tool_args: licenseToolArgs,
+      dry_run: true,
+      now,
+    });
+    const proofRecord = decision.ok
+      ? durableProofRegistry.context.required
+        ? await durableProofRegistry.context.proof_store.markProofCapsuleValidated(capsule.capsule_id, now)
+        : dojoSkillRegistry.markProofCapsuleValidated(capsule.capsule_id, now) ?? decision.proof_record ?? null
+      : decision.proof_record ?? null;
+    const licenseKernel = proofRecord
+      ? { ...decision, proof_record: proofRecord }
+      : decision;
+    return jsonResponse({
+      ok: decision.ok,
+      skill_id: skill.skill.skill_id,
+      requested_action: requestedAction,
+      control_plane_source: durableProofRegistry.context.required ? durableProofRegistry.context.source : "compatibility_registry",
+      proof_record: proofRecord,
+      license_kernel: licenseKernel,
+    });
+  } finally {
+    if (durableProofRegistry.context.required) {
+      await durableProofRegistry.context.close?.();
+    }
+  }
 }
 
-function dojoRevokeProofCapsuleTool(args: unknown): ToolResponse {
+async function dojoRevokeProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const capsuleId = stringOpt(a["capsule_id"]);
   if (!capsuleId) return errorResponse("dojo_proof_capsule_id_required");
@@ -2483,23 +2621,62 @@ function dojoRevokeProofCapsuleTool(args: unknown): ToolResponse {
   if (!actorType) return errorResponse("dojo_proof_capsule_revocation_actor_type_required");
   const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
   if (evidenceRefs.length === 0) return errorResponse("dojo_proof_capsule_revocation_evidence_required");
-  const existingRecord = dojoSkillRegistry.getProofRecord(capsuleId);
-  if (!existingRecord) return errorResponse("dojo_proof_capsule_not_found", { capsule_id: capsuleId });
-  const skill = dojoSkillRegistry.get(existingRecord.skill_id);
-  if (!skill) return errorResponse("dojo_proof_capsule_skill_not_found", {
-    capsule_id: capsuleId,
-    skill_id: existingRecord.skill_id,
-  });
-  const authorization = authorizeTenantForDojoSkill(args, skill);
-  if (!authorization.ok) return authorization.error;
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_revoke_proof_capsule");
+  const enforcement = resolveDojoEnforcementConfig();
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_revoke_proof_capsule", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
-  const record = dojoSkillRegistry.revokeProofCapsule(capsuleId, reason, stringOpt(a["now"]), {
-    actor_id: actorId,
-    actor_type: actorType,
-  }, evidenceRefs);
-  if (!record) return errorResponse("dojo_proof_capsule_not_found", { capsule_id: capsuleId });
-  return jsonResponse({ ok: true, proof_record: record });
+
+  let existingRecord = dojoSkillRegistry.getProofRecord(capsuleId);
+  let durableProofRegistry: { ok: true; context: DojoDurableProofRegistryContext } | { ok: false; error: ToolResponse } | null = null;
+  let skill = existingRecord ? dojoSkillRegistry.get(existingRecord.skill_id) : null;
+  if (enforcement.production_enforcement && enforcement.require_durable_store) {
+    const tenantContext = dojoTenantContextResultFromArgs(args, skill ? {
+      development_defaults: { workspace_id: skill.workspace_id },
+    } : undefined);
+    if (!tenantContext.ok) return tenantContext.error;
+    durableProofRegistry = await durableProofRegistryForTenantIfRequired({
+      tenant: tenantContext.tenant,
+      operation: "synthi_dojo_revoke_proof_capsule",
+      app_origin: skill?.app_origin,
+    });
+    if (!durableProofRegistry.ok) return durableProofRegistry.error;
+    if (durableProofRegistry.context.required) {
+      existingRecord = await durableProofRegistry.context.proof_store.getProofRecord(capsuleId);
+      skill = existingRecord
+        ? dojoSkillRegistry.get(existingRecord.skill_id) ?? await durableProofRegistry.context.skill_store.getSkill(existingRecord.skill_id)
+        : null;
+    }
+  }
+  try {
+    if (!existingRecord) return errorResponse("dojo_proof_capsule_not_found", { capsule_id: capsuleId });
+    if (!skill) return errorResponse("dojo_proof_capsule_skill_not_found", {
+      capsule_id: capsuleId,
+      skill_id: existingRecord.skill_id,
+    });
+    const authorization = authorizeTenantForDojoSkill(args, skill);
+    if (!authorization.ok) return authorization.error;
+    const revokedBy = {
+      actor_id: actorId,
+      actor_type: actorType,
+    };
+    const record = durableProofRegistry?.ok && durableProofRegistry.context.required
+      ? await durableProofRegistry.context.proof_store.revokeProofCapsule(capsuleId, reason, stringOpt(a["now"]), revokedBy, evidenceRefs)
+      : dojoSkillRegistry.revokeProofCapsule(capsuleId, reason, stringOpt(a["now"]), revokedBy, evidenceRefs);
+    if (!record) return errorResponse("dojo_proof_capsule_not_found", { capsule_id: capsuleId });
+    if (durableProofRegistry?.ok && durableProofRegistry.context.required) {
+      dojoSkillRegistry.revokeProofCapsule(capsuleId, reason, stringOpt(a["now"]), revokedBy, evidenceRefs);
+    }
+    return jsonResponse({
+      ok: true,
+      control_plane_source: durableProofRegistry?.ok && durableProofRegistry.context.required
+        ? durableProofRegistry.context.source
+        : "compatibility_registry",
+      proof_record: record,
+    });
+  } finally {
+    if (durableProofRegistry?.ok && durableProofRegistry.context.required) {
+      await durableProofRegistry.context.close?.();
+    }
+  }
 }
 
 async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolResponse> {
@@ -2589,174 +2766,195 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
   const runId = stringOpt(a["run_id"])
     ?? stringOpt(a["request_id"])
     ?? `dojo_run_${hashId(`${(capsule as { capsule_id: string }).capsule_id}:${skill.skill.skill_id}:${requestedAction}:${skill.skill.skill_version}`)}`;
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_with_proof_capsule");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_with_proof_capsule", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const now = stringOpt(a["now"]);
   const tenant = skill.tenant;
-  const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, toolArgs);
-  let decision: ReturnType<typeof evaluateDojoLicenseKernel> | undefined;
-  let proofConsume: ReturnType<typeof markDojoProofExecution> | undefined;
-  const skillBus = createInProcessDojoMcpSkillBus({
-    listSkills: () => dojoSkillRegistry.list(),
-    validateProof: ({ skill: resolvedSkill, proof_capsule: proofCapsule, requested_action: action }) => {
-      decision = evaluateDojoLicenseKernel({
-        skill: resolvedSkill,
-        registry: dojoSkillRegistry,
-        proof_capsule: proofCapsule,
-        requested_action: action,
-        tool_args: licenseToolArgs,
-        dry_run: dryRun,
-        now,
+  const durableProofRegistry = await durableProofRegistryForTenantIfRequired({
+    tenant,
+    operation: "synthi_dojo_run_with_proof_capsule",
+    app_origin: skill.skill.app_origin,
+  });
+  if (!durableProofRegistry.ok) return durableProofRegistry.error;
+  try {
+    const durableProofRecord = durableProofRegistry.context.required
+      ? await durableProofRegistry.context.proof_store.getProofRecord(capsule.capsule_id)
+      : undefined;
+    const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, toolArgs);
+    let decision: ReturnType<typeof evaluateDojoLicenseKernel> | undefined;
+    let proofConsume: DojoProofConsumeResult | undefined;
+    const skillBus = createInProcessDojoMcpSkillBus({
+      listSkills: () => dojoSkillRegistry.list(),
+      validateProof: ({ skill: resolvedSkill, proof_capsule: proofCapsule, requested_action: action }) => {
+        decision = evaluateDojoLicenseKernel({
+          skill: resolvedSkill,
+          registry: dojoSkillRegistry,
+          proof_record: durableProofRecord,
+          proof_capsule: proofCapsule,
+          requested_action: action,
+          tool_args: licenseToolArgs,
+          dry_run: dryRun,
+          now,
+        });
+        return {
+          ok: decision.ok,
+          status: decision.status,
+          blocked_by: decision.blocked_by,
+          error_codes: decision.error_codes,
+        };
+      },
+      executeTool: async ({ skill: resolvedSkill, args: executionArgs, proof_capsule: proofCapsule }) => {
+        proofConsume = durableProofRegistry.context.required
+          ? await durableProofRegistry.context.proof_store.markProofCapsuleUsed(proofCapsule.capsule_id, runId, now)
+          : markDojoProofExecution({
+            registry: dojoSkillRegistry,
+            proof_capsule: proofCapsule,
+            run_id: runId,
+            now,
+          });
+        if (!proofConsume.ok) {
+          const blockedBy = [...(decision?.blocked_by ?? []), ...proofConsume.blocked_by];
+          return blockDojoMcpSkillBusExecution(blockedBy, {
+            ok: false,
+            status: "blocked",
+            blocked_by: blockedBy,
+            error_codes: normalizeDojoProofErrorCodes(blockedBy),
+          });
+        }
+        return requestedAction === "run_prefix_validation"
+          ? await dispatchSafetyTool("synthi_safety_run_prefix_validation", executionArgs)
+          : await dispatchBackingSkillTool(resolvedSkill, executionArgs);
+      },
+    });
+    const skillBusPreflight = await skillBus.dispatch({
+      tenant,
+      tool_name: skill.skill.published_tool_name ?? skill.skill.private_tool_manifest?.tool_name ?? "",
+      requested_action: requestedAction,
+      args: toolArgs,
+      proof_capsule: capsule,
+      dry_run: true,
+    });
+    const licenseDecision = decision;
+    if (!licenseDecision) {
+      return errorResponse("dojo_license_kernel_not_evaluated", {
+        skill_id: skill.skill.skill_id,
+        requested_action: requestedAction,
+        skill_bus: skillBusPreflight,
+        refusal: refusalFor(skill.skill, ["dojo_license_kernel_not_evaluated"]),
       });
-      return {
-        ok: decision.ok,
-        status: decision.status,
-        blocked_by: decision.blocked_by,
-        error_codes: decision.error_codes,
+    }
+    if (!skillBusPreflight.ok || !licenseDecision.ok) {
+      return errorResponse(licenseDecision?.validation.error ?? skillBusPreflight.blocked_by[0] ?? "dojo_skill_bus_blocked", {
+        skill_id: skill.skill.skill_id,
+        requested_action: requestedAction,
+        validation: licenseDecision.validation,
+        license_kernel: licenseDecision,
+        skill_bus: skillBusPreflight,
+        refusal: refusalFor(skill.skill, licenseDecision.blocked_by.length > 0 ? licenseDecision.blocked_by : skillBusPreflight.blocked_by),
+      });
+    }
+    if (dryRun) {
+      return jsonResponse({
+        ok: true,
+        dry_run: true,
+        skill_id: skill.skill.skill_id,
+        requested_action: requestedAction,
+        control_plane_source: durableProofRegistry.context.required ? durableProofRegistry.context.source : "compatibility_registry",
+        validation: licenseDecision.validation,
+        license_kernel: licenseDecision,
+        skill_bus: skillBusPreflight,
+      });
+    }
+
+    const runtimeAuthorization = await authorizeHostedRuntimeForProductionRun({
+      args: a,
+      tenant,
+      skill: skill.skill,
+      run_id: runId,
+      requested_action: requestedAction,
+      proof_capsule: capsule,
+      license_decision: licenseDecision,
+      skill_bus_preflight: skillBusPreflight,
+      now,
+    });
+    if (!runtimeAuthorization.ok) return runtimeAuthorization.error;
+
+    const skillBusExecution = await skillBus.dispatch({
+      tenant,
+      tool_name: skill.skill.published_tool_name ?? skill.skill.private_tool_manifest?.tool_name ?? "",
+      requested_action: requestedAction,
+      args: toolArgs,
+      proof_capsule: capsule,
+      dry_run: false,
+    });
+    if (!skillBusExecution.ok) {
+      const blockedBy = [...(skillBusExecution.blocked_by.length > 0 ? skillBusExecution.blocked_by : licenseDecision.blocked_by)];
+      const errorCodes = normalizeDojoProofErrorCodes(blockedBy);
+      const validation = {
+        ...licenseDecision.validation,
+        ok: false,
+        status: "blocked" as const,
+        error: blockedBy[0] ?? "dojo_skill_bus_blocked",
+        blocked_by: blockedBy,
+        error_codes: errorCodes,
       };
-    },
-    executeTool: async ({ skill: resolvedSkill, args: executionArgs, proof_capsule: proofCapsule }) => {
-      proofConsume = markDojoProofExecution({
-        registry: dojoSkillRegistry,
-        proof_capsule: proofCapsule,
+      return errorResponse(validation.error ?? "dojo_proof_consume_blocked", {
+        skill_id: skill.skill.skill_id,
+        requested_action: requestedAction,
         run_id: runId,
-        now,
-      });
-      if (!proofConsume.ok) {
-        const blockedBy = [...(decision?.blocked_by ?? []), ...proofConsume.blocked_by];
-        return blockDojoMcpSkillBusExecution(blockedBy, {
+        validation,
+        license_kernel: {
+          ...licenseDecision,
           ok: false,
           status: "blocked",
+          validation,
           blocked_by: blockedBy,
-          error_codes: normalizeDojoProofErrorCodes(blockedBy),
-        });
-      }
-      return requestedAction === "run_prefix_validation"
-        ? await dispatchSafetyTool("synthi_safety_run_prefix_validation", executionArgs)
-        : await dispatchBackingSkillTool(resolvedSkill, executionArgs);
-    },
-  });
-  const skillBusPreflight = await skillBus.dispatch({
-    tenant,
-    tool_name: skill.skill.published_tool_name ?? skill.skill.private_tool_manifest?.tool_name ?? "",
-    requested_action: requestedAction,
-    args: toolArgs,
-    proof_capsule: capsule,
-    dry_run: true,
-  });
-  const licenseDecision = decision;
-  if (!licenseDecision) {
-    return errorResponse("dojo_license_kernel_not_evaluated", {
-      skill_id: skill.skill.skill_id,
-      requested_action: requestedAction,
-      skill_bus: skillBusPreflight,
-      refusal: refusalFor(skill.skill, ["dojo_license_kernel_not_evaluated"]),
-    });
-  }
-  if (!skillBusPreflight.ok || !licenseDecision.ok) {
-    return errorResponse(licenseDecision?.validation.error ?? skillBusPreflight.blocked_by[0] ?? "dojo_skill_bus_blocked", {
-      skill_id: skill.skill.skill_id,
-      requested_action: requestedAction,
-      validation: licenseDecision.validation,
-      license_kernel: licenseDecision,
-      skill_bus: skillBusPreflight,
-      refusal: refusalFor(skill.skill, licenseDecision.blocked_by.length > 0 ? licenseDecision.blocked_by : skillBusPreflight.blocked_by),
-    });
-  }
-  if (dryRun) {
-    return jsonResponse({
-      ok: true,
-      dry_run: true,
-      skill_id: skill.skill.skill_id,
-      requested_action: requestedAction,
-      validation: licenseDecision.validation,
-      license_kernel: licenseDecision,
-      skill_bus: skillBusPreflight,
-    });
-  }
+          error_codes: validation.error_codes,
+          proof_record: proofConsume?.record ?? licenseDecision.proof_record ?? null,
+        },
+        proof_consume: proofConsume ?? null,
+        skill_bus: skillBusExecution,
+        runtime_authorization: runtimeAuthorization.decision ?? null,
+        refusal: refusalFor(skill.skill, blockedBy),
+      });
+    }
 
-  const runtimeAuthorization = await authorizeHostedRuntimeForProductionRun({
-    args: a,
-    tenant,
-    skill: skill.skill,
-    run_id: runId,
-    requested_action: requestedAction,
-    proof_capsule: capsule,
-    license_decision: licenseDecision,
-    skill_bus_preflight: skillBusPreflight,
-    now,
-  });
-  if (!runtimeAuthorization.ok) return runtimeAuthorization.error;
-
-  const skillBusExecution = await skillBus.dispatch({
-    tenant,
-    tool_name: skill.skill.published_tool_name ?? skill.skill.private_tool_manifest?.tool_name ?? "",
-    requested_action: requestedAction,
-    args: toolArgs,
-    proof_capsule: capsule,
-    dry_run: false,
-  });
-  if (!skillBusExecution.ok) {
-    const blockedBy = [...(skillBusExecution.blocked_by.length > 0 ? skillBusExecution.blocked_by : licenseDecision.blocked_by)];
-    const validation = {
-      ...licenseDecision.validation,
-      ok: false,
-      status: "blocked" as const,
-      error: blockedBy[0] ?? "dojo_skill_bus_blocked",
-      blocked_by: blockedBy,
-      error_codes: normalizeDojoProofErrorCodes(blockedBy),
+    const run = skillBusExecution.result as ToolResponse | null | undefined;
+    if (!run) {
+      return errorResponse("dojo_backing_tool_unavailable", {
+        skill_id: skill.skill.skill_id,
+        requested_action: requestedAction,
+        published_tool_name: skill.skill.published_tool_name ?? null,
+        skill_bus: skillBusExecution,
+        proof_consume: proofConsume,
+        runtime_authorization: runtimeAuthorization.decision ?? null,
+      });
+    }
+    const executionLicenseDecision = {
+      ...licenseDecision,
+      proof_record: proofConsume?.record ?? licenseDecision.proof_record,
     };
-    return errorResponse(validation.error ?? "dojo_proof_consume_blocked", {
+    return jsonResponse({
+      ok: run.isError !== true,
       skill_id: skill.skill.skill_id,
       requested_action: requestedAction,
       run_id: runId,
-      validation,
-      license_kernel: {
-        ...licenseDecision,
-        ok: false,
-        status: "blocked",
-        validation,
-        blocked_by: blockedBy,
-        error_codes: validation.error_codes,
-        proof_record: proofConsume?.record ?? licenseDecision.proof_record ?? null,
-      },
-      proof_consume: proofConsume ?? null,
+      control_plane_source: durableProofRegistry.context.required ? durableProofRegistry.context.source : "compatibility_registry",
+      validation: licenseDecision.validation,
+      license_kernel: executionLicenseDecision,
       skill_bus: skillBusExecution,
       runtime_authorization: runtimeAuthorization.decision ?? null,
-      refusal: refusalFor(skill.skill, blockedBy),
-    });
-  }
-
-  const run = skillBusExecution.result as ToolResponse | null | undefined;
-  if (!run) {
-    return errorResponse("dojo_backing_tool_unavailable", {
-      skill_id: skill.skill.skill_id,
-      requested_action: requestedAction,
-      published_tool_name: skill.skill.published_tool_name ?? null,
-      skill_bus: skillBusExecution,
+      proof_capsule_id: capsule.capsule_id,
       proof_consume: proofConsume,
-      runtime_authorization: runtimeAuthorization.decision ?? null,
+      proof_record: proofConsume?.record,
+      backing_tool: requestedAction === "run_prefix_validation" ? "synthi_safety_run_prefix_validation" : skill.skill.published_tool_name,
+      result: run.structuredContent ?? {},
     });
+  } finally {
+    if (durableProofRegistry.context.required) {
+      await durableProofRegistry.context.close?.();
+    }
   }
-  const executionLicenseDecision = {
-    ...licenseDecision,
-    proof_record: proofConsume?.record ?? licenseDecision.proof_record,
-  };
-  return jsonResponse({
-    ok: run.isError !== true,
-    skill_id: skill.skill.skill_id,
-    requested_action: requestedAction,
-    run_id: runId,
-    validation: licenseDecision.validation,
-    license_kernel: executionLicenseDecision,
-    skill_bus: skillBusExecution,
-    runtime_authorization: runtimeAuthorization.decision ?? null,
-    proof_capsule_id: capsule.capsule_id,
-    proof_consume: proofConsume,
-    proof_record: proofConsume?.record,
-    backing_tool: requestedAction === "run_prefix_validation" ? "synthi_safety_run_prefix_validation" : skill.skill.published_tool_name,
-    result: run.structuredContent ?? {},
-  });
 }
 
 async function authorizeHostedRuntimeForProductionRun(input: {

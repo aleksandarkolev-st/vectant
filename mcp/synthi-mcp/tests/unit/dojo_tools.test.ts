@@ -2941,7 +2941,7 @@ describe("Agent Dojo MCP tools", () => {
     expect(dojoSkillRegistry.list()).toHaveLength(0);
   });
 
-  it("blocks proof execution before consuming proof when production durable registry writes are not wired", async () => {
+  it("blocks proof execution before consuming proof when production requires a durable control plane but none is configured", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
     expect(publish?.isError).toBeUndefined();
@@ -2963,8 +2963,11 @@ describe("Agent Dojo MCP tools", () => {
 
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
     process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
-    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
-    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = "postgres://dojo-control-plane.test/synthi";
+    delete process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE;
+    delete process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL;
+    delete process.env.SYNTHI_DOJO_STORE_FILE;
+    delete process.env.SYNTHI_DOJO_STORE_KEY;
+    delete process.env.SYNTHI_DOJO_STORE_SCOPE;
 
     const run = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
       skill_id: skillId,
@@ -2984,9 +2987,12 @@ describe("Agent Dojo MCP tools", () => {
       ok: false,
       operation: "synthi_dojo_run_with_proof_capsule",
       enforcement_mode: "production",
-      store_kind: "postgres",
-      production_capable: true,
-      blocked_by: ["dojo_control_plane_registry_postgres_adapter_not_wired"],
+      store_kind: "unconfigured",
+      production_capable: false,
+      blocked_by: expect.arrayContaining([
+        "dojo_control_plane_store_not_production_capable",
+        "control_plane_store_unconfigured",
+      ]),
       error_codes: ["dojo_control_plane_store_not_runtime_wired"],
     }));
     expect(dojoSkillRegistry.getProofRecord(capsule.capsule_id)?.status).toBe("issued");

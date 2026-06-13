@@ -35,6 +35,7 @@ export interface DojoLicenseKernelDecision {
 export function evaluateDojoLicenseKernel(input: {
   skill: DojoSkill;
   registry: DojoSkillRegistry;
+  proof_record?: DojoProofCapsuleRecord | null;
   proof_capsule: DojoProofCarryingSkillCapsule;
   requested_action: string;
   tool_args?: Record<string, unknown>;
@@ -56,7 +57,9 @@ export function evaluateDojoLicenseKernel(input: {
     ? validation.blocked_by.map((reason) => `approval_constraint:${reason}`)
     : [];
 
-  const record = input.registry.getProofRecord(input.proof_capsule.capsule_id);
+  const record = input.proof_record === undefined
+    ? input.registry.getProofRecord(input.proof_capsule.capsule_id)
+    : input.proof_record;
   if (!record) {
     hardBlockedBy.push("proof_capsule_not_issued_by_registry");
   } else {

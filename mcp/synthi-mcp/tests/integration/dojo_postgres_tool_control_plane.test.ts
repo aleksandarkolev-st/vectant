@@ -1,12 +1,18 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
+import { createHash } from "node:crypto";
 import { browserBroker } from "../../src/browser/broker.js";
-import { dojoSkillRegistry } from "../../src/browser/dojo.js";
+import {
+  dojoSkillRegistry,
+  type DojoSkill,
+} from "../../src/browser/dojo.js";
 import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import { InMemoryPrivateWorkflowToolStore, privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
 import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
 import { PostgresDojoLicenseStore } from "../../src/dojo/store/postgres_license_store.js";
 import { applyDojoPostgresMigrations } from "../../src/dojo/store/postgres_proof_store.js";
+import { PostgresDojoProofStore } from "../../src/dojo/store/postgres_proof_store.js";
+import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_record.js";
 import { PostgresDojoSkillStore } from "../../src/dojo/store/postgres_skill_store.js";
 import { dispatchDojoTool } from "../../src/tools/dojo.js";
 
@@ -128,6 +134,190 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       ],
     }));
   });
+
+  it("uses Postgres proof records for production validation, consumption, and replay after local proof loss", async () => {
+    const tenantId = `tenant_proof_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_proof_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-proof-publish",
+      correlation_id: "corr-postgres-proof-publish",
+      actor_id: "postgres-proof-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_proof_publish",
+      evidence_refs: ["evidence:integration-postgres-proof-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+    };
+    const skill = dojoSkillRegistry.get(published.skill.skill_id);
+    expect(skill).toBeTruthy();
+
+    const issue = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_prefix_validation",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(skill!, {
+        record_id: `evidence-${published.skill.skill_id}-postgres-proof`,
+        tenant_id: tenantId,
+      }),
+      require_verified_evidence: true,
+      ...tenant,
+      actor_id: "postgres-proof-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-proof-issue",
+      correlation_id: "corr-postgres-proof-issue",
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(issue?.isError).toBeUndefined();
+    const issued = issue?.structuredContent as {
+      control_plane_source: string;
+      proof_capsule: { capsule_id: string };
+      proof_record: { status: string };
+    };
+    expect(issued.control_plane_source).toBe("postgres");
+    expect(issued.proof_record).toEqual(expect.objectContaining({ status: "issued" }));
+
+    const proofStore = new PostgresDojoProofStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    expect(await proofStore.getProofRecord(issued.proof_capsule.capsule_id)).toEqual(expect.objectContaining({
+      capsule_id: issued.proof_capsule.capsule_id,
+      status: "issued",
+      skill_id: published.skill.skill_id,
+    }));
+
+    const skillStore = new PostgresDojoSkillStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    const savedSkill = await skillStore.getSkill(published.skill.skill_id);
+    expect(savedSkill).toBeTruthy();
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    dojoSkillRegistry.publish(savedSkill!);
+    expect(dojoSkillRegistry.getProofRecord(issued.proof_capsule.capsule_id)).toBeNull();
+
+    const validate = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_prefix_validation",
+      proof_capsule: issued.proof_capsule,
+      ...tenant,
+      actor_id: "postgres-proof-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-proof-validate",
+      correlation_id: "corr-postgres-proof-validate",
+      now: "2026-06-11T00:01:00.000Z",
+    });
+    expect(validate?.isError).toBeUndefined();
+    expect(validate?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      proof_record: expect.objectContaining({
+        capsule_id: issued.proof_capsule.capsule_id,
+        status: "issued",
+        last_validated_at: "2026-06-11T00:01:00.000Z",
+      }),
+    }));
+    expect(dojoSkillRegistry.getProofRecord(issued.proof_capsule.capsule_id)).toBeNull();
+
+    const session = await dispatchDojoTool("synthi_dojo_create_hosted_runtime_session", {
+      skill_id: published.skill.skill_id,
+      run_id: "postgres-proof-run-1",
+      workspace_url: "https://app.example.test/settings",
+      origin_allowlist: ["https://app.example.test"],
+      ttl_ms: 600_000,
+      credential_ttl_ms: 300_000,
+      ...tenant,
+      actor_id: "postgres-proof-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-proof-session",
+      correlation_id: "corr-postgres-proof-session",
+      now: "2026-06-11T00:01:30.000Z",
+    });
+    expect(session?.isError).toBeUndefined();
+    const sessionContent = session?.structuredContent as {
+      runtime_session: { session_id: string; credential_id: string };
+      credentials: { credential_id: string; credential_secret: string };
+    };
+
+    const run = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_prefix_validation",
+      proof_capsule: issued.proof_capsule,
+      run_id: "postgres-proof-run-1",
+      runtime_session_id: sessionContent.runtime_session.session_id,
+      runtime_credential_id: sessionContent.credentials.credential_id,
+      runtime_credential_secret: sessionContent.credentials.credential_secret,
+      runtime_action_url: "https://app.example.test/settings",
+      ...tenant,
+      actor_id: "postgres-proof-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-proof-run",
+      correlation_id: "corr-postgres-proof-run",
+      now: "2026-06-11T00:02:00.000Z",
+    });
+    expect(run?.isError).toBeUndefined();
+    expect(run?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      proof_consume: expect.objectContaining({ ok: true, status: "used" }),
+      proof_record: expect.objectContaining({
+        capsule_id: issued.proof_capsule.capsule_id,
+        status: "used",
+        first_used_at: "2026-06-11T00:02:00.000Z",
+      }),
+    }));
+    expect(await proofStore.getProofRecord(issued.proof_capsule.capsule_id)).toEqual(expect.objectContaining({
+      status: "used",
+      first_used_at: "2026-06-11T00:02:00.000Z",
+    }));
+    expect(dojoSkillRegistry.getProofRecord(issued.proof_capsule.capsule_id)).toBeNull();
+
+    const replay = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_prefix_validation",
+      proof_capsule: issued.proof_capsule,
+      run_id: "postgres-proof-run-2",
+      ...tenant,
+      actor_id: "postgres-proof-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-proof-replay",
+      correlation_id: "corr-postgres-proof-replay",
+      now: "2026-06-11T00:03:00.000Z",
+    });
+    expect(replay?.isError).toBe(true);
+    expect(replay?.structuredContent).toEqual(expect.objectContaining({
+      validation: expect.objectContaining({
+        blocked_by: expect.arrayContaining(["proof_capsule_replay_detected"]),
+      }),
+      license_kernel: expect.objectContaining({
+        proof_record: expect.objectContaining({ status: "used" }),
+      }),
+    }));
+  });
 });
 
 function recordOpenDetailsWorkflowForToolTest(workspaceId: string): void {
@@ -171,4 +361,38 @@ function productionTenantContextArgs(overrides: Record<string, unknown> = {}): R
     correlation_id: "corr-production-a",
     ...overrides,
   };
+}
+
+function evidenceLedgerRecordsForProof(
+  skill: DojoSkill,
+  options: {
+    record_id: string;
+    tenant_id: string;
+    created_at?: string;
+  }
+): ReturnType<typeof buildDojoEvidenceLedgerRecord>[] {
+  const createdAt = options.created_at ?? "2026-06-11T00:00:00.000Z";
+  const claimIds = skill.permission_license.proof_requirements.required_evidence_claims;
+  const artifactPayload = JSON.stringify({
+    claim_ids: claimIds,
+    created_at: createdAt,
+    record_id: options.record_id,
+    skill_id: skill.skill_id,
+  });
+  return [
+    buildDojoEvidenceLedgerRecord({
+      record_id: options.record_id,
+      tenant_id: options.tenant_id,
+      workspace_id: skill.workspace_id,
+      skill_id: skill.skill_id,
+      run_id: `checkride-${skill.skill_id}`,
+      kind: "checkride",
+      artifact_uri: `memory://dojo/tests/${skill.skill_id}/checkride`,
+      artifact_sha256: createHash("sha256").update(artifactPayload, "utf8").digest("hex"),
+      claim_ids: claimIds,
+      created_at: createdAt,
+      created_by: "dojo-postgres-tool-control-plane-test",
+      retention_class: "ephemeral",
+    }),
+  ];
 }
