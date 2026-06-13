@@ -100,6 +100,10 @@ function postgresVitestReportFixture() {
       "PostgresDojoAuditStore persists audit actor, request, correlation, entity, and details",
     ],
     [
+      "PostgresDojoSkillStore persists skills and published workflow bindings by tenant scope",
+      "PostgresDojoSkillStore persists skill version records and audit custody",
+    ],
+    [
       "PostgresDojoLicenseStore persists licenses and version history by tenant scope",
       "PostgresDojoLicenseStore revokes licenses with audit custody",
     ],

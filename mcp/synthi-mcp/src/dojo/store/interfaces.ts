@@ -149,6 +149,71 @@ export interface DojoSkillStore {
   listSkills(): DojoSkill[];
 }
 
+export type DojoStoredSkillStatus = "draft" | "published" | "expired" | "revoked";
+
+export interface DojoStoredSkillRecord {
+  tenant_id: string;
+  workspace_id: string;
+  skill_id: string;
+  workflow_id: string;
+  name: string;
+  status: DojoStoredSkillStatus;
+  current_skill_version: string;
+  skill_json: DojoSkill;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DojoStoredSkillVersionRecord {
+  tenant_id: string;
+  workspace_id: string;
+  skill_id: string;
+  skill_version: string;
+  graph_version?: string;
+  seed_json: DojoSkill["skill_seed"];
+  graph_json: DojoSkill["skill_cortex"];
+  created_at: string;
+  created_by?: string;
+}
+
+export interface DojoSkillListFilter {
+  skill_id?: string;
+  workflow_id?: string;
+  status?: DojoStoredSkillStatus;
+  published_tool_name?: string;
+  limit?: number;
+}
+
+export interface DojoSkillVersionListFilter {
+  skill_id?: string;
+  skill_version?: string;
+  graph_version?: string;
+  created_by?: string;
+  limit?: number;
+}
+
+export interface DojoDurableSkillStore {
+  readonly store_contract_kind?: "skill";
+  saveSkill(
+    skill: DojoSkill,
+    options?: {
+      status?: DojoStoredSkillStatus;
+      created_by?: DojoAuditActor;
+      now?: string;
+    }
+  ): MaybePromise<DojoStoredSkillRecord>;
+  getSkillRecord(skillId: string): MaybePromise<DojoStoredSkillRecord | null>;
+  getSkill(skillId: string): MaybePromise<DojoSkill | null>;
+  getSkillByWorkflowId(workflowId: string): MaybePromise<DojoSkill | null>;
+  getSkillByPublishedToolName(toolName: string): MaybePromise<DojoSkill | null>;
+  getPublishedWorkflowBindingByWorkflowId(workflowId: string): MaybePromise<DojoPublishedWorkflowBinding | null>;
+  getPublishedWorkflowBindingByToolName(toolName: string): MaybePromise<DojoPublishedWorkflowBinding | null>;
+  listSkillRecords(filter?: DojoSkillListFilter): MaybePromise<DojoStoredSkillRecord[]>;
+  listSkills(filter?: DojoSkillListFilter): MaybePromise<DojoSkill[]>;
+  getSkillVersion(skillId: string, skillVersion: string): MaybePromise<DojoStoredSkillVersionRecord | null>;
+  listSkillVersions(filter?: DojoSkillVersionListFilter): MaybePromise<DojoStoredSkillVersionRecord[]>;
+}
+
 export interface DojoProofStore {
   saveProofRecord(record: DojoProofCapsuleRecord): void;
   getProofRecord(capsuleId: string): DojoProofCapsuleRecord | null;
