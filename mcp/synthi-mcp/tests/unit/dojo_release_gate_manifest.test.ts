@@ -43,6 +43,10 @@ import {
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "../../scripts/dojo-hosted-runtime-gateway-self-check.mjs";
 import {
+  DOJO_VIVARIUM_RUNTIME_CAPABILITIES,
+  DOJO_VIVARIUM_RUNTIME_TEST_FILES,
+} from "../../scripts/dojo-vivarium-runtime-self-check.mjs";
+import {
   DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "../../scripts/dojo-managed-key-signing-self-check.mjs";
@@ -80,6 +84,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:managed-key-signing:self-check": "node scripts/dojo-managed-key-signing-self-check.mjs",
     "proof:dojo:governance-lifecycle:self-check": "node scripts/dojo-governance-lifecycle-self-check.mjs",
     "proof:dojo:graph-runtime:self-check": "node scripts/dojo-graph-runtime-self-check.mjs",
+    "proof:dojo:vivarium-runtime:self-check": "node scripts/dojo-vivarium-runtime-self-check.mjs",
     "proof:dojo:hosted-runtime-gateway:self-check": "node scripts/dojo-hosted-runtime-gateway-self-check.mjs",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
     "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
@@ -424,6 +429,39 @@ describe("Dojo release gate manifest", () => {
         }),
       }),
       expect.objectContaining({
+        id: "dojo_vivarium_runtime_self_check",
+        tier: "T7",
+        package_script: "proof:dojo:vivarium-runtime:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.vivariumRuntimeEvidence.v1",
+        default_evidence_path: "tmp/dojo-vivarium-runtime/dojo-vivarium-runtime.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          require_all_vivarium_runtime_capabilities_covered: true,
+          required_vivarium_runtime_capabilities: DOJO_VIVARIUM_RUNTIME_CAPABILITIES,
+          required_test_files: DOJO_VIVARIUM_RUNTIME_TEST_FILES,
+          require_scenario_dsl: true,
+          require_synthetic_fixture_materialization: true,
+          require_synthetic_only_policy: true,
+          require_oracle: true,
+          require_ledger_ready_oracle_evidence: true,
+          require_api_fault_server: true,
+          require_fake_success_state_detection: true,
+          require_partial_write_detection: true,
+          require_prompt_injection_quarantine: true,
+          require_deterministic_reset: true,
+          require_budget_enforcement: true,
+          require_targeted_graph_execution: true,
+          require_executable_checkride: true,
+          require_license_constraints_from_blocked_risk: true,
+          require_critical_guardrail_failure: true,
+          require_substrate_hook_passthrough: true,
+          require_evil_twin_attack_measurement: true,
+          require_evil_twin_hardening_loop: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "dojo_hosted_runtime_gateway_self_check",
         tier: "T7",
         package_script: "proof:dojo:hosted-runtime-gateway:self-check",
@@ -710,6 +748,22 @@ describe("Dojo release gate manifest", () => {
       `graph_runtime_missing_required_test_files:${missingGraphRuntimeTestFile}`,
     ]));
 
+    const brokenVivariumRuntime = JSON.parse(JSON.stringify(manifest));
+    const vivariumRuntimeGate = brokenVivariumRuntime.gates.find((gate) => gate.id === "dojo_vivarium_runtime_self_check");
+    const missingVivariumRuntimeTestFile = DOJO_VIVARIUM_RUNTIME_TEST_FILES[0];
+    vivariumRuntimeGate.release_artifact_requirements.required_vivarium_runtime_capabilities = DOJO_VIVARIUM_RUNTIME_CAPABILITIES
+      .filter((capability) => capability !== "evil_twin_hardening_reduces_attack_success_rate");
+    vivariumRuntimeGate.release_artifact_requirements.required_test_files = DOJO_VIVARIUM_RUNTIME_TEST_FILES
+      .filter((file) => file !== missingVivariumRuntimeTestFile);
+    vivariumRuntimeGate.release_artifact_requirements.require_evil_twin_hardening_loop = false;
+    vivariumRuntimeGate.release_artifact_requirements.require_executable_checkride = false;
+    expect(validateDojoReleaseGateManifest(brokenVivariumRuntime, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "vivarium_runtime_missing_evil_twin_hardening_requirement",
+      "vivarium_runtime_missing_checkride_requirement",
+      "vivarium_runtime_missing_required_capabilities:evil_twin_hardening_reduces_attack_success_rate",
+      `vivarium_runtime_missing_required_test_files:${missingVivariumRuntimeTestFile}`,
+    ]));
+
     const brokenHostedRuntimeGateway = JSON.parse(JSON.stringify(manifest));
     const hostedRuntimeGatewayGate = brokenHostedRuntimeGateway.gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check");
     const missingHostedRuntimeTestFile = DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES[0];
@@ -803,6 +857,7 @@ describe("Dojo release gate manifest", () => {
       "dojo_managed_key_signing_self_check",
       "dojo_governance_lifecycle_self_check",
       "dojo_graph_runtime_self_check",
+      "dojo_vivarium_runtime_self_check",
       "dojo_hosted_runtime_gateway_self_check",
       "security_abuse_suite",
       "compliance_export_suite",
@@ -834,7 +889,7 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 19,
+      proof_artifact_gate_count: 20,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
@@ -847,6 +902,7 @@ describe("Dojo release gate manifest", () => {
         "dojo_managed_key_signing_self_check",
         "dojo_governance_lifecycle_self_check",
         "dojo_graph_runtime_self_check",
+        "dojo_vivarium_runtime_self_check",
         "dojo_hosted_runtime_gateway_self_check",
         "compliance_export_suite",
         "privacy_redaction_suite",

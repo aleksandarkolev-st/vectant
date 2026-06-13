@@ -61,6 +61,10 @@ import {
   DOJO_SOURCE_DRIFT_CAPABILITIES,
   DOJO_SOURCE_DRIFT_TEST_FILES,
 } from "./dojo-source-drift-self-check.mjs";
+import {
+  DOJO_VIVARIUM_RUNTIME_CAPABILITIES,
+  DOJO_VIVARIUM_RUNTIME_TEST_FILES,
+} from "./dojo-vivarium-runtime-self-check.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -652,6 +656,44 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
   },
   {
+    id: "dojo_vivarium_runtime_self_check",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:vivarium-runtime:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_scenario_dsl.test.ts tests/unit/dojo_fixture_materializer.test.ts tests/unit/dojo_scenario_oracle.test.ts tests/integration/dojo_api_fault_server.test.ts tests/integration/dojo_vivarium_runner.test.ts tests/integration/dojo_checkride_runner.test.ts tests/integration/dojo_evil_twin_runner.test.ts -- --reporter=json --outputFile ../../tmp/dojo-vivarium-runtime/dojo-vivarium-runtime.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:vivarium-runtime:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.vivariumRuntimeEvidence.v1",
+    default_evidence_path: "tmp/dojo-vivarium-runtime/dojo-vivarium-runtime.evidence.json",
+    release_artifact_requirements: {
+      require_all_vivarium_runtime_capabilities_covered: true,
+      required_vivarium_runtime_capabilities: [...DOJO_VIVARIUM_RUNTIME_CAPABILITIES],
+      required_test_files: [...DOJO_VIVARIUM_RUNTIME_TEST_FILES],
+      require_scenario_dsl: true,
+      require_synthetic_fixture_materialization: true,
+      require_synthetic_only_policy: true,
+      require_oracle: true,
+      require_ledger_ready_oracle_evidence: true,
+      require_api_fault_server: true,
+      require_fake_success_state_detection: true,
+      require_partial_write_detection: true,
+      require_prompt_injection_quarantine: true,
+      require_deterministic_reset: true,
+      require_budget_enforcement: true,
+      require_targeted_graph_execution: true,
+      require_executable_checkride: true,
+      require_license_constraints_from_blocked_risk: true,
+      require_critical_guardrail_failure: true,
+      require_substrate_hook_passthrough: true,
+      require_evil_twin_attack_measurement: true,
+      require_evil_twin_hardening_loop: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "dojo_hosted_runtime_gateway_self_check",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -823,6 +865,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "dojo_managed_key_signing_self_check",
   "dojo_governance_lifecycle_self_check",
   "dojo_graph_runtime_self_check",
+  "dojo_vivarium_runtime_self_check",
   "dojo_hosted_runtime_gateway_self_check",
   "security_abuse_suite",
   "compliance_export_suite",
@@ -1399,6 +1442,65 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!graphRuntimeGate.release_artifact_requirements?.require_json_report_digest_match) {
       errors.push("graph_runtime_missing_json_report_digest_requirement");
+    }
+  }
+  const vivariumRuntimeGate = gates.find((gate) => gate.id === "dojo_vivarium_runtime_self_check");
+  if (vivariumRuntimeGate) {
+    if (vivariumRuntimeGate.evidence_schema_version !== "synthi.dojo.vivariumRuntimeEvidence.v1") {
+      errors.push("vivarium_runtime_missing_evidence_schema");
+    }
+    if (vivariumRuntimeGate.package_script !== "proof:dojo:vivarium-runtime:self-check") {
+      errors.push("vivarium_runtime_missing_package_script");
+    }
+    if (!vivariumRuntimeGate.default_evidence_path) errors.push("vivarium_runtime_missing_default_evidence_path");
+    if (!vivariumRuntimeGate.release_artifact_requirements?.require_all_vivarium_runtime_capabilities_covered) {
+      errors.push("vivarium_runtime_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_scenario_dsl", "vivarium_runtime_missing_scenario_dsl_requirement"],
+      ["require_synthetic_fixture_materialization", "vivarium_runtime_missing_fixture_requirement"],
+      ["require_synthetic_only_policy", "vivarium_runtime_missing_synthetic_policy_requirement"],
+      ["require_oracle", "vivarium_runtime_missing_oracle_requirement"],
+      ["require_ledger_ready_oracle_evidence", "vivarium_runtime_missing_oracle_evidence_requirement"],
+      ["require_api_fault_server", "vivarium_runtime_missing_api_fault_requirement"],
+      ["require_fake_success_state_detection", "vivarium_runtime_missing_fake_success_requirement"],
+      ["require_partial_write_detection", "vivarium_runtime_missing_partial_write_requirement"],
+      ["require_prompt_injection_quarantine", "vivarium_runtime_missing_prompt_injection_requirement"],
+      ["require_deterministic_reset", "vivarium_runtime_missing_reset_requirement"],
+      ["require_budget_enforcement", "vivarium_runtime_missing_budget_requirement"],
+      ["require_targeted_graph_execution", "vivarium_runtime_missing_targeted_graph_requirement"],
+      ["require_executable_checkride", "vivarium_runtime_missing_checkride_requirement"],
+      ["require_license_constraints_from_blocked_risk", "vivarium_runtime_missing_license_constraint_requirement"],
+      ["require_critical_guardrail_failure", "vivarium_runtime_missing_critical_guardrail_requirement"],
+      ["require_substrate_hook_passthrough", "vivarium_runtime_missing_substrate_hook_requirement"],
+      ["require_evil_twin_attack_measurement", "vivarium_runtime_missing_evil_twin_measurement_requirement"],
+      ["require_evil_twin_hardening_loop", "vivarium_runtime_missing_evil_twin_hardening_requirement"],
+    ]) {
+      if (!vivariumRuntimeGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredVivariumCapabilities = Array.isArray(vivariumRuntimeGate.release_artifact_requirements?.required_vivarium_runtime_capabilities)
+      ? vivariumRuntimeGate.release_artifact_requirements.required_vivarium_runtime_capabilities
+      : [];
+    const missingVivariumCapabilities = DOJO_VIVARIUM_RUNTIME_CAPABILITIES
+      .filter((capability) => !requiredVivariumCapabilities.includes(capability));
+    if (missingVivariumCapabilities.length > 0) {
+      errors.push(`vivarium_runtime_missing_required_capabilities:${missingVivariumCapabilities.join(",")}`);
+    }
+    const missingVivariumTestFiles = missingRequiredEntries(
+      DOJO_VIVARIUM_RUNTIME_TEST_FILES,
+      vivariumRuntimeGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingVivariumTestFiles.length > 0) {
+      errors.push(`vivarium_runtime_missing_required_test_files:${missingVivariumTestFiles.join(",")}`);
+    }
+    if (!vivariumRuntimeGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("vivarium_runtime_missing_no_skipped_requirement");
+    }
+    if (!vivariumRuntimeGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("vivarium_runtime_missing_digest_requirement");
+    }
+    if (!vivariumRuntimeGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("vivarium_runtime_missing_json_report_digest_requirement");
     }
   }
   const hostedRuntimeGatewayGate = gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check");

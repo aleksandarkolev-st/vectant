@@ -72,6 +72,10 @@ import {
   DOJO_SOURCE_DRIFT_CAPABILITIES,
   DOJO_SOURCE_DRIFT_TEST_FILES,
 } from "./dojo-source-drift-self-check.mjs";
+import {
+  DOJO_VIVARIUM_RUNTIME_CAPABILITIES,
+  DOJO_VIVARIUM_RUNTIME_TEST_FILES,
+} from "./dojo-vivarium-runtime-self-check.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -95,6 +99,7 @@ const DEFAULT_GOVERNANCE_LIFECYCLE_DIR = path.join(REPO_ROOT, "tmp", "dojo-gover
 const DEFAULT_GRAPH_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-graph-runtime");
 const DEFAULT_HOSTED_RUNTIME_GATEWAY_DIR = path.join(REPO_ROOT, "tmp", "dojo-hosted-runtime-gateway");
 const DEFAULT_MANAGED_KEY_SIGNING_DIR = path.join(REPO_ROOT, "tmp", "dojo-managed-key-signing");
+const DEFAULT_VIVARIUM_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-vivarium-runtime");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_COMPLIANCE_EXPORT_DIR = path.join(REPO_ROOT, "tmp", "dojo-compliance-export");
 const DEFAULT_PRIVACY_REDACTION_DIR = path.join(REPO_ROOT, "tmp", "dojo-privacy-redaction");
@@ -317,6 +322,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
+  const vivariumRuntimeResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-vivarium-runtime"]) || args["vivarium-runtime-evidence"]) {
+    const vivariumRuntimeGate = findGate(manifest, "dojo_vivarium_runtime_self_check") || {};
+    vivariumRuntimeResults.push(await verifyDojoVivariumRuntimeEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["vivarium-runtime-evidence"]
+        || vivariumRuntimeGate.default_evidence_path
+        || path.join(DEFAULT_VIVARIUM_RUNTIME_DIR, "dojo-vivarium-runtime.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
   const hostedRuntimeGatewayResults = [];
   if (truthy(args["release-candidate"]) || truthy(args["include-hosted-runtime-gateway"]) || args["hosted-runtime-gateway-evidence"]) {
     const hostedRuntimeGatewayGate = findGate(manifest, "dojo_hosted_runtime_gateway_self_check") || {};
@@ -376,7 +392,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...vivariumRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -394,6 +410,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     managed_key_signing: managedKeySigningResults.map(summarizeSection),
     governance_lifecycle: governanceLifecycleResults.map(summarizeSection),
     graph_runtime: graphRuntimeResults.map(summarizeSection),
+    vivarium_runtime: vivariumRuntimeResults.map(summarizeSection),
     hosted_runtime_gateway: hostedRuntimeGatewayResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
     compliance_export: complianceExportResults.map(summarizeSection),
@@ -1682,6 +1699,98 @@ export function validateDojoGraphRuntimeEvidenceForRelease(evidence) {
   };
 }
 
+export async function verifyDojoVivariumRuntimeEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoVivariumRuntimeEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_vivarium_runtime_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoVivariumRuntimeEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.vivariumRuntimeEvidence.v1") {
+    errors.push(`vivarium_runtime_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("vivarium_runtime_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`vivarium_runtime_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("vivarium_runtime_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`vivarium_runtime_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_VIVARIUM_RUNTIME_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`vivarium_runtime_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_VIVARIUM_RUNTIME_TEST_FILES,
+    prefix: "vivarium_runtime",
+  }));
+  const untestedRequiredCapabilities = DOJO_VIVARIUM_RUNTIME_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`vivarium_runtime_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`vivarium_runtime_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`vivarium_runtime_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.vivarium_contract || {};
+  for (const [field, errorCode] of [
+    ["scenario_dsl_required", "vivarium_runtime_scenario_dsl_requirement_missing"],
+    ["synthetic_fixture_materialization_required", "vivarium_runtime_fixture_requirement_missing"],
+    ["synthetic_only_policy_required", "vivarium_runtime_synthetic_policy_requirement_missing"],
+    ["oracle_required", "vivarium_runtime_oracle_requirement_missing"],
+    ["ledger_ready_oracle_evidence_required", "vivarium_runtime_oracle_evidence_requirement_missing"],
+    ["api_fault_server_required", "vivarium_runtime_api_fault_requirement_missing"],
+    ["fake_success_state_detection_required", "vivarium_runtime_fake_success_requirement_missing"],
+    ["partial_write_detection_required", "vivarium_runtime_partial_write_requirement_missing"],
+    ["prompt_injection_quarantine_required", "vivarium_runtime_prompt_injection_requirement_missing"],
+    ["deterministic_reset_required", "vivarium_runtime_reset_requirement_missing"],
+    ["budget_enforcement_required", "vivarium_runtime_budget_requirement_missing"],
+    ["targeted_graph_execution_required", "vivarium_runtime_targeted_graph_requirement_missing"],
+    ["executable_checkride_required", "vivarium_runtime_checkride_requirement_missing"],
+    ["license_constraints_from_blocked_risk_required", "vivarium_runtime_license_constraint_requirement_missing"],
+    ["critical_guardrail_failure_required", "vivarium_runtime_critical_guardrail_requirement_missing"],
+    ["substrate_hook_passthrough_required", "vivarium_runtime_substrate_hook_requirement_missing"],
+    ["evil_twin_attack_measurement_required", "vivarium_runtime_evil_twin_measurement_requirement_missing"],
+    ["evil_twin_hardening_loop_required", "vivarium_runtime_evil_twin_hardening_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("vivarium_runtime_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`vivarium_runtime_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`vivarium_runtime_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("vivarium_runtime_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`vivarium_runtime_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
 export async function verifyDojoHostedRuntimeGatewayEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
   const evidence = await readJsonFile(evidencePath);
   const errors = validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence).errors;
@@ -2855,6 +2964,37 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedGraphRuntime.errors.includes("graph_runtime_rollback_requirement_missing"));
   assert(rejectedGraphRuntime.errors.includes("graph_runtime_proof_gate_requirement_missing"));
 
+  const vivariumRuntimeDir = path.join(outDir, "vivarium-runtime");
+  await mkdir(vivariumRuntimeDir, { recursive: true });
+  const vivariumRuntimeArtifacts = await writeVivariumRuntimeEvidenceForSelfCheck({ outDir: vivariumRuntimeDir });
+  const vivariumRuntimeResult = await verifyDojoVivariumRuntimeEvidenceArtifact({
+    evidencePath: vivariumRuntimeArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(vivariumRuntimeResult.ok, true, vivariumRuntimeResult.errors.join(";"));
+  const rejectedVivariumRuntimeArtifacts = await writeVivariumRuntimeEvidenceForSelfCheck({
+    outDir: vivariumRuntimeDir,
+    basename: "dojo-vivarium-runtime-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["evil_twin_hardening_reduces_attack_success_rate"],
+      vivarium_contract: {
+        ...vivariumRuntimeArtifacts.evidence.vivarium_contract,
+        evil_twin_hardening_loop_required: false,
+        executable_checkride_required: false,
+      },
+    },
+  });
+  const rejectedVivariumRuntime = await verifyDojoVivariumRuntimeEvidenceArtifact({
+    evidencePath: rejectedVivariumRuntimeArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_coverage_incomplete"));
+  assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_missing_capabilities:evil_twin_hardening_reduces_attack_success_rate"));
+  assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_evil_twin_hardening_requirement_missing"));
+  assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_checkride_requirement_missing"));
+
   const hostedRuntimeGatewayDir = path.join(outDir, "hosted-runtime-gateway");
   await mkdir(hostedRuntimeGatewayDir, { recursive: true });
   const hostedRuntimeGatewayArtifacts = await writeHostedRuntimeGatewayEvidenceForSelfCheck({ outDir: hostedRuntimeGatewayDir });
@@ -3036,6 +3176,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(managedKeySigningResult),
       summarizeSection(governanceLifecycleResult),
       summarizeSection(graphRuntimeResult),
+      summarizeSection(vivariumRuntimeResult),
       summarizeSection(hostedRuntimeGatewayResult),
       summarizeSection(sourceDriftResult),
       summarizeSection(apiToolCompilerResult),
@@ -3056,6 +3197,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedManagedKeySigning),
       summarizeSection(rejectedGovernanceLifecycle),
       summarizeSection(rejectedGraphRuntime),
+      summarizeSection(rejectedVivariumRuntime),
       summarizeSection(rejectedHostedRuntimeGateway),
       summarizeSection(rejectedSourceDrift),
       summarizeSection(rejectedApiToolCompiler),
@@ -4476,6 +4618,112 @@ async function writeGraphRuntimeEvidenceForSelfCheck({
     test_summary: {
       total_tests: DOJO_GRAPH_RUNTIME_CAPABILITIES.length,
       passed_tests: DOJO_GRAPH_RUNTIME_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeVivariumRuntimeEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-vivarium-runtime",
+  overrides = {},
+}) {
+  const stdout = "vivarium runtime focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.length,
+    numPassedTests: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_VIVARIUM_RUNTIME_TEST_FILES.length,
+    numPassedTestSuites: DOJO_VIVARIUM_RUNTIME_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.vivariumRuntimeEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: DOJO_VIVARIUM_RUNTIME_CAPABILITIES,
+    tested_capabilities: DOJO_VIVARIUM_RUNTIME_CAPABILITIES,
+    missing_capabilities: [],
+    capability_count: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.length,
+    configured_capability_count: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    vivarium_contract: {
+      scenario_dsl_required: true,
+      synthetic_fixture_materialization_required: true,
+      synthetic_only_policy_required: true,
+      oracle_required: true,
+      ledger_ready_oracle_evidence_required: true,
+      api_fault_server_required: true,
+      fake_success_state_detection_required: true,
+      partial_write_detection_required: true,
+      prompt_injection_quarantine_required: true,
+      deterministic_reset_required: true,
+      budget_enforcement_required: true,
+      targeted_graph_execution_required: true,
+      executable_checkride_required: true,
+      license_constraints_from_blocked_risk_required: true,
+      critical_guardrail_failure_required: true,
+      substrate_hook_passthrough_required: true,
+      evil_twin_attack_measurement_required: true,
+      evil_twin_hardening_loop_required: true,
+    },
+    test_files: [...DOJO_VIVARIUM_RUNTIME_TEST_FILES],
+    test_file_count: DOJO_VIVARIUM_RUNTIME_TEST_FILES.length,
+    reported_test_file_count: DOJO_VIVARIUM_RUNTIME_TEST_FILES.length,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_report_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.length,
+      passed_tests: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.length,
       failed_tests: 0,
       pending_tests: 0,
     },
