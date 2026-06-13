@@ -13,6 +13,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  DOJO_API_TOOL_COMPILER_CAPABILITIES,
+  DOJO_API_TOOL_COMPILER_TEST_FILES,
+} from "./dojo-api-tool-compiler-self-check.mjs";
+import {
   DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
   DOJO_COMPLIANCE_EXPORT_TEST_FILES,
 } from "./dojo-compliance-export-self-check.mjs";
@@ -260,6 +264,35 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     evidence_schema_version: "synthi.dojo.affordanceCodemodEvidence.v1",
     default_report_path: "tmp/dojo-affordance-codemod-self-check/dojo-affordance-codemod-self-check.json",
     default_evidence_path: "tmp/dojo-affordance-codemod-self-check/dojo-affordance-codemod-self-check.evidence.json",
+  },
+  {
+    id: "dojo_api_tool_compiler_self_check",
+    tier: "T2",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:api-tool-compiler:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_api_candidate.test.ts tests/unit/dojo_api_tool_compiler.test.ts tests/unit/dojo_substrate_executor.test.ts -- --reporter=json --outputFile ../../tmp/dojo-api-tool-compiler/dojo-api-tool-compiler.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:api-tool-compiler:self-check",
+    required_for: ["milestone", "release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.apiToolCompilerEvidence.v1",
+    default_evidence_path: "tmp/dojo-api-tool-compiler/dojo-api-tool-compiler.evidence.json",
+    artifact_requirements: {
+      require_all_api_tool_compiler_capabilities_covered: true,
+      required_api_tool_compiler_capabilities: [...DOJO_API_TOOL_COMPILER_CAPABILITIES],
+      required_test_files: [...DOJO_API_TOOL_COMPILER_TEST_FILES],
+      require_reviewed_candidate: true,
+      require_proof_capsule: true,
+      require_license_kernel: true,
+      require_idempotency: true,
+      require_auth_scope: true,
+      require_strict_input_schema: true,
+      require_postcondition: true,
+      require_evidence_write: true,
+      require_graph_proof_match: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
   },
   {
     id: "frontend_lint",
@@ -625,6 +658,7 @@ export const DOJO_MILESTONE_GATE_IDS = [
   "dojo_self_check",
   "dojo_mcp_host_conformance_self_check",
   "dojo_affordance_codemod_self_check",
+  "dojo_api_tool_compiler_self_check",
   "docker_integration",
   "dojo_full_visual_proof",
   "dojo_ghost_mode_visual_proof",
@@ -802,6 +836,56 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!Array.isArray(postgresControlPlaneGate.requires_env)
       || !postgresControlPlaneGate.requires_env.includes("SYNTHI_DOJO_POSTGRES_TEST_URL")) {
       errors.push("postgres_control_plane_missing_postgres_env");
+    }
+  }
+  const apiToolCompilerGate = gates.find((gate) => gate.id === "dojo_api_tool_compiler_self_check");
+  if (apiToolCompilerGate) {
+    if (apiToolCompilerGate.evidence_schema_version !== "synthi.dojo.apiToolCompilerEvidence.v1") {
+      errors.push("api_tool_compiler_missing_evidence_schema");
+    }
+    if (apiToolCompilerGate.package_script !== "proof:dojo:api-tool-compiler:self-check") {
+      errors.push("api_tool_compiler_missing_package_script");
+    }
+    if (!apiToolCompilerGate.default_evidence_path) errors.push("api_tool_compiler_missing_default_evidence_path");
+    if (!apiToolCompilerGate.artifact_requirements?.require_all_api_tool_compiler_capabilities_covered) {
+      errors.push("api_tool_compiler_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_reviewed_candidate", "api_tool_compiler_missing_reviewed_candidate_requirement"],
+      ["require_proof_capsule", "api_tool_compiler_missing_proof_requirement"],
+      ["require_license_kernel", "api_tool_compiler_missing_license_requirement"],
+      ["require_idempotency", "api_tool_compiler_missing_idempotency_requirement"],
+      ["require_auth_scope", "api_tool_compiler_missing_auth_scope_requirement"],
+      ["require_strict_input_schema", "api_tool_compiler_missing_strict_schema_requirement"],
+      ["require_postcondition", "api_tool_compiler_missing_postcondition_requirement"],
+      ["require_evidence_write", "api_tool_compiler_missing_evidence_requirement"],
+      ["require_graph_proof_match", "api_tool_compiler_missing_graph_proof_requirement"],
+    ]) {
+      if (!apiToolCompilerGate.artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredApiToolCompilerCapabilities = Array.isArray(apiToolCompilerGate.artifact_requirements?.required_api_tool_compiler_capabilities)
+      ? apiToolCompilerGate.artifact_requirements.required_api_tool_compiler_capabilities
+      : [];
+    const missingApiToolCompilerCapabilities = DOJO_API_TOOL_COMPILER_CAPABILITIES
+      .filter((capability) => !requiredApiToolCompilerCapabilities.includes(capability));
+    if (missingApiToolCompilerCapabilities.length > 0) {
+      errors.push(`api_tool_compiler_missing_required_capabilities:${missingApiToolCompilerCapabilities.join(",")}`);
+    }
+    const missingApiToolCompilerTestFiles = missingRequiredEntries(
+      DOJO_API_TOOL_COMPILER_TEST_FILES,
+      apiToolCompilerGate.artifact_requirements?.required_test_files,
+    );
+    if (missingApiToolCompilerTestFiles.length > 0) {
+      errors.push(`api_tool_compiler_missing_required_test_files:${missingApiToolCompilerTestFiles.join(",")}`);
+    }
+    if (!apiToolCompilerGate.artifact_requirements?.require_no_skipped_tests) {
+      errors.push("api_tool_compiler_missing_no_skipped_requirement");
+    }
+    if (!apiToolCompilerGate.artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("api_tool_compiler_missing_digest_requirement");
+    }
+    if (!apiToolCompilerGate.artifact_requirements?.require_json_report_digest_match) {
+      errors.push("api_tool_compiler_missing_json_report_digest_requirement");
     }
   }
   const dockerIntegrationGate = gates.find((gate) => gate.id === "docker_integration");

@@ -166,6 +166,7 @@
   },
   "files": [
     "dist",
+    "scripts/dojo-api-tool-compiler-self-check.mjs",
     "scripts/lib/gpu-hmr-acceptance-contract.mjs",
     "scripts/lib/gpu-hmr-validation-matrix-ledger.mjs",
     "scripts/dojo-affordance-codemod-self-check.mjs",
@@ -233,6 +234,7 @@
     "proof:dojo:docker-integration:self-check": "node scripts/dojo-docker-integration-self-check.mjs",
     "proof:dojo:postgres-control-plane:self-check": "node scripts/dojo-postgres-control-plane-self-check.mjs",
     "proof:dojo:affordance-codemod:self-check": "node scripts/dojo-affordance-codemod-self-check.mjs",
+    "proof:dojo:api-tool-compiler:self-check": "node scripts/dojo-api-tool-compiler-self-check.mjs --from-json ../../tmp/dojo-api-tool-compiler/dojo-api-tool-compiler.vitest.json",
     "proof:dojo:release-gates:self-check": "node scripts/dojo-release-gate-manifest.mjs --self-check",
     "proof:dojo:release-gates:verify": "node scripts/dojo-release-gate-verify.mjs",
     "proof:dojo:release-gates:verify:self-check": "node scripts/dojo-release-gate-verify.mjs --self-check",

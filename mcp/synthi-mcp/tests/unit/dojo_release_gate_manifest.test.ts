@@ -14,6 +14,10 @@ import {
   validateDojoVisualProofReport,
 } from "../../scripts/dojo-release-gate-manifest.mjs";
 import {
+  DOJO_API_TOOL_COMPILER_CAPABILITIES,
+  DOJO_API_TOOL_COMPILER_TEST_FILES,
+} from "../../scripts/dojo-api-tool-compiler-self-check.mjs";
+import {
   DOJO_CHAOS_PERFORMANCE_TEST_FILES,
   DOJO_CHAOS_SCENARIOS,
 } from "../../scripts/dojo-chaos-performance-self-check.mjs";
@@ -55,6 +59,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:docker-integration:self-check": "node scripts/dojo-docker-integration-self-check.mjs",
     "proof:dojo:postgres-control-plane:self-check": "node scripts/dojo-postgres-control-plane-self-check.mjs",
     "proof:dojo:affordance-codemod:self-check": "node scripts/dojo-affordance-codemod-self-check.mjs",
+    "proof:dojo:api-tool-compiler:self-check": "node scripts/dojo-api-tool-compiler-self-check.mjs",
     "proof:dojo:managed-key-signing:self-check": "node scripts/dojo-managed-key-signing-self-check.mjs",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
     "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
@@ -158,6 +163,29 @@ describe("Dojo release gate manifest", () => {
         script_exists: true,
         report_schema_version: "synthi.dojo.affordanceCodemodSelfCheck.v1",
         evidence_schema_version: "synthi.dojo.affordanceCodemodEvidence.v1",
+      }),
+      expect.objectContaining({
+        id: "dojo_api_tool_compiler_self_check",
+        tier: "T2",
+        package_script: "proof:dojo:api-tool-compiler:self-check",
+        evidence_kind: "proof_artifact",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.apiToolCompilerEvidence.v1",
+        default_evidence_path: "tmp/dojo-api-tool-compiler/dojo-api-tool-compiler.evidence.json",
+        artifact_requirements: expect.objectContaining({
+          require_all_api_tool_compiler_capabilities_covered: true,
+          required_api_tool_compiler_capabilities: DOJO_API_TOOL_COMPILER_CAPABILITIES,
+          required_test_files: DOJO_API_TOOL_COMPILER_TEST_FILES,
+          require_reviewed_candidate: true,
+          require_proof_capsule: true,
+          require_license_kernel: true,
+          require_idempotency: true,
+          require_auth_scope: true,
+          require_strict_input_schema: true,
+          require_postcondition: true,
+          require_evidence_write: true,
+          require_graph_proof_match: true,
+        }),
       }),
       expect.objectContaining({
         id: "docker_integration",
@@ -435,6 +463,22 @@ describe("Dojo release gate manifest", () => {
       `postgres_control_plane_missing_required_test_files:${missingPostgresTestFile}`,
     ]));
 
+    const brokenApiToolCompiler = JSON.parse(JSON.stringify(manifest));
+    const apiToolCompilerGate = brokenApiToolCompiler.gates.find((gate) => gate.id === "dojo_api_tool_compiler_self_check");
+    const missingApiToolCompilerTestFile = DOJO_API_TOOL_COMPILER_TEST_FILES[0];
+    apiToolCompilerGate.artifact_requirements.required_api_tool_compiler_capabilities = DOJO_API_TOOL_COMPILER_CAPABILITIES
+      .filter((capability) => capability !== "api_tool_executes_with_idempotency_postcondition_and_evidence");
+    apiToolCompilerGate.artifact_requirements.required_test_files = DOJO_API_TOOL_COMPILER_TEST_FILES
+      .filter((file) => file !== missingApiToolCompilerTestFile);
+    apiToolCompilerGate.artifact_requirements.require_proof_capsule = false;
+    apiToolCompilerGate.artifact_requirements.require_evidence_write = false;
+    expect(validateDojoReleaseGateManifest(brokenApiToolCompiler, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "api_tool_compiler_missing_proof_requirement",
+      "api_tool_compiler_missing_evidence_requirement",
+      "api_tool_compiler_missing_required_capabilities:api_tool_executes_with_idempotency_postcondition_and_evidence",
+      `api_tool_compiler_missing_required_test_files:${missingApiToolCompilerTestFile}`,
+    ]));
+
     const brokenDocker = JSON.parse(JSON.stringify(manifest));
     const dockerGate = brokenDocker.gates.find((gate) => gate.id === "docker_integration");
     dockerGate.artifact_requirements.required_services = DOJO_DOCKER_REQUIRED_SERVICES
@@ -593,11 +637,12 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 14,
+      proof_artifact_gate_count: 15,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
         "dojo_mcp_host_conformance_self_check",
+        "dojo_api_tool_compiler_self_check",
         "docker_integration",
         "workflow_e2e_hosted",
         "dojo_mcp_host_conformance",

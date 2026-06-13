@@ -18,6 +18,10 @@ import {
   validateDojoVisualProofReport,
 } from "./dojo-release-gate-manifest.mjs";
 import {
+  DOJO_API_TOOL_COMPILER_CAPABILITIES,
+  DOJO_API_TOOL_COMPILER_TEST_FILES,
+} from "./dojo-api-tool-compiler-self-check.mjs";
+import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
   DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS,
@@ -68,6 +72,7 @@ const DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tm
 const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-host-conformance");
 const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-postgres-control-plane");
 const DEFAULT_AFFORDANCE_CODEMOD_DIR = path.join(REPO_ROOT, "tmp", "dojo-affordance-codemod-self-check");
+const DEFAULT_API_TOOL_COMPILER_DIR = path.join(REPO_ROOT, "tmp", "dojo-api-tool-compiler");
 const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-integration");
 const DEFAULT_MANAGED_KEY_SIGNING_DIR = path.join(REPO_ROOT, "tmp", "dojo-managed-key-signing");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
@@ -181,6 +186,15 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       evidencePath: resolveRepoPath(args["affordance-codemod-evidence"]
         || affordanceGate.default_evidence_path
         || path.join(DEFAULT_AFFORDANCE_CODEMOD_DIR, "dojo-affordance-codemod-self-check.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+  if (truthy(args["release-candidate"]) || truthy(args["include-api-tool-compiler"]) || args["api-tool-compiler-evidence"]) {
+    const apiToolCompilerGate = findGate(manifest, "dojo_api_tool_compiler_self_check") || {};
+    sourceApiResults.push(await verifyDojoApiToolCompilerEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["api-tool-compiler-evidence"]
+        || apiToolCompilerGate.default_evidence_path
+        || path.join(DEFAULT_API_TOOL_COMPILER_DIR, "dojo-api-tool-compiler.evidence.json")),
       releaseCandidate: truthy(args["release-candidate"]),
     }));
   }
@@ -766,6 +780,92 @@ export async function verifyDojoAffordanceCodemodEvidenceArtifact({ reportPath, 
     report_schema_version: report?.schema_version ?? null,
     evidence_schema_version: evidence?.schema_version ?? null,
     operation_count: Array.isArray(evidence?.operation_ids) ? evidence.operation_ids.length : 0,
+  };
+}
+
+export async function verifyDojoApiToolCompilerEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoApiToolCompilerEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_api_tool_compiler_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoApiToolCompilerEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.apiToolCompilerEvidence.v1") {
+    errors.push(`api_tool_compiler_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("api_tool_compiler_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`api_tool_compiler_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("api_tool_compiler_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`api_tool_compiler_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_API_TOOL_COMPILER_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`api_tool_compiler_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_API_TOOL_COMPILER_TEST_FILES,
+    prefix: "api_tool_compiler",
+  }));
+  const untestedRequiredCapabilities = DOJO_API_TOOL_COMPILER_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`api_tool_compiler_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`api_tool_compiler_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`api_tool_compiler_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const promotionContract = evidence?.promotion_contract || {};
+  for (const [field, errorCode] of [
+    ["reviewed_candidate_required", "api_tool_compiler_reviewed_candidate_requirement_missing"],
+    ["proof_capsule_required", "api_tool_compiler_proof_requirement_missing"],
+    ["license_kernel_required", "api_tool_compiler_license_requirement_missing"],
+    ["idempotency_required", "api_tool_compiler_idempotency_requirement_missing"],
+    ["auth_scope_required", "api_tool_compiler_auth_scope_requirement_missing"],
+    ["strict_input_schema_required", "api_tool_compiler_strict_schema_requirement_missing"],
+    ["postcondition_required", "api_tool_compiler_postcondition_requirement_missing"],
+    ["evidence_write_required", "api_tool_compiler_evidence_requirement_missing"],
+    ["graph_proof_match_required", "api_tool_compiler_graph_proof_requirement_missing"],
+  ]) {
+    if (promotionContract[field] !== true) errors.push(errorCode);
+  }
+  if (promotionContract.production_candidate_only_execution_allowed !== false) {
+    errors.push("api_tool_compiler_candidate_only_production_allowed");
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("api_tool_compiler_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`api_tool_compiler_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`api_tool_compiler_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("api_tool_compiler_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`api_tool_compiler_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
   };
 }
 
@@ -2040,6 +2140,37 @@ async function runSelfCheck({ outDir }) {
   });
   assert(rejectedAffordanceCodemod.errors.includes("affordance_codemod_before_did_not_fail"));
 
+  const apiToolCompilerDir = path.join(outDir, "api-tool-compiler");
+  await mkdir(apiToolCompilerDir, { recursive: true });
+  const apiToolCompilerArtifacts = await writeApiToolCompilerEvidenceForSelfCheck({ outDir: apiToolCompilerDir });
+  const apiToolCompilerResult = await verifyDojoApiToolCompilerEvidenceArtifact({
+    evidencePath: apiToolCompilerArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(apiToolCompilerResult.ok, true, apiToolCompilerResult.errors.join(";"));
+  const rejectedApiToolCompilerArtifacts = await writeApiToolCompilerEvidenceForSelfCheck({
+    outDir: apiToolCompilerDir,
+    basename: "dojo-api-tool-compiler-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["api_tool_executes_with_idempotency_postcondition_and_evidence"],
+      promotion_contract: {
+        ...apiToolCompilerArtifacts.evidence.promotion_contract,
+        proof_capsule_required: false,
+        production_candidate_only_execution_allowed: true,
+      },
+    },
+  });
+  const rejectedApiToolCompiler = await verifyDojoApiToolCompilerEvidenceArtifact({
+    evidencePath: rejectedApiToolCompilerArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedApiToolCompiler.errors.includes("api_tool_compiler_coverage_incomplete"));
+  assert(rejectedApiToolCompiler.errors.includes("api_tool_compiler_missing_capabilities:api_tool_executes_with_idempotency_postcondition_and_evidence"));
+  assert(rejectedApiToolCompiler.errors.includes("api_tool_compiler_proof_requirement_missing"));
+  assert(rejectedApiToolCompiler.errors.includes("api_tool_compiler_candidate_only_production_allowed"));
+
   const liveHostedDir = path.join(outDir, "live-hosted-runtime");
   await mkdir(liveHostedDir, { recursive: true });
   const liveHostedArtifacts = await writeLiveHostedRuntimeArtifactsForSelfCheck({ outDir: liveHostedDir });
@@ -2367,6 +2498,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(stdioHostConformanceResult),
       summarizeSection(codexHostConformanceResult),
       summarizeSection(managedKeySigningResult),
+      summarizeSection(apiToolCompilerResult),
       summarizeSection(visualResult),
       summarizeSection(securityResult),
       summarizeSection(complianceResult),
@@ -2382,6 +2514,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedDryRun),
       summarizeSection(rejectedStdioHost),
       summarizeSection(rejectedManagedKeySigning),
+      summarizeSection(rejectedApiToolCompiler),
       summarizeSection(rejectedSecurity),
       summarizeSection(rejectedCompliance),
       summarizeSection(rejectedPrivacy),
@@ -2579,6 +2712,104 @@ async function writeAffordanceCodemodArtifactsForSelfCheck({ outDir, basename = 
   return {
     report_path: reportPath,
     evidence_path: evidencePath,
+  };
+}
+
+async function writeApiToolCompilerEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-api-tool-compiler",
+  overrides = {},
+}) {
+  const stdout = "api tool compiler focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+    numPassedTests: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: 1,
+    numPassedTestSuites: 1,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_API_TOOL_COMPILER_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.apiToolCompilerEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: DOJO_API_TOOL_COMPILER_CAPABILITIES,
+    tested_capabilities: DOJO_API_TOOL_COMPILER_CAPABILITIES,
+    capability_count: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+    configured_capability_count: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    missing_capabilities: [],
+    promotion_contract: {
+      reviewed_candidate_required: true,
+      proof_capsule_required: true,
+      license_kernel_required: true,
+      idempotency_required: true,
+      auth_scope_required: true,
+      strict_input_schema_required: true,
+      postcondition_required: true,
+      evidence_write_required: true,
+      graph_proof_match_required: true,
+      production_candidate_only_execution_allowed: false,
+    },
+    test_files: [...DOJO_API_TOOL_COMPILER_TEST_FILES],
+    test_file_count: DOJO_API_TOOL_COMPILER_TEST_FILES.length,
+    reported_test_file_count: DOJO_API_TOOL_COMPILER_TEST_FILES.length,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_spawn_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+      passed_tests: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
   };
 }
 

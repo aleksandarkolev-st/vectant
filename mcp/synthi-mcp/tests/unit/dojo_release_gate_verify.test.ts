@@ -10,6 +10,10 @@ import {
   buildDojoReleaseGateManifest,
 } from "../../scripts/dojo-release-gate-manifest.mjs";
 import {
+  DOJO_API_TOOL_COMPILER_CAPABILITIES,
+  DOJO_API_TOOL_COMPILER_TEST_FILES,
+} from "../../scripts/dojo-api-tool-compiler-self-check.mjs";
+import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
@@ -44,6 +48,7 @@ import {
 } from "../../scripts/dojo-security-abuse-self-check.mjs";
 import {
   validateDojoProofSelfCheckForRelease,
+  validateDojoApiToolCompilerEvidenceForRelease,
   validateDojoMcpHostConformanceReportForRelease,
   validateDojoPrivateToolCodexAcceptanceForRelease,
   validateDojoPrivateToolCodexHostConformanceForRelease,
@@ -62,6 +67,7 @@ import {
   verifyDojoChaosPerformanceEvidenceArtifact,
   verifyDojoComplianceExportEvidenceArtifact,
   verifyDojoAffordanceCodemodEvidenceArtifact,
+  verifyDojoApiToolCompilerEvidenceArtifact,
   verifyDojoDockerIntegrationEvidenceArtifact,
   verifyDojoManagedKeySigningEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
@@ -442,6 +448,93 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("verifies API tool compiler evidence before source/API promotion", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-api-tool-compiler-verify-"));
+    const evidencePath = await writeApiToolCompilerEvidenceFixture({ dir });
+
+    expect(validateDojoApiToolCompilerEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoApiToolCompilerEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_api_tool_compiler_self_check",
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = apiToolCompilerEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["api_tool_executes_with_idempotency_postcondition_and_evidence"],
+      promotion_contract: {
+        ...apiToolCompilerEvidenceFixture().promotion_contract,
+        proof_capsule_required: false,
+        evidence_write_required: false,
+        production_candidate_only_execution_allowed: true,
+      },
+    });
+    const incompletePath = await writeApiToolCompilerEvidenceFixture({
+      dir,
+      basename: "incomplete-api-tool-compiler",
+      evidence: incomplete,
+    });
+    const rejected = await verifyDojoApiToolCompilerEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "api_tool_compiler_not_ok",
+      "api_tool_compiler_coverage_incomplete",
+      "api_tool_compiler_missing_capabilities:api_tool_executes_with_idempotency_postcondition_and_evidence",
+      "api_tool_compiler_proof_requirement_missing",
+      "api_tool_compiler_evidence_requirement_missing",
+      "api_tool_compiler_candidate_only_production_allowed",
+    ]));
+
+    const driftedPath = await writeApiToolCompilerEvidenceFixture({
+      dir,
+      basename: "drifted-api-tool-compiler",
+      evidence: apiToolCompilerEvidenceFixture({
+        configured_capabilities: DOJO_API_TOOL_COMPILER_CAPABILITIES
+          .filter((capability) => capability !== "substrate_blocks_graph_api_proof_mismatch"),
+        tested_capabilities: DOJO_API_TOOL_COMPILER_CAPABILITIES
+          .filter((capability) => capability !== "substrate_blocks_graph_api_proof_mismatch"),
+        capability_count: DOJO_API_TOOL_COMPILER_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_API_TOOL_COMPILER_CAPABILITIES.length - 1,
+        test_files: DOJO_API_TOOL_COMPILER_TEST_FILES
+          .filter((file) => file !== DOJO_API_TOOL_COMPILER_TEST_FILES[0]),
+        test_file_count: DOJO_API_TOOL_COMPILER_TEST_FILES.length - 1,
+        reported_test_file_count: DOJO_API_TOOL_COMPILER_TEST_FILES.length - 1,
+      }),
+    });
+    expect((await verifyDojoApiToolCompilerEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "api_tool_compiler_required_capabilities_missing:substrate_blocks_graph_api_proof_mismatch",
+      "api_tool_compiler_required_capabilities_untested:substrate_blocks_graph_api_proof_mismatch",
+      `api_tool_compiler_required_test_files_missing:${DOJO_API_TOOL_COMPILER_TEST_FILES[0]}`,
+    ]));
+
+    const tamperedJson = path.join(dir, "tampered-api-tool-compiler.vitest.json");
+    await writeFile(tamperedJson, JSON.stringify({ success: false, numFailedTests: 1 }), "utf8");
+    const expectedJson = apiToolCompilerJsonReportFixtureText();
+    const tamperedJsonPath = await writeApiToolCompilerEvidenceFixture({
+      dir,
+      basename: "tampered-api-tool-compiler-json",
+      evidence: apiToolCompilerEvidenceFixture({
+        json_report_path: tamperedJson,
+        json_report_sha256: sha256(expectedJson),
+        json_report_bytes: Buffer.byteLength(expectedJson),
+      }),
+      writeLogs: false,
+    });
+    const tamperedJsonResult = await verifyDojoApiToolCompilerEvidenceArtifact({ evidencePath: tamperedJsonPath });
+    expect(tamperedJsonResult.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^json_report_sha256_mismatch:/),
+      expect.stringMatching(/^json_report_bytes_mismatch:/),
+    ]));
+  });
+
   it("verifies live hosted runtime acceptance artifacts for release candidates", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-live-hosted-runtime-verify-"));
     const workflow = await writeWorkflowE2EFixture({ dir });
@@ -697,6 +790,7 @@ describe("Dojo release gate artifact verifier", () => {
     const postgresEvidencePath = await writePostgresControlPlaneEvidenceFixture({ dir });
     const dockerEvidencePath = await writeDockerIntegrationEvidenceFixture({ dir });
     const affordanceCodemod = await writeAffordanceCodemodFixture({ dir });
+    const apiToolCompilerEvidencePath = await writeApiToolCompilerEvidenceFixture({ dir });
     const conformanceReportPath = path.join(dir, "dojo-mcp-host-conformance.json");
     const conformanceEvidencePath = path.join(dir, "dojo-mcp-host-conformance.evidence.json");
     await writeConformancePair({
@@ -751,6 +845,7 @@ describe("Dojo release gate artifact verifier", () => {
     const affordanceGate = manifest.gates.find((gate) => gate.id === "dojo_affordance_codemod_self_check");
     affordanceGate.default_report_path = affordanceCodemod.reportPath;
     affordanceGate.default_evidence_path = affordanceCodemod.evidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_api_tool_compiler_self_check").default_evidence_path = apiToolCompilerEvidencePath;
     manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path = managedKeySigningEvidencePath;
     manifest.gates.find((gate) => gate.id === "privacy_redaction_suite").default_evidence_path = privacyEvidencePath;
@@ -780,6 +875,7 @@ describe("Dojo release gate artifact verifier", () => {
         "mcp-host-conformance-evidence": conformanceEvidencePath,
         "security-abuse-evidence": securityEvidencePath,
         "managed-key-signing-evidence": managedKeySigningEvidencePath,
+        "api-tool-compiler-evidence": apiToolCompilerEvidencePath,
       },
     });
 
@@ -813,6 +909,11 @@ describe("Dojo release gate artifact verifier", () => {
         ok: true,
         artifact_path: affordanceCodemod.reportPath,
         evidence_path: affordanceCodemod.evidencePath,
+      }),
+      expect.objectContaining({
+        id: "dojo_api_tool_compiler_self_check",
+        ok: true,
+        evidence_path: apiToolCompilerEvidencePath,
       }),
     ]);
     expect(verified.visual_reports).toHaveLength(2);
@@ -2239,6 +2340,95 @@ async function writeAffordanceCodemodFixture({
     reportPath,
     evidencePath,
   };
+}
+
+async function writeApiToolCompilerEvidenceFixture({
+  dir,
+  basename = "dojo-api-tool-compiler",
+  evidence,
+  writeLogs = true,
+}) {
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  const stdoutPath = path.join(dir, `${basename}.stdout.txt`);
+  const stderrPath = path.join(dir, `${basename}.stderr.txt`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  const stdout = "api tool compiler suite passed\n";
+  const stderr = "";
+  const jsonReport = apiToolCompilerJsonReportFixtureText();
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? apiToolCompilerEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  await writeFile(evidencePath, JSON.stringify(body, null, 2), "utf8");
+  return evidencePath;
+}
+
+function apiToolCompilerEvidenceFixture(overrides = {}) {
+  const stdout = "api tool compiler suite passed\n";
+  const stderr = "";
+  const jsonReport = apiToolCompilerJsonReportFixtureText();
+  return {
+    schema_version: "synthi.dojo.apiToolCompilerEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    test_files: [...DOJO_API_TOOL_COMPILER_TEST_FILES],
+    configured_capabilities: [...DOJO_API_TOOL_COMPILER_CAPABILITIES],
+    tested_capabilities: [...DOJO_API_TOOL_COMPILER_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+    configured_capability_count: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    promotion_contract: {
+      reviewed_candidate_required: true,
+      proof_capsule_required: true,
+      license_kernel_required: true,
+      idempotency_required: true,
+      auth_scope_required: true,
+      strict_input_schema_required: true,
+      postcondition_required: true,
+      evidence_write_required: true,
+      graph_proof_match_required: true,
+      production_candidate_only_execution_allowed: false,
+    },
+    test_file_count: DOJO_API_TOOL_COMPILER_TEST_FILES.length,
+    configured_test_file_count: DOJO_API_TOOL_COMPILER_TEST_FILES.length,
+    reported_test_file_count: DOJO_API_TOOL_COMPILER_TEST_FILES.length,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+      passed_tests: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: path.join(tmpdir(), "dojo-api-tool-compiler.stdout.txt"),
+    stdout_sha256: sha256(stdout),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_path: path.join(tmpdir(), "dojo-api-tool-compiler.stderr.txt"),
+    stderr_sha256: sha256(stderr),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_path: path.join(tmpdir(), "dojo-api-tool-compiler.vitest.json"),
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function apiToolCompilerJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+    numPassedTests: DOJO_API_TOOL_COMPILER_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    testResults: [],
+  }, null, 2);
 }
 
 function affordanceCodemodReportFixture(overrides = {}) {
