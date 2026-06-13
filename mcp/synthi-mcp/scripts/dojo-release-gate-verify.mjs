@@ -2436,6 +2436,49 @@ async function writeProofSelfCheckArtifactsForSelfCheck({
   };
   const productionEvidencePath = path.join(outDir, `${basename}.production-runtime-evidence.json`);
   await writeFile(productionEvidencePath, `${JSON.stringify(productionEvidence, null, 2)}\n`, "utf8");
+  const visualDir = path.join(outDir, `${basename}.visual-proof`);
+  await mkdir(visualDir, { recursive: true });
+  const visualScreenshotPath = path.join(visualDir, "dojo-proof-visual.png");
+  const visualScreenshotBytes = proofSelfCheckVisualPngBytes();
+  await writeFile(visualScreenshotPath, visualScreenshotBytes);
+  const visualEvidencePath = path.join(visualDir, "dojo-proof-visual.evidence.json");
+  const visualEvidence = {
+    schema_version: "synthi.dojo.proofSelfCheckVisualEvidence.v1",
+    ok: true,
+    page_path: path.join(visualDir, "dojo-proof-visual.html"),
+    screenshot_path: visualScreenshotPath,
+    screenshot_bytes: visualScreenshotBytes.length,
+    checks: {
+      has_skill_id: true,
+      has_tool_name: true,
+      has_license_status: true,
+      has_proof_capsule: true,
+    },
+    failed_visual_gates: [],
+    visual_thresholds: {
+      min_screenshot_bytes: 10000,
+      min_unique_color_sample_count: 24,
+      min_luma_stddev: 2,
+      min_background_diff_pixel_ratio: 0.01,
+      max_horizontal_overflow_px: 4,
+      min_selector_visible_area_px: 900,
+    },
+    image_metrics: {
+      pixel_metrics_verified: true,
+      width: 1360,
+      height: 1000,
+      unique_color_sample_count: 64,
+      luma_stddev: 20,
+      background_diff_pixel_ratio: 0.9,
+    },
+    layout_metrics: {
+      selector_found: true,
+      selector_visible: true,
+      horizontal_overflow_px: 0,
+      selector_visible_area_px: 100000,
+    },
+  };
+  await writeFile(visualEvidencePath, `${JSON.stringify(visualEvidence, null, 2)}\n`, "utf8");
   const summary = {
     schema_version: "synthi.dojo.proofSelfCheckSummary.v1",
     ok: true,
@@ -2447,6 +2490,8 @@ async function writeProofSelfCheckArtifactsForSelfCheck({
     visual_proof_ok: true,
     visual_proof_pixel_metrics_verified: true,
     visual_proof_horizontal_overflow_px: 0,
+    visual_proof_screenshot: path.relative(outDir, visualScreenshotPath).replace(/\\/g, "/"),
+    visual_proof_evidence: path.relative(outDir, visualEvidencePath).replace(/\\/g, "/"),
     ...summaryOverrides,
   };
   const summaryPath = path.join(outDir, `${basename}.summary.json`);
@@ -2454,7 +2499,16 @@ async function writeProofSelfCheckArtifactsForSelfCheck({
   return {
     summary_path: summaryPath,
     production_evidence_path: productionEvidencePath,
+    visual_evidence_path: visualEvidencePath,
+    visual_screenshot_path: visualScreenshotPath,
   };
+}
+
+function proofSelfCheckVisualPngBytes() {
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(12000, 1),
+  ]);
 }
 
 async function writePostgresControlPlaneEvidenceForSelfCheck({
