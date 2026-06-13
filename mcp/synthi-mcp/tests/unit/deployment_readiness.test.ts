@@ -39,7 +39,7 @@ describe("browser workflow deployment readiness", () => {
       expect.objectContaining({ id: "hosted_browser_session_policy", status: "pass" }),
       expect.objectContaining({ id: "hosted_browser_tenant_policy", status: "pass" }),
     ]));
-    expect(JSON.stringify(readiness)).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret|dojo-manifest-secret/);
+    expect(JSON.stringify(readiness)).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret|dojo-manifest-secret|manifest-redacted|BEGIN PRIVATE KEY|BEGIN PUBLIC KEY/);
     expect(JSON.stringify(readiness)).not.toMatch(/SYNTHI_BROWSER_CDP_URL/);
   });
 
@@ -142,7 +142,10 @@ describe("browser workflow deployment readiness", () => {
   it("fails production readiness when MCP skill manifest signing falls back to the default local key", () => {
     const readiness = browserWorkflowDeploymentReadiness({}, {
       ...productionReadyEnv(),
+      SYNTHI_DOJO_MCP_MANIFEST_SIGNING_ALGORITHM: undefined,
       SYNTHI_DOJO_MCP_MANIFEST_KEY_ID: undefined,
+      SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM: undefined,
+      SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM: undefined,
       SYNTHI_DOJO_MCP_MANIFEST_SIGNING_KEY: DOJO_DEFAULT_MCP_MANIFEST_SIGNING_KEY,
     });
 
@@ -150,6 +153,26 @@ describe("browser workflow deployment readiness", () => {
     expect(readiness.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "dojo_mcp_manifest_signing", status: "fail" }),
     ]));
+  });
+
+  it("fails production readiness when MCP skill manifest signing uses shared-secret HMAC", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_DOJO_MCP_MANIFEST_SIGNING_ALGORITHM: "hmac-sha256",
+      SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM: undefined,
+      SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM: undefined,
+      SYNTHI_DOJO_MCP_MANIFEST_SIGNING_KEY: "dojo-manifest-secret",
+    });
+
+    expect(readiness.ok).toBe(false);
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "dojo_mcp_manifest_signing",
+        status: "fail",
+        message: expect.stringContaining("dojo_mcp_manifest_hmac_not_independently_verifiable"),
+      }),
+    ]));
+    expect(JSON.stringify(readiness)).not.toMatch(/dojo-manifest-secret/);
   });
 
   it("fails production readiness when the Dojo evidence ledger is inline-only", () => {
@@ -318,7 +341,7 @@ describe("browser workflow deployment readiness", () => {
       const text = response?.content?.[0]?.type === "text" ? response.content[0].text : "";
       expect(text).toContain("synthi.browserWorkflowDeploymentReadiness.v1");
       expect(text).toContain("synthi.dojo.enforcementConfig.v1");
-      expect(text).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret|dojo-manifest-secret/);
+      expect(text).not.toMatch(/private-tool-secret|auth-store-secret|bridge-secret|session-secret|dojo-signing-secret|dojo-manifest-secret|manifest-redacted|BEGIN PRIVATE KEY|BEGIN PUBLIC KEY/);
     } finally {
       process.env = originalEnv;
     }
@@ -355,7 +378,9 @@ function productionReadyEnv(): NodeJS.ProcessEnv {
     SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM: "-----BEGIN PUBLIC KEY-----\nredacted\n-----END PUBLIC KEY-----",
     SYNTHI_DOJO_MCP_MANIFEST_ISSUER: "synthi-dojo-skill-bus-prod",
     SYNTHI_DOJO_MCP_MANIFEST_KEY_ID: "dojo-mcp-manifest-key-1",
-    SYNTHI_DOJO_MCP_MANIFEST_SIGNING_KEY: "dojo-manifest-secret",
+    SYNTHI_DOJO_MCP_MANIFEST_SIGNING_ALGORITHM: "ed25519",
+    SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM: "-----BEGIN PRIVATE KEY-----\nmanifest-redacted\n-----END PRIVATE KEY-----",
+    SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM: "-----BEGIN PUBLIC KEY-----\nmanifest-redacted\n-----END PUBLIC KEY-----",
     SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER: "1",
     SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "postgres://dojo-evidence-ledger",
   };

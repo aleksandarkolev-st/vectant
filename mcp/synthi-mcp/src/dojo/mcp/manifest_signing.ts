@@ -1,6 +1,13 @@
-import { createHash, createHmac } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  sign as nodeSign,
+  verify as nodeVerify,
+} from "node:crypto";
 import type { DojoExecutionSubstrate, DojoSkill } from "../../browser/dojo.js";
 import type { PrivateWorkflowToolManifestV7 } from "../../browser/private_tool_manifest.js";
+
+export type DojoMcpSkillManifestSigningAlgorithm = "hmac-sha256" | "ed25519";
 
 export interface DojoMcpSkillManifestV1 {
   kind: "dojoMcpSkillManifest";
@@ -41,7 +48,7 @@ export interface DojoMcpSkillManifestV1 {
   };
   issuer: string;
   key_id: string;
-  signature_algorithm: "hmac-sha256";
+  signature_algorithm: DojoMcpSkillManifestSigningAlgorithm;
   issued_at: string;
   manifest_digest: string;
   signature: string;
@@ -63,7 +70,11 @@ export interface DojoMcpSkillManifestOptions {
 export const DOJO_MCP_MANIFEST_ISSUER_ENV = "SYNTHI_DOJO_MCP_MANIFEST_ISSUER";
 export const DOJO_MCP_MANIFEST_KEY_ID_ENV = "SYNTHI_DOJO_MCP_MANIFEST_KEY_ID";
 export const DOJO_MCP_MANIFEST_SIGNING_KEY_ENV = "SYNTHI_DOJO_MCP_MANIFEST_SIGNING_KEY";
+export const DOJO_MCP_MANIFEST_SIGNING_ALGORITHM_ENV = "SYNTHI_DOJO_MCP_MANIFEST_SIGNING_ALGORITHM";
+export const DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM_ENV = "SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM";
+export const DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM_ENV = "SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM";
 export const DOJO_DEFAULT_MCP_MANIFEST_SIGNING_KEY = "synthi-dojo-mcp-manifest-development-key";
+const DOJO_MCP_MANIFEST_SIGNING_ALGORITHMS: DojoMcpSkillManifestSigningAlgorithm[] = ["hmac-sha256", "ed25519"];
 
 export function buildDojoMcpSkillManifest(
   skill: DojoSkill,
@@ -71,6 +82,7 @@ export function buildDojoMcpSkillManifest(
 ): DojoMcpSkillManifestV1 {
   const env = options.env ?? process.env;
   const issuedAt = options.now ?? skill.generated_at;
+  const signatureAlgorithm = dojoMcpManifestSigningAlgorithm(env);
   const proofRequired = dojoSkillRequiresMcpProof(skill);
   const privateManifestDigest = skill.private_tool_manifest
     ? digestObject(skill.private_tool_manifest)
@@ -127,14 +139,14 @@ export function buildDojoMcpSkillManifest(
     },
     issuer: dojoMcpManifestIssuer(env),
     key_id: dojoMcpManifestKeyId(env),
-    signature_algorithm: "hmac-sha256" as const,
+    signature_algorithm: signatureAlgorithm,
     issued_at: issuedAt,
   };
   const manifestDigest = digestObject(unsigned);
   return {
     ...unsigned,
     manifest_digest: manifestDigest,
-    signature: signManifestDigest(manifestDigest, env),
+    signature: signManifestDigest(manifestDigest, env, signatureAlgorithm, unsigned.key_id),
   };
 }
 
@@ -152,10 +164,17 @@ export function validateDojoMcpSkillManifest(
 ): DojoMcpSkillManifestValidation {
   const env = options.env ?? process.env;
   const blockedBy: string[] = [];
+  const expectedAlgorithm = dojoMcpManifestSigningAlgorithm(env);
+  if (isDojoMcpManifestSigningAlgorithmEnvInvalid(env)) {
+    blockedBy.push("dojo_mcp_manifest_signature_algorithm_invalid");
+  }
 
   if (manifest.kind !== "dojoMcpSkillManifest") blockedBy.push("dojo_mcp_manifest_kind_mismatch");
   if (manifest.schema_version !== "synthi.dojo.mcpSkillManifest.v1") blockedBy.push("dojo_mcp_manifest_schema_mismatch");
-  if (manifest.signature_algorithm !== "hmac-sha256") blockedBy.push("dojo_mcp_manifest_signature_algorithm_mismatch");
+  if (manifest.signature_algorithm !== "hmac-sha256" && manifest.signature_algorithm !== "ed25519") {
+    blockedBy.push("dojo_mcp_manifest_signature_algorithm_unsupported");
+  }
+  if (manifest.signature_algorithm !== expectedAlgorithm) blockedBy.push("dojo_mcp_manifest_signature_algorithm_mismatch");
   if (manifest.issuer !== dojoMcpManifestIssuer(env)) blockedBy.push("dojo_mcp_manifest_issuer_mismatch");
   if (manifest.key_id !== dojoMcpManifestKeyId(env)) blockedBy.push("dojo_mcp_manifest_key_mismatch");
   if (options.expected_skill_id && manifest.skill.skill_id !== options.expected_skill_id) {
@@ -167,7 +186,7 @@ export function validateDojoMcpSkillManifest(
 
   const expectedDigest = digestObject(unsignedManifest(manifest));
   if (manifest.manifest_digest !== expectedDigest) blockedBy.push("dojo_mcp_manifest_digest_mismatch");
-  if (manifest.signature !== signManifestDigest(expectedDigest, env)) {
+  if (!verifyManifestDigestSignature(manifest, expectedDigest, env)) {
     blockedBy.push("dojo_mcp_manifest_signature_invalid");
   }
 
@@ -187,31 +206,138 @@ export function dojoMcpManifestIssuer(env: NodeJS.ProcessEnv = process.env): str
 export function dojoMcpManifestKeyId(env: NodeJS.ProcessEnv = process.env): string {
   const configured = env[DOJO_MCP_MANIFEST_KEY_ID_ENV]?.trim();
   if (configured) return configured;
-  return `dojo-mcp-manifest-dev-${shortHash(dojoMcpManifestSigningKey(env))}`;
+  if (dojoMcpManifestSigningAlgorithm(env) === "ed25519") {
+    const publicKey = env[DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM_ENV]?.trim();
+    if (publicKey) return `dojo-mcp-manifest-ed25519-${shortHash(publicKey)}`;
+  }
+  return `dojo-mcp-manifest-dev-${shortHash(dojoMcpManifestHmacSigningKey(env))}`;
+}
+
+export function dojoMcpManifestSigningAlgorithm(
+  env: NodeJS.ProcessEnv = process.env
+): DojoMcpSkillManifestSigningAlgorithm {
+  const configured = env[DOJO_MCP_MANIFEST_SIGNING_ALGORITHM_ENV]?.trim().toLowerCase();
+  if (configured === "ed25519") return "ed25519";
+  return "hmac-sha256";
+}
+
+export function isDojoMcpManifestSigningAlgorithmEnvInvalid(env: NodeJS.ProcessEnv = process.env): boolean {
+  const configured = env[DOJO_MCP_MANIFEST_SIGNING_ALGORITHM_ENV]?.trim().toLowerCase();
+  return Boolean(configured) && !DOJO_MCP_MANIFEST_SIGNING_ALGORITHMS.includes(configured as DojoMcpSkillManifestSigningAlgorithm);
 }
 
 export function configuredDojoMcpManifestSigningEnv(env: NodeJS.ProcessEnv = process.env): string[] {
   return [
+    DOJO_MCP_MANIFEST_SIGNING_ALGORITHM_ENV,
     DOJO_MCP_MANIFEST_ISSUER_ENV,
     DOJO_MCP_MANIFEST_KEY_ID_ENV,
     DOJO_MCP_MANIFEST_SIGNING_KEY_ENV,
+    DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM_ENV,
+    DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM_ENV,
   ].filter((name) => Boolean(env[name]?.trim()));
 }
 
 export function isDojoDefaultMcpManifestSigningKey(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (dojoMcpManifestSigningAlgorithm(env) === "ed25519") return false;
   const configured = env[DOJO_MCP_MANIFEST_SIGNING_KEY_ENV]?.trim();
   return !configured || configured === DOJO_DEFAULT_MCP_MANIFEST_SIGNING_KEY;
 }
 
-function dojoMcpManifestSigningKey(env: NodeJS.ProcessEnv): string {
+export function isDojoMcpManifestSigningProductionReady(env: NodeJS.ProcessEnv = process.env): boolean {
+  return dojoMcpManifestSigningReadiness(env).production_ready;
+}
+
+export function dojoMcpManifestSigningReadiness(env: NodeJS.ProcessEnv = process.env): {
+  algorithm: DojoMcpSkillManifestSigningAlgorithm;
+  production_ready: boolean;
+  configured_env: string[];
+  blocked_by: string[];
+} {
+  const algorithm = dojoMcpManifestSigningAlgorithm(env);
+  const issuer = env[DOJO_MCP_MANIFEST_ISSUER_ENV]?.trim();
+  const keyId = env[DOJO_MCP_MANIFEST_KEY_ID_ENV]?.trim();
+  const blockedBy = [
+    ...(isDojoMcpManifestSigningAlgorithmEnvInvalid(env) ? ["dojo_mcp_manifest_signature_algorithm_invalid"] : []),
+    ...(!issuer ? ["dojo_mcp_manifest_issuer_missing"] : []),
+    ...(!keyId ? ["dojo_mcp_manifest_key_id_missing"] : []),
+  ];
+  if (algorithm === "ed25519") {
+    const privateKey = env[DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM_ENV]?.trim();
+    const publicKey = env[DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM_ENV]?.trim();
+    if (!privateKey) blockedBy.push("dojo_mcp_manifest_private_key_missing");
+    if (!publicKey) blockedBy.push("dojo_mcp_manifest_public_key_missing");
+  } else {
+    blockedBy.push("dojo_mcp_manifest_hmac_not_independently_verifiable");
+    if (isDojoDefaultMcpManifestSigningKey(env)) {
+      blockedBy.push("dojo_mcp_manifest_default_signing_key");
+    }
+  }
+  return {
+    algorithm,
+    production_ready: blockedBy.length === 0,
+    configured_env: configuredDojoMcpManifestSigningEnv(env),
+    blocked_by: blockedBy,
+  };
+}
+
+function dojoMcpManifestHmacSigningKey(env: NodeJS.ProcessEnv): string {
   return env[DOJO_MCP_MANIFEST_SIGNING_KEY_ENV]?.trim()
     || DOJO_DEFAULT_MCP_MANIFEST_SIGNING_KEY;
 }
 
-function signManifestDigest(manifestDigest: string, env: NodeJS.ProcessEnv): string {
-  return `hmac-sha256:${createHmac("sha256", dojoMcpManifestSigningKey(env))
-    .update(`synthi.dojo.mcpSkillManifest.v1:${manifestDigest}`)
-    .digest("hex")}`;
+function signManifestDigest(
+  manifestDigest: string,
+  env: NodeJS.ProcessEnv,
+  algorithm: DojoMcpSkillManifestSigningAlgorithm,
+  keyId: string
+): string {
+  const payload = manifestSignaturePayload(manifestDigest);
+  if (algorithm === "hmac-sha256") {
+    return `hmac-sha256:${createHmac("sha256", dojoMcpManifestHmacSigningKey(env))
+      .update(payload)
+      .digest("hex")}`;
+  }
+  const privateKey = env[DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM_ENV]?.trim();
+  if (!privateKey) throw new Error("dojo_mcp_manifest_private_key_missing");
+  return `ed25519:${keyId}:${nodeSign(null, Buffer.from(payload, "utf8"), privateKey).toString("base64url")}`;
+}
+
+function verifyManifestDigestSignature(
+  manifest: DojoMcpSkillManifestV1,
+  expectedDigest: string,
+  env: NodeJS.ProcessEnv
+): boolean {
+  const payload = manifestSignaturePayload(expectedDigest);
+  if (manifest.signature_algorithm === "hmac-sha256") {
+    return manifest.signature === signManifestDigest(expectedDigest, env, "hmac-sha256", manifest.key_id);
+  }
+  if (manifest.signature_algorithm === "ed25519") {
+    const publicKey = env[DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM_ENV]?.trim();
+    if (!publicKey) return false;
+    const parsed = parseEd25519ManifestSignature(manifest.signature);
+    if (!parsed || parsed.key_id !== manifest.key_id) return false;
+    try {
+      return nodeVerify(null, Buffer.from(payload, "utf8"), publicKey, Buffer.from(parsed.signature, "base64url"));
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function manifestSignaturePayload(manifestDigest: string): string {
+  return `synthi.dojo.mcpSkillManifest.v1:${manifestDigest}`;
+}
+
+function parseEd25519ManifestSignature(value: string): { key_id: string; signature: string } | null {
+  if (!value.startsWith("ed25519:")) return null;
+  const rest = value.slice("ed25519:".length);
+  const separatorIndex = rest.indexOf(":");
+  if (separatorIndex < 1) return null;
+  const keyId = rest.slice(0, separatorIndex);
+  const signature = rest.slice(separatorIndex + 1);
+  if (!keyId || !signature) return null;
+  return { key_id: keyId, signature };
 }
 
 function unsignedManifest(manifest: DojoMcpSkillManifestV1): Omit<DojoMcpSkillManifestV1, "manifest_digest" | "signature"> {

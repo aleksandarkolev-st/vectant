@@ -29,8 +29,10 @@ import {
   configuredDojoMcpManifestSigningEnv,
   DOJO_MCP_MANIFEST_ISSUER_ENV,
   DOJO_MCP_MANIFEST_KEY_ID_ENV,
-  DOJO_MCP_MANIFEST_SIGNING_KEY_ENV,
-  isDojoDefaultMcpManifestSigningKey,
+  DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM_ENV,
+  DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM_ENV,
+  DOJO_MCP_MANIFEST_SIGNING_ALGORITHM_ENV,
+  dojoMcpManifestSigningReadiness,
 } from "../dojo/mcp/manifest_signing.js";
 
 export type BrowserWorkflowDeploymentMode = "production" | "development";
@@ -300,18 +302,18 @@ function checkDojoMcpManifestSigning(
   production: boolean
 ): BrowserWorkflowDeploymentCheck {
   const required = [
+    `${DOJO_MCP_MANIFEST_SIGNING_ALGORITHM_ENV}=ed25519`,
     DOJO_MCP_MANIFEST_ISSUER_ENV,
     DOJO_MCP_MANIFEST_KEY_ID_ENV,
-    DOJO_MCP_MANIFEST_SIGNING_KEY_ENV,
+    DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM_ENV,
+    DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM_ENV,
   ];
+  const readiness = dojoMcpManifestSigningReadiness(env);
   const configured = configuredDojoMcpManifestSigningEnv(env);
-  const issuer = nonEmpty(env[DOJO_MCP_MANIFEST_ISSUER_ENV]);
-  const keyId = nonEmpty(env[DOJO_MCP_MANIFEST_KEY_ID_ENV]);
-  const hasNonDefaultSigningKey = !isDojoDefaultMcpManifestSigningKey(env);
-  if (issuer && keyId && hasNonDefaultSigningKey) {
+  if (readiness.production_ready) {
     return pass(
       "dojo_mcp_manifest_signing",
-      "Dojo MCP skill manifests use an explicit issuer, key ID, and non-default signing key.",
+      "Dojo MCP skill manifests use Ed25519 signing and public verifier material.",
       required,
       configured
     );
@@ -319,7 +321,7 @@ function checkDojoMcpManifestSigning(
   return {
     id: "dojo_mcp_manifest_signing",
     status: production ? "fail" : "warn",
-    message: "Dojo MCP skill manifest signing is not production-ready; explicit issuer, key ID, and non-default signing key are required.",
+    message: `Dojo MCP skill manifest signing is not production-ready; Ed25519 issuer, key ID, private signer, and public verifier material are required. Blocked by: ${readiness.blocked_by.join(", ")}.`,
     required_env: required,
     configured_env: configured,
   };
