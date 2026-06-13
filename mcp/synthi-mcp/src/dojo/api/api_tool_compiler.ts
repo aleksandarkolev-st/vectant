@@ -567,6 +567,11 @@ function requireProofEvidenceBacked(
   blockedBy: string[]
 ): void {
   const evidenceRecordIds = proofCapsule["evidence_record_ids"];
+  const evidenceRecordIdSet = new Set(
+    Array.isArray(evidenceRecordIds)
+      ? evidenceRecordIds.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : []
+  );
   if (!Array.isArray(evidenceRecordIds) || evidenceRecordIds.every((item) => typeof item !== "string" || item.trim().length === 0)) {
     blockedBy.push("api_tool_proof_evidence_records_required");
   }
@@ -587,6 +592,11 @@ function requireProofEvidenceBacked(
     }
     if (evidenceClaim.evidence_refs.length === 0) {
       blockedBy.push(`api_tool_proof_evidence_claim_refs_required:${claim}`);
+      continue;
+    }
+    const unboundRefs = evidenceClaim.evidence_refs.filter((ref) => !evidenceRecordIdSet.has(ref));
+    if (unboundRefs.length > 0) {
+      blockedBy.push(`api_tool_proof_evidence_claim_ref_unbound:${claim}`);
     }
   }
 }
