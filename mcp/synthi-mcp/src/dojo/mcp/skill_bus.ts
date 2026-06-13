@@ -46,6 +46,7 @@ export interface DojoToolDispatchResult {
   tool_name?: string;
   resolution?: DojoToolResolution;
   validation?: DojoSkillBusProofValidation;
+  rate_limit?: DojoMcpSkillBusRateLimitDecision;
   result?: unknown;
 }
 
@@ -60,6 +61,44 @@ export interface DojoMcpSkillBusExecutionBlock {
   kind: "dojoMcpSkillBusExecutionBlock";
   blocked_by: string[];
   validation?: DojoSkillBusProofValidation;
+}
+
+export type DojoMcpSkillBusRateLimitScope =
+  | "tenant"
+  | "workspace"
+  | "skill"
+  | "actor"
+  | "action"
+  | "tool";
+
+export interface DojoMcpSkillBusRateLimitRule {
+  rule_id: string;
+  scope: DojoMcpSkillBusRateLimitScope[];
+  max_calls: number;
+  window_ms: number;
+  include_dry_run?: boolean;
+}
+
+export interface DojoMcpSkillBusRateLimitInput {
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  tool_name: string;
+  requested_action: string;
+  dry_run: boolean;
+}
+
+export interface DojoMcpSkillBusRateLimitDecision {
+  ok: boolean;
+  blocked_by: string[];
+  rule_id?: string;
+  scope_key?: string;
+  limit?: number;
+  remaining?: number;
+  retry_after_ms?: number;
+}
+
+export interface DojoMcpSkillBusRateLimiter {
+  evaluate(input: DojoMcpSkillBusRateLimitInput): DojoMcpSkillBusRateLimitDecision | Promise<DojoMcpSkillBusRateLimitDecision>;
 }
 
 export interface DojoMcpSkillBus {
@@ -93,10 +132,18 @@ export interface InProcessDojoMcpSkillBusOptions {
     args: Record<string, unknown>;
     proof_capsule: DojoProofCarryingSkillCapsule;
   }) => unknown | DojoMcpSkillBusExecutionBlock | Promise<unknown | DojoMcpSkillBusExecutionBlock>;
+  rateLimiter?: DojoMcpSkillBusRateLimiter;
 }
 
 export function createInProcessDojoMcpSkillBus(options: InProcessDojoMcpSkillBusOptions): DojoMcpSkillBus {
   return new InProcessDojoMcpSkillBus(options);
+}
+
+export function createInMemoryDojoMcpSkillBusRateLimiter(options: {
+  rules: DojoMcpSkillBusRateLimitRule[];
+  now?: () => Date;
+}): DojoMcpSkillBusRateLimiter {
+  return new InMemoryDojoMcpSkillBusRateLimiter(options);
 }
 
 export function blockDojoMcpSkillBusExecution(
@@ -128,12 +175,14 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
   private readonly listSkillsFn: InProcessDojoMcpSkillBusOptions["listSkills"];
   private readonly validateProof?: InProcessDojoMcpSkillBusOptions["validateProof"];
   private readonly executeTool?: InProcessDojoMcpSkillBusOptions["executeTool"];
+  private readonly rateLimiter?: DojoMcpSkillBusRateLimiter;
 
   constructor(options: InProcessDojoMcpSkillBusOptions) {
     this.env = options.env ?? process.env;
     this.listSkillsFn = options.listSkills;
     this.validateProof = options.validateProof;
     this.executeTool = options.executeTool;
+    this.rateLimiter = options.rateLimiter;
   }
 
   async listCompetencies(input: { tenant: DojoTenantContext }): Promise<DojoCompetencySummary[]> {
@@ -236,6 +285,26 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       };
     }
 
+    const requestedAction = input.requested_action ?? "run_workflow";
+    if (this.rateLimiter) {
+      const rateLimit = await this.rateLimiter.evaluate({
+        tenant: input.tenant,
+        skill: resolution.skill,
+        tool_name: resolution.tool_name ?? input.tool_name,
+        requested_action: requestedAction,
+        dry_run: input.dry_run === true,
+      });
+      if (!rateLimit.ok) {
+        return blockedDispatch(
+          input,
+          resolution,
+          rateLimit.blocked_by.length > 0 ? rateLimit.blocked_by : ["dojo_mcp_rate_limit_exceeded"],
+          undefined,
+          rateLimit
+        );
+      }
+    }
+
     const proofRequired = dojoMcpManifestRequiresProof(resolution.mcp_skill_manifest);
     if (proofRequired && !input.proof_capsule) {
       return blockedDispatch(input, resolution, ["dojo_proof_capsule_required"]);
@@ -249,7 +318,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       const bindingBlockedBy = validateProofCapsuleBinding(
         input.proof_capsule,
         resolution.mcp_skill_manifest,
-        input.requested_action ?? "run_workflow"
+        requestedAction
       );
       if (bindingBlockedBy.length > 0) {
         return blockedDispatch(input, resolution, bindingBlockedBy);
@@ -261,7 +330,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
         tenant: input.tenant,
         skill: resolution.skill,
         proof_capsule: input.proof_capsule,
-        requested_action: input.requested_action ?? "run_workflow",
+        requested_action: requestedAction,
         args: input.args,
       });
       if (!validation.ok) {
@@ -326,6 +395,86 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
   }
 }
 
+interface InMemoryRateLimitBucket {
+  count: number;
+  reset_at_ms: number;
+}
+
+class InMemoryDojoMcpSkillBusRateLimiter implements DojoMcpSkillBusRateLimiter {
+  private readonly rules: DojoMcpSkillBusRateLimitRule[];
+  private readonly nowFn: () => Date;
+  private readonly buckets = new Map<string, InMemoryRateLimitBucket>();
+
+  constructor(options: { rules: DojoMcpSkillBusRateLimitRule[]; now?: () => Date }) {
+    this.rules = options.rules.map((rule) => ({
+      ...rule,
+      scope: [...rule.scope],
+    }));
+    this.nowFn = options.now ?? (() => new Date());
+  }
+
+  evaluate(input: DojoMcpSkillBusRateLimitInput): DojoMcpSkillBusRateLimitDecision {
+    const nowMs = this.nowFn().getTime();
+    this.pruneExpiredBuckets(nowMs);
+    const increments: Array<{ key: string; bucket: InMemoryRateLimitBucket }> = [];
+    let minRemaining: number | undefined;
+
+    for (const rule of this.rules) {
+      const ruleValidation = validateRateLimitRule(rule);
+      if (ruleValidation.length > 0) {
+        return {
+          ok: false,
+          blocked_by: ruleValidation,
+          rule_id: rule.rule_id,
+        };
+      }
+      if (input.dry_run && rule.include_dry_run !== true) {
+        continue;
+      }
+
+      const scopeKey = rateLimitScopeKey(rule, input);
+      const windowStartMs = Math.floor(nowMs / rule.window_ms) * rule.window_ms;
+      const resetAtMs = windowStartMs + rule.window_ms;
+      const bucketKey = `${rule.rule_id}\u0000${scopeKey}\u0000${windowStartMs}`;
+      const bucket = this.buckets.get(bucketKey) ?? { count: 0, reset_at_ms: resetAtMs };
+      if (bucket.count >= rule.max_calls) {
+        return {
+          ok: false,
+          blocked_by: ["dojo_mcp_rate_limit_exceeded"],
+          rule_id: rule.rule_id,
+          scope_key: scopeKey,
+          limit: rule.max_calls,
+          remaining: 0,
+          retry_after_ms: Math.max(0, resetAtMs - nowMs),
+        };
+      }
+      minRemaining = Math.min(minRemaining ?? Number.POSITIVE_INFINITY, rule.max_calls - bucket.count - 1);
+      increments.push({ key: bucketKey, bucket });
+    }
+
+    for (const item of increments) {
+      this.buckets.set(item.key, {
+        count: item.bucket.count + 1,
+        reset_at_ms: item.bucket.reset_at_ms,
+      });
+    }
+
+    return {
+      ok: true,
+      blocked_by: [],
+      remaining: Number.isFinite(minRemaining) ? minRemaining : undefined,
+    };
+  }
+
+  private pruneExpiredBuckets(nowMs: number): void {
+    for (const [key, bucket] of this.buckets.entries()) {
+      if (bucket.reset_at_ms <= nowMs) {
+        this.buckets.delete(key);
+      }
+    }
+  }
+}
+
 function competencySummary(skill: DojoSkill, env: NodeJS.ProcessEnv): DojoCompetencySummary {
   const manifest = buildDojoMcpSkillManifest(skill, { env });
   return {
@@ -368,7 +517,8 @@ function blockedDispatch(
   input: { tool_name: string; dry_run?: boolean },
   resolution: DojoToolResolution,
   blockedBy: string[],
-  validation?: DojoSkillBusProofValidation
+  validation?: DojoSkillBusProofValidation,
+  rateLimit?: DojoMcpSkillBusRateLimitDecision
 ): DojoToolDispatchResult {
   return {
     ok: false,
@@ -379,6 +529,7 @@ function blockedDispatch(
     tool_name: resolution.tool_name ?? input.tool_name,
     resolution: summarizeResolution(resolution),
     validation,
+    rate_limit: rateLimit,
   };
 }
 
@@ -416,4 +567,38 @@ function validateProofCapsuleBinding(
 function summarizeResolution(resolution: DojoToolResolution): DojoToolResolution {
   const { skill: _skill, ...summary } = resolution;
   return summary;
+}
+
+function validateRateLimitRule(rule: DojoMcpSkillBusRateLimitRule): string[] {
+  const blockedBy: string[] = [];
+  if (!rule.rule_id.trim()) blockedBy.push("dojo_mcp_rate_limit_rule_id_required");
+  if (!Array.isArray(rule.scope) || rule.scope.length === 0) blockedBy.push("dojo_mcp_rate_limit_scope_required");
+  if (!Number.isInteger(rule.max_calls) || rule.max_calls < 1) blockedBy.push("dojo_mcp_rate_limit_max_calls_invalid");
+  if (!Number.isInteger(rule.window_ms) || rule.window_ms < 1) blockedBy.push("dojo_mcp_rate_limit_window_invalid");
+  const validScopes: DojoMcpSkillBusRateLimitScope[] = ["tenant", "workspace", "skill", "actor", "action", "tool"];
+  for (const scope of rule.scope) {
+    if (!validScopes.includes(scope)) blockedBy.push("dojo_mcp_rate_limit_scope_invalid");
+  }
+  return [...new Set(blockedBy)];
+}
+
+function rateLimitScopeKey(rule: DojoMcpSkillBusRateLimitRule, input: DojoMcpSkillBusRateLimitInput): string {
+  return rule.scope.map((scope) => `${scope}:${rateLimitScopeValue(scope, input)}`).join("|");
+}
+
+function rateLimitScopeValue(scope: DojoMcpSkillBusRateLimitScope, input: DojoMcpSkillBusRateLimitInput): string {
+  switch (scope) {
+    case "tenant":
+      return input.tenant.tenant_id;
+    case "workspace":
+      return input.tenant.workspace_id;
+    case "skill":
+      return input.skill.skill_id;
+    case "actor":
+      return input.tenant.actor_id;
+    case "action":
+      return input.requested_action;
+    case "tool":
+      return input.tool_name;
+  }
 }

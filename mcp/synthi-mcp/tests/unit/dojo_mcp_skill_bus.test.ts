@@ -6,6 +6,7 @@ import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import { validateDojoMcpSkillManifest } from "../../src/dojo/mcp/manifest_signing.js";
 import {
   blockDojoMcpSkillBusExecution,
+  createInMemoryDojoMcpSkillBusRateLimiter,
   createInProcessDojoMcpSkillBus,
   createLegacyDojoTenantContext,
   type DojoSkillBusProofValidation,
@@ -251,6 +252,129 @@ describe("Dojo MCP skill bus", () => {
       }),
     }));
   });
+
+  it("rate-limits dispatch by configured scope before proof validation or execution", async () => {
+    const skill = skillFixture("workspace-a", "Open details");
+    const proof = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
+      substrate_claim: "mcp",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const now = new Date("2026-06-11T00:00:00.000Z");
+    const validations: string[] = [];
+    const executions: string[] = [];
+    const bus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skill],
+      env: manifestEnv(),
+      rateLimiter: createInMemoryDojoMcpSkillBusRateLimiter({
+        now: () => now,
+        rules: [{
+          rule_id: "one-call-per-skill-action",
+          scope: ["tenant", "workspace", "skill", "action"],
+          max_calls: 1,
+          window_ms: 60_000,
+        }],
+      }),
+      validateProof: ({ proof_capsule }): DojoSkillBusProofValidation => {
+        validations.push(proof_capsule.capsule_id);
+        return { ok: true, status: "allowed", blocked_by: [] };
+      },
+      executeTool: ({ tool_name }) => {
+        executions.push(tool_name);
+        return { ok: true, tool_name };
+      },
+    });
+
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: proof,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+    }));
+
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      requested_action: "run_workflow",
+      args: {},
+      proof_capsule: proof,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["dojo_mcp_rate_limit_exceeded"],
+      rate_limit: expect.objectContaining({
+        rule_id: "one-call-per-skill-action",
+        scope_key: expect.stringContaining(`skill:${skill.skill_id}`),
+        retry_after_ms: 60_000,
+      }),
+    }));
+    expect(validations).toEqual([proof.capsule_id]);
+    expect(executions).toEqual([skill.published_tool_name]);
+  });
+
+  it("keeps rate-limit scopes independent and does not count dry runs unless configured", async () => {
+    const skill = skillFixture("workspace-a", "Open details");
+    const proof = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
+      substrate_claim: "mcp",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const now = new Date("2026-06-11T00:00:00.000Z");
+    const bus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skill],
+      env: manifestEnv(),
+      rateLimiter: createInMemoryDojoMcpSkillBusRateLimiter({
+        now: () => now,
+        rules: [{
+          rule_id: "one-call-per-actor",
+          scope: ["tenant", "workspace", "actor"],
+          max_calls: 1,
+          window_ms: 60_000,
+        }],
+      }),
+      validateProof: (): DojoSkillBusProofValidation => ({ ok: true, status: "allowed", blocked_by: [] }),
+      executeTool: ({ tenant: caller }) => ({ ok: true, actor_id: caller.actor_id }),
+    });
+
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      args: {},
+      proof_capsule: proof,
+      dry_run: true,
+    })).resolves.toEqual(expect.objectContaining({ ok: true, dry_run: true }));
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      args: {},
+      proof_capsule: proof,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      result: expect.objectContaining({ actor_id: "agent-a" }),
+    }));
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: skill.published_tool_name!,
+      args: {},
+      proof_capsule: proof,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: ["dojo_mcp_rate_limit_exceeded"],
+    }));
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a", ["agent"], "agent-b"),
+      tool_name: skill.published_tool_name!,
+      args: {},
+      proof_capsule: proof,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      result: expect.objectContaining({ actor_id: "agent-b" }),
+    }));
+  });
 });
 
 function skillFixture(workspaceId: string, label: string): DojoSkill {
@@ -348,12 +472,12 @@ function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {
   };
 }
 
-function tenant(workspaceId: string, roles = ["agent"]): DojoTenantContext {
+function tenant(workspaceId: string, roles = ["agent"], actorId = "agent-a"): DojoTenantContext {
   return {
     tenant_id: "tenant-a",
     organization_id: "org-a",
     workspace_id: workspaceId,
-    actor_id: "agent-a",
+    actor_id: actorId,
     actor_type: "agent",
     roles,
     request_id: `req-${workspaceId}`,
