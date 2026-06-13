@@ -1123,6 +1123,27 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     }));
     expect(dojoSkillRegistry.getProofRecord(issued.proof_capsule.capsule_id)).toBeNull();
 
+    const healthAfterValidation = await dispatchDojoTool("synthi_dojo_get_license_health", {
+      skill_id: published.skill.skill_id,
+      ...tenant,
+      actor_id: "postgres-proof-auditor",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      request_id: "req-postgres-proof-health-after-validation",
+      correlation_id: "corr-postgres-proof-health-after-validation",
+    });
+    expect(healthAfterValidation?.isError).toBeUndefined();
+    expect(healthAfterValidation?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      license_health: expect.objectContaining({
+        proof_record_source: "postgres",
+        proof_record_count: 1,
+        proof_records: expect.objectContaining({ issued: 1 }),
+      }),
+    }));
+    expect(dojoSkillRegistry.getProofRecord(issued.proof_capsule.capsule_id)).toBeNull();
+
     const complianceExport = await dispatchDojoTool("synthi_dojo_export_compliance_pack", {
       skill_id: published.skill.skill_id,
       ...tenant,
@@ -1137,6 +1158,12 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     const complianceContent = complianceExport?.structuredContent as {
       pack: {
         compliance_evidence_pack: { artifacts: Array<{ artifact_id: string; status: string }> };
+        audit_exports: Array<{
+          export_id: string;
+          status: string;
+          record_count: number;
+          event_type_counts?: Record<string, number>;
+        }>;
       };
       artifacts: Array<{ path: string; content: string; sensitive: boolean }>;
     };
@@ -1144,6 +1171,23 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       expect.objectContaining({
         artifact_id: "proof_public_verification",
         status: "available",
+      }),
+      expect.objectContaining({
+        artifact_id: "control_plane_audit",
+        status: "available",
+      }),
+    ]));
+    expect(complianceContent.pack.audit_exports).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        export_id: "control_plane_audit",
+        status: "available",
+        record_count: expect.any(Number),
+        event_type_counts: expect.objectContaining({
+          license_issued: expect.any(Number),
+          proof_issued: expect.any(Number),
+          proof_validated: expect.any(Number),
+          proof_key_upserted: expect.any(Number),
+        }),
       }),
     ]));
     const publicVerificationArtifact = complianceContent.artifacts.find((artifact) =>

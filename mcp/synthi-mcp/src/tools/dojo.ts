@@ -2482,7 +2482,7 @@ async function dojoRunVivariumScenarioTool(args: unknown): Promise<ToolResponse>
     vivarium_run: scenarioRun,
     persisted_skill: skillListItem(persisted),
     control_plane_persistence: durablePersistence.persistence ?? null,
-    license_health: licenseHealthFor(persisted),
+    license_health: await licenseHealthFor(persisted, skill.tenant),
   });
 }
 
@@ -2523,7 +2523,7 @@ async function dojoRunWindTunnelTool(args: unknown): Promise<ToolResponse> {
     wind_tunnel_execution: tunnel,
     persisted_skill: skillListItem(persisted),
     control_plane_persistence: durablePersistence.persistence ?? null,
-    license_health: licenseHealthFor(persisted),
+    license_health: await licenseHealthFor(persisted, skill.tenant),
   });
 }
 
@@ -2861,7 +2861,7 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
     },
     checkride: recertified.checkride,
     license: recertified.permission_license,
-    license_health: licenseHealthFor(recertified),
+    license_health: await licenseHealthFor(recertified, tenant),
     governance_service: await governanceServiceViewForTenant(tenant, now, [recertified]),
     assurance_case: recertified.assurance_case,
     repo_artifacts: artifactSummary(exportDojoRepoArtifacts(recertified)),
@@ -2875,7 +2875,7 @@ async function dojoGetLicenseHealthTool(args: unknown): Promise<ToolResponse> {
     ok: true,
     control_plane_source: skill.control_plane_source,
     skill_id: skill.skill.skill_id,
-    license_health: licenseHealthFor(skill.skill),
+    license_health: await licenseHealthFor(skill.skill, skill.tenant),
   });
 }
 
@@ -4381,7 +4381,22 @@ async function visibleDojoAuditEventsForTenant(
   if (skills.length === 0) return [];
   const skillIds = new Set(skills.map((skill) => skill.skill_id));
   const workspaceIds = new Set(skills.map((skill) => skill.workspace_id));
-  const records = await dojoSkillRegistry.listAuditEvents();
+  const enforcement = resolveDojoEnforcementConfig();
+  let records: DojoAuditEventRecord[];
+  if (enforcement.production_enforcement && enforcement.require_durable_store) {
+    const resolution = await createDojoControlPlaneStoresFromEnv({ tenant });
+    if (!resolution.ok) {
+      records = [];
+    } else {
+      try {
+        records = await resolution.audit_store.listAuditEvents({ limit: 500 });
+      } finally {
+        await resolution.close?.();
+      }
+    }
+  } else {
+    records = await dojoSkillRegistry.listAuditEvents();
+  }
   return records
     .filter((record) => record.tenant_id === tenant.tenant_id)
     .filter((record) => workspaceIds.has(record.workspace_id))
@@ -5051,8 +5066,9 @@ function skillWithDojoRuns(
   return updated;
 }
 
-function licenseHealthFor(skill: DojoSkill): Record<string, unknown> {
-  const proofRecords = dojoSkillRegistry.listProofRecords().filter((record) => record.skill_id === skill.skill_id);
+async function licenseHealthFor(skill: DojoSkill, tenant?: DojoTenantContext): Promise<Record<string, unknown>> {
+  const proofRecordsResult = await proofRecordsForLicenseHealth(skill, tenant);
+  const proofRecords = proofRecordsResult.records;
   const proofRecordCounts = proofRecords.reduce<Record<string, number>>((counts, record) => {
     counts[record.status] = (counts[record.status] ?? 0) + 1;
     return counts;
@@ -5073,11 +5089,41 @@ function licenseHealthFor(skill: DojoSkill): Record<string, unknown> {
     license_expires_at: skill.license_expires_at,
     days_until_expiry: lifecycle.days_until_expiry,
     proof_records: proofRecordCounts,
+    proof_record_source: proofRecordsResult.source,
+    proof_record_count: proofRecords.length,
     active_guardrails: skill.guardrails.length,
     binding_case_law: skill.case_law.filter((item) => item.status === "binding").length,
     lifecycle,
     governance,
     metrics: buildDojoUniverseMetrics([skill]),
+  };
+}
+
+async function proofRecordsForLicenseHealth(
+  skill: DojoSkill,
+  tenant?: DojoTenantContext
+): Promise<{ records: DojoProofCapsuleRecord[]; source: "compatibility_registry" | "postgres" }> {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (tenant && enforcement.production_enforcement && enforcement.require_durable_store) {
+    const resolution = await createDojoControlPlaneStoresFromEnv({
+      tenant,
+      app_origin: skill.app_origin,
+    });
+    if (resolution.ok) {
+      try {
+        const records = await resolution.proof_store.listProofRecords();
+        return {
+          source: "postgres",
+          records: records.filter((record) => record.skill_id === skill.skill_id),
+        };
+      } finally {
+        await resolution.close?.();
+      }
+    }
+  }
+  return {
+    source: "compatibility_registry",
+    records: dojoSkillRegistry.listProofRecords().filter((record) => record.skill_id === skill.skill_id),
   };
 }
 
