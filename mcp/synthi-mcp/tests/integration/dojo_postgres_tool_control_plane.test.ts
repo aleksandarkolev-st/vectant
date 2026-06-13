@@ -142,6 +142,143 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     }));
   });
 
+  it("reads aggregate production views from Postgres after local registry loss", async () => {
+    const tenantId = `tenant_aggregate_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_aggregate_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-aggregate-publish",
+      correlation_id: "corr-postgres-aggregate-publish",
+      actor_id: "postgres-aggregate-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_aggregate_publish",
+      evidence_refs: ["evidence:integration-postgres-aggregate-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+    };
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+
+    const readerTenant = {
+      ...tenant,
+      actor_id: "postgres-aggregate-reader",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-aggregate-read",
+      correlation_id: "corr-postgres-aggregate-read",
+    };
+
+    const registry = await dispatchDojoTool("synthi_dojo_get_registry", readerTenant);
+    expect(registry?.isError).toBeUndefined();
+    expect(registry?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      registry: expect.objectContaining({
+        skill_count: 1,
+        competencies: [
+          expect.objectContaining({
+            skill_id: published.skill.skill_id,
+            workspace_id: workspaceId,
+          }),
+        ],
+      }),
+      governance_service: expect.objectContaining({
+        skill_registry: [
+          expect.objectContaining({
+            skill_id: published.skill.skill_id,
+            workspace_id: workspaceId,
+          }),
+        ],
+      }),
+    }));
+
+    const metrics = await dispatchDojoTool("synthi_dojo_get_metrics", {
+      ...readerTenant,
+      request_id: "req-postgres-aggregate-metrics",
+      correlation_id: "corr-postgres-aggregate-metrics",
+    });
+    expect(metrics?.isError).toBeUndefined();
+    expect(metrics?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      metrics: expect.objectContaining({
+        skill_count: 1,
+        business: expect.objectContaining({ published_skill_count: 1 }),
+      }),
+    }));
+
+    const governance = await dispatchDojoTool("synthi_dojo_get_governance_report", {
+      ...readerTenant,
+      skill_id: published.skill.skill_id,
+      request_id: "req-postgres-aggregate-governance",
+      correlation_id: "corr-postgres-aggregate-governance",
+    });
+    expect(governance?.isError).toBeUndefined();
+    expect(governance?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      skill_id: published.skill.skill_id,
+      governance_service: expect.objectContaining({
+        skill_registry: [
+          expect.objectContaining({ skill_id: published.skill.skill_id }),
+        ],
+      }),
+    }));
+
+    const universe = await dispatchDojoTool("synthi_dojo_get_universe_dossier", {
+      ...readerTenant,
+      skill_id: published.skill.skill_id,
+      request_id: "req-postgres-aggregate-universe",
+      correlation_id: "corr-postgres-aggregate-universe",
+    });
+    expect(universe?.isError).toBeUndefined();
+    expect(universe?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      skill_id: published.skill.skill_id,
+      universe_dossier: expect.objectContaining({
+        metrics: expect.objectContaining({ skill_count: 1 }),
+      }),
+    }));
+
+    const compliance = await dispatchDojoTool("synthi_dojo_export_compliance_pack", {
+      ...readerTenant,
+      request_id: "req-postgres-aggregate-compliance",
+      correlation_id: "corr-postgres-aggregate-compliance",
+      now: "2026-06-11T02:00:00.000Z",
+    });
+    expect(compliance?.isError).toBeUndefined();
+    expect(compliance?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      pack: expect.objectContaining({
+        skill_ids: [published.skill.skill_id],
+        workspace_ids: [workspaceId],
+      }),
+      governance_service: expect.objectContaining({
+        skill_registry: [
+          expect.objectContaining({ skill_id: published.skill.skill_id }),
+        ],
+      }),
+      artifact_count: expect.any(Number),
+    }));
+  });
+
   it("blocks raw browser workflow replay using durable published bindings after local registry loss", async () => {
     const tenantId = `tenant_raw_gate_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_raw_gate_${Math.random().toString(16).slice(2)}`;

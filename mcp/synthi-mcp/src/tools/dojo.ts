@@ -236,7 +236,8 @@ function requireDojoDurableControlPlaneWrite(
 }
 
 async function listDurableDojoSkillsForTenantIfRequired(
-  tenant: DojoTenantContext
+  tenant: DojoTenantContext,
+  operation = "synthi_dojo_list_competencies"
 ): Promise<{ ok: true; skills?: DojoSkill[]; source: "compatibility_registry" | "postgres" } | { ok: false; error: ToolResponse }> {
   const enforcement = resolveDojoEnforcementConfig();
   if (!enforcement.production_enforcement || !enforcement.require_durable_store) {
@@ -247,7 +248,7 @@ async function listDurableDojoSkillsForTenantIfRequired(
   if (!resolution.ok) {
     return {
       ok: false,
-      error: controlPlaneResolutionError("synthi_dojo_list_competencies", resolution),
+      error: controlPlaneResolutionError(operation, resolution),
     };
   }
   try {
@@ -1532,7 +1533,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = dojoGetCostPolicyTool(args);
         break;
       case "synthi_dojo_get_universe_dossier":
-        response = dojoGetUniverseDossierTool(args);
+        response = await dojoGetUniverseDossierTool(args);
         break;
       case "synthi_dojo_get_lifecycle":
         response = dojoGetLifecycleTool(args);
@@ -1541,7 +1542,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoGetGovernanceReportTool(args);
         break;
       case "synthi_dojo_get_metrics":
-        response = dojoGetMetricsTool(args);
+        response = await dojoGetMetricsTool(args);
         break;
       case "synthi_dojo_get_source_affordance_pr_plan":
         response = dojoGetSourceAffordancePrPlanTool(args);
@@ -1779,15 +1780,20 @@ function dojoGetCostPolicyTool(args: unknown): ToolResponse {
   return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, cost_control_policy: skill.skill.cost_control_policy });
 }
 
-function dojoGetUniverseDossierTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetUniverseDossierTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_universe_dossier");
   if (!skill.ok) return skill.error;
   const a = obj(args);
-  const visibleSkills = visibleDojoSkillsForTenant(skill.tenant);
+  const visibleSkills = await visibleDojoSkillsForTenantFromControlPlaneIfRequired(
+    skill.tenant,
+    "synthi_dojo_get_universe_dossier"
+  );
+  if (!visibleSkills.ok) return visibleSkills.error;
   return jsonResponse({
     ok: true,
+    control_plane_source: visibleSkills.control_plane_source,
     skill_id: skill.skill.skill_id,
-    universe_dossier: buildDojoUniverseDossier(skill.skill, visibleSkills, {
+    universe_dossier: buildDojoUniverseDossier(skill.skill, visibleSkills.skills, {
       question: stringOpt(a["question"]),
       mutation_kind: stringOpt(a["mutation_kind"]),
     }),
@@ -1801,29 +1807,43 @@ function dojoGetLifecycleTool(args: unknown): ToolResponse {
 }
 
 async function dojoGetGovernanceReportTool(args: unknown): Promise<ToolResponse> {
-  const skill = requiredAuthorizedSkill(args);
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_governance_report");
   if (!skill.ok) return skill.error;
   const now = new Date().toISOString();
+  const visibleSkills = await visibleDojoSkillsForTenantFromControlPlaneIfRequired(
+    skill.tenant,
+    "synthi_dojo_get_governance_report"
+  );
+  if (!visibleSkills.ok) return visibleSkills.error;
   return jsonResponse({
     ok: true,
+    control_plane_source: visibleSkills.control_plane_source,
     skill_id: skill.skill.skill_id,
     governance_report: buildDojoGovernanceReport(skill.skill),
-    governance_service: await governanceServiceViewForTenant(skill.tenant, now),
+    governance_service: await governanceServiceViewForTenant(skill.tenant, now, visibleSkills.skills),
   });
 }
 
-function dojoGetMetricsTool(args: unknown): ToolResponse {
+async function dojoGetMetricsTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const hasExplicitSkillSelection = Boolean(stringOpt(a["skill_id"]) || stringOpt(a["workflow_id"]));
   if (hasExplicitSkillSelection) {
-    const skill = requiredAuthorizedSkill(args);
+    const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_metrics");
     if (!skill.ok) return skill.error;
-    return jsonResponse({ ok: true, metrics: buildDojoUniverseMetrics([skill.skill]) });
+    return jsonResponse({ ok: true, control_plane_source: skill.control_plane_source, metrics: buildDojoUniverseMetrics([skill.skill]) });
   }
   const tenantContext = dojoTenantContextResultFromArgs(args);
   if (!tenantContext.ok) return tenantContext.error;
-  const skills = visibleDojoSkillsForTenant(tenantContext.tenant);
-  return jsonResponse({ ok: true, metrics: buildDojoUniverseMetrics(skills) });
+  const visibleSkills = await visibleDojoSkillsForTenantFromControlPlaneIfRequired(
+    tenantContext.tenant,
+    "synthi_dojo_get_metrics"
+  );
+  if (!visibleSkills.ok) return visibleSkills.error;
+  return jsonResponse({
+    ok: true,
+    control_plane_source: visibleSkills.control_plane_source,
+    metrics: buildDojoUniverseMetrics(visibleSkills.skills),
+  });
 }
 
 function dojoGetSourceAffordancePrPlanTool(args: unknown): ToolResponse {
@@ -1840,11 +1860,16 @@ async function dojoGetRegistryTool(args: unknown): Promise<ToolResponse> {
   const tenantContext = dojoTenantContextResultFromArgs(args);
   if (!tenantContext.ok) return tenantContext.error;
   const now = new Date().toISOString();
-  const skills = visibleDojoSkillsForTenant(tenantContext.tenant);
+  const visibleSkills = await visibleDojoSkillsForTenantFromControlPlaneIfRequired(
+    tenantContext.tenant,
+    "synthi_dojo_get_registry"
+  );
+  if (!visibleSkills.ok) return visibleSkills.error;
   return jsonResponse({
     ok: true,
-    registry: buildDojoOrganizationRegistry(skills, { now }),
-    governance_service: await governanceServiceViewForTenant(tenantContext.tenant, now),
+    control_plane_source: visibleSkills.control_plane_source,
+    registry: buildDojoOrganizationRegistry(visibleSkills.skills, { now }),
+    governance_service: await governanceServiceViewForTenant(tenantContext.tenant, now, visibleSkills.skills),
   });
 }
 
@@ -3106,7 +3131,12 @@ async function dojoExportCompliancePackTool(args: unknown): Promise<ToolResponse
     const tenantContext = dojoTenantContextResultFromArgs(args);
     if (!tenantContext.ok) return tenantContext.error;
     tenant = tenantContext.tenant;
-    skills = visibleDojoSkillsForTenant(tenant);
+    const visibleSkills = await visibleDojoSkillsForTenantFromControlPlaneIfRequired(
+      tenant,
+      "synthi_dojo_export_compliance_pack"
+    );
+    if (!visibleSkills.ok) return visibleSkills.error;
+    skills = visibleSkills.skills;
   }
   if (skills.length === 0) return errorResponse("dojo_skill_required");
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
@@ -4290,6 +4320,22 @@ function sourceWorkspaceIdForWorkflowArtifact(artifact: BrowserWorkflowArtifact)
 
 function visibleDojoSkillsForTenant(tenant: DojoTenantContext, skills: DojoSkill[] = dojoSkillRegistry.list()): DojoSkill[] {
   return skills.filter((skill) => isTenantAuthorizedForDojoSkill(tenant, skill));
+}
+
+async function visibleDojoSkillsForTenantFromControlPlaneIfRequired(
+  tenant: DojoTenantContext,
+  operation: string
+): Promise<
+  | { ok: true; skills: DojoSkill[]; control_plane_source: "compatibility_registry" | "postgres" }
+  | { ok: false; error: ToolResponse }
+> {
+  const durableSkills = await listDurableDojoSkillsForTenantIfRequired(tenant, operation);
+  if (!durableSkills.ok) return durableSkills;
+  return {
+    ok: true,
+    skills: visibleDojoSkillsForTenant(tenant, durableSkills.skills ?? dojoSkillRegistry.list()),
+    control_plane_source: durableSkills.source,
+  };
 }
 
 function visibleDojoCaseLawRecordsForTenant(tenant: DojoTenantContext, skills: DojoSkill[]): DojoCaseLawRecord[] {
