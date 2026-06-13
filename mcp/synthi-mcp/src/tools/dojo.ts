@@ -1675,16 +1675,14 @@ function dojoRecertifySkillTool(args: unknown): ToolResponse {
     tenant = authorization.tenant;
   }
   const workflowId = existing?.workflow_id ?? stringOpt(a["workflow_id"]);
-  const artifact = requiredWorkflowArtifact({ workflow_id: workflowId });
-  if (!artifact.ok) return artifact.error;
-  const workspaceId = stringOpt(a["workspace_id"]) ?? existing?.workspace_id;
-  if (!tenant) {
-    const tenantContext = dojoTenantContextResultFromArgs(args, {
-      development_defaults: workspaceId ? { workspace_id: workspaceId } : undefined,
-    });
-    if (!tenantContext.ok) return tenantContext.error;
-    tenant = tenantContext.tenant;
-  }
+  const workflow = requiredAuthorizedWorkflowArtifact({
+    ...a,
+    workflow_id: workflowId,
+    ...(existing ? { workspace_id: existing.workspace_id } : {}),
+  });
+  if (!workflow.ok) return workflow.error;
+  if (!tenant) tenant = workflow.tenant;
+  const workspaceId = existing?.workspace_id ?? workflow.workspace_id;
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const reason = stringOpt(a["reason"]);
   if (!reason) return errorResponse("dojo_recertification_reason_required");
@@ -1695,9 +1693,9 @@ function dojoRecertifySkillTool(args: unknown): ToolResponse {
   const actorType = actorTypeInputOpt(a["actor_type"]);
   if (!actorType) return errorResponse("dojo_recertification_actor_type_required");
   const previousLicenseVersion = existing?.permission_license.license_version ?? null;
-  const manifest = generatePrivateWorkflowToolManifest(artifact.artifact.workflow.contract);
+  const manifest = generatePrivateWorkflowToolManifest(workflow.artifact.workflow.contract);
   const publishedToolName = existing?.published_tool_name;
-  const recertified = dojoSkillRegistry.publish(buildDojoSkill(artifact.artifact.workflow.contract, {
+  const recertified = dojoSkillRegistry.publish(buildDojoSkill(workflow.artifact.workflow.contract, {
     workspace_id: workspaceId,
     now,
     private_tool_manifest: manifest,
@@ -1713,6 +1711,7 @@ function dojoRecertifySkillTool(args: unknown): ToolResponse {
     workspace_id: recertified.workspace_id,
     skill_id: recertified.skill_id,
     license_id: recertified.permission_license.license_id,
+    tenant_context: tenant,
     reason,
     evidence_refs: evidenceRefs,
   };

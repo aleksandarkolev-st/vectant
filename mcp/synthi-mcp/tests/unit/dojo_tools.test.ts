@@ -2095,6 +2095,10 @@ describe("Agent Dojo MCP tools", () => {
         audit_event: expect.objectContaining({
           event_type: "checkride_run_completed",
           actor: { actor_id: "recertifier-a", actor_type: "human" },
+          tenant_context: expect.objectContaining({
+            workspace_id: "workspace-a",
+            actor_id: "recertifier-a",
+          }),
           evidence_refs: ["evidence:recertification"],
         }),
       }),
