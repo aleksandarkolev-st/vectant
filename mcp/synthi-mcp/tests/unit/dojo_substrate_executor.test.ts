@@ -251,6 +251,131 @@ describe("Dojo substrate executor", () => {
       blocked_by: ["api_tool_auth_scope_missing"],
     }));
   });
+
+  it("executes compiled API substrate through transport and evidence callbacks", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const tool = compiledApiTool();
+    const requests: unknown[] = [];
+    const evidenceRecords: unknown[] = [];
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: tool.candidate_id } }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["api"],
+        compiled_api_tool: tool,
+        api_tool_args: {
+          proof_capsule: proofCapsuleFixture(),
+          request: { amount: 42 },
+          idempotency_key: "idem-a",
+        },
+        license_context: {
+          skill_id: "skill-a",
+          license_id: "license-a",
+          license_version: "1.0.0",
+          action: "run_workflow",
+          auth_scopes: ["invoice:write"],
+        },
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor({
+        api_transport: (request) => {
+          requests.push(request);
+          return { status: 201, body: { status: "saved" } };
+        },
+        write_api_evidence: (evidence) => {
+          evidenceRecords.push(evidence);
+          return "evidence:api-substrate-a";
+        },
+      }),
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          substrate_result: expect.objectContaining({
+            ok: true,
+            substrate: "api",
+            evidence_refs: ["evidence:api-substrate-a"],
+            api_tool_execution: expect.objectContaining({
+              ok: true,
+              evidence_record_id: "evidence:api-substrate-a",
+            }),
+          }),
+        }),
+      ]),
+    }));
+    expect(requests).toEqual([
+      expect.objectContaining({
+        method: "POST",
+        path: "/api/invoices",
+        headers: { "Idempotency-Key": "idem-a" },
+      }),
+    ]);
+    expect(evidenceRecords).toEqual([
+      expect.objectContaining({
+        tool_name: "synthi_api_save_invoice",
+        proof_capsule_id: "capsule-a",
+        postcondition_ok: true,
+        blocked_by: [],
+      }),
+    ]);
+  });
+
+  it("keeps API execution evidence on blocked substrate postconditions", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const tool = compiledApiTool();
+
+    await expect(runtime.execute({
+      graph: graphFixture({ substrate_options: ["api"], metadata: { api_candidate_id: tool.candidate_id } }),
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["api"],
+        compiled_api_tool: tool,
+        api_tool_args: {
+          proof_capsule: proofCapsuleFixture(),
+          request: { amount: 42 },
+          idempotency_key: "idem-a",
+        },
+        license_context: {
+          skill_id: "skill-a",
+          license_id: "license-a",
+          license_version: "1.0.0",
+          action: "run_workflow",
+          auth_scopes: ["invoice:write"],
+        },
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor({
+        api_transport: () => ({ status: 200, body: { status: "draft" } }),
+        write_api_evidence: () => "evidence:api-substrate-failed-postcondition",
+      }),
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_postcondition_guardrail_comparison_failed"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          substrate_result: expect.objectContaining({
+            ok: false,
+            substrate: "api",
+            evidence_refs: ["evidence:api-substrate-failed-postcondition"],
+            api_tool_execution: expect.objectContaining({
+              ok: false,
+              evidence_record_id: "evidence:api-substrate-failed-postcondition",
+            }),
+          }),
+        }),
+      ]),
+    }));
+  });
 });
 
 const validProofValidator = () => ({ ok: true, blocked_by: [] });

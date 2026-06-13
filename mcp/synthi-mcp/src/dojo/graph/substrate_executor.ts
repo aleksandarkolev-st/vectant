@@ -1,7 +1,12 @@
 import type { DojoGraphMode, DojoGraphNode } from "./types.js";
 import {
+  executeDojoApiBackedToolInvocation,
   validateDojoApiBackedToolInvocation,
   type DojoApiBackedMcpTool,
+  type DojoApiToolExecutionEvidence,
+  type DojoApiToolExecutionResult,
+  type DojoApiToolHttpRequest,
+  type DojoApiToolHttpResponse,
   type DojoApiToolLicenseContext,
 } from "../api/api_tool_compiler.js";
 
@@ -19,13 +24,21 @@ export interface DojoSubstrateExecutionResult {
   substrate?: DojoExecutionSubstrate;
   blocked_by: string[];
   evidence_refs: string[];
+  api_tool_execution?: DojoApiToolExecutionResult;
 }
 
 export interface DojoSubstrateExecutor {
   execute(request: DojoSubstrateExecutionRequest): Promise<DojoSubstrateExecutionResult>;
 }
 
+export interface DojoSubstrateExecutorOptions {
+  api_transport?: (request: DojoApiToolHttpRequest) => DojoApiToolHttpResponse | Promise<DojoApiToolHttpResponse>;
+  write_api_evidence?: (evidence: DojoApiToolExecutionEvidence) => string | Promise<string>;
+}
+
 export class FakeDojoSubstrateExecutor implements DojoSubstrateExecutor {
+  constructor(private readonly options: DojoSubstrateExecutorOptions = {}) {}
+
   async execute(request: DojoSubstrateExecutionRequest): Promise<DojoSubstrateExecutionResult> {
     const selection = selectSubstrate(request.node, request.inputs, request.mode ?? "practice");
     if (!selection.ok) {
@@ -33,8 +46,27 @@ export class FakeDojoSubstrateExecutor implements DojoSubstrateExecutor {
     }
     const substrate = selection.substrate;
     if (substrate === "api") {
-      const apiValidation = apiSubstrateApproved(request.node, request.inputs);
-      if (!apiValidation.ok) return blocked(apiValidation.blocked_by, substrate);
+      const apiValidation = await apiSubstrateApproved(request.node, request.inputs, this.options);
+      if (!apiValidation.ok) {
+        return {
+          ok: false,
+          status: "blocked",
+          substrate,
+          blocked_by: apiValidation.blocked_by,
+          evidence_refs: apiValidation.execution?.evidence_record_id ? [apiValidation.execution.evidence_record_id] : [],
+          ...(apiValidation.execution ? { api_tool_execution: apiValidation.execution } : {}),
+        };
+      }
+      if (apiValidation.execution) {
+        return {
+          ok: true,
+          status: "executed",
+          substrate,
+          blocked_by: [],
+          evidence_refs: apiValidation.execution.evidence_record_id ? [apiValidation.execution.evidence_record_id] : [],
+          api_tool_execution: apiValidation.execution,
+        };
+      }
     }
     return {
       ok: true,
@@ -46,8 +78,8 @@ export class FakeDojoSubstrateExecutor implements DojoSubstrateExecutor {
   }
 }
 
-export function createFakeDojoSubstrateExecutor(): DojoSubstrateExecutor {
-  return new FakeDojoSubstrateExecutor();
+export function createFakeDojoSubstrateExecutor(options: DojoSubstrateExecutorOptions = {}): DojoSubstrateExecutor {
+  return new FakeDojoSubstrateExecutor(options);
 }
 
 type DojoSubstrateSelection =
@@ -87,9 +119,13 @@ function requestedSubstrate(inputs: Record<string, unknown>): DojoExecutionSubst
   return typeof value === "string" && isExecutionSubstrate(value) ? value : null;
 }
 
-function apiSubstrateApproved(node: DojoGraphNode, inputs: Record<string, unknown>): { ok: boolean; blocked_by: string[] } {
+async function apiSubstrateApproved(
+  node: DojoGraphNode,
+  inputs: Record<string, unknown>,
+  options: DojoSubstrateExecutorOptions
+): Promise<{ ok: boolean; blocked_by: string[]; execution?: DojoApiToolExecutionResult }> {
   const compiledTool = objectOpt(inputs["compiled_api_tool"]);
-  if (compiledTool) return compiledApiToolApproved(node, inputs, compiledTool as unknown as DojoApiBackedMcpTool);
+  if (compiledTool) return compiledApiToolApproved(node, inputs, compiledTool as unknown as DojoApiBackedMcpTool, options);
   return apiCandidateApproved(node, inputs)
     ? { ok: true, blocked_by: [] }
     : { ok: false, blocked_by: ["api_candidate_not_approved"] };
@@ -98,12 +134,26 @@ function apiSubstrateApproved(node: DojoGraphNode, inputs: Record<string, unknow
 function compiledApiToolApproved(
   node: DojoGraphNode,
   inputs: Record<string, unknown>,
-  tool: DojoApiBackedMcpTool
-): { ok: boolean; blocked_by: string[] } {
+  tool: DojoApiBackedMcpTool,
+  options: DojoSubstrateExecutorOptions
+): { ok: boolean; blocked_by: string[] } | Promise<{ ok: boolean; blocked_by: string[]; execution?: DojoApiToolExecutionResult }> {
   const candidateId = typeof node.metadata?.["api_candidate_id"] === "string" ? node.metadata["api_candidate_id"] : undefined;
   if (candidateId && tool.candidate_id !== candidateId) return { ok: false, blocked_by: ["api_tool_candidate_mismatch"] };
   const licenseContext = licenseContextOpt(inputs["license_context"]);
   if (!licenseContext) return { ok: false, blocked_by: ["api_tool_license_context_required"] };
+  if (options.api_transport && options.write_api_evidence) {
+    return executeDojoApiBackedToolInvocation({
+      tool,
+      args: objectOpt(inputs["api_tool_args"]) ?? {},
+      license_context: licenseContext,
+      transport: options.api_transport,
+      write_evidence: options.write_api_evidence,
+    }).then((execution) => ({
+      ok: execution.ok,
+      blocked_by: execution.blocked_by,
+      execution,
+    }));
+  }
   return validateDojoApiBackedToolInvocation({
     tool,
     args: objectOpt(inputs["api_tool_args"]) ?? {},
