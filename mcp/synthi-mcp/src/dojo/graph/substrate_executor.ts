@@ -11,6 +11,7 @@ import {
 } from "../api/api_tool_compiler.js";
 
 export type DojoExecutionSubstrate = "vision" | "dom" | "source" | "api" | "mcp";
+const DOJO_SUBSTRATE_SAFETY_PRIORITY: DojoExecutionSubstrate[] = ["api", "mcp", "source", "dom", "vision"];
 
 export interface DojoSubstrateExecutionRequest {
   node: DojoGraphNode;
@@ -101,7 +102,9 @@ function selectSubstrate(
       ? { ok: true, substrate: requested }
       : { ok: false, blocked_by: ["substrate_not_allowed"] };
   }
-  const selected = nodeSubstrates.find((substrate) => allowed.includes(substrate));
+  const selected = DOJO_SUBSTRATE_SAFETY_PRIORITY.find((substrate) =>
+    nodeSubstrates.includes(substrate) && allowed.includes(substrate)
+  );
   return selected ? { ok: true, substrate: selected } : { ok: false, blocked_by: ["substrate_not_allowed"] };
 }
 

@@ -98,6 +98,58 @@ describe("Dojo substrate executor", () => {
     }));
   });
 
+  it("prefers the safest licensed substrate unless an allowed substrate is explicitly requested", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const graph = graphFixture({ substrate_options: ["vision", "dom", "source", "mcp"] });
+
+    await expect(runtime.execute({
+      graph,
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["vision", "dom", "source", "mcp"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          substrate_result: expect.objectContaining({
+            ok: true,
+            substrate: "mcp",
+          }),
+        }),
+      ]),
+    }));
+
+    await expect(runtime.execute({
+      graph,
+      mode: "production",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["vision", "dom", "source", "mcp"],
+        requested_substrate: "dom",
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          substrate_result: expect.objectContaining({
+            ok: true,
+            substrate: "dom",
+          }),
+        }),
+      ]),
+    }));
+  });
+
   it("rejects self-attested API candidate approval that is not bound to a reviewed candidate", async () => {
     const runtime = new DojoSkillGraphRuntime();
 
