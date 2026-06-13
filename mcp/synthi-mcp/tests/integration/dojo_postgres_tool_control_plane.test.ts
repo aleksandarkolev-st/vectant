@@ -369,6 +369,143 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).toEqual([]);
   });
 
+  it("persists case law proposal and review through Postgres after local reset", async () => {
+    const tenantId = `tenant_case_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_case_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-case-publish",
+      correlation_id: "corr-postgres-case-publish",
+      actor_id: "postgres-case-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_case_publish",
+      evidence_refs: ["evidence:integration-postgres-case-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+    };
+
+    const recorded = await dispatchDojoTool("synthi_dojo_record_case_law", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      title: "Duplicate entity stable identifier",
+      finding: "A duplicate display name can make the skill choose the wrong entity.",
+      rule: "Require a stable identifier match before committing entity mutations.",
+      applies_to: ["commit_mutation"],
+      evidence_refs: ["evidence:integration-postgres-case-proposal"],
+      actor_id: "postgres-case-author",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      request_id: "req-postgres-case-record",
+      correlation_id: "corr-postgres-case-record",
+    });
+    expect(recorded?.isError).toBeUndefined();
+    expect(recorded?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      case_law_record: expect.objectContaining({
+        status: "proposed",
+        binding_scope: { kind: "skill", id: published.skill.skill_id },
+        applies_to: ["commit_mutation"],
+      }),
+      guardrail_binding_status: "review_required",
+    }));
+    const caseId = (recorded?.structuredContent as {
+      case_law_record: { case_id: string };
+    }).case_law_record.case_id;
+
+    const governanceStore = new PostgresDojoGovernanceStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(governanceStore.getCaseLawRecord(caseId)).resolves.toEqual(expect.objectContaining({
+      case_id: caseId,
+      status: "proposed",
+      binding_scope: { kind: "skill", id: published.skill.skill_id },
+      evidence_refs: ["evidence:integration-postgres-case-proposal"],
+    }));
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+    expect(dojoSkillRegistry.getCaseLawRecord(caseId)).toBeNull();
+
+    const reviewed = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      case_id: caseId,
+      decision: "approved",
+      reviewer_actor_id: "postgres-case-reviewer",
+      reviewer_actor_type: "human",
+      reason: "Evidence proves the stable identifier guardrail is required.",
+      evidence_refs: ["evidence:integration-postgres-case-review"],
+      actor_id: "postgres-case-reviewer",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      request_id: "req-postgres-case-review",
+      correlation_id: "corr-postgres-case-review",
+      decided_at: "2026-06-11T03:00:00.000Z",
+    });
+    expect(reviewed?.isError).toBeUndefined();
+    expect(reviewed?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      case_law_record: expect.objectContaining({
+        case_id: caseId,
+        status: "approved",
+        reviewer: "postgres-case-reviewer",
+        evidence_refs: expect.arrayContaining([
+          "evidence:integration-postgres-case-proposal",
+          "evidence:integration-postgres-case-review",
+        ]),
+      }),
+      skill: expect.objectContaining({ skill_id: published.skill.skill_id }),
+    }));
+
+    await expect(governanceStore.getCaseLawRecord(caseId)).resolves.toEqual(expect.objectContaining({
+      case_id: caseId,
+      status: "approved",
+      reviewer: "postgres-case-reviewer",
+    }));
+    const skillStore = new PostgresDojoSkillStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(skillStore.getSkill(published.skill.skill_id)).resolves.toEqual(expect.objectContaining({
+      skill_id: published.skill.skill_id,
+      case_law: expect.arrayContaining([
+        expect.objectContaining({
+          case_id: caseId,
+          status: "binding",
+        }),
+      ]),
+      case_law_refs: expect.arrayContaining([caseId]),
+      guardrails: expect.arrayContaining([
+        expect.objectContaining({
+          source_case_id: caseId,
+          blocks_actions: ["commit_mutation"],
+        }),
+      ]),
+    }));
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+    expect(dojoSkillRegistry.getCaseLawRecord(caseId)).toBeNull();
+  });
+
   it("uses Postgres skill and proof records for production validation, consumption, and replay after local process loss", async () => {
     const tenantId = `tenant_proof_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_proof_${Math.random().toString(16).slice(2)}`;

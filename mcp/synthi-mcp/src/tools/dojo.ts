@@ -346,6 +346,20 @@ type DojoDurablePermissionUpgradeReviewContext = {
   close?: () => Promise<void>;
 };
 
+type DojoDurableCaseLawReviewContext = {
+  source: "postgres";
+  tenant: DojoTenantContext;
+  record: DojoCaseLawRecord;
+  skill: DojoSkill;
+  governance_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
+    ? T extends { ok: true; governance_store: infer Store } ? Store : never
+    : never;
+  skill_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
+    ? T extends { ok: true; skill_store: infer Store } ? Store : never
+    : never;
+  close?: () => Promise<void>;
+};
+
 async function durableProofRegistryForTenantIfRequired(input: {
   tenant: DojoTenantContext;
   operation: string;
@@ -471,6 +485,124 @@ async function permissionUpgradeReviewContextFromDurableControlPlaneIfRequired(
         request,
         skill,
         governance_store: resolution.governance_store,
+        close: resolution.close,
+      },
+    };
+  } catch (err) {
+    await resolution.close?.();
+    throw err;
+  }
+}
+
+async function caseLawReviewContextFromDurableControlPlaneIfRequired(
+  args: unknown,
+  caseId: string
+): Promise<
+  | { ok: true; context?: DojoDurableCaseLawReviewContext }
+  | { ok: false; error: ToolResponse }
+> {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_durable_store) {
+    return { ok: true };
+  }
+
+  const tenantContext = dojoTenantContextResultFromArgs(args);
+  if (!tenantContext.ok) return tenantContext;
+  const resolution = await createDojoControlPlaneStoresFromEnv({
+    tenant: tenantContext.tenant,
+  });
+  if (!resolution.ok) {
+    return {
+      ok: false,
+      error: controlPlaneResolutionError("synthi_dojo_review_case_law", resolution),
+    };
+  }
+
+  try {
+    const record = await resolution.governance_store.getCaseLawRecord(caseId);
+    if (!record) {
+      await resolution.close?.();
+      return {
+        ok: false,
+        error: errorResponse("dojo_case_law_not_found", {
+          case_id: caseId,
+          control_plane_source: "postgres",
+        }),
+      };
+    }
+
+    const requested = obj(args);
+    const explicitSkillId = stringOpt(requested["skill_id"]);
+    const explicitWorkflowId = stringOpt(requested["workflow_id"]);
+    let skill: DojoSkill | null = null;
+    if (explicitSkillId) {
+      skill = await resolution.skill_store.getSkill(explicitSkillId);
+    } else if (explicitWorkflowId) {
+      skill = await resolution.skill_store.getSkillByWorkflowId(explicitWorkflowId);
+    } else if (record.binding_scope.kind === "skill") {
+      skill = await resolution.skill_store.getSkill(record.binding_scope.id);
+    } else {
+      const visibleSkills = await resolution.skill_store.listSkills();
+      skill = visibleSkills
+        .sort((left, right) => left.skill_id.localeCompare(right.skill_id))
+        .find((candidate) => caseLawRecordAppliesToSkill(record, candidate))
+        ?? null;
+    }
+    if (!skill) {
+      await resolution.close?.();
+      return {
+        ok: false,
+        error: errorResponse("dojo_case_law_skill_not_found", {
+          case_id: caseId,
+          skill_id: explicitSkillId ?? null,
+          workflow_id: explicitWorkflowId ?? null,
+          binding_scope: record.binding_scope,
+          control_plane_source: "postgres",
+        }),
+      };
+    }
+    if (!isTenantAuthorizedForDojoSkill(tenantContext.tenant, skill)) {
+      await resolution.close?.();
+      return {
+        ok: false,
+        error: errorResponse("dojo_skill_not_authorized", {
+          ok: false,
+          skill_id: skill.skill_id,
+          workspace_id: skill.workspace_id,
+          tenant_workspace_id: tenantContext.tenant.workspace_id,
+          actor_id: tenantContext.tenant.actor_id,
+          control_plane_source: "postgres",
+          blocked_by: ["dojo_skill_workspace_mismatch"],
+          required_roles: ["dojo:admin", "dojo:operator"],
+        }),
+      };
+    }
+    if (!caseLawRecordAppliesToSkill(record, skill)) {
+      await resolution.close?.();
+      return {
+        ok: false,
+        error: errorResponse("dojo_case_law_not_authorized", {
+          ok: false,
+          case_id: record.case_id,
+          skill_id: skill.skill_id,
+          binding_scope: record.binding_scope,
+          tenant_workspace_id: tenantContext.tenant.workspace_id,
+          actor_id: tenantContext.tenant.actor_id,
+          control_plane_source: "postgres",
+          blocked_by: ["dojo_case_law_scope_mismatch"],
+        }),
+      };
+    }
+
+    return {
+      ok: true,
+      context: {
+        source: "postgres",
+        tenant: tenantContext.tenant,
+        record,
+        skill,
+        governance_store: resolution.governance_store,
+        skill_store: resolution.skill_store,
         close: resolution.close,
       },
     };
@@ -1219,7 +1351,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoReviewPermissionUpgradeTool(args);
         break;
       case "synthi_dojo_review_case_law":
-        response = dojoReviewCaseLawTool(args);
+        response = await dojoReviewCaseLawTool(args);
         break;
       case "synthi_dojo_generate_vivarium_scenarios":
         response = dojoGenerateVivariumScenariosTool(args);
@@ -1246,7 +1378,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoRevokeLicenseTool(args);
         break;
       case "synthi_dojo_record_case_law":
-        response = dojoRecordCaseLawTool(args);
+        response = await dojoRecordCaseLawTool(args);
         break;
       case "synthi_dojo_export_artifacts":
         response = dojoExportArtifactsTool(args);
@@ -1902,7 +2034,7 @@ async function dojoReviewPermissionUpgradeTool(args: unknown): Promise<ToolRespo
   });
 }
 
-function dojoReviewCaseLawTool(args: unknown): ToolResponse {
+async function dojoReviewCaseLawTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const caseId = stringOpt(a["case_id"]);
   if (!caseId) return errorResponse("dojo_case_law_case_id_required");
@@ -1914,17 +2046,30 @@ function dojoReviewCaseLawTool(args: unknown): ToolResponse {
   if (!reviewerActorId) return errorResponse("dojo_case_law_reviewer_required");
   const reviewerActorType = actorTypeInputOpt(a["reviewer_actor_type"] ?? a["actor_type"]);
   if (!reviewerActorType) return errorResponse("dojo_case_law_reviewer_actor_type_required");
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_review_case_law");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_review_case_law", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
 
-  const selectedSkill = skillByArgs(args);
-  const storedRecord = dojoSkillRegistry.getCaseLawRecord(caseId);
+  const durableResolution = await caseLawReviewContextFromDurableControlPlaneIfRequired(args, caseId);
+  if (!durableResolution.ok) return durableResolution.error;
+
+  const selectedSkill = durableResolution.context?.skill ?? skillByArgs(args);
+  const storedRecord = durableResolution.context?.record ?? dojoSkillRegistry.getCaseLawRecord(caseId);
   const skillLocalRecord = !storedRecord && selectedSkill
     ? caseLawRecordsForSkill(selectedSkill).find((record) => record.case_id === caseId)
     : undefined;
   const record = storedRecord ?? (skillLocalRecord ? dojoSkillRegistry.recordCaseLawRecord(skillLocalRecord) : null);
-  if (!record) return errorResponse("dojo_case_law_not_found", { case_id: caseId });
-  const authorization = authorizeTenantForCaseLawRecord(args, record, selectedSkill);
+  if (!record) {
+    await durableResolution.context?.close?.();
+    return errorResponse("dojo_case_law_not_found", { case_id: caseId });
+  }
+  const authorization = durableResolution.context
+    ? {
+        ok: true as const,
+        tenant: durableResolution.context.tenant,
+        scopedSkill: durableResolution.context.skill,
+        visibleSkills: [durableResolution.context.skill],
+      }
+    : authorizeTenantForCaseLawRecord(args, record, selectedSkill);
   if (!authorization.ok) return authorization.error;
 
   const review = decideDojoCaseLawReview({
@@ -1940,20 +2085,50 @@ function dojoReviewCaseLawTool(args: unknown): ToolResponse {
     superseded_by: stringOpt(a["superseded_by"]),
   });
   if (!review.ok) {
+    await durableResolution.context?.close?.();
     return errorResponse(review.error ?? "dojo_case_law_review_rejected", {
       case_id: caseId,
       review,
     });
   }
 
-  const updatedRecord = dojoSkillRegistry.recordCaseLawRecord(review.case_law);
   const scopedSkill = selectedSkill ?? authorization.scopedSkill;
-  const updatedSkill = scopedSkill?.case_law.some((item) => item.case_id === updatedRecord.case_id)
-    ? dojoSkillRegistry.publish(applyCaseLawReviewToSkill(scopedSkill, updatedRecord))
+  let updatedRecord = review.case_law;
+  let updatedSkill = scopedSkill?.case_law.some((item) => item.case_id === updatedRecord.case_id)
+    ? applyCaseLawReviewToSkill(scopedSkill, updatedRecord)
     : scopedSkill;
+  let controlPlaneSource: "compatibility_registry" | "postgres" = "compatibility_registry";
+  try {
+    if (durableResolution.context) {
+      await durableResolution.context.governance_store.saveCaseLawRecord(updatedRecord);
+      if (updatedSkill && updatedSkill !== scopedSkill) {
+        await durableResolution.context.skill_store.saveSkill(updatedSkill, {
+          status: "published",
+          created_by: {
+            actor_id: reviewerActorId,
+            actor_type: reviewerActorType,
+          },
+          now: updatedRecord.updated_at,
+        });
+      }
+      controlPlaneSource = durableResolution.context.source;
+    }
+  } finally {
+    await durableResolution.context?.close?.();
+  }
+  if (!durableResolution.context) {
+    updatedRecord = dojoSkillRegistry.recordCaseLawRecord(review.case_law);
+    updatedSkill = scopedSkill?.case_law.some((item) => item.case_id === updatedRecord.case_id)
+      ? dojoSkillRegistry.publish(applyCaseLawReviewToSkill(scopedSkill, updatedRecord))
+      : scopedSkill;
+  }
   const governanceSkills = updatedSkill ? [updatedSkill] : authorization.visibleSkills;
+  const governanceCaseLawRecords = durableResolution.context
+    ? [updatedRecord]
+    : visibleDojoCaseLawRecordsForTenant(authorization.tenant, governanceSkills);
   return jsonResponse({
     ok: true,
+    control_plane_source: controlPlaneSource,
     case_id: caseId,
     decision,
     case_law_record: updatedRecord,
@@ -1961,7 +2136,7 @@ function dojoReviewCaseLawTool(args: unknown): ToolResponse {
     ...(updatedSkill ? { skill_id: updatedSkill.skill_id, skill: skillListItem(updatedSkill) } : {}),
     governance_service: buildDojoGovernanceServiceView({
       skills: governanceSkills,
-      case_law_records: visibleDojoCaseLawRecordsForTenant(authorization.tenant, governanceSkills),
+      case_law_records: governanceCaseLawRecords,
       permission_upgrade_requests: visibleDojoPermissionUpgradeRequestsForSkills(governanceSkills),
       now: updatedRecord.updated_at,
     }),
@@ -2415,8 +2590,8 @@ async function dojoRevokeLicenseTool(args: unknown): Promise<ToolResponse> {
   });
 }
 
-function dojoRecordCaseLawTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoRecordCaseLawTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_record_case_law");
   if (!skill.ok) return skill.error;
   const a = obj(args);
   const finding = stringOpt(a["finding"]);
@@ -2445,7 +2620,7 @@ function dojoRecordCaseLawTool(args: unknown): ToolResponse {
       review_tool: "synthi_dojo_review_case_law",
     });
   }
-  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_record_case_law");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_record_case_law", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const caseId = `case_${hashId(`${skill.skill.skill_id}:${sourceRunId}:${finding}:${rule}`)}`;
   const caseLaw: DojoSkill["case_law"][number] = {
@@ -2475,12 +2650,40 @@ function dojoRecordCaseLawTool(args: unknown): ToolResponse {
     readiness_decision: `Case law ${caseId} proposed; governance review required before runtime guardrail binding.`,
   };
   updated.last_trained_at = now;
-  const saved = dojoSkillRegistry.publish(updated);
-  const caseLawRecord = dojoSkillRegistry.recordCaseLawRecord(caseLawRecordForSkillCase(saved, caseLaw));
+  let saved = updated;
+  let caseLawRecord = caseLawRecordForSkillCase(saved, caseLaw);
+  let controlPlaneSource: "compatibility_registry" | "postgres" = "compatibility_registry";
+  const enforcement = resolveDojoEnforcementConfig();
+  if (enforcement.production_enforcement && enforcement.require_durable_store) {
+    const resolution = await createDojoControlPlaneStoresFromEnv({
+      tenant: skill.tenant,
+      app_origin: skill.skill.app_origin,
+    });
+    if (!resolution.ok) return controlPlaneResolutionError("synthi_dojo_record_case_law", resolution);
+    try {
+      await resolution.skill_store.saveSkill(updated, {
+        status: "published",
+        created_by: {
+          actor_id: skill.tenant.actor_id,
+          actor_type: skill.tenant.actor_type,
+        },
+        now,
+      });
+      await resolution.governance_store.saveCaseLawRecord(caseLawRecord);
+      controlPlaneSource = "postgres";
+    } finally {
+      await resolution.close?.();
+    }
+  }
+  if (skill.control_plane_source === "compatibility_registry") {
+    saved = dojoSkillRegistry.publish(updated);
+    caseLawRecord = dojoSkillRegistry.recordCaseLawRecord(caseLawRecordForSkillCase(saved, caseLaw));
+  }
   const guardrailProposal = guardrailForCaseLawRecord(caseLawRecord);
   const antibodyProposal = antibodyForCaseLawRecord(caseLawRecord, guardrailProposal, now);
   return jsonResponse({
     ok: true,
+    control_plane_source: controlPlaneSource,
     skill_id: saved.skill_id,
     case_law: caseLaw,
     case_law_record: caseLawRecord,
