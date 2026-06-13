@@ -35,6 +35,10 @@ import {
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "../../scripts/dojo-governance-lifecycle-self-check.mjs";
 import {
+  DOJO_GRAPH_RUNTIME_CAPABILITIES,
+  DOJO_GRAPH_RUNTIME_TEST_FILES,
+} from "../../scripts/dojo-graph-runtime-self-check.mjs";
+import {
   DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "../../scripts/dojo-hosted-runtime-gateway-self-check.mjs";
@@ -75,6 +79,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:source-drift:self-check": "node scripts/dojo-source-drift-self-check.mjs",
     "proof:dojo:managed-key-signing:self-check": "node scripts/dojo-managed-key-signing-self-check.mjs",
     "proof:dojo:governance-lifecycle:self-check": "node scripts/dojo-governance-lifecycle-self-check.mjs",
+    "proof:dojo:graph-runtime:self-check": "node scripts/dojo-graph-runtime-self-check.mjs",
     "proof:dojo:hosted-runtime-gateway:self-check": "node scripts/dojo-hosted-runtime-gateway-self-check.mjs",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
     "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
@@ -386,6 +391,39 @@ describe("Dojo release gate manifest", () => {
         }),
       }),
       expect.objectContaining({
+        id: "dojo_graph_runtime_self_check",
+        tier: "T7",
+        package_script: "proof:dojo:graph-runtime:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.graphRuntimeEvidence.v1",
+        default_evidence_path: "tmp/dojo-graph-runtime/dojo-graph-runtime.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          require_all_graph_runtime_capabilities_covered: true,
+          required_graph_runtime_capabilities: DOJO_GRAPH_RUNTIME_CAPABILITIES,
+          required_test_files: DOJO_GRAPH_RUNTIME_TEST_FILES,
+          require_graph_ir_validation: true,
+          require_graph_compiler: true,
+          require_source_api_binding: true,
+          require_production_execution: true,
+          require_edge_order: true,
+          require_evidence_events: true,
+          require_ledger_backed_evidence: true,
+          require_preconditions: true,
+          require_proof_gate: true,
+          require_substrate_executor: true,
+          require_expiry: true,
+          require_branch_runtime: true,
+          require_retry_runtime: true,
+          require_case_law_runtime: true,
+          require_rollback_runtime: true,
+          require_human_resume: true,
+          require_validation_fail_closed: true,
+          require_predicate_dsl: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "dojo_hosted_runtime_gateway_self_check",
         tier: "T7",
         package_script: "proof:dojo:hosted-runtime-gateway:self-check",
@@ -656,6 +694,22 @@ describe("Dojo release gate manifest", () => {
       `governance_lifecycle_missing_required_test_files:${missingGovernanceTestFile}`,
     ]));
 
+    const brokenGraphRuntime = JSON.parse(JSON.stringify(manifest));
+    const graphRuntimeGate = brokenGraphRuntime.gates.find((gate) => gate.id === "dojo_graph_runtime_self_check");
+    const missingGraphRuntimeTestFile = DOJO_GRAPH_RUNTIME_TEST_FILES[0];
+    graphRuntimeGate.release_artifact_requirements.required_graph_runtime_capabilities = DOJO_GRAPH_RUNTIME_CAPABILITIES
+      .filter((capability) => capability !== "graph_runtime_executes_available_rollback");
+    graphRuntimeGate.release_artifact_requirements.required_test_files = DOJO_GRAPH_RUNTIME_TEST_FILES
+      .filter((file) => file !== missingGraphRuntimeTestFile);
+    graphRuntimeGate.release_artifact_requirements.require_rollback_runtime = false;
+    graphRuntimeGate.release_artifact_requirements.require_proof_gate = false;
+    expect(validateDojoReleaseGateManifest(brokenGraphRuntime, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "graph_runtime_missing_rollback_requirement",
+      "graph_runtime_missing_proof_gate_requirement",
+      "graph_runtime_missing_required_capabilities:graph_runtime_executes_available_rollback",
+      `graph_runtime_missing_required_test_files:${missingGraphRuntimeTestFile}`,
+    ]));
+
     const brokenHostedRuntimeGateway = JSON.parse(JSON.stringify(manifest));
     const hostedRuntimeGatewayGate = brokenHostedRuntimeGateway.gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check");
     const missingHostedRuntimeTestFile = DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES[0];
@@ -748,6 +802,7 @@ describe("Dojo release gate manifest", () => {
       "dojo_mcp_host_conformance",
       "dojo_managed_key_signing_self_check",
       "dojo_governance_lifecycle_self_check",
+      "dojo_graph_runtime_self_check",
       "dojo_hosted_runtime_gateway_self_check",
       "security_abuse_suite",
       "compliance_export_suite",
@@ -779,7 +834,7 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 18,
+      proof_artifact_gate_count: 19,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
@@ -791,6 +846,7 @@ describe("Dojo release gate manifest", () => {
         "dojo_mcp_host_conformance",
         "dojo_managed_key_signing_self_check",
         "dojo_governance_lifecycle_self_check",
+        "dojo_graph_runtime_self_check",
         "dojo_hosted_runtime_gateway_self_check",
         "compliance_export_suite",
         "privacy_redaction_suite",

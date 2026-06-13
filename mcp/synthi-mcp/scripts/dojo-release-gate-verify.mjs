@@ -45,6 +45,10 @@ import {
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "./dojo-governance-lifecycle-self-check.mjs";
 import {
+  DOJO_GRAPH_RUNTIME_CAPABILITIES,
+  DOJO_GRAPH_RUNTIME_TEST_FILES,
+} from "./dojo-graph-runtime-self-check.mjs";
+import {
   DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "./dojo-hosted-runtime-gateway-self-check.mjs";
@@ -88,6 +92,7 @@ const DEFAULT_SOURCE_DRIFT_DIR = path.join(REPO_ROOT, "tmp", "dojo-source-drift"
 const DEFAULT_API_TOOL_COMPILER_DIR = path.join(REPO_ROOT, "tmp", "dojo-api-tool-compiler");
 const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-integration");
 const DEFAULT_GOVERNANCE_LIFECYCLE_DIR = path.join(REPO_ROOT, "tmp", "dojo-governance-lifecycle");
+const DEFAULT_GRAPH_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-graph-runtime");
 const DEFAULT_HOSTED_RUNTIME_GATEWAY_DIR = path.join(REPO_ROOT, "tmp", "dojo-hosted-runtime-gateway");
 const DEFAULT_MANAGED_KEY_SIGNING_DIR = path.join(REPO_ROOT, "tmp", "dojo-managed-key-signing");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
@@ -301,6 +306,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
+  const graphRuntimeResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-graph-runtime"]) || args["graph-runtime-evidence"]) {
+    const graphRuntimeGate = findGate(manifest, "dojo_graph_runtime_self_check") || {};
+    graphRuntimeResults.push(await verifyDojoGraphRuntimeEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["graph-runtime-evidence"]
+        || graphRuntimeGate.default_evidence_path
+        || path.join(DEFAULT_GRAPH_RUNTIME_DIR, "dojo-graph-runtime.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
   const hostedRuntimeGatewayResults = [];
   if (truthy(args["release-candidate"]) || truthy(args["include-hosted-runtime-gateway"]) || args["hosted-runtime-gateway-evidence"]) {
     const hostedRuntimeGatewayGate = findGate(manifest, "dojo_hosted_runtime_gateway_self_check") || {};
@@ -360,7 +376,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -377,6 +393,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     managed_key_signing: managedKeySigningResults.map(summarizeSection),
     governance_lifecycle: governanceLifecycleResults.map(summarizeSection),
+    graph_runtime: graphRuntimeResults.map(summarizeSection),
     hosted_runtime_gateway: hostedRuntimeGatewayResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
     compliance_export: complianceExportResults.map(summarizeSection),
@@ -1573,6 +1590,98 @@ export function validateDojoGovernanceLifecycleEvidenceForRelease(evidence) {
   };
 }
 
+export async function verifyDojoGraphRuntimeEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoGraphRuntimeEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_graph_runtime_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoGraphRuntimeEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.graphRuntimeEvidence.v1") {
+    errors.push(`graph_runtime_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("graph_runtime_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`graph_runtime_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("graph_runtime_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`graph_runtime_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_GRAPH_RUNTIME_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`graph_runtime_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_GRAPH_RUNTIME_TEST_FILES,
+    prefix: "graph_runtime",
+  }));
+  const untestedRequiredCapabilities = DOJO_GRAPH_RUNTIME_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`graph_runtime_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`graph_runtime_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`graph_runtime_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.graph_runtime_contract || {};
+  for (const [field, errorCode] of [
+    ["graph_ir_validation_required", "graph_runtime_ir_validation_requirement_missing"],
+    ["graph_compiler_required", "graph_runtime_compiler_requirement_missing"],
+    ["source_api_binding_required", "graph_runtime_source_api_requirement_missing"],
+    ["production_execution_required", "graph_runtime_production_execution_requirement_missing"],
+    ["edge_order_required", "graph_runtime_edge_order_requirement_missing"],
+    ["evidence_events_required", "graph_runtime_evidence_events_requirement_missing"],
+    ["ledger_backed_evidence_required", "graph_runtime_ledger_evidence_requirement_missing"],
+    ["preconditions_required", "graph_runtime_precondition_requirement_missing"],
+    ["proof_gate_required", "graph_runtime_proof_gate_requirement_missing"],
+    ["substrate_executor_required", "graph_runtime_substrate_requirement_missing"],
+    ["expiry_required", "graph_runtime_expiry_requirement_missing"],
+    ["branch_runtime_required", "graph_runtime_branch_requirement_missing"],
+    ["retry_runtime_required", "graph_runtime_retry_requirement_missing"],
+    ["case_law_runtime_required", "graph_runtime_case_law_requirement_missing"],
+    ["rollback_runtime_required", "graph_runtime_rollback_requirement_missing"],
+    ["human_resume_required", "graph_runtime_human_resume_requirement_missing"],
+    ["validation_fail_closed_required", "graph_runtime_validation_fail_closed_requirement_missing"],
+    ["predicate_dsl_required", "graph_runtime_predicate_dsl_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("graph_runtime_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`graph_runtime_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`graph_runtime_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("graph_runtime_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`graph_runtime_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
 export async function verifyDojoHostedRuntimeGatewayEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
   const evidence = await readJsonFile(evidencePath);
   const errors = validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence).errors;
@@ -2715,6 +2824,37 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_license_revocation_requirement_missing"));
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_compliance_pack_requirement_missing"));
 
+  const graphRuntimeDir = path.join(outDir, "graph-runtime");
+  await mkdir(graphRuntimeDir, { recursive: true });
+  const graphRuntimeArtifacts = await writeGraphRuntimeEvidenceForSelfCheck({ outDir: graphRuntimeDir });
+  const graphRuntimeResult = await verifyDojoGraphRuntimeEvidenceArtifact({
+    evidencePath: graphRuntimeArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(graphRuntimeResult.ok, true, graphRuntimeResult.errors.join(";"));
+  const rejectedGraphRuntimeArtifacts = await writeGraphRuntimeEvidenceForSelfCheck({
+    outDir: graphRuntimeDir,
+    basename: "dojo-graph-runtime-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["graph_runtime_executes_available_rollback"],
+      graph_runtime_contract: {
+        ...graphRuntimeArtifacts.evidence.graph_runtime_contract,
+        rollback_runtime_required: false,
+        proof_gate_required: false,
+      },
+    },
+  });
+  const rejectedGraphRuntime = await verifyDojoGraphRuntimeEvidenceArtifact({
+    evidencePath: rejectedGraphRuntimeArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedGraphRuntime.errors.includes("graph_runtime_coverage_incomplete"));
+  assert(rejectedGraphRuntime.errors.includes("graph_runtime_missing_capabilities:graph_runtime_executes_available_rollback"));
+  assert(rejectedGraphRuntime.errors.includes("graph_runtime_rollback_requirement_missing"));
+  assert(rejectedGraphRuntime.errors.includes("graph_runtime_proof_gate_requirement_missing"));
+
   const hostedRuntimeGatewayDir = path.join(outDir, "hosted-runtime-gateway");
   await mkdir(hostedRuntimeGatewayDir, { recursive: true });
   const hostedRuntimeGatewayArtifacts = await writeHostedRuntimeGatewayEvidenceForSelfCheck({ outDir: hostedRuntimeGatewayDir });
@@ -2895,6 +3035,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(codexHostConformanceResult),
       summarizeSection(managedKeySigningResult),
       summarizeSection(governanceLifecycleResult),
+      summarizeSection(graphRuntimeResult),
       summarizeSection(hostedRuntimeGatewayResult),
       summarizeSection(sourceDriftResult),
       summarizeSection(apiToolCompilerResult),
@@ -2914,6 +3055,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedStdioHost),
       summarizeSection(rejectedManagedKeySigning),
       summarizeSection(rejectedGovernanceLifecycle),
+      summarizeSection(rejectedGraphRuntime),
       summarizeSection(rejectedHostedRuntimeGateway),
       summarizeSection(rejectedSourceDrift),
       summarizeSection(rejectedApiToolCompiler),
@@ -4228,6 +4370,112 @@ async function writeGovernanceLifecycleEvidenceForSelfCheck({
     test_summary: {
       total_tests: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.length,
       passed_tests: DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeGraphRuntimeEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-graph-runtime",
+  overrides = {},
+}) {
+  const stdout = "graph runtime focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_GRAPH_RUNTIME_CAPABILITIES.length,
+    numPassedTests: DOJO_GRAPH_RUNTIME_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_GRAPH_RUNTIME_TEST_FILES.length,
+    numPassedTestSuites: DOJO_GRAPH_RUNTIME_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_GRAPH_RUNTIME_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.graphRuntimeEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: DOJO_GRAPH_RUNTIME_CAPABILITIES,
+    tested_capabilities: DOJO_GRAPH_RUNTIME_CAPABILITIES,
+    missing_capabilities: [],
+    capability_count: DOJO_GRAPH_RUNTIME_CAPABILITIES.length,
+    configured_capability_count: DOJO_GRAPH_RUNTIME_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    graph_runtime_contract: {
+      graph_ir_validation_required: true,
+      graph_compiler_required: true,
+      source_api_binding_required: true,
+      production_execution_required: true,
+      edge_order_required: true,
+      evidence_events_required: true,
+      ledger_backed_evidence_required: true,
+      preconditions_required: true,
+      proof_gate_required: true,
+      substrate_executor_required: true,
+      expiry_required: true,
+      branch_runtime_required: true,
+      retry_runtime_required: true,
+      case_law_runtime_required: true,
+      rollback_runtime_required: true,
+      human_resume_required: true,
+      validation_fail_closed_required: true,
+      predicate_dsl_required: true,
+    },
+    test_files: [...DOJO_GRAPH_RUNTIME_TEST_FILES],
+    test_file_count: DOJO_GRAPH_RUNTIME_TEST_FILES.length,
+    reported_test_file_count: DOJO_GRAPH_RUNTIME_TEST_FILES.length,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_report_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: DOJO_GRAPH_RUNTIME_CAPABILITIES.length,
+      passed_tests: DOJO_GRAPH_RUNTIME_CAPABILITIES.length,
       failed_tests: 0,
       pending_tests: 0,
     },
