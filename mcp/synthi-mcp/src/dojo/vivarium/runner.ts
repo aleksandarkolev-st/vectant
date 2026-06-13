@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { DojoSkillGraphRuntime, type DojoGraphEvidenceEvent, type DojoGraphRunResult } from "../graph/runtime.js";
+import type { DojoSubstrateExecutor } from "../graph/substrate_executor.js";
 import type { DojoSkillGraph } from "../graph/types.js";
 import type { DojoTenantContext } from "../mcp/execution_policy_gate.js";
 import { type DojoMaterializedFixture, materializeDojoSyntheticFixture } from "./fixture_materializer.js";
@@ -99,6 +100,7 @@ export class DojoVivariumRunner {
     graph: DojoSkillGraph;
     tenant?: DojoTenantContext;
     runtime?: DojoSkillGraphRuntime;
+    substrate_executor?: DojoSubstrateExecutor;
     run_id?: string;
     budget?: DojoScenarioBudget;
     inputs?: Record<string, unknown>;
@@ -161,6 +163,7 @@ export class DojoVivariumRunner {
           graphEvents.push(event);
           return `dojo-graph://${event.run_id}/${event.node_id}`;
         },
+        ...(input.substrate_executor ? { substrate_executor: input.substrate_executor } : {}),
       });
     } catch {
       graphResult = blockedGraphRunResult(runId, ["dojo_graph_runtime_failed"], [

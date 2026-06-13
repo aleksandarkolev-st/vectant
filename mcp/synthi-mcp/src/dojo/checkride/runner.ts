@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import type { DojoGraphRunResult } from "../graph/runtime.js";
+import { DojoSkillGraphRuntime, type DojoGraphRunResult } from "../graph/runtime.js";
+import type { DojoSubstrateExecutor } from "../graph/substrate_executor.js";
 import type { DojoSkillGraph } from "../graph/types.js";
 import type { DojoMaterializedFixture } from "../vivarium/fixture_materializer.js";
 import {
@@ -56,9 +57,15 @@ export interface DojoExecutableCheckrideReport {
 export interface DojoExecutableCheckrideInput {
   graph: DojoSkillGraph;
   scenarios: DojoScenarioDefinition[];
+  runtime?: DojoSkillGraphRuntime;
+  substrate_executor?: DojoSubstrateExecutor;
+  scenario_runtimes?: Record<string, DojoSkillGraphRuntime>;
+  scenario_substrate_executors?: Record<string, DojoSubstrateExecutor>;
   base_inputs?: Record<string, unknown>;
   scenario_inputs?: Record<string, Record<string, unknown>>;
   observed_evidence_by_scenario?: Record<string, string[]>;
+  budget_by_scenario?: Record<string, DojoScenarioDefinition["budget"]>;
+  model_calls_used_by_scenario?: Record<string, number>;
   evidence_context?: Omit<DojoScenarioOracleEvidenceContext, "run_id"> & { run_id_prefix?: string };
   now?: string;
 }
@@ -85,8 +92,12 @@ export async function runDojoExecutableCheckride(
       materialized,
       graph: input.graph,
       run_id: runId,
+      runtime: input.scenario_runtimes?.[scenario.scenario_id] ?? input.runtime,
+      substrate_executor: input.scenario_substrate_executors?.[scenario.scenario_id] ?? input.substrate_executor,
+      budget: input.budget_by_scenario?.[scenario.scenario_id],
       inputs: scenarioInputs,
       observed_evidence: input.observed_evidence_by_scenario?.[scenario.scenario_id] ?? ["graph_run_result", "oracle_result"],
+      model_calls_used: input.model_calls_used_by_scenario?.[scenario.scenario_id],
       now,
     });
     const graphRun = scenarioRun.graph_result;

@@ -150,6 +150,82 @@ describe("Dojo executable checkride runner", () => {
       }),
     ]);
   });
+
+  it("passes substrate executor hooks through executable checkride runs", async () => {
+    const baseline = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "baseline",
+      layer: "skill",
+      risk_tags: ["baseline"],
+    }));
+
+    const report = await runDojoExecutableCheckride({
+      graph: apiGraphFixture(),
+      scenarios: [baseline],
+      base_inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["api"],
+      },
+      substrate_executor: {
+        execute: async () => ({
+          ok: true,
+          status: "executed",
+          substrate: "api",
+          blocked_by: [],
+          evidence_refs: ["api-evidence:checkride"],
+          api_tool_execution: {
+            ok: true,
+            status: "executed",
+            blocked_by: [],
+            validation: { ok: true, blocked_by: [] },
+            response: {
+              status: 200,
+              body: {
+                visual_success: true,
+                durable_success: false,
+              },
+            },
+            evidence_record_id: "api-evidence:checkride",
+          },
+        }),
+      },
+      now: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(report).toEqual(expect.objectContaining({
+      scenario_count: 1,
+      blocked_scenarios: 1,
+      production_recommendation: "constrained",
+    }));
+    expect(report.results[0]).toEqual(expect.objectContaining({
+      scenario_id: baseline.scenario_id,
+      status: "needs_human",
+      graph_status: "blocked",
+      blocked_by: ["assertion_failed:api_response.body.durable_success", "rollback_human_review_required"],
+      graph_run: expect.objectContaining({
+        node_results: [
+          expect.objectContaining({
+            substrate_result: expect.objectContaining({
+              ok: true,
+              substrate: "api",
+              api_tool_execution: expect.objectContaining({
+                response: expect.objectContaining({
+                  body: expect.objectContaining({ durable_success: false }),
+                }),
+              }),
+            }),
+            assertion_results: [
+              expect.objectContaining({
+                assertion_id: "api_response.body.durable_success",
+                status: "failed",
+                observed: false,
+              }),
+            ],
+          }),
+        ],
+      }),
+    }));
+  });
 });
 
 function graphFixture(): DojoSkillGraph {
@@ -202,6 +278,26 @@ function graphFixture(): DojoSkillGraph {
       },
     ],
     edges: [],
+  };
+}
+
+function apiGraphFixture(): DojoSkillGraph {
+  const base = graphFixture();
+  return {
+    ...base,
+    nodes: [
+      {
+        ...base.nodes[0]!,
+        assertions: [
+          {
+            assertion_id: "api_response.body.durable_success",
+            description: "API response confirms durable success.",
+            required: true,
+          },
+        ],
+        substrate_options: ["api"],
+      },
+    ],
   };
 }
 
