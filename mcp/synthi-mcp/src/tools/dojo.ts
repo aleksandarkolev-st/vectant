@@ -44,7 +44,11 @@ import {
   contextKeyForDojoGuardrailPredicate,
   normalizeDojoGuardrailPredicate,
 } from "../dojo/graph/guardrail_predicates.js";
-import { resolveDojoEnforcementConfig, resolveDojoEvidenceLedgerStoreConfig } from "../dojo/config/enforcement.js";
+import {
+  resolveDojoControlPlaneStoreConfig,
+  resolveDojoEnforcementConfig,
+  resolveDojoEvidenceLedgerStoreConfig,
+} from "../dojo/config/enforcement.js";
 import { resolveDojoEvidenceLedgerRecords } from "../dojo/evidence/ledger_resolver.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { normalizeDojoProofErrorCodes } from "../dojo/proof/errors.js";
@@ -174,6 +178,40 @@ function dojoHostedRuntimeGatewayCacheKey(env: NodeJS.ProcessEnv): string {
     control_plane_store: env.SYNTHI_DOJO_CONTROL_PLANE_STORE ?? "",
     control_plane_postgres_url: env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL ?? "",
   });
+}
+
+function requireDojoDurableControlPlaneWrite(operation: string): { ok: true } | { ok: false; error: ToolResponse } {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_durable_store) return { ok: true };
+
+  const storeConfig = resolveDojoControlPlaneStoreConfig();
+  const runtimeWiringBlock = storeConfig.production_capable
+    ? ["dojo_control_plane_registry_postgres_adapter_not_wired"]
+    : ["dojo_control_plane_store_not_production_capable"];
+  const blockedBy = [...new Set([...runtimeWiringBlock, ...storeConfig.blocked_by])];
+
+  return {
+    ok: false,
+    error: errorResponse("dojo_control_plane_store_not_runtime_wired", {
+      ok: false,
+      operation,
+      enforcement_mode: enforcement.enforcement_mode,
+      store_kind: storeConfig.store_kind,
+      configured: storeConfig.configured,
+      durable: storeConfig.durable,
+      production_capable: storeConfig.production_capable,
+      configured_env: [...new Set([...enforcement.configured_env, ...storeConfig.configured_env])],
+      required_env: [
+        "SYNTHI_DOJO_PRODUCTION_ENFORCEMENT=1",
+        "SYNTHI_DOJO_REQUIRE_DURABLE_STORE=1",
+        "SYNTHI_DOJO_CONTROL_PLANE_STORE=postgres",
+        "SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL",
+      ],
+      blocked_by: blockedBy,
+      error_codes: ["dojo_control_plane_store_not_runtime_wired"],
+      message: "Production Dojo control-plane writes require a wired durable registry store. The compatibility registry is not accepted for production writes.",
+    }),
+  };
 }
 
 const DOJO_TENANT_CONTEXT_INPUT_PROPERTIES = {
@@ -1272,6 +1310,8 @@ function dojoRunTimeMachineDebuggerTool(args: unknown): ToolResponse {
 async function dojoRunGhostModeTool(args: unknown): Promise<ToolResponse> {
   const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_ghost_mode");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const a = obj(args);
   const observed = objectOpt(a["observed_human_action"]) ?? {};
   const planned = objectOpt(a["agent_planned_action"]) ?? {};
@@ -1401,6 +1441,8 @@ function dojoPermissionUpgradeTool(args: unknown): ToolResponse {
   if (!actorId) return errorResponse("dojo_permission_upgrade_actor_required");
   const actorType = actorTypeInputOpt(a["actor_type"]);
   if (!actorType) return errorResponse("dojo_permission_upgrade_actor_type_required");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_request_permission_upgrade");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const requiredSteps = permissionUpgradeSteps(skill.skill, requestedAction);
   const requestId = stringOpt(a["request_id"])
@@ -1467,6 +1509,8 @@ function dojoReviewPermissionUpgradeTool(args: unknown): ToolResponse {
   if (!reviewerActorId) return errorResponse("dojo_permission_upgrade_reviewer_required");
   const reviewerActorType = actorTypeInputOpt(a["reviewer_actor_type"] ?? a["actor_type"]);
   if (!reviewerActorType) return errorResponse("dojo_permission_upgrade_reviewer_actor_type_required");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_review_permission_upgrade");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
 
   const review = decideDojoPermissionUpgradeRequest({
     request: storedRequest,
@@ -1514,6 +1558,8 @@ function dojoReviewCaseLawTool(args: unknown): ToolResponse {
   if (!reviewerActorId) return errorResponse("dojo_case_law_reviewer_required");
   const reviewerActorType = actorTypeInputOpt(a["reviewer_actor_type"] ?? a["actor_type"]);
   if (!reviewerActorType) return errorResponse("dojo_case_law_reviewer_actor_type_required");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_review_case_law");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
 
   const selectedSkill = skillByArgs(args);
   const storedRecord = dojoSkillRegistry.getCaseLawRecord(caseId);
@@ -1606,6 +1652,8 @@ function dojoGenerateVivariumScenariosTool(args: unknown): ToolResponse {
 async function dojoRunVivariumScenarioTool(args: unknown): Promise<ToolResponse> {
   const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_vivarium_scenario");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const a = obj(args);
   const scenarioRun = await runDojoVivariumScenario(skill.skill, {
     scenario_id: stringOpt(a["scenario_id"]),
@@ -1626,6 +1674,8 @@ async function dojoRunVivariumScenarioTool(args: unknown): Promise<ToolResponse>
 async function dojoRunWindTunnelTool(args: unknown): Promise<ToolResponse> {
   const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_wind_tunnel");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const a = obj(args);
   const tunnel = await runDojoWindTunnel(skill.skill, {
     max_scenarios: numberOpt(a["max_scenarios"]),
@@ -1762,6 +1812,8 @@ function dojoPublishSkillTool(args: unknown): ToolResponse {
   if (!actorType) return errorResponse("dojo_skill_publication_actor_type_required");
   const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
   if (evidenceRefs.length === 0) return errorResponse("dojo_skill_publication_evidence_required");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_publish_skill");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const contract = workflow.artifact.workflow.contract;
   const manifest = generatePrivateWorkflowToolManifest(contract);
@@ -1835,6 +1887,8 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
   if (!actorId) return errorResponse("dojo_recertification_actor_required");
   const actorType = actorTypeInputOpt(a["actor_type"]);
   if (!actorType) return errorResponse("dojo_recertification_actor_type_required");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_recertify_skill");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const previousLicenseVersion = existing?.permission_license.license_version ?? null;
   const manifest = generatePrivateWorkflowToolManifest(workflow.artifact.workflow.contract);
   const publishedToolName = existing?.published_tool_name;
@@ -1905,6 +1959,8 @@ function dojoRevokeLicenseTool(args: unknown): ToolResponse {
   if (!actorType) return errorResponse("dojo_license_revocation_actor_type_required");
   const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
   if (evidenceRefs.length === 0) return errorResponse("dojo_license_revocation_evidence_required");
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_revoke_license");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const revocation = revokeDojoSkillLicense({
     skill: skill.skill,
     reason,
@@ -1957,6 +2013,8 @@ function dojoRecordCaseLawTool(args: unknown): ToolResponse {
       review_tool: "synthi_dojo_review_case_law",
     });
   }
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_record_case_law");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const caseId = `case_${hashId(`${skill.skill.skill_id}:${sourceRunId}:${finding}:${rule}`)}`;
   const caseLaw: DojoSkill["case_law"][number] = {
     case_id: caseId,
@@ -2086,6 +2144,8 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
       blocked_by: ["proof_issuer_actor_type_invalid"],
     });
   }
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_issue_proof_capsule");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const issuedBy = enforcement.production_enforcement
     ? { actor_id: tenant.actor_id, actor_type: tenant.actor_type }
     : (issuerActorId && issuerActorType ? { actor_id: issuerActorId, actor_type: issuerActorType } : undefined);
@@ -2245,6 +2305,8 @@ function dojoValidateProofCapsuleTool(args: unknown): ToolResponse {
     });
   }
   const now = stringOpt(a["now"]);
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_validate_proof_capsule");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const tenant = skill.tenant;
   const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, objectOpt(a["tool_args"]) ?? {});
   const decision = evaluateDojoLicenseKernel({
@@ -2292,6 +2354,8 @@ function dojoRevokeProofCapsuleTool(args: unknown): ToolResponse {
   });
   const authorization = authorizeTenantForDojoSkill(args, skill);
   if (!authorization.ok) return authorization.error;
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_revoke_proof_capsule");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const record = dojoSkillRegistry.revokeProofCapsule(capsuleId, reason, stringOpt(a["now"]), {
     actor_id: actorId,
     actor_type: actorType,
@@ -2387,6 +2451,8 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
   const runId = stringOpt(a["run_id"])
     ?? stringOpt(a["request_id"])
     ?? `dojo_run_${hashId(`${(capsule as { capsule_id: string }).capsule_id}:${skill.skill.skill_id}:${requestedAction}:${skill.skill.skill_version}`)}`;
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_with_proof_capsule");
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const now = stringOpt(a["now"]);
   const tenant = skill.tenant;
   const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, toolArgs);

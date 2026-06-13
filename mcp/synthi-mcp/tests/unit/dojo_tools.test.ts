@@ -2903,6 +2903,90 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("blocks compatibility registry writes when production requires a durable control plane", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = "postgres://dojo-control-plane.test/synthi";
+
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
+      ...productionTenantContextArgs({
+        actor_id: "durable-publisher",
+        actor_type: "human",
+        request_id: "req-production-durable-publish",
+        correlation_id: "corr-production-durable-publish",
+      }),
+    }));
+
+    expect(publish?.isError).toBe(true);
+    expect(publish?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_control_plane_store_not_runtime_wired",
+      ok: false,
+      operation: "synthi_dojo_publish_skill",
+      enforcement_mode: "production",
+      store_kind: "postgres",
+      configured: true,
+      durable: true,
+      production_capable: true,
+      blocked_by: ["dojo_control_plane_registry_postgres_adapter_not_wired"],
+      error_codes: ["dojo_control_plane_store_not_runtime_wired"],
+    }));
+    expect(dojoSkillRegistry.list()).toHaveLength(0);
+  });
+
+  it("blocks proof execution before consuming proof when production durable registry writes are not wired", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const skill = dojoSkillRegistry.get(skillId);
+    expect(skill).toBeTruthy();
+    const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(skill!, { record_id: "evidence-durable-run-proof" }),
+      require_verified_evidence: true,
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(capsuleResponse?.isError).toBeUndefined();
+    const capsule = (capsuleResponse?.structuredContent as { proof_capsule: { capsule_id: string } }).proof_capsule;
+    expect(dojoSkillRegistry.getProofRecord(capsule.capsule_id)?.status).toBe("issued");
+
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = "postgres://dojo-control-plane.test/synthi";
+
+    const run = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      tool_args: { client_id: "client-a" },
+      ...productionTenantContextArgs({
+        actor_id: "durable-proof-agent",
+        request_id: "req-production-durable-proof-run",
+        correlation_id: "corr-production-durable-proof-run",
+      }),
+    });
+
+    expect(run?.isError).toBe(true);
+    expect(run?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_control_plane_store_not_runtime_wired",
+      ok: false,
+      operation: "synthi_dojo_run_with_proof_capsule",
+      enforcement_mode: "production",
+      store_kind: "postgres",
+      production_capable: true,
+      blocked_by: ["dojo_control_plane_registry_postgres_adapter_not_wired"],
+      error_codes: ["dojo_control_plane_store_not_runtime_wired"],
+    }));
+    expect(dojoSkillRegistry.getProofRecord(capsule.capsule_id)?.status).toBe("issued");
+    expect(dojoSkillRegistry.getProofRecord(capsule.capsule_id)?.used_at).toBeUndefined();
+  });
+
   it("uses top-level approval and actor context for license validation without duplicating workflow args", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
