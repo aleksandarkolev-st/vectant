@@ -12,6 +12,14 @@ import { writeFile, mkdir, appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import {
+  captureSoakMemorySample,
+  extractNumericUsageCounters,
+  extractRuntimeResourceCounters,
+  summarizeRuntimeResourceSamples,
+  summarizeSoakMemorySamples,
+  summarizeUsageCounterSamples,
+} from './soak_metrics.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -123,6 +131,9 @@ const stats = {
     usage: { count: 0, errors: 0, latencyMs: [] },
   },
   warnings: [],
+  memorySamples: [],
+  usageSamples: [],
+  runtimeResourceSamples: [],
   summary: null,
 };
 
@@ -166,11 +177,14 @@ async function run() {
   });
   await client.request('notifications/initialized', {}).catch(() => {});
 
+  await captureUsageSnapshot('pre_attach');
+
   const attach = await client.toolCall('synthi_attach', { 'i-understand-no-auth': true });
   if (attach.isError) {
     console.error('attach failed:', attach.parsed);
     process.exit(3);
   }
+  await captureUsageSnapshot('post_attach');
 
   const deadline = ts() + CFG.durationMin * 60_000;
   while (!stopping && ts() < deadline) {
@@ -206,14 +220,21 @@ async function run() {
       }
 
       if (iter % 30 === 0) {
-        const u = await timed('usage', () => client.toolCall('synthi_get_usage', {}));
-        iterEvents.steps.push({ tool: 'usage', ...u.meta, counters: u.parsed?.counters });
+        const u = await captureUsageSnapshot('iteration', iter);
+        iterEvents.steps.push({
+          tool: 'usage',
+          ...u.meta,
+          counters: u.parsed?.counters,
+          runtime_session_diagnostics: u.parsed?.runtime_session_diagnostics,
+        });
       }
     } catch (err) {
       stats.errors++;
       iterEvents.error = err.message;
       stats.warnings.push({ iter, error: err.message, at: ts() });
     }
+    const memorySample = captureMemorySample();
+    iterEvents.memory_sample = memorySample;
     await appendFile(eventsPath, JSON.stringify(iterEvents) + '\n').catch(() => {});
     if (iter % 10 === 0) {
       const elapsed = ((ts() - stats.startedAt) / 1000).toFixed(1);
@@ -226,6 +247,10 @@ async function run() {
   stop('duration_reached');
 
   try { await client.toolCall('synthi_detach', {}); } catch { /* best effort */ }
+  await captureUsageSnapshot('post_detach').catch((err) => {
+    stats.warnings.push({ phase: 'post_detach_usage', error: err.message, at: ts() });
+  });
+  captureMemorySample();
   try { mcp.stdin.end(); } catch { /* ignored */ }
 
   async function timed(key, fn) {
@@ -246,6 +271,41 @@ async function run() {
       return { parsed: {}, isError: true, meta: { latency_ms: latency, ok: false, err: err.message } };
     }
   }
+
+  async function captureUsageSnapshot(phase, iter) {
+    const usage = await timed('usage', () => client.toolCall('synthi_get_usage', {}));
+    const at = ts();
+    const numericCounters = extractNumericUsageCounters(usage.parsed);
+    const runtimeResources = extractRuntimeResourceCounters(usage.parsed);
+    const sample = {
+      at,
+      phase,
+      ...(iter !== undefined ? { iter } : {}),
+      counters: numericCounters,
+    };
+    const resourceSample = {
+      at,
+      phase,
+      ...(iter !== undefined ? { iter } : {}),
+      ...runtimeResources,
+    };
+    stats.usageSamples.push(sample);
+    stats.runtimeResourceSamples.push(resourceSample);
+    return {
+      ...usage,
+      parsed: {
+        ...usage.parsed,
+        numeric_counters: numericCounters,
+        runtime_resource_counters: runtimeResources,
+      },
+    };
+  }
+
+  function captureMemorySample() {
+    const sample = captureSoakMemorySample({ at: ts() });
+    stats.memorySamples.push(sample);
+    return sample;
+  }
 }
 
 try {
@@ -264,6 +324,9 @@ stats.summary = {
   per_tool: Object.fromEntries(
     Object.entries(stats.tools).map(([k, b]) => [k, summarizeBucket(k, b)])
   ),
+  memory: summarizeSoakMemorySamples(stats.memorySamples),
+  usage_counters: summarizeUsageCounterSamples(stats.usageSamples),
+  runtime_resources: summarizeRuntimeResourceSamples(stats.runtimeResourceSamples),
 };
 await writeFile(summaryPath, JSON.stringify(stats.summary, null, 2));
 

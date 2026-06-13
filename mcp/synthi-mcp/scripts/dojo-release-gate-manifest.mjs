@@ -361,6 +361,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_zero_errors: true,
       require_iteration_events: true,
       require_tool_latency_metrics: true,
+      require_memory_growth_metrics: true,
+      require_post_detach_leak_counters: true,
     },
   },
 ];
@@ -542,6 +544,12 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!soakPerformanceGate.enterprise_artifact_requirements?.require_iteration_events) {
       errors.push("soak_performance_missing_event_requirement");
+    }
+    if (!soakPerformanceGate.enterprise_artifact_requirements?.require_memory_growth_metrics) {
+      errors.push("soak_performance_missing_memory_requirement");
+    }
+    if (!soakPerformanceGate.enterprise_artifact_requirements?.require_post_detach_leak_counters) {
+      errors.push("soak_performance_missing_leak_counter_requirement");
     }
   }
   return {

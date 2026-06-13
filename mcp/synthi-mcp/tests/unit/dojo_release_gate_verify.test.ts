@@ -257,6 +257,26 @@ describe("Dojo release gate artifact verifier", () => {
       minDurationSeconds: 1,
     });
     expect(malformed.errors).toContain("soak_events_parse_error");
+
+    const leakedResources = await writeSoakFixture({
+      dir,
+      basename: "leaked-resource-soak",
+      summary: soakSummaryFixture({
+        runtime_resources: {
+          ...soakSummaryFixture().runtime_resources,
+          active_session_count_end: 1,
+          browser_session_leak_count: 1,
+        },
+      }),
+    });
+    const leakRejected = await verifyDojoSoakPerformanceArtifacts({
+      summaryPath: leakedResources.summaryPath,
+      eventsPath: leakedResources.eventsPath,
+      minDurationSeconds: 1,
+    });
+    expect(leakRejected.errors).toEqual(expect.arrayContaining([
+      "soak_browser_session_leak_count_nonzero:1",
+    ]));
   });
 
   it("verifies visual reports against schema, pixel/layout metrics, and screenshot bytes", async () => {
@@ -473,6 +493,45 @@ function soakSummaryFixture(overrides = {}) {
       wait: { name: "wait", count: 2, errors: 0, p50: 12, p95: 16, p99: 16, max: 16 },
       snapshot: { name: "snapshot", count: 1, errors: 0, p50: 21, p95: 21, p99: 21, max: 21 },
       usage: { name: "usage", count: 1, errors: 0, p50: 8, p95: 8, p99: 8, max: 8 },
+    },
+    memory: {
+      source: "node_process_memory_usage",
+      sample_count: 3,
+      rss_start_bytes: 100_000_000,
+      rss_end_bytes: 101_000_000,
+      rss_max_bytes: 101_000_000,
+      rss_growth_bytes: 1_000_000,
+      heap_used_start_bytes: 40_000_000,
+      heap_used_end_bytes: 40_500_000,
+      heap_used_max_bytes: 40_500_000,
+      heap_used_growth_bytes: 500_000,
+      external_max_bytes: 2_000_000,
+      array_buffer_max_bytes: 1_000_000,
+    },
+    usage_counters: {
+      sample_count: 3,
+      first_phase: "pre_attach",
+      last_phase: "post_detach",
+      first_counters: { tool_call: 0, screenshot: 0, vision_inference: 0, egress_bytes: 0 },
+      last_counters: { tool_call: 20, screenshot: 2, vision_inference: 0, egress_bytes: 1024 },
+      delta: { tool_call: 20, screenshot: 2, vision_inference: 0, egress_bytes: 1024 },
+      counter_names: ["egress_bytes", "screenshot", "tool_call", "vision_inference"],
+    },
+    runtime_resources: {
+      source: "synthi_get_usage.runtime_session_diagnostics",
+      sample_count: 3,
+      post_detach_observed: true,
+      first_phase: "pre_attach",
+      last_phase: "post_detach",
+      active_session_count_start: 0,
+      active_session_count_end: 0,
+      active_session_count_max: 1,
+      active_frame_sink_count_start: 0,
+      active_frame_sink_count_end: 0,
+      active_frame_sink_count_max: 1,
+      browser_session_leak_count: 0,
+      frame_sink_leak_count: 0,
+      leak_count_source: "post_detach_runtime_session_diagnostics",
     },
     ...overrides,
   };

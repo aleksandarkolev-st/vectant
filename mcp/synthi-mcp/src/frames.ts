@@ -428,6 +428,10 @@ export class FrameSink {
   }
 }
 
+export function getActiveFrameSinkCount(): number {
+  return activeFrameSinks.size;
+}
+
 function sha256(data: Buffer): string {
   return `sha256:${createHash("sha256").update(data).digest("hex")}`;
 }

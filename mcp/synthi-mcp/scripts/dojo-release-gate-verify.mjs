@@ -386,10 +386,74 @@ export function validateDojoSoakPerformanceSummary(summary, {
     if (Number(tool.errors || 0) !== 0) errors.push(`soak_tool_errors_nonzero:${toolName}:${tool.errors}`);
     if (!Number.isFinite(Number(tool.p95))) errors.push(`soak_tool_p95_missing:${toolName}`);
   }
+  errors.push(...validateSoakMemoryMetrics(summary?.memory));
+  errors.push(...validateSoakUsageCounterMetrics(summary?.usage_counters));
+  errors.push(...validateSoakRuntimeResourceMetrics(summary?.runtime_resources));
   return {
     ok: errors.length === 0,
     errors,
   };
+}
+
+function validateSoakMemoryMetrics(memory) {
+  const errors = [];
+  if (!memory || typeof memory !== "object") return ["soak_memory_metrics_missing"];
+  if (!Number.isInteger(Number(memory.sample_count)) || Number(memory.sample_count) <= 0) {
+    errors.push("soak_memory_sample_count_missing");
+  }
+  for (const field of ["rss_start_bytes", "rss_end_bytes", "rss_max_bytes", "rss_growth_bytes"]) {
+    if (!Number.isFinite(Number(memory[field]))) errors.push(`soak_memory_metric_missing:${field}`);
+  }
+  const start = Number(memory.rss_start_bytes);
+  const end = Number(memory.rss_end_bytes);
+  const max = Number(memory.rss_max_bytes);
+  if (Number.isFinite(start) && Number.isFinite(end) && Number.isFinite(max) && max < Math.max(start, end)) {
+    errors.push("soak_memory_rss_max_below_endpoint");
+  }
+  return errors;
+}
+
+function validateSoakUsageCounterMetrics(usageCounters) {
+  const errors = [];
+  if (!usageCounters || typeof usageCounters !== "object") return ["soak_usage_counters_missing"];
+  if (!Number.isInteger(Number(usageCounters.sample_count)) || Number(usageCounters.sample_count) <= 0) {
+    errors.push("soak_usage_counter_samples_missing");
+  }
+  if (!usageCounters.delta || typeof usageCounters.delta !== "object") {
+    errors.push("soak_usage_counter_delta_missing");
+  }
+  if (!Array.isArray(usageCounters.counter_names)) {
+    errors.push("soak_usage_counter_names_missing");
+  }
+  return errors;
+}
+
+function validateSoakRuntimeResourceMetrics(runtimeResources) {
+  const errors = [];
+  if (!runtimeResources || typeof runtimeResources !== "object") return ["soak_runtime_resource_metrics_missing"];
+  if (!Number.isInteger(Number(runtimeResources.sample_count)) || Number(runtimeResources.sample_count) <= 0) {
+    errors.push("soak_runtime_resource_samples_missing");
+  }
+  if (runtimeResources.post_detach_observed !== true) {
+    errors.push("soak_runtime_resource_post_detach_missing");
+  }
+  for (const field of [
+    "active_session_count_end",
+    "active_frame_sink_count_end",
+    "browser_session_leak_count",
+    "frame_sink_leak_count",
+  ]) {
+    if (!Number.isFinite(Number(runtimeResources[field]))) {
+      errors.push(`soak_runtime_resource_metric_missing:${field}`);
+    }
+  }
+  if (Number(runtimeResources.browser_session_leak_count) !== 0) {
+    errors.push(`soak_browser_session_leak_count_nonzero:${runtimeResources.browser_session_leak_count}`);
+  }
+  if (Number(runtimeResources.frame_sink_leak_count) !== 0) {
+    errors.push(`soak_frame_sink_leak_count_nonzero:${runtimeResources.frame_sink_leak_count}`);
+  }
+  return errors;
 }
 
 async function validateVisualScreenshotArtifacts(report) {
@@ -889,6 +953,45 @@ async function writeSoakArtifactsForSelfCheck({
       wait: { name: "wait", count: events.length, errors: 0, p50: 12, p95: 16, p99: 17, max: 17 },
       snapshot: { name: "snapshot", count: 1, errors: 0, p50: 21, p95: 21, p99: 21, max: 21 },
       usage: { name: "usage", count: 1, errors: 0, p50: 8, p95: 8, p99: 8, max: 8 },
+    },
+    memory: {
+      source: "node_process_memory_usage",
+      sample_count: events.length + 1,
+      rss_start_bytes: 100_000_000,
+      rss_end_bytes: 101_000_000,
+      rss_max_bytes: 101_000_000,
+      rss_growth_bytes: 1_000_000,
+      heap_used_start_bytes: 40_000_000,
+      heap_used_end_bytes: 40_500_000,
+      heap_used_max_bytes: 40_500_000,
+      heap_used_growth_bytes: 500_000,
+      external_max_bytes: 2_000_000,
+      array_buffer_max_bytes: 1_000_000,
+    },
+    usage_counters: {
+      sample_count: 3,
+      first_phase: "pre_attach",
+      last_phase: "post_detach",
+      first_counters: { tool_call: 0, screenshot: 0, vision_inference: 0, egress_bytes: 0 },
+      last_counters: { tool_call: 20, screenshot: 2, vision_inference: 0, egress_bytes: 1024 },
+      delta: { tool_call: 20, screenshot: 2, vision_inference: 0, egress_bytes: 1024 },
+      counter_names: ["egress_bytes", "screenshot", "tool_call", "vision_inference"],
+    },
+    runtime_resources: {
+      source: "synthi_get_usage.runtime_session_diagnostics",
+      sample_count: 3,
+      post_detach_observed: true,
+      first_phase: "pre_attach",
+      last_phase: "post_detach",
+      active_session_count_start: 0,
+      active_session_count_end: 0,
+      active_session_count_max: 1,
+      active_frame_sink_count_start: 0,
+      active_frame_sink_count_end: 0,
+      active_frame_sink_count_max: 1,
+      browser_session_leak_count: 0,
+      frame_sink_leak_count: 0,
+      leak_count_source: "post_detach_runtime_session_diagnostics",
     },
     ...summaryOverrides,
   };
