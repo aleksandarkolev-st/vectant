@@ -55,6 +55,7 @@ function expectedDojoContractExports() {
     contractExport("./dojo/checkride/readiness", "checkride/readiness"),
     contractExport("./dojo/case-law/registry", "case_law/registry"),
     contractExport("./dojo/case-law/guardrail-synthesizer", "case_law/guardrail_synthesizer"),
+    contractExport("./dojo/case-law/antibody-matcher", "case_law/antibody_matcher"),
     contractExport("./dojo/source/source-snapshot", "source/source_snapshot"),
     contractExport("./dojo/source/source-drift", "source/source_drift"),
     contractExport("./dojo/source/agent-ready-ui-contract", "source/agent_ready_ui_contract"),

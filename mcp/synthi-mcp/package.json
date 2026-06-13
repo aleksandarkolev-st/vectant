@@ -118,6 +118,10 @@
       "types": "./dist/dojo/case_law/guardrail_synthesizer.d.ts",
       "import": "./dist/dojo/case_law/guardrail_synthesizer.js"
     },
+    "./dojo/case-law/antibody-matcher": {
+      "types": "./dist/dojo/case_law/antibody_matcher.d.ts",
+      "import": "./dist/dojo/case_law/antibody_matcher.js"
+    },
     "./dojo/source/source-snapshot": {
       "types": "./dist/dojo/source/source_snapshot.d.ts",
       "import": "./dist/dojo/source/source_snapshot.js"
