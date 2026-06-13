@@ -39,6 +39,7 @@ export interface DojoScenarioRunResult {
   started_at: string;
   completed_at: string;
   budget: DojoScenarioBudget;
+  budget_usage: DojoScenarioBudgetUsage;
 }
 
 export interface DojoApiFaultExecution {
@@ -50,6 +51,14 @@ export interface DojoApiFaultExecution {
   response_body: unknown;
   durable_state: DojoApiFaultServerState["durable_state"];
   evidence_refs: string[];
+}
+
+export interface DojoScenarioBudgetUsage {
+  elapsed_ms: number;
+  model_calls: number;
+  max_runs: number;
+  max_estimated_ms: number;
+  max_model_calls: number;
 }
 
 export interface DojoFixtureResetResult {
@@ -94,6 +103,7 @@ export class DojoVivariumRunner {
     budget?: DojoScenarioBudget;
     inputs?: Record<string, unknown>;
     observed_evidence?: string[];
+    model_calls_used?: number;
     now?: string;
   }): Promise<DojoScenarioRunResult> {
     const budget = input.budget ?? input.materialized.definition.budget;
@@ -102,7 +112,7 @@ export class DojoVivariumRunner {
     const graphEvents: DojoGraphEvidenceEvent[] = [];
     const startedAt = input.now ?? new Date().toISOString();
     const runId = input.run_id ?? createScenarioRunId(input.materialized, input.graph, startedAt);
-    const completedAt = input.now ?? new Date().toISOString();
+    let completedAt = input.now ?? new Date().toISOString();
     const targetedGraph = graphForScenarioTargets(input.graph, input.materialized.definition.target_graph_node_ids);
     if (!targetedGraph.ok) {
       return blockedScenarioRunResult({
@@ -113,6 +123,7 @@ export class DojoVivariumRunner {
         started_at: startedAt,
         completed_at: completedAt,
         budget,
+        budget_usage: budgetUsage(budget, startedAt, completedAt, 0),
         blocked_by: targetedGraph.blocked_by,
         observed_evidence: input.observed_evidence ?? [],
       });
@@ -126,6 +137,7 @@ export class DojoVivariumRunner {
         started_at: startedAt,
         completed_at: completedAt,
         budget,
+        budget_usage: budgetUsage(budget, startedAt, completedAt, 0),
         blocked_by: ["dojo_scenario_budget_max_runs_exhausted"],
         observed_evidence: input.observed_evidence ?? [],
       });
@@ -155,7 +167,25 @@ export class DojoVivariumRunner {
         `dojo-graph-runtime://${runId}/failed`,
       ]);
     }
+    completedAt = input.now ?? new Date().toISOString();
+    const usage = budgetUsage(
+      budget,
+      startedAt,
+      completedAt,
+      input.model_calls_used ?? modelCallsUsedFromInputs(input.inputs)
+    );
+    const budgetBlockedBy = budgetBlockedByForUsage(usage);
+    if (budgetBlockedBy.length > 0) {
+      graphResult = {
+        ...graphResult,
+        ok: false,
+        status: "blocked",
+        blocked_by: [...new Set([...graphResult.blocked_by, ...budgetBlockedBy])],
+        evidence_refs: [...graphResult.evidence_refs, `dojo-budget://${runId}`],
+      };
+    }
     const observedEvidence = observedEvidenceForRun(input.materialized, graphResult, graphEvents, [
+      ...(budgetBlockedBy.length > 0 ? ["scenario_budget_state"] : []),
       ...apiFaultObservedEvidence(apiFaultExecution),
       ...(input.observed_evidence ?? []),
     ]);
@@ -187,6 +217,7 @@ export class DojoVivariumRunner {
       started_at: startedAt,
       completed_at: completedAt,
       budget,
+      budget_usage: usage,
     };
   }
 
@@ -218,6 +249,7 @@ function blockedScenarioRunResult(input: {
   started_at: string;
   completed_at: string;
   budget: DojoScenarioBudget;
+  budget_usage: DojoScenarioBudgetUsage;
   blocked_by: string[];
   observed_evidence: string[];
 }): DojoScenarioRunResult {
@@ -249,6 +281,7 @@ function blockedScenarioRunResult(input: {
     started_at: input.started_at,
     completed_at: input.completed_at,
     budget: input.budget,
+    budget_usage: input.budget_usage,
   };
 }
 
@@ -437,6 +470,42 @@ function apiFaultObservedEvidence(apiFault: DojoApiFaultExecution | undefined): 
   if (apiFault.durable_state.fake_success) evidence.add("fake_success_visual_only");
   if (apiFault.durable_state.downstream_failed) evidence.add("api_downstream_failure_state");
   return [...evidence].sort();
+}
+
+function budgetUsage(
+  budget: DojoScenarioBudget,
+  startedAt: string,
+  completedAt: string,
+  modelCalls: number
+): DojoScenarioBudgetUsage {
+  const startedMs = Date.parse(startedAt);
+  const completedMs = Date.parse(completedAt);
+  const elapsedMs = Number.isFinite(startedMs) && Number.isFinite(completedMs)
+    ? Math.max(0, completedMs - startedMs)
+    : 0;
+  return {
+    elapsed_ms: elapsedMs,
+    model_calls: Math.max(0, Math.trunc(modelCalls)),
+    max_runs: budget.max_runs,
+    max_estimated_ms: budget.max_estimated_ms,
+    max_model_calls: budget.max_model_calls,
+  };
+}
+
+function budgetBlockedByForUsage(usage: DojoScenarioBudgetUsage): string[] {
+  const blockedBy: string[] = [];
+  if (usage.max_estimated_ms < 1 || usage.elapsed_ms > usage.max_estimated_ms) {
+    blockedBy.push("dojo_scenario_budget_time_exhausted");
+  }
+  if (usage.max_model_calls < 0 || usage.model_calls > usage.max_model_calls) {
+    blockedBy.push("dojo_scenario_budget_model_calls_exhausted");
+  }
+  return blockedBy;
+}
+
+function modelCallsUsedFromInputs(inputs: Record<string, unknown> | undefined): number {
+  const value = inputs?.["model_calls_used"];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function duplicateDisplayNameCount(fixture: DojoMaterializedFixture): number {

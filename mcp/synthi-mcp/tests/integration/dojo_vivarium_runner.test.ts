@@ -244,6 +244,58 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("blocks completed scenario runs that exceed time or model-call budgets", async () => {
+    const runner = new DojoVivariumRunner();
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: toDojoScenarioDefinition(scenarioFixture({
+        mutation_kind: "baseline",
+        layer: "skill",
+        risk_tags: ["baseline"],
+      })),
+      seed: "budget-overrun-seed",
+    });
+
+    await expect(runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-budget-overrun",
+      budget: {
+        ...materialized.definition.budget,
+        max_estimated_ms: 0,
+        max_model_calls: 0,
+      },
+      model_calls_used: 1,
+      now: "2026-06-11T00:00:01.000Z",
+    })).resolves.toEqual(expect.objectContaining({
+      status: "blocked",
+      expectation_met: false,
+      budget_usage: expect.objectContaining({
+        elapsed_ms: 0,
+        model_calls: 1,
+        max_estimated_ms: 0,
+        max_model_calls: 0,
+      }),
+      graph_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: expect.arrayContaining([
+          "dojo_scenario_budget_time_exhausted",
+          "dojo_scenario_budget_model_calls_exhausted",
+        ]),
+        evidence_refs: expect.arrayContaining(["dojo-budget://scenario-run-budget-overrun"]),
+      }),
+      oracle_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: expect.arrayContaining([
+          "dojo_scenario_budget_time_exhausted",
+          "dojo_scenario_budget_model_calls_exhausted",
+        ]),
+      }),
+      observed_evidence: expect.arrayContaining(["scenario_budget_state"]),
+      evidence_refs: expect.arrayContaining(["dojo-budget://scenario-run-budget-overrun"]),
+    }));
+  });
+
   it("classifies runtime execution failures as blocked scenario runs", async () => {
     const runner = new DojoVivariumRunner();
     const materialized = runner.materialize({
