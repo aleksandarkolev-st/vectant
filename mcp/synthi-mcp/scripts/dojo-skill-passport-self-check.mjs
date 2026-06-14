@@ -2,8 +2,9 @@
 /*
  * Build a digest-backed evidence manifest for Agent Dojo Skill Passport and
  * consumer Skill Card contracts: report-only status, license/readiness/proof
- * scope, published tool visibility, card action grouping, proof badge state,
- * practice/guardrail counts, and safe passport export metadata.
+ * scope, executable entrustment provenance, published tool visibility, card
+ * action grouping, proof badge state, practice/guardrail counts, and safe
+ * passport export metadata.
  */
 
 import assert from "node:assert/strict";
@@ -28,6 +29,7 @@ export const DOJO_SKILL_PASSPORT_CAPABILITIES = [
   "skill_passport_report_only_status",
   "skill_passport_license_readiness_scope",
   "skill_passport_proof_coverage_attack_scope",
+  "skill_passport_executable_entrustment_provenance",
   "skill_passport_published_tool_scope",
   "skill_card_allowed_ask_before_blocked_scope",
   "skill_card_proof_badge_matches_passport",
@@ -161,6 +163,7 @@ export function buildDojoSkillPassportEvidenceManifest({
       readiness_scope_required: true,
       proof_scope_required: true,
       coverage_and_attack_metrics_required: true,
+      executable_entrustment_provenance_required: true,
       published_tool_scope_required: true,
       skill_card_action_grouping_required: true,
       proof_badge_required: true,
@@ -257,6 +260,7 @@ const CAPABILITY_MATCHERS = {
   skill_passport_report_only_status: includes("report-only passport"),
   skill_passport_license_readiness_scope: includes("license", "readiness"),
   skill_passport_proof_coverage_attack_scope: includes("proof", "coverage", "attack"),
+  skill_passport_executable_entrustment_provenance: includes("executable entrustment provenance"),
   skill_passport_published_tool_scope: includes("published-tool scope"),
   skill_card_allowed_ask_before_blocked_scope: includes("allowed", "ask-before", "blocked"),
   skill_card_proof_badge_matches_passport: includes("proof badge"),

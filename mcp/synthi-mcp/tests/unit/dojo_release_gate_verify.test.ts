@@ -2063,6 +2063,7 @@ describe("Dojo release gate artifact verifier", () => {
       skill_passport_contract: {
         ...skillPassportEvidenceFixture().skill_passport_contract,
         report_only_status_required: false,
+        executable_entrustment_provenance_required: false,
         raw_payload_redaction_required: false,
       },
     });
@@ -2078,6 +2079,7 @@ describe("Dojo release gate artifact verifier", () => {
       "skill_passport_coverage_incomplete",
       "skill_passport_missing_capabilities:skill_passport_report_only_status",
       "skill_passport_report_only_requirement_missing",
+      "skill_passport_executable_entrustment_requirement_missing",
       "skill_passport_redaction_requirement_missing",
     ]));
 
@@ -5055,6 +5057,7 @@ function skillPassportEvidenceFixture(overrides = {}) {
       readiness_scope_required: true,
       proof_scope_required: true,
       coverage_and_attack_metrics_required: true,
+      executable_entrustment_provenance_required: true,
       published_tool_scope_required: true,
       skill_card_action_grouping_required: true,
       proof_badge_required: true,

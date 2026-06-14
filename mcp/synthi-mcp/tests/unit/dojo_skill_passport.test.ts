@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 describe("Dojo Skill Passport and consumer Skill Card contract", () => {
-  it("returns a report-only passport with license, readiness, proof, coverage, attack, and published-tool scope", async () => {
+  it("returns a report-only passport with license, readiness, proof, coverage, attack, published-tool scope, and executable entrustment provenance", async () => {
     const { skill, toolName } = await publishApproverWorkflowSkill();
 
     const passport = await dispatchDojoTool("synthi_dojo_get_skill_passport", {
@@ -36,6 +36,25 @@ describe("Dojo Skill Passport and consumer Skill Card contract", () => {
       implementation_status: "report_only",
       runtime_enforced: false,
       skill_id: skill.skill_id,
+      entrustment_source: "executable_checkride",
+      executable_entrustment: expect.objectContaining({
+        schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1",
+        source: "publish",
+        checkride_id: skill.executable_entrustment?.checkride_id,
+        scenario_count: skill.executable_entrustment?.scenario_count,
+        entrustment_decision: expect.objectContaining({
+          level: skill.permission_license.entrustment_level,
+        }),
+        readiness_decision: expect.objectContaining({
+          level: skill.skill_readiness_level,
+        }),
+      }),
+      license_scope: expect.objectContaining({
+        allowed_actions: skill.permission_license.allowed_actions,
+        gated_actions: skill.permission_license.gated_actions,
+        blocked_actions: skill.permission_license.blocked_actions,
+      }),
+      evidence_refs: skill.executable_entrustment?.evidence_refs,
       skill_passport: expect.objectContaining({
         passport_id: expect.stringMatching(/^passport_/),
         skill_id: skill.skill_id,
@@ -53,6 +72,7 @@ describe("Dojo Skill Passport and consumer Skill Card contract", () => {
         issued_at: expect.any(String),
       }),
     }));
+    expect(skill.executable_entrustment?.evidence_refs.length).toBeGreaterThan(0);
   });
 
   it("keeps the consumer skill card aligned with allowed, ask-before, blocked, proof badge, practice, and guardrail counts", async () => {

@@ -1785,7 +1785,21 @@ function dojoGetTrainingReportTool(args: unknown): ToolResponse {
 function dojoGetSkillPassportTool(args: unknown): ToolResponse {
   const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, skill_passport: skill.skill.skill_passport });
+  const executableEntrustment = skill.skill.executable_entrustment;
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    skill_passport: skill.skill.skill_passport,
+    entrustment_source: executableEntrustment ? "executable_checkride" : "legacy_license_artifact",
+    executable_entrustment: executableEntrustment ?? null,
+    license_scope: {
+      allowed_actions: skill.skill.permission_license.allowed_actions,
+      gated_actions: skill.skill.permission_license.gated_actions,
+      blocked_actions: skill.skill.permission_license.blocked_actions,
+      approval_requirements: skill.skill.permission_license.approval_requirements,
+    },
+    evidence_refs: executableEntrustment?.evidence_refs ?? skill.skill.assurance_case.evidence_refs,
+  });
 }
 
 function dojoGetSkillGenomeTool(args: unknown): ToolResponse {

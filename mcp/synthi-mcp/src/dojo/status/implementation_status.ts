@@ -58,7 +58,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_get_counterfactual_twin: deterministic("Returns generated counterfactual variants from scenario metadata."),
   synthi_dojo_get_evil_twin_report: syntheticProjection("Returns adversarial report data; the runtime Evil Twin runner executes targeted Vivarium attacks in integration paths."),
   synthi_dojo_get_training_report: report("Returns a training report assembled from current Dojo artifacts."),
-  synthi_dojo_get_skill_passport: report("Returns a compact skill passport assembled from the current license and artifacts."),
+  synthi_dojo_get_skill_passport: reportWithRuntimeEvidence("Returns a compact skill passport with license scope and executable checkride provenance when the skill was published or recertified through the runtime path."),
   synthi_dojo_get_skill_genome: report("Returns a redacted, shareable skill pattern artifact."),
   synthi_dojo_get_antibodies: graphProjection("Returns antibodies generated from current checkride failures and guardrails; approved case law can bind guardrail predicates at runtime."),
   synthi_dojo_get_agent_ready_ui_contract: sourceProjection("Returns a generated Agent-Ready UI Contract report backed by schema/lint validation; project CI adoption remains deployment-specific."),
