@@ -913,7 +913,18 @@ describe("Agent Dojo MCP tools", () => {
         skill_registry: [
           expect.objectContaining({ skill_id: visibleSkillId }),
         ],
-        approval_queue: [],
+        approval_queue: expect.arrayContaining([
+          expect.objectContaining({
+            action: "commit_mutation",
+            source: "license_gated_action",
+            status: "pending",
+          }),
+          expect.objectContaining({
+            action: "commit_mutation",
+            source: "license_approval_requirement",
+            status: "pending",
+          }),
+        ]),
       }),
     }));
   });
@@ -2251,6 +2262,9 @@ describe("Agent Dojo MCP tools", () => {
         blocked_by: ["review_evidence_missing"],
       }),
     }));
+    const preUpgradeSkill = dojoSkillRegistry.get(published.skill.skill_id);
+    expect(preUpgradeSkill?.permission_license.allowed_actions.map((action) => action.action)).not.toContain("commit_mutation");
+    expect(preUpgradeSkill?.permission_license.gated_actions.map((action) => action.action)).not.toContain("commit_mutation");
     const reviewedUpgrade = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
       request_id: "upgrade-test-request",
       decision: "approved",
@@ -2272,14 +2286,67 @@ describe("Agent Dojo MCP tools", () => {
         decision_evidence_refs: ["evidence:unit-review"],
         evidence_refs: expect.arrayContaining(["evidence:unit-review"]),
       }),
+      permission_upgrade_license_promotion: expect.objectContaining({
+        ok: true,
+        applied: true,
+        status: "applied",
+        requested_action: "commit_mutation",
+        license_action_status: "gated",
+        previous_license_version: preUpgradeSkill?.permission_license.license_version,
+        approval_required: true,
+        constraints: expect.arrayContaining([
+          "permission_upgrade_approved",
+          "permission_upgrade_request:upgrade-test-request",
+          "required_step:rerun_checkride_for_requested_action",
+          "review_evidence:evidence:unit-review",
+        ]),
+      }),
+      control_plane_persistence: expect.objectContaining({
+        ok: true,
+        store_kind: "compatibility_registry",
+        license_promotion_status: "applied",
+        requested_action: "commit_mutation",
+        license_action_status: "gated",
+      }),
+      license: expect.objectContaining({
+        license_id: preUpgradeSkill?.permission_license.license_id,
+        gated_actions: expect.arrayContaining([
+          expect.objectContaining({
+            action: "commit_mutation",
+            constraints: expect.arrayContaining([
+              "permission_upgrade_approved",
+              "permission_upgrade_request:upgrade-test-request",
+            ]),
+          }),
+        ]),
+        approval_requirements: expect.arrayContaining(["commit_mutation"]),
+      }),
       review: expect.objectContaining({
         ok: true,
         audit_event: expect.objectContaining({ event_type: "approval_granted" }),
       }),
       governance_service: expect.objectContaining({
-        approval_queue: [],
+        approval_queue: expect.arrayContaining([
+          expect.objectContaining({
+            action: "commit_mutation",
+            source: "license_gated_action",
+            status: "pending",
+          }),
+          expect.objectContaining({
+            action: "commit_mutation",
+            source: "license_approval_requirement",
+            status: "pending",
+          }),
+        ]),
       }),
     }));
+    const upgradedSkill = dojoSkillRegistry.get(published.skill.skill_id);
+    expect(upgradedSkill?.permission_license.license_version).not.toBe(preUpgradeSkill?.permission_license.license_version);
+    expect(upgradedSkill?.permission_license.gated_actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "commit_mutation" }),
+    ]));
+    expect(upgradedSkill?.permission_license.blocked_actions.map((action) => action.action)).not.toContain("commit_mutation");
+    expect(upgradedSkill?.skill_card.will_ask_before).toContain("commit_mutation");
     const reviewedAgain = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
       request_id: "upgrade-test-request",
       decision: "denied",

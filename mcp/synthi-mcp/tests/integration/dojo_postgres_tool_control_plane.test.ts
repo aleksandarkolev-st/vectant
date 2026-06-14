@@ -702,6 +702,19 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       workspace_id: workspaceId,
       queryable: pool,
     });
+    const skillStore = new PostgresDojoSkillStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    const licenseStore = new PostgresDojoLicenseStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    const preUpgradeSkill = await skillStore.getSkill(published.skill.skill_id);
+    expect(preUpgradeSkill).toBeTruthy();
+    expect(preUpgradeSkill?.permission_license.gated_actions.map((action) => action.action)).not.toContain("delete_record");
     await expect(governanceStore.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).resolves.toEqual([
       expect.objectContaining({
         request_id: requestContent.permission_upgrade_request.request_id,
@@ -767,6 +780,29 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         reviewed_at: "2026-06-11T02:05:00.000Z",
         decision_evidence_refs: ["evidence:integration-postgres-upgrade-review"],
       }),
+      permission_upgrade_license_promotion: expect.objectContaining({
+        ok: true,
+        applied: true,
+        status: "applied",
+        requested_action: "delete_record",
+        license_action_status: "gated",
+        previous_license_version: preUpgradeSkill?.permission_license.license_version,
+        approval_required: true,
+      }),
+      control_plane_persistence: expect.objectContaining({
+        ok: true,
+        store_kind: "postgres",
+        license_promotion_status: "applied",
+        requested_action: "delete_record",
+        license_action_status: "gated",
+      }),
+      license: expect.objectContaining({
+        license_id: preUpgradeSkill?.permission_license.license_id,
+        gated_actions: expect.arrayContaining([
+          expect.objectContaining({ action: "delete_record" }),
+        ]),
+        approval_requirements: expect.arrayContaining(["delete_record"]),
+      }),
     }));
     await expect(governanceStore.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).resolves.toEqual([
       expect.objectContaining({
@@ -775,6 +811,37 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         reviewed_by: { actor_id: "postgres-upgrade-reviewer", actor_type: "human" },
       }),
     ]);
+    const upgradedSkill = await skillStore.getSkill(published.skill.skill_id);
+    expect(upgradedSkill?.permission_license.license_version).not.toBe(preUpgradeSkill?.permission_license.license_version);
+    expect(upgradedSkill?.permission_license.gated_actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "delete_record",
+        constraints: expect.arrayContaining([
+          "permission_upgrade_approved",
+          `permission_upgrade_request:${requestContent.permission_upgrade_request.request_id}`,
+        ]),
+      }),
+    ]));
+    expect(upgradedSkill?.permission_license.blocked_actions.map((action) => action.action)).not.toContain("delete_record");
+    expect(upgradedSkill?.skill_card.will_ask_before).toContain("delete_record");
+    await expect(licenseStore.getLicense(upgradedSkill!.permission_license.license_id)).resolves.toEqual(expect.objectContaining({
+      status: "active",
+      license_version: upgradedSkill?.permission_license.license_version,
+      license_json: expect.objectContaining({
+        gated_actions: expect.arrayContaining([
+          expect.objectContaining({ action: "delete_record" }),
+        ]),
+        approval_requirements: expect.arrayContaining(["delete_record"]),
+      }),
+    }));
+    await expect(licenseStore.getLicenseVersion(
+      upgradedSkill!.permission_license.license_id,
+      upgradedSkill!.permission_license.license_version
+    )).resolves.toEqual(expect.objectContaining({
+      license_version: upgradedSkill?.permission_license.license_version,
+      status: "active",
+      created_by: "postgres-upgrade-reviewer",
+    }));
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
     expect(dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).toEqual([]);
   });

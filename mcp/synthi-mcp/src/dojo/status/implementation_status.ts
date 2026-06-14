@@ -84,7 +84,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
     ["license_promotion_still_requires_checkride_and_evidence_policy"]
   ),
   synthi_dojo_review_permission_upgrade: controlPlaneWrite(
-    "Records approval or denial review state for a stored permission-upgrade request without promoting the production license by itself.",
+    "Records approval or denial review state for a stored permission-upgrade request and applies approved requests as gated license-scope updates.",
     ["license_promotion_still_requires_checkride_and_evidence_policy"]
   ),
   synthi_dojo_review_case_law: controlPlaneWrite(

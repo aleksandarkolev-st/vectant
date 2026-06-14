@@ -485,6 +485,12 @@ type DojoDurablePermissionUpgradeReviewContext = {
   governance_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
     ? T extends { ok: true; governance_store: infer Store } ? Store : never
     : never;
+  skill_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
+    ? T extends { ok: true; skill_store: infer Store } ? Store : never
+    : never;
+  license_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
+    ? T extends { ok: true; license_store: infer Store } ? Store : never
+    : never;
   close?: () => Promise<void>;
 };
 
@@ -823,6 +829,8 @@ async function permissionUpgradeReviewContextFromDurableControlPlaneIfRequired(
         request,
         skill,
         governance_store: resolution.governance_store,
+        skill_store: resolution.skill_store,
+        license_store: resolution.license_store,
         close: resolution.close,
       },
     };
@@ -1297,7 +1305,7 @@ export const DOJO_TOOLS = [
   {
     name: "synthi_dojo_review_permission_upgrade",
     description:
-      "Approve or deny a stored Dojo permission-upgrade request with reviewer metadata and evidence references. This records governance review state; it does not promote the production license by itself.",
+      "Approve or deny a stored Dojo permission-upgrade request with reviewer metadata and evidence references. Approved requests create a constrained license-scope update for the requested action.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2423,7 +2431,7 @@ async function dojoReviewPermissionUpgradeTool(args: unknown): Promise<ToolRespo
   const storedRequest = durableResolution.context?.request
     ?? dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestId, limit: 1 })[0];
   if (!storedRequest) return errorResponse("dojo_permission_upgrade_request_not_found", { request_id: requestId });
-  const skill = durableResolution.context?.skill ?? dojoSkillRegistry.get(storedRequest.skill_id);
+  let skill = durableResolution.context?.skill ?? dojoSkillRegistry.get(storedRequest.skill_id);
   if (!skill) return errorResponse("dojo_permission_upgrade_skill_not_found", {
     request_id: requestId,
     skill_id: storedRequest.skill_id,
@@ -2456,10 +2464,55 @@ async function dojoReviewPermissionUpgradeTool(args: unknown): Promise<ToolRespo
   }
 
   let updatedRequest = review.request;
+  let licensePromotion = permissionUpgradeLicensePromotionFor(skill, updatedRequest);
   let controlPlaneSource: "compatibility_registry" | "postgres" = "compatibility_registry";
+  let controlPlanePersistence: Record<string, unknown> = {
+    ok: true,
+    store_kind: "compatibility_registry",
+    license_promotion_status: licensePromotion.status,
+  };
   try {
     if (durableResolution.context) {
       await durableResolution.context.governance_store.savePermissionUpgradeRequest(review.request);
+      if (licensePromotion.applied) {
+        const reviewer = updatedRequest.reviewed_by ?? {
+          actor_id: reviewerActorId,
+          actor_type: reviewerActorType,
+        };
+        const reviewedAt = updatedRequest.reviewed_at ?? new Date().toISOString();
+        const skillRecord = await durableResolution.context.skill_store.saveSkill(licensePromotion.skill, {
+          status: "published",
+          created_by: reviewer,
+          now: reviewedAt,
+        });
+        const licenseRecord = await durableResolution.context.license_store.saveLicense(licensePromotion.skill.permission_license, {
+          readiness_level: licensePromotion.skill.skill_readiness_level,
+          status: "active",
+          expires_at: licensePromotion.skill.license_expires_at,
+          created_by: reviewer,
+          now: reviewedAt,
+        });
+        skill = licensePromotion.skill;
+        controlPlanePersistence = {
+          ok: true,
+          store_kind: durableResolution.context.source,
+          license_promotion_status: licensePromotion.status,
+          skill_id: skillRecord.skill_id,
+          skill_version: skillRecord.current_skill_version,
+          license_id: licenseRecord.license_id,
+          previous_license_version: licensePromotion.previous_license_version,
+          license_version: licenseRecord.license_version,
+          requested_action: updatedRequest.requested_action,
+          license_action_status: licensePromotion.license_action_status,
+        };
+      } else {
+        controlPlanePersistence = {
+          ok: true,
+          store_kind: durableResolution.context.source,
+          license_promotion_status: licensePromotion.status,
+          requested_action: updatedRequest.requested_action,
+        };
+      }
       controlPlaneSource = durableResolution.context.source;
     }
   } finally {
@@ -2467,6 +2520,26 @@ async function dojoReviewPermissionUpgradeTool(args: unknown): Promise<ToolRespo
   }
   if (!durableResolution.context) {
     updatedRequest = dojoSkillRegistry.recordPermissionUpgradeRequest(review.request);
+    licensePromotion = permissionUpgradeLicensePromotionFor(skill, updatedRequest);
+    if (licensePromotion.applied) {
+      skill = dojoSkillRegistry.publish(licensePromotion.skill);
+      licensePromotion = {
+        ...licensePromotion,
+        skill,
+      };
+      controlPlanePersistence = {
+        ok: true,
+        store_kind: "compatibility_registry",
+        license_promotion_status: licensePromotion.status,
+        skill_id: skill.skill_id,
+        skill_version: skill.skill_version,
+        license_id: skill.permission_license.license_id,
+        previous_license_version: licensePromotion.previous_license_version,
+        license_version: skill.permission_license.license_version,
+        requested_action: updatedRequest.requested_action,
+        license_action_status: licensePromotion.license_action_status,
+      };
+    }
   }
   return jsonResponse({
     ok: true,
@@ -2474,6 +2547,9 @@ async function dojoReviewPermissionUpgradeTool(args: unknown): Promise<ToolRespo
     request_id: requestId,
     decision,
     permission_upgrade_request: updatedRequest,
+    permission_upgrade_license_promotion: licensePromotion.summary,
+    control_plane_persistence: controlPlanePersistence,
+    license: skill.permission_license,
     review,
     governance_service: buildDojoGovernanceServiceView({
       skills: [skill],
@@ -5987,6 +6063,180 @@ function bindingScopeIdForSkillCase(skill: DojoSkill, bindingScope: DojoSkill["c
   if (bindingScope === "skill") return skill.skill_id;
   if (bindingScope === "workspace") return skill.workspace_id;
   return `organization:${skill.workspace_id}`;
+}
+
+type DojoPermissionUpgradeLicensePromotion =
+  | {
+    applied: true;
+    status: "applied";
+    skill: DojoSkill;
+    previous_license_version: string;
+    license_action_status: "gated";
+    summary: Record<string, unknown>;
+  }
+  | {
+    applied: false;
+    status: "not_approved" | "already_allowed";
+    skill: DojoSkill;
+    previous_license_version: string;
+    license_action_status: "unchanged" | "already_allowed";
+    summary: Record<string, unknown>;
+  };
+
+function permissionUpgradeLicensePromotionFor(
+  skill: DojoSkill,
+  request: DojoPermissionUpgradeRequestRecord
+): DojoPermissionUpgradeLicensePromotion {
+  const previousLicenseVersion = skill.permission_license.license_version;
+  if (request.status !== "approved") {
+    return {
+      applied: false,
+      status: "not_approved",
+      skill,
+      previous_license_version: previousLicenseVersion,
+      license_action_status: "unchanged",
+      summary: {
+        ok: true,
+        applied: false,
+        status: "not_approved",
+        requested_action: request.requested_action,
+        previous_license_version: previousLicenseVersion,
+        license_version: previousLicenseVersion,
+      },
+    };
+  }
+
+  const existingAllowed = skill.permission_license.allowed_actions.find((action) => action.action === request.requested_action);
+  if (existingAllowed) {
+    return {
+      applied: false,
+      status: "already_allowed",
+      skill,
+      previous_license_version: previousLicenseVersion,
+      license_action_status: "already_allowed",
+      summary: {
+        ok: true,
+        applied: false,
+        status: "already_allowed",
+        requested_action: request.requested_action,
+        previous_license_version: previousLicenseVersion,
+        license_version: previousLicenseVersion,
+        constraints: existingAllowed.constraints,
+      },
+    };
+  }
+
+  const updated = cloneJson(skill);
+  const reviewedAt = request.reviewed_at ?? new Date().toISOString();
+  const gatedConstraints = [...new Set([
+    "permission_upgrade_approved",
+    `permission_upgrade_request:${request.request_id}`,
+    ...request.required_steps
+      .filter((step) => step !== "no_upgrade_required_for_current_license")
+      .map((step) => `required_step:${step}`),
+    ...(request.decision_evidence_refs ?? []).map((ref) => `review_evidence:${ref}`),
+  ])];
+  const nextLicense = {
+    ...updated.permission_license,
+    license_version: bumpVersion(previousLicenseVersion),
+    issued_at: reviewedAt,
+    gated_actions: upsertLicenseAction(updated.permission_license.gated_actions, {
+      action: request.requested_action,
+      constraints: gatedConstraints,
+    }),
+    blocked_actions: updated.permission_license.blocked_actions
+      .filter((action) => action.action !== request.requested_action),
+    approval_requirements: [...new Set([
+      ...updated.permission_license.approval_requirements,
+      request.requested_action,
+    ])],
+    substrate_requirements: upsertPermissionUpgradeSubstrateRequirement(updated, request.requested_action),
+  };
+  updated.permission_license = nextLicense;
+  updated.license_expires_at = licenseExpiresAtFromIssuedAt(nextLicense.issued_at);
+  updated.skill_card = {
+    ...updated.skill_card,
+    status: `Licensed ${nextLicense.entrustment_level}`,
+    can_do_alone: nextLicense.allowed_actions.map((action) => action.action),
+    will_ask_before: nextLicense.gated_actions.map((action) => action.action),
+    will_not_do: nextLicense.blocked_actions.map((action) => action.action),
+    proof_badge: nextLicense.proof_requirements.required_evidence_claims.length > 0 ? "Proof required" : "Proof optional",
+  };
+  updated.skill_passport = {
+    ...updated.skill_passport,
+    passport_id: `passport_${hashId(`${updated.skill_id}:${updated.skill_version}:${nextLicense.license_id}:${nextLicense.license_version}`)}`,
+    license_id: nextLicense.license_id,
+    license_expires_at: updated.license_expires_at,
+    issued_at: nextLicense.issued_at,
+  };
+  updated.training_report = {
+    ...updated.training_report,
+    evidence_refs: [...new Set([
+      ...updated.training_report.evidence_refs,
+      ...request.evidence_refs,
+      ...(request.decision_evidence_refs ?? []),
+    ])],
+    readiness_decision: `Permission upgrade ${request.request_id} approved; ${request.requested_action} is gated by approval evidence under license ${nextLicense.license_version}.`,
+  };
+  updated.assurance_case = {
+    ...updated.assurance_case,
+    evidence_refs: [...new Set([
+      ...updated.assurance_case.evidence_refs,
+      ...request.evidence_refs,
+      ...(request.decision_evidence_refs ?? []),
+    ])],
+    limits: [...new Set([
+      ...updated.assurance_case.limits,
+      `permission_upgrade:${request.requested_action}:approval_required`,
+      ...request.required_steps.map((step) => `permission_upgrade_required_step:${step}`),
+    ])],
+  };
+  updated.last_trained_at = reviewedAt;
+
+  return {
+    applied: true,
+    status: "applied",
+    skill: updated,
+    previous_license_version: previousLicenseVersion,
+    license_action_status: "gated",
+    summary: {
+      ok: true,
+      applied: true,
+      status: "applied",
+      requested_action: request.requested_action,
+      license_action_status: "gated",
+      previous_license_version: previousLicenseVersion,
+      license_version: nextLicense.license_version,
+      license_id: nextLicense.license_id,
+      approval_required: true,
+      constraints: gatedConstraints,
+      evidence_refs: [...request.evidence_refs],
+      decision_evidence_refs: [...(request.decision_evidence_refs ?? [])],
+      expires_at: updated.license_expires_at,
+    },
+  };
+}
+
+function upsertPermissionUpgradeSubstrateRequirement(
+  skill: DojoSkill,
+  requestedAction: string
+): DojoSkill["permission_license"]["substrate_requirements"] {
+  const existing = skill.permission_license.substrate_requirements.find((requirement) => requirement.action === requestedAction);
+  const fallback = skill.permission_license.substrate_requirements.find((requirement) =>
+    skill.permission_license.allowed_actions.some((action) => action.action === requirement.action)
+  );
+  const allowedSubstrates = existing?.allowed_substrates
+    ?? fallback?.allowed_substrates
+    ?? skill.execution_substrates;
+  if (allowedSubstrates.length === 0) return skill.permission_license.substrate_requirements;
+  const next = {
+    action: requestedAction,
+    allowed_substrates: [...new Set(allowedSubstrates)],
+  };
+  return [
+    ...skill.permission_license.substrate_requirements.filter((requirement) => requirement.action !== requestedAction),
+    next,
+  ];
 }
 
 function permissionUpgradeSteps(skill: DojoSkill, requestedAction: string): string[] {
