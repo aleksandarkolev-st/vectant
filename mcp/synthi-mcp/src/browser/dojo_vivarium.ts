@@ -272,6 +272,8 @@ export function buildDojoVivariumGraphInputsForFixture(
   const lineItemsTotalVerified = lineItemsTotalVerifiedForFixture(fixture);
   const sourceAnchorCurrent = sourceAnchorCurrentForFixture(fixture);
   const durableStateEvidence = durableStateEvidenceForFixture(fixture);
+  const durableStateVerificationAvailable = durableStateVerificationAvailableForFixture(fixture);
+  const mutationIsolationAvailable = mutationIsolationAvailableForFixture(fixture);
   const humanReviewReady = workspaceVerified && !fixture.identity_state.permission_downgraded;
   const visualPostconditionsObserved = visualPostconditionsObservedForFixture(fixture);
   return {
@@ -280,7 +282,9 @@ export function buildDojoVivariumGraphInputsForFixture(
     client_id_verified: clientIdVerified,
     line_items_total_verified: lineItemsTotalVerified,
     source_anchor_current: sourceAnchorCurrent,
+    durable_state_verification_available: durableStateVerificationAvailable,
     durable_state_evidence: durableStateEvidence,
+    mutation_isolation_available: mutationIsolationAvailable,
     human_review_ready: humanReviewReady,
     approval_status: humanReviewReady ? "approved" : "denied",
     assertion_results: Object.fromEntries(
@@ -311,6 +315,19 @@ function observedEvidenceForScenario(
 
 function workspaceVerifiedForFixture(fixture: DojoMaterializedFixture): boolean {
   return !fixture.identity_state.auth_expired;
+}
+
+function durableStateVerificationAvailableForFixture(fixture: DojoMaterializedFixture): boolean {
+  return fixture.synthetic_data_only === true
+    && Boolean(fixture.api_state)
+    && Array.isArray(fixture.records);
+}
+
+function mutationIsolationAvailableForFixture(fixture: DojoMaterializedFixture): boolean {
+  return fixture.synthetic_data_only === true
+    && fixture.reset_evidence.deterministic === true
+    && fixture.reset_evidence.reset_profile_id.trim().length > 0
+    && fixture.reset_evidence.reset_seed.trim().length > 0;
 }
 
 function clientIdentityVerifiedForFixture(fixture: DojoMaterializedFixture): boolean {

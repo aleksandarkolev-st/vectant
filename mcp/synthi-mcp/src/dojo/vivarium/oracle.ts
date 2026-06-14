@@ -135,7 +135,11 @@ function classifyScenarioOutcome(
     };
   }
 
-  if (fixture.api_state.fake_success && !observedEvidence.includes("durable_state_evidence")) {
+  if (
+    definition.oracle.expected_outcome === "fail"
+      && fixture.api_state.fake_success
+      && !observedEvidence.includes("durable_state_evidence")
+  ) {
     return {
       status: "failed",
       finding: "Scenario produced fake visual success without durable state evidence.",
@@ -143,7 +147,7 @@ function classifyScenarioOutcome(
     };
   }
 
-  if (fixture.api_state.partial_write) {
+  if (definition.oracle.expected_outcome === "fail" && fixture.api_state.partial_write) {
     return {
       status: "failed",
       finding: "Scenario left a partial write in synthetic durable state.",

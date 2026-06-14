@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { DojoSkillGraphRuntime, type DojoGraphEvidenceEvent, type DojoGraphRunResult } from "../graph/runtime.js";
-import type { DojoSubstrateExecutor } from "../graph/substrate_executor.js";
+import type {
+  DojoExecutionSubstrate,
+  DojoSubstrateExecutionResult,
+  DojoSubstrateExecutor,
+} from "../graph/substrate_executor.js";
 import type { DojoSkillGraph } from "../graph/types.js";
 import type { DojoTenantContext } from "../mcp/execution_policy_gate.js";
 import { type DojoMaterializedFixture, materializeDojoSyntheticFixture } from "./fixture_materializer.js";
@@ -145,7 +149,16 @@ export class DojoVivariumRunner {
       });
     }
 
-    const apiFaultExecution = await executeApiFaultServerForScenario(input.materialized, runId, budget);
+    let apiFaultExecution: DojoApiFaultExecution | undefined;
+    const scenarioSubstrateExecutor = input.substrate_executor
+      ?? createApiFaultScenarioSubstrateExecutor({
+        materialized: input.materialized,
+        run_id: runId,
+        budget,
+        recordExecution: (execution) => {
+          apiFaultExecution = execution;
+        },
+      });
     let graphResult: DojoGraphRunResult;
     try {
       graphResult = await runtime.execute({
@@ -156,14 +169,13 @@ export class DojoVivariumRunner {
         inputs: {
           ...input.materialized.definition.input_overrides,
           ...fixtureInputs(input.materialized.fixture),
-          ...(apiFaultExecution ? apiFaultInputs(apiFaultExecution) : {}),
           ...(input.inputs ?? {}),
         },
         evidence_writer: (event) => {
           graphEvents.push(event);
           return `dojo-graph://${event.run_id}/${event.node_id}`;
         },
-        ...(input.substrate_executor ? { substrate_executor: input.substrate_executor } : {}),
+        ...(scenarioSubstrateExecutor ? { substrate_executor: scenarioSubstrateExecutor } : {}),
       });
     } catch {
       graphResult = blockedGraphRunResult(runId, ["dojo_graph_runtime_failed"], [
@@ -455,15 +467,6 @@ function cloneDurableApiState(state: DojoApiFaultServerState["durable_state"]): 
   };
 }
 
-function apiFaultInputs(apiFault: DojoApiFaultExecution): Record<string, unknown> {
-  return {
-    api_fault_behavior: apiFault.behavior,
-    api_fault_response_status: apiFault.response_status,
-    api_fault_request_count: apiFault.request_count,
-    api_fault_durable_state: apiFault.durable_state,
-  };
-}
-
 function apiFaultObservedEvidence(apiFault: DojoApiFaultExecution | undefined): string[] {
   if (!apiFault) return [];
   const evidence = new Set<string>(["api_fault_server_executed"]);
@@ -473,6 +476,98 @@ function apiFaultObservedEvidence(apiFault: DojoApiFaultExecution | undefined): 
   if (apiFault.durable_state.fake_success) evidence.add("fake_success_visual_only");
   if (apiFault.durable_state.downstream_failed) evidence.add("api_downstream_failure_state");
   return [...evidence].sort();
+}
+
+function createApiFaultScenarioSubstrateExecutor(input: {
+  materialized: DojoMaterializedScenario;
+  run_id: string;
+  budget: DojoScenarioBudget;
+  recordExecution: (execution: DojoApiFaultExecution) => void;
+}): DojoSubstrateExecutor | undefined {
+  if (!apiFaultBehaviorForScenario(input.materialized)) return undefined;
+  return {
+    execute: async (request): Promise<DojoSubstrateExecutionResult> => {
+      const substrateSelection = selectScenarioSubstrate(request.node.substrate_options, request.inputs, request.mode ?? "checkride");
+      if (!substrateSelection.ok) {
+        return {
+          ok: false,
+          status: "blocked",
+          blocked_by: substrateSelection.blocked_by,
+          evidence_refs: [],
+        };
+      }
+      const execution = await executeApiFaultServerForScenario(input.materialized, input.run_id, input.budget);
+      if (!execution) {
+        return {
+          ok: false,
+          status: "blocked",
+          substrate: substrateSelection.substrate,
+          blocked_by: ["api_fault_server_required"],
+          evidence_refs: [],
+        };
+      }
+      input.recordExecution(execution);
+      const blockedBy = apiFaultSubstrateBlockedBy(execution);
+      return {
+        ok: blockedBy.length === 0,
+        status: blockedBy.length === 0 ? "executed" : "blocked",
+        substrate: substrateSelection.substrate,
+        blocked_by: blockedBy,
+        evidence_refs: [...execution.evidence_refs],
+      };
+    },
+  };
+}
+
+function apiFaultSubstrateBlockedBy(execution: DojoApiFaultExecution): string[] {
+  if (execution.behavior === "validation_error") return ["api_fault_validation_error"];
+  if (execution.behavior === "timeout") return ["api_fault_timeout"];
+  if (execution.behavior === "downstream_failure") return ["api_fault_downstream_failure"];
+  if (execution.response_status >= 400) return [`api_fault_response_status:${execution.response_status}`];
+  return [];
+}
+
+type ScenarioSubstrateSelection =
+  | { ok: true; substrate: DojoExecutionSubstrate }
+  | { ok: false; blocked_by: string[] };
+
+const SCENARIO_SUBSTRATE_PRIORITY: DojoExecutionSubstrate[] = ["api", "mcp", "source", "dom", "vision"];
+
+function selectScenarioSubstrate(
+  nodeSubstrateOptions: string[],
+  inputs: Record<string, unknown>,
+  mode: string
+): ScenarioSubstrateSelection {
+  const nodeSubstrates = nodeSubstrateOptions.filter(isExecutionSubstrate);
+  if (nodeSubstrates.length === 0) return { ok: false, blocked_by: ["substrate_not_allowed"] };
+
+  const allowed = scenarioAllowedSubstrates(inputs, mode);
+  if (!allowed) return { ok: false, blocked_by: ["license_substrate_policy_missing"] };
+
+  const requested = typeof inputs["requested_substrate"] === "string" && isExecutionSubstrate(inputs["requested_substrate"])
+    ? inputs["requested_substrate"]
+    : undefined;
+  if (requested) {
+    return nodeSubstrates.includes(requested) && allowed.includes(requested)
+      ? { ok: true, substrate: requested }
+      : { ok: false, blocked_by: ["substrate_not_allowed"] };
+  }
+
+  const selected = SCENARIO_SUBSTRATE_PRIORITY.find((substrate) =>
+    nodeSubstrates.includes(substrate) && allowed.includes(substrate)
+  );
+  return selected ? { ok: true, substrate: selected } : { ok: false, blocked_by: ["substrate_not_allowed"] };
+}
+
+function scenarioAllowedSubstrates(inputs: Record<string, unknown>, mode: string): DojoExecutionSubstrate[] | null {
+  const value = inputs["license_allowed_substrates"];
+  if (Array.isArray(value)) return value.filter(isExecutionSubstrate);
+  if (mode === "production") return null;
+  return ["vision", "dom", "source", "api", "mcp"];
+}
+
+function isExecutionSubstrate(value: unknown): value is DojoExecutionSubstrate {
+  return value === "vision" || value === "dom" || value === "source" || value === "api" || value === "mcp";
 }
 
 function budgetUsage(

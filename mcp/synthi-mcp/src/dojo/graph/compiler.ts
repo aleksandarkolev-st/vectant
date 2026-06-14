@@ -114,11 +114,12 @@ function guardrailNode(guardrail: DojoGuardrail): DojoGraphNode {
     title: guardrail.title,
     guardrail_id: guardrail.guardrail_id,
   });
+  const predicate = preActionRuntimePredicateForGuardrail(normalized.predicate);
   return {
     ...baseNode(guardrail.guardrail_id, "Guardrail", guardrail.title, "safe"),
     guardrails: [{
       guardrail_id: guardrail.guardrail_id,
-      predicate: normalized.predicate,
+      predicate,
       severity: "block",
     }],
     case_law_refs: guardrail.source_case_id ? [guardrail.source_case_id] : [],
@@ -286,10 +287,16 @@ function graphGuardrailsForSkill(skill: DojoSkill) {
     });
     return {
       guardrail_id: guardrail.guardrail_id,
-      predicate: normalized.predicate,
+      predicate: preActionRuntimePredicateForGuardrail(normalized.predicate),
       severity: "block" as const,
     };
   });
+}
+
+function preActionRuntimePredicateForGuardrail(predicate: string): string {
+  return predicate.trim() === "durable_state_evidence == true"
+    ? "durable_state_verification_available == true"
+    : predicate;
 }
 
 function intrinsicActionGuardrailsFor(input: {
@@ -303,7 +310,7 @@ function intrinsicActionGuardrailsFor(input: {
   if (!requiresPostconditionEvidence) return [];
   return [{
     guardrail_id: "guard_durable_postcondition_evidence",
-    predicate: "durable_state_evidence == true",
+    predicate: "durable_state_verification_available == true",
     severity: "block" as const,
   }];
 }

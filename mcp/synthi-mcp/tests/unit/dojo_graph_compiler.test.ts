@@ -56,7 +56,7 @@ describe("Dojo graph compiler", () => {
         expect.objectContaining({ severity: "block" }),
         expect.objectContaining({
           guardrail_id: "guard_durable_postcondition_evidence",
-          predicate: "durable_state_evidence == true",
+          predicate: "durable_state_verification_available == true",
           severity: "block",
         }),
       ]),
@@ -69,7 +69,7 @@ describe("Dojo graph compiler", () => {
     expect(action?.metadata).toEqual(expect.objectContaining({
       guardrail_predicates: expect.arrayContaining([
         expect.objectContaining({
-          predicate: expect.stringMatching(/^(client_id_verified|source_anchor_current|durable_state_evidence|human_review_ready|guardrail_[a-f0-9]{12})/),
+          predicate: expect.stringMatching(/^(client_id_verified|source_anchor_current|durable_state_verification_available|human_review_ready|guardrail_[a-f0-9]{12})/),
         }),
       ]),
     }));

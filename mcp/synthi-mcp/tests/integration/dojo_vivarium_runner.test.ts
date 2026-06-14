@@ -90,6 +90,17 @@ describe("Dojo Vivarium runner", () => {
       }),
       observed_evidence: expect.arrayContaining(["api_fault_server_executed", "fake_success_visual_only"]),
       evidence_refs: expect.arrayContaining(["dojo-api-fault://scenario-run-fake-success/fake_success"]),
+      graph_result: expect.objectContaining({
+        node_results: expect.arrayContaining([
+          expect.objectContaining({
+            node_id: "action",
+            substrate_result: expect.objectContaining({
+              status: "executed",
+              evidence_refs: ["dojo-api-fault://scenario-run-fake-success/fake_success"],
+            }),
+          }),
+        ]),
+      }),
       oracle_result: expect.objectContaining({
         blocked_by: ["oracle_durable_state_evidence_missing"],
         finding: "Scenario produced fake visual success without durable state evidence.",
@@ -139,6 +150,46 @@ describe("Dojo Vivarium runner", () => {
     expect(result.oracle_result).toEqual(expect.objectContaining({
       status: "failed",
       blocked_by: ["oracle_partial_write_detected"],
+    }));
+  });
+
+  it("does not execute API fault fixtures when graph preconditions block before the action", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "fake_success",
+      layer: "risk",
+      risk_tags: ["fake_success", "evidence_required"],
+    }));
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "blocked-before-action-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: actionPreconditionGraphFixture(),
+      run_id: "scenario-run-blocked-before-api-fault",
+    });
+
+    expect(result.api_fault).toBeUndefined();
+    expect(result.evidence_refs).not.toContain("dojo-api-fault://scenario-run-blocked-before-api-fault/fake_success");
+    expect(result.observed_evidence).not.toContain("api_fault_server_executed");
+    expect(result.graph_result).toEqual(expect.objectContaining({
+      status: "blocked",
+      blocked_by: ["precondition_failed:action_ready == true"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action",
+          status: "blocked",
+          blocked_by: ["precondition_failed:action_ready == true"],
+        }),
+      ]),
+    }));
+    expect(result.graph_result.node_results.find((node) => node.node_id === "action")).not.toHaveProperty("substrate_result");
+    expect(result.oracle_result).toEqual(expect.objectContaining({
+      status: "blocked",
+      blocked_by: ["precondition_failed:action_ready == true"],
     }));
   });
 
@@ -485,6 +536,18 @@ function branchingGraphFixture(): DojoSkillGraph {
         observed_variants: [],
       },
     ],
+  };
+}
+
+function actionPreconditionGraphFixture(): DojoSkillGraph {
+  return {
+    ...graphFixture(),
+    nodes: graphFixture().nodes.map((node) => node.node_id === "action"
+      ? {
+          ...node,
+          preconditions: ["action_ready == true"],
+        }
+      : node),
   };
 }
 

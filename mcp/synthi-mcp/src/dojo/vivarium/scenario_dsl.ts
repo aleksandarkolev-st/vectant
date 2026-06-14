@@ -83,6 +83,7 @@ export function toDojoScenarioDefinitions(
   input: {
     target_graph_node_ids?: string[];
     input_overrides?: Record<string, unknown>;
+    expected_outcome_overrides?: Record<string, DojoScenarioExpectedOutcome>;
   } = {}
 ): DojoScenarioDefinition[] {
   return scenarios.map((scenario) => toDojoScenarioDefinition(scenario, input));
@@ -93,9 +94,11 @@ export function toDojoScenarioDefinition(
   input: {
     target_graph_node_ids?: string[];
     input_overrides?: Record<string, unknown>;
+    expected_outcome_overrides?: Record<string, DojoScenarioExpectedOutcome>;
   } = {}
 ): DojoScenarioDefinition {
   const mutationScopes = mutationScopesFor(scenario.mutation_kind);
+  const expectedOutcome = input.expected_outcome_overrides?.[scenario.mutation_kind];
   return {
     schema_version: "synthi.dojo.scenarioDefinition.v1",
     scenario_id: scenario.scenario_id,
@@ -106,7 +109,7 @@ export function toDojoScenarioDefinition(
     fixture_requirements: fixtureRequirementsForScenario(scenario, mutationScopes),
     input_overrides: input.input_overrides ?? {},
     expected_behavior: scenario.expected_behavior,
-    oracle: oracleForScenario(scenario),
+    oracle: oracleForScenario(scenario, expectedOutcome),
     simulator_tier: scenario.simulator_tier,
     reset_profile: {
       reset_profile_id: `reset_${scenario.scenario_id}`,
@@ -251,13 +254,16 @@ function mutationScopesFor(mutationKind: string): DojoScenarioMutationScope[] {
   }
 }
 
-function oracleForScenario(scenario: DojoScenario): DojoScenarioOracleDefinition {
-  const expectedOutcome = expectedOutcomeFor(scenario);
+function oracleForScenario(
+  scenario: DojoScenario,
+  expectedOutcomeOverride?: DojoScenarioExpectedOutcome
+): DojoScenarioOracleDefinition {
+  const expectedOutcome = expectedOutcomeOverride ?? expectedOutcomeFor(scenario);
   return {
     oracle_id: `oracle_${scenario.scenario_id}`,
     kind: expectedOutcome === "block" ? "expected_block" : scenario.risk_tags.includes("evidence_required") ? "evidence_claim" : "postcondition",
     expected_outcome: expectedOutcome,
-    observed_evidence_required: observedEvidenceFor(scenario),
+    observed_evidence_required: observedEvidenceFor(scenario, expectedOutcome),
   };
 }
 
@@ -268,9 +274,12 @@ function expectedOutcomeFor(scenario: DojoScenario): DojoScenarioExpectedOutcome
   return "pass";
 }
 
-function observedEvidenceFor(scenario: DojoScenario): string[] {
+function observedEvidenceFor(
+  scenario: DojoScenario,
+  expectedOutcome: DojoScenarioExpectedOutcome
+): string[] {
   const evidence = ["graph_run_result", "graph_node_evidence", "oracle_result"];
-  if (scenario.risk_tags.includes("evidence_required")) evidence.push("durable_state_evidence");
+  if (expectedOutcome !== "pass" && scenario.risk_tags.includes("evidence_required")) evidence.push("durable_state_evidence");
   if (scenario.mutation_kind === "auth_expiry" || scenario.mutation_kind === "permission_change") evidence.push("identity_policy_state");
   if (scenario.mutation_kind === "duplicate_entity" || scenario.mutation_kind === "stale_entity") evidence.push("stable_entity_identity");
   if (isPromptInjectionDocumentMutation(scenario.mutation_kind)) evidence.push("document_instruction_quarantine");

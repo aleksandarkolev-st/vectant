@@ -40,6 +40,9 @@ describe("Dojo guardrail runtime", () => {
     const humanReview = normalizeDojoGuardrailPredicate({
       rule: "Require human review before high-risk submission.",
     });
+    const mutationIsolation = normalizeDojoGuardrailPredicate({
+      rule: "Mutation replay must use confirmation or isolated CI before production execution.",
+    });
     const generated = normalizeDojoGuardrailPredicate({
       rule: "Business-specific policy flag is satisfied.",
       guardrail_id: "guard_custom_policy",
@@ -53,6 +56,11 @@ describe("Dojo guardrail runtime", () => {
     expect(sourceAnchor.predicate).toBe("source_anchor_current == true");
     expect(durableState.predicate).toBe("durable_state_evidence == true");
     expect(humanReview.predicate).toBe("human_review_ready == true");
+    expect(mutationIsolation).toEqual(expect.objectContaining({
+      predicate: "mutation_isolation_available == true",
+      source: "normalized",
+      generated_context_key: "mutation_isolation_available",
+    }));
     expect(generated).toEqual(expect.objectContaining({
       source: "generated_key",
       predicate: expect.stringMatching(/^guardrail_[a-f0-9]{12} == true$/),

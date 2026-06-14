@@ -53,7 +53,7 @@ import {
   decideDojoPermissionUpgradeRequest,
   revokeDojoSkillLicense,
 } from "../dojo/governance/service.js";
-import { compileDojoSkillGraphForSkill } from "../dojo/graph/compiler.js";
+import { compileDojoSkillGraphForSkill, compileDojoSkillGraphFromContract } from "../dojo/graph/compiler.js";
 import { validateDojoSkillGraph, type DojoSkillGraph } from "../dojo/graph/types.js";
 import {
   contextKeyForDojoGuardrailPredicate,
@@ -91,7 +91,11 @@ import {
 } from "../dojo/runtime/hosted_runtime_gateway_resolver.js";
 import { buildDojoImplementationMetadata } from "../dojo/status/implementation_status.js";
 import { hardenDojoEvilTwinAttacks, runDojoEvilTwin } from "../dojo/vivarium/evil_twin.js";
-import { toDojoScenarioDefinitions, validateDojoScenarioDefinition } from "../dojo/vivarium/scenario_dsl.js";
+import {
+  toDojoScenarioDefinitions,
+  validateDojoScenarioDefinition,
+  type DojoScenarioExpectedOutcome,
+} from "../dojo/vivarium/scenario_dsl.js";
 import type {
   DojoAuditActor,
   DojoAuditEventRecord,
@@ -110,6 +114,7 @@ import {
 } from "../dojo/mcp/skill_bus.js";
 import type { DojoTenantContext } from "../dojo/mcp/execution_policy_gate.js";
 import type { BrowserWorkflowArtifact } from "../browser/broker.js";
+import type { WorkflowContractV7 } from "../browser/workflow.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import {
   dispatchBrowserPrivateWorkflowToolAfterDojoProof,
@@ -2777,12 +2782,13 @@ async function dojoRunCheckrideTool(args: unknown): Promise<ToolResponse> {
     private_tool_manifest: generatePrivateWorkflowToolManifest(contract),
   });
   const runtimeSkill = withExecutableCheckrideGuardrails(previewSkill);
-  const compiledGraph = compileDojoSkillGraphForSkill(runtimeSkill, {
+  const compiledGraph = compileDojoSkillGraphFromContract(contract, runtimeSkill, {
     mode: "checkride",
     created_at: now,
   });
   const scenarioDefinitions = toDojoScenarioDefinitions(scenarios, {
-    target_graph_node_ids: ["action"],
+    target_graph_node_ids: [],
+    expected_outcome_overrides: expectedOutcomeOverridesForExecutableCheckride(contract),
   });
   const scenarioDefinitionValidation = scenarioDefinitions.map((scenario) => ({
     scenario_id: scenario.scenario_id,
@@ -2853,7 +2859,9 @@ function checkrideRuntimeInputsFor(skill: DojoSkill): Record<string, unknown> {
     entrustment_level: skill.permission_license.entrustment_level,
     client_id_verified: true,
     source_anchor_current: true,
+    durable_state_verification_available: true,
     durable_state_evidence: true,
+    mutation_isolation_available: true,
     human_review_ready: true,
   };
   for (const claim of [
@@ -2867,6 +2875,16 @@ function checkrideRuntimeInputsFor(skill: DojoSkill): Record<string, unknown> {
     if (contextKey) inputs[contextKey] = true;
   }
   return inputs;
+}
+
+function expectedOutcomeOverridesForExecutableCheckride(
+  contract: WorkflowContractV7
+): Record<string, DojoScenarioExpectedOutcome> {
+  if (contract.mutationBoundaryPlan.mutationSteps.length > 0) return {};
+  return {
+    fake_success: "pass",
+    partial_write: "pass",
+  };
 }
 
 interface DojoPublicationExecutableCheckride {
@@ -2886,18 +2904,20 @@ interface DojoPublicationExecutableCheckride {
 
 async function executableCheckrideForSkillPublication(input: {
   skill: DojoSkill;
+  contract: WorkflowContractV7;
   tenant: DojoTenantContext;
   now: string;
 }): Promise<{ ok: true; publication_checkride: DojoPublicationExecutableCheckride } | { ok: false; error: ToolResponse }> {
   const ledgerResolution = await resolvePublicationCheckrideEvidenceLedger(input.tenant, input.skill);
   if (!ledgerResolution.ok) return { ok: false, error: ledgerResolution.error };
   const runtimeSkill = withExecutableCheckrideGuardrails(input.skill);
-  const compiledGraph = compileDojoSkillGraphForSkill(runtimeSkill, {
+  const compiledGraph = compileDojoSkillGraphFromContract(input.contract, runtimeSkill, {
     mode: "checkride",
     created_at: input.now,
   });
   const scenarioDefinitions = toDojoScenarioDefinitions(runtimeSkill.scenarios, {
-    target_graph_node_ids: ["action"],
+    target_graph_node_ids: [],
+    expected_outcome_overrides: expectedOutcomeOverridesForExecutableCheckride(input.contract),
   });
   let executableCheckride: DojoExecutableCheckrideReport;
   try {
@@ -2938,9 +2958,7 @@ async function executableCheckrideForSkillPublication(input: {
   } finally {
     await ledgerResolution.close?.();
   }
-  const graphHasBlockingGuardrails = compiledGraph.graph.nodes
-    .filter((node) => node.kind === "Action")
-    .some((node) => node.guardrails.some((guardrail) => guardrail.severity === "block"));
+  const graphHasBlockingGuardrails = hasExecutableBlockingGuardrails(compiledGraph.graph);
   const inlineOrLedgerEvidenceBacked = executableCheckride.evidence_refs.length >= executableCheckride.scenario_count
     && executableCheckride.results.every((result) => Boolean(result.evidence_record ?? result.ledger_record));
   const ledgerEvidenceBacked = executableCheckride.scenario_count > 0
@@ -2987,6 +3005,13 @@ async function executableCheckrideForSkillPublication(input: {
       },
     },
   };
+}
+
+function hasExecutableBlockingGuardrails(graph: DojoSkillGraph): boolean {
+  return graph.nodes.some((node) => (
+    (node.kind === "Action" || node.kind === "Guardrail")
+    && node.guardrails.some((guardrail) => guardrail.severity === "block")
+  ));
 }
 
 async function resolvePublicationCheckrideEvidenceLedger(
@@ -3305,6 +3330,7 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
   });
   const publicationCheckride = await executableCheckrideForSkillPublication({
     skill: candidateSkill,
+    contract,
     tenant: workflow.tenant,
     now,
   });
@@ -3424,6 +3450,7 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
   });
   const recertificationCheckride = await executableCheckrideForSkillPublication({
     skill: recertified,
+    contract: workflow.artifact.workflow.contract,
     tenant,
     now,
   });
@@ -4759,6 +4786,11 @@ function dojoGraphRuntimeInputsForProofRun(input: {
   runtime_authorization?: DojoHostedRuntimeActionDecision;
 }): Record<string, unknown> {
   const authoritativeInputKeys = authoritativeGraphRuntimeInputKeys(input.skill);
+  const satisfiedEvidenceClaims = new Set(
+    input.proof_capsule.evidence_claims
+      .filter((claim) => claim.satisfied)
+      .map((claim) => claim.claim)
+  );
   const inputs: Record<string, unknown> = {
     ...stripAuthoritativeGraphRuntimeInputs(input.tool_args, authoritativeInputKeys),
     ...stripAuthoritativeGraphRuntimeInputs(input.license_tool_args, authoritativeInputKeys),
@@ -4767,6 +4799,9 @@ function dojoGraphRuntimeInputsForProofRun(input: {
     proof_capsule_id: input.proof_capsule.capsule_id,
     proof_evidence_record_ids: [...input.proof_capsule.evidence_record_ids],
     proof_guardrails_active: [...input.proof_capsule.guardrails_active],
+    durable_state_verification_available: satisfiedEvidenceClaims.has("durable_state_evidence"),
+    mutation_isolation_available: input.proof_capsule.context_claims["mutation_isolation_available"] === true
+      || input.proof_capsule.context_claims["approval_granted"] === true,
     entrustment_level: input.skill.permission_license.entrustment_level,
     readiness_level: input.skill.skill_readiness_level,
     license_id: input.skill.permission_license.license_id,
@@ -4820,6 +4855,8 @@ function authoritativeGraphRuntimeInputKeys(skill: DojoSkill): Set<string> {
     "proof_capsule_id",
     "proof_evidence_record_ids",
     "proof_guardrails_active",
+    "durable_state_verification_available",
+    "mutation_isolation_available",
     "entrustment_level",
     "readiness_level",
     "license_id",

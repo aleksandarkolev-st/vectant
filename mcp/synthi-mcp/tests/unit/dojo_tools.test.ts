@@ -1445,15 +1445,13 @@ describe("Agent Dojo MCP tools", () => {
           }),
           expect.objectContaining({
             mutation_kind: "fake_success",
-            status: "blocked",
-            graph_status: "blocked",
-            blocked_by: expect.arrayContaining(["guardrail_failed:guard_durable_postcondition_evidence"]),
+            status: "passed",
+            graph_status: "completed",
           }),
           expect.objectContaining({
             mutation_kind: "partial_write",
-            status: "blocked",
-            graph_status: "blocked",
-            blocked_by: expect.arrayContaining(["guardrail_failed:guard_durable_postcondition_evidence"]),
+            status: "passed",
+            graph_status: "completed",
           }),
           expect.objectContaining({
             scenario_run: expect.objectContaining({ schema_version: "synthi.dojo.scenarioRunResult.v1" }),

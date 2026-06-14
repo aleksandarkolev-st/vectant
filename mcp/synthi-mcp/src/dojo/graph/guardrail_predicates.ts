@@ -74,6 +74,12 @@ function predicateForKnownGuardrailText(text: string): string | null {
   if (text.includes("durable") || text.includes("success assertion") || text.includes("postcondition") || text.includes("state evidence")) {
     return "durable_state_evidence == true";
   }
+  if (
+    (text.includes("mutation") || text.includes("write") || text.includes("replay"))
+      && (text.includes("isolated") || text.includes("isolation") || text.includes("ci"))
+  ) {
+    return "mutation_isolation_available == true";
+  }
   if (text.includes("approval") || text.includes("review") || text.includes("human")) {
     return "human_review_ready == true";
   }
