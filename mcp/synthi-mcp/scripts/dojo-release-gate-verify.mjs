@@ -132,6 +132,7 @@ const DEFAULT_WORKFLOW_PIPELINE_E2E_DIR = path.join(REPO_ROOT, "tmp", "workflow-
 const DEFAULT_PRIVATE_TOOL_STDIO_ACCEPTANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-stdio-acceptance");
 const DEFAULT_PRIVATE_TOOL_CODEX_ACCEPTANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-acceptance");
 const DEFAULT_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-host-conformance");
+const DEFAULT_CONFORMANCE_LIVE_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-host-conformance-live");
 const DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-stdio-host-conformance");
 const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-host-conformance");
 const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-postgres-control-plane");
@@ -488,8 +489,12 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   if (shouldVerifyDeployedHostConformance) {
     const stdioHostGate = findGate(manifest, "private_tool_stdio_host_conformance") || {};
     const codexHostGate = findGate(manifest, "private_tool_codex_host_conformance") || {};
-    const reportPath = resolveRepoPath(args["mcp-host-conformance-report"] || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.json"));
-    const evidencePath = resolveRepoPath(args["mcp-host-conformance-evidence"] || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.evidence.json"));
+    const reportPath = resolveRepoPath(args["mcp-host-conformance-report"]
+      || findGate(manifest, "dojo_mcp_host_conformance")?.default_report_path
+      || path.join(DEFAULT_CONFORMANCE_LIVE_DIR, "dojo-mcp-host-conformance.json"));
+    const evidencePath = resolveRepoPath(args["mcp-host-conformance-evidence"]
+      || findGate(manifest, "dojo_mcp_host_conformance")?.default_evidence_path
+      || path.join(DEFAULT_CONFORMANCE_LIVE_DIR, "dojo-mcp-host-conformance.evidence.json"));
     const stdioTranscriptPath = resolveRepoPath(args["private-tool-stdio-host-conformance"]
       || stdioHostGate.default_report_path
       || path.join(DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR, "mcp-stdio-private-tool-acceptance.json"));

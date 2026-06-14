@@ -661,8 +661,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     evidence_kind: "proof_artifact",
     report_schema_version: "synthi.dojo.mcpHostConformance.v1",
     evidence_schema_version: "synthi.dojo.mcpHostConformanceEvidence.v1",
-    default_report_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.json",
-    default_evidence_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.evidence.json",
+    default_report_path: "tmp/dojo-mcp-host-conformance-live/dojo-mcp-host-conformance.json",
+    default_evidence_path: "tmp/dojo-mcp-host-conformance-live/dojo-mcp-host-conformance.evidence.json",
     release_artifact_requirements: {
       ...DOJO_MCP_HOST_CONFORMANCE_REQUIREMENTS,
     },
@@ -1994,6 +1994,12 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!mcpHostConformanceGate.default_report_path) errors.push("mcp_host_conformance_missing_default_report_path");
     if (!mcpHostConformanceGate.default_evidence_path) errors.push("mcp_host_conformance_missing_default_evidence_path");
+    if (mcpHostConformanceSelfCheckGate?.default_report_path === mcpHostConformanceGate.default_report_path) {
+      errors.push("mcp_host_conformance_default_report_path_conflicts_self_check");
+    }
+    if (mcpHostConformanceSelfCheckGate?.default_evidence_path === mcpHostConformanceGate.default_evidence_path) {
+      errors.push("mcp_host_conformance_default_evidence_path_conflicts_self_check");
+    }
     if (!mcpHostConformanceGate.release_artifact_requirements?.require_production_execution) {
       errors.push("mcp_host_conformance_missing_production_execution_requirement");
     }
@@ -2027,6 +2033,8 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       }
     }
     const missingScriptFlags = missingRequiredPackageScriptTokens(packageScripts, mcpHostConformanceGate, [
+      "--out-dir",
+      "tmp/dojo-mcp-host-conformance-live",
       "--require-non-loopback-mcp-host",
       "--execute-production",
       "--require-external-control-plane-store",

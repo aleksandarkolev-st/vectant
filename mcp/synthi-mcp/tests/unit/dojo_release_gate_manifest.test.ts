@@ -148,7 +148,7 @@ const PACKAGE_SCRIPTS = {
     "live:browser:workflow-pipeline": "node scripts/workflow-pipeline-e2e.mjs",
     "live:browser:private-tool-stdio": "node scripts/private-tool-stdio-acceptance.mjs",
     "live:browser:private-tool-codex": "node scripts/private-tool-codex-acceptance.mjs",
-    "live:dojo:mcp-host-conformance": "node scripts/dojo-mcp-host-conformance.mjs --require-non-loopback-mcp-host --execute-production --require-external-control-plane-store --require-external-proof-signing --require-bridge-token --require-no-local-cdp --require-licensed-skill-filtering",
+    "live:dojo:mcp-host-conformance": "node scripts/dojo-mcp-host-conformance.mjs --out-dir tmp/dojo-mcp-host-conformance-live --require-non-loopback-mcp-host --execute-production --require-external-control-plane-store --require-external-proof-signing --require-bridge-token --require-no-local-cdp --require-licensed-skill-filtering",
     "live:browser:private-tool-host-conformance": "node scripts/private-tool-stdio-acceptance.mjs --require-custom-mcp-command --require-non-loopback-runtime --require-external-private-tool-store",
     "live:browser:private-tool-codex-host-conformance": "node scripts/private-tool-codex-acceptance.mjs --require-non-loopback-runtime --require-external-private-tool-store",
     soak: "node tests/soak/soak_loop.mjs",
@@ -463,8 +463,8 @@ describe("Dojo release gate manifest", () => {
         command: "npm --prefix mcp/synthi-mcp run live:dojo:mcp-host-conformance",
         report_schema_version: "synthi.dojo.mcpHostConformance.v1",
         evidence_schema_version: "synthi.dojo.mcpHostConformanceEvidence.v1",
-        default_report_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.json",
-        default_evidence_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.evidence.json",
+        default_report_path: "tmp/dojo-mcp-host-conformance-live/dojo-mcp-host-conformance.json",
+        default_evidence_path: "tmp/dojo-mcp-host-conformance-live/dojo-mcp-host-conformance.evidence.json",
         release_artifact_requirements: DOJO_MCP_HOST_CONFORMANCE_REQUIREMENTS,
         requires_env: expect.arrayContaining([
           "SYNTHI_DOJO_MCP_HOST_URL",
@@ -1048,7 +1048,7 @@ describe("Dojo release gate manifest", () => {
     };
     const brokenLiveManifest = buildDojoReleaseGateManifest({ packageScripts: brokenLiveScripts });
     expect(validateDojoReleaseGateManifest(brokenLiveManifest, { packageScripts: brokenLiveScripts }).errors).toEqual(expect.arrayContaining([
-      "mcp_host_conformance_package_script_missing_flags:--execute-production,--require-external-control-plane-store,--require-external-proof-signing,--require-bridge-token,--require-no-local-cdp,--require-licensed-skill-filtering",
+      "mcp_host_conformance_package_script_missing_flags:--out-dir,tmp/dojo-mcp-host-conformance-live,--execute-production,--require-external-control-plane-store,--require-external-proof-signing,--require-bridge-token,--require-no-local-cdp,--require-licensed-skill-filtering",
       "private_tool_host_conformance_package_script_missing_flags:private_tool_stdio_host_conformance:--require-non-loopback-runtime,--require-external-private-tool-store",
       "private_tool_host_conformance_package_script_missing_flags:private_tool_codex_host_conformance:--require-external-private-tool-store",
     ]));
@@ -1183,6 +1183,8 @@ describe("Dojo release gate manifest", () => {
     mcpHostSelfCheckGate.artifact_requirements.require_private_network_rejection = false;
     mcpHostSelfCheckGate.artifact_requirements.require_link_local_rejection = false;
     const mcpHostGate = brokenMcpHostConformance.gates.find((gate) => gate.id === "dojo_mcp_host_conformance");
+    mcpHostGate.default_report_path = mcpHostSelfCheckGate.default_report_path;
+    mcpHostGate.default_evidence_path = mcpHostSelfCheckGate.default_evidence_path;
     mcpHostGate.release_artifact_requirements.require_public_non_local_mcp_host = false;
     mcpHostGate.release_artifact_requirements.require_revocation_propagation = false;
     mcpHostGate.release_artifact_requirements.require_external_proof_signing = false;
@@ -1197,6 +1199,8 @@ describe("Dojo release gate manifest", () => {
       "mcp_host_conformance_missing_external_signing_requirement",
       "mcp_host_conformance_missing_no_local_cdp_requirement",
       "mcp_host_conformance_missing_env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
+      "mcp_host_conformance_default_report_path_conflicts_self_check",
+      "mcp_host_conformance_default_evidence_path_conflicts_self_check",
     ]));
 
     const brokenPrivateToolHostConformance = JSON.parse(JSON.stringify(manifest));
