@@ -246,6 +246,24 @@ describe("Dojo release gate manifest", () => {
         }),
       }),
       expect.objectContaining({
+        id: "dojo_mcp_host_conformance_self_check",
+        tier: "T2",
+        package_script: "proof:dojo:mcp-host-conformance:self-check",
+        evidence_kind: "proof_artifact",
+        script_exists: true,
+        report_schema_version: "synthi.dojo.mcpHostConformance.selfCheck.v1",
+        evidence_schema_version: "synthi.dojo.mcpHostConformanceEvidence.v1",
+        default_report_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.json",
+        default_evidence_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.evidence.json",
+        artifact_requirements: expect.objectContaining({
+          require_loopback_rejection: true,
+          require_private_network_rejection: true,
+          require_link_local_rejection: true,
+          require_unique_local_ipv6_rejection: true,
+          require_report_redaction: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "dojo_postgres_control_plane_self_check",
         tier: "T2",
         package_script: "proof:dojo:postgres-control-plane:self-check",
@@ -1161,13 +1179,20 @@ describe("Dojo release gate manifest", () => {
     ]));
 
     const brokenMcpHostConformance = JSON.parse(JSON.stringify(manifest));
+    const mcpHostSelfCheckGate = brokenMcpHostConformance.gates.find((gate) => gate.id === "dojo_mcp_host_conformance_self_check");
+    mcpHostSelfCheckGate.artifact_requirements.require_private_network_rejection = false;
+    mcpHostSelfCheckGate.artifact_requirements.require_link_local_rejection = false;
     const mcpHostGate = brokenMcpHostConformance.gates.find((gate) => gate.id === "dojo_mcp_host_conformance");
+    mcpHostGate.release_artifact_requirements.require_public_non_local_mcp_host = false;
     mcpHostGate.release_artifact_requirements.require_revocation_propagation = false;
     mcpHostGate.release_artifact_requirements.require_external_proof_signing = false;
     mcpHostGate.release_artifact_requirements.require_no_local_cdp = false;
     mcpHostGate.requires_env = mcpHostGate.requires_env
       .filter((envName) => envName !== "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING");
     expect(validateDojoReleaseGateManifest(brokenMcpHostConformance, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "mcp_host_conformance_self_check_missing_private_network_rejection",
+      "mcp_host_conformance_self_check_missing_link_local_rejection",
+      "mcp_host_conformance_missing_public_non_local_requirement",
       "mcp_host_conformance_missing_revocation_requirement",
       "mcp_host_conformance_missing_external_signing_requirement",
       "mcp_host_conformance_missing_no_local_cdp_requirement",

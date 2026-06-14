@@ -118,6 +118,7 @@ import {
   validateDojoEvidenceAuthorityEvidenceForMilestone,
   validateDojoImplementationStatusEvidenceForRelease,
   validateDojoSourceDriftEvidenceForRelease,
+  validateDojoMcpHostConformanceSelfCheckReport,
   validateDojoMcpHostConformanceReportForRelease,
   validateDojoPrivateToolCodexAcceptanceForRelease,
   validateDojoPrivateToolCodexHostConformanceForRelease,
@@ -167,6 +168,7 @@ import {
   verifyDojoCaseLawRuntimeEvidenceArtifact,
   verifyDojoManagedKeySigningEvidenceArtifact,
   verifyDojoPublicProofVerificationEvidenceArtifact,
+  verifyDojoMcpHostConformanceSelfCheckArtifacts,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoPrivateToolCodexAcceptanceArtifact,
   verifyDojoPrivateToolCodexHostConformanceArtifact,
@@ -1480,6 +1482,13 @@ describe("Dojo release gate artifact verifier", () => {
     const apiToolCompilerEvidencePath = await writeApiToolCompilerEvidenceFixture({ dir });
     const generatedPrEvidencePath = await writeGeneratedPrEvidenceFixture({ dir });
     const mcpSkillBusEvidencePath = await writeMcpSkillBusEvidenceFixture({ dir });
+    const conformanceSelfCheckReportPath = path.join(dir, "dojo-mcp-host-conformance-self-check.json");
+    const conformanceSelfCheckEvidencePath = path.join(dir, "dojo-mcp-host-conformance-self-check.evidence.json");
+    await writeConformancePair({
+      report: buildConformanceSelfCheckReport(),
+      reportPath: conformanceSelfCheckReportPath,
+      evidencePath: conformanceSelfCheckEvidencePath,
+    });
     const conformanceReportPath = path.join(dir, "dojo-mcp-host-conformance.json");
     const conformanceEvidencePath = path.join(dir, "dojo-mcp-host-conformance.evidence.json");
     await writeConformancePair({
@@ -1551,6 +1560,9 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "dojo_api_tool_compiler_self_check").default_evidence_path = apiToolCompilerEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_generated_pr_self_check").default_evidence_path = generatedPrEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_mcp_skill_bus_self_check").default_evidence_path = mcpSkillBusEvidencePath;
+    const conformanceSelfCheckGate = manifest.gates.find((gate) => gate.id === "dojo_mcp_host_conformance_self_check");
+    conformanceSelfCheckGate.default_report_path = conformanceSelfCheckReportPath;
+    conformanceSelfCheckGate.default_evidence_path = conformanceSelfCheckEvidencePath;
     manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path = managedKeySigningEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_public_proof_verification_self_check").default_evidence_path = publicProofVerificationEvidencePath;
@@ -1683,6 +1695,14 @@ describe("Dojo release gate artifact verifier", () => {
         id: "dojo_mcp_skill_bus_self_check",
         ok: true,
         evidence_path: mcpSkillBusEvidencePath,
+      }),
+    ]);
+    expect(verified.mcp_host_conformance_self_check).toEqual([
+      expect.objectContaining({
+        id: "dojo_mcp_host_conformance_self_check",
+        ok: true,
+        artifact_path: conformanceSelfCheckReportPath,
+        evidence_path: conformanceSelfCheckEvidencePath,
       }),
     ]);
     expect(verified.visual_reports).toHaveLength(2);
@@ -1820,6 +1840,49 @@ describe("Dojo release gate artifact verifier", () => {
     expect(rejected.errors).toEqual(expect.arrayContaining([
       expect.stringMatching(/^report_sha256_mismatch:/),
       "conformance_execute_production_missing",
+    ]));
+  });
+
+  it("verifies MCP host conformance self-check classifier coverage", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-mcp-conformance-self-check-"));
+    const report = buildConformanceSelfCheckReport();
+    const reportPath = path.join(dir, "dojo-mcp-host-conformance-self-check.json");
+    const evidencePath = path.join(dir, "dojo-mcp-host-conformance-self-check.evidence.json");
+    await writeConformancePair({ report, reportPath, evidencePath });
+
+    expect(validateDojoMcpHostConformanceSelfCheckReport(report)).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoMcpHostConformanceSelfCheckArtifacts({
+      reportPath,
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = buildConformanceSelfCheckReport({
+      checkResults: report.check_results.filter((check) => check.id !== "private_network_rejection"),
+      checks: report.checks.filter((check) => check !== "private network rejection"),
+    });
+    const incompletePath = path.join(dir, "dojo-mcp-host-conformance-self-check-incomplete.json");
+    const incompleteEvidencePath = path.join(dir, "dojo-mcp-host-conformance-self-check-incomplete.evidence.json");
+    await writeConformancePair({
+      report: incomplete,
+      reportPath: incompletePath,
+      evidencePath: incompleteEvidencePath,
+    });
+    const rejected = await verifyDojoMcpHostConformanceSelfCheckArtifacts({
+      reportPath: incompletePath,
+      evidencePath: incompleteEvidencePath,
+      releaseCandidate: true,
+    });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "conformance_self_check_private_network_rejection_missing",
     ]));
   });
 
@@ -6781,6 +6844,38 @@ function buildConformanceReport({
     deployment_claims: deploymentClaims,
     steps: steps || buildConformanceSteps({ executeProduction }),
   };
+  report.release_gate = buildConformanceReleaseGateSummary(report);
+  return report;
+}
+
+function buildConformanceSelfCheckReport({
+  checks,
+  checkResults,
+} = {}) {
+  const report = buildConformanceReport({
+    schemaVersion: "synthi.dojo.mcpHostConformance.selfCheck.v1",
+    executeProduction: false,
+  });
+  report.checks = checks || [
+    "remote host classification",
+    "loopback rejection",
+    "private network rejection",
+    "link-local rejection",
+    "unique local ipv6 rejection",
+    "competency selection",
+    "blocked call detection",
+    "report redaction",
+  ];
+  report.check_results = checkResults || [
+    { id: "remote_host_classification", ok: true },
+    { id: "loopback_rejection", ok: true },
+    { id: "private_network_rejection", ok: true },
+    { id: "link_local_rejection", ok: true },
+    { id: "unique_local_ipv6_rejection", ok: true },
+    { id: "competency_selection", ok: true },
+    { id: "blocked_call_detection", ok: true },
+    { id: "report_redaction", ok: true },
+  ];
   report.release_gate = buildConformanceReleaseGateSummary(report);
   return report;
 }

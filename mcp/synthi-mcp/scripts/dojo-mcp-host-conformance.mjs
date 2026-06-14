@@ -917,6 +917,16 @@ async function runSelfCheck({ outDir }) {
       "blocked call detection",
       "report redaction",
     ],
+    check_results: [
+      { id: "remote_host_classification", ok: true },
+      { id: "loopback_rejection", ok: true },
+      { id: "private_network_rejection", ok: true },
+      { id: "link_local_rejection", ok: true },
+      { id: "unique_local_ipv6_rejection", ok: true },
+      { id: "competency_selection", ok: true },
+      { id: "blocked_call_detection", ok: true },
+      { id: "report_redaction", ok: true },
+    ],
   });
   report.release_gate = buildConformanceReleaseGateSummary(report);
   const artifacts = await writeConformanceArtifacts(outDir, report);

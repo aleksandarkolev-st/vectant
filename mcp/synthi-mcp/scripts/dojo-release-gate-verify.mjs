@@ -371,10 +371,26 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const conformanceResults = [];
+  const conformanceSelfCheckResults = [];
   const shouldVerifyDeployedHostConformance = truthy(args["release-candidate"])
     || args["mcp-host-conformance-report"]
     || args["private-tool-stdio-host-conformance"]
     || args["private-tool-codex-host-conformance"];
+  const shouldVerifyMcpHostConformanceSelfCheck = truthy(args["release-candidate"])
+    || args["mcp-host-conformance-self-check-report"]
+    || args["mcp-host-conformance-self-check-evidence"];
+  if (shouldVerifyMcpHostConformanceSelfCheck) {
+    const selfCheckGate = findGate(manifest, "dojo_mcp_host_conformance_self_check") || {};
+    conformanceSelfCheckResults.push(await verifyDojoMcpHostConformanceSelfCheckArtifacts({
+      reportPath: resolveRepoPath(args["mcp-host-conformance-self-check-report"]
+        || selfCheckGate.default_report_path
+        || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.json")),
+      evidencePath: resolveRepoPath(args["mcp-host-conformance-self-check-evidence"]
+        || selfCheckGate.default_evidence_path
+        || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
   if (shouldVerifyDeployedHostConformance) {
     const stdioHostGate = findGate(manifest, "private_tool_stdio_host_conformance") || {};
     const codexHostGate = findGate(manifest, "private_tool_codex_host_conformance") || {};
@@ -566,7 +582,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const releaseGateCoverage = getVerifiableReleaseGateCoverage({
     manifest,
     sections,
@@ -594,6 +610,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     generated_pr: generatedPrResults.map(summarizeSection),
     mcp_skill_bus: mcpSkillBusResults.map(summarizeSection),
     live_hosted_runtime: liveHostedRuntimeResults.map(summarizeSection),
+    mcp_host_conformance_self_check: conformanceSelfCheckResults.map(summarizeSection),
     mcp_host_conformance: conformanceResults.map(summarizeSection),
     managed_key_signing: managedKeySigningResults.map(summarizeSection),
     public_proof_verification: publicProofVerificationResults.map(summarizeSection),
@@ -2132,6 +2149,97 @@ export async function verifyDojoMcpHostConformanceArtifacts({ reportPath, eviden
     release_candidate: Boolean(releaseCandidate),
     report_schema_version: report?.schema_version ?? null,
   };
+}
+
+const DOJO_MCP_HOST_CONFORMANCE_SELF_CHECK_REQUIREMENTS = [
+  {
+    id: "loopback_rejection",
+    label: "loopback rejection",
+    error: "conformance_self_check_loopback_rejection_missing",
+  },
+  {
+    id: "private_network_rejection",
+    label: "private network rejection",
+    error: "conformance_self_check_private_network_rejection_missing",
+  },
+  {
+    id: "link_local_rejection",
+    label: "link-local rejection",
+    error: "conformance_self_check_link_local_rejection_missing",
+  },
+  {
+    id: "unique_local_ipv6_rejection",
+    label: "unique local ipv6 rejection",
+    error: "conformance_self_check_unique_local_ipv6_rejection_missing",
+  },
+  {
+    id: "report_redaction",
+    label: "report redaction",
+    error: "conformance_self_check_report_redaction_missing",
+  },
+];
+
+export async function verifyDojoMcpHostConformanceSelfCheckArtifacts({ reportPath, evidencePath, releaseCandidate = false }) {
+  const { artifact: report, evidence, digest } = await readDigestCheckedJsonPair({
+    id: "dojo_mcp_host_conformance_self_check",
+    artifactPath: reportPath,
+    evidencePath,
+    evidenceSchema: "synthi.dojo.mcpHostConformanceEvidence.v1",
+    digestField: "report_sha256",
+    bytesField: "report_bytes",
+    pathField: "report_path",
+  });
+  const errors = [...digest.errors, ...validateDojoMcpHostConformanceSelfCheckReport(report).errors];
+  if (evidence.gate_ok !== true) errors.push("conformance_self_check_evidence_gate_not_ok");
+  if (Number(evidence.gate_failed || 0) !== 0) {
+    errors.push(`conformance_self_check_evidence_gate_failed:${evidence.gate_failed}`);
+  }
+  return {
+    id: "dojo_mcp_host_conformance_self_check",
+    ok: errors.length === 0,
+    errors,
+    artifact_path: reportPath,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: report?.schema_version ?? null,
+  };
+}
+
+export function validateDojoMcpHostConformanceSelfCheckReport(report) {
+  const errors = [];
+  if (report?.schema_version !== "synthi.dojo.mcpHostConformance.selfCheck.v1") {
+    errors.push(`conformance_self_check_schema_mismatch:${report?.schema_version || "missing"}`);
+  }
+  if (report?.conformance?.ok !== true) errors.push("conformance_self_check_host_not_ok");
+  if (report?.conformance?.mcp_host_class !== "remote") {
+    errors.push(`conformance_self_check_host_not_remote:${report?.conformance?.mcp_host_class || "missing"}`);
+  }
+  if (report?.conformance?.non_loopback_mcp_host !== true) {
+    errors.push("conformance_self_check_non_loopback_host_missing");
+  }
+  if (report?.config?.raw_backing_tool_required !== true) {
+    errors.push("conformance_self_check_raw_backing_tool_requirement_missing");
+  }
+  if (report?.release_gate?.ok !== true) errors.push("conformance_self_check_release_gate_not_ok");
+  if (Number(report?.release_gate?.failed || 0) !== 0) {
+    errors.push(`conformance_self_check_release_gate_failed:${report.release_gate.failed}`);
+  }
+  for (const requirement of DOJO_MCP_HOST_CONFORMANCE_SELF_CHECK_REQUIREMENTS) {
+    if (!hasPassingMcpHostConformanceSelfCheck(report, requirement)) {
+      errors.push(requirement.error);
+    }
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+function hasPassingMcpHostConformanceSelfCheck(report, requirement) {
+  const structuredChecks = Array.isArray(report?.check_results) ? report.check_results : [];
+  if (structuredChecks.some((check) => check?.id === requirement.id && check.ok === true)) return true;
+  const labels = new Set((Array.isArray(report?.checks) ? report.checks : []).map((check) => String(check)));
+  return labels.has(requirement.label);
 }
 
 export function validateDojoMcpHostConformanceReportForRelease(report) {
@@ -4455,6 +4563,12 @@ async function runSelfCheck({ outDir }) {
     report: selfCheckReport,
     basename: "dojo-mcp-host-conformance-self-check",
   });
+  const acceptedSelfCheck = await verifyDojoMcpHostConformanceSelfCheckArtifacts({
+    reportPath: selfCheckArtifacts.report_path,
+    evidencePath: selfCheckArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(acceptedSelfCheck.ok, true, acceptedSelfCheck.errors.join(";"));
   const rejectedSelfCheck = await verifyDojoMcpHostConformanceArtifacts({
     reportPath: selfCheckArtifacts.report_path,
     evidencePath: selfCheckArtifacts.evidence_path,
@@ -5130,6 +5244,28 @@ function buildReleaseCandidateConformanceReport({
       { name: "revoked proof run blocked", ok: true },
     ],
   };
+  if (schemaVersion === "synthi.dojo.mcpHostConformance.selfCheck.v1") {
+    report.checks = [
+      "remote host classification",
+      "loopback rejection",
+      "private network rejection",
+      "link-local rejection",
+      "unique local ipv6 rejection",
+      "competency selection",
+      "blocked call detection",
+      "report redaction",
+    ];
+    report.check_results = [
+      { id: "remote_host_classification", ok: true },
+      { id: "loopback_rejection", ok: true },
+      { id: "private_network_rejection", ok: true },
+      { id: "link_local_rejection", ok: true },
+      { id: "unique_local_ipv6_rejection", ok: true },
+      { id: "competency_selection", ok: true },
+      { id: "blocked_call_detection", ok: true },
+      { id: "report_redaction", ok: true },
+    ];
+  }
   report.release_gate = buildConformanceReleaseGateSummary(report);
   return redactConformanceReport(report);
 }

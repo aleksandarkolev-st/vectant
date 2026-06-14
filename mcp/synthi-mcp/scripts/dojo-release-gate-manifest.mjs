@@ -218,6 +218,7 @@ export const DOJO_DEPLOYED_PRIVATE_TOOL_HOST_REQUIREMENTS = Object.freeze({
 export const DOJO_MCP_HOST_CONFORMANCE_REQUIREMENTS = Object.freeze({
   reject_self_check_schema: true,
   require_non_loopback_mcp_host: true,
+  require_public_non_local_mcp_host: true,
   require_production_execution: true,
   require_raw_backing_tool_block: true,
   require_revocation_propagation: true,
@@ -383,6 +384,17 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     command: "npm --prefix mcp/synthi-mcp run proof:dojo:mcp-host-conformance:self-check",
     required_for: ["milestone", "release"],
     evidence_kind: "proof_artifact",
+    report_schema_version: "synthi.dojo.mcpHostConformance.selfCheck.v1",
+    evidence_schema_version: "synthi.dojo.mcpHostConformanceEvidence.v1",
+    default_report_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.json",
+    default_evidence_path: "tmp/dojo-mcp-host-conformance/dojo-mcp-host-conformance.evidence.json",
+    artifact_requirements: {
+      require_loopback_rejection: true,
+      require_private_network_rejection: true,
+      require_link_local_rejection: true,
+      require_unique_local_ipv6_rejection: true,
+      require_report_redaction: true,
+    },
   },
   {
     id: "dojo_affordance_codemod_self_check",
@@ -1951,6 +1963,28 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
   }
   const mcpHostConformanceGate = gates.find((gate) => gate.id === "dojo_mcp_host_conformance");
+  const mcpHostConformanceSelfCheckGate = gates.find((gate) => gate.id === "dojo_mcp_host_conformance_self_check");
+  if (mcpHostConformanceSelfCheckGate) {
+    if (mcpHostConformanceSelfCheckGate.report_schema_version !== "synthi.dojo.mcpHostConformance.selfCheck.v1") {
+      errors.push("mcp_host_conformance_self_check_missing_report_schema");
+    }
+    if (mcpHostConformanceSelfCheckGate.evidence_schema_version !== "synthi.dojo.mcpHostConformanceEvidence.v1") {
+      errors.push("mcp_host_conformance_self_check_missing_evidence_schema");
+    }
+    if (!mcpHostConformanceSelfCheckGate.default_report_path) errors.push("mcp_host_conformance_self_check_missing_report_path");
+    if (!mcpHostConformanceSelfCheckGate.default_evidence_path) errors.push("mcp_host_conformance_self_check_missing_evidence_path");
+    for (const [requirement, errorCode] of [
+      ["require_loopback_rejection", "mcp_host_conformance_self_check_missing_loopback_rejection"],
+      ["require_private_network_rejection", "mcp_host_conformance_self_check_missing_private_network_rejection"],
+      ["require_link_local_rejection", "mcp_host_conformance_self_check_missing_link_local_rejection"],
+      ["require_unique_local_ipv6_rejection", "mcp_host_conformance_self_check_missing_unique_local_ipv6_rejection"],
+      ["require_report_redaction", "mcp_host_conformance_self_check_missing_report_redaction"],
+    ]) {
+      if (!mcpHostConformanceSelfCheckGate.artifact_requirements?.[requirement]) {
+        errors.push(errorCode);
+      }
+    }
+  }
   if (mcpHostConformanceGate) {
     if (mcpHostConformanceGate.report_schema_version !== "synthi.dojo.mcpHostConformance.v1") {
       errors.push("mcp_host_conformance_missing_release_report_schema");
@@ -1967,6 +2001,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       errors.push("mcp_host_conformance_missing_non_loopback_requirement");
     }
     for (const [requirement, errorCode] of [
+      ["require_public_non_local_mcp_host", "mcp_host_conformance_missing_public_non_local_requirement"],
       ["require_raw_backing_tool_block", "mcp_host_conformance_missing_raw_backing_tool_requirement"],
       ["require_revocation_propagation", "mcp_host_conformance_missing_revocation_requirement"],
       ["require_external_control_plane_store", "mcp_host_conformance_missing_external_store_requirement"],
