@@ -1616,6 +1616,10 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         artifact_id: "control_plane_audit",
         status: "available",
       }),
+      expect.objectContaining({
+        artifact_id: "executable_entrustment_provenance",
+        status: "available",
+      }),
     ]));
     expect(complianceContent.pack.audit_exports).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -1636,6 +1640,18 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(publicVerificationArtifact).toEqual(expect.objectContaining({
       sensitive: false,
     }));
+    const complianceSkillArtifact = complianceContent.artifacts.find((artifact) => artifact.path.endsWith("/skill.json"));
+    expect(complianceSkillArtifact).toEqual(expect.objectContaining({
+      sensitive: false,
+    }));
+    const complianceSkill = JSON.parse(complianceSkillArtifact?.content ?? "null") as {
+      executable_entrustment?: { schema_version: string; evidence_refs: string[] };
+    };
+    expect(complianceSkill.executable_entrustment).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1",
+      evidence_refs: expect.any(Array),
+    }));
+    expect(complianceSkill.executable_entrustment?.evidence_refs.length).toBeGreaterThan(0);
     const publicVerificationBundle = JSON.parse(publicVerificationArtifact?.content ?? "null") as {
       schema_version: string;
       key_count: number;

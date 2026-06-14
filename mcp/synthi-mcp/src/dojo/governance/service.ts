@@ -869,6 +869,9 @@ export function buildDojoComplianceEvidencePack(input: {
   const skillCaseLaw = input.skills.flatMap((skill) => skill.case_law);
   const controlPlaneAuditExport = input.audit_exports.find((item) => item.export_id === "control_plane_audit");
   const proofKeyRecords = input.proof_key_records;
+  const executableEntrustmentSnapshots = input.skills
+    .map((skill) => skill.executable_entrustment)
+    .filter((snapshot): snapshot is NonNullable<DojoSkill["executable_entrustment"]> => Boolean(snapshot));
   const caseLawEvidenceRefs = [
     ...skillCaseLaw.flatMap((item) => item.evidence_refs),
     ...input.case_law_review_queue.flatMap((item) => item.evidence_refs),
@@ -890,6 +893,33 @@ export function buildDojoComplianceEvidencePack(input: {
       digest: digestFor(["compliance", "license_and_proof_audit", ...input.skills.map((skill) => skill.permission_license.license_id)]),
       evidence_refs: [],
     },
+    ...(executableEntrustmentSnapshots.length > 0 ? [{
+      artifact_id: "executable_entrustment_provenance",
+      title: "Executable Entrustment Provenance",
+      status: "available" as const,
+      digest: digestFor([
+        "compliance",
+        "executable_entrustment_provenance",
+        ...executableEntrustmentSnapshots.map((snapshot) => [
+          snapshot.checkride_id,
+          snapshot.source,
+          snapshot.generated_at,
+          snapshot.scenario_count,
+          snapshot.passed_scenarios,
+          snapshot.failed_scenarios,
+          snapshot.blocked_scenarios,
+          snapshot.critical_failures,
+          snapshot.coverage_score,
+          snapshot.entrustment_decision.level,
+          snapshot.readiness_decision.level,
+        ].join(":")),
+      ]),
+      evidence_refs: uniqueStrings(executableEntrustmentSnapshots.flatMap((snapshot) => [
+        `checkride:${snapshot.checkride_id}`,
+        ...snapshot.evidence_refs,
+        ...snapshot.ledger_checkpoint_hashes.map((hash) => `ledger_checkpoint:${hash}`),
+      ])),
+    }] : []),
     ...(controlPlaneAuditExport ? [{
       artifact_id: "control_plane_audit",
       title: "Control Plane Audit Trail",

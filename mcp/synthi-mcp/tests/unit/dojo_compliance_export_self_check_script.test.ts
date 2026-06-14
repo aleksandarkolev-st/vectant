@@ -80,11 +80,12 @@ describe("Dojo compliance export self-check script", () => {
     expect(evidence.missing_capabilities).toEqual(expect.arrayContaining([
       "compliance_pack_view_model",
       "control_plane_audit_export",
+      "executable_entrustment_compliance_artifact",
       "redacted_evidence_export",
-        "redaction_fail_closed",
-        "source_ref_redaction",
-        "proof_public_verification_export",
-      ]));
+      "redaction_fail_closed",
+      "source_ref_redaction",
+      "proof_public_verification_export",
+    ]));
     expect(evidence.budget_evaluation.failed_checks).toEqual(["capability_coverage_complete"]);
   });
 
@@ -120,6 +121,7 @@ function complianceVitestReportFixture({
     "Agent Dojo MCP tools requires tenant authorization for production skill operations and exports",
     "Dojo governance service includes stored control-plane audit events in audit exports and compliance pack",
     "Dojo governance service builds recertification, audit export, and compliance pack views",
+    "Dojo governance service adds executable entrustment provenance to compliance packs when runtime checkride snapshots exist",
     "Dojo redacted evidence export exports redacted evidence metadata without raw artifact content",
     "Dojo redacted evidence export fails closed when a bound evidence record lacks redaction metadata",
     "Dojo redacted evidence export allows local generated artifacts while redacting source refs",

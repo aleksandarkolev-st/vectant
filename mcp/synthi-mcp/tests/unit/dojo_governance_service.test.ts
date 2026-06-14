@@ -735,6 +735,37 @@ describe("Dojo governance service", () => {
     ]));
   });
 
+  it("adds executable entrustment provenance to compliance packs when runtime checkride snapshots exist", () => {
+    const skill = skillFixture({
+      skillId: "skill-executable-entrustment",
+      executableEntrustment: executableEntrustmentFixture("checkride-executable-001"),
+    });
+    const auditExports = queryDojoAuditExports({
+      skills: [skill],
+      case_law_review_queue: [],
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+    const pack = buildDojoComplianceEvidencePack({
+      skills: [skill],
+      case_law_review_queue: [],
+      audit_exports: auditExports,
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(pack.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        artifact_id: "executable_entrustment_provenance",
+        status: "available",
+        evidence_refs: expect.arrayContaining([
+          "checkride:checkride-executable-001",
+          "evidence:scenario-001",
+          "ledger_checkpoint:ledger-head-001",
+        ]),
+      }),
+    ]));
+    expect(pack.missing_artifacts).not.toContain("executable_entrustment_provenance");
+  });
+
   it("adds proof public verification custody to the compliance pack when proof keys are supplied", () => {
     const skill = skillFixture({ skillId: "skill-proof-key-export" });
     const keyPair = generateEd25519DojoProofKeyPair("ed25519-governance-compliance");
@@ -784,6 +815,7 @@ function skillFixture(input: {
   caseLaw?: DojoSkill["case_law"];
   ownerId?: string;
   publishedToolName?: string;
+  executableEntrustment?: DojoSkill["executable_entrustment"];
 }): DojoSkill {
   const expiresAt = input.expiresAt ?? "2026-07-11T00:00:00.000Z";
   return {
@@ -818,6 +850,7 @@ function skillFixture(input: {
       issued_at: "2026-06-11T00:00:00.000Z",
       evidence_refs: ["evidence-passport"],
     },
+    executable_entrustment: input.executableEntrustment,
     permission_license: {
       license_id: `license-${input.skillId}`,
       license_version: "1.0.0",
@@ -843,6 +876,44 @@ function skillFixture(input: {
     },
     last_trained_at: "2026-06-11T00:00:00.000Z",
   } as unknown as DojoSkill;
+}
+
+function executableEntrustmentFixture(checkrideId: string): NonNullable<DojoSkill["executable_entrustment"]> {
+  return {
+    schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1",
+    source: "publish",
+    checkride_id: checkrideId,
+    generated_at: "2026-06-11T00:00:30.000Z",
+    started_at: "2026-06-11T00:00:00.000Z",
+    finished_at: "2026-06-11T00:00:30.000Z",
+    scenario_count: 3,
+    passed_scenarios: 2,
+    failed_scenarios: 0,
+    blocked_scenarios: 1,
+    critical_failures: 0,
+    coverage_score: 0.92,
+    production_recommendation: "constrained",
+    license_constraints: [{
+      scenario_id: "scenario-duplicate-entity",
+      mutation_kind: "duplicate_entity",
+      constraint_kind: "requires_guardrail",
+      reason: "Require stable entity identity before mutation.",
+    }],
+    entrustment_decision: {
+      level: "E3",
+      production_recommendation: "constrained",
+      blocked_by: [],
+      limitations: ["duplicate_entity_requires_guardrail"],
+      evidence_refs: ["evidence:scenario-001"],
+    },
+    readiness_decision: {
+      level: 7,
+      blocked_by: [],
+      next_required: ["shadow_run_before_E4"],
+    },
+    evidence_refs: ["evidence:scenario-001"],
+    ledger_checkpoint_hashes: ["ledger-head-001"],
+  };
 }
 
 function permissionUpgradeRequestFixture(skill: DojoSkill): DojoPermissionUpgradeRequestRecord {

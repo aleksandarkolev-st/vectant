@@ -2637,6 +2637,7 @@ describe("Agent Dojo MCP tools", () => {
           artifacts: expect.arrayContaining([
             expect.objectContaining({ artifact_id: "skill_assurance_case", status: "available" }),
             expect.objectContaining({ artifact_id: "license_and_proof_audit", status: "available" }),
+            expect.objectContaining({ artifact_id: "executable_entrustment_provenance", status: "available" }),
             expect.objectContaining({ artifact_id: "case_law_registry", status: "available" }),
           ]),
         }),
@@ -2645,10 +2646,19 @@ describe("Agent Dojo MCP tools", () => {
     expect(complianceContent.artifact_count).toBe(complianceContent.artifacts.length);
     expect(complianceContent.artifacts.every((artifact) => artifact.sensitive === false)).toBe(true);
     expect(complianceContent.artifacts.map((artifact) => artifact.path)).toEqual(expect.arrayContaining([
+      expect.stringContaining("skill.json"),
       expect.stringContaining("assurance.case.md"),
       expect.stringContaining("license.json"),
       expect.stringContaining("case-law.md"),
     ]));
+    const complianceSkillArtifact = JSON.parse(
+      complianceContent.artifacts.find((artifact) => artifact.path.endsWith("/skill.json"))?.content ?? "null"
+    ) as { executable_entrustment?: { schema_version: string; evidence_refs: string[] } };
+    expect(complianceSkillArtifact.executable_entrustment).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1",
+      evidence_refs: expect.any(Array),
+    }));
+    expect(complianceSkillArtifact.executable_entrustment?.evidence_refs.length).toBeGreaterThan(0);
     const complianceManifest = JSON.parse(
       complianceContent.artifacts.find((artifact) => artifact.path.endsWith(".manifest.json"))?.content ?? "null"
     ) as { artifact_count: number; artifacts: Array<{ path: string }> };

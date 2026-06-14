@@ -5326,6 +5326,12 @@ function complianceArtifactCoversPath(artifactId: string, path: string): boolean
         || normalized.includes("lifecycle.report.json")
         || normalized.includes("governance.report.json")
         || normalized.includes("mcp.manifest.json");
+    case "executable_entrustment_provenance":
+      return normalized.includes("skill.json")
+        || normalized.includes("checkride.report.md")
+        || normalized.includes("evidence-manifest.json")
+        || normalized.includes("evidence-ledger.json")
+        || normalized.includes(".ledger.json");
     case "case_law_registry":
       return normalized.includes("case-law.md")
         || normalized.includes("/cases/")
