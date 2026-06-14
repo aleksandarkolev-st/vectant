@@ -43,6 +43,7 @@ export const DOJO_GRAPH_RUNTIME_CAPABILITIES = [
   "graph_compiler_preserves_source_api_bindings",
   "graph_compiler_adapts_repo_artifacts",
   "graph_runtime_executes_production_with_valid_proof",
+  "graph_runtime_preflights_without_action_execution",
   "graph_runtime_executes_edge_order",
   "graph_runtime_emits_evidence_events",
   "graph_runtime_blocks_evidence_write_failure",
@@ -202,6 +203,7 @@ export function buildDojoGraphRuntimeEvidenceManifest({
       workflow_step_nodes_required: true,
       source_api_binding_required: true,
       production_execution_required: true,
+      preflight_only_required: true,
       edge_order_required: true,
       evidence_events_required: true,
       ledger_backed_evidence_required: true,
@@ -304,6 +306,8 @@ function capabilityMatchers(capability) {
       return ["adapts existing repo graph artifacts"];
     case "graph_runtime_executes_production_with_valid_proof":
       return ["executes a valid production graph", "proof and preconditions"];
+    case "graph_runtime_preflights_without_action_execution":
+      return ["preflights production graph proof and guardrails", "without action execution"];
     case "graph_runtime_executes_edge_order":
       return ["executes nodes in graph edge order"];
     case "graph_runtime_emits_evidence_events":

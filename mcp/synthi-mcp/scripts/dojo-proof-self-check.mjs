@@ -483,6 +483,26 @@ function textIncludesRequired(text, value) {
   return typeof value === "string" && value.trim().length > 0 && text.includes(value);
 }
 
+function runtimeClaimsForSkillGuardrails(
+  skill,
+  normalizeDojoGuardrailPredicate,
+  contextKeyForDojoGuardrailPredicate
+) {
+  const claims = {};
+  for (const guardrail of skill.guardrails || []) {
+    const normalized = normalizeDojoGuardrailPredicate({
+      rule: String(guardrail.rule || ""),
+      title: guardrail.title,
+      guardrail_id: guardrail.guardrail_id,
+    });
+    const contextKey = normalized.generated_context_key || contextKeyForDojoGuardrailPredicate(normalized.predicate);
+    if (contextKey) {
+      claims[contextKey] = true;
+    }
+  }
+  return claims;
+}
+
 async function main() {
   if (!existsSync(DIST_INDEX)) {
     throw new Error("dist/index.js is missing; run `npm run build` in mcp/synthi-mcp before this proof self-check");
@@ -495,6 +515,7 @@ async function main() {
     { dojoSkillRegistry, validateDojoProofCapsule },
     { InMemoryDojoSkillStore },
     { buildDojoEvidenceLedgerRecord },
+    { contextKeyForDojoGuardrailPredicate, normalizeDojoGuardrailPredicate },
     { dispatchBrowserTool },
     { dispatchDojoTool },
   ] = await Promise.all([
@@ -504,6 +525,7 @@ async function main() {
     import("../dist/browser/dojo.js"),
     import("../dist/browser/dojo_store.js"),
     import("../dist/dojo/evidence/ledger_record.js"),
+    import("../dist/dojo/graph/guardrail_predicates.js"),
     import("../dist/tools/browser.js"),
     import("../dist/tools/dojo.js"),
   ]);
@@ -571,6 +593,11 @@ async function main() {
 
   const skill = dojoSkillRegistry.get(publish.skill.skill_id);
   assert(skill, "published skill should be registered");
+  const graphRuntimeClaims = runtimeClaimsForSkillGuardrails(
+    skill,
+    normalizeDojoGuardrailPredicate,
+    contextKeyForDojoGuardrailPredicate
+  );
   const proofEvidenceCreatedAt = new Date().toISOString();
   const proofEvidenceClaimIds = [...new Set([
     ...skill.permission_license.proof_requirements.required_evidence_claims,
@@ -599,7 +626,7 @@ async function main() {
   const capsuleResponse = structured(await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
     skill_id: publish.skill.skill_id,
     requested_action: "run_workflow",
-    context_claims: { workspace_verified: true },
+    context_claims: { workspace_verified: true, ...graphRuntimeClaims },
     evidence_ledger_records: [proofEvidenceRecord],
     require_verified_evidence: true,
   }));
@@ -639,7 +666,7 @@ async function main() {
     const productionProof = structured(await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: publish.skill.skill_id,
       requested_action: "run_prefix_validation",
-      context_claims: { workspace_verified: true },
+      context_claims: { workspace_verified: true, ...graphRuntimeClaims },
       evidence_ledger_records: [proofEvidenceRecord],
       require_verified_evidence: true,
       ...productionTenant,

@@ -34,6 +34,60 @@ describe("Dojo graph runtime", () => {
     }));
   });
 
+  it("preflights production graph proof and guardrails without action execution", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const events: DojoGraphEvidenceEvent[] = [];
+    let substrateExecutions = 0;
+
+    const result = await runtime.execute({
+      graph: graphFixture(),
+      run_id: "graph-run-preflight",
+      preflight_only: true,
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: async () => {
+        substrateExecutions += 1;
+        return { ok: true, status: "executed", substrate: "dom", evidence_refs: ["substrate:should-not-run"] };
+      },
+      evidence_writer: (event) => {
+        events.push(event);
+        return `ledger://${event.run_id}/${event.node_id}`;
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      run_id: "graph-run-preflight",
+      blocked_by: [],
+      evidence_refs: [
+        "ledger://graph-run-preflight/trigger",
+        "ledger://graph-run-preflight/action_submit",
+      ],
+    }));
+    expect(substrateExecutions).toBe(0);
+    expect(result.node_results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        node_id: "action_submit",
+        status: "skipped",
+        control_flow: { skipped_by: ["graph_preflight_only"] },
+      }),
+    ]));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        run_id: "graph-run-preflight",
+        node_id: "action_submit",
+        status: "skipped",
+        guardrail_ids: ["guard_client_stable_id"],
+      }),
+    ]));
+  });
+
   it("executes nodes in graph edge order rather than node array order", async () => {
     const runtime = new DojoSkillGraphRuntime();
     const graph = graphFixture();

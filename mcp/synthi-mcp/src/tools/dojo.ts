@@ -51,6 +51,7 @@ import {
   contextKeyForDojoGuardrailPredicate,
   normalizeDojoGuardrailPredicate,
 } from "../dojo/graph/guardrail_predicates.js";
+import { DojoSkillGraphRuntime, type DojoGraphRunResult } from "../dojo/graph/runtime.js";
 import {
   DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
   resolveDojoControlPlaneStoreConfig,
@@ -3874,6 +3875,18 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       });
     }
     if (dryRun) {
+      const dryRunGraphRuntimePreflight = await runDojoGraphRuntimePreflightForProofRun({
+        skill: skill.skill,
+        tenant,
+        requested_action: requestedAction,
+        run_id: runId,
+        proof_capsule: capsule,
+        license_decision: licenseDecision,
+        tool_args: toolArgs,
+        license_tool_args: licenseToolArgs,
+        now,
+      });
+      if (!dryRunGraphRuntimePreflight.ok) return dryRunGraphRuntimePreflight.error;
       return jsonResponse({
         ok: true,
         dry_run: true,
@@ -3884,6 +3897,8 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
         validation: licenseDecision.validation,
         license_kernel: licenseDecision,
         skill_bus: skillBusPreflight,
+        graph_validation: dryRunGraphRuntimePreflight.graph_validation,
+        graph_runtime_preflight: dryRunGraphRuntimePreflight.graph_runtime_preflight,
       });
     }
 
@@ -3907,6 +3922,19 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       runtime_authorization_evidence_record_ids: runtimeAuthorization.decision?.evidence_record_ids ?? [],
       now,
     };
+    const graphRuntimePreflight = await runDojoGraphRuntimePreflightForProofRun({
+      skill: skill.skill,
+      tenant,
+      requested_action: requestedAction,
+      run_id: runId,
+      proof_capsule: capsule,
+      license_decision: licenseDecision,
+      tool_args: toolArgs,
+      license_tool_args: licenseToolArgs,
+      runtime_authorization: runtimeAuthorization.decision,
+      now,
+    });
+    if (!graphRuntimePreflight.ok) return graphRuntimePreflight.error;
 
     const skillBusExecution = await skillBus.dispatch({
       tenant,
@@ -3944,6 +3972,8 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
         proof_consume: proofConsume ?? null,
         skill_bus: skillBusExecution,
         runtime_authorization: runtimeAuthorization.decision ?? null,
+        graph_validation: graphRuntimePreflight.graph_validation,
+        graph_runtime_preflight: graphRuntimePreflight.graph_runtime_preflight,
         refusal: refusalFor(skill.skill, blockedBy),
       });
     }
@@ -3974,6 +4004,8 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       license_kernel: executionLicenseDecision,
       skill_bus: skillBusExecution,
       runtime_authorization: runtimeAuthorization.decision ?? null,
+      graph_validation: graphRuntimePreflight.graph_validation,
+      graph_runtime_preflight: graphRuntimePreflight.graph_runtime_preflight,
       proof_capsule_id: capsule.capsule_id,
       proof_consume: proofConsume,
       proof_record: proofConsume?.record,
@@ -3985,6 +4017,207 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       await durableProofRegistry.context.close?.();
     }
   }
+}
+
+async function runDojoGraphRuntimePreflightForProofRun(input: {
+  skill: DojoSkill;
+  tenant: DojoTenantContext;
+  requested_action: string;
+  run_id: string;
+  proof_capsule: DojoProofCarryingSkillCapsule;
+  license_decision: ReturnType<typeof evaluateDojoLicenseKernel>;
+  tool_args: Record<string, unknown>;
+  license_tool_args: Record<string, unknown>;
+  runtime_authorization?: DojoHostedRuntimeActionDecision;
+  now?: string;
+}): Promise<{
+  ok: true;
+  graph: DojoSkillGraph;
+  graph_validation: ReturnType<typeof validateDojoSkillGraph>;
+  graph_runtime_preflight: DojoGraphRunResult;
+} | { ok: false; error: ToolResponse }> {
+  const compiled = compileDojoSkillGraphForSkill(input.skill, { mode: "production", created_at: input.now });
+  if (!compiled.validation.ok) {
+    const blockedBy = compiled.validation.issues
+      .filter((issue) => issue.severity === "error")
+      .map((issue) => `graph_validation:${issue.issue_id}`);
+    return {
+      ok: false,
+      error: errorResponse("dojo_graph_runtime_validation_failed", {
+        ok: false,
+        skill_id: input.skill.skill_id,
+        requested_action: input.requested_action,
+        run_id: input.run_id,
+        graph_validation: compiled.validation,
+        validation: {
+          ...input.license_decision.validation,
+          ok: false,
+          status: "blocked",
+          error: "dojo_graph_runtime_validation_failed",
+          blocked_by: blockedBy,
+          error_codes: normalizeDojoProofErrorCodes(blockedBy),
+        },
+        license_kernel: {
+          ...input.license_decision,
+          ok: false,
+          status: "blocked",
+          blocked_by: blockedBy,
+          error_codes: normalizeDojoProofErrorCodes(blockedBy),
+        },
+        proof_not_consumed: true,
+        refusal: refusalFor(input.skill, blockedBy),
+      }),
+    };
+  }
+
+  const runtime = new DojoSkillGraphRuntime();
+  const graphRuntimePreflight = await runtime.execute({
+    graph: compiled.graph,
+    run_id: `${input.run_id}_graph_preflight`,
+    mode: "production",
+    preflight_only: true,
+    inputs: dojoGraphRuntimeInputsForProofRun(input),
+    proof_capsule: input.proof_capsule,
+    proof_validator: ({ proof_capsule }) => {
+      const proof = objectOpt(proof_capsule);
+      const capsuleId = stringOpt(proof?.["capsule_id"]);
+      if (capsuleId !== input.proof_capsule.capsule_id) {
+        return { ok: false, blocked_by: ["proof_capsule_mismatch"] };
+      }
+      if (!input.license_decision.ok) {
+        return {
+          ok: false,
+          blocked_by: input.license_decision.blocked_by.length > 0
+            ? input.license_decision.blocked_by
+            : ["dojo_license_kernel_blocked"],
+        };
+      }
+      return { ok: true, blocked_by: [] };
+    },
+    evidence_writer: (event) => `evidence:dojo_graph_preflight_${hashId(JSON.stringify({
+      run_id: event.run_id,
+      graph_id: event.graph_id,
+      skill_id: event.skill_id,
+      graph_version: event.graph_version,
+      node_id: event.node_id,
+      node_kind: event.node_kind,
+      status: event.status,
+      blocked_by: event.blocked_by,
+      created_at: event.created_at,
+    }))}`,
+    now: input.now,
+  });
+  if (!graphRuntimePreflight.ok) {
+    const blockedBy = graphRuntimePreflight.blocked_by.length > 0
+      ? graphRuntimePreflight.blocked_by
+      : ["dojo_graph_runtime_preflight_blocked"];
+    const validation = {
+      ...input.license_decision.validation,
+      ok: false,
+      status: "blocked" as const,
+      error: blockedBy[0] ?? "dojo_graph_runtime_preflight_blocked",
+      blocked_by: blockedBy,
+      error_codes: normalizeDojoProofErrorCodes(blockedBy),
+    };
+    return {
+      ok: false,
+      error: errorResponse(validation.error, {
+        ok: false,
+        skill_id: input.skill.skill_id,
+        requested_action: input.requested_action,
+        run_id: input.run_id,
+        validation,
+        license_kernel: {
+          ...input.license_decision,
+          ok: false,
+          status: "blocked",
+          validation,
+          blocked_by: blockedBy,
+          error_codes: validation.error_codes,
+        },
+        graph_validation: compiled.validation,
+        graph_runtime_preflight: graphRuntimePreflight,
+        runtime_authorization: input.runtime_authorization ?? null,
+        proof_not_consumed: true,
+        refusal: refusalFor(input.skill, blockedBy),
+      }),
+    };
+  }
+
+  return {
+    ok: true,
+    graph: compiled.graph,
+    graph_validation: compiled.validation,
+    graph_runtime_preflight: graphRuntimePreflight,
+  };
+}
+
+function dojoGraphRuntimeInputsForProofRun(input: {
+  skill: DojoSkill;
+  tenant: DojoTenantContext;
+  requested_action: string;
+  proof_capsule: DojoProofCarryingSkillCapsule;
+  tool_args: Record<string, unknown>;
+  license_tool_args: Record<string, unknown>;
+  runtime_authorization?: DojoHostedRuntimeActionDecision;
+}): Record<string, unknown> {
+  const inputs: Record<string, unknown> = {
+    ...input.tool_args,
+    ...input.license_tool_args,
+    ...input.proof_capsule.context_claims,
+    proof_capsule_valid: true,
+    proof_capsule_id: input.proof_capsule.capsule_id,
+    proof_evidence_record_ids: [...input.proof_capsule.evidence_record_ids],
+    proof_guardrails_active: [...input.proof_capsule.guardrails_active],
+    entrustment_level: input.skill.permission_license.entrustment_level,
+    readiness_level: input.skill.skill_readiness_level,
+    license_id: input.skill.permission_license.license_id,
+    license_version: input.skill.permission_license.license_version,
+    requested_action: input.requested_action,
+    requested_substrate: input.proof_capsule.substrate_claim,
+    tenant_id: input.tenant.tenant_id,
+    organization_id: input.tenant.organization_id,
+    workspace_id: input.tenant.workspace_id,
+    actor_id: input.tenant.actor_id,
+    actor_type: input.tenant.actor_type,
+    request_id: input.tenant.request_id,
+    correlation_id: input.tenant.correlation_id,
+    roles: [...input.tenant.roles],
+    license_allowed_substrates: allowedSubstratesForProofRun(input.skill, input.requested_action),
+  };
+  for (const claim of input.proof_capsule.evidence_claims) {
+    inputs[claim.claim] = claim.satisfied;
+  }
+  for (const guardrailId of input.proof_capsule.guardrails_active) {
+    inputs[`guardrail:${guardrailId}`] = true;
+  }
+  for (const guardrail of input.skill.guardrails) {
+    if (!input.proof_capsule.guardrails_active.includes(guardrail.guardrail_id)) continue;
+    const normalized = normalizeDojoGuardrailPredicate({
+      rule: guardrail.rule,
+      title: guardrail.title,
+      guardrail_id: guardrail.guardrail_id,
+    });
+    if (normalized.source === "generated_key" && normalized.generated_context_key) {
+      inputs[normalized.generated_context_key] = true;
+    }
+  }
+  if (input.runtime_authorization) {
+    inputs["runtime_authorized"] = input.runtime_authorization.ok;
+    inputs["runtime_session_id"] = input.runtime_authorization.session_id;
+    inputs["runtime_authorization_status"] = input.runtime_authorization.status;
+    inputs["runtime_authorization_evidence_record_ids"] = [...input.runtime_authorization.evidence_record_ids];
+  }
+  return inputs;
+}
+
+function allowedSubstratesForProofRun(skill: DojoSkill, requestedAction: string): DojoExecutionSubstrate[] {
+  const actionRequirements = skill.permission_license.substrate_requirements
+    .find((requirement) => requirement.action === requestedAction);
+  const allowed = actionRequirements?.allowed_substrates.length
+    ? actionRequirements.allowed_substrates
+    : skill.execution_substrates;
+  return [...new Set(allowed)];
 }
 
 async function authorizeHostedRuntimeForProductionRun(input: {

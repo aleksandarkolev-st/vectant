@@ -119,6 +119,7 @@ export interface DojoSkillGraphRuntimeInput {
   proof_capsule?: unknown;
   proof_validator?: DojoGraphProofValidator;
   allow_self_attested_proof?: boolean;
+  preflight_only?: boolean;
   substrate_executor?: DojoSubstrateExecutor;
   evidence_writer?: DojoGraphEvidenceWriter;
   now?: string;
@@ -210,6 +211,17 @@ export class DojoSkillGraphRuntime {
           blocked_by: blockedBy,
           evidence_refs: evidenceRefs,
         };
+      }
+
+      if (input.preflight_only === true && (node.kind === "Action" || node.kind === "Assertion")) {
+        const preflightResult: DojoGraphNodeRunResult = {
+          ...result,
+          status: "skipped",
+          control_flow: { skipped_by: ["graph_preflight_only"] },
+        };
+        nodeResults[nodeResults.length - 1] = preflightResult;
+        evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, preflightResult));
+        continue;
       }
 
       if (node.kind === "Human") {

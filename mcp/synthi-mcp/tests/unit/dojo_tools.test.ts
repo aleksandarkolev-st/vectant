@@ -24,6 +24,10 @@ import { validateDojoMcpSkillManifest, type DojoMcpSkillManifestV1 } from "../..
 import { dispatchBrowserTool } from "../../src/tools/browser.js";
 import { dispatchDojoTool } from "../../src/tools/dojo.js";
 import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_record.js";
+import {
+  contextKeyForDojoGuardrailPredicate,
+  normalizeDojoGuardrailPredicate,
+} from "../../src/dojo/graph/guardrail_predicates.js";
 
 const originalEnv = { ...process.env };
 
@@ -1495,6 +1499,7 @@ describe("Agent Dojo MCP tools", () => {
     }));
     const publishedSkill = dojoSkillRegistry.get(published.skill.skill_id);
     expect(publishedSkill).toBeTruthy();
+    const graphRuntimeClaims = runtimeClaimsForSkillGuardrails(publishedSkill!);
     const publishedManifest = (publish?.structuredContent as {
       mcp_skill_manifest: DojoMcpSkillManifestV1;
     }).mcp_skill_manifest;
@@ -1540,7 +1545,7 @@ describe("Agent Dojo MCP tools", () => {
     const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: published.skill.skill_id,
       requested_action: "run_workflow",
-      context_claims: { workspace_verified: true },
+      context_claims: { workspace_verified: true, ...graphRuntimeClaims },
       evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!),
       require_verified_evidence: true,
     });
@@ -1596,7 +1601,7 @@ describe("Agent Dojo MCP tools", () => {
     const prefixCapsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: published.skill.skill_id,
       requested_action: "run_prefix_validation",
-      context_claims: { workspace_verified: true },
+      context_claims: { workspace_verified: true, ...graphRuntimeClaims },
       evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, { record_id: "evidence-prefix-proof" }),
       require_verified_evidence: true,
       now: "2026-06-11T00:00:00.000Z",
@@ -1689,7 +1694,7 @@ describe("Agent Dojo MCP tools", () => {
     const secondCapsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: published.skill.skill_id,
       requested_action: "run_workflow",
-      context_claims: { workspace_verified: true },
+      context_claims: { workspace_verified: true, ...graphRuntimeClaims },
       evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, { record_id: "evidence-second-proof" }),
       require_verified_evidence: true,
     });
@@ -2638,10 +2643,11 @@ describe("Agent Dojo MCP tools", () => {
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
     const publishedSkill = dojoSkillRegistry.get(skillId);
     expect(publishedSkill).toBeTruthy();
+    const graphRuntimeClaims = runtimeClaimsForSkillGuardrails(publishedSkill!);
     const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
       requested_action: "run_workflow",
-      context_claims: { workspace_verified: true },
+      context_claims: { workspace_verified: true, ...graphRuntimeClaims },
       evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, {
         record_id: "evidence-production-proof-context",
         tenant_id: "tenant-a",
@@ -2797,10 +2803,11 @@ describe("Agent Dojo MCP tools", () => {
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
     const publishedSkill = dojoSkillRegistry.get(skillId);
     expect(publishedSkill).toBeTruthy();
+    const graphRuntimeClaims = runtimeClaimsForSkillGuardrails(publishedSkill!);
     const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
       requested_action: "run_prefix_validation",
-      context_claims: { workspace_verified: true },
+      context_claims: { workspace_verified: true, ...graphRuntimeClaims },
       evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, {
         record_id: "evidence-hosted-runtime-proof",
         tenant_id: "tenant-a",
@@ -2892,7 +2899,7 @@ describe("Agent Dojo MCP tools", () => {
     const workflowCapsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
       requested_action: "run_workflow",
-      context_claims: { workspace_verified: true },
+      context_claims: { workspace_verified: true, ...graphRuntimeClaims },
       evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, {
         record_id: "evidence-hosted-runtime-workflow-proof",
         tenant_id: "tenant-a",
@@ -3149,6 +3156,7 @@ describe("Agent Dojo MCP tools", () => {
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
     const skill = dojoSkillRegistry.get(skillId);
     expect(skill).toBeTruthy();
+    const graphRuntimeClaims = runtimeClaimsForSkillGuardrails(skill!);
     const currentGatedRun = skill!.permission_license.gated_actions.find((action) => action.action === "run_workflow");
     dojoSkillRegistry.publish({
       ...skill!,
@@ -3168,7 +3176,7 @@ describe("Agent Dojo MCP tools", () => {
     const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
       requested_action: "run_workflow",
-      context_claims: { workspace_verified: true },
+      context_claims: { workspace_verified: true, ...graphRuntimeClaims },
       evidence_ledger_records: evidenceLedgerRecordsForProof(skill!, { record_id: "evidence-approval-proof" }),
       require_verified_evidence: true,
       now: "2026-06-11T00:00:00.000Z",
@@ -3230,6 +3238,24 @@ describe("Agent Dojo MCP tools", () => {
         ok: true,
         validation: expect.objectContaining({ ok: true, status: "allowed" }),
       }),
+      graph_validation: expect.objectContaining({
+        ok: true,
+      }),
+      graph_runtime_preflight: expect.objectContaining({
+        ok: true,
+        status: "completed",
+        mode: "production",
+        node_results: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "Action",
+            status: "skipped",
+            control_flow: { skipped_by: ["graph_preflight_only"] },
+          }),
+        ]),
+        evidence_refs: expect.arrayContaining([
+          expect.stringMatching(/^evidence:dojo_graph_preflight_/),
+        ]),
+      }),
     }));
     expect(workflowArgs).toEqual({ client_id: "client-a" });
 
@@ -3262,6 +3288,89 @@ describe("Agent Dojo MCP tools", () => {
         last_validated_at: "2026-06-11T00:03:00.000Z",
       }),
     }));
+  });
+
+  it("blocks proof-gated runs at graph preflight before consuming proof", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const skill = dojoSkillRegistry.get(skillId);
+    expect(skill).toBeTruthy();
+    const guardrailId = "guard_client_id_verified";
+    dojoSkillRegistry.publish({
+      ...skill!,
+      guardrails: [
+        {
+          guardrail_id: guardrailId,
+          title: "Client identity is verified",
+          rule: "client_id_verified == true",
+          source_case_id: "case_client_id_verified",
+          blocks_actions: ["run_workflow"],
+        },
+      ],
+      permission_license: {
+        ...skill!.permission_license,
+        proof_requirements: {
+          ...skill!.permission_license.proof_requirements,
+          required_guardrails: [guardrailId],
+        },
+      },
+    });
+    const updatedSkill = dojoSkillRegistry.get(skillId);
+    expect(updatedSkill).toBeTruthy();
+    const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_prefix_validation",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(updatedSkill!, { record_id: "evidence-graph-preflight-proof" }),
+      require_verified_evidence: true,
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(capsuleResponse?.isError).toBeUndefined();
+    const capsule = (capsuleResponse?.structuredContent as { proof_capsule: unknown }).proof_capsule;
+    const capsuleId = (capsule as { capsule_id: string }).capsule_id;
+
+    const blocked = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_prefix_validation",
+      proof_capsule: capsule,
+      tool_args: {
+        prefix: "preview",
+        text: "preview draft",
+      },
+      run_id: "run-graph-preflight-blocked",
+      now: "2026-06-11T00:01:00.000Z",
+    });
+
+    expect(blocked?.isError).toBe(true);
+    expect(blocked?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      skill_id: skillId,
+      requested_action: "run_prefix_validation",
+      proof_not_consumed: true,
+      validation: expect.objectContaining({
+        ok: false,
+        status: "blocked",
+        blocked_by: expect.arrayContaining(["guardrail_failed:guard_client_id_verified"]),
+      }),
+      graph_validation: expect.objectContaining({ ok: true }),
+      graph_runtime_preflight: expect.objectContaining({
+        ok: false,
+        status: "blocked",
+        run_id: "run-graph-preflight-blocked_graph_preflight",
+        blocked_by: expect.arrayContaining(["guardrail_failed:guard_client_id_verified"]),
+        node_results: expect.arrayContaining([
+          expect.objectContaining({
+            status: "blocked",
+            blocked_by: expect.arrayContaining(["guardrail_failed:guard_client_id_verified"]),
+          }),
+        ]),
+      }),
+    }));
+    expect(dojoSkillRegistry.getProofRecord(capsuleId)?.status).toBe("issued");
+    expect(dojoSkillRegistry.getProofRecord(capsuleId)?.used_at).toBeUndefined();
   });
 });
 
@@ -3334,6 +3443,22 @@ function productionTenantContextArgs(overrides: Record<string, unknown> = {}): R
     correlation_id: "corr-production-a",
     ...overrides,
   };
+}
+
+function runtimeClaimsForSkillGuardrails(skill: DojoSkill): Record<string, unknown> {
+  const claims: Record<string, unknown> = {};
+  for (const guardrail of skill.guardrails) {
+    const normalized = normalizeDojoGuardrailPredicate({
+      rule: guardrail.rule,
+      title: guardrail.title,
+      guardrail_id: guardrail.guardrail_id,
+    });
+    const contextKey = normalized.generated_context_key ?? contextKeyForDojoGuardrailPredicate(normalized.predicate);
+    if (contextKey) {
+      claims[contextKey] = true;
+    }
+  }
+  return claims;
 }
 
 function evidenceLedgerRecordsForProof(

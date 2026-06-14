@@ -655,6 +655,7 @@ describe("Dojo release gate manifest", () => {
           require_workflow_step_nodes: true,
           require_source_api_binding: true,
           require_production_execution: true,
+          require_preflight_only: true,
           require_edge_order: true,
           require_evidence_events: true,
           require_ledger_backed_evidence: true,

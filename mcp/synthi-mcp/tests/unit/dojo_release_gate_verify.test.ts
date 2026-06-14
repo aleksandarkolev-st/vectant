@@ -4842,6 +4842,7 @@ function graphRuntimeEvidenceFixture(overrides = {}) {
       workflow_step_nodes_required: true,
       source_api_binding_required: true,
       production_execution_required: true,
+      preflight_only_required: true,
       edge_order_required: true,
       evidence_events_required: true,
       ledger_backed_evidence_required: true,
