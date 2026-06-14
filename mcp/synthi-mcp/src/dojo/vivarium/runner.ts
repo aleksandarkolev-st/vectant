@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { DojoSkillGraphRuntime, type DojoGraphEvidenceEvent, type DojoGraphRunResult } from "../graph/runtime.js";
 import type {
-  DojoExecutionSubstrate,
   DojoSubstrateExecutionResult,
   DojoSubstrateExecutor,
 } from "../graph/substrate_executor.js";
+import { selectDojoExecutionSubstrate } from "../graph/substrate_executor.js";
 import type { DojoSkillGraph } from "../graph/types.js";
 import type { DojoTenantContext } from "../mcp/execution_policy_gate.js";
 import { type DojoMaterializedFixture, materializeDojoSyntheticFixture } from "./fixture_materializer.js";
@@ -487,7 +487,11 @@ function createApiFaultScenarioSubstrateExecutor(input: {
   if (!apiFaultBehaviorForScenario(input.materialized)) return undefined;
   return {
     execute: async (request): Promise<DojoSubstrateExecutionResult> => {
-      const substrateSelection = selectScenarioSubstrate(request.node.substrate_options, request.inputs, request.mode ?? "checkride");
+      const substrateSelection = selectDojoExecutionSubstrate({
+        node_substrate_options: request.node.substrate_options,
+        inputs: request.inputs,
+        mode: request.mode ?? "checkride",
+      });
       if (!substrateSelection.ok) {
         return {
           ok: false,
@@ -525,49 +529,6 @@ function apiFaultSubstrateBlockedBy(execution: DojoApiFaultExecution): string[] 
   if (execution.behavior === "downstream_failure") return ["api_fault_downstream_failure"];
   if (execution.response_status >= 400) return [`api_fault_response_status:${execution.response_status}`];
   return [];
-}
-
-type ScenarioSubstrateSelection =
-  | { ok: true; substrate: DojoExecutionSubstrate }
-  | { ok: false; blocked_by: string[] };
-
-const SCENARIO_SUBSTRATE_PRIORITY: DojoExecutionSubstrate[] = ["api", "mcp", "source", "dom", "vision"];
-
-function selectScenarioSubstrate(
-  nodeSubstrateOptions: string[],
-  inputs: Record<string, unknown>,
-  mode: string
-): ScenarioSubstrateSelection {
-  const nodeSubstrates = nodeSubstrateOptions.filter(isExecutionSubstrate);
-  if (nodeSubstrates.length === 0) return { ok: false, blocked_by: ["substrate_not_allowed"] };
-
-  const allowed = scenarioAllowedSubstrates(inputs, mode);
-  if (!allowed) return { ok: false, blocked_by: ["license_substrate_policy_missing"] };
-
-  const requested = typeof inputs["requested_substrate"] === "string" && isExecutionSubstrate(inputs["requested_substrate"])
-    ? inputs["requested_substrate"]
-    : undefined;
-  if (requested) {
-    return nodeSubstrates.includes(requested) && allowed.includes(requested)
-      ? { ok: true, substrate: requested }
-      : { ok: false, blocked_by: ["substrate_not_allowed"] };
-  }
-
-  const selected = SCENARIO_SUBSTRATE_PRIORITY.find((substrate) =>
-    nodeSubstrates.includes(substrate) && allowed.includes(substrate)
-  );
-  return selected ? { ok: true, substrate: selected } : { ok: false, blocked_by: ["substrate_not_allowed"] };
-}
-
-function scenarioAllowedSubstrates(inputs: Record<string, unknown>, mode: string): DojoExecutionSubstrate[] | null {
-  const value = inputs["license_allowed_substrates"];
-  if (Array.isArray(value)) return value.filter(isExecutionSubstrate);
-  if (mode === "production") return null;
-  return ["vision", "dom", "source", "api", "mcp"];
-}
-
-function isExecutionSubstrate(value: unknown): value is DojoExecutionSubstrate {
-  return value === "vision" || value === "dom" || value === "source" || value === "api" || value === "mcp";
 }
 
 function budgetUsage(
