@@ -132,6 +132,32 @@ function sendExtensionMessage(type, payload = {}, timeoutMs = 900) {
   });
 }
 
+function notifyWorkspaceRelayComplete({ workspaceSlug, runtimeScope, terminalId, status }) {
+  if (typeof window === 'undefined') return;
+  const payload = {
+    type: 'synthi.oauthRelay.complete',
+    workspaceSlug,
+    runtimeScope,
+    terminalId,
+    status,
+    at: Date.now(),
+  };
+
+  try {
+    const channel = new BroadcastChannel('synthi-oauth-relay');
+    channel.postMessage(payload);
+    channel.close();
+  } catch {}
+
+  try {
+    window.localStorage.setItem('synthi.oauthRelay.lastComplete', JSON.stringify(payload));
+  } catch {}
+
+  try {
+    window.opener?.postMessage(payload, window.location.origin);
+  } catch {}
+}
+
 function LoopbackAuthPage() {
   const searchParams = useSearchParams();
   const runtimeScope = searchParams.get('runtimeScope') || '';
@@ -218,6 +244,7 @@ function LoopbackAuthPage() {
       if (last?.sessionId === relaySession.sessionId && last.ok) {
         setStatus('success');
         setMessageTone('success');
+        notifyWorkspaceRelayComplete({ workspaceSlug, runtimeScope, terminalId, status: 'success' });
         setMessage('The extension sent the callback to the workspace. Return to the terminal.');
       }
     }, 2000);
@@ -280,7 +307,8 @@ function LoopbackAuthPage() {
       });
       setStatus('success');
       setMessageTone('success');
-      setMessage('The callback was sent to the workspace. Return to the terminal.');
+      notifyWorkspaceRelayComplete({ workspaceSlug, runtimeScope, terminalId, status: 'success' });
+      setMessage('The callback was delivered to the workspace. Return to the terminal. If the CLI stays on the same screen, restart the command; many CLIs will now see the saved credentials.');
     } catch (err) {
       setStatus('error');
       setMessageTone('error');

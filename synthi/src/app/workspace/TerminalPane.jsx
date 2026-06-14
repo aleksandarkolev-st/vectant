@@ -186,6 +186,48 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     }
   }, [terminalTheme, colorOverrides]);
 
+  // OAuth relay helpers live in a separate tab. When a callback is delivered
+  // successfully, force a terminal repaint/focus so waiting TUIs are visibly
+  // refreshed for the user.
+  useEffect(() => {
+    const handleRelayComplete = (payload) => {
+      if (!payload || payload.type !== 'synthi.oauthRelay.complete') return;
+      if (payload.workspaceSlug && payload.workspaceSlug !== workspaceSlug) return;
+      if (payload.terminalId && payload.terminalId !== terminalId) return;
+
+      const instance = terminalRef.current;
+      try { instance?.fitAddon?.fit(); } catch (_) {}
+      try { instance?.term?.refresh(0, instance.term.rows - 1); } catch (_) {}
+      try { instance?.term?.focus(); } catch (_) {}
+      toast.success('Terminal OAuth callback delivered');
+    };
+
+    const onWindowMessage = (event) => {
+      if (event.origin !== window.location.origin) return;
+      handleRelayComplete(event.data);
+    };
+    const onStorage = (event) => {
+      if (event.key !== 'synthi.oauthRelay.lastComplete' || !event.newValue) return;
+      try {
+        handleRelayComplete(JSON.parse(event.newValue));
+      } catch (_) {}
+    };
+
+    let channel = null;
+    try {
+      channel = new BroadcastChannel('synthi-oauth-relay');
+      channel.onmessage = (event) => handleRelayComplete(event.data);
+    } catch (_) {}
+
+    window.addEventListener('message', onWindowMessage);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('message', onWindowMessage);
+      window.removeEventListener('storage', onStorage);
+      try { channel?.close(); } catch (_) {}
+    };
+  }, [terminalId, workspaceSlug]);
+
   // ─── Cleanup helper ───────────────────────────────────────────────────
   const disposeInputHandlers = useCallback(() => {
     if (inputDataDisposableRef.current) {
