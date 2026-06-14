@@ -493,6 +493,138 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
   });
 
+  it("requires ledger-backed license revocation evidence when production evidence ledger is enforced", async () => {
+    const tenantId = `tenant_revoke_ledger_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_revoke_ledger_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE = "postgres";
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-revoke-ledger-publish",
+      correlation_id: "corr-postgres-revoke-ledger-publish",
+      actor_id: "postgres-revoke-ledger-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_revoke_ledger_publish",
+      evidence_refs: ["evidence:integration-postgres-revoke-ledger-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+      license: { license_id: string; license_version: string };
+      publication: {
+        evidence_policy: {
+          require_evidence_ledger: boolean;
+          evidence_backed: boolean;
+          evidence_ledger_store_kind: string;
+        };
+      };
+    };
+    expect(published.publication.evidence_policy).toEqual(expect.objectContaining({
+      require_evidence_ledger: true,
+      evidence_backed: true,
+      evidence_ledger_store_kind: "postgres",
+    }));
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+
+    const unbackedRevoke = await dispatchDojoTool("synthi_dojo_revoke_license", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      reason: "unbacked_policy_change",
+      actor_id: "postgres-revoke-ledger-reviewer",
+      actor_type: "human",
+      evidence_refs: ["evidence:unbacked-license-revocation"],
+      request_id: "req-postgres-revoke-ledger-unbacked",
+      correlation_id: "corr-postgres-revoke-ledger-unbacked",
+      now: "2026-06-11T01:20:00.000Z",
+    });
+    expect(unbackedRevoke?.isError).toBe(true);
+    expect(unbackedRevoke?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_license_revocation_evidence_ledger_resolution_failed",
+      missing_evidence_record_ids: ["evidence:unbacked-license-revocation"],
+      blocked_by: ["evidence_record_missing:evidence:unbacked-license-revocation"],
+    }));
+
+    const licenseStore = new PostgresDojoLicenseStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(licenseStore.getLicense(published.license.license_id)).resolves.toEqual(expect.objectContaining({
+      status: "active",
+      license_version: published.license.license_version,
+    }));
+
+    const revocationEvidence = await appendGovernanceEvidenceRecordForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      skill_id: published.skill.skill_id,
+      record_id: `license_revocation_${createHash("sha256").update(`${tenantId}:${workspaceId}:${published.skill.skill_id}:revocation`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T01:21:00.000Z",
+      created_by: "postgres-revoke-ledger-reviewer",
+      source_ref: "license:revocation",
+      kind: "license",
+      run_id_prefix: "license_revocation",
+      claim_ids: ["license_revocation_reviewed"],
+    });
+
+    const revoke = await dispatchDojoTool("synthi_dojo_revoke_license", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      reason: "ledger_backed_policy_change",
+      actor_id: "postgres-revoke-ledger-reviewer",
+      actor_type: "human",
+      evidence_refs: [revocationEvidence.record_id],
+      request_id: "req-postgres-revoke-ledger",
+      correlation_id: "corr-postgres-revoke-ledger",
+      now: "2026-06-11T01:25:00.000Z",
+    });
+    expect(revoke?.isError).toBeUndefined();
+    expect(revoke?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      evidence_ledger_validation: expect.objectContaining({
+        store_kind: "postgres",
+        evidence_record_ids: [revocationEvidence.record_id],
+        record_count: 1,
+      }),
+      license: expect.objectContaining({
+        license_id: published.license.license_id,
+        entrustment_level: "EX",
+        autonomy_level: "blocked",
+      }),
+      revocation: expect.objectContaining({
+        audit_event: expect.objectContaining({
+          reason: "ledger_backed_policy_change",
+          evidence_refs: [revocationEvidence.record_id],
+        }),
+      }),
+    }));
+    await expect(licenseStore.getLicense(published.license.license_id)).resolves.toEqual(expect.objectContaining({
+      status: "revoked",
+      revoked_reason: "ledger_backed_policy_change",
+      license_json: expect.objectContaining({
+        autonomy_level: "blocked",
+        entrustment_level: "EX",
+      }),
+    }));
+  });
+
   it("recertifies a production skill through Postgres after local reset", async () => {
     const tenantId = `tenant_recert_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_recert_${Math.random().toString(16).slice(2)}`;

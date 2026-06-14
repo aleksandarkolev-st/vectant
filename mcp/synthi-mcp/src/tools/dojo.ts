@@ -3696,6 +3696,14 @@ async function dojoRevokeLicenseTool(args: unknown): Promise<ToolResponse> {
   };
   const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_revoke_license", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
+  const evidenceLedgerValidation = await validateLicenseRevocationEvidenceRefsAgainstLedgerIfRequired({
+    operation: "synthi_dojo_revoke_license",
+    tenant: skill.tenant,
+    skill: skill.skill,
+    evidence_refs: evidenceRefs,
+    checked_at: now,
+  });
+  if (!evidenceLedgerValidation.ok) return evidenceLedgerValidation.error;
   const revocation = revokeDojoSkillLicense({
     skill: skill.skill,
     reason,
@@ -3766,6 +3774,7 @@ async function dojoRevokeLicenseTool(args: unknown): Promise<ToolResponse> {
     skill_id: saved.skill_id,
     control_plane_source: controlPlanePersistence.store_kind,
     control_plane_persistence: controlPlanePersistence,
+    evidence_ledger_validation: evidenceLedgerValidation.evidence_ledger_resolution ?? null,
     reason,
     revocation,
     license: saved.permission_license,
@@ -5596,6 +5605,26 @@ async function validatePermissionUpgradeEvidenceRefsAgainstLedgerIfRequired(inpu
     scope_error: "dojo_permission_upgrade_evidence_ledger_scope_mismatch",
     missing_blocked_by: "permission_upgrade_evidence_refs_missing",
     scope_mismatch_block_prefix: "permission_upgrade_evidence_skill_mismatch",
+  });
+}
+
+async function validateLicenseRevocationEvidenceRefsAgainstLedgerIfRequired(input: {
+  operation: string;
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  evidence_refs: string[];
+  checked_at: string;
+}): Promise<
+  | { ok: true; evidence_ledger_resolution?: Record<string, unknown> }
+  | { ok: false; error: ToolResponse }
+> {
+  return validateGovernanceEvidenceRefsAgainstLedgerIfRequired({
+    ...input,
+    missing_error: "dojo_license_revocation_evidence_required",
+    resolution_error: "dojo_license_revocation_evidence_ledger_resolution_failed",
+    scope_error: "dojo_license_revocation_evidence_ledger_scope_mismatch",
+    missing_blocked_by: "license_revocation_evidence_refs_missing",
+    scope_mismatch_block_prefix: "license_revocation_evidence_skill_mismatch",
   });
 }
 
