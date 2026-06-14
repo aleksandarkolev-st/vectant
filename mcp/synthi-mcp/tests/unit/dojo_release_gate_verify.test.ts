@@ -2167,6 +2167,7 @@ describe("Dojo release gate artifact verifier", () => {
         ...ghostModeEvidenceFixture().ghost_mode_contract,
         non_mutating_shadow_run_required: false,
         tenant_boundary_required: false,
+        self_check_executes_tests_required: false,
       },
     });
     const incompletePath = await writeGhostModeEvidenceFixture({
@@ -2182,6 +2183,23 @@ describe("Dojo release gate artifact verifier", () => {
       "ghost_mode_missing_capabilities:ghost_mode_runs_without_production_mutation",
       "ghost_mode_non_mutating_requirement_missing",
       "ghost_mode_tenant_boundary_requirement_missing",
+      "ghost_mode_self_check_execution_requirement_missing",
+    ]));
+
+    const missingExecutionPath = await writeGhostModeEvidenceFixture({
+      dir,
+      basename: "ghost-mode-missing-execution",
+      evidence: ghostModeEvidenceFixture({
+        ghost_mode_contract: {
+          ...ghostModeEvidenceFixture().ghost_mode_contract,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    expect((await verifyDojoGhostModeEvidenceArtifact({ evidencePath: missingExecutionPath })).errors).toEqual(expect.arrayContaining([
+      "ghost_mode_self_check_execution_requirement_missing",
+      "ghost_mode_test_execution_missing",
     ]));
 
     const driftedPath = await writeGhostModeEvidenceFixture({
@@ -5319,6 +5337,7 @@ function ghostModeEvidenceFixture(overrides = {}) {
       tenant_boundary_required: true,
       production_mutation_rejection_required: true,
       operational_filtering_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_GHOST_MODE_EVIDENCE_TEST_FILES],
     test_file_count: DOJO_GHOST_MODE_EVIDENCE_TEST_FILES.length,
@@ -5339,6 +5358,18 @@ function ghostModeEvidenceFixture(overrides = {}) {
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
     json_report_bytes: Buffer.byteLength(jsonReport),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_GHOST_MODE_EVIDENCE_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 1000,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
 }

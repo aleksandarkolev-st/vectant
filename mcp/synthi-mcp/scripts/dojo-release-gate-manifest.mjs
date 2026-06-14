@@ -925,7 +925,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:ghost-mode-evidence:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_ghost_mode_tool.test.ts tests/integration/dojo_postgres_ghost_shadow_evidence_store.test.ts -- --reporter=json --outputFile ../../tmp/dojo-ghost-mode-evidence/dojo-ghost-mode-evidence.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:ghost-mode-evidence:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:ghost-mode-evidence:self-check",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.ghostModeEvidence.v1",
@@ -945,6 +945,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_operational_filtering: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
+      require_self_check_executes_tests: true,
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
     },
@@ -2263,6 +2264,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_tenant_boundary", "ghost_mode_missing_tenant_boundary_requirement"],
       ["require_production_mutation_rejection", "ghost_mode_missing_mutation_rejection_requirement"],
       ["require_operational_filtering", "ghost_mode_missing_filtering_requirement"],
+      ["require_self_check_executes_tests", "ghost_mode_missing_self_check_execution_requirement"],
     ]) {
       if (!ghostModeGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }

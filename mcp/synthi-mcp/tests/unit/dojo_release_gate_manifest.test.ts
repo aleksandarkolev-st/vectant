@@ -705,6 +705,7 @@ describe("Dojo release gate manifest", () => {
           require_operational_filtering: true,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
+          require_self_check_executes_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -1284,10 +1285,12 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingGhostModeTestFile);
     ghostModeGate.release_artifact_requirements.require_non_mutating_shadow_run = false;
     ghostModeGate.release_artifact_requirements.require_tenant_boundary = false;
+    ghostModeGate.release_artifact_requirements.require_self_check_executes_tests = false;
     ghostModeGate.requires_env = [];
     expect(validateDojoReleaseGateManifest(brokenGhostMode, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "ghost_mode_missing_non_mutating_requirement",
       "ghost_mode_missing_tenant_boundary_requirement",
+      "ghost_mode_missing_self_check_execution_requirement",
       "ghost_mode_missing_postgres_env",
       "ghost_mode_missing_required_capabilities:ghost_mode_runs_without_production_mutation",
       `ghost_mode_missing_required_test_files:${missingGhostModeTestFile}`,

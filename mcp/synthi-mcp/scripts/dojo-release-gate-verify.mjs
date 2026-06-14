@@ -2630,6 +2630,7 @@ export function validateDojoGhostModeEvidenceForRelease(evidence) {
     ["tenant_boundary_required", "ghost_mode_tenant_boundary_requirement_missing"],
     ["production_mutation_rejection_required", "ghost_mode_mutation_rejection_requirement_missing"],
     ["operational_filtering_required", "ghost_mode_filtering_requirement_missing"],
+    ["self_check_executes_tests_required", "ghost_mode_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
   }
@@ -2643,6 +2644,20 @@ export function validateDojoGhostModeEvidenceForRelease(evidence) {
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("ghost_mode_no_reported_tests");
   if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
     errors.push(`ghost_mode_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution) {
+    errors.push("ghost_mode_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`ghost_mode_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("ghost_mode_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("ghost_mode_test_execution_args_missing");
+    }
   }
   return {
     ok: errors.length === 0,
@@ -4539,6 +4554,7 @@ async function runSelfCheck({ outDir }) {
         ...ghostModeArtifacts.evidence.ghost_mode_contract,
         non_mutating_shadow_run_required: false,
         tenant_boundary_required: false,
+        self_check_executes_tests_required: false,
       },
     },
   });
@@ -4550,6 +4566,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedGhostMode.errors.includes("ghost_mode_missing_capabilities:ghost_mode_runs_without_production_mutation"));
   assert(rejectedGhostMode.errors.includes("ghost_mode_non_mutating_requirement_missing"));
   assert(rejectedGhostMode.errors.includes("ghost_mode_tenant_boundary_requirement_missing"));
+  assert(rejectedGhostMode.errors.includes("ghost_mode_self_check_execution_requirement_missing"));
 
   const skillPassportDir = path.join(outDir, "skill-passport");
   await mkdir(skillPassportDir, { recursive: true });
@@ -6913,6 +6930,7 @@ async function writeGhostModeEvidenceForSelfCheck({
       tenant_boundary_required: true,
       production_mutation_rejection_required: true,
       operational_filtering_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_GHOST_MODE_EVIDENCE_TEST_FILES],
     test_file_count: DOJO_GHOST_MODE_EVIDENCE_TEST_FILES.length,
@@ -6945,6 +6963,18 @@ async function writeGhostModeEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_GHOST_MODE_EVIDENCE_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 1000,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);
