@@ -846,6 +846,171 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).toEqual([]);
   });
 
+  it("requires ledger-backed permission upgrade review evidence when production evidence ledger is enforced", async () => {
+    const tenantId = `tenant_upgrade_ledger_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_upgrade_ledger_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE = "postgres";
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-upgrade-ledger-publish",
+      correlation_id: "corr-postgres-upgrade-ledger-publish",
+      actor_id: "postgres-upgrade-ledger-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_upgrade_ledger_publish",
+      evidence_refs: ["evidence:integration-postgres-upgrade-ledger-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+      publication: {
+        evidence_policy: {
+          require_evidence_ledger: boolean;
+          evidence_backed: boolean;
+          evidence_ledger_store_kind: string;
+        };
+      };
+    };
+    expect(published.publication.evidence_policy).toEqual(expect.objectContaining({
+      require_evidence_ledger: true,
+      evidence_backed: true,
+      evidence_ledger_store_kind: "postgres",
+    }));
+
+    const request = await dispatchDojoTool("synthi_dojo_request_permission_upgrade", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      requested_action: "delete_record",
+      actor_id: "postgres-upgrade-ledger-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-upgrade-ledger-request",
+      correlation_id: "corr-postgres-upgrade-ledger-request",
+      now: "2026-06-11T02:40:00.000Z",
+    });
+    expect(request?.isError).toBeUndefined();
+    const requestContent = request?.structuredContent as {
+      permission_upgrade_request: { request_id: string };
+    };
+
+    const governanceStore = new PostgresDojoGovernanceStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    const skillStore = new PostgresDojoSkillStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    const preUpgradeSkill = await skillStore.getSkill(published.skill.skill_id);
+    expect(preUpgradeSkill).toBeTruthy();
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+
+    const unbackedReview = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      ...tenant,
+      request_id: requestContent.permission_upgrade_request.request_id,
+      decision: "approved",
+      reviewer_actor_id: "postgres-upgrade-ledger-reviewer",
+      reviewer_actor_type: "human",
+      reason: "Reject review because evidence is not in the ledger.",
+      evidence_refs: ["evidence:unbacked-permission-upgrade-review"],
+      actor_id: "postgres-upgrade-ledger-reviewer",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      correlation_id: "corr-postgres-upgrade-ledger-review-unbacked",
+      decided_at: "2026-06-11T02:45:00.000Z",
+    });
+    expect(unbackedReview?.isError).toBe(true);
+    expect(unbackedReview?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_permission_upgrade_evidence_ledger_resolution_failed",
+      missing_evidence_record_ids: ["evidence:unbacked-permission-upgrade-review"],
+      blocked_by: ["evidence_record_missing:evidence:unbacked-permission-upgrade-review"],
+    }));
+    await expect(governanceStore.listPermissionUpgradeRequests({
+      request_id: requestContent.permission_upgrade_request.request_id,
+    })).resolves.toEqual([
+      expect.objectContaining({
+        request_id: requestContent.permission_upgrade_request.request_id,
+        status: "pending",
+      }),
+    ]);
+
+    const reviewEvidence = await appendGovernanceEvidenceRecordForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      skill_id: published.skill.skill_id,
+      record_id: `permission_upgrade_review_${createHash("sha256").update(`${tenantId}:${workspaceId}:${published.skill.skill_id}:review`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T02:44:00.000Z",
+      created_by: "postgres-upgrade-ledger-reviewer",
+      source_ref: "permission-upgrade:review",
+      kind: "license",
+      run_id_prefix: "permission_upgrade",
+      claim_ids: ["permission_upgrade_reviewed"],
+    });
+
+    const reviewed = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      ...tenant,
+      request_id: requestContent.permission_upgrade_request.request_id,
+      decision: "approved",
+      reviewer_actor_id: "postgres-upgrade-ledger-reviewer",
+      reviewer_actor_type: "human",
+      reason: "Ledger records prove the permission upgrade review evidence.",
+      evidence_refs: [reviewEvidence.record_id],
+      actor_id: "postgres-upgrade-ledger-reviewer",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      correlation_id: "corr-postgres-upgrade-ledger-review",
+      decided_at: "2026-06-11T02:50:00.000Z",
+    });
+    expect(reviewed?.isError).toBeUndefined();
+    expect(reviewed?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      evidence_ledger_validation: expect.objectContaining({
+        store_kind: "postgres",
+        evidence_record_ids: [reviewEvidence.record_id],
+        record_count: 1,
+      }),
+      permission_upgrade_request: expect.objectContaining({
+        status: "approved",
+        decision_evidence_refs: [reviewEvidence.record_id],
+      }),
+      permission_upgrade_license_promotion: expect.objectContaining({
+        applied: true,
+        license_action_status: "gated",
+        previous_license_version: preUpgradeSkill?.permission_license.license_version,
+      }),
+    }));
+    const upgradedSkill = await skillStore.getSkill(published.skill.skill_id);
+    expect(upgradedSkill?.permission_license.license_version).not.toBe(preUpgradeSkill?.permission_license.license_version);
+    expect(upgradedSkill?.permission_license.gated_actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "delete_record",
+        constraints: expect.arrayContaining([
+          `review_evidence:${reviewEvidence.record_id}`,
+          `permission_upgrade_request:${requestContent.permission_upgrade_request.request_id}`,
+        ]),
+      }),
+    ]));
+  });
+
   it("persists case law proposal and review through Postgres after local reset and rejects unauthorized reviewers", async () => {
     const tenantId = `tenant_case_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_case_${Math.random().toString(16).slice(2)}`;
@@ -2052,6 +2217,29 @@ async function appendCaseLawEvidenceRecordForToolTest(
     source_ref: string;
   }
 ) {
+  return appendGovernanceEvidenceRecordForToolTest(pool, {
+    ...input,
+    kind: "case_law",
+    run_id_prefix: "case_law",
+    claim_ids: ["case_law_reviewed"],
+  });
+}
+
+async function appendGovernanceEvidenceRecordForToolTest(
+  pool: Pool,
+  input: {
+    tenant_id: string;
+    workspace_id: string;
+    skill_id: string;
+    record_id: string;
+    created_at: string;
+    created_by: string;
+    source_ref: string;
+    kind: "case_law" | "license" | "proof" | "audit";
+    run_id_prefix: string;
+    claim_ids: string[];
+  }
+) {
   const payload = JSON.stringify({
     tenant_id: input.tenant_id,
     workspace_id: input.workspace_id,
@@ -2073,12 +2261,12 @@ async function appendCaseLawEvidenceRecordForToolTest(
   return ledgerStore.append({
     record_id: input.record_id,
     skill_id: input.skill_id,
-    run_id: `case_law_${input.record_id}`,
-    kind: "case_law",
+    run_id: `${input.run_id_prefix}_${input.record_id}`,
+    kind: input.kind,
     artifact_uri: `sha256://${artifactSha256}`,
     artifact_sha256: artifactSha256,
     redaction_manifest_sha256: redactionManifestSha256,
-    claim_ids: ["case_law_reviewed"],
+    claim_ids: input.claim_ids,
     created_at: input.created_at,
     created_by: input.created_by,
     retention_class: "standard",
