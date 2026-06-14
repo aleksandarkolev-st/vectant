@@ -595,3 +595,8 @@ Goal: get a non-privileged `runtimeClassName: sysbox-runc` pod to run `docker ru
 
 ## RESULT — #1006 DEFEATED (2026-06-14)
 Root cause of the 2-day park was a misdiagnosis: the Slice-0 smoke pod omitted `hostUsers: false`. The v0.7.0 release binary already carries sysbox-runc PR#106 (`features` cmd), and the GKE installer configures containerd 2.1.5 for sysbox correctly. One-line fix (`hostUsers: false`, already present in `runtimePodSpec.js`) → a non-privileged `sysbox-runc` pod runs docker on GKE. **The entire Phase-2 9-slice arc is unblocked.**
+
+## Post-spike — runtime image in AR + configmap wired (2026-06-14)
+- [x] Pushed `vectant-runtime:slice1` (the vuln-gate-validated kind-v0.32.0 image) → AR `europe-west10-docker.pkg.dev/vectant-proj/synthi/vectant-runtime`, digest `sha256:101bd456852a53efd52302a7fa1e2cd697279710f5d029db15872fe6d0d2018e` (verified via `gcloud artifacts ... describe`).
+- [x] Wired `RUNTIME_POD_IMAGE` (digest-pinned, passes reject-mutable-images) in `k8s/configmap.yaml` — inert in prod (flag off). TODO Slice-1 CI: cloudbuild Kaniko build + trivy CRITICAL gate → switch to `:build-tag-required` like WORKER_IMAGE.
+- [ ] NEXT (step #2, needs cluster re-spin → restarts billing): live-validate the real runtime Deployment (`buildRuntimeDeployment`) under sysbox on scratch — per-workspace runtime pod spawns, dockerd-ready, collab-data subPath mount, terminal exec, port preview.
