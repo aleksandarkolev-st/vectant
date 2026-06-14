@@ -163,9 +163,9 @@ function deterministic(summary: string): DojoImplementationMetadata {
     simulation_backing: "scenario_catalog",
     summary,
     maturity_blockers: [
-      "no_executable_graph_runtime",
-      "no_materialized_synthetic_fixture",
-      "no_authoritative_evidence_ledger",
+      "read_only_projection_surface",
+      "runtime_execution_available_through_specific_run_surfaces",
+      "deployed_release_evidence_required",
     ],
   };
 }
@@ -373,8 +373,9 @@ function report(summary: string): DojoImplementationMetadata {
     simulation_backing: "none",
     summary,
     maturity_blockers: [
-      "no_durable_control_plane",
-      "no_authoritative_evidence_ledger",
+      "read_only_report_surface",
+      "external_enterprise_control_plane_not_deployed",
+      "release_gate_visual_and_hosted_proof_required",
     ],
   };
 }

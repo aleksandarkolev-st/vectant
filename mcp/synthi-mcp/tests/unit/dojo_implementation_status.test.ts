@@ -184,6 +184,25 @@ describe("Dojo implementation status registry", () => {
     );
   });
 
+  it("does not use retired blockers for foundations that now have runtime modules", () => {
+    const retiredBlockers = [
+      "no_executable_graph_runtime",
+      "no_materialized_synthetic_fixture",
+      "no_durable_control_plane",
+      "no_authoritative_evidence_ledger",
+    ];
+    const allMetadata = [
+      ...Object.values(DOJO_TOOL_IMPLEMENTATION_STATUS),
+      ...Object.values(DOJO_REPORT_IMPLEMENTATION_STATUS),
+    ];
+    for (const blocker of retiredBlockers) {
+      expect(
+        allMetadata.filter((metadata) => metadata.maturity_blockers.includes(blocker)),
+        blocker
+      ).toEqual([]);
+    }
+  });
+
   it("describes proof issuing as evidence-aware and production signer configurable", () => {
     expect(getDojoToolImplementationMetadata("synthi_dojo_issue_proof_capsule")).toEqual(
       expect.objectContaining({
