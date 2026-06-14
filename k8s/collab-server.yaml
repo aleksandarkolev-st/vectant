@@ -70,6 +70,21 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_PREVIEW_TARGET_TEMPLATE
+            - name: SYNTHI_PREVIEW_PUBLIC_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_PUBLIC_PREFIX
+            - name: SYNTHI_PREVIEW_PUBLIC_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_PUBLIC_DOMAIN
+            - name: SYNTHI_PREVIEW_PUBLIC_PROTOCOL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_PUBLIC_PROTOCOL
             - name: SYNTHI_PREVIEW_SIDECAR_PORT
               valueFrom:
                 configMapKeyRef:
@@ -279,9 +294,9 @@ spec:
                   name: synthi-config
                   key: WORKSPACE_NODE_TAINT_EFFECT
             - name: IDLE_TIMEOUT_MS
-              value: "600000"   # 10 min
+              value: "300000"   # 5 min
             - name: MAX_WORKSPACE_PODS
-              value: "3"
+              value: "10"
             - name: POD_READY_TIMEOUT_MS
               value: "300000"   # 5 min
             - name: SPAWNER_CLEANUP_ON_SHUTDOWN

@@ -26,6 +26,7 @@ const http = require('http');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const { URL } = require('url');
 const { runtimeResourceId } = require('./runtimeIdentity');
 
@@ -41,6 +42,9 @@ const PROXY_HOST = process.env.PROXY_TARGET_HOST || '127.0.0.1';
 const PREVIEW_TARGET_TEMPLATE = process.env.SYNTHI_PREVIEW_TARGET_TEMPLATE || '';
 const PREVIEW_SIDECAR_PORT = String(process.env.SYNTHI_PREVIEW_SIDECAR_PORT || '18080');
 const PREVIEW_SIDECAR_PREFIX = normalizePathPrefix(process.env.SYNTHI_PREVIEW_SIDECAR_PREFIX || '/__synthi_preview') || '/__synthi_preview';
+const PREVIEW_PUBLIC_PREFIX = normalizePathPrefix(process.env.SYNTHI_PREVIEW_PUBLIC_PREFIX || '');
+const PREVIEW_PUBLIC_DOMAIN = normalizeHostname(process.env.SYNTHI_PREVIEW_PUBLIC_DOMAIN || '');
+const PREVIEW_PUBLIC_PROTOCOL = normalizePreviewProtocol(process.env.SYNTHI_PREVIEW_PUBLIC_PROTOCOL || 'https');
 
 /** Fallback ports to actively scan when socket discovery is unavailable. */
 const DEFAULT_SCAN_PORTS = [];
@@ -274,10 +278,112 @@ function normalizePathPrefix(value) {
   return `/${raw.replace(/^\/+|\/+$/g, '')}`;
 }
 
+function normalizeHostname(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return raw.replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/\.$/, '');
+}
+
+function normalizePreviewProtocol(value) {
+  const raw = String(value || '').trim().toLowerCase().replace(/:$/, '');
+  return raw === 'http' ? 'http' : 'https';
+}
+
+function hostnameFromHostHeader(hostHeader) {
+  const raw = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  let host = String(raw || '').trim().toLowerCase();
+  if (!host || host.startsWith('[')) return '';
+  const firstColon = host.indexOf(':');
+  if (firstColon !== -1 && firstColon === host.lastIndexOf(':')) {
+    host = host.slice(0, firstColon);
+  }
+  return host.replace(/\.$/, '');
+}
+
+function parsePreviewHostHeader(hostHeader) {
+  if (!PREVIEW_PUBLIC_DOMAIN) return null;
+
+  const hostname = hostnameFromHostHeader(hostHeader);
+  const suffix = `.${PREVIEW_PUBLIC_DOMAIN}`;
+  if (!hostname.endsWith(suffix)) return null;
+
+  const label = hostname.slice(0, -suffix.length);
+  if (!label || label.includes('.')) return null;
+
+  const match = /^p(\d{1,5})-(rt-[a-z0-9-]{1,60})$/.exec(label);
+  if (!match) return null;
+
+  const port = Number(match[1]);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+
+  return { port, runtimeId: match[2], hostname };
+}
+
+function parsePreviewHostRequest(req) {
+  const host = parsePreviewHostHeader(req?.headers?.host);
+  if (!host) return null;
+
+  try {
+    const parsed = new URL(req.url || '/', 'http://preview.local');
+    return {
+      port: host.port,
+      downstream: `${parsed.pathname || '/'}${parsed.search || ''}`,
+      runtimeScope: null,
+      runtimeId: host.runtimeId,
+      hostBased: true,
+    };
+  } catch {
+    return {
+      port: host.port,
+      downstream: '/',
+      runtimeScope: null,
+      runtimeId: host.runtimeId,
+      hostBased: true,
+    };
+  }
+}
+
+function isPreviewHostRequest(req) {
+  return Boolean(parsePreviewHostHeader(req?.headers?.host));
+}
+
 function joinTargetPath(pathPrefix, downstream) {
   const prefix = normalizePathPrefix(pathPrefix);
   const tail = downstream && downstream.startsWith('/') ? downstream : `/${downstream || ''}`;
   return `${prefix}${tail}` || '/';
+}
+
+function publicMountPrefixFromReq(req) {
+  const explicit = normalizePathPrefix(req?._synthiExternalMountPrefix || '');
+  if (explicit) return explicit;
+  const forwarded = Array.isArray(req?.headers?.['x-forwarded-prefix'])
+    ? req.headers['x-forwarded-prefix'][0]
+    : req?.headers?.['x-forwarded-prefix'];
+  return normalizePathPrefix(forwarded || PREVIEW_PUBLIC_PREFIX);
+}
+
+function previewRoutePrefix(port, runtimeScope = null, publicMountPrefix = '') {
+  const mount = normalizePathPrefix(publicMountPrefix);
+  const route = runtimeScope
+    ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${port}`
+    : `/port/${port}`;
+  return `${mount}${route}`;
+}
+
+function previewPathUrl(port, runtimeScope = null, downstream = '/') {
+  const prefix = previewRoutePrefix(port, runtimeScope, PREVIEW_PUBLIC_PREFIX);
+  return `${prefix}${normalizePreviewDownstream(downstream)}`;
+}
+
+function previewPublicUrl(port, runtimeScope = null, downstream = '/') {
+  if (!PREVIEW_PUBLIC_DOMAIN || !runtimeScope) return null;
+  const runtimeId = runtimeResourceId(runtimeScope);
+  return `${PREVIEW_PUBLIC_PROTOCOL}://p${port}-${runtimeId}.${PREVIEW_PUBLIC_DOMAIN}${normalizePreviewDownstream(downstream)}`;
+}
+
+function normalizePreviewDownstream(downstream) {
+  const raw = String(downstream || '/');
+  if (!raw || raw === '/') return '/';
+  return raw.startsWith('/') ? raw : `/${raw}`;
 }
 
 function previewTargetFor(port, runtimeScope) {
@@ -309,6 +415,34 @@ function previewTargetFor(port, runtimeScope) {
   };
 }
 
+function previewTargetForRuntimeId(port, runtimeId) {
+  if (!runtimeId || !PREVIEW_TARGET_TEMPLATE) return null;
+  const rendered = PREVIEW_TARGET_TEMPLATE
+    .replaceAll('{runtimeId}', runtimeId)
+    .replaceAll('{runtimeScope}', runtimeId)
+    .replaceAll('{sidecarPort}', PREVIEW_SIDECAR_PORT)
+    .replaceAll('{sidecarPrefix}', PREVIEW_SIDECAR_PREFIX)
+    .replaceAll('{port}', String(port));
+  try {
+    const url = new URL(rendered);
+    return {
+      hostname: url.hostname,
+      port: Number(url.port) || port,
+      protocol: url.protocol,
+      pathPrefix: normalizePathPrefix(url.pathname),
+      requestHost: url.host,
+    };
+  } catch (err) {
+    console.error('[Proxy] Invalid SYNTHI_PREVIEW_TARGET_TEMPLATE:', err.message);
+    return null;
+  }
+}
+
+function previewTargetForParsed(parsed) {
+  if (parsed?.runtimeId) return previewTargetForRuntimeId(parsed.port, parsed.runtimeId);
+  return previewTargetFor(parsed.port, parsed.runtimeScope);
+}
+
 function portAllowedForRuntime(port, runtimeScope) {
   if (!runtimeScope) return true;
   const processInfo = portProcessMap.get(port);
@@ -320,34 +454,44 @@ function usesRemoteRuntimeTarget(runtimeScope) {
   return Boolean(runtimeScope && PREVIEW_TARGET_TEMPLATE);
 }
 
+function usesRemotePreviewTarget(parsed) {
+  return Boolean(parsed?.runtimeId || usesRemoteRuntimeTarget(parsed?.runtimeScope));
+}
+
 /**
  * Handle an HTTP request that starts with /port/<N>/...
  * Proxies it to http://PROXY_HOST:<N>/...
  */
 function proxyHttpRequest(clientReq, clientRes) {
-  const parsed = parsePortUrl(clientReq.url);
+  const parsed = parsePreviewHostRequest(clientReq) || parsePortUrl(clientReq.url);
   if (!parsed) {
     clientRes.writeHead(400, { 'Content-Type': 'application/json' });
-    clientRes.end(JSON.stringify({ error: 'Invalid /port/<N>/path' }));
+    clientRes.end(JSON.stringify({ error: 'Invalid preview request' }));
     return;
   }
 
-  const { port, downstream, runtimeScope } = parsed;
+  const { port, downstream, runtimeScope, hostBased } = parsed;
+  const publicMountPrefix = hostBased ? '' : publicMountPrefixFromReq(clientReq);
 
-  if (!usesRemoteRuntimeTarget(runtimeScope) && !activePorts.has(port)) {
+  if (!usesRemotePreviewTarget(parsed) && !activePorts.has(port)) {
     clientRes.writeHead(502, { 'Content-Type': 'application/json' });
     clientRes.end(JSON.stringify({ error: `Port ${port} is not active`, activePorts: [...activePorts] }));
     return;
   }
 
-  if (!portAllowedForRuntime(port, runtimeScope)) {
+  if (!hostBased && !portAllowedForRuntime(port, runtimeScope)) {
     clientRes.writeHead(404, { 'Content-Type': 'application/json' });
     clientRes.end(JSON.stringify({ error: `Port ${port} is not active for this runtime scope` }));
     return;
   }
 
   // Build the proxied request
-  const target = previewTargetFor(port, runtimeScope);
+  const target = previewTargetForParsed(parsed);
+  if (!target) {
+    clientRes.writeHead(502, { 'Content-Type': 'application/json' });
+    clientRes.end(JSON.stringify({ error: 'Preview target is not configured' }));
+    return;
+  }
   const targetPath = joinTargetPath(target.pathPrefix, downstream);
   const options = {
     hostname: target.hostname,
@@ -356,7 +500,8 @@ function proxyHttpRequest(clientReq, clientRes) {
     method: clientReq.method,
     headers: {
       ...clientReq.headers,
-      host: `localhost:${port}`,   // Use 'localhost' so dev servers (Vite, etc.) accept it
+      host: target.requestHost || `localhost:${port}`,
+      'accept-encoding': 'identity',
     },
     timeout: PROXY_TIMEOUT_MS,
   };
@@ -373,17 +518,30 @@ function proxyHttpRequest(clientReq, clientRes) {
     headers['access-control-allow-origin'] = '*';
     headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
     headers['access-control-allow-headers'] = '*';
+    if (!hostBased) {
+      rewriteProxyHeaders(headers, port, runtimeScope, publicMountPrefix);
+    } else {
+      hardenHostPreviewHeaders(headers);
+    }
 
-    if (shouldRewriteBody(headers)) {
+    if (!hostBased && shouldRewriteBody(headers)) {
       const chunks = [];
       proxyRes.on('data', (chunk) => chunks.push(chunk));
       proxyRes.on('end', () => {
-        const body = Buffer.concat(chunks).toString('utf8');
-        const rewritten = rewriteRootAbsoluteUrls(body, port, runtimeScope);
-        delete headers['content-length'];
-        delete headers['content-encoding'];
-        clientRes.writeHead(proxyRes.statusCode, headers);
-        clientRes.end(rewritten);
+        const encodedBody = Buffer.concat(chunks);
+        decodeProxyBody(encodedBody, headers['content-encoding'], (err, bodyBuffer) => {
+          if (err) {
+            clientRes.writeHead(proxyRes.statusCode, headers);
+            clientRes.end(encodedBody);
+            return;
+          }
+          const body = bodyBuffer.toString('utf8');
+          const rewritten = rewriteRootAbsoluteUrls(body, port, runtimeScope, publicMountPrefix);
+          delete headers['content-length'];
+          delete headers['content-encoding'];
+          clientRes.writeHead(proxyRes.statusCode, headers);
+          clientRes.end(rewritten);
+        });
       });
       return;
     }
@@ -393,10 +551,10 @@ function proxyHttpRequest(clientReq, clientRes) {
   });
 
   proxyReq.on('error', (err) => {
-    console.error(`[Proxy] HTTP proxy error for port ${port} runtime=${runtimeScope || 'legacy'}:`, err.message);
+    console.error(`[Proxy] HTTP proxy error for port ${port} runtime=${runtimeScope || parsed.runtimeId || 'legacy'}:`, err.message);
     if (!clientRes.headersSent) {
       clientRes.writeHead(502, { 'Content-Type': 'application/json' });
-      clientRes.end(JSON.stringify({ error: 'Upstream unreachable', detail: err.message }));
+      clientRes.end(JSON.stringify({ error: 'upstream_unreachable', port, detail: err.message }));
     }
   });
 
@@ -413,7 +571,6 @@ function proxyHttpRequest(clientReq, clientRes) {
 }
 
 function shouldRewriteBody(headers) {
-  if (headers['content-encoding']) return false;
   const contentType = String(headers['content-type'] || '').toLowerCase();
   return (
     contentType.includes('text/html') ||
@@ -422,13 +579,97 @@ function shouldRewriteBody(headers) {
   );
 }
 
-function rewriteRootAbsoluteUrls(body, port, runtimeScope = null) {
-  const prefix = runtimeScope
-    ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${port}`
-    : `/port/${port}`;
+function decodeProxyBody(buffer, contentEncoding, callback) {
+  const encoding = String(contentEncoding || 'identity').toLowerCase().trim();
+  if (!encoding || encoding === 'identity') {
+    callback(null, buffer);
+    return;
+  }
+  if (encoding === 'gzip' || encoding === 'x-gzip') {
+    zlib.gunzip(buffer, callback);
+    return;
+  }
+  if (encoding === 'br') {
+    zlib.brotliDecompress(buffer, callback);
+    return;
+  }
+  if (encoding === 'deflate') {
+    zlib.inflate(buffer, callback);
+    return;
+  }
+  callback(new Error(`Unsupported preview response encoding: ${encoding}`));
+}
+
+function rewriteProxyHeaders(headers, port, runtimeScope = null, publicMountPrefix = '') {
+  const prefix = previewRoutePrefix(port, runtimeScope, publicMountPrefix);
+  if (headers.location) {
+    headers.location = rewriteHeaderRootUrls(headers.location, prefix, publicMountPrefix);
+  }
+  if (headers.link) {
+    headers.link = rewriteHeaderRootUrls(headers.link, prefix, publicMountPrefix);
+  }
+  if (headers['set-cookie']) {
+    headers['set-cookie'] = rewriteCookiePaths(headers['set-cookie'], prefix, publicMountPrefix);
+  }
+}
+
+function rewriteHeaderRootUrls(value, prefix, publicMountPrefix = '') {
+  const rewriteOne = (part) => {
+    const text = String(part);
+    if (text.startsWith('/')) return rewriteRootPath(text, prefix, publicMountPrefix);
+    try {
+      const parsed = new URL(text, 'http://preview.local');
+      if (!parsed.origin || parsed.origin === 'http://preview.local') {
+        return rewriteRootPath(`${parsed.pathname}${parsed.search}${parsed.hash}`, prefix, publicMountPrefix);
+      }
+    } catch (_) {}
+    return text;
+  };
+  if (Array.isArray(value)) return value.map(rewriteOne);
+  const text = String(value);
+  const linked = text.replace(/<([^>]+)>/g, (_, url) => `<${rewriteOne(url)}>`);
+  return linked === text ? rewriteOne(text) : linked;
+}
+
+function rewriteCookiePaths(value, prefix, publicMountPrefix = '') {
+  const rewriteOne = (cookie) => String(cookie).replace(/;\s*Path=\/(?=;|$)/i, `; Path=${rootPathPrefix(prefix, publicMountPrefix)}/`);
+  return Array.isArray(value) ? value.map(rewriteOne) : rewriteOne(value);
+}
+
+function hardenHostPreviewHeaders(headers) {
+  if (headers['set-cookie']) {
+    headers['set-cookie'] = stripCookieDomain(headers['set-cookie']);
+  }
+}
+
+function stripCookieDomain(value) {
+  const stripOne = (cookie) => String(cookie).replace(/;\s*Domain=[^;]*/ig, '');
+  return Array.isArray(value) ? value.map(stripOne) : stripOne(value);
+}
+
+function rewriteRootPath(pathValue, prefix, publicMountPrefix = '') {
+  if (!pathValue || pathValue[0] !== '/') return pathValue;
+  if (pathValue.startsWith('//')) return pathValue;
+  const mount = normalizePathPrefix(publicMountPrefix);
+  const rootPrefix = rootPathPrefix(prefix, mount);
+  if (pathValue === rootPrefix || pathValue.startsWith(`${rootPrefix}/`)) return pathValue;
+  if (pathValue.startsWith('/port/') || pathValue.startsWith('/runtime/')) return mount ? `${mount}${pathValue}` : pathValue;
+  if (mount && (pathValue === mount || pathValue.startsWith(`${mount}/`))) return pathValue;
+  return `${prefix}${pathValue}`;
+}
+
+function rootPathPrefix(prefix, publicMountPrefix = '') {
+  const mount = normalizePathPrefix(publicMountPrefix);
+  const normalizedPrefix = normalizePathPrefix(prefix);
+  if (mount && normalizedPrefix.startsWith(`${mount}/`)) return normalizedPrefix;
+  return normalizedPrefix || mount || '';
+}
+
+function rewriteRootAbsoluteUrls(body, port, runtimeScope = null, publicMountPrefix = '') {
+  const prefix = previewRoutePrefix(port, runtimeScope, publicMountPrefix);
   return body
-    .replace(/(["'`])\/(?!\/|port\/|runtime\/)/g, `$1${prefix}/`)
-    .replace(/(url\(\s*["']?)\/(?!\/|port\/|runtime\/)/g, `$1${prefix}/`);
+    .replace(/(["'`])\/(?!\/)([^"'`\s<>)]*)/g, (_match, quote, rest) => `${quote}${rewriteRootPath(`/${rest}`, prefix, publicMountPrefix)}`)
+    .replace(/(url\(\s*["']?)\/(?!\/)([^"')\s]+)(["']?\s*\))/g, (_match, lead, rest, tail) => `${lead}${rewriteRootPath(`/${rest}`, prefix, publicMountPrefix)}${tail}`);
 }
 
 // ─── WebSocket Reverse Proxy ────────────────────────────────────────────────
@@ -438,34 +679,48 @@ function rewriteRootAbsoluteUrls(body, port, runtimeScope = null) {
  * This is essential for HMR (Vite, Next.js, Webpack dev server).
  */
 function proxyWsUpgrade(clientReq, clientSocket, head) {
-  const parsed = parsePortUrl(clientReq.url);
+  const parsed = parsePreviewHostRequest(clientReq) || parsePortUrl(clientReq.url);
   if (!parsed) {
     clientSocket.destroy();
     return false;
   }
 
-  const { port, downstream, runtimeScope } = parsed;
+  const { port, downstream, runtimeScope, hostBased } = parsed;
+  const publicMountPrefix = hostBased ? '' : publicMountPrefixFromReq(clientReq);
 
-  if (!usesRemoteRuntimeTarget(runtimeScope) && !activePorts.has(port)) {
+  if (!usesRemotePreviewTarget(parsed) && !activePorts.has(port)) {
     clientSocket.destroy();
     return false;
   }
 
-  if (!portAllowedForRuntime(port, runtimeScope)) {
+  if (!hostBased && !portAllowedForRuntime(port, runtimeScope)) {
     clientSocket.destroy();
     return false;
   }
 
   // Open a raw TCP connection to the upstream
-  const target = previewTargetFor(port, runtimeScope);
+  const target = previewTargetForParsed(parsed);
+  if (!target) {
+    clientSocket.destroy();
+    return false;
+  }
   const upstreamSocket = net.connect(target.port, target.hostname, () => {
     // Reconstruct the HTTP upgrade request for the upstream
     const targetPath = joinTargetPath(target.pathPrefix, downstream);
     const reqLine = `${clientReq.method} ${targetPath} HTTP/1.1\r\n`;
     const headers = Object.entries(clientReq.headers)
       .filter(([k]) => k.toLowerCase() !== 'host')
+      .map(([k, v]) => {
+        if (k.toLowerCase() === 'origin') return [k, v];
+        if (k.toLowerCase() === 'referer') {
+          if (hostBased) return [k, v];
+          const prefix = previewRoutePrefix(port, runtimeScope, publicMountPrefix);
+          return [k, rewriteHeaderRootUrls(v, prefix, publicMountPrefix)];
+        }
+        return [k, v];
+      })
       .map(([k, v]) => `${k}: ${v}`)
-      .concat([`Host: localhost:${port}`])
+      .concat([`Host: ${target.requestHost || `localhost:${port}`}`])
       .join('\r\n');
 
     upstreamSocket.write(reqLine + headers + '\r\n\r\n');
@@ -480,7 +735,7 @@ function proxyWsUpgrade(clientReq, clientSocket, head) {
   });
 
   upstreamSocket.on('error', (err) => {
-    console.error(`[Proxy] WS proxy error for port ${port} runtime=${runtimeScope || 'legacy'}:`, err.message);
+    console.error(`[Proxy] WS proxy error for port ${port} runtime=${runtimeScope || parsed.runtimeId || 'legacy'}:`, err.message);
     clientSocket.destroy();
   });
 
@@ -534,16 +789,50 @@ function previewForPort(port, requestedRuntimeScope = null) {
   const processInfo = portProcessMap.get(port);
   const runtimeScope = processInfo?.runtimeScope || requestedRuntimeScope || null;
   const target = previewTargetFor(port, runtimeScope);
+  const pathUrl = previewPathUrl(port, runtimeScope);
+  const publicUrl = previewPublicUrl(port, runtimeScope);
   return {
     port,
-    url: runtimeScope
-      ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${port}/`
-      : `/port/${port}/`,
+    url: publicUrl || pathUrl,
+    publicUrl,
+    pathUrl,
     target: `http://${target.hostname}:${target.port}${target.pathPrefix || '/'}`,
     workspace: processInfo?.workspaceSlug ?? null,
     runtimeScope,
     attributed: Boolean(processInfo?.workspaceSlug),
   };
+}
+
+function handlePreviewUrlRequest(req, res) {
+  try {
+    const parsed = new URL(req.url || '/preview-url', 'http://collab.local');
+    const runtimeScope = parsed.searchParams.get('runtimeScope') || parsed.searchParams.get('scope') || '';
+    const port = Number(parsed.searchParams.get('port'));
+    const downstream = parsed.searchParams.get('path') || '/';
+    if (!runtimeScope || !Number.isInteger(port) || port < 1 || port > 65535) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'runtimeScope and valid port are required' }));
+      return;
+    }
+
+    const pathUrl = previewPathUrl(port, runtimeScope, downstream);
+    const publicUrl = previewPublicUrl(port, runtimeScope, downstream);
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify({
+      port,
+      runtimeScope,
+      runtimeId: runtimeResourceId(runtimeScope),
+      url: publicUrl || pathUrl,
+      publicUrl,
+      pathUrl,
+    }));
+  } catch (err) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: err.message }));
+  }
 }
 
 function workspaceFilterFromReq(req) {
@@ -741,5 +1030,12 @@ module.exports = {
   proxyHttpRequest,
   proxyWsUpgrade,
   handlePortsStatus,
+  handlePreviewUrlRequest,
+  isPreviewHostRequest,
   parsePortUrl,
+  rewriteRootAbsoluteUrls,
+  rewriteHeaderRootUrls,
+  previewRoutePrefix,
+  previewPathUrl,
+  previewPublicUrl,
 };

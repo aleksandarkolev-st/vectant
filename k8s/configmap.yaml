@@ -31,6 +31,9 @@ data:
   # Optional runtime-scoped preview proxy target. Production previews route to
   # a pod-local preview sidecar so user apps may bind localhost-only ports.
   SYNTHI_PREVIEW_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"
+  SYNTHI_PREVIEW_PUBLIC_PREFIX: "/collab"
+  SYNTHI_PREVIEW_PUBLIC_DOMAIN: "preview.vectant.dev"
+  SYNTHI_PREVIEW_PUBLIC_PROTOCOL: "https"
   SYNTHI_PREVIEW_SIDECAR_PORT: "18080"
   SYNTHI_PREVIEW_SIDECAR_PREFIX: "/__synthi_preview"
   SYNTHI_PREVIEW_SIDECAR_IMAGE: "node:20-alpine"

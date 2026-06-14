@@ -2,11 +2,11 @@
 import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
-import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw } from 'lucide-react';
+import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw, Power } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
-import { resolveCollabWsUrl } from '@/lib/collab-url';
+import { resolveCollabHttpUrl, resolveCollabWsUrl } from '@/lib/collab-url';
 import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 import {
@@ -43,6 +43,7 @@ let sessionAutoApprovePaste = false;
 const TERMINAL_SERVER_URL = process.env.NEXT_PUBLIC_TERMINAL_URL 
   ? process.env.NEXT_PUBLIC_TERMINAL_URL
   : resolveCollabWsUrl();
+const TERMINAL_HTTP_URL = resolveCollabHttpUrl();
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
@@ -61,7 +62,7 @@ function parseTerminalUrl(rawUri) {
   }
 }
 
-function buildRuntimePreviewUrl(rawUri, runtimeScope) {
+function buildRuntimePreviewPathUrl(rawUri, runtimeScope) {
   if (!runtimeScope || typeof window === 'undefined') return null;
   const parsed = parseTerminalUrl(rawUri);
   if (!parsed || !parsed.port) return null;
@@ -70,6 +71,33 @@ function buildRuntimePreviewUrl(rawUri, runtimeScope) {
 
   const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '/';
   return `${window.location.origin}/collab/runtime/${encodeURIComponent(runtimeScope)}/port/${encodeURIComponent(parsed.port)}${path}${parsed.search}${parsed.hash}`;
+}
+
+async function resolveRuntimePreviewUrl(rawUri, runtimeScope) {
+  const fallbackUrl = buildRuntimePreviewPathUrl(rawUri, runtimeScope);
+  const parsed = parseTerminalUrl(rawUri);
+  if (!runtimeScope || !parsed || !parsed.port || !LOCAL_PREVIEW_HOSTS.has(parsed.hostname)) {
+    return fallbackUrl || rawUri;
+  }
+
+  try {
+    const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '/';
+    const previewPath = `${path}${parsed.search}${parsed.hash}`;
+    const params = new URLSearchParams({
+      runtimeScope,
+      port: parsed.port,
+      path: previewPath,
+    });
+    const response = await fetch(`${TERMINAL_HTTP_URL.replace(/\/+$/, '')}/preview-url?${params.toString()}`, {
+      method: 'GET',
+      credentials: 'same-origin',
+    });
+    if (!response.ok) return fallbackUrl || rawUri;
+    const data = await response.json();
+    return data?.url || data?.publicUrl || fallbackUrl || rawUri;
+  } catch (_) {
+    return fallbackUrl || rawUri;
+  }
 }
 
 // ─── Terminal Theme (from ThemeProvider) ───────────────────────────────
@@ -152,6 +180,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const [pasteConfirm, setPasteConfirm] = useState(null);
   // Color customizer floating panel
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [stoppingRuntime, setStoppingRuntime] = useState(false);
   // Live overrides — re-renders when user tweaks colors
   const [colorOverrides, setColorOverrides] = useState(() => getTerminalOverrides());
 
@@ -272,8 +301,23 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         try {
           const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
           const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
-          const previewUrl = buildRuntimePreviewUrl(uri, runtimeIdentity.runtimeScope);
-          window.open(previewUrl || uri, '_blank', 'noopener,noreferrer');
+          const fallbackUrl = buildRuntimePreviewPathUrl(uri, runtimeIdentity.runtimeScope);
+          const isRuntimePreview = Boolean(fallbackUrl);
+          if (!isRuntimePreview) {
+            window.open(uri, '_blank', 'noopener,noreferrer');
+            return;
+          }
+
+          const popup = window.open('about:blank', '_blank');
+          resolveRuntimePreviewUrl(uri, runtimeIdentity.runtimeScope).then((previewUrl) => {
+            const targetUrl = previewUrl || fallbackUrl || uri;
+            if (popup) {
+              try { popup.opener = null; } catch {}
+              popup.location.href = targetUrl;
+            } else {
+              window.open(targetUrl, '_blank', 'noopener,noreferrer');
+            }
+          });
         } catch (_) {
           try { window.open(uri, '_blank', 'noopener,noreferrer'); } catch {}
         }
@@ -780,6 +824,47 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     window.location.reload();
   }, [cleanup]);
 
+  const handleStopRuntime = useCallback(async () => {
+    if (stoppingRuntime) return;
+    const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
+    const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
+    const runtimeScope = runtimeIdentity.runtimeScope;
+    if (!runtimeScope) {
+      toast.error('Runtime scope unavailable');
+      return;
+    }
+
+    setStoppingRuntime(true);
+    try {
+      const response = await fetch(`${TERMINAL_HTTP_URL}/api/spawner/release`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-runtime-scope': runtimeScope,
+        },
+        body: JSON.stringify({
+          session_id: runtimeScope,
+          workspaceSlug,
+          reason: 'explicit_release',
+        }),
+      });
+      if (!response.ok) {
+        const message = await response.text().catch(() => '');
+        throw new Error(message || `Runtime stop failed (${response.status})`);
+      }
+
+      cleanup();
+      reconnectCountRef.current = 0;
+      setState('closed');
+      toast.success('Runtime stopped');
+    } catch (err) {
+      console.error('[Terminal] Failed to stop runtime:', err);
+      toast.error(err?.message || 'Failed to stop runtime');
+    } finally {
+      setStoppingRuntime(false);
+    }
+  }, [cleanup, stoppingRuntime, workspaceSlug]);
+
   // ─── Multi-line paste confirmation actions ────────────────────────────
   const confirmPaste = useCallback((opts) => {
     const pending = pasteConfirm;
@@ -848,6 +933,23 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         <Palette className="w-3.5 h-3.5" />
       </button>
 
+      {!fixedSessionId && (
+        <button
+          type="button"
+          onClick={handleStopRuntime}
+          disabled={stoppingRuntime}
+          title="Stop runtime"
+          aria-label="Stop runtime"
+          className="absolute top-1.5 right-8 z-10 rounded p-1 opacity-40 hover:opacity-100 disabled:opacity-30 transition-opacity"
+          style={{
+            color: stoppingRuntime ? 'var(--accent-warning)' : 'var(--text-muted)',
+            background: 'color-mix(in srgb, var(--bg-app) 60%, transparent)',
+          }}
+        >
+          <Power className="w-3.5 h-3.5" />
+        </button>
+      )}
+
       {pasteConfirm && (
         <MultiLinePasteDialog
           text={pasteConfirm.text}
@@ -877,10 +979,10 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       )}
 
       {/* Connecting indicator */}
-      {state === 'connecting' && (
+      {(state === 'connecting' || stoppingRuntime) && (
         <div className="absolute bottom-2 right-3 flex items-center gap-1.5 text-[10px] z-10" style={{ color: 'var(--text-muted)' }}>
           <Zap className="w-3 h-3 animate-pulse" style={{ color: 'var(--accent-primary)' }} />
-          <span>Connecting…</span>
+          <span>{stoppingRuntime ? 'Stopping…' : 'Connecting…'}</span>
         </div>
       )}
     </div>

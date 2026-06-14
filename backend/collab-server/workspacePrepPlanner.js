@@ -171,9 +171,7 @@ async function buildNodeTask(directory, manifestTexts) {
     ? (hasPnpmLock ? 'corepack pnpm install --frozen-lockfile' : 'corepack pnpm install')
     : packageManager === 'yarn'
       ? 'corepack yarn install'
-      : hasPackageLock
-        ? 'npm ci'
-        : 'npm install';
+      : 'npm install';
 
   return {
     id: `node:${directory.relPath || '.'}`,

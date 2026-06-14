@@ -30,7 +30,7 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
 spec:
   iap:
-    enabled: false
+    enabled: true
   timeoutSec: 300
   connectionDraining:
     drainingTimeoutSec: 30
@@ -52,7 +52,7 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
 spec:
   iap:
-    enabled: false
+    enabled: true
   timeoutSec: 3600
   connectionDraining:
     drainingTimeoutSec: 30
@@ -74,7 +74,7 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
 spec:
   iap:
-    enabled: false
+    enabled: true
   timeoutSec: 3600
   connectionDraining:
     drainingTimeoutSec: 30
@@ -96,7 +96,7 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
 spec:
   iap:
-    enabled: false
+    enabled: true
   timeoutSec: 3600
   connectionDraining:
     drainingTimeoutSec: 30
@@ -123,6 +123,10 @@ metadata:
     networking.gke.io/managed-certificates: synthi-managed-cert
     networking.gke.io/v1beta1.FrontendConfig: synthi-frontend-config
 spec:
+  tls:
+    - hosts:
+        - "*.preview.vectant.dev"
+      secretName: preview-wildcard-tls
   defaultBackend:
     service:
       name: frontend
@@ -160,3 +164,13 @@ spec:
                 name: frontend
                 port:
                   number: 3000
+    - host: "*.preview.vectant.dev"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: collab-server
+                port:
+                  number: 1234
