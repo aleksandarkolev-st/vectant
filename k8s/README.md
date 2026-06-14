@@ -125,6 +125,23 @@ Search-and-replace `synthi.example.com` in:
 - `k8s/configmap.yaml` — public URLs
 - `k8s/ingress.yaml` — Ingress host + ManagedCertificate
 
+### Configure Workspace Node Pool
+
+The app manifests schedule runtime pods onto the `workspace-pool` node pool via
+`cloud.google.com/gke-nodepool=workspace-pool`. The node pool itself is GKE
+infrastructure, not a Kubernetes manifest, so configure it with `gcloud`:
+
+```bash
+scripts/configure-workspace-node-pool.sh \
+  --machine-type n2-standard-4 \
+  --min-nodes 0 \
+  --max-nodes 2
+```
+
+For closed beta, the intended default is `n2-standard-4` with autoscaling from
+0 to 2 nodes. Idle runtime pods are removed by the spawner; when no runtime pods
+remain, the workspace pool can scale down instead of burning node CPU/RAM.
+
 ### Configure DNS
 
 After reserving the static IP and deploying the Ingress, set up DNS:
