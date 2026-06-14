@@ -4242,6 +4242,10 @@ async function validateDigestReferencedLogArtifacts(evidence, evidencePath) {
     expectedBytes: evidence?.stderr_bytes,
     evidencePath,
   }));
+  errors.push(...await validateReferencedVitestReportSummary({
+    evidence,
+    evidencePath,
+  }));
   return errors;
 }
 
@@ -4297,6 +4301,43 @@ async function validateDigestReferencedFile({
     errors.push(`${label}_bytes_mismatch:${expectedBytes}:${bytes.length}`);
   }
   return errors;
+}
+
+async function validateReferencedVitestReportSummary({ evidence, evidencePath }) {
+  const errors = [];
+  if (!evidence?.test_summary || !evidence?.json_report_path) return errors;
+  const resolved = resolveEvidenceArtifactPath(evidence.json_report_path, evidencePath);
+  let report;
+  try {
+    report = JSON.parse(await readFile(resolved, "utf8"));
+  } catch {
+    return errors;
+  }
+  const reportSummary = vitestReportSummary(report);
+  if (!reportSummary) return errors;
+  if (report.success !== true) {
+    errors.push("json_report_success_false");
+  }
+  for (const [summaryField, reportValue] of Object.entries(reportSummary)) {
+    const declared = Number(evidence.test_summary?.[summaryField]);
+    if (Number.isFinite(declared) && declared !== reportValue) {
+      errors.push(`json_report_test_summary_mismatch:${summaryField}:${declared}:${reportValue}`);
+    }
+  }
+  return errors;
+}
+
+function vitestReportSummary(report) {
+  if (!report || typeof report !== "object") return null;
+  const fields = {
+    total_tests: report.numTotalTests,
+    passed_tests: report.numPassedTests,
+    failed_tests: report.numFailedTests,
+    pending_tests: report.numPendingTests,
+  };
+  const entries = Object.entries(fields);
+  if (!entries.some(([, value]) => Number.isFinite(Number(value)))) return null;
+  return Object.fromEntries(entries.map(([key, value]) => [key, Number(value || 0)]));
 }
 
 async function readDigestCheckedJsonPair({

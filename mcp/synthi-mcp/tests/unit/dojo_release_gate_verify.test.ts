@@ -577,6 +577,42 @@ describe("Dojo release gate artifact verifier", () => {
       "evidence_authority_required_capabilities_untested:proof_issuance_requires_verified_evidence_records",
       `evidence_authority_required_test_files_missing:${DOJO_EVIDENCE_AUTHORITY_TEST_FILES[0]}`,
     ]));
+
+    const forgedJson = JSON.stringify({
+      success: false,
+      numTotalTests: 13,
+      numPassedTests: 12,
+      numFailedTests: 1,
+      numPendingTests: 0,
+      numTotalTestSuites: DOJO_EVIDENCE_AUTHORITY_TEST_FILES.length,
+      numPassedTestSuites: DOJO_EVIDENCE_AUTHORITY_TEST_FILES.length - 1,
+      numFailedTestSuites: 1,
+      testResults: [],
+    }, null, 2);
+    const forgedJsonPath = path.join(dir, "dojo-evidence-authority-forged.vitest.json");
+    await writeFile(forgedJsonPath, forgedJson, "utf8");
+    const forgedSummaryPath = await writeEvidenceAuthorityEvidenceFixture({
+      dir,
+      basename: "dojo-evidence-authority-forged-summary",
+      evidence: evidenceAuthorityEvidenceFixture({
+        json_report_path: forgedJsonPath,
+        json_report_sha256: sha256(forgedJson),
+        json_report_bytes: Buffer.byteLength(forgedJson),
+        test_summary: {
+          total_tests: 13,
+          passed_tests: 13,
+          failed_tests: 0,
+          pending_tests: 0,
+        },
+      }),
+    });
+    const forgedSummary = await verifyDojoEvidenceAuthorityEvidenceArtifact({ evidencePath: forgedSummaryPath });
+    expect(forgedSummary.ok).toBe(false);
+    expect(forgedSummary.errors).toEqual(expect.arrayContaining([
+      "json_report_success_false",
+      "json_report_test_summary_mismatch:passed_tests:13:12",
+      "json_report_test_summary_mismatch:failed_tests:0:1",
+    ]));
   });
 
   it("verifies implementation-status evidence and rejects overclaim boundary drift", async () => {
