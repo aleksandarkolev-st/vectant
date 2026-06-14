@@ -50,6 +50,11 @@ describe('terminal-preview-links', () => {
     const result = await resolveTerminalLinkUrl(authUrl, 'ws-demo-user-demo', {
       ...options,
       loopbackCallbackBridgeUrl: 'https://beta.vectant.dev/auth/loopback',
+      loopbackContext: {
+        workspaceSlug: 'demo',
+        runtimeKind: 'private',
+        terminalId: 'terminal-main',
+      },
     });
     const parsed = new URL(result);
 
@@ -57,6 +62,9 @@ describe('terminal-preview-links', () => {
     expect(parsed.pathname).toBe('/auth/loopback');
     expect(parsed.searchParams.get('runtimeScope')).toBe('ws-demo-user-demo');
     expect(parsed.searchParams.get('authUrl')).toBe(authUrl);
+    expect(parsed.searchParams.get('workspaceSlug')).toBe('demo');
+    expect(parsed.searchParams.get('runtimeKind')).toBe('private');
+    expect(parsed.searchParams.get('terminalId')).toBe('terminal-main');
   });
 
   it('routes hash-based loopback callback parameters through the helper page', async () => {
@@ -78,6 +86,9 @@ describe('terminal-preview-links', () => {
     const rewritten = rewriteTerminalOutputLoopbackAuthLinks(text, {
       runtimeScope: 'ws-demo-user-demo',
       bridgeBaseUrl: 'https://beta.vectant.dev/auth/loopback',
+      loopbackContext: {
+        workspaceSlug: 'demo',
+      },
     });
     const helperUrl = rewritten.replace('Open this link: ', '');
     const parsed = new URL(helperUrl);
@@ -85,6 +96,7 @@ describe('terminal-preview-links', () => {
     expect(parsed.pathname).toBe('/auth/loopback');
     expect(parsed.searchParams.get('runtimeScope')).toBe('ws-demo-user-demo');
     expect(parsed.searchParams.get('authUrl')).toBe(authUrl);
+    expect(parsed.searchParams.get('workspaceSlug')).toBe('demo');
   });
 
   it('leaves ordinary external links untouched', async () => {

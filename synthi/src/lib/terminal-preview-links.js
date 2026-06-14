@@ -123,7 +123,12 @@ async function rewriteLoopbackParams(params, runtimeScope, options) {
 }
 
 export async function resolveTerminalLinkUrl(rawUri, runtimeScope, options = {}) {
-  const bridgeUrl = buildLoopbackCallbackBridgeUrl(rawUri, runtimeScope, options.loopbackCallbackBridgeUrl);
+  const bridgeUrl = buildLoopbackCallbackBridgeUrl(
+    rawUri,
+    runtimeScope,
+    options.loopbackCallbackBridgeUrl,
+    options.loopbackContext || options,
+  );
   if (bridgeUrl) return bridgeUrl;
 
   const directPreview = await resolveRuntimePreviewUrl(rawUri, runtimeScope, options);
@@ -146,7 +151,7 @@ export async function resolveTerminalLinkUrl(rawUri, runtimeScope, options = {})
   return rewrittenSearch.changed || hashChanged ? parsed.toString() : rawUri;
 }
 
-export function buildLoopbackCallbackBridgeUrl(rawUri, runtimeScope, bridgeBaseUrl) {
+export function buildLoopbackCallbackBridgeUrl(rawUri, runtimeScope, bridgeBaseUrl, context = {}) {
   if (!runtimeScope || !bridgeBaseUrl || !terminalLinkHasNestedLoopbackCallback(rawUri)) {
     return null;
   }
@@ -155,19 +160,23 @@ export function buildLoopbackCallbackBridgeUrl(rawUri, runtimeScope, bridgeBaseU
     const bridge = new URL(bridgeBaseUrl);
     bridge.searchParams.set('runtimeScope', runtimeScope);
     bridge.searchParams.set('authUrl', rawUri);
+    for (const key of ['workspaceSlug', 'terminalId', 'runtimeKind', 'filesystemUserId', 'actorUserId', 'collabSessionId']) {
+      const value = context?.[key];
+      if (value) bridge.searchParams.set(key, String(value));
+    }
     return bridge.toString();
   } catch (_) {
     return null;
   }
 }
 
-export function rewriteTerminalOutputLoopbackAuthLinks(text, { runtimeScope, bridgeBaseUrl } = {}) {
+export function rewriteTerminalOutputLoopbackAuthLinks(text, { runtimeScope, bridgeBaseUrl, loopbackContext } = {}) {
   if (!text || !runtimeScope || !bridgeBaseUrl || !/localhost|127\.0\.0\.1|0\.0\.0\.0|%2f%2flocalhost|%2f%2f127\.0\.0\.1|%2f%2f0\.0\.0\.0/i.test(text)) {
     return text;
   }
 
   return String(text).replace(TERMINAL_URL_RE, (match) => {
-    const bridgeUrl = buildLoopbackCallbackBridgeUrl(match, runtimeScope, bridgeBaseUrl);
+    const bridgeUrl = buildLoopbackCallbackBridgeUrl(match, runtimeScope, bridgeBaseUrl, loopbackContext);
     return bridgeUrl || match;
   });
 }

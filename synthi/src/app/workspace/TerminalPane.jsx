@@ -16,7 +16,6 @@ import {
   terminalLinkHasNestedLoopbackCallback,
   terminalLinkNeedsRuntimeResolution,
 } from '@/lib/terminal-preview-links';
-import { openAgentWorkflowExternalUrl } from '@/services/agentWorkflowClient';
 import {
   TERMINAL_COLOR_KEYS,
   getTerminalOverrides,
@@ -285,6 +284,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           terminalHttpUrl: TERMINAL_HTTP_URL,
           windowOrigin: window.location.origin,
           loopbackCallbackBridgeUrl: linkContext.bridgeBaseUrl,
+          loopbackContext: linkContext,
         });
         openLocalBrowserUrl(fallbackUrl || uri, popup);
       };
@@ -303,29 +303,17 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           if (isHttpLink && terminalLinkHasNestedLoopbackCallback(uri)) {
             const popup = window.open('about:blank', '_blank');
             if (!popup) {
-              toast.warning('Browser blocked the workspace browser popup');
+              toast.warning('Browser blocked the sign-in helper popup');
             }
-            openAgentWorkflowExternalUrl({
-              targetUrl: uri,
-              runtime: linkContext,
-            }).then((result) => {
-              const viewerUrl = result?.workspaceBrowser?.url;
-              if (!viewerUrl) {
-                toast.warning('Workspace browser viewer unavailable; opening sign-in helper');
-                openManualLoopbackFallback(uri, linkContext, popup).catch(() => {
-                  try { openLocalBrowserUrl(localBrowserHref, popup); } catch {}
-                });
-                return;
-              }
-              openLocalBrowserUrl(viewerUrl, popup);
-              toast.success('Opened workspace browser');
-            }).catch((err) => {
-              console.warn('[Terminal] Workspace browser auth open failed:', err);
-              toast.warning('Workspace browser unavailable; opening fallback sign-in helper');
-              openManualLoopbackFallback(uri, linkContext, popup).catch(() => {
+            openManualLoopbackFallback(uri, linkContext, popup)
+              .then(() => {
+                toast.success('Opened terminal sign-in helper');
+              })
+              .catch((err) => {
+                console.warn('[Terminal] Sign-in helper open failed:', err);
+                toast.warning('Opening the original sign-in link');
                 try { openLocalBrowserUrl(localBrowserHref, popup); } catch {}
               });
-            });
             return;
           }
 
@@ -340,9 +328,16 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             terminalHttpUrl: TERMINAL_HTTP_URL,
             windowOrigin: window.location.origin,
             loopbackCallbackBridgeUrl: linkContext.bridgeBaseUrl,
+            loopbackContext: linkContext,
           }).then((previewUrl) => {
             openLocalBrowserUrl(previewUrl || localBrowserHref, popup);
           }).catch(() => {
+            if (isHttpLink && terminalLinkHasNestedLoopbackCallback(uri)) {
+              openManualLoopbackFallback(uri, linkContext, popup).catch(() => {
+                try { openLocalBrowserUrl(localBrowserHref, popup); } catch {}
+              });
+              return;
+            }
             openLocalBrowserUrl(localBrowserHref, popup);
           });
         } catch (_) {
