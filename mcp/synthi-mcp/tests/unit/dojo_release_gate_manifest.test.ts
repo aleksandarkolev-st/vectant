@@ -821,6 +821,7 @@ describe("Dojo release gate manifest", () => {
           require_srl_policy: true,
           require_limited_license_srl7: true,
           require_operational_feedback_srl9: true,
+          require_self_check_executes_tests: true,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -1335,11 +1336,13 @@ describe("Dojo release gate manifest", () => {
     checkrideLicenseGate.release_artifact_requirements.require_ledger_append = false;
     checkrideLicenseGate.release_artifact_requirements.require_license_constraints = false;
     checkrideLicenseGate.release_artifact_requirements.require_stale_evidence_downgrade = false;
+    checkrideLicenseGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenCheckrideLicense, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "checkride_license_missing_executable_requirement",
       "checkride_license_missing_ledger_append_requirement",
       "checkride_license_missing_license_constraint_requirement",
       "checkride_license_missing_stale_evidence_requirement",
+      "checkride_license_missing_self_check_execution_requirement",
       "checkride_license_missing_required_capabilities:checkride_runtime_oracle_blocks_happy_path_only",
       `checkride_license_missing_required_test_files:${missingCheckrideLicenseTestFile}`,
     ]));

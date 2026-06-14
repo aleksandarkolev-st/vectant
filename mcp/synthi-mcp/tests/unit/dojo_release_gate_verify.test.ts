@@ -2352,6 +2352,24 @@ describe("Dojo release gate artifact verifier", () => {
       "checkride_license_stale_evidence_requirement_missing",
     ]));
 
+    const missingExecutionPath = await writeCheckrideLicenseEvidenceFixture({
+      dir,
+      basename: "missing-execution-checkride-license",
+      evidence: checkrideLicenseEvidenceFixture({
+        checkride_license: {
+          ...checkrideLicenseEvidenceFixture().checkride_license,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    const missingExecution = await verifyDojoCheckrideLicenseEvidenceArtifact({ evidencePath: missingExecutionPath });
+    expect(missingExecution.ok).toBe(false);
+    expect(missingExecution.errors).toEqual(expect.arrayContaining([
+      "checkride_license_self_check_execution_requirement_missing",
+      "checkride_license_test_execution_missing",
+    ]));
+
     const driftedPath = await writeCheckrideLicenseEvidenceFixture({
       dir,
       basename: "drifted-checkride-license",
@@ -5528,6 +5546,7 @@ function checkrideLicenseEvidenceFixture(overrides = {}) {
       srl_policy_required: true,
       limited_license_srl7_required: true,
       operational_feedback_srl9_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_CHECKRIDE_LICENSE_TEST_FILES],
     test_file_count: DOJO_CHECKRIDE_LICENSE_TEST_FILES.length,
@@ -5548,6 +5567,18 @@ function checkrideLicenseEvidenceFixture(overrides = {}) {
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
     json_report_bytes: Buffer.byteLength(jsonReport),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_CHECKRIDE_LICENSE_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 123,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
 }

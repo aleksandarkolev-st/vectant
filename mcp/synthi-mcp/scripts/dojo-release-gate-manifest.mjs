@@ -1050,7 +1050,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:checkride-license:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/integration/dojo_checkride_runner.test.ts tests/unit/dojo_entrustment_policy.test.ts tests/unit/dojo_srl_policy.test.ts -- --reporter=json --outputFile ../../tmp/dojo-checkride-license/dojo-checkride-license.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:checkride-license:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:checkride-license:self-check",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.checkrideLicenseEvidence.v1",
@@ -1075,6 +1075,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_srl_policy: true,
       require_limited_license_srl7: true,
       require_operational_feedback_srl9: true,
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -2473,6 +2474,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_srl_policy", "checkride_license_missing_srl_requirement"],
       ["require_limited_license_srl7", "checkride_license_missing_srl7_requirement"],
       ["require_operational_feedback_srl9", "checkride_license_missing_srl9_requirement"],
+      ["require_self_check_executes_tests", "checkride_license_missing_self_check_execution_requirement"],
     ]) {
       if (!checkrideLicenseGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }
