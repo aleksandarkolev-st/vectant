@@ -3382,7 +3382,7 @@ describe("Agent Dojo MCP tools", () => {
     expect(updatedSkill).toBeTruthy();
     const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
-      requested_action: "run_prefix_validation",
+      requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
       evidence_ledger_records: evidenceLedgerRecordsForProof(updatedSkill!, { record_id: "evidence-graph-preflight-proof" }),
       require_verified_evidence: true,
@@ -3395,7 +3395,7 @@ describe("Agent Dojo MCP tools", () => {
 
     const blocked = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
       skill_id: skillId,
-      requested_action: "run_prefix_validation",
+      requested_action: "run_workflow",
       proof_capsule: capsule,
       tool_args: {
         prefix: "preview",
@@ -3409,7 +3409,7 @@ describe("Agent Dojo MCP tools", () => {
     expect(blocked?.structuredContent).toEqual(expect.objectContaining({
       ok: false,
       skill_id: skillId,
-      requested_action: "run_prefix_validation",
+      requested_action: "run_workflow",
       proof_not_consumed: true,
       validation: expect.objectContaining({
         ok: false,
