@@ -10,6 +10,8 @@ import { resolveCollabHttpUrl, resolveCollabWsUrl } from '@/lib/collab-url';
 import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 import {
+  isRuntimeLoopbackUrl,
+  parseTerminalUrl,
   resolveTerminalLinkUrl,
   terminalLinkHasNestedLoopbackCallback,
   terminalLinkNeedsRuntimeResolution,
@@ -51,6 +53,8 @@ const TERMINAL_SERVER_URL = process.env.NEXT_PUBLIC_TERMINAL_URL
   : resolveCollabWsUrl();
 const TERMINAL_HTTP_URL = resolveCollabHttpUrl();
 const LOOPBACK_AUTH_BRIDGE_PATH = process.env.NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH || '/auth/loopback';
+const BLOCKED_TERMINAL_LINK_PROTOCOLS = new Set(['javascript:', 'data:', 'vbscript:']);
+const EXPLICIT_TERMINAL_LINK_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
@@ -64,6 +68,18 @@ function resolveLoopbackAuthBridgeBaseUrl(origin) {
   } catch {
     return `${origin}/auth/loopback`;
   }
+}
+
+function resolveOpenableTerminalLink(rawUri) {
+  const uri = typeof rawUri === 'string' ? rawUri.trim() : '';
+  const parsed = parseTerminalUrl(uri);
+  if (!parsed || BLOCKED_TERMINAL_LINK_PROTOCOLS.has(parsed.protocol)) {
+    return null;
+  }
+  if (!EXPLICIT_TERMINAL_LINK_SCHEME_RE.test(uri) && !isRuntimeLoopbackUrl(parsed)) {
+    return null;
+  }
+  return parsed.href;
 }
 
 // ─── Terminal Theme (from ThemeProvider) ───────────────────────────────
@@ -245,6 +261,85 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       if (disposed || !containerRef.current) return;
 
+      const runtimeLinkContext = () => {
+        const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
+        const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
+        return {
+          workspaceSlug,
+          ...runtimeIdentity,
+          bridgeBaseUrl: resolveLoopbackAuthBridgeBaseUrl(window.location.origin),
+        };
+      };
+
+      const openLocalBrowserUrl = (uri, popup = null) => {
+        if (popup) {
+          try { popup.opener = null; } catch {}
+          popup.location.href = uri;
+          return;
+        }
+        window.open(uri, '_blank', 'noopener,noreferrer');
+      };
+
+      const openManualLoopbackFallback = async (uri, linkContext) => {
+        const fallbackUrl = await resolveTerminalLinkUrl(uri, linkContext.runtimeScope, {
+          terminalHttpUrl: TERMINAL_HTTP_URL,
+          windowOrigin: window.location.origin,
+          loopbackCallbackBridgeUrl: linkContext.bridgeBaseUrl,
+        });
+        openLocalBrowserUrl(fallbackUrl || uri);
+      };
+
+      const openTerminalLink = (uri) => {
+        try {
+          const localBrowserHref = resolveOpenableTerminalLink(uri);
+          if (!localBrowserHref) {
+            toast.error('Blocked unsafe terminal link');
+            return;
+          }
+
+          const linkContext = runtimeLinkContext();
+          const parsedLink = parseTerminalUrl(uri);
+          const isHttpLink = parsedLink?.protocol === 'http:' || parsedLink?.protocol === 'https:';
+          if (isHttpLink && terminalLinkHasNestedLoopbackCallback(uri)) {
+            openAgentWorkflowExternalUrl({
+              targetUrl: uri,
+              runtime: linkContext,
+            }).then(() => {
+              toast.success('Opened in workspace browser');
+            }).catch((err) => {
+              console.warn('[Terminal] Workspace browser auth open failed:', err);
+              toast.warning('Workspace browser unavailable; opening fallback sign-in helper');
+              openManualLoopbackFallback(uri, linkContext).catch(() => {
+                try { openLocalBrowserUrl(localBrowserHref); } catch {}
+              });
+            });
+            return;
+          }
+
+          const needsRuntimeResolution = terminalLinkNeedsRuntimeResolution(uri);
+          if (!needsRuntimeResolution) {
+            openLocalBrowserUrl(localBrowserHref);
+            return;
+          }
+
+          const popup = window.open('about:blank', '_blank');
+          resolveTerminalLinkUrl(uri, linkContext.runtimeScope, {
+            terminalHttpUrl: TERMINAL_HTTP_URL,
+            windowOrigin: window.location.origin,
+            loopbackCallbackBridgeUrl: linkContext.bridgeBaseUrl,
+          }).then((previewUrl) => {
+            openLocalBrowserUrl(previewUrl || localBrowserHref, popup);
+          }).catch(() => {
+            openLocalBrowserUrl(localBrowserHref, popup);
+          });
+        } catch (_) {
+          const localBrowserHref = resolveOpenableTerminalLink(uri);
+          if (localBrowserHref) {
+            try { openLocalBrowserUrl(localBrowserHref); } catch {}
+          }
+        }
+      };
+
       // ── Create xterm instance ───────────────────────────────────────
       const initialTheme = applyOverridesToTheme(
         terminalTheme || SYNTHI_THEME_FALLBACK,
@@ -260,71 +355,16 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         scrollback: 5000,
         allowTransparency: false,
         convertEol: true,   // Required on Windows — ConPTY can emit bare \n
+        // Handles OSC 8 hyperlinks emitted by CLIs. Without this, xterm shows
+        // its default confirm dialog and opens loopback OAuth links locally.
+        linkHandler: {
+          allowNonHttpProtocols: true,
+          activate: (_event, uri) => openTerminalLink(uri),
+        },
       });
-
-      const runtimeLinkContext = () => {
-        const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
-        const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
-        return {
-          workspaceSlug,
-          ...runtimeIdentity,
-          bridgeBaseUrl: resolveLoopbackAuthBridgeBaseUrl(window.location.origin),
-        };
-      };
-
-      const openManualLoopbackFallback = async (uri, linkContext) => {
-        const fallbackUrl = await resolveTerminalLinkUrl(uri, linkContext.runtimeScope, {
-          terminalHttpUrl: TERMINAL_HTTP_URL,
-          windowOrigin: window.location.origin,
-          loopbackCallbackBridgeUrl: linkContext.bridgeBaseUrl,
-        });
-        window.open(fallbackUrl || uri, '_blank', 'noopener,noreferrer');
-      };
 
       const fitAddon = new FitAddon();
-      const linksAddon = new WebLinksAddon((_event, uri) => {
-        try {
-          const linkContext = runtimeLinkContext();
-          if (terminalLinkHasNestedLoopbackCallback(uri)) {
-            openAgentWorkflowExternalUrl({
-              targetUrl: uri,
-              runtime: linkContext,
-            }).then(() => {
-              toast.success('Opened in workspace browser');
-            }).catch((err) => {
-              console.warn('[Terminal] Workspace browser auth open failed:', err);
-              toast.warning('Workspace browser unavailable; opening fallback sign-in helper');
-              openManualLoopbackFallback(uri, linkContext).catch(() => {
-                try { window.open(uri, '_blank', 'noopener,noreferrer'); } catch {}
-              });
-            });
-            return;
-          }
-
-          const needsRuntimeResolution = terminalLinkNeedsRuntimeResolution(uri);
-          if (!needsRuntimeResolution) {
-            window.open(uri, '_blank', 'noopener,noreferrer');
-            return;
-          }
-
-          const popup = window.open('about:blank', '_blank');
-          resolveTerminalLinkUrl(uri, linkContext.runtimeScope, {
-            terminalHttpUrl: TERMINAL_HTTP_URL,
-            windowOrigin: window.location.origin,
-            loopbackCallbackBridgeUrl: linkContext.bridgeBaseUrl,
-          }).then((previewUrl) => {
-            const targetUrl = previewUrl || uri;
-            if (popup) {
-              try { popup.opener = null; } catch {}
-              popup.location.href = targetUrl;
-            } else {
-              window.open(targetUrl, '_blank', 'noopener,noreferrer');
-            }
-          });
-        } catch (_) {
-          try { window.open(uri, '_blank', 'noopener,noreferrer'); } catch {}
-        }
-      });
+      const linksAddon = new WebLinksAddon((_event, uri) => openTerminalLink(uri));
       term.loadAddon(fitAddon);
       term.loadAddon(linksAddon);
       term.open(containerRef.current);
