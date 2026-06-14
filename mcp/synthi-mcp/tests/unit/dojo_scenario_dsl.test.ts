@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  DOJO_SCENARIO_BASE_BUDGET_MS,
+  DOJO_SCENARIO_TIER_BUDGET_MS,
+  scenarioBudgetMsForTier,
   toDojoScenarioDefinition,
   toDojoScenarioDefinitions,
   validateDojoScenarioDefinition,
@@ -51,6 +54,22 @@ describe("Dojo scenario DSL", () => {
       "fake_database_state",
     ]));
     expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
+  });
+
+  it("uses a tiered wall-clock budget that is stable under parallel integration load", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "fake_success",
+      simulator_tier: 2,
+      risk_tags: ["fake_success", "evidence_required"],
+    }));
+
+    expect(definition.budget).toEqual(expect.objectContaining({
+      max_runs: 1,
+      max_estimated_ms: DOJO_SCENARIO_BASE_BUDGET_MS + 2 * DOJO_SCENARIO_TIER_BUDGET_MS,
+      max_model_calls: 0,
+    }));
+    expect(scenarioBudgetMsForTier(-1)).toBe(DOJO_SCENARIO_BASE_BUDGET_MS);
+    expect(scenarioBudgetMsForTier(2.9)).toBe(DOJO_SCENARIO_BASE_BUDGET_MS + 2 * DOJO_SCENARIO_TIER_BUDGET_MS);
   });
 
   it("rejects invalid scenarios without oracle or synthetic fixtures", () => {

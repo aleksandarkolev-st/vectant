@@ -75,6 +75,9 @@ export interface DojoScenarioDefinitionValidation {
   issues: DojoScenarioDefinitionValidationIssue[];
 }
 
+export const DOJO_SCENARIO_BASE_BUDGET_MS = 1000;
+export const DOJO_SCENARIO_TIER_BUDGET_MS = 250;
+
 export function toDojoScenarioDefinitions(
   scenarios: DojoScenario[],
   input: {
@@ -113,7 +116,7 @@ export function toDojoScenarioDefinition(
     },
     budget: {
       max_runs: 1,
-      max_estimated_ms: 50 + scenario.simulator_tier * 25,
+      max_estimated_ms: scenarioBudgetMsForTier(scenario.simulator_tier),
       max_model_calls: 0,
     },
     provenance: {
@@ -121,6 +124,11 @@ export function toDojoScenarioDefinition(
       risk_tags: [...scenario.risk_tags],
     },
   };
+}
+
+export function scenarioBudgetMsForTier(simulatorTier: number): number {
+  const normalizedTier = Number.isFinite(simulatorTier) ? Math.max(0, Math.floor(simulatorTier)) : 0;
+  return DOJO_SCENARIO_BASE_BUDGET_MS + normalizedTier * DOJO_SCENARIO_TIER_BUDGET_MS;
 }
 
 export function validateDojoScenarioDefinition(
