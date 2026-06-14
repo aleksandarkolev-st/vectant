@@ -10,6 +10,10 @@ import { resolveCollabHttpUrl, resolveCollabWsUrl } from '@/lib/collab-url';
 import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 import {
+  resolveTerminalLinkUrl,
+  terminalLinkNeedsRuntimeResolution,
+} from '@/lib/terminal-preview-links';
+import {
   TERMINAL_COLOR_KEYS,
   getTerminalOverrides,
   setTerminalOverrides,
@@ -47,58 +51,6 @@ const TERMINAL_HTTP_URL = resolveCollabHttpUrl();
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
-const LOCAL_PREVIEW_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
-
-function parseTerminalUrl(rawUri) {
-  if (!rawUri || typeof rawUri !== 'string') return null;
-  try {
-    return new URL(rawUri);
-  } catch (_) {
-    try {
-      return new URL(`http://${rawUri}`);
-    } catch (_) {
-      return null;
-    }
-  }
-}
-
-function buildRuntimePreviewPathUrl(rawUri, runtimeScope) {
-  if (!runtimeScope || typeof window === 'undefined') return null;
-  const parsed = parseTerminalUrl(rawUri);
-  if (!parsed || !parsed.port) return null;
-  const host = parsed.hostname;
-  if (!LOCAL_PREVIEW_HOSTS.has(host)) return null;
-
-  const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '/';
-  return `${window.location.origin}/collab/runtime/${encodeURIComponent(runtimeScope)}/port/${encodeURIComponent(parsed.port)}${path}${parsed.search}${parsed.hash}`;
-}
-
-async function resolveRuntimePreviewUrl(rawUri, runtimeScope) {
-  const fallbackUrl = buildRuntimePreviewPathUrl(rawUri, runtimeScope);
-  const parsed = parseTerminalUrl(rawUri);
-  if (!runtimeScope || !parsed || !parsed.port || !LOCAL_PREVIEW_HOSTS.has(parsed.hostname)) {
-    return fallbackUrl || rawUri;
-  }
-
-  try {
-    const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '/';
-    const previewPath = `${path}${parsed.search}${parsed.hash}`;
-    const params = new URLSearchParams({
-      runtimeScope,
-      port: parsed.port,
-      path: previewPath,
-    });
-    const response = await fetch(`${TERMINAL_HTTP_URL.replace(/\/+$/, '')}/preview-url?${params.toString()}`, {
-      method: 'GET',
-      credentials: 'same-origin',
-    });
-    if (!response.ok) return fallbackUrl || rawUri;
-    const data = await response.json();
-    return data?.url || data?.publicUrl || fallbackUrl || rawUri;
-  } catch (_) {
-    return fallbackUrl || rawUri;
-  }
-}
 
 // ─── Terminal Theme (from ThemeProvider) ───────────────────────────────
 // The `useTheme()` hook provides `terminalTheme` generated from the active
@@ -301,16 +253,18 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         try {
           const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
           const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
-          const fallbackUrl = buildRuntimePreviewPathUrl(uri, runtimeIdentity.runtimeScope);
-          const isRuntimePreview = Boolean(fallbackUrl);
-          if (!isRuntimePreview) {
+          const needsRuntimeResolution = terminalLinkNeedsRuntimeResolution(uri);
+          if (!needsRuntimeResolution) {
             window.open(uri, '_blank', 'noopener,noreferrer');
             return;
           }
 
           const popup = window.open('about:blank', '_blank');
-          resolveRuntimePreviewUrl(uri, runtimeIdentity.runtimeScope).then((previewUrl) => {
-            const targetUrl = previewUrl || fallbackUrl || uri;
+          resolveTerminalLinkUrl(uri, runtimeIdentity.runtimeScope, {
+            terminalHttpUrl: TERMINAL_HTTP_URL,
+            windowOrigin: window.location.origin,
+          }).then((previewUrl) => {
+            const targetUrl = previewUrl || uri;
             if (popup) {
               try { popup.opener = null; } catch {}
               popup.location.href = targetUrl;
