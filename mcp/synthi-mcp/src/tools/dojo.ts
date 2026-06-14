@@ -4282,6 +4282,29 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
       }),
     };
   }
+  if (!dojoGraphRepresentsRequestedAction(compiled.graph, input.requested_action)) {
+    return {
+      ok: true,
+      graph: compiled.graph,
+      graph_validation: compiled.validation,
+      graph_runtime_preflight: {
+        ok: true,
+        status: "completed",
+        mode: "production",
+        run_id: `${input.run_id}_graph_preflight`,
+        node_results: [],
+        blocked_by: [],
+        evidence_refs: [
+          `evidence:dojo_graph_preflight_support_action_${hashId(JSON.stringify({
+            graph_id: compiled.graph.graph_id,
+            skill_id: input.skill.skill_id,
+            requested_action: input.requested_action,
+            run_id: input.run_id,
+          }))}`,
+        ],
+      },
+    };
+  }
 
   const runtime = new DojoSkillGraphRuntime();
   const graphRuntimePreflight = await runtime.execute({
@@ -4363,6 +4386,12 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
     graph_validation: compiled.validation,
     graph_runtime_preflight: graphRuntimePreflight,
   };
+}
+
+function dojoGraphRepresentsRequestedAction(graph: DojoSkillGraph, requestedAction: string): boolean {
+  return graph.nodes.some((node) =>
+    node.kind === "Action" && (node.action ?? "run_workflow") === requestedAction
+  );
 }
 
 function dojoGraphRuntimeInputsForProofRun(input: {

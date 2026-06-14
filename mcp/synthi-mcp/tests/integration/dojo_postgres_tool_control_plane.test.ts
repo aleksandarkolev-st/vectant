@@ -1687,6 +1687,14 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         status: "active",
       }),
       proof_consume: expect.objectContaining({ ok: true, status: "used" }),
+      graph_runtime_preflight: expect.objectContaining({
+        ok: true,
+        status: "completed",
+        node_results: [],
+        evidence_refs: expect.arrayContaining([
+          expect.stringMatching(/^evidence:dojo_graph_preflight_support_action_/),
+        ]),
+      }),
       proof_record: expect.objectContaining({
         capsule_id: issued.proof_capsule.capsule_id,
         status: "used",
