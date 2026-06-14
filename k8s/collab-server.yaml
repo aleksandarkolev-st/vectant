@@ -120,6 +120,16 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_HOSTED_BROWSER_CDP_PORT
+            - name: SYNTHI_HOSTED_BROWSER_VIEW_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_HOSTED_BROWSER_VIEW_PORT
+            - name: SYNTHI_HOSTED_BROWSER_VNC_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_HOSTED_BROWSER_VNC_PORT
             - name: SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES
               valueFrom:
                 configMapKeyRef:

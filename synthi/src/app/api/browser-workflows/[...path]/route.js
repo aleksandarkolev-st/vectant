@@ -6,6 +6,7 @@ export const runtime = 'nodejs';
 
 const DEFAULT_LOCAL_BRIDGE_URL = 'http://127.0.0.1:9466';
 const BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
+const HOSTED_BROWSER_VIEWER_PATH = '/vnc.html?autoconnect=1&resize=scale&reconnect=1';
 
 function hashRuntimeScopePart(value) {
   const text = String(value || 'unknown');
@@ -188,6 +189,41 @@ function workflowBridgeBaseUrl(runtimeScope) {
   return process.env.NODE_ENV === 'production' ? '' : DEFAULT_LOCAL_BRIDGE_URL;
 }
 
+function normalizePathPrefix(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw === '/') return '';
+  return `/${raw.replace(/^\/+|\/+$/g, '')}`;
+}
+
+function normalizePreviewProtocol(value) {
+  const raw = String(value || '').trim().toLowerCase().replace(/:$/, '');
+  return raw === 'http' ? 'http' : 'https';
+}
+
+function hostedBrowserViewerPort() {
+  const rawPort = String(process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT || '6080').trim();
+  const port = Number(rawPort);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+function hostedBrowserViewerUrl(runtimeScope) {
+  if (!runtimeScope) return null;
+
+  const port = hostedBrowserViewerPort();
+  if (!port) return null;
+
+  const runtimeId = runtimeResourceId(runtimeScope);
+  const publicDomain = String(process.env.SYNTHI_PREVIEW_PUBLIC_DOMAIN || '').trim().toLowerCase().replace(/\.$/, '');
+  const viewerPath = HOSTED_BROWSER_VIEWER_PATH;
+  if (publicDomain) {
+    const protocol = normalizePreviewProtocol(process.env.SYNTHI_PREVIEW_PUBLIC_PROTOCOL || 'https');
+    return `${protocol}://p${port}-${runtimeId}.${publicDomain}${viewerPath}`;
+  }
+
+  const prefix = normalizePathPrefix(process.env.SYNTHI_PREVIEW_PUBLIC_PREFIX || '/collab');
+  return `${prefix}/runtime/${encodeURIComponent(runtimeScope)}/port/${port}${viewerPath}`;
+}
+
 function responseHeaders(upstream) {
   const headers = new Headers();
   const contentType = upstream.headers.get('content-type');
@@ -289,6 +325,25 @@ export async function proxyWorkflowBridge(request, routeContext) {
 
   try {
     const upstream = await fetch(upstreamUrl, init);
+    if (path === 'open-external' && request.method === 'POST') {
+      const body = await upstream.json().catch(() => ({}));
+      const viewerUrl = hostedBrowserViewerUrl(runtimeContext.runtimeScope);
+      return NextResponse.json(
+        viewerUrl
+          ? {
+              ...body,
+              workspaceBrowser: {
+                kind: 'novnc',
+                url: viewerUrl,
+                port: hostedBrowserViewerPort(),
+                runtimeScope: runtimeContext.runtimeScope,
+                runtimeId: runtimeResourceId(runtimeContext.runtimeScope),
+              },
+            }
+          : body,
+        { status: upstream.status },
+      );
+    }
     return new NextResponse(upstream.body, {
       status: upstream.status,
       headers: responseHeaders(upstream),

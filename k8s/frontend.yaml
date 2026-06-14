@@ -153,6 +153,26 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT
+            - name: SYNTHI_HOSTED_BROWSER_VIEW_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_HOSTED_BROWSER_VIEW_PORT
+            - name: SYNTHI_PREVIEW_PUBLIC_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_PUBLIC_DOMAIN
+            - name: SYNTHI_PREVIEW_PUBLIC_PROTOCOL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_PUBLIC_PROTOCOL
+            - name: SYNTHI_PREVIEW_PUBLIC_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_PUBLIC_PREFIX
             - name: SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN
               valueFrom:
                 secretKeyRef:

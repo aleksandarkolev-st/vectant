@@ -62,6 +62,8 @@ const WORKFLOW_BRIDGE_PORT = parseSinglePort(process.env.SYNTHI_BROWSER_WORKFLOW
 const WORKFLOW_EXTERNAL_OPEN_BODY_LIMIT_BYTES = parsePositiveInt(process.env.SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES, 20_000);
 const WORKFLOW_EXTERNAL_OPEN_TIMEOUT_MS = parsePositiveInt(process.env.SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS, 15_000);
 const HOSTED_BROWSER_CDP_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT, 9222);
+const HOSTED_BROWSER_VIEW_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT, 6080);
+const HOSTED_BROWSER_VNC_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_VNC_PORT, 5900);
 
 // ── K8s client ─────────────────────────────────────────────────────────────
 
@@ -269,15 +271,32 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
       args: [
         [
           'set -euo pipefail',
+          'export DISPLAY="${DISPLAY:-:99}"',
           'BROWSER="$(node -e "const { chromium } = require(\'playwright-core\'); process.stdout.write(chromium.executablePath())")"',
-          'exec "$BROWSER" --headless=new --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-address=0.0.0.0 --remote-debugging-port="$SYNTHI_HOSTED_BROWSER_CDP_PORT" --user-data-dir=/tmp/synthi-chrome-profile about:blank',
+          'VIEW_SIZE="${SYNTHI_HOSTED_BROWSER_VIEW_SIZE:-1366x768x24}"',
+          'WINDOW_SIZE="${SYNTHI_HOSTED_BROWSER_WINDOW_SIZE:-1366,768}"',
+          'rm -f /tmp/.X99-lock',
+          'Xvfb "$DISPLAY" -screen 0 "$VIEW_SIZE" -ac +extension GLX +render -noreset &',
+          'XVFB_PID="$!"',
+          'sleep 0.5',
+          'x11vnc -display "$DISPLAY" -localhost -nopw -shared -forever -rfbport "$SYNTHI_HOSTED_BROWSER_VNC_PORT" -quiet &',
+          'VNC_PID="$!"',
+          'websockify --web=/usr/share/novnc "$SYNTHI_HOSTED_BROWSER_VIEW_PORT" "127.0.0.1:$SYNTHI_HOSTED_BROWSER_VNC_PORT" &',
+          'NOVNC_PID="$!"',
+          '"$BROWSER" --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-address=0.0.0.0 --remote-debugging-port="$SYNTHI_HOSTED_BROWSER_CDP_PORT" --user-data-dir=/tmp/synthi-chrome-profile --window-size="$WINDOW_SIZE" --start-maximized about:blank &',
+          'BROWSER_PID="$!"',
+          'trap \'kill "$BROWSER_PID" "$NOVNC_PID" "$VNC_PID" "$XVFB_PID" 2>/dev/null || true\' EXIT TERM INT',
+          'wait "$BROWSER_PID"',
         ].join('\n'),
       ],
       env: [
         { name: 'SYNTHI_HOSTED_BROWSER_CDP_PORT', value: String(HOSTED_BROWSER_CDP_PORT) },
+        { name: 'SYNTHI_HOSTED_BROWSER_VIEW_PORT', value: String(HOSTED_BROWSER_VIEW_PORT) },
+        { name: 'SYNTHI_HOSTED_BROWSER_VNC_PORT', value: String(HOSTED_BROWSER_VNC_PORT) },
       ],
       ports: [
         { name: 'cdp', containerPort: HOSTED_BROWSER_CDP_PORT },
+        { name: 'browser-view', containerPort: HOSTED_BROWSER_VIEW_PORT },
       ],
       resources: {
         requests: { cpu: '200m', memory: '512Mi' },
@@ -288,7 +307,7 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
           command: [
             'node',
             '-e',
-            `fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
+            `Promise.all([fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version'),fetch('http://127.0.0.1:${HOSTED_BROWSER_VIEW_PORT}/vnc.html')]).then(rs=>process.exit(rs.every(r=>r.ok)?0:1)).catch(()=>process.exit(1))`,
           ],
         },
         initialDelaySeconds: 3,
@@ -299,7 +318,7 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
           command: [
             'node',
             '-e',
-            `fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
+            `Promise.all([fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version'),fetch('http://127.0.0.1:${HOSTED_BROWSER_VIEW_PORT}/vnc.html')]).then(rs=>process.exit(rs.every(r=>r.ok)?0:1)).catch(()=>process.exit(1))`,
           ],
         },
         initialDelaySeconds: 15,

@@ -162,6 +162,16 @@ This keeps user app assets, HMR WebSockets, cookies, localStorage, and service
 workers rooted at `/` on an isolated origin. The fallback path proxy under
 `/collab/runtime/.../port/...` remains only for local/debug use.
 
+The same preview-domain machinery exposes the per-runtime workspace browser
+viewer used for terminal OAuth flows:
+
+```text
+https://p6080-rt-<runtime-id>.preview.vectant.dev/vnc.html?autoconnect=1&resize=scale&reconnect=1
+```
+
+`6080` is configurable through `SYNTHI_HOSTED_BROWSER_VIEW_PORT`; it is a
+reserved runtime infrastructure port, not a user application port.
+
 The `preview.vectant.dev` sub-zone is delegated to Cloud DNS, and
 `*.preview.vectant.dev` points at the same static IP as `beta.vectant.dev`.
 Wildcard TLS is issued by cert-manager using ACME DNS-01 with Cloud DNS:
