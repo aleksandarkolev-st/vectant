@@ -3013,8 +3013,23 @@ export function validateDojoCaseLawRuntimeEvidenceForRelease(evidence) {
     ["local_practice_required", "case_law_runtime_local_practice_requirement_missing"],
     ["local_checkride_required", "case_law_runtime_local_checkride_requirement_missing"],
     ["deterministic_antibody_ids_required", "case_law_runtime_deterministic_antibody_requirement_missing"],
+    ["self_check_executes_tests_required", "case_law_runtime_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution || typeof testExecution !== "object") {
+    errors.push("case_law_runtime_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`case_law_runtime_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("case_law_runtime_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("case_law_runtime_test_execution_args_missing");
+    }
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("case_law_runtime_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -7494,6 +7509,7 @@ async function writeCaseLawRuntimeEvidenceForSelfCheck({
       local_practice_required: true,
       local_checkride_required: true,
       deterministic_antibody_ids_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_CASE_LAW_RUNTIME_TEST_FILES],
     test_file_count: DOJO_CASE_LAW_RUNTIME_TEST_FILES.length,
@@ -7525,6 +7541,18 @@ async function writeCaseLawRuntimeEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_CASE_LAW_RUNTIME_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 100,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);

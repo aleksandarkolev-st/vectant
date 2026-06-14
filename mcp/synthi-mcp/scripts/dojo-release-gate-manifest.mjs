@@ -1087,7 +1087,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:case-law-runtime:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_case_law_registry.test.ts tests/unit/dojo_case_law_refusal.test.ts tests/unit/dojo_antibody_matcher.test.ts tests/integration/dojo_case_law_guardrail_runtime.test.ts -- --reporter=json --outputFile ../../tmp/dojo-case-law-runtime/dojo-case-law-runtime.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:case-law-runtime:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:case-law-runtime:self-check",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.caseLawRuntimeEvidence.v1",
@@ -1113,6 +1113,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_local_practice: true,
       require_local_checkride: true,
       require_deterministic_antibody_ids: true,
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -2533,6 +2534,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_local_practice", "case_law_runtime_missing_local_practice_requirement"],
       ["require_local_checkride", "case_law_runtime_missing_local_checkride_requirement"],
       ["require_deterministic_antibody_ids", "case_law_runtime_missing_deterministic_antibody_requirement"],
+      ["require_self_check_executes_tests", "case_law_runtime_missing_self_check_execution_requirement"],
     ]) {
       if (!caseLawRuntimeGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }

@@ -856,6 +856,7 @@ describe("Dojo release gate manifest", () => {
           require_local_practice: true,
           require_local_checkride: true,
           require_deterministic_antibody_ids: true,
+          require_self_check_executes_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -1356,9 +1357,11 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingCaseLawRuntimeTestFile);
     caseLawRuntimeGate.release_artifact_requirements.require_antibody_matching = false;
     caseLawRuntimeGate.release_artifact_requirements.require_antibody_private_data_redaction = false;
+    caseLawRuntimeGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenCaseLawRuntime, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "case_law_runtime_missing_antibody_matching_requirement",
       "case_law_runtime_missing_antibody_private_data_requirement",
+      "case_law_runtime_missing_self_check_execution_requirement",
       "case_law_runtime_missing_required_capabilities:antibody_matcher_proposes_without_binding",
       `case_law_runtime_missing_required_test_files:${missingCaseLawRuntimeTestFile}`,
     ]));

@@ -2435,6 +2435,24 @@ describe("Dojo release gate artifact verifier", () => {
       "case_law_runtime_antibody_private_data_requirement_missing",
     ]));
 
+    const missingExecutionPath = await writeCaseLawRuntimeEvidenceFixture({
+      dir,
+      basename: "missing-execution-case-law-runtime",
+      evidence: caseLawRuntimeEvidenceFixture({
+        case_law_contract: {
+          ...caseLawRuntimeEvidenceFixture().case_law_contract,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    const missingExecution = await verifyDojoCaseLawRuntimeEvidenceArtifact({ evidencePath: missingExecutionPath });
+    expect(missingExecution.ok).toBe(false);
+    expect(missingExecution.errors).toEqual(expect.arrayContaining([
+      "case_law_runtime_self_check_execution_requirement_missing",
+      "case_law_runtime_test_execution_missing",
+    ]));
+
     const driftedPath = await writeCaseLawRuntimeEvidenceFixture({
       dir,
       basename: "drifted-case-law-runtime",
@@ -5678,6 +5696,7 @@ function caseLawRuntimeEvidenceFixture(overrides = {}) {
       local_practice_required: true,
       local_checkride_required: true,
       deterministic_antibody_ids_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_CASE_LAW_RUNTIME_TEST_FILES],
     test_file_count: DOJO_CASE_LAW_RUNTIME_TEST_FILES.length,
@@ -5698,6 +5717,18 @@ function caseLawRuntimeEvidenceFixture(overrides = {}) {
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
     json_report_bytes: Buffer.byteLength(jsonReport),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_CASE_LAW_RUNTIME_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 123,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
 }
