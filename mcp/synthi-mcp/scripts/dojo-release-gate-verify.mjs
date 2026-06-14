@@ -1095,8 +1095,23 @@ export function validateDojoImplementationStatusEvidenceForRelease(evidence) {
     ["ghost_mode_non_mutating_boundary_required", "implementation_status_ghost_mode_boundary_requirement_missing"],
     ["control_plane_write_boundary_required", "implementation_status_control_plane_boundary_requirement_missing"],
     ["immutable_metadata_required", "implementation_status_immutable_metadata_requirement_missing"],
+    ["self_check_executes_tests_required", "implementation_status_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution || typeof testExecution !== "object") {
+    errors.push("implementation_status_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`implementation_status_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("implementation_status_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("implementation_status_test_execution_args_missing");
+    }
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("implementation_status_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -3977,6 +3992,7 @@ async function runSelfCheck({ outDir }) {
         ...implementationStatusArtifacts.evidence.implementation_status_contract,
         production_runtime_claim_boundary_required: false,
         runtime_scope_required_for_executable_required: false,
+        self_check_executes_tests_required: false,
       },
     },
   });
@@ -3987,6 +4003,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedImplementationStatus.errors.includes("implementation_status_missing_capabilities:no_mature_production_runtime_claims"));
   assert(rejectedImplementationStatus.errors.includes("implementation_status_production_boundary_requirement_missing"));
   assert(rejectedImplementationStatus.errors.includes("implementation_status_runtime_scope_requirement_missing"));
+  assert(rejectedImplementationStatus.errors.includes("implementation_status_self_check_execution_requirement_missing"));
 
   const dockerDir = path.join(outDir, "docker-integration");
   await mkdir(dockerDir, { recursive: true });
@@ -6038,6 +6055,7 @@ async function writeImplementationStatusEvidenceForSelfCheck({
       ghost_mode_non_mutating_boundary_required: true,
       control_plane_write_boundary_required: true,
       immutable_metadata_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_IMPLEMENTATION_STATUS_TEST_FILES],
     test_file_count: DOJO_IMPLEMENTATION_STATUS_TEST_FILES.length,
@@ -6063,6 +6081,18 @@ async function writeImplementationStatusEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_IMPLEMENTATION_STATUS_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 100,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);

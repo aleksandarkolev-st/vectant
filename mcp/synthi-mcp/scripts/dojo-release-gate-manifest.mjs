@@ -261,7 +261,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T1",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:implementation-status:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_implementation_status.test.ts -- --reporter=json --outputFile ../../tmp/dojo-implementation-status/dojo-implementation-status.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:implementation-status:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:implementation-status:self-check",
     required_for: ["milestone", "release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.implementationStatusEvidence.v1",
@@ -281,6 +281,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_ghost_mode_non_mutating_boundary: true,
       require_control_plane_write_boundary: true,
       require_immutable_metadata: true,
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -1444,6 +1445,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_ghost_mode_non_mutating_boundary", "implementation_status_missing_ghost_mode_boundary_requirement"],
       ["require_control_plane_write_boundary", "implementation_status_missing_control_plane_boundary_requirement"],
       ["require_immutable_metadata", "implementation_status_missing_immutable_metadata_requirement"],
+      ["require_self_check_executes_tests", "implementation_status_missing_self_check_execution_requirement"],
     ]) {
       if (!implementationStatusGate.artifact_requirements?.[requirement]) errors.push(errorCode);
     }

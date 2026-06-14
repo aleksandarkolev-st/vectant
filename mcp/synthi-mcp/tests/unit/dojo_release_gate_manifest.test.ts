@@ -221,6 +221,7 @@ describe("Dojo release gate manifest", () => {
           require_ghost_mode_non_mutating_boundary: true,
           require_control_plane_write_boundary: true,
           require_immutable_metadata: true,
+          require_self_check_executes_tests: true,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -1045,9 +1046,11 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingImplementationStatusTestFile);
     implementationStatusGate.artifact_requirements.require_production_runtime_claim_boundary = false;
     implementationStatusGate.artifact_requirements.require_runtime_scope_for_executable = false;
+    implementationStatusGate.artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenImplementationStatus, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "implementation_status_missing_production_boundary_requirement",
       "implementation_status_missing_runtime_scope_requirement",
+      "implementation_status_missing_self_check_execution_requirement",
       "implementation_status_missing_required_capabilities:no_mature_production_runtime_claims",
       `implementation_status_missing_required_test_files:${missingImplementationStatusTestFile}`,
     ]));
