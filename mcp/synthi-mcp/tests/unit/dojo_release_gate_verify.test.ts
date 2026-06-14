@@ -55,6 +55,10 @@ import {
   DOJO_GHOST_MODE_EVIDENCE_TEST_FILES,
 } from "../../scripts/dojo-ghost-mode-evidence-self-check.mjs";
 import {
+  DOJO_SKILL_PASSPORT_CAPABILITIES,
+  DOJO_SKILL_PASSPORT_TEST_FILES,
+} from "../../scripts/dojo-skill-passport-self-check.mjs";
+import {
   DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "../../scripts/dojo-hosted-runtime-gateway-self-check.mjs";
@@ -101,6 +105,7 @@ import {
   validateDojoGovernanceLifecycleEvidenceForRelease,
   validateDojoGraphRuntimeEvidenceForRelease,
   validateDojoGhostModeEvidenceForRelease,
+  validateDojoSkillPassportEvidenceForRelease,
   validateDojoTimeMachineDebuggerEvidenceForRelease,
   validateDojoHostedRuntimeGatewayEvidenceForRelease,
   validateDojoVivariumRuntimeEvidenceForRelease,
@@ -125,6 +130,7 @@ import {
   verifyDojoGovernanceLifecycleEvidenceArtifact,
   verifyDojoGraphRuntimeEvidenceArtifact,
   verifyDojoGhostModeEvidenceArtifact,
+  verifyDojoSkillPassportEvidenceArtifact,
   verifyDojoTimeMachineDebuggerEvidenceArtifact,
   verifyDojoHostedRuntimeGatewayEvidenceArtifact,
   verifyDojoVivariumRuntimeEvidenceArtifact,
@@ -1081,6 +1087,7 @@ describe("Dojo release gate artifact verifier", () => {
     const governanceLifecycleEvidencePath = await writeGovernanceLifecycleEvidenceFixture({ dir });
     const graphRuntimeEvidencePath = await writeGraphRuntimeEvidenceFixture({ dir });
     const ghostModeEvidencePath = await writeGhostModeEvidenceFixture({ dir });
+    const skillPassportEvidencePath = await writeSkillPassportEvidenceFixture({ dir });
     const timeMachineDebuggerEvidencePath = await writeTimeMachineDebuggerEvidenceFixture({ dir });
     const vivariumRuntimeEvidencePath = await writeVivariumRuntimeEvidenceFixture({ dir });
     const caseLawRuntimeEvidencePath = await writeCaseLawRuntimeEvidenceFixture({ dir });
@@ -1139,6 +1146,7 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check").default_evidence_path = governanceLifecycleEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_graph_runtime_self_check").default_evidence_path = graphRuntimeEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_ghost_mode_evidence_self_check").default_evidence_path = ghostModeEvidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_skill_passport_self_check").default_evidence_path = skillPassportEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_time_machine_debugger_self_check").default_evidence_path = timeMachineDebuggerEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_vivarium_runtime_self_check").default_evidence_path = vivariumRuntimeEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_case_law_runtime_self_check").default_evidence_path = caseLawRuntimeEvidencePath;
@@ -1173,6 +1181,7 @@ describe("Dojo release gate artifact verifier", () => {
         "governance-lifecycle-evidence": governanceLifecycleEvidencePath,
         "graph-runtime-evidence": graphRuntimeEvidencePath,
         "ghost-mode-evidence": ghostModeEvidencePath,
+        "skill-passport-evidence": skillPassportEvidencePath,
         "time-machine-debugger-evidence": timeMachineDebuggerEvidencePath,
         "vivarium-runtime-evidence": vivariumRuntimeEvidencePath,
         "case-law-runtime-evidence": caseLawRuntimeEvidencePath,
@@ -1281,6 +1290,13 @@ describe("Dojo release gate artifact verifier", () => {
         id: "dojo_ghost_mode_evidence_self_check",
         ok: true,
         evidence_path: ghostModeEvidencePath,
+      }),
+    ]);
+    expect(verified.skill_passport).toEqual([
+      expect.objectContaining({
+        id: "dojo_skill_passport_self_check",
+        ok: true,
+        evidence_path: skillPassportEvidencePath,
       }),
     ]);
     expect(verified.time_machine_debugger).toEqual([
@@ -1637,6 +1653,71 @@ describe("Dojo release gate artifact verifier", () => {
       "ghost_mode_required_capabilities_missing:postgres_ghost_shadow_rejects_mutating_evidence",
       "ghost_mode_required_capabilities_untested:postgres_ghost_shadow_rejects_mutating_evidence",
       `ghost_mode_required_test_files_missing:${DOJO_GHOST_MODE_EVIDENCE_TEST_FILES.join(",")}`,
+    ]));
+  });
+
+  it("verifies Skill Passport evidence coverage and report-only consumer trust contract", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-skill-passport-verify-"));
+    const evidencePath = await writeSkillPassportEvidenceFixture({ dir });
+
+    expect(validateDojoSkillPassportEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoSkillPassportEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_skill_passport_self_check",
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = skillPassportEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["skill_passport_report_only_status"],
+      skill_passport_contract: {
+        ...skillPassportEvidenceFixture().skill_passport_contract,
+        report_only_status_required: false,
+        raw_payload_redaction_required: false,
+      },
+    });
+    const incompletePath = await writeSkillPassportEvidenceFixture({
+      dir,
+      basename: "incomplete-skill-passport",
+      evidence: incomplete,
+    });
+    const rejected = await verifyDojoSkillPassportEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "skill_passport_not_ok",
+      "skill_passport_coverage_incomplete",
+      "skill_passport_missing_capabilities:skill_passport_report_only_status",
+      "skill_passport_report_only_requirement_missing",
+      "skill_passport_redaction_requirement_missing",
+    ]));
+
+    const driftedPath = await writeSkillPassportEvidenceFixture({
+      dir,
+      basename: "drifted-skill-passport",
+      evidence: skillPassportEvidenceFixture({
+        configured_capabilities: DOJO_SKILL_PASSPORT_CAPABILITIES
+          .filter((capability) => capability !== "skill_passport_report_only_status"),
+        tested_capabilities: DOJO_SKILL_PASSPORT_CAPABILITIES
+          .filter((capability) => capability !== "skill_passport_report_only_status"),
+        capability_count: DOJO_SKILL_PASSPORT_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_SKILL_PASSPORT_CAPABILITIES.length - 1,
+        test_files: [],
+        test_file_count: 0,
+        reported_test_file_count: 0,
+      }),
+    });
+    expect((await verifyDojoSkillPassportEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "skill_passport_required_capabilities_missing:skill_passport_report_only_status",
+      "skill_passport_required_capabilities_untested:skill_passport_report_only_status",
+      `skill_passport_required_test_files_missing:${DOJO_SKILL_PASSPORT_TEST_FILES.join(",")}`,
     ]));
   });
 
@@ -4084,6 +4165,109 @@ function ghostModeJsonReportFixtureText() {
         startTime: 0,
         endTime: 100,
         assertionResults: DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+}
+
+async function writeSkillPassportEvidenceFixture({
+  dir,
+  basename = "dojo-skill-passport",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "skill passport suite passed\n";
+  const stderr = "";
+  const jsonReport = skillPassportJsonReportFixtureText();
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? skillPassportEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(body, null, 2), "utf8");
+  return evidencePath;
+}
+
+function skillPassportEvidenceFixture(overrides = {}) {
+  const stdout = "skill passport suite passed\n";
+  const stderr = "";
+  const jsonReport = skillPassportJsonReportFixtureText();
+  return {
+    schema_version: "synthi.dojo.skillPassportEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_SKILL_PASSPORT_CAPABILITIES],
+    tested_capabilities: [...DOJO_SKILL_PASSPORT_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_SKILL_PASSPORT_CAPABILITIES.length,
+    configured_capability_count: DOJO_SKILL_PASSPORT_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    skill_passport_contract: {
+      report_only_status_required: true,
+      license_scope_required: true,
+      readiness_scope_required: true,
+      proof_scope_required: true,
+      coverage_and_attack_metrics_required: true,
+      published_tool_scope_required: true,
+      skill_card_action_grouping_required: true,
+      proof_badge_required: true,
+      practice_guardrail_counts_required: true,
+      passport_export_required: true,
+      raw_payload_redaction_required: true,
+    },
+    test_files: [...DOJO_SKILL_PASSPORT_TEST_FILES],
+    test_file_count: DOJO_SKILL_PASSPORT_TEST_FILES.length,
+    reported_test_file_count: DOJO_SKILL_PASSPORT_TEST_FILES.length,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: DOJO_SKILL_PASSPORT_CAPABILITIES.length,
+      passed_tests: DOJO_SKILL_PASSPORT_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: overrides.stdout_path || path.join(tmpdir(), "dojo-skill-passport.stdout.log"),
+    stderr_path: overrides.stderr_path || path.join(tmpdir(), "dojo-skill-passport.stderr.log"),
+    json_report_path: overrides.json_report_path || path.join(tmpdir(), "dojo-skill-passport.vitest.json"),
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    json_report_sha256: sha256(jsonReport),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function skillPassportJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_SKILL_PASSPORT_CAPABILITIES.length,
+    numPassedTests: DOJO_SKILL_PASSPORT_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_SKILL_PASSPORT_TEST_FILES.length,
+    numPassedTestSuites: DOJO_SKILL_PASSPORT_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_SKILL_PASSPORT_CAPABILITIES.map((capability, index) => ({
           fullName: `release verifier fixture covers ${capability}`,
           title: `release verifier fixture covers ${capability}`,
           status: "passed",

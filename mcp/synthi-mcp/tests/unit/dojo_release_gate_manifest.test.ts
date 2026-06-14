@@ -55,6 +55,10 @@ import {
   DOJO_GHOST_MODE_EVIDENCE_TEST_FILES,
 } from "../../scripts/dojo-ghost-mode-evidence-self-check.mjs";
 import {
+  DOJO_SKILL_PASSPORT_CAPABILITIES,
+  DOJO_SKILL_PASSPORT_TEST_FILES,
+} from "../../scripts/dojo-skill-passport-self-check.mjs";
+import {
   DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "../../scripts/dojo-hosted-runtime-gateway-self-check.mjs";
@@ -107,6 +111,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:governance-lifecycle:self-check": "node scripts/dojo-governance-lifecycle-self-check.mjs",
     "proof:dojo:graph-runtime:self-check": "node scripts/dojo-graph-runtime-self-check.mjs",
     "proof:dojo:ghost-mode-evidence:self-check": "node scripts/dojo-ghost-mode-evidence-self-check.mjs",
+    "proof:dojo:skill-passport:self-check": "node scripts/dojo-skill-passport-self-check.mjs",
     "proof:dojo:time-machine-debugger:self-check": "node scripts/dojo-time-machine-debugger-self-check.mjs",
     "proof:dojo:vivarium-runtime:self-check": "node scripts/dojo-vivarium-runtime-self-check.mjs",
     "proof:dojo:case-law-runtime:self-check": "node scripts/dojo-case-law-runtime-self-check.mjs",
@@ -558,6 +563,34 @@ describe("Dojo release gate manifest", () => {
         requires_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
       }),
       expect.objectContaining({
+        id: "dojo_skill_passport_self_check",
+        tier: "T7",
+        package_script: "proof:dojo:skill-passport:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.skillPassportEvidence.v1",
+        default_evidence_path: "tmp/dojo-skill-passport/dojo-skill-passport.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          require_all_skill_passport_capabilities_covered: true,
+          required_skill_passport_capabilities: DOJO_SKILL_PASSPORT_CAPABILITIES,
+          required_test_files: DOJO_SKILL_PASSPORT_TEST_FILES,
+          require_report_only_status: true,
+          require_license_scope: true,
+          require_readiness_scope: true,
+          require_proof_scope: true,
+          require_coverage_and_attack_metrics: true,
+          require_published_tool_scope: true,
+          require_skill_card_action_grouping: true,
+          require_proof_badge: true,
+          require_practice_guardrail_counts: true,
+          require_passport_export: true,
+          require_raw_payload_redaction: true,
+          require_no_failed_tests: true,
+          require_no_skipped_tests: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "dojo_time_machine_debugger_self_check",
         tier: "T7",
         package_script: "proof:dojo:time-machine-debugger:self-check",
@@ -988,6 +1021,22 @@ describe("Dojo release gate manifest", () => {
       `ghost_mode_missing_required_test_files:${missingGhostModeTestFile}`,
     ]));
 
+    const brokenSkillPassport = JSON.parse(JSON.stringify(manifest));
+    const skillPassportGate = brokenSkillPassport.gates.find((gate) => gate.id === "dojo_skill_passport_self_check");
+    const missingSkillPassportTestFile = DOJO_SKILL_PASSPORT_TEST_FILES[0];
+    skillPassportGate.release_artifact_requirements.required_skill_passport_capabilities = DOJO_SKILL_PASSPORT_CAPABILITIES
+      .filter((capability) => capability !== "skill_passport_report_only_status");
+    skillPassportGate.release_artifact_requirements.required_test_files = DOJO_SKILL_PASSPORT_TEST_FILES
+      .filter((file) => file !== missingSkillPassportTestFile);
+    skillPassportGate.release_artifact_requirements.require_report_only_status = false;
+    skillPassportGate.release_artifact_requirements.require_raw_payload_redaction = false;
+    expect(validateDojoReleaseGateManifest(brokenSkillPassport, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "skill_passport_missing_report_only_requirement",
+      "skill_passport_missing_redaction_requirement",
+      "skill_passport_missing_required_capabilities:skill_passport_report_only_status",
+      `skill_passport_missing_required_test_files:${missingSkillPassportTestFile}`,
+    ]));
+
     const brokenTimeMachine = JSON.parse(JSON.stringify(manifest));
     const timeMachineGate = brokenTimeMachine.gates.find((gate) => gate.id === "dojo_time_machine_debugger_self_check");
     const missingTimeMachineTestFile = DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES[0];
@@ -1132,6 +1181,7 @@ describe("Dojo release gate manifest", () => {
       "dojo_governance_lifecycle_self_check",
       "dojo_graph_runtime_self_check",
       "dojo_ghost_mode_evidence_self_check",
+      "dojo_skill_passport_self_check",
       "dojo_time_machine_debugger_self_check",
       "dojo_vivarium_runtime_self_check",
       "dojo_case_law_runtime_self_check",
@@ -1166,7 +1216,7 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 25,
+      proof_artifact_gate_count: 26,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
@@ -1182,6 +1232,7 @@ describe("Dojo release gate manifest", () => {
         "dojo_governance_lifecycle_self_check",
         "dojo_graph_runtime_self_check",
         "dojo_ghost_mode_evidence_self_check",
+        "dojo_skill_passport_self_check",
         "dojo_time_machine_debugger_self_check",
         "dojo_vivarium_runtime_self_check",
         "dojo_case_law_runtime_self_check",

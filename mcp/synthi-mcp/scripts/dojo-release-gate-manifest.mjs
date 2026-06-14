@@ -74,6 +74,10 @@ import {
   DOJO_SECURITY_ABUSE_TEST_FILES,
 } from "./dojo-security-abuse-self-check.mjs";
 import {
+  DOJO_SKILL_PASSPORT_CAPABILITIES,
+  DOJO_SKILL_PASSPORT_TEST_FILES,
+} from "./dojo-skill-passport-self-check.mjs";
+import {
   DOJO_SOURCE_DRIFT_CAPABILITIES,
   DOJO_SOURCE_DRIFT_TEST_FILES,
 } from "./dojo-source-drift-self-check.mjs";
@@ -791,6 +795,37 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     requires_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
   },
   {
+    id: "dojo_skill_passport_self_check",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:skill-passport:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_skill_passport.test.ts -- --reporter=json --outputFile ../../tmp/dojo-skill-passport/dojo-skill-passport.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:skill-passport:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.skillPassportEvidence.v1",
+    default_evidence_path: "tmp/dojo-skill-passport/dojo-skill-passport.evidence.json",
+    release_artifact_requirements: {
+      require_all_skill_passport_capabilities_covered: true,
+      required_skill_passport_capabilities: [...DOJO_SKILL_PASSPORT_CAPABILITIES],
+      required_test_files: [...DOJO_SKILL_PASSPORT_TEST_FILES],
+      require_report_only_status: true,
+      require_license_scope: true,
+      require_readiness_scope: true,
+      require_proof_scope: true,
+      require_coverage_and_attack_metrics: true,
+      require_published_tool_scope: true,
+      require_skill_card_action_grouping: true,
+      require_proof_badge: true,
+      require_practice_guardrail_counts: true,
+      require_passport_export: true,
+      require_raw_payload_redaction: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "dojo_time_machine_debugger_self_check",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -1070,6 +1105,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "dojo_governance_lifecycle_self_check",
   "dojo_graph_runtime_self_check",
   "dojo_ghost_mode_evidence_self_check",
+  "dojo_skill_passport_self_check",
   "dojo_time_machine_debugger_self_check",
   "dojo_vivarium_runtime_self_check",
   "dojo_case_law_runtime_self_check",
@@ -1833,6 +1869,58 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!Array.isArray(ghostModeGate.requires_env)
       || !ghostModeGate.requires_env.includes("SYNTHI_DOJO_POSTGRES_TEST_URL")) {
       errors.push("ghost_mode_missing_postgres_env");
+    }
+  }
+  const skillPassportGate = gates.find((gate) => gate.id === "dojo_skill_passport_self_check");
+  if (skillPassportGate) {
+    if (skillPassportGate.evidence_schema_version !== "synthi.dojo.skillPassportEvidence.v1") {
+      errors.push("skill_passport_missing_evidence_schema");
+    }
+    if (skillPassportGate.package_script !== "proof:dojo:skill-passport:self-check") {
+      errors.push("skill_passport_missing_package_script");
+    }
+    if (!skillPassportGate.default_evidence_path) errors.push("skill_passport_missing_default_evidence_path");
+    if (!skillPassportGate.release_artifact_requirements?.require_all_skill_passport_capabilities_covered) {
+      errors.push("skill_passport_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_report_only_status", "skill_passport_missing_report_only_requirement"],
+      ["require_license_scope", "skill_passport_missing_license_scope_requirement"],
+      ["require_readiness_scope", "skill_passport_missing_readiness_scope_requirement"],
+      ["require_proof_scope", "skill_passport_missing_proof_scope_requirement"],
+      ["require_coverage_and_attack_metrics", "skill_passport_missing_coverage_attack_requirement"],
+      ["require_published_tool_scope", "skill_passport_missing_published_tool_requirement"],
+      ["require_skill_card_action_grouping", "skill_passport_missing_action_grouping_requirement"],
+      ["require_proof_badge", "skill_passport_missing_proof_badge_requirement"],
+      ["require_practice_guardrail_counts", "skill_passport_missing_practice_guardrail_requirement"],
+      ["require_passport_export", "skill_passport_missing_export_requirement"],
+      ["require_raw_payload_redaction", "skill_passport_missing_redaction_requirement"],
+    ]) {
+      if (!skillPassportGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredSkillPassportCapabilities = Array.isArray(skillPassportGate.release_artifact_requirements?.required_skill_passport_capabilities)
+      ? skillPassportGate.release_artifact_requirements.required_skill_passport_capabilities
+      : [];
+    const missingSkillPassportCapabilities = DOJO_SKILL_PASSPORT_CAPABILITIES
+      .filter((capability) => !requiredSkillPassportCapabilities.includes(capability));
+    if (missingSkillPassportCapabilities.length > 0) {
+      errors.push(`skill_passport_missing_required_capabilities:${missingSkillPassportCapabilities.join(",")}`);
+    }
+    const missingSkillPassportTestFiles = missingRequiredEntries(
+      DOJO_SKILL_PASSPORT_TEST_FILES,
+      skillPassportGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingSkillPassportTestFiles.length > 0) {
+      errors.push(`skill_passport_missing_required_test_files:${missingSkillPassportTestFiles.join(",")}`);
+    }
+    if (!skillPassportGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("skill_passport_missing_no_skipped_requirement");
+    }
+    if (!skillPassportGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("skill_passport_missing_digest_requirement");
+    }
+    if (!skillPassportGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("skill_passport_missing_json_report_digest_requirement");
     }
   }
   const timeMachineGate = gates.find((gate) => gate.id === "dojo_time_machine_debugger_self_check");

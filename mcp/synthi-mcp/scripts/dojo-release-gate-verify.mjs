@@ -61,6 +61,10 @@ import {
   DOJO_GHOST_MODE_EVIDENCE_TEST_FILES,
 } from "./dojo-ghost-mode-evidence-self-check.mjs";
 import {
+  DOJO_SKILL_PASSPORT_CAPABILITIES,
+  DOJO_SKILL_PASSPORT_TEST_FILES,
+} from "./dojo-skill-passport-self-check.mjs";
+import {
   DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "./dojo-hosted-runtime-gateway-self-check.mjs";
@@ -120,6 +124,7 @@ const DEFAULT_DOCKER_INTEGRATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-docker-
 const DEFAULT_GOVERNANCE_LIFECYCLE_DIR = path.join(REPO_ROOT, "tmp", "dojo-governance-lifecycle");
 const DEFAULT_GRAPH_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-graph-runtime");
 const DEFAULT_GHOST_MODE_EVIDENCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-ghost-mode-evidence");
+const DEFAULT_SKILL_PASSPORT_DIR = path.join(REPO_ROOT, "tmp", "dojo-skill-passport");
 const DEFAULT_TIME_MACHINE_DEBUGGER_DIR = path.join(REPO_ROOT, "tmp", "dojo-time-machine-debugger");
 const DEFAULT_HOSTED_RUNTIME_GATEWAY_DIR = path.join(REPO_ROOT, "tmp", "dojo-hosted-runtime-gateway");
 const DEFAULT_MANAGED_KEY_SIGNING_DIR = path.join(REPO_ROOT, "tmp", "dojo-managed-key-signing");
@@ -380,6 +385,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
+  const skillPassportResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-skill-passport"]) || args["skill-passport-evidence"]) {
+    const skillPassportGate = findGate(manifest, "dojo_skill_passport_self_check") || {};
+    skillPassportResults.push(await verifyDojoSkillPassportEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["skill-passport-evidence"]
+        || skillPassportGate.default_evidence_path
+        || path.join(DEFAULT_SKILL_PASSPORT_DIR, "dojo-skill-passport.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
   const timeMachineDebuggerResults = [];
   if (truthy(args["release-candidate"]) || truthy(args["include-time-machine-debugger"]) || args["time-machine-debugger-evidence"]) {
     const timeMachineGate = findGate(manifest, "dojo_time_machine_debugger_self_check") || {};
@@ -472,7 +488,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -493,6 +509,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     governance_lifecycle: governanceLifecycleResults.map(summarizeSection),
     graph_runtime: graphRuntimeResults.map(summarizeSection),
     ghost_mode_evidence: ghostModeEvidenceResults.map(summarizeSection),
+    skill_passport: skillPassportResults.map(summarizeSection),
     time_machine_debugger: timeMachineDebuggerResults.map(summarizeSection),
     vivarium_runtime: vivariumRuntimeResults.map(summarizeSection),
     case_law_runtime: caseLawRuntimeResults.map(summarizeSection),
@@ -2059,6 +2076,91 @@ export function validateDojoGhostModeEvidenceForRelease(evidence) {
   };
 }
 
+export async function verifyDojoSkillPassportEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoSkillPassportEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_skill_passport_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoSkillPassportEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.skillPassportEvidence.v1") {
+    errors.push(`skill_passport_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("skill_passport_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`skill_passport_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("skill_passport_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`skill_passport_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_SKILL_PASSPORT_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`skill_passport_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_SKILL_PASSPORT_TEST_FILES,
+    prefix: "skill_passport",
+  }));
+  const untestedRequiredCapabilities = DOJO_SKILL_PASSPORT_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`skill_passport_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`skill_passport_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`skill_passport_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.skill_passport_contract || {};
+  for (const [field, errorCode] of [
+    ["report_only_status_required", "skill_passport_report_only_requirement_missing"],
+    ["license_scope_required", "skill_passport_license_scope_requirement_missing"],
+    ["readiness_scope_required", "skill_passport_readiness_scope_requirement_missing"],
+    ["proof_scope_required", "skill_passport_proof_scope_requirement_missing"],
+    ["coverage_and_attack_metrics_required", "skill_passport_coverage_attack_requirement_missing"],
+    ["published_tool_scope_required", "skill_passport_published_tool_requirement_missing"],
+    ["skill_card_action_grouping_required", "skill_passport_action_grouping_requirement_missing"],
+    ["proof_badge_required", "skill_passport_proof_badge_requirement_missing"],
+    ["practice_guardrail_counts_required", "skill_passport_practice_guardrail_requirement_missing"],
+    ["passport_export_required", "skill_passport_export_requirement_missing"],
+    ["raw_payload_redaction_required", "skill_passport_redaction_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("skill_passport_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`skill_passport_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`skill_passport_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("skill_passport_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`skill_passport_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
 export async function verifyDojoTimeMachineDebuggerEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
   const evidence = await readJsonFile(evidencePath);
   const errors = validateDojoTimeMachineDebuggerEvidenceForRelease(evidence).errors;
@@ -3592,6 +3694,37 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedGhostMode.errors.includes("ghost_mode_non_mutating_requirement_missing"));
   assert(rejectedGhostMode.errors.includes("ghost_mode_tenant_boundary_requirement_missing"));
 
+  const skillPassportDir = path.join(outDir, "skill-passport");
+  await mkdir(skillPassportDir, { recursive: true });
+  const skillPassportArtifacts = await writeSkillPassportEvidenceForSelfCheck({ outDir: skillPassportDir });
+  const skillPassportResult = await verifyDojoSkillPassportEvidenceArtifact({
+    evidencePath: skillPassportArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(skillPassportResult.ok, true, skillPassportResult.errors.join(";"));
+  const rejectedSkillPassportArtifacts = await writeSkillPassportEvidenceForSelfCheck({
+    outDir: skillPassportDir,
+    basename: "dojo-skill-passport-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["skill_passport_report_only_status"],
+      skill_passport_contract: {
+        ...skillPassportArtifacts.evidence.skill_passport_contract,
+        report_only_status_required: false,
+        raw_payload_redaction_required: false,
+      },
+    },
+  });
+  const rejectedSkillPassport = await verifyDojoSkillPassportEvidenceArtifact({
+    evidencePath: rejectedSkillPassportArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedSkillPassport.errors.includes("skill_passport_coverage_incomplete"));
+  assert(rejectedSkillPassport.errors.includes("skill_passport_missing_capabilities:skill_passport_report_only_status"));
+  assert(rejectedSkillPassport.errors.includes("skill_passport_report_only_requirement_missing"));
+  assert(rejectedSkillPassport.errors.includes("skill_passport_redaction_requirement_missing"));
+
   const timeMachineDir = path.join(outDir, "time-machine-debugger");
   await mkdir(timeMachineDir, { recursive: true });
   const timeMachineArtifacts = await writeTimeMachineDebuggerEvidenceForSelfCheck({ outDir: timeMachineDir });
@@ -3867,6 +4000,8 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(governanceLifecycleResult),
       summarizeSection(graphRuntimeResult),
       summarizeSection(ghostModeResult),
+      summarizeSection(skillPassportResult),
+      summarizeSection(timeMachineResult),
       summarizeSection(vivariumRuntimeResult),
       summarizeSection(caseLawRuntimeResult),
       summarizeSection(hostedRuntimeGatewayResult),
@@ -3892,6 +4027,8 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedGovernanceLifecycle),
       summarizeSection(rejectedGraphRuntime),
       summarizeSection(rejectedGhostMode),
+      summarizeSection(rejectedSkillPassport),
+      summarizeSection(rejectedTimeMachine),
       summarizeSection(rejectedVivariumRuntime),
       summarizeSection(rejectedCaseLawRuntime),
       summarizeSection(rejectedHostedRuntimeGateway),
@@ -5414,6 +5551,106 @@ async function writeGhostModeEvidenceForSelfCheck({
     test_summary: {
       total_tests: DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES.length,
       passed_tests: DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeSkillPassportEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-skill-passport",
+  overrides = {},
+}) {
+  const stdout = "skill passport focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_SKILL_PASSPORT_CAPABILITIES.length,
+    numPassedTests: DOJO_SKILL_PASSPORT_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_SKILL_PASSPORT_TEST_FILES.length,
+    numPassedTestSuites: DOJO_SKILL_PASSPORT_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_SKILL_PASSPORT_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.skillPassportEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_SKILL_PASSPORT_CAPABILITIES],
+    tested_capabilities: [...DOJO_SKILL_PASSPORT_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_SKILL_PASSPORT_CAPABILITIES.length,
+    configured_capability_count: DOJO_SKILL_PASSPORT_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    skill_passport_contract: {
+      report_only_status_required: true,
+      license_scope_required: true,
+      readiness_scope_required: true,
+      proof_scope_required: true,
+      coverage_and_attack_metrics_required: true,
+      published_tool_scope_required: true,
+      skill_card_action_grouping_required: true,
+      proof_badge_required: true,
+      practice_guardrail_counts_required: true,
+      passport_export_required: true,
+      raw_payload_redaction_required: true,
+    },
+    test_files: [...DOJO_SKILL_PASSPORT_TEST_FILES],
+    test_file_count: DOJO_SKILL_PASSPORT_TEST_FILES.length,
+    reported_test_file_count: DOJO_SKILL_PASSPORT_TEST_FILES.length,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_report_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        all_test_files_reported: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: DOJO_SKILL_PASSPORT_CAPABILITIES.length,
+      passed_tests: DOJO_SKILL_PASSPORT_CAPABILITIES.length,
       failed_tests: 0,
       pending_tests: 0,
     },
