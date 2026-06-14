@@ -343,6 +343,14 @@ Static worker replicas are kept at `0`. The collab server creates a one-replica 
 ### Runtime Filesystem Storage
 Runtime pods and the collab server both mount `/data/repos`, so `collab-data-pvc` must use ReadWriteMany storage when pods can schedule on different node pools. The production manifest defaults to GKE Filestore CSI `enterprise-multishare-rwx`; override the StorageClass if your cluster uses another RWX Filestore or NFS class.
 
+Runtime pod cleanup deletes the Kubernetes Deployment/Pod, not the workspace
+filesystem. In production `REPO_CACHE_DELETE_ON_EVICT=false` makes collab-server
+LRU eviction memory-only, so `/data/repos/<workspace>/<filesystem-user>` remains
+on the PVC. Terminals also store generic CLI/package-manager state under
+`/data/repos/<workspace>/<filesystem-user>/.synthi/runtime`, which keeps npm
+global installs, language caches, and CLI login state across idle teardown and
+runtime recreation without placing hidden auth files directly in the user repo.
+
 ### WebSocket Health Checks
 For GKE Ingress, timeout settings alone are not enough. Each public WebSocket backend also needs a valid HTTP health target. In this deployment:
 - `collab-server` uses `/debug/status` on port `1234`

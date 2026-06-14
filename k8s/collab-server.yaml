@@ -257,6 +257,8 @@ spec:
               value: /data/repos
             - name: REPO_CACHE_DIR
               value: /data/repos
+            - name: REPO_CACHE_DELETE_ON_EVICT
+              value: "false"
             # ── GCS ─────────────────────────────────────────────────────────
             - name: GCP_PROJECT_ID
               valueFrom:
