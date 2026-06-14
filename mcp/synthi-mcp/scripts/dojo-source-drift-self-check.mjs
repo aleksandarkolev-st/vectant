@@ -39,6 +39,7 @@ export const DOJO_SOURCE_DRIFT_CAPABILITIES = [
   "source_drift_expires_stable_token_content_change",
   "source_drift_reports_added_risky_affordances",
   "source_drift_rejects_unverified_snapshots",
+  "source_drift_applies_license_store_expiry",
 ];
 
 const args = parseArgs(process.argv.slice(2));
@@ -169,6 +170,7 @@ export function buildDojoSourceDriftEvidenceManifest({
       added_risky_affordance_review_required: true,
       unrelated_token_no_expiry_required: true,
       tamper_rejection_required: true,
+      license_store_expiry_application_required: true,
     },
     test_files: [...testFiles],
     test_file_count: testFiles.length,
@@ -249,6 +251,8 @@ function capabilityMatchers(capability) {
       return ["reports newly added risky affordances", "review"];
     case "source_drift_rejects_unverified_snapshots":
       return ["rejects drift reports", "unverifiable source snapshots"];
+    case "source_drift_applies_license_store_expiry":
+      return ["applies source drift expiry triggers", "license store"];
     default:
       return [normalizeText(capability)];
   }

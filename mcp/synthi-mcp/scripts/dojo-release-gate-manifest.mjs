@@ -415,6 +415,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_added_risky_affordance_review: true,
       require_unrelated_token_no_expiry: true,
       require_tamper_rejection: true,
+      require_license_store_expiry_application: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -1588,6 +1589,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_added_risky_affordance_review", "source_drift_missing_risky_affordance_review_requirement"],
       ["require_unrelated_token_no_expiry", "source_drift_missing_unrelated_no_expiry_requirement"],
       ["require_tamper_rejection", "source_drift_missing_tamper_rejection_requirement"],
+      ["require_license_store_expiry_application", "source_drift_missing_license_store_expiry_requirement"],
     ]) {
       if (!sourceDriftGate.artifact_requirements?.[requirement]) errors.push(errorCode);
     }

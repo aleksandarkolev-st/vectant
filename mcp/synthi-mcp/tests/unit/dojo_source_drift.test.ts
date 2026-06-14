@@ -1,7 +1,17 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { detectDojoSourceDrift } from "../../src/dojo/source/source_drift.js";
+import type { DojoPermissionLicense } from "../../src/browser/dojo.js";
+import {
+  applyDojoSourceDriftExpiry,
+  detectDojoSourceDrift,
+  type DojoSourceDriftReport,
+} from "../../src/dojo/source/source_drift.js";
 import { buildDojoSourceSnapshot } from "../../src/dojo/source/source_snapshot.js";
+import type {
+  DojoAuditActor,
+  DojoLicenseStore,
+  DojoPermissionLicenseRecord,
+} from "../../src/dojo/store/interfaces.js";
 
 describe("Dojo source drift expiry", () => {
   it("expires graph nodes mapped to changed source tokens", () => {
@@ -181,6 +191,119 @@ describe("Dojo source drift expiry", () => {
       source_snapshot_signing_keys_by_id: {},
     })).toThrow(/dojo_source_drift_previous_snapshot_unverified/);
   });
+
+  it("applies source drift expiry triggers through the license store", async () => {
+    const report = reportFixture([
+      triggerFixture({ trigger_id: "trigger-a", license_id: "license-a", node_id: "action_submit", source_token_id: "save-button" }),
+      triggerFixture({ trigger_id: "trigger-b", license_id: "license-a", node_id: "action_assert", source_token_id: "save-button" }),
+      triggerFixture({ trigger_id: "trigger-no-license", node_id: "action_observe", source_token_id: "title" }),
+    ]);
+    const store = new FakeLicenseStore([
+      licenseRecordFixture({ license_id: "license-a", status: "active" }),
+    ]);
+
+    const result = await applyDojoSourceDriftExpiry({
+      report,
+      license_store: store,
+      expired_by: actorFixture(),
+      now: "2026-06-12T00:00:00.000Z",
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      trigger_count: 3,
+      unique_license_count: 1,
+      expired_license_count: 1,
+      skipped_trigger_count: 1,
+      failed_expiration_count: 0,
+      blocked_by: [],
+    }));
+    expect(result.expired_licenses).toEqual([
+      expect.objectContaining({
+        license_id: "license-a",
+        trigger_ids: ["trigger-a", "trigger-b"],
+        node_ids: ["action_assert", "action_submit"],
+        source_token_ids: ["save-button"],
+        record: expect.objectContaining({
+          status: "expired",
+          expires_at: "2026-06-12T00:00:00.000Z",
+        }),
+      }),
+    ]);
+    expect(result.skipped_triggers).toEqual([
+      expect.objectContaining({
+        trigger_id: "trigger-no-license",
+        reason: "license_id_missing",
+      }),
+    ]);
+    expect(store.expireCalls).toEqual([
+      expect.objectContaining({
+        license_id: "license-a",
+        now: "2026-06-12T00:00:00.000Z",
+        expired_by: actorFixture(),
+      }),
+    ]);
+    expect(store.records.get("license-a")).toEqual(expect.objectContaining({
+      status: "expired",
+      revoked_reason: expect.stringContaining("source_drift:snapshot-previous->snapshot-next"),
+    }));
+  });
+
+  it("fails closed when source drift names a missing license record", async () => {
+    const report = reportFixture([
+      triggerFixture({ trigger_id: "trigger-missing", license_id: "license-missing" }),
+    ]);
+    const result = await applyDojoSourceDriftExpiry({
+      report,
+      license_store: new FakeLicenseStore([]),
+      expired_by: actorFixture(),
+      now: "2026-06-12T00:00:00.000Z",
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      expired_license_count: 0,
+      failed_expiration_count: 1,
+      blocked_by: ["source_drift_license_record_missing"],
+    }));
+    expect(result.failed_expirations).toEqual([
+      expect.objectContaining({
+        license_id: "license-missing",
+        trigger_ids: ["trigger-missing"],
+        reason: "license_record_missing",
+      }),
+    ]);
+  });
+
+  it("skips source drift expiry for already terminal licenses", async () => {
+    const report = reportFixture([
+      triggerFixture({ trigger_id: "trigger-expired", license_id: "license-expired" }),
+      triggerFixture({ trigger_id: "trigger-revoked", license_id: "license-revoked" }),
+    ]);
+    const store = new FakeLicenseStore([
+      licenseRecordFixture({ license_id: "license-expired", status: "expired" }),
+      licenseRecordFixture({ license_id: "license-revoked", status: "revoked" }),
+    ]);
+
+    const result = await applyDojoSourceDriftExpiry({
+      report,
+      license_store: store,
+      expired_by: actorFixture(),
+      now: "2026-06-12T00:00:00.000Z",
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      expired_license_count: 0,
+      skipped_trigger_count: 2,
+      failed_expiration_count: 0,
+    }));
+    expect(result.skipped_triggers).toEqual([
+      expect.objectContaining({ trigger_id: "trigger-expired", reason: "license_already_expired", status: "expired" }),
+      expect.objectContaining({ trigger_id: "trigger-revoked", reason: "license_not_active", status: "revoked" }),
+    ]);
+    expect(store.expireCalls).toEqual([]);
+  });
 });
 
 function snapshotFixture(appVersion: string, sourceTokens: Parameters<typeof buildDojoSourceSnapshot>[0]["source_tokens"]) {
@@ -208,4 +331,135 @@ function sourceSigningKey(): string {
 
 function hashSource(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function reportFixture(licenseExpiryTriggers: DojoSourceDriftReport["license_expiry_triggers"]): DojoSourceDriftReport {
+  return {
+    schema_version: "synthi.dojo.sourceDriftReport.v1",
+    previous_snapshot_id: "snapshot-previous",
+    next_snapshot_id: "snapshot-next",
+    app_origin: "https://app.example.test",
+    previous_app_version: "2026.06.11",
+    next_app_version: "2026.06.12",
+    drifted_token_ids: [...new Set(licenseExpiryTriggers.map((trigger) => trigger.source_token_id))].sort(),
+    added_token_ids: [],
+    review_required_token_ids: [],
+    affected_nodes: licenseExpiryTriggers.map((trigger) => ({
+      node_id: trigger.node_id,
+      source_token_id: trigger.source_token_id,
+      drift_kind: "changed",
+      ...(trigger.license_id ? { license_id: trigger.license_id } : {}),
+    })),
+    license_expiry_triggers: licenseExpiryTriggers,
+  };
+}
+
+function triggerFixture(overrides: Partial<DojoSourceDriftReport["license_expiry_triggers"][number]> = {}): DojoSourceDriftReport["license_expiry_triggers"][number] {
+  const nodeId = overrides.node_id ?? "action_submit";
+  const sourceTokenId = overrides.source_token_id ?? "save-button";
+  return {
+    trigger_id: overrides.trigger_id ?? `source_drift_${nodeId}_${sourceTokenId}`,
+    node_id: nodeId,
+    source_token_id: sourceTokenId,
+    reason: overrides.reason ?? `Source token ${sourceTokenId} changed.`,
+    ...(overrides.license_id ? { license_id: overrides.license_id } : {}),
+  };
+}
+
+function actorFixture(): DojoAuditActor {
+  return { actor_id: "source-drift-reviewer", actor_type: "service" };
+}
+
+class FakeLicenseStore implements Pick<DojoLicenseStore, "getLicense" | "expireLicense"> {
+  readonly records: Map<string, DojoPermissionLicenseRecord>;
+  readonly expireCalls: Array<{
+    license_id: string;
+    reason: string;
+    now: string | undefined;
+    expired_by: DojoAuditActor | undefined;
+    expires_at: string | undefined;
+  }> = [];
+
+  constructor(records: DojoPermissionLicenseRecord[]) {
+    this.records = new Map(records.map((record) => [record.license_id, { ...record }]));
+  }
+
+  getLicense(licenseId: string): DojoPermissionLicenseRecord | null {
+    const record = this.records.get(licenseId);
+    return record ? { ...record, license_json: { ...record.license_json } } : null;
+  }
+
+  expireLicense(
+    licenseId: string,
+    reason: string,
+    now?: string,
+    expiredBy?: DojoAuditActor,
+    options: { expires_at?: string } = {}
+  ): DojoPermissionLicenseRecord | null {
+    this.expireCalls.push({
+      license_id: licenseId,
+      reason,
+      now,
+      expired_by: expiredBy,
+      expires_at: options.expires_at,
+    });
+    const record = this.records.get(licenseId);
+    if (!record) return null;
+    const expired = {
+      ...record,
+      status: "expired" as const,
+      expires_at: options.expires_at ?? now ?? record.expires_at,
+      revoked_reason: reason,
+      updated_at: now ?? record.updated_at,
+    };
+    this.records.set(licenseId, expired);
+    return { ...expired, license_json: { ...expired.license_json } };
+  }
+}
+
+function licenseRecordFixture(overrides: Partial<DojoPermissionLicenseRecord> = {}): DojoPermissionLicenseRecord {
+  const licenseId = overrides.license_id ?? "license-a";
+  const skillId = overrides.skill_id ?? "skill-a";
+  const licenseVersion = overrides.license_version ?? "1.0.0";
+  const issuedAt = overrides.created_at ?? "2026-06-11T00:00:00.000Z";
+  const licenseJson: DojoPermissionLicense = {
+    schema_version: "synthi.dojo.permissionLicense.v1",
+    license_id: licenseId,
+    skill_id: skillId,
+    license_version: licenseVersion,
+    entrustment_level: overrides.entrustment_level ?? "E3",
+    autonomy_level: "submit_gated",
+    allowed_actions: [{ action: "submit_invoice", constraints: [] }],
+    gated_actions: [],
+    blocked_actions: [],
+    evidence_requirements: [],
+    approval_requirements: [],
+    substrate_requirements: [],
+    proof_requirements: {
+      required_context_claims: [],
+      required_evidence_claims: [],
+      required_guardrails: [],
+    },
+    expiry_policy: {
+      expires_on: ["source_drift"],
+      recertify_after_days: 30,
+    },
+    issued_at: issuedAt,
+  };
+  return {
+    tenant_id: overrides.tenant_id ?? "tenant-a",
+    workspace_id: overrides.workspace_id ?? "workspace-a",
+    license_id: licenseId,
+    skill_id: skillId,
+    license_version: licenseVersion,
+    status: overrides.status ?? "active",
+    entrustment_level: licenseJson.entrustment_level,
+    readiness_level: overrides.readiness_level ?? 7,
+    license_json: overrides.license_json ?? licenseJson,
+    expires_at: overrides.expires_at ?? "2026-07-11T00:00:00.000Z",
+    created_at: issuedAt,
+    updated_at: overrides.updated_at ?? issuedAt,
+    ...(overrides.revoked_at ? { revoked_at: overrides.revoked_at } : {}),
+    ...(overrides.revoked_reason ? { revoked_reason: overrides.revoked_reason } : {}),
+  };
 }

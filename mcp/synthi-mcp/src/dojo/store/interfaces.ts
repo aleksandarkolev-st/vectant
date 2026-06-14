@@ -303,6 +303,15 @@ export interface DojoLicenseStore {
       expires_at?: string;
     }
   ): MaybePromise<DojoPermissionLicenseRecord | null>;
+  expireLicense(
+    licenseId: string,
+    reason: string,
+    now?: string,
+    expiredBy?: DojoAuditActor,
+    options?: {
+      expires_at?: string;
+    }
+  ): MaybePromise<DojoPermissionLicenseRecord | null>;
 }
 
 export interface DojoEvidenceStore {
@@ -328,6 +337,7 @@ export type DojoAuditEventType =
   | "checkride_run_started"
   | "checkride_run_completed"
   | "license_issued"
+  | "license_expired"
   | "license_revoked"
   | "proof_issued"
   | "proof_validated"

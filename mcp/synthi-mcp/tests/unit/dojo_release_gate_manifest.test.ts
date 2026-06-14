@@ -324,6 +324,7 @@ describe("Dojo release gate manifest", () => {
           require_added_risky_affordance_review: true,
           require_unrelated_token_no_expiry: true,
           require_tamper_rejection: true,
+          require_license_store_expiry_application: true,
         }),
       }),
       expect.objectContaining({
@@ -1063,9 +1064,11 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingSourceDriftTestFile);
     sourceDriftGate.artifact_requirements.require_changed_token_expiry = false;
     sourceDriftGate.artifact_requirements.require_tamper_rejection = false;
+    sourceDriftGate.artifact_requirements.require_license_store_expiry_application = false;
     expect(validateDojoReleaseGateManifest(brokenSourceDrift, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "source_drift_missing_changed_token_expiry_requirement",
       "source_drift_missing_tamper_rejection_requirement",
+      "source_drift_missing_license_store_expiry_requirement",
       "source_drift_missing_required_capabilities:source_drift_rejects_unverified_snapshots",
       `source_drift_missing_required_test_files:${missingSourceDriftTestFile}`,
     ]));

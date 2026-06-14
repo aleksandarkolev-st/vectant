@@ -141,6 +141,67 @@ describeWithPostgres("PostgresDojoLicenseStore", () => {
     ]);
   });
 
+  it("expires licenses with audit custody", async () => {
+    const auditStore = new PostgresDojoAuditStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
+    const store = new PostgresDojoLicenseStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+      audit_store: auditStore,
+      audit_actor: { actor_id: "license-operator", actor_type: "service" },
+      request_id: "request-license-expiry",
+      correlation_id: "correlation-license-expiry",
+    });
+    await store.saveLicense(skill.permission_license, {
+      readiness_level: skill.skill_readiness_level,
+      expires_at: "2026-07-11T00:00:00.000Z",
+      created_by: { actor_id: "certifier-a", actor_type: "human" },
+      now: "2026-06-11T00:01:00.000Z",
+    });
+
+    const expired = await store.expireLicense(
+      skill.permission_license.license_id,
+      "source_drift:snapshot-a->snapshot-b tokens=save-button nodes=action_submit",
+      "2026-06-12T00:00:00.000Z",
+      { actor_id: "source-drift-monitor", actor_type: "service" }
+    );
+
+    expect(expired).toEqual(expect.objectContaining({
+      status: "expired",
+      expires_at: "2026-06-12T00:00:00.000Z",
+      revoked_reason: "source_drift:snapshot-a->snapshot-b tokens=save-button nodes=action_submit",
+    }));
+    expect(await store.expireLicense(
+      skill.permission_license.license_id,
+      "source_drift:duplicate",
+      "2026-06-12T00:05:00.000Z",
+      { actor_id: "source-drift-monitor", actor_type: "service" }
+    )).toBeNull();
+    expect(await store.getLicense(skill.permission_license.license_id)).toEqual(expect.objectContaining({
+      status: "expired",
+      revoked_reason: "source_drift:snapshot-a->snapshot-b tokens=save-button nodes=action_submit",
+    }));
+    expect(await store.getLicenseVersion(skill.permission_license.license_id, skill.permission_license.license_version)).toEqual(expect.objectContaining({
+      status: "expired",
+    }));
+    expect(await auditStore.listAuditEvents({ entity_kind: "permission_license" })).toEqual([
+      expect.objectContaining({
+        event_type: "license_issued",
+        entity_id: skill.permission_license.license_id,
+      }),
+      expect.objectContaining({
+        event_type: "license_expired",
+        entity_id: skill.permission_license.license_id,
+        actor: { actor_id: "source-drift-monitor", actor_type: "service" },
+        details: expect.objectContaining({
+          expired_reason: "source_drift:snapshot-a->snapshot-b tokens=save-button nodes=action_submit",
+          status: "expired",
+          expires_at: "2026-06-12T00:00:00.000Z",
+        }),
+      }),
+    ]);
+  });
+
   it("rejects invalid license shape and readiness before persistence", async () => {
     const store = new PostgresDojoLicenseStore({
       tenant_id: tenantId,

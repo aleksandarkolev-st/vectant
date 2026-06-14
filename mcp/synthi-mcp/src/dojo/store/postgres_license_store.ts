@@ -355,8 +355,56 @@ export class PostgresDojoLicenseStore implements DojoLicenseStore {
     return revoked;
   }
 
+  async expireLicense(
+    licenseId: string,
+    reason: string,
+    now: string = new Date().toISOString(),
+    expiredBy: DojoAuditActor = this.auditActor,
+    options: {
+      expires_at?: string;
+    } = {}
+  ): Promise<DojoPermissionLicenseRecord | null> {
+    const effectiveExpiresAt = options.expires_at ?? now;
+    const result = await this.queryable.query<LicenseRow>(
+      `UPDATE dojo_licenses
+      SET status = 'expired',
+        expires_at = CASE
+          WHEN expires_at IS NULL THEN $4::timestamptz
+          WHEN expires_at > $4::timestamptz THEN $4::timestamptz
+          ELSE expires_at
+        END,
+        revoked_reason = $5,
+        updated_at = $6::timestamptz
+      WHERE tenant_id = $1 AND workspace_id = $2 AND license_id = $3 AND status = 'active'
+      RETURNING tenant_id, workspace_id, license_id, skill_id, license_version,
+        status, entrustment_level, readiness_level, license_json, expires_at,
+        revoked_at, revoked_reason, created_at, updated_at`,
+      [
+        this.tenantId,
+        this.workspaceId,
+        licenseId,
+        effectiveExpiresAt,
+        requiredId(reason, "expired_reason"),
+        now,
+      ]
+    );
+    const expired = rowToLicense(result.rows[0]);
+    if (!expired) return null;
+    await this.queryable.query(
+      `UPDATE dojo_license_versions
+      SET status = 'expired'
+      WHERE tenant_id = $1 AND workspace_id = $2 AND license_id = $3`,
+      [this.tenantId, this.workspaceId, expired.license_id]
+    );
+    await this.appendLicenseAudit("license_expired", expired, expiredBy, {
+      expired_reason: reason,
+      expires_at: expired.expires_at,
+    });
+    return expired;
+  }
+
   private async appendLicenseAudit(
-    eventType: "license_issued" | "license_revoked",
+    eventType: "license_issued" | "license_expired" | "license_revoked",
     record: DojoPermissionLicenseRecord,
     actor: DojoAuditActor,
     details: Record<string, unknown> = {}
@@ -379,7 +427,7 @@ export class PostgresDojoLicenseStore implements DojoLicenseStore {
         readiness_level: record.readiness_level,
         ...details,
       },
-      created_at: eventType === "license_revoked" ? record.updated_at : record.created_at,
+      created_at: eventType === "license_issued" ? record.created_at : record.updated_at,
     });
   }
 }

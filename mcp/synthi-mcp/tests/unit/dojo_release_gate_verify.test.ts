@@ -938,6 +938,7 @@ describe("Dojo release gate artifact verifier", () => {
         ...sourceDriftEvidenceFixture().source_drift_contract,
         changed_token_expiry_required: false,
         tamper_rejection_required: false,
+        license_store_expiry_application_required: false,
       },
     });
     const incompletePath = await writeSourceDriftEvidenceFixture({
@@ -953,6 +954,7 @@ describe("Dojo release gate artifact verifier", () => {
       "source_drift_missing_capabilities:source_drift_rejects_unverified_snapshots",
       "source_drift_changed_token_expiry_requirement_missing",
       "source_drift_tamper_rejection_requirement_missing",
+      "source_drift_license_store_expiry_requirement_missing",
     ]));
 
     const driftedPath = await writeSourceDriftEvidenceFixture({
@@ -4240,6 +4242,7 @@ function sourceDriftEvidenceFixture(overrides = {}) {
       added_risky_affordance_review_required: true,
       unrelated_token_no_expiry_required: true,
       tamper_rejection_required: true,
+      license_store_expiry_application_required: true,
     },
     test_files: [...DOJO_SOURCE_DRIFT_TEST_FILES],
     test_file_count: DOJO_SOURCE_DRIFT_TEST_FILES.length,

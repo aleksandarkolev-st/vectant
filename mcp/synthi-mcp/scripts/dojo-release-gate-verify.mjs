@@ -1297,6 +1297,7 @@ export function validateDojoSourceDriftEvidenceForRelease(evidence) {
     ["added_risky_affordance_review_required", "source_drift_risky_affordance_review_requirement_missing"],
     ["unrelated_token_no_expiry_required", "source_drift_unrelated_no_expiry_requirement_missing"],
     ["tamper_rejection_required", "source_drift_tamper_rejection_requirement_missing"],
+    ["license_store_expiry_application_required", "source_drift_license_store_expiry_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
   }
@@ -3900,6 +3901,7 @@ async function runSelfCheck({ outDir }) {
         ...sourceDriftArtifacts.evidence.source_drift_contract,
         changed_token_expiry_required: false,
         tamper_rejection_required: false,
+        license_store_expiry_application_required: false,
       },
     },
   });
@@ -3911,6 +3913,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedSourceDrift.errors.includes("source_drift_missing_capabilities:source_drift_rejects_unverified_snapshots"));
   assert(rejectedSourceDrift.errors.includes("source_drift_changed_token_expiry_requirement_missing"));
   assert(rejectedSourceDrift.errors.includes("source_drift_tamper_rejection_requirement_missing"));
+  assert(rejectedSourceDrift.errors.includes("source_drift_license_store_expiry_requirement_missing"));
 
   const agentReadyUiContractDir = path.join(outDir, "agent-ready-ui-contract");
   await mkdir(agentReadyUiContractDir, { recursive: true });
@@ -4978,6 +4981,7 @@ async function writeSourceDriftEvidenceForSelfCheck({
       added_risky_affordance_review_required: true,
       unrelated_token_no_expiry_required: true,
       tamper_rejection_required: true,
+      license_store_expiry_application_required: true,
     },
     test_files: [...DOJO_SOURCE_DRIFT_TEST_FILES],
     test_file_count: DOJO_SOURCE_DRIFT_TEST_FILES.length,
