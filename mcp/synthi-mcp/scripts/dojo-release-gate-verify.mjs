@@ -988,6 +988,8 @@ export function validateDojoEvidenceAuthorityEvidenceForMilestone(evidence) {
     ["ledger_resolver_fail_closed_required", "evidence_authority_resolver_requirement_missing"],
     ["redaction_manifest_required", "evidence_authority_redaction_manifest_requirement_missing"],
     ["redacted_export_required", "evidence_authority_redacted_export_requirement_missing"],
+    ["evidence_retention_policy_required", "evidence_authority_retention_policy_requirement_missing"],
+    ["legal_hold_blocks_disposal_required", "evidence_authority_legal_hold_requirement_missing"],
     ["proof_issue_claim_verification_required", "evidence_authority_proof_issue_requirement_missing"],
     ["proof_validation_rejects_self_attested_claims_required", "evidence_authority_self_attested_rejection_requirement_missing"],
     ["durable_postgres_ledger_gate_required", "evidence_authority_durable_postgres_gate_requirement_missing"],
@@ -4083,6 +4085,8 @@ async function runSelfCheck({ outDir }) {
       missing_capabilities: ["proof_issuance_requires_verified_evidence_records"],
       evidence_authority: {
         ...evidenceAuthorityArtifacts.evidence.evidence_authority,
+        evidence_retention_policy_required: false,
+        legal_hold_blocks_disposal_required: false,
         proof_issue_claim_verification_required: false,
         proof_validation_rejects_self_attested_claims_required: false,
       },
@@ -4093,6 +4097,8 @@ async function runSelfCheck({ outDir }) {
   });
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_coverage_incomplete"));
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_missing_capabilities:proof_issuance_requires_verified_evidence_records"));
+  assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_retention_policy_requirement_missing"));
+  assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_legal_hold_requirement_missing"));
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_proof_issue_requirement_missing"));
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_self_attested_rejection_requirement_missing"));
 
@@ -6071,6 +6077,8 @@ async function writeEvidenceAuthorityEvidenceForSelfCheck({
       ledger_resolver_fail_closed_required: true,
       redaction_manifest_required: true,
       redacted_export_required: true,
+      evidence_retention_policy_required: true,
+      legal_hold_blocks_disposal_required: true,
       proof_issue_claim_verification_required: true,
       proof_validation_rejects_self_attested_claims_required: true,
       durable_postgres_ledger_gate_required: true,

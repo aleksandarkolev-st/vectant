@@ -66,6 +66,10 @@
       "types": "./dist/dojo/evidence/export.d.ts",
       "import": "./dist/dojo/evidence/export.js"
     },
+    "./dojo/evidence/retention": {
+      "types": "./dist/dojo/evidence/retention.d.ts",
+      "import": "./dist/dojo/evidence/retention.js"
+    },
     "./dojo/graph/types": {
       "types": "./dist/dojo/graph/types.d.ts",
       "import": "./dist/dojo/graph/types.js"

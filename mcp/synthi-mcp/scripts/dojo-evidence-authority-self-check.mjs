@@ -30,6 +30,7 @@ export const DOJO_EVIDENCE_AUTHORITY_TEST_FILES = [
   "tests/unit/dojo_evidence_ledger_resolver.test.ts",
   "tests/unit/dojo_evidence_redaction.test.ts",
   "tests/unit/dojo_evidence_export.test.ts",
+  "tests/unit/dojo_evidence_retention.test.ts",
   "tests/unit/dojo_proof_claims.test.ts",
 ];
 
@@ -40,6 +41,7 @@ export const DOJO_EVIDENCE_AUTHORITY_CAPABILITIES = [
   "evidence_ledger_resolver_fails_closed",
   "evidence_redaction_manifest_tamper_detection",
   "evidence_export_redacts_and_requires_ledger_records",
+  "evidence_retention_policy_legal_hold_and_artifact_disposal",
   "proof_issuance_requires_verified_evidence_records",
   "proof_validation_rejects_self_attested_or_unreferenced_claims",
 ];
@@ -189,6 +191,8 @@ export function buildDojoEvidenceAuthorityEvidenceManifest({
       ledger_resolver_fail_closed_required: true,
       redaction_manifest_required: true,
       redacted_export_required: true,
+      evidence_retention_policy_required: true,
+      legal_hold_blocks_disposal_required: true,
       proof_issue_claim_verification_required: true,
       proof_validation_rejects_self_attested_claims_required: true,
       durable_postgres_ledger_gate_required: true,
@@ -325,6 +329,12 @@ const CAPABILITY_MATCHERS = {
     includes("bound evidence record lacks redaction metadata"),
     includes("bound evidence record has different tenant scope"),
     includes("requires a ledger evidence record for external artifact uris"),
+  ),
+  evidence_retention_policy_legal_hold_and_artifact_disposal: anyOf(
+    includes("preserves append-only ledger rows", "expired artifacts", "purge"),
+    includes("uses redaction grace before purge grace"),
+    includes("blocks deletion when legal hold is active"),
+    includes("builds a scoped retention plan"),
   ),
   proof_issuance_requires_verified_evidence_records: anyOf(
     includes("signs verified evidence record ids", "ledger checkpoint"),
