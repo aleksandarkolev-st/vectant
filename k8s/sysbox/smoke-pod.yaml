@@ -23,6 +23,13 @@ spec:
   # Sysbox engine. The RuntimeClass auto-injects nodeSelector sysbox-runtime=running,
   # so this only schedules onto a node where Sysbox finished installing.
   runtimeClassName: sysbox-runc
+  # REQUIRED for sysbox-runc via the containerd CRI path (k8s user-namespaces).
+  # Without it, containerd invokes sysbox-runc OUTSIDE a userns and sandbox creation
+  # fails with `mount through procfd: operation not permitted` (the #1006 symptom).
+  # Makes containerd set up the userns + pass io.kubernetes.cri.userns-mode.
+  # Needs k8s >=1.33 + containerd >=2.0.5 (sysbox-pool: 1.35.3 + 2.1.5). The prod
+  # runtime pod spec (runtimePodSpec.js) already sets this; only this test omitted it.
+  hostUsers: false
   # Tolerate the dedicated pool taint (RuntimeClass handles the nodeSelector).
   tolerations:
   - key: workload

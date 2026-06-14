@@ -571,3 +571,27 @@ main's `proxyService.js` (+362) already routes runtime-scoped previews (`/runtim
 - [ ] **Config (remainder):** set `PREVIEW_TARGET_TEMPLATE` to the runtime Service pattern (e.g. `http://{runtimeScope}-rt.<ns>.svc.cluster.local:18080/__synthi_preview/{port}`) in `k8s/configmap.yaml` when sysbox is on.
 - [x] S4-T2 (skip) integration: opened ports detected + reachable — #1006.
 - [x] Gate: full suite **74 (71 pass + 3 skip)**, `node --check` clean.
+
+---
+
+# Task: Sysbox #1006 unblock spike (2026-06-14, feat/docker-sysbox-engine)
+
+Goal: get a non-privileged `runtimeClassName: sysbox-runc` pod to run `docker run hello-world` on a fresh GKE scratch cluster — defeat #1006. User-approved (config-first; master-static only if needed). Scratch-first per guardrails.
+
+## Upstream re-check + pre-flight (DONE — see memory `sysbox-070-cri-blocker`)
+- #1006 OPEN (last activity 2026-05-26); NO sysbox release past v0.7.0 (2026-06-02).
+- Fix for the procfd error = sysbox-runc **PR #106** (`features` cmd), MERGED to master 2025-08-29.
+- **Pre-flight (cluster-free, definitive):** the v0.7.0 deploy image we already deploy (AR digest `c7859de4…` == public upstream) bundles `sysbox-runc` 0.7.0 (commit a4dd414) whose **`features` subcommand EXISTS + returns OCI JSON** → **PR #106 IS in the release binary; building master-static is NOT needed.**
+- So our earlier failure was NOT a missing binary fix. **Prime suspect: `smoke-pod.yaml` never set `hostUsers: false`** → containerd invoked sysbox-runc outside a k8s userns → sysfs `mount through procfd` failure. Working recipe REQUIRES `hostUsers: false` (k8s>=1.33 + containerd>=2.0.5; we have 1.35.3 + 2.1.5).
+
+## Plan (cheapest-first)
+- [x] P0 Pre-flight (binary has `features`) + add `hostUsers: false` to `smoke-pod.yaml`. (Docker pull of public deploy image confirmed it.)
+- [x] P1 Recreate scratch cluster + sysbox-pool (`create-scratch-cluster.ps1`) — cluster `synthi-sysbox-scratch` 1.35.3, `sysbox-pool` e2-standard-4 ubuntu_containerd. (Needed `gcloud auth login` first.)
+- [x] P2 `kubectl apply -k k8s/sysbox/` → DaemonSet rolled out, RuntimeClass `sysbox-runc` present, node `sysbox-runtime=running`. Installer log: "Detected containerd version 2.1.5 … The k8s runtime on this node is containerd + Sysbox. Done."
+- [x] P3 NOT NEEDED — the v0.7.0 installer configured containerd 2.1.5 correctly out of the box (no manual config-scheme patch required on GKE).
+- [x] P4 **Smoke test WITH `hostUsers: false` PASSED.** Pod Ready (sandbox created, no procfd error); `docker run hello-world` → "Hello from Docker!"; `privileged=false`; `hostUsers=false`; uid_map `0 41549824 65536` (root-in-userns, NOT host root); no host docker.sock. **#1006 DEFEATED config-only → 9-slice substrate validated GO.**
+- [x] P5 N/A — master-static build NOT needed (release binary already has PR#106).
+- [x] P6 Smoke pod deleted; evidence captured; memory/index/lessons updated; **scratch cluster DELETED + verified GONE (billing stopped)**, prod untouched. AR install image kept (digest-pinned) for 1-command re-spin. (Teardown needed `--async` after a host-RAM `gcloud.ps1` OutOfMemoryException — see lessons.)
+
+## RESULT — #1006 DEFEATED (2026-06-14)
+Root cause of the 2-day park was a misdiagnosis: the Slice-0 smoke pod omitted `hostUsers: false`. The v0.7.0 release binary already carries sysbox-runc PR#106 (`features` cmd), and the GKE installer configures containerd 2.1.5 for sysbox correctly. One-line fix (`hostUsers: false`, already present in `runtimePodSpec.js`) → a non-privileged `sysbox-runc` pod runs docker on GKE. **The entire Phase-2 9-slice arc is unblocked.**
