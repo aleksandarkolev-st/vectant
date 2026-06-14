@@ -2,7 +2,8 @@
 import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
-import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw, Power } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { WifiOff, RefreshCw, Terminal, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw, Power } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
@@ -11,6 +12,7 @@ import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 import {
   isRuntimeLoopbackUrl,
+  findTerminalLoopbackAuthLinks,
   parseTerminalUrl,
   resolveTerminalLinkUrl,
   terminalLinkHasNestedLoopbackCallback,
@@ -124,6 +126,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const inputDataDisposableRef = useRef(null);
   const inputBinaryDisposableRef = useRef(null);
   const inputBufferRef = useRef('');
+  const oauthOutputBufferRef = useRef('');
+  const oauthRelaySeenLinksRef = useRef(new Set());
   const initializedRef = useRef(false);
   // ─── Ctrl+Z undo stack ───────────────────────────────────────────────
   // Each entry is one undoable input segment: a single typed character or
@@ -162,6 +166,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   // Color customizer floating panel
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [stoppingRuntime, setStoppingRuntime] = useState(false);
+  const [oauthRelayPrompt, setOauthRelayPrompt] = useState(null);
   // Live overrides — re-renders when user tweaks colors
   const [colorOverrides, setColorOverrides] = useState(() => getTerminalOverrides());
 
@@ -199,6 +204,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       try { instance?.fitAddon?.fit(); } catch (_) {}
       try { instance?.term?.refresh(0, instance.term.rows - 1); } catch (_) {}
       try { instance?.term?.focus(); } catch (_) {}
+      setOauthRelayPrompt(null);
       toast.success('Terminal OAuth callback delivered');
     };
 
@@ -227,6 +233,24 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       try { channel?.close(); } catch (_) {}
     };
   }, [terminalId, workspaceSlug]);
+
+  const dismissOauthRelayPrompt = useCallback(() => {
+    setOauthRelayPrompt(null);
+    try { terminalRef.current?.term?.focus(); } catch (_) {}
+  }, []);
+
+  const openOauthRelayPrompt = useCallback(() => {
+    const prompt = oauthRelayPrompt;
+    if (!prompt?.bridgeUrl) return;
+    const popup = window.open(prompt.bridgeUrl, '_blank', 'noopener,noreferrer');
+    if (!popup) {
+      toast.warning('Browser blocked the sign-in helper popup');
+      return;
+    }
+    setOauthRelayPrompt((current) => (
+      current?.id === prompt.id ? { ...current, opened: true } : current
+    ));
+  }, [oauthRelayPrompt]);
 
   // ─── Cleanup helper ───────────────────────────────────────────────────
   const disposeInputHandlers = useCallback(() => {
@@ -307,9 +331,36 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
         return {
           workspaceSlug,
+          terminalId,
           ...runtimeIdentity,
           bridgeBaseUrl: resolveLoopbackAuthBridgeBaseUrl(window.location.origin),
         };
+      };
+
+      const surfaceOauthRelayLinks = (outputText) => {
+        if (!outputText) return;
+        const nextBuffer = `${oauthOutputBufferRef.current}${outputText}`;
+        oauthOutputBufferRef.current = nextBuffer.slice(-12000);
+
+        const linkContext = runtimeLinkContext();
+        const links = findTerminalLoopbackAuthLinks(oauthOutputBufferRef.current, {
+          runtimeScope: linkContext.runtimeScope,
+          bridgeBaseUrl: linkContext.bridgeBaseUrl,
+          loopbackContext: linkContext,
+          limit: 2,
+        });
+
+        const nextLink = links.find((link) => !oauthRelaySeenLinksRef.current.has(link.bridgeUrl));
+        if (!nextLink) return;
+
+        oauthRelaySeenLinksRef.current.add(nextLink.bridgeUrl);
+        setOauthRelayPrompt({
+          id: nextLink.bridgeUrl,
+          bridgeUrl: nextLink.bridgeUrl,
+          originalUrl: nextLink.originalUrl,
+          opened: false,
+          detectedAt: Date.now(),
+        });
       };
 
       const openLocalBrowserUrl = (uri, popup = null) => {
@@ -793,6 +844,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         // Binary frame → raw PTY output
         if (event.data instanceof ArrayBuffer) {
           const text = new TextDecoder().decode(new Uint8Array(event.data));
+          surfaceOauthRelayLinks(text);
           term.write(text);
           return;
         }
@@ -837,6 +889,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             }
           } catch (_) {
             // Not JSON — treat as plain text output
+            surfaceOauthRelayLinks(event.data);
             term.write(event.data);
           }
         }
@@ -903,7 +956,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         try { terminalInstance.dispose(); } catch (_) {}
       }
     };
-  }, [sessionKey, workspaceSlug, fixedSessionId, shellType, isGuest, canTerminal, cleanup, disposeInputHandlers]); // Re-connect if terminal tab, workspace, shell type, or terminal permission changes
+  }, [sessionKey, terminalId, workspaceSlug, fixedSessionId, shellType, isGuest, canTerminal, cleanup, disposeInputHandlers]); // Re-connect if terminal tab, workspace, shell type, or terminal permission changes
 
   // ─── Reconnect button handler ─────────────────────────────────────────
   const handleReconnect = useCallback(() => {
@@ -1052,6 +1105,77 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           onCancel={cancelPaste}
         />
       )}
+
+      <AnimatePresence>
+        {oauthRelayPrompt && (
+          <motion.div
+            key={oauthRelayPrompt.id}
+            initial={{ opacity: 0, y: 16, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 10, scale: 0.98 }}
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            className="absolute bottom-4 left-4 z-20 w-[360px] max-w-[calc(100%-32px)] border shadow-2xl"
+            style={{
+              background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 96%, black)',
+              borderColor: 'color-mix(in srgb, var(--accent-primary, #327464) 34%, var(--border-medium, #3f3f46))',
+              color: 'var(--text-primary, #e4e4e7)',
+            }}
+            role="status"
+            aria-live="polite"
+          >
+            <div
+              className="flex items-start gap-3 border-b px-3 py-2.5"
+              style={{ borderColor: 'var(--border-subtle, #2a2b38)' }}
+            >
+              <div
+                className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center border"
+                style={{
+                  borderColor: 'color-mix(in srgb, var(--accent-primary, #327464) 40%, transparent)',
+                  color: 'var(--accent-primary, #327464)',
+                  background: 'color-mix(in srgb, var(--accent-primary, #327464) 10%, transparent)',
+                }}
+              >
+                <Terminal className="h-3.5 w-3.5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-[12px] font-semibold">Terminal sign-in detected</div>
+                <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+                  {oauthRelayPrompt.opened
+                    ? 'Helper opened. Finish browser sign-in, then return to this terminal.'
+                    : 'This command wants to return to a localhost callback. Vectant can relay it back to this workspace.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={dismissOauthRelayPrompt}
+                className="rounded p-0.5 opacity-70 transition-opacity hover:opacity-100"
+                style={{ color: 'var(--text-muted, #6b7089)' }}
+                aria-label="Dismiss terminal sign-in prompt"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-3 py-2.5">
+              <button
+                type="button"
+                onClick={dismissOauthRelayPrompt}
+                className="h-8 px-3 text-[11px] font-medium transition-colors hover:bg-white/5"
+                style={{ color: 'var(--text-secondary, #a1a1aa)' }}
+              >
+                Later
+              </button>
+              <button
+                type="button"
+                onClick={openOauthRelayPrompt}
+                className="h-8 px-3 text-[11px] font-semibold text-white transition-opacity hover:opacity-90"
+                style={{ background: 'var(--accent-primary, #327464)' }}
+              >
+                Open sign-in
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {colorPickerOpen && (
         <TerminalColorPanel

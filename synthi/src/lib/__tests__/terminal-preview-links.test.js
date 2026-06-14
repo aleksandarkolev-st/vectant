@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  findTerminalLoopbackAuthLinks,
   resolveTerminalLinkUrl,
   rewriteTerminalOutputLoopbackAuthLinks,
   terminalLinkNeedsRuntimeResolution,
@@ -97,6 +98,36 @@ describe('terminal-preview-links', () => {
     expect(parsed.searchParams.get('runtimeScope')).toBe('ws-demo-user-demo');
     expect(parsed.searchParams.get('authUrl')).toBe(authUrl);
     expect(parsed.searchParams.get('workspaceSlug')).toBe('demo');
+  });
+
+  it('finds terminal output auth links for in-IDE relay prompts', () => {
+    const authUrl = 'https://auth.example.test/oauth/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A4567%2Fcallback&state=abc';
+    const links = findTerminalLoopbackAuthLinks(`Open (${authUrl}).`, {
+      runtimeScope: 'ws-demo-user-demo',
+      bridgeBaseUrl: 'https://beta.vectant.dev/auth/loopback',
+      loopbackContext: {
+        workspaceSlug: 'demo',
+        terminalId: 'term-1',
+      },
+    });
+
+    expect(links).toHaveLength(1);
+    expect(links[0].originalUrl).toBe(authUrl);
+    const parsed = new URL(links[0].bridgeUrl);
+    expect(parsed.pathname).toBe('/auth/loopback');
+    expect(parsed.searchParams.get('runtimeScope')).toBe('ws-demo-user-demo');
+    expect(parsed.searchParams.get('authUrl')).toBe(authUrl);
+    expect(parsed.searchParams.get('workspaceSlug')).toBe('demo');
+    expect(parsed.searchParams.get('terminalId')).toBe('term-1');
+  });
+
+  it('does not surface ordinary terminal links as auth relay prompts', () => {
+    const links = findTerminalLoopbackAuthLinks('Docs: https://example.test/docs and preview: http://localhost:3000', {
+      runtimeScope: 'ws-demo-user-demo',
+      bridgeBaseUrl: 'https://beta.vectant.dev/auth/loopback',
+    });
+
+    expect(links).toEqual([]);
   });
 
   it('leaves ordinary external links untouched', async () => {

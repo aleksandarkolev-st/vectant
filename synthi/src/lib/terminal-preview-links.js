@@ -2,6 +2,8 @@ const LOCAL_PREVIEW_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1',
 const LOOPBACK_CALLBACK_PARAM_RE = /(redirect|callback|return|continue|next|url|uri)/i;
 const SCHEMELESS_LOOPBACK_RE = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1):\d+(?:[/?#]|$)/i;
 const TERMINAL_URL_RE = /\bhttps?:\/\/[^\s"'<>]+/gi;
+const TERMINAL_URL_TRAILING_PUNCTUATION_RE = /[)\].,;:!?]+$/;
+const LOOPBACK_TEXT_HINT_RE = /localhost|127\.0\.0\.1|0\.0\.0\.0|::1|%2f%2flocalhost|%2f%2f127\.0\.0\.1|%2f%2f0\.0\.0\.0|%2f%2f%5b%3a%3a1%5d|%2f%2f%3a%3a1/i;
 
 export function parseTerminalUrl(rawUri) {
   if (!rawUri || typeof rawUri !== 'string') return null;
@@ -170,8 +172,56 @@ export function buildLoopbackCallbackBridgeUrl(rawUri, runtimeScope, bridgeBaseU
   }
 }
 
+function terminalUrlCandidates(rawMatch) {
+  const candidates = [];
+  const seen = new Set();
+  const original = String(rawMatch || '').trim();
+  let candidate = original.replace(TERMINAL_URL_TRAILING_PUNCTUATION_RE, '');
+
+  while (candidate) {
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      candidates.push(candidate);
+    }
+    if (!TERMINAL_URL_TRAILING_PUNCTUATION_RE.test(candidate)) break;
+    candidate = candidate.replace(TERMINAL_URL_TRAILING_PUNCTUATION_RE, '');
+  }
+
+  if (original && !seen.has(original)) {
+    candidates.push(original);
+  }
+
+  return candidates;
+}
+
+export function findTerminalLoopbackAuthLinks(text, { runtimeScope, bridgeBaseUrl, loopbackContext, limit = 3 } = {}) {
+  if (!text || !runtimeScope || !bridgeBaseUrl || !LOOPBACK_TEXT_HINT_RE.test(text)) {
+    return [];
+  }
+
+  const links = [];
+  const seen = new Set();
+  const maxLinks = Math.max(1, Number(limit) || 3);
+
+  String(text).replace(TERMINAL_URL_RE, (match) => {
+    if (links.length >= maxLinks) return match;
+
+    for (const candidate of terminalUrlCandidates(match)) {
+      const bridgeUrl = buildLoopbackCallbackBridgeUrl(candidate, runtimeScope, bridgeBaseUrl, loopbackContext);
+      if (!bridgeUrl || seen.has(bridgeUrl)) continue;
+      seen.add(bridgeUrl);
+      links.push({ originalUrl: candidate, bridgeUrl });
+      break;
+    }
+
+    return match;
+  });
+
+  return links;
+}
+
 export function rewriteTerminalOutputLoopbackAuthLinks(text, { runtimeScope, bridgeBaseUrl, loopbackContext } = {}) {
-  if (!text || !runtimeScope || !bridgeBaseUrl || !/localhost|127\.0\.0\.1|0\.0\.0\.0|%2f%2flocalhost|%2f%2f127\.0\.0\.1|%2f%2f0\.0\.0\.0/i.test(text)) {
+  if (!text || !runtimeScope || !bridgeBaseUrl || !LOOPBACK_TEXT_HINT_RE.test(text)) {
     return text;
   }
 
