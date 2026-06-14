@@ -28,6 +28,7 @@ export const DOJO_CHECKRIDE_LICENSE_TEST_FILES = [
 export const DOJO_CHECKRIDE_LICENSE_CAPABILITIES = [
   "checkride_runtime_oracle_blocks_happy_path_only",
   "checkride_blocked_scenario_emits_license_constraint_and_evidence_record",
+  "checkride_appends_scenario_evidence_to_ledger",
   "checkride_prompt_injection_is_critical_guardrail_failure",
   "checkride_substrate_assertion_failure_requires_human_review",
   "entrustment_blocks_critical_failures",
@@ -163,6 +164,7 @@ export function buildDojoCheckrideLicenseEvidenceManifest({
       vivarium_oracle_required: true,
       observed_evidence_required: true,
       evidence_record_required: true,
+      ledger_append_required: true,
       license_constraints_required: true,
       critical_failure_block_required: true,
       substrate_assertion_required: true,
@@ -262,6 +264,7 @@ const includes = (...needles) => (title) => {
 const CAPABILITY_MATCHERS = {
   checkride_runtime_oracle_blocks_happy_path_only: includes("runtime and oracle evidence", "happy path alone is not enough"),
   checkride_blocked_scenario_emits_license_constraint_and_evidence_record: includes("blocked risk scenarios", "license constraints", "evidence records"),
+  checkride_appends_scenario_evidence_to_ledger: includes("appends checkride scenario evidence", "ledger"),
   checkride_prompt_injection_is_critical_guardrail_failure: includes("prompt injection document scenarios", "critical guardrail failures"),
   checkride_substrate_assertion_failure_requires_human_review: includes("substrate executor hooks", "executable checkride runs"),
   entrustment_blocks_critical_failures: includes("blocks production entrustment", "critical failures"),

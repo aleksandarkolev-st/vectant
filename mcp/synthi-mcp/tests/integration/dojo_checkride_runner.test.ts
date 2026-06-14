@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { runDojoExecutableCheckride } from "../../src/dojo/checkride/runner.js";
+import {
+  runDojoExecutableCheckride,
+  type DojoCheckrideEvidenceLedger,
+} from "../../src/dojo/checkride/runner.js";
 import { toDojoScenarioDefinition } from "../../src/dojo/vivarium/scenario_dsl.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
 import type { DojoScenario } from "../../src/browser/dojo.js";
+import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_record.js";
+import type { DojoEvidenceLedgerRecord, DojoEvidenceRecordInput } from "../../src/dojo/evidence/types.js";
 
 describe("Dojo executable checkride runner", () => {
   it("uses runtime and oracle evidence so happy path alone is not enough when risk scenario fails", async () => {
@@ -104,6 +109,93 @@ describe("Dojo executable checkride runner", () => {
       claim_ids: expect.arrayContaining(["scenario_oracle:blocked", "scenario_expectation:met"]),
     }));
     expect(report.evidence_refs[0]).toContain("evidence:evidence_oracle_");
+    expect(report.ledger_record_count).toBe(0);
+    expect(report.ledger_checkpoint_hashes).toEqual([]);
+  });
+
+  it("appends checkride scenario evidence to the ledger when required", async () => {
+    const authExpiry = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "auth_expiry",
+      layer: "risk",
+      risk_tags: ["auth_expired"],
+    }));
+    const ledger = new InMemoryCheckrideLedger("tenant-a", "workspace-a");
+
+    const report = await runDojoExecutableCheckride({
+      graph: graphFixture(),
+      scenarios: [authExpiry],
+      base_inputs: {
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      observed_evidence_by_scenario: {
+        [authExpiry.scenario_id]: ["identity_policy_state"],
+      },
+      evidence_context: {
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        skill_id: "skill-a",
+        created_at: "2026-06-11T00:00:00.000Z",
+        created_by: "checkride-test",
+        run_id_prefix: "run",
+      },
+      evidence_ledger: ledger,
+      require_evidence_ledger: true,
+      now: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(ledger.records).toHaveLength(1);
+    expect(report.ledger_record_count).toBe(1);
+    expect(report.ledger_checkpoint_hashes).toEqual([ledger.records[0]!.ledger_head_hash]);
+    expect(report.evidence_refs).toEqual([
+      `ledger:${ledger.records[0]!.record_id}:${ledger.records[0]!.ledger_head_hash}`,
+    ]);
+    expect(report.results[0]).toEqual(expect.objectContaining({
+      evidence_record: expect.objectContaining({
+        record_id: ledger.records[0]!.record_id,
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+      }),
+      ledger_record: expect.objectContaining({
+        record_id: ledger.records[0]!.record_id,
+        previous_hash: "0".repeat(64),
+        record_hash: ledger.records[0]!.record_hash,
+      }),
+    }));
+    expect(ledger.appendInputs[0]).toEqual(expect.not.objectContaining({
+      tenant_id: expect.anything(),
+      workspace_id: expect.anything(),
+      previous_hash: expect.anything(),
+    }));
+  });
+
+  it("fails closed when ledger-backed checkride evidence is required but unavailable", async () => {
+    const baseline = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "baseline",
+      layer: "skill",
+      risk_tags: ["baseline"],
+    }));
+
+    await expect(runDojoExecutableCheckride({
+      graph: graphFixture(),
+      scenarios: [baseline],
+      evidence_context: {
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        skill_id: "skill-a",
+        created_at: "2026-06-11T00:00:00.000Z",
+        created_by: "checkride-test",
+      },
+      require_evidence_ledger: true,
+      now: "2026-06-11T00:00:00.000Z",
+    })).rejects.toThrow("dojo_checkride_evidence_ledger_required");
+
+    await expect(runDojoExecutableCheckride({
+      graph: graphFixture(),
+      scenarios: [baseline],
+      require_evidence_ledger: true,
+      now: "2026-06-11T00:00:00.000Z",
+    })).rejects.toThrow("dojo_checkride_evidence_context_required");
   });
 
   it("treats unquarantined prompt injection document scenarios as critical guardrail failures", async () => {
@@ -313,4 +405,28 @@ function scenarioFixture(overrides: Partial<DojoScenario>): DojoScenario {
     risk_tags: overrides.risk_tags ?? [],
     generated_from: overrides.generated_from ?? "dojo_template",
   };
+}
+
+class InMemoryCheckrideLedger implements DojoCheckrideEvidenceLedger {
+  readonly records: DojoEvidenceLedgerRecord[] = [];
+  readonly appendInputs: Array<Omit<DojoEvidenceRecordInput, "tenant_id" | "workspace_id" | "previous_hash">> = [];
+
+  constructor(
+    private readonly tenantId: string,
+    private readonly workspaceId: string
+  ) {}
+
+  async append(
+    input: Omit<DojoEvidenceRecordInput, "tenant_id" | "workspace_id" | "previous_hash">
+  ): Promise<DojoEvidenceLedgerRecord> {
+    this.appendInputs.push({ ...input, claim_ids: [...input.claim_ids], source_refs: [...(input.source_refs ?? [])] });
+    const record = buildDojoEvidenceLedgerRecord({
+      ...input,
+      tenant_id: this.tenantId,
+      workspace_id: this.workspaceId,
+      previous_hash: this.records.at(-1)?.record_hash,
+    });
+    this.records.push(record);
+    return record;
+  }
 }

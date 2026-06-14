@@ -2257,6 +2257,7 @@ describe("Dojo release gate artifact verifier", () => {
       missing_capabilities: ["checkride_blocked_scenario_emits_license_constraint_and_evidence_record"],
       checkride_license: {
         ...checkrideLicenseEvidenceFixture().checkride_license,
+        ledger_append_required: false,
         license_constraints_required: false,
         stale_evidence_downgrade_required: false,
       },
@@ -2272,6 +2273,7 @@ describe("Dojo release gate artifact verifier", () => {
       "checkride_license_not_ok",
       "checkride_license_coverage_incomplete",
       "checkride_license_missing_capabilities:checkride_blocked_scenario_emits_license_constraint_and_evidence_record",
+      "checkride_license_ledger_append_requirement_missing",
       "checkride_license_constraint_requirement_missing",
       "checkride_license_stale_evidence_requirement_missing",
     ]));
@@ -5386,6 +5388,7 @@ function checkrideLicenseEvidenceFixture(overrides = {}) {
       vivarium_oracle_required: true,
       observed_evidence_required: true,
       evidence_record_required: true,
+      ledger_append_required: true,
       license_constraints_required: true,
       critical_failure_block_required: true,
       substrate_assertion_required: true,

@@ -84,6 +84,8 @@ function reportFixture(overrides: Partial<DojoExecutableCheckrideReport> = {}): 
     license_constraints: [],
     results: [],
     evidence_refs: ["evidence:checkride-a"],
+    ledger_record_count: 0,
+    ledger_checkpoint_hashes: [],
     ...overrides,
   };
 }

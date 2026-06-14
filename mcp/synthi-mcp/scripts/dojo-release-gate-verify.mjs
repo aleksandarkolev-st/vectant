@@ -2833,6 +2833,7 @@ export function validateDojoCheckrideLicenseEvidenceForRelease(evidence) {
     ["vivarium_oracle_required", "checkride_license_oracle_requirement_missing"],
     ["observed_evidence_required", "checkride_license_observed_evidence_requirement_missing"],
     ["evidence_record_required", "checkride_license_evidence_record_requirement_missing"],
+    ["ledger_append_required", "checkride_license_ledger_append_requirement_missing"],
     ["license_constraints_required", "checkride_license_constraint_requirement_missing"],
     ["critical_failure_block_required", "checkride_license_critical_failure_requirement_missing"],
     ["substrate_assertion_required", "checkride_license_substrate_assertion_requirement_missing"],
@@ -4452,6 +4453,7 @@ async function runSelfCheck({ outDir }) {
       missing_capabilities: ["checkride_blocked_scenario_emits_license_constraint_and_evidence_record"],
       checkride_license: {
         ...checkrideLicenseArtifacts.evidence.checkride_license,
+        ledger_append_required: false,
         license_constraints_required: false,
         stale_evidence_downgrade_required: false,
       },
@@ -4463,6 +4465,7 @@ async function runSelfCheck({ outDir }) {
   });
   assert(rejectedCheckrideLicense.errors.includes("checkride_license_coverage_incomplete"));
   assert(rejectedCheckrideLicense.errors.includes("checkride_license_missing_capabilities:checkride_blocked_scenario_emits_license_constraint_and_evidence_record"));
+  assert(rejectedCheckrideLicense.errors.includes("checkride_license_ledger_append_requirement_missing"));
   assert(rejectedCheckrideLicense.errors.includes("checkride_license_constraint_requirement_missing"));
   assert(rejectedCheckrideLicense.errors.includes("checkride_license_stale_evidence_requirement_missing"));
 
@@ -7006,6 +7009,7 @@ async function writeCheckrideLicenseEvidenceForSelfCheck({
       vivarium_oracle_required: true,
       observed_evidence_required: true,
       evidence_record_required: true,
+      ledger_append_required: true,
       license_constraints_required: true,
       critical_failure_block_required: true,
       substrate_assertion_required: true,

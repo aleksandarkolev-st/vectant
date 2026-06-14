@@ -803,6 +803,7 @@ describe("Dojo release gate manifest", () => {
           require_vivarium_oracle: true,
           require_observed_evidence: true,
           require_evidence_record: true,
+          require_ledger_append: true,
           require_license_constraints: true,
           require_critical_failure_block: true,
           require_substrate_assertion: true,
@@ -1314,10 +1315,12 @@ describe("Dojo release gate manifest", () => {
     checkrideLicenseGate.release_artifact_requirements.required_test_files = DOJO_CHECKRIDE_LICENSE_TEST_FILES
       .filter((file) => file !== missingCheckrideLicenseTestFile);
     checkrideLicenseGate.release_artifact_requirements.require_executable_checkride = false;
+    checkrideLicenseGate.release_artifact_requirements.require_ledger_append = false;
     checkrideLicenseGate.release_artifact_requirements.require_license_constraints = false;
     checkrideLicenseGate.release_artifact_requirements.require_stale_evidence_downgrade = false;
     expect(validateDojoReleaseGateManifest(brokenCheckrideLicense, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "checkride_license_missing_executable_requirement",
+      "checkride_license_missing_ledger_append_requirement",
       "checkride_license_missing_license_constraint_requirement",
       "checkride_license_missing_stale_evidence_requirement",
       "checkride_license_missing_required_capabilities:checkride_runtime_oracle_blocks_happy_path_only",

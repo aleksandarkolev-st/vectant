@@ -10,7 +10,11 @@ import {
 } from "../vivarium/oracle.js";
 import { DojoVivariumRunner, type DojoScenarioRunResult } from "../vivarium/runner.js";
 import type { DojoScenarioDefinition } from "../vivarium/scenario_dsl.js";
-import type { DojoEvidenceRecordInput } from "../evidence/types.js";
+import type { DojoEvidenceLedgerRecord, DojoEvidenceRecordInput } from "../evidence/types.js";
+
+export interface DojoCheckrideEvidenceLedger {
+  append(input: Omit<DojoEvidenceRecordInput, "tenant_id" | "workspace_id" | "previous_hash">): Promise<DojoEvidenceLedgerRecord>;
+}
 
 export interface DojoExecutableCheckrideScenarioResult {
   scenario_id: string;
@@ -26,6 +30,7 @@ export interface DojoExecutableCheckrideScenarioResult {
   oracle: DojoScenarioOracleEvaluation;
   scenario_run: DojoScenarioRunResult;
   evidence_record?: DojoEvidenceRecordInput;
+  ledger_record?: DojoEvidenceLedgerRecord;
 }
 
 export interface DojoCheckrideLicenseConstraint {
@@ -52,6 +57,8 @@ export interface DojoExecutableCheckrideReport {
   license_constraints: DojoCheckrideLicenseConstraint[];
   results: DojoExecutableCheckrideScenarioResult[];
   evidence_refs: string[];
+  ledger_record_count: number;
+  ledger_checkpoint_hashes: string[];
 }
 
 export interface DojoExecutableCheckrideInput {
@@ -67,6 +74,8 @@ export interface DojoExecutableCheckrideInput {
   budget_by_scenario?: Record<string, DojoScenarioDefinition["budget"]>;
   model_calls_used_by_scenario?: Record<string, number>;
   evidence_context?: Omit<DojoScenarioOracleEvidenceContext, "run_id"> & { run_id_prefix?: string };
+  evidence_ledger?: DojoCheckrideEvidenceLedger;
+  require_evidence_ledger?: boolean;
   now?: string;
 }
 
@@ -74,6 +83,12 @@ export async function runDojoExecutableCheckride(
   input: DojoExecutableCheckrideInput
 ): Promise<DojoExecutableCheckrideReport> {
   const now = input.now ?? new Date().toISOString();
+  if (input.require_evidence_ledger === true && !input.evidence_context) {
+    throw new Error("dojo_checkride_evidence_context_required");
+  }
+  if (input.require_evidence_ledger === true && !input.evidence_ledger) {
+    throw new Error("dojo_checkride_evidence_ledger_required");
+  }
   const vivarium = new DojoVivariumRunner();
   const results: DojoExecutableCheckrideScenarioResult[] = [];
 
@@ -108,6 +123,9 @@ export async function runDojoExecutableCheckride(
           run_id: runId,
         })
       : undefined;
+    const ledgerRecord = evidenceRecord && input.evidence_ledger
+      ? await input.evidence_ledger.append(toCheckrideLedgerAppendInput(evidenceRecord))
+      : undefined;
 
     results.push({
       scenario_id: scenario.scenario_id,
@@ -123,6 +141,7 @@ export async function runDojoExecutableCheckride(
       oracle,
       scenario_run: scenarioRun,
       ...(evidenceRecord ? { evidence_record: evidenceRecord } : {}),
+      ...(ledgerRecord ? { ledger_record: ledgerRecord } : {}),
     });
   }
 
@@ -147,8 +166,41 @@ export async function runDojoExecutableCheckride(
     production_recommendation: productionRecommendation(criticalFailures, licenseConstraints),
     license_constraints: licenseConstraints,
     results,
-    evidence_refs: results.flatMap((result) => result.evidence_record ? [`evidence:${result.evidence_record.record_id}`] : [`oracle:${result.oracle.oracle_id}`]),
+    evidence_refs: results.flatMap(evidenceRefsForResult),
+    ledger_record_count: results.filter((result) => Boolean(result.ledger_record)).length,
+    ledger_checkpoint_hashes: [
+      ...new Set(results.flatMap((result) => result.ledger_record?.ledger_head_hash ? [result.ledger_record.ledger_head_hash] : [])),
+    ],
   };
+}
+
+function toCheckrideLedgerAppendInput(
+  record: DojoEvidenceRecordInput
+): Omit<DojoEvidenceRecordInput, "tenant_id" | "workspace_id" | "previous_hash"> {
+  return {
+    record_id: record.record_id,
+    skill_id: record.skill_id,
+    run_id: record.run_id,
+    kind: record.kind,
+    artifact_uri: record.artifact_uri,
+    artifact_sha256: record.artifact_sha256,
+    ...(record.redaction_manifest_sha256 ? { redaction_manifest_sha256: record.redaction_manifest_sha256 } : {}),
+    claim_ids: [...record.claim_ids],
+    ...(record.signer_key_id ? { signer_key_id: record.signer_key_id } : {}),
+    created_at: record.created_at,
+    created_by: record.created_by,
+    retention_class: record.retention_class,
+    ...(record.legal_hold !== undefined ? { legal_hold: record.legal_hold } : {}),
+    ...(record.source_refs ? { source_refs: [...record.source_refs] } : {}),
+  };
+}
+
+function evidenceRefsForResult(result: DojoExecutableCheckrideScenarioResult): string[] {
+  if (result.ledger_record) {
+    return [`ledger:${result.ledger_record.record_id}:${result.ledger_record.ledger_head_hash}`];
+  }
+  if (result.evidence_record) return [`evidence:${result.evidence_record.record_id}`];
+  return [`oracle:${result.oracle.oracle_id}`];
 }
 
 function licenseConstraintsFor(results: DojoExecutableCheckrideScenarioResult[]): DojoCheckrideLicenseConstraint[] {
