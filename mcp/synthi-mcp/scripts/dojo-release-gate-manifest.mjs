@@ -1134,7 +1134,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:hosted-runtime-gateway:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_hosted_runtime_gateway.test.ts tests/unit/dojo_hosted_runtime_gateway_resolver.test.ts tests/unit/dojo_hosted_runtime_postgres_store.test.ts -- --reporter=json --outputFile ../../tmp/dojo-hosted-runtime-gateway/dojo-hosted-runtime-gateway.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:hosted-runtime-gateway:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:hosted-runtime-gateway:self-check",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.hostedRuntimeGatewayEvidence.v1",
@@ -1159,6 +1159,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_malformed_record_rejection: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
+      require_self_check_executes_tests: true,
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
     },
@@ -2608,6 +2609,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_durable_store_production_requirement", "hosted_runtime_gateway_missing_durable_store_requirement"],
       ["require_postgres_session_store", "hosted_runtime_gateway_missing_postgres_store_requirement"],
       ["require_malformed_record_rejection", "hosted_runtime_gateway_missing_malformed_record_requirement"],
+      ["require_self_check_executes_tests", "hosted_runtime_gateway_missing_self_check_execution_requirement"],
     ]) {
       if (!hostedRuntimeGatewayGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }

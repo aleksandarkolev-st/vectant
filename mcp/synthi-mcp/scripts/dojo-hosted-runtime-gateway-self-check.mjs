@@ -13,6 +13,10 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { summarizeVitestJsonReport } from "./dojo-chaos-performance-self-check.mjs";
+import {
+  runVitestJsonForSelfCheck,
+  shouldRunVitestForSelfCheck,
+} from "./dojo-vitest-self-check-runner.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -76,27 +80,41 @@ export async function runDojoHostedRuntimeGatewaySelfCheck({
   assert.deepEqual(missing, [], `missing hosted runtime gateway test files: ${missing.join(", ")}`);
   const startedAt = performance.now();
   const jsonReportPath = path.resolve(args["from-json"] || args["vitest-json"] || path.join(outputDir, "dojo-hosted-runtime-gateway.vitest.json"));
+  const shouldRunTests = shouldRunVitestForSelfCheck(args, jsonReportPath, existsSync);
+  const testRun = shouldRunTests
+    ? await runVitestJsonForSelfCheck({
+      testFiles: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
+      jsonReportPath,
+      timeoutMs,
+      cwd: MCP_ROOT,
+    })
+    : null;
   const jsonReportError = existsSync(jsonReportPath) ? undefined : `json_report_missing:${jsonReportPath}`;
   const jsonReportText = jsonReportError ? "" : await readFile(jsonReportPath, "utf8");
   const jsonReport = jsonReportError ? null : JSON.parse(jsonReportText);
   const durationMs = performance.now() - startedAt;
   const testSummary = summarizeVitestJsonReport(jsonReport);
-  const stdout = [
+  const builderSummary = [
     "Dojo hosted runtime gateway self-check evidence builder",
     `vitest_json=${jsonReportPath}`,
+    `vitest_executed=${testRun ? "true" : "false"}`,
     `test_files=${DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.join(",")}`,
     `reported_tests=${testSummary.total_tests}`,
     `reported_test_files=${testSummary.reported_test_file_count}`,
   ].join("\n") + "\n";
-  const stderr = jsonReportError ? `${jsonReportError}\n` : "";
+  const stdout = testRun?.stdout ? `${builderSummary}${testRun.stdout}` : builderSummary;
+  const stderrParts = [];
+  if (testRun?.stderr) stderrParts.push(testRun.stderr);
+  if (jsonReportError) stderrParts.push(jsonReportError);
+  const stderr = stderrParts.length > 0 ? `${stderrParts.join("\n")}\n` : "";
   const stdoutPath = path.join(outputDir, "dojo-hosted-runtime-gateway.evidence-builder.stdout.log");
   const stderrPath = path.join(outputDir, "dojo-hosted-runtime-gateway.evidence-builder.stderr.log");
   await writeFile(stdoutPath, stdout);
   await writeFile(stderrPath, stderr);
   const evidence = buildDojoHostedRuntimeGatewayEvidenceManifest({
     now,
-    exitCode: jsonReport?.success === true ? 0 : 1,
-    signal: null,
+    exitCode: testRun?.exitCode ?? (jsonReport?.success === true ? 0 : 1),
+    signal: testRun?.signal ?? null,
     durationMs,
     testFiles: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
     stdout,
@@ -107,7 +125,8 @@ export async function runDojoHostedRuntimeGatewaySelfCheck({
     jsonReportPath,
     jsonReportText,
     timeoutMs,
-    error: jsonReportError,
+    error: jsonReportError ?? testRun?.error,
+    testRun,
   });
   const evidencePath = path.join(outputDir, "dojo-hosted-runtime-gateway.evidence.json");
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
@@ -136,6 +155,7 @@ export function buildDojoHostedRuntimeGatewayEvidenceManifest({
   jsonReportText,
   timeoutMs = 120000,
   error,
+  testRun,
 }) {
   const testSummary = summarizeVitestJsonReport(jsonReport);
   const capabilityCoverage = buildHostedRuntimeGatewayCapabilityCoverage({
@@ -179,6 +199,7 @@ export function buildDojoHostedRuntimeGatewayEvidenceManifest({
       durable_store_production_requirement_required: true,
       postgres_session_store_required: true,
       malformed_record_rejection_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...testFiles],
     test_file_count: testFiles.length,
@@ -194,6 +215,20 @@ export function buildDojoHostedRuntimeGatewayEvidenceManifest({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: testRun
+      ? {
+        command: testRun.command,
+        args: testRun.args,
+        exit_code: testRun.exitCode,
+        signal: testRun.signal ?? null,
+        duration_ms: Number(testRun.durationMs.toFixed(3)),
+        timed_out: testRun.timedOut,
+        stdout_sha256: sha256(testRun.stdout),
+        stderr_sha256: sha256(testRun.stderr),
+        stdout_bytes: Buffer.byteLength(testRun.stdout),
+        stderr_bytes: Buffer.byteLength(testRun.stderr),
+      }
+      : null,
     ...(error ? { error } : {}),
   };
 }

@@ -3251,6 +3251,7 @@ export function validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence) {
     ["durable_store_production_requirement_required", "hosted_runtime_gateway_durable_store_requirement_missing"],
     ["postgres_session_store_required", "hosted_runtime_gateway_postgres_store_requirement_missing"],
     ["malformed_record_rejection_required", "hosted_runtime_gateway_malformed_record_requirement_missing"],
+    ["self_check_executes_tests_required", "hosted_runtime_gateway_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
   }
@@ -3264,6 +3265,20 @@ export function validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence) {
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("hosted_runtime_gateway_no_reported_tests");
   if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
     errors.push(`hosted_runtime_gateway_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution) {
+    errors.push("hosted_runtime_gateway_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`hosted_runtime_gateway_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("hosted_runtime_gateway_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("hosted_runtime_gateway_test_execution_args_missing");
+    }
   }
   return {
     ok: errors.length === 0,
@@ -4763,6 +4778,7 @@ async function runSelfCheck({ outDir }) {
         ...hostedRuntimeGatewayArtifacts.evidence.hosted_runtime_contract,
         revocation_and_expiry_required: false,
         evidence_write_required: false,
+        self_check_executes_tests_required: false,
       },
     },
   });
@@ -4774,6 +4790,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedHostedRuntimeGateway.errors.includes("hosted_runtime_gateway_missing_capabilities:hosted_runtime_blocks_expired_and_revoked_sessions"));
   assert(rejectedHostedRuntimeGateway.errors.includes("hosted_runtime_gateway_revocation_expiry_requirement_missing"));
   assert(rejectedHostedRuntimeGateway.errors.includes("hosted_runtime_gateway_evidence_requirement_missing"));
+  assert(rejectedHostedRuntimeGateway.errors.includes("hosted_runtime_gateway_self_check_execution_requirement_missing"));
 
   const visualDir = path.join(outDir, "visual");
   await mkdir(visualDir, { recursive: true });
@@ -7892,6 +7909,7 @@ async function writeHostedRuntimeGatewayEvidenceForSelfCheck({
       durable_store_production_requirement_required: true,
       postgres_session_store_required: true,
       malformed_record_rejection_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES],
     test_file_count: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.length,
@@ -7923,6 +7941,18 @@ async function writeHostedRuntimeGatewayEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 1000,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);

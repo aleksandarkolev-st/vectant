@@ -2671,6 +2671,7 @@ describe("Dojo release gate artifact verifier", () => {
         ...hostedRuntimeGatewayEvidenceFixture().hosted_runtime_contract,
         revocation_and_expiry_required: false,
         evidence_write_required: false,
+        self_check_executes_tests_required: false,
       },
     });
     const incompletePath = await writeHostedRuntimeGatewayEvidenceFixture({
@@ -2686,6 +2687,23 @@ describe("Dojo release gate artifact verifier", () => {
       "hosted_runtime_gateway_missing_capabilities:hosted_runtime_blocks_expired_and_revoked_sessions",
       "hosted_runtime_gateway_revocation_expiry_requirement_missing",
       "hosted_runtime_gateway_evidence_requirement_missing",
+      "hosted_runtime_gateway_self_check_execution_requirement_missing",
+    ]));
+
+    const missingExecutionPath = await writeHostedRuntimeGatewayEvidenceFixture({
+      dir,
+      basename: "hosted-runtime-gateway-missing-execution",
+      evidence: hostedRuntimeGatewayEvidenceFixture({
+        hosted_runtime_contract: {
+          ...hostedRuntimeGatewayEvidenceFixture().hosted_runtime_contract,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    expect((await verifyDojoHostedRuntimeGatewayEvidenceArtifact({ evidencePath: missingExecutionPath })).errors).toEqual(expect.arrayContaining([
+      "hosted_runtime_gateway_self_check_execution_requirement_missing",
+      "hosted_runtime_gateway_test_execution_missing",
     ]));
 
     const driftedPath = await writeHostedRuntimeGatewayEvidenceFixture({
@@ -6112,6 +6130,19 @@ function hostedRuntimeGatewayEvidenceFixture(overrides = {}) {
       durable_store_production_requirement_required: true,
       postgres_session_store_required: true,
       malformed_record_rejection_required: true,
+      self_check_executes_tests_required: true,
+    },
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 1000,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
     },
     test_files: [...DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES],
     test_file_count: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.length,
