@@ -83,6 +83,10 @@ import {
   DOJO_SOURCE_DRIFT_TEST_FILES,
 } from "../../scripts/dojo-source-drift-self-check.mjs";
 import {
+  DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES,
+  DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES,
+} from "../../scripts/dojo-time-machine-debugger-self-check.mjs";
+import {
   validateDojoProofSelfCheckForRelease,
   validateDojoApiToolCompilerEvidenceForRelease,
   validateDojoSourceDriftEvidenceForRelease,
@@ -97,6 +101,7 @@ import {
   validateDojoGovernanceLifecycleEvidenceForRelease,
   validateDojoGraphRuntimeEvidenceForRelease,
   validateDojoGhostModeEvidenceForRelease,
+  validateDojoTimeMachineDebuggerEvidenceForRelease,
   validateDojoHostedRuntimeGatewayEvidenceForRelease,
   validateDojoVivariumRuntimeEvidenceForRelease,
   validateDojoCaseLawRuntimeEvidenceForRelease,
@@ -120,6 +125,7 @@ import {
   verifyDojoGovernanceLifecycleEvidenceArtifact,
   verifyDojoGraphRuntimeEvidenceArtifact,
   verifyDojoGhostModeEvidenceArtifact,
+  verifyDojoTimeMachineDebuggerEvidenceArtifact,
   verifyDojoHostedRuntimeGatewayEvidenceArtifact,
   verifyDojoVivariumRuntimeEvidenceArtifact,
   verifyDojoCaseLawRuntimeEvidenceArtifact,
@@ -1075,6 +1081,7 @@ describe("Dojo release gate artifact verifier", () => {
     const governanceLifecycleEvidencePath = await writeGovernanceLifecycleEvidenceFixture({ dir });
     const graphRuntimeEvidencePath = await writeGraphRuntimeEvidenceFixture({ dir });
     const ghostModeEvidencePath = await writeGhostModeEvidenceFixture({ dir });
+    const timeMachineDebuggerEvidencePath = await writeTimeMachineDebuggerEvidenceFixture({ dir });
     const vivariumRuntimeEvidencePath = await writeVivariumRuntimeEvidenceFixture({ dir });
     const caseLawRuntimeEvidencePath = await writeCaseLawRuntimeEvidenceFixture({ dir });
     const hostedRuntimeGatewayEvidencePath = await writeHostedRuntimeGatewayEvidenceFixture({ dir });
@@ -1132,6 +1139,7 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check").default_evidence_path = governanceLifecycleEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_graph_runtime_self_check").default_evidence_path = graphRuntimeEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_ghost_mode_evidence_self_check").default_evidence_path = ghostModeEvidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_time_machine_debugger_self_check").default_evidence_path = timeMachineDebuggerEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_vivarium_runtime_self_check").default_evidence_path = vivariumRuntimeEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_case_law_runtime_self_check").default_evidence_path = caseLawRuntimeEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check").default_evidence_path = hostedRuntimeGatewayEvidencePath;
@@ -1165,6 +1173,7 @@ describe("Dojo release gate artifact verifier", () => {
         "governance-lifecycle-evidence": governanceLifecycleEvidencePath,
         "graph-runtime-evidence": graphRuntimeEvidencePath,
         "ghost-mode-evidence": ghostModeEvidencePath,
+        "time-machine-debugger-evidence": timeMachineDebuggerEvidencePath,
         "vivarium-runtime-evidence": vivariumRuntimeEvidencePath,
         "case-law-runtime-evidence": caseLawRuntimeEvidencePath,
         "hosted-runtime-gateway-evidence": hostedRuntimeGatewayEvidencePath,
@@ -1272,6 +1281,13 @@ describe("Dojo release gate artifact verifier", () => {
         id: "dojo_ghost_mode_evidence_self_check",
         ok: true,
         evidence_path: ghostModeEvidencePath,
+      }),
+    ]);
+    expect(verified.time_machine_debugger).toEqual([
+      expect.objectContaining({
+        id: "dojo_time_machine_debugger_self_check",
+        ok: true,
+        evidence_path: timeMachineDebuggerEvidencePath,
       }),
     ]);
     expect(verified.vivarium_runtime).toEqual([
@@ -1621,6 +1637,71 @@ describe("Dojo release gate artifact verifier", () => {
       "ghost_mode_required_capabilities_missing:postgres_ghost_shadow_rejects_mutating_evidence",
       "ghost_mode_required_capabilities_untested:postgres_ghost_shadow_rejects_mutating_evidence",
       `ghost_mode_required_test_files_missing:${DOJO_GHOST_MODE_EVIDENCE_TEST_FILES.join(",")}`,
+    ]));
+  });
+
+  it("verifies Time Machine debugger evidence coverage and honest deterministic debug contract", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-time-machine-verify-"));
+    const evidencePath = await writeTimeMachineDebuggerEvidenceFixture({ dir });
+
+    expect(validateDojoTimeMachineDebuggerEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoTimeMachineDebuggerEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_time_machine_debugger_self_check",
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = timeMachineDebuggerEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["time_machine_replay_plan"],
+      time_machine_contract: {
+        ...timeMachineDebuggerEvidenceFixture().time_machine_contract,
+        replay_plan_required: false,
+        honest_projection_status_required: false,
+      },
+    });
+    const incompletePath = await writeTimeMachineDebuggerEvidenceFixture({
+      dir,
+      basename: "incomplete-time-machine",
+      evidence: incomplete,
+    });
+    const rejected = await verifyDojoTimeMachineDebuggerEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "time_machine_not_ok",
+      "time_machine_coverage_incomplete",
+      "time_machine_missing_capabilities:time_machine_replay_plan",
+      "time_machine_replay_plan_requirement_missing",
+      "time_machine_honest_status_requirement_missing",
+    ]));
+
+    const driftedPath = await writeTimeMachineDebuggerEvidenceFixture({
+      dir,
+      basename: "drifted-time-machine",
+      evidence: timeMachineDebuggerEvidenceFixture({
+        configured_capabilities: DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES
+          .filter((capability) => capability !== "time_machine_replay_plan"),
+        tested_capabilities: DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES
+          .filter((capability) => capability !== "time_machine_replay_plan"),
+        capability_count: DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES.length - 1,
+        test_files: [],
+        test_file_count: 0,
+        reported_test_file_count: 0,
+      }),
+    });
+    expect((await verifyDojoTimeMachineDebuggerEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "time_machine_required_capabilities_missing:time_machine_replay_plan",
+      "time_machine_required_capabilities_untested:time_machine_replay_plan",
+      `time_machine_required_test_files_missing:${DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES.join(",")}`,
     ]));
   });
 
@@ -4003,6 +4084,108 @@ function ghostModeJsonReportFixtureText() {
         startTime: 0,
         endTime: 100,
         assertionResults: DOJO_GHOST_MODE_EVIDENCE_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+}
+
+async function writeTimeMachineDebuggerEvidenceFixture({
+  dir,
+  basename = "dojo-time-machine-debugger",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "time machine debugger suite passed\n";
+  const stderr = "";
+  const jsonReport = timeMachineDebuggerJsonReportFixtureText();
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? timeMachineDebuggerEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(body, null, 2), "utf8");
+  return evidencePath;
+}
+
+function timeMachineDebuggerEvidenceFixture(overrides = {}) {
+  const stdout = "time machine debugger suite passed\n";
+  const stderr = "";
+  const jsonReport = timeMachineDebuggerJsonReportFixtureText();
+  return {
+    schema_version: "synthi.dojo.timeMachineDebuggerEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES],
+    tested_capabilities: [...DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES.length,
+    configured_capability_count: DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    time_machine_contract: {
+      deterministic_debug_report_required: true,
+      counterfactual_twin_required: true,
+      promoted_scenario_selection_required: true,
+      scenario_correlation_required: true,
+      attack_guardrail_correlation_required: true,
+      remediation_cost_policy_required: true,
+      baseline_explanation_required: true,
+      counterfactual_license_impact_required: true,
+      replay_plan_required: true,
+      honest_projection_status_required: true,
+    },
+    test_files: [...DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES],
+    test_file_count: DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES.length,
+    reported_test_file_count: DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES.length,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES.length,
+      passed_tests: DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: overrides.stdout_path || path.join(tmpdir(), "dojo-time-machine-debugger.stdout.log"),
+    stderr_path: overrides.stderr_path || path.join(tmpdir(), "dojo-time-machine-debugger.stderr.log"),
+    json_report_path: overrides.json_report_path || path.join(tmpdir(), "dojo-time-machine-debugger.vitest.json"),
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    json_report_sha256: sha256(jsonReport),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function timeMachineDebuggerJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES.length,
+    numPassedTests: DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES.length,
+    numPassedTestSuites: DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES.map((capability, index) => ({
           fullName: `release verifier fixture covers ${capability}`,
           title: `release verifier fixture covers ${capability}`,
           status: "passed",

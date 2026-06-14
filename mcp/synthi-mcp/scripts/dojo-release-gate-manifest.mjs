@@ -78,6 +78,10 @@ import {
   DOJO_SOURCE_DRIFT_TEST_FILES,
 } from "./dojo-source-drift-self-check.mjs";
 import {
+  DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES,
+  DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES,
+} from "./dojo-time-machine-debugger-self-check.mjs";
+import {
   DOJO_VIVARIUM_RUNTIME_CAPABILITIES,
   DOJO_VIVARIUM_RUNTIME_TEST_FILES,
 } from "./dojo-vivarium-runtime-self-check.mjs";
@@ -787,6 +791,36 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     requires_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
   },
   {
+    id: "dojo_time_machine_debugger_self_check",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:time-machine-debugger:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_time_machine_debugger.test.ts -- --reporter=json --outputFile ../../tmp/dojo-time-machine-debugger/dojo-time-machine-debugger.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:time-machine-debugger:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.timeMachineDebuggerEvidence.v1",
+    default_evidence_path: "tmp/dojo-time-machine-debugger/dojo-time-machine-debugger.evidence.json",
+    release_artifact_requirements: {
+      require_all_time_machine_capabilities_covered: true,
+      required_time_machine_capabilities: [...DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES],
+      required_test_files: [...DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES],
+      require_deterministic_debug_report: true,
+      require_counterfactual_twin: true,
+      require_promoted_scenario_selection: true,
+      require_scenario_correlation: true,
+      require_attack_guardrail_correlation: true,
+      require_remediation_cost_policy: true,
+      require_baseline_explanation: true,
+      require_counterfactual_license_impact: true,
+      require_replay_plan: true,
+      require_honest_projection_status: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "dojo_vivarium_runtime_self_check",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -1036,6 +1070,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "dojo_governance_lifecycle_self_check",
   "dojo_graph_runtime_self_check",
   "dojo_ghost_mode_evidence_self_check",
+  "dojo_time_machine_debugger_self_check",
   "dojo_vivarium_runtime_self_check",
   "dojo_case_law_runtime_self_check",
   "dojo_hosted_runtime_gateway_self_check",
@@ -1798,6 +1833,57 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!Array.isArray(ghostModeGate.requires_env)
       || !ghostModeGate.requires_env.includes("SYNTHI_DOJO_POSTGRES_TEST_URL")) {
       errors.push("ghost_mode_missing_postgres_env");
+    }
+  }
+  const timeMachineGate = gates.find((gate) => gate.id === "dojo_time_machine_debugger_self_check");
+  if (timeMachineGate) {
+    if (timeMachineGate.evidence_schema_version !== "synthi.dojo.timeMachineDebuggerEvidence.v1") {
+      errors.push("time_machine_missing_evidence_schema");
+    }
+    if (timeMachineGate.package_script !== "proof:dojo:time-machine-debugger:self-check") {
+      errors.push("time_machine_missing_package_script");
+    }
+    if (!timeMachineGate.default_evidence_path) errors.push("time_machine_missing_default_evidence_path");
+    if (!timeMachineGate.release_artifact_requirements?.require_all_time_machine_capabilities_covered) {
+      errors.push("time_machine_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_deterministic_debug_report", "time_machine_missing_deterministic_debug_requirement"],
+      ["require_counterfactual_twin", "time_machine_missing_counterfactual_twin_requirement"],
+      ["require_promoted_scenario_selection", "time_machine_missing_promoted_scenario_requirement"],
+      ["require_scenario_correlation", "time_machine_missing_scenario_correlation_requirement"],
+      ["require_attack_guardrail_correlation", "time_machine_missing_attack_guardrail_requirement"],
+      ["require_remediation_cost_policy", "time_machine_missing_remediation_cost_requirement"],
+      ["require_baseline_explanation", "time_machine_missing_baseline_requirement"],
+      ["require_counterfactual_license_impact", "time_machine_missing_license_impact_requirement"],
+      ["require_replay_plan", "time_machine_missing_replay_plan_requirement"],
+      ["require_honest_projection_status", "time_machine_missing_honest_status_requirement"],
+    ]) {
+      if (!timeMachineGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredTimeMachineCapabilities = Array.isArray(timeMachineGate.release_artifact_requirements?.required_time_machine_capabilities)
+      ? timeMachineGate.release_artifact_requirements.required_time_machine_capabilities
+      : [];
+    const missingTimeMachineCapabilities = DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES
+      .filter((capability) => !requiredTimeMachineCapabilities.includes(capability));
+    if (missingTimeMachineCapabilities.length > 0) {
+      errors.push(`time_machine_missing_required_capabilities:${missingTimeMachineCapabilities.join(",")}`);
+    }
+    const missingTimeMachineTestFiles = missingRequiredEntries(
+      DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES,
+      timeMachineGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingTimeMachineTestFiles.length > 0) {
+      errors.push(`time_machine_missing_required_test_files:${missingTimeMachineTestFiles.join(",")}`);
+    }
+    if (!timeMachineGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("time_machine_missing_no_skipped_requirement");
+    }
+    if (!timeMachineGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("time_machine_missing_digest_requirement");
+    }
+    if (!timeMachineGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("time_machine_missing_json_report_digest_requirement");
     }
   }
   const vivariumRuntimeGate = gates.find((gate) => gate.id === "dojo_vivarium_runtime_self_check");

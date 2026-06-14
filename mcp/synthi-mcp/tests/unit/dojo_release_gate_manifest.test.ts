@@ -82,6 +82,10 @@ import {
   DOJO_SOURCE_DRIFT_CAPABILITIES,
   DOJO_SOURCE_DRIFT_TEST_FILES,
 } from "../../scripts/dojo-source-drift-self-check.mjs";
+import {
+  DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES,
+  DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES,
+} from "../../scripts/dojo-time-machine-debugger-self-check.mjs";
 
 const PACKAGE_SCRIPTS = {
   "mcp/synthi-mcp/package.json": {
@@ -103,6 +107,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:governance-lifecycle:self-check": "node scripts/dojo-governance-lifecycle-self-check.mjs",
     "proof:dojo:graph-runtime:self-check": "node scripts/dojo-graph-runtime-self-check.mjs",
     "proof:dojo:ghost-mode-evidence:self-check": "node scripts/dojo-ghost-mode-evidence-self-check.mjs",
+    "proof:dojo:time-machine-debugger:self-check": "node scripts/dojo-time-machine-debugger-self-check.mjs",
     "proof:dojo:vivarium-runtime:self-check": "node scripts/dojo-vivarium-runtime-self-check.mjs",
     "proof:dojo:case-law-runtime:self-check": "node scripts/dojo-case-law-runtime-self-check.mjs",
     "proof:dojo:hosted-runtime-gateway:self-check": "node scripts/dojo-hosted-runtime-gateway-self-check.mjs",
@@ -553,6 +558,33 @@ describe("Dojo release gate manifest", () => {
         requires_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
       }),
       expect.objectContaining({
+        id: "dojo_time_machine_debugger_self_check",
+        tier: "T7",
+        package_script: "proof:dojo:time-machine-debugger:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.timeMachineDebuggerEvidence.v1",
+        default_evidence_path: "tmp/dojo-time-machine-debugger/dojo-time-machine-debugger.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          require_all_time_machine_capabilities_covered: true,
+          required_time_machine_capabilities: DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES,
+          required_test_files: DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES,
+          require_deterministic_debug_report: true,
+          require_counterfactual_twin: true,
+          require_promoted_scenario_selection: true,
+          require_scenario_correlation: true,
+          require_attack_guardrail_correlation: true,
+          require_remediation_cost_policy: true,
+          require_baseline_explanation: true,
+          require_counterfactual_license_impact: true,
+          require_replay_plan: true,
+          require_honest_projection_status: true,
+          require_no_failed_tests: true,
+          require_no_skipped_tests: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "dojo_vivarium_runtime_self_check",
         tier: "T7",
         package_script: "proof:dojo:vivarium-runtime:self-check",
@@ -956,6 +988,22 @@ describe("Dojo release gate manifest", () => {
       `ghost_mode_missing_required_test_files:${missingGhostModeTestFile}`,
     ]));
 
+    const brokenTimeMachine = JSON.parse(JSON.stringify(manifest));
+    const timeMachineGate = brokenTimeMachine.gates.find((gate) => gate.id === "dojo_time_machine_debugger_self_check");
+    const missingTimeMachineTestFile = DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES[0];
+    timeMachineGate.release_artifact_requirements.required_time_machine_capabilities = DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES
+      .filter((capability) => capability !== "time_machine_replay_plan");
+    timeMachineGate.release_artifact_requirements.required_test_files = DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES
+      .filter((file) => file !== missingTimeMachineTestFile);
+    timeMachineGate.release_artifact_requirements.require_replay_plan = false;
+    timeMachineGate.release_artifact_requirements.require_honest_projection_status = false;
+    expect(validateDojoReleaseGateManifest(brokenTimeMachine, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "time_machine_missing_replay_plan_requirement",
+      "time_machine_missing_honest_status_requirement",
+      "time_machine_missing_required_capabilities:time_machine_replay_plan",
+      `time_machine_missing_required_test_files:${missingTimeMachineTestFile}`,
+    ]));
+
     const brokenVivariumRuntime = JSON.parse(JSON.stringify(manifest));
     const vivariumRuntimeGate = brokenVivariumRuntime.gates.find((gate) => gate.id === "dojo_vivarium_runtime_self_check");
     const missingVivariumRuntimeTestFile = DOJO_VIVARIUM_RUNTIME_TEST_FILES[0];
@@ -1084,6 +1132,7 @@ describe("Dojo release gate manifest", () => {
       "dojo_governance_lifecycle_self_check",
       "dojo_graph_runtime_self_check",
       "dojo_ghost_mode_evidence_self_check",
+      "dojo_time_machine_debugger_self_check",
       "dojo_vivarium_runtime_self_check",
       "dojo_case_law_runtime_self_check",
       "dojo_hosted_runtime_gateway_self_check",
@@ -1117,7 +1166,7 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 24,
+      proof_artifact_gate_count: 25,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
@@ -1133,6 +1182,7 @@ describe("Dojo release gate manifest", () => {
         "dojo_governance_lifecycle_self_check",
         "dojo_graph_runtime_self_check",
         "dojo_ghost_mode_evidence_self_check",
+        "dojo_time_machine_debugger_self_check",
         "dojo_vivarium_runtime_self_check",
         "dojo_case_law_runtime_self_check",
         "dojo_hosted_runtime_gateway_self_check",
