@@ -2233,6 +2233,7 @@ describe("Dojo release gate artifact verifier", () => {
         report_only_status_required: false,
         executable_entrustment_provenance_required: false,
         raw_payload_redaction_required: false,
+        self_check_executes_tests_required: false,
       },
     });
     const incompletePath = await writeSkillPassportEvidenceFixture({
@@ -2249,6 +2250,25 @@ describe("Dojo release gate artifact verifier", () => {
       "skill_passport_report_only_requirement_missing",
       "skill_passport_executable_entrustment_requirement_missing",
       "skill_passport_redaction_requirement_missing",
+      "skill_passport_self_check_execution_requirement_missing",
+    ]));
+
+    const missingExecutionPath = await writeSkillPassportEvidenceFixture({
+      dir,
+      basename: "skill-passport-missing-execution",
+      evidence: skillPassportEvidenceFixture({
+        skill_passport_contract: {
+          ...skillPassportEvidenceFixture().skill_passport_contract,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    const missingExecution = await verifyDojoSkillPassportEvidenceArtifact({ evidencePath: missingExecutionPath });
+    expect(missingExecution.ok).toBe(false);
+    expect(missingExecution.errors).toEqual(expect.arrayContaining([
+      "skill_passport_self_check_execution_requirement_missing",
+      "skill_passport_test_execution_missing",
     ]));
 
     const driftedPath = await writeSkillPassportEvidenceFixture({
@@ -5403,6 +5423,19 @@ function skillPassportEvidenceFixture(overrides = {}) {
       practice_guardrail_counts_required: true,
       passport_export_required: true,
       raw_payload_redaction_required: true,
+      self_check_executes_tests_required: true,
+    },
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_SKILL_PASSPORT_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 123,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
     },
     test_files: [...DOJO_SKILL_PASSPORT_TEST_FILES],
     test_file_count: DOJO_SKILL_PASSPORT_TEST_FILES.length,

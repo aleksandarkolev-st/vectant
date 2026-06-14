@@ -955,7 +955,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:skill-passport:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_skill_passport.test.ts -- --reporter=json --outputFile ../../tmp/dojo-skill-passport/dojo-skill-passport.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:skill-passport:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:skill-passport:self-check",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.skillPassportEvidence.v1",
@@ -976,6 +976,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_practice_guardrail_counts: true,
       require_passport_export: true,
       require_raw_payload_redaction: true,
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -2319,6 +2320,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_practice_guardrail_counts", "skill_passport_missing_practice_guardrail_requirement"],
       ["require_passport_export", "skill_passport_missing_export_requirement"],
       ["require_raw_payload_redaction", "skill_passport_missing_redaction_requirement"],
+      ["require_self_check_executes_tests", "skill_passport_missing_self_check_execution_requirement"],
     ]) {
       if (!skillPassportGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }

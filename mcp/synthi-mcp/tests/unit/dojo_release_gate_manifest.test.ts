@@ -733,6 +733,7 @@ describe("Dojo release gate manifest", () => {
           require_practice_guardrail_counts: true,
           require_passport_export: true,
           require_raw_payload_redaction: true,
+          require_self_check_executes_tests: true,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -1302,10 +1303,12 @@ describe("Dojo release gate manifest", () => {
     skillPassportGate.release_artifact_requirements.require_report_only_status = false;
     skillPassportGate.release_artifact_requirements.require_executable_entrustment_provenance = false;
     skillPassportGate.release_artifact_requirements.require_raw_payload_redaction = false;
+    skillPassportGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenSkillPassport, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "skill_passport_missing_report_only_requirement",
       "skill_passport_missing_executable_entrustment_requirement",
       "skill_passport_missing_redaction_requirement",
+      "skill_passport_missing_self_check_execution_requirement",
       "skill_passport_missing_required_capabilities:skill_passport_report_only_status",
       `skill_passport_missing_required_test_files:${missingSkillPassportTestFile}`,
     ]));
