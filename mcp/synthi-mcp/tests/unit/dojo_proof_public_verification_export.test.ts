@@ -10,7 +10,7 @@ import {
 import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
 
 describe("Dojo proof public verification export", () => {
-  it("builds a tenant-scoped public verification bundle from proof-key custody records without private material", () => {
+  it("builds a tenant-scoped public verification bundle with custody metadata and without private material", () => {
     const keyPair = generateEd25519DojoProofKeyPair("ed25519-compliance-export");
     const keyRecord = buildDojoProofKeyRecord({
       tenant_id: "tenant-a",

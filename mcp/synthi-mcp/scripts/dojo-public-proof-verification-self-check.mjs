@@ -41,6 +41,7 @@ export const DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES = [
   "public_proof_allows_retired_key_verification",
   "public_proof_blocks_revoked_key_without_forensic",
   "public_verification_bundle_exports_public_keys_only",
+  "public_verification_bundle_exports_key_custody_metadata",
   "public_verification_bundle_filters_tenant_keys",
   "public_verification_bundle_marks_unavailable_keys",
 ];
@@ -188,6 +189,7 @@ export function buildDojoPublicProofVerificationEvidenceManifest({
       timestamp_window_required: true,
       proof_key_custody_policy_required: true,
       public_export_required: true,
+      key_custody_metadata_export_required: true,
       private_secret_exclusion_required: true,
       tenant_scoped_key_export_required: true,
       unavailable_key_marking_required: true,
@@ -304,6 +306,7 @@ const CAPABILITY_MATCHERS = {
   public_proof_allows_retired_key_verification: includes("retired proof keys", "historical capsules"),
   public_proof_blocks_revoked_key_without_forensic: includes("revoked proof keys", "forensic verification"),
   public_verification_bundle_exports_public_keys_only: includes("public verification bundle", "without private material"),
+  public_verification_bundle_exports_key_custody_metadata: includes("public verification bundle", "custody metadata"),
   public_verification_bundle_filters_tenant_keys: includes("tenant-scoped", "public verification bundle"),
   public_verification_bundle_marks_unavailable_keys: includes("non-public or revoked key records unavailable"),
 };

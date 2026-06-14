@@ -1936,6 +1936,7 @@ describe("Dojo release gate artifact verifier", () => {
       public_proof_verification_contract: {
         ...publicProofVerificationEvidenceFixture().public_proof_verification_contract,
         ed25519_public_key_required: false,
+        key_custody_metadata_export_required: false,
         private_secret_exclusion_required: false,
         self_check_executes_tests_required: false,
       },
@@ -1952,6 +1953,7 @@ describe("Dojo release gate artifact verifier", () => {
       "public_proof_coverage_incomplete",
       "public_proof_missing_capabilities:public_proof_verifies_ed25519_public_key",
       "public_proof_ed25519_requirement_missing",
+      "public_proof_key_custody_metadata_export_requirement_missing",
       "public_proof_secret_exclusion_requirement_missing",
       "public_proof_self_check_execution_requirement_missing",
     ]));
@@ -5068,6 +5070,7 @@ function publicProofVerificationEvidenceFixture(overrides = {}) {
       timestamp_window_required: true,
       proof_key_custody_policy_required: true,
       public_export_required: true,
+      key_custody_metadata_export_required: true,
       private_secret_exclusion_required: true,
       tenant_scoped_key_export_required: true,
       unavailable_key_marking_required: true,

@@ -2337,6 +2337,7 @@ export function validateDojoPublicProofVerificationEvidenceForRelease(evidence) 
     ["timestamp_window_required", "public_proof_timestamp_requirement_missing"],
     ["proof_key_custody_policy_required", "public_proof_custody_requirement_missing"],
     ["public_export_required", "public_proof_export_requirement_missing"],
+    ["key_custody_metadata_export_required", "public_proof_key_custody_metadata_export_requirement_missing"],
     ["private_secret_exclusion_required", "public_proof_secret_exclusion_requirement_missing"],
     ["tenant_scoped_key_export_required", "public_proof_tenant_export_requirement_missing"],
     ["unavailable_key_marking_required", "public_proof_unavailable_key_requirement_missing"],
@@ -4558,6 +4559,7 @@ async function runSelfCheck({ outDir }) {
       public_proof_verification_contract: {
         ...publicProofArtifacts.evidence.public_proof_verification_contract,
         ed25519_public_key_required: false,
+        key_custody_metadata_export_required: false,
         private_secret_exclusion_required: false,
         self_check_executes_tests_required: false,
       },
@@ -4570,6 +4572,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedPublicProof.errors.includes("public_proof_coverage_incomplete"));
   assert(rejectedPublicProof.errors.includes("public_proof_missing_capabilities:public_proof_verifies_ed25519_public_key"));
   assert(rejectedPublicProof.errors.includes("public_proof_ed25519_requirement_missing"));
+  assert(rejectedPublicProof.errors.includes("public_proof_key_custody_metadata_export_requirement_missing"));
   assert(rejectedPublicProof.errors.includes("public_proof_secret_exclusion_requirement_missing"));
   assert(rejectedPublicProof.errors.includes("public_proof_self_check_execution_requirement_missing"));
 
@@ -6707,6 +6710,7 @@ async function writePublicProofVerificationEvidenceForSelfCheck({
       timestamp_window_required: true,
       proof_key_custody_policy_required: true,
       public_export_required: true,
+      key_custody_metadata_export_required: true,
       private_secret_exclusion_required: true,
       tenant_scoped_key_export_required: true,
       unavailable_key_marking_required: true,
