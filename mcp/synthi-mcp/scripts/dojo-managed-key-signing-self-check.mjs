@@ -107,6 +107,23 @@ export async function runDojoManagedKeySigningSelfCheck({
   const jsonReportText = jsonReportError ? "" : await readFile(jsonReportPath, "utf8");
   const jsonReport = jsonReportError ? null : JSON.parse(jsonReportText);
   const durationMs = performance.now() - startedAt;
+  const testExecution = {
+    command: process.execPath,
+    args: [
+      vitestPath,
+      "run",
+      ...DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
+      "--reporter=basic",
+    ],
+    exit_code: result.status ?? null,
+    signal: result.signal ?? null,
+    duration_ms: Number(basicRunDurationMs.toFixed(3)),
+    timed_out: result.error?.code === "ETIMEDOUT",
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+  };
   const evidence = buildDojoManagedKeySigningEvidenceManifest({
     now,
     exitCode: result.status ?? jsonResult.status,
@@ -122,6 +139,7 @@ export async function runDojoManagedKeySigningSelfCheck({
     jsonReportPath,
     jsonReportText,
     timeoutMs,
+    testExecution,
     error: result.error?.message ?? jsonResult.error?.message ?? jsonReportError,
   });
   const evidencePath = path.join(outputDir, "dojo-managed-key-signing.evidence.json");
@@ -155,6 +173,7 @@ export function buildDojoManagedKeySigningEvidenceManifest({
   jsonReportPath,
   jsonReportText,
   timeoutMs = 120000,
+  testExecution,
   error,
 }) {
   const testSummary = summarizeVitestJsonReport(jsonReport);
@@ -199,6 +218,7 @@ export function buildDojoManagedKeySigningEvidenceManifest({
     test_file_count: testFiles.length,
     reported_test_file_count: testSummary.reported_test_file_count,
     test_summary: testSummary,
+    test_execution: testExecution ?? null,
     basic_run_duration_ms: typeof basicRunDurationMs === "number" ? Number(basicRunDurationMs.toFixed(3)) : null,
     budget_evaluation: budgetEvaluation,
     json_report_path: jsonReportPath ?? null,

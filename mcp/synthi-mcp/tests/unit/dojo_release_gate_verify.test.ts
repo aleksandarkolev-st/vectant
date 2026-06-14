@@ -555,6 +555,24 @@ describe("Dojo release gate artifact verifier", () => {
       "evidence_authority_test_execution_missing",
     ]));
 
+    const driftedExecutionArgsPath = await writeEvidenceAuthorityEvidenceFixture({
+      dir,
+      basename: "dojo-evidence-authority-drifted-execution-args",
+      evidence: evidenceAuthorityEvidenceFixture({
+        test_execution: {
+          ...evidenceAuthorityEvidenceFixture().test_execution,
+          args: ["vitest", "run", ...DOJO_EVIDENCE_AUTHORITY_TEST_FILES.slice(1)],
+        },
+      }),
+    });
+    const driftedExecutionArgs = await verifyDojoEvidenceAuthorityEvidenceArtifact({
+      evidencePath: driftedExecutionArgsPath,
+    });
+    expect(driftedExecutionArgs.ok).toBe(false);
+    expect(driftedExecutionArgs.errors).toEqual(expect.arrayContaining([
+      `evidence_authority_test_execution_required_args_missing:${DOJO_EVIDENCE_AUTHORITY_TEST_FILES[0]}`,
+    ]));
+
     const driftedPath = await writeEvidenceAuthorityEvidenceFixture({
       dir,
       basename: "dojo-evidence-authority-drifted",
@@ -2138,6 +2156,31 @@ describe("Dojo release gate artifact verifier", () => {
       "managed_key_signing_required_capabilities_missing:managed_key_service_rejects_uri_mismatch",
       "managed_key_signing_required_capabilities_untested:managed_key_service_rejects_uri_mismatch",
       `managed_key_signing_required_test_files_missing:${DOJO_MANAGED_KEY_SIGNING_TEST_FILES[0]}`,
+    ]));
+
+    const missingExecutionPath = await writeManagedKeySigningEvidenceFixture({
+      dir,
+      basename: "missing-execution-managed-key-signing",
+      evidence: managedKeySigningEvidenceFixture({
+        test_execution: null,
+      }),
+    });
+    expect((await verifyDojoManagedKeySigningEvidenceArtifact({ evidencePath: missingExecutionPath })).errors).toEqual(expect.arrayContaining([
+      "managed_key_signing_test_execution_missing",
+    ]));
+
+    const driftedExecutionArgsPath = await writeManagedKeySigningEvidenceFixture({
+      dir,
+      basename: "drifted-execution-args-managed-key-signing",
+      evidence: managedKeySigningEvidenceFixture({
+        test_execution: {
+          ...managedKeySigningEvidenceFixture().test_execution,
+          args: ["vitest", "run", ...DOJO_MANAGED_KEY_SIGNING_TEST_FILES.slice(1)],
+        },
+      }),
+    });
+    expect((await verifyDojoManagedKeySigningEvidenceArtifact({ evidencePath: driftedExecutionArgsPath })).errors).toEqual(expect.arrayContaining([
+      `managed_key_signing_test_execution_required_args_missing:${DOJO_MANAGED_KEY_SIGNING_TEST_FILES[0]}`,
     ]));
 
     const tamperedJson = path.join(dir, "tampered-managed-key-signing.vitest.json");
@@ -5245,6 +5288,18 @@ function managedKeySigningEvidenceFixture(overrides = {}) {
       passed_tests: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
       failed_tests: 0,
       pending_tests: 0,
+    },
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_MANAGED_KEY_SIGNING_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 1000,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
     },
     stdout_path: overrides.stdout_path || path.join(tmpdir(), "dojo-managed-key-signing.stdout.log"),
     stderr_path: overrides.stderr_path || path.join(tmpdir(), "dojo-managed-key-signing.stderr.log"),

@@ -1144,7 +1144,12 @@ export function validateDojoPostgresControlPlaneEvidenceForMilestone(evidence) {
   };
 }
 
-function validateRequiredEvidenceTestFiles({ evidence, requiredTestFiles, prefix }) {
+function validateRequiredEvidenceTestFiles({
+  evidence,
+  requiredTestFiles,
+  prefix,
+  requireTestExecution = false,
+}) {
   const errors = [];
   const testFiles = Array.isArray(evidence?.test_files) ? evidence.test_files.map(String) : [];
   const missingTestFiles = requiredTestFiles.filter((file) => !testFiles.includes(file));
@@ -1153,6 +1158,44 @@ function validateRequiredEvidenceTestFiles({ evidence, requiredTestFiles, prefix
   }
   if (Number(evidence?.test_file_count || 0) !== testFiles.length) {
     errors.push(`${prefix}_declared_test_file_count_mismatch:${evidence?.test_file_count ?? "missing"}:${testFiles.length}`);
+  }
+  errors.push(...validateEvidenceTestExecutionBindings({
+    evidence,
+    requiredTestFiles,
+    prefix,
+    requireTestExecution,
+  }));
+  return errors;
+}
+
+function validateEvidenceTestExecutionBindings({
+  evidence,
+  requiredTestFiles,
+  prefix,
+  requireTestExecution = false,
+}) {
+  const errors = [];
+  const testExecution = evidence?.test_execution;
+  if (!testExecution || typeof testExecution !== "object") {
+    if (requireTestExecution) errors.push(`${prefix}_test_execution_missing`);
+    return errors;
+  }
+  if (requireTestExecution) {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`${prefix}_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push(`${prefix}_test_execution_timed_out`);
+    }
+  }
+  const args = Array.isArray(testExecution.args) ? testExecution.args.map(String) : [];
+  if (args.length === 0) {
+    if (requireTestExecution) errors.push(`${prefix}_test_execution_args_missing`);
+    return errors;
+  }
+  const missingExecutedTestFiles = requiredTestFiles.filter((file) => !args.includes(file));
+  if (missingExecutedTestFiles.length > 0) {
+    errors.push(`${prefix}_test_execution_required_args_missing:${missingExecutedTestFiles.join(",")}`);
   }
   return errors;
 }
@@ -2543,6 +2586,7 @@ export function validateDojoManagedKeySigningEvidenceForRelease(evidence) {
     evidence,
     requiredTestFiles: DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
     prefix: "managed_key_signing",
+    requireTestExecution: true,
   }));
   const untestedRequiredCapabilities = DOJO_MANAGED_KEY_SIGNING_CAPABILITIES
     .filter((capability) => !testedCapabilities.includes(capability));
@@ -6418,6 +6462,18 @@ async function writePostgresControlPlaneEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 1000,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);
@@ -6943,6 +6999,18 @@ async function writeSecurityEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_SECURITY_ABUSE_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 1000,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);
@@ -7040,6 +7108,18 @@ async function writeManagedKeySigningEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_MANAGED_KEY_SIGNING_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 1000,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);
