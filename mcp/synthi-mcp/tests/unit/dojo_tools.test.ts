@@ -818,7 +818,7 @@ describe("Agent Dojo MCP tools", () => {
       request_id: "req-review-hidden-workspace",
       correlation_id: "corr-review-hidden-workspace",
       actor_id: "workspace-a-reviewer",
-      roles: ["dojo:reviewer"],
+      roles: ["dojo:approval:review"],
     });
 
     const blockedUpgradeReview = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
@@ -890,7 +890,7 @@ describe("Agent Dojo MCP tools", () => {
         request_id: "req-review-visible-upgrade",
         correlation_id: "corr-review-visible-upgrade",
         actor_id: "workspace-a-reviewer",
-        roles: ["dojo:reviewer"],
+        roles: ["dojo:approval:review"],
       }),
       request_id: "visible-upgrade-review-test",
       decision: "approved",

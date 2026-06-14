@@ -643,7 +643,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
   });
 
-  it("persists permission upgrade request and review through Postgres after local reset", async () => {
+  it("persists permission upgrade request and review through Postgres after local reset and rejects unauthorized reviewers", async () => {
     const tenantId = `tenant_upgrade_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_upgrade_${Math.random().toString(16).slice(2)}`;
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
@@ -715,6 +715,35 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
     expect(dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).toEqual([]);
 
+    const unauthorizedReview = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      ...tenant,
+      request_id: requestContent.permission_upgrade_request.request_id,
+      decision: "approved",
+      reviewer_actor_id: "postgres-upgrade-agent-reviewer",
+      reviewer_actor_type: "agent",
+      reason: "Agent role should not be able to approve permission upgrades.",
+      evidence_refs: ["evidence:integration-postgres-upgrade-unauthorized-review"],
+      actor_id: "postgres-upgrade-agent-reviewer",
+      actor_type: "agent",
+      roles: ["agent"],
+      correlation_id: "corr-postgres-upgrade-unauthorized-review",
+      decided_at: "2026-06-11T02:04:00.000Z",
+    });
+    expect(unauthorizedReview?.isError).toBe(true);
+    expect(unauthorizedReview?.structuredContent).toEqual(expect.objectContaining({
+      error: "permission_upgrade_reviewer_role_required",
+      review: expect.objectContaining({
+        ok: false,
+        blocked_by: ["governance_role_required:dojo:approval:review|dojo:license:review"],
+      }),
+    }));
+    await expect(governanceStore.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).resolves.toEqual([
+      expect.objectContaining({
+        request_id: requestContent.permission_upgrade_request.request_id,
+        status: "pending",
+      }),
+    ]);
+
     const review = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
       ...tenant,
       request_id: requestContent.permission_upgrade_request.request_id,
@@ -750,7 +779,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).toEqual([]);
   });
 
-  it("persists case law proposal and review through Postgres after local reset", async () => {
+  it("persists case law proposal and review through Postgres after local reset and rejects unauthorized reviewers", async () => {
     const tenantId = `tenant_case_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_case_${Math.random().toString(16).slice(2)}`;
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
@@ -824,6 +853,35 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     dojoSkillRegistry.resetForTests();
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
     expect(dojoSkillRegistry.getCaseLawRecord(caseId)).toBeNull();
+
+    const unauthorizedReview = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      case_id: caseId,
+      decision: "approved",
+      reviewer_actor_id: "postgres-case-agent-reviewer",
+      reviewer_actor_type: "agent",
+      reason: "Agent role should not approve binding case law.",
+      evidence_refs: ["evidence:integration-postgres-case-unauthorized-review"],
+      actor_id: "postgres-case-agent-reviewer",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-case-unauthorized-review",
+      correlation_id: "corr-postgres-case-unauthorized-review",
+      decided_at: "2026-06-11T02:59:00.000Z",
+    });
+    expect(unauthorizedReview?.isError).toBe(true);
+    expect(unauthorizedReview?.structuredContent).toEqual(expect.objectContaining({
+      error: "case_law_reviewer_role_required",
+      review: expect.objectContaining({
+        ok: false,
+        blocked_by: ["governance_role_required:dojo:case-law:review"],
+      }),
+    }));
+    await expect(governanceStore.getCaseLawRecord(caseId)).resolves.toEqual(expect.objectContaining({
+      case_id: caseId,
+      status: "proposed",
+    }));
 
     const reviewed = await dispatchDojoTool("synthi_dojo_review_case_law", {
       ...tenant,

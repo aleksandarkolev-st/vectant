@@ -118,6 +118,11 @@ export async function createDojoControlPlaneStoresFromEnv(
     request_id: options.tenant.request_id,
     correlation_id: options.tenant.correlation_id,
   };
+  const governanceStoreOptions = {
+    ...baseStoreOptions,
+    tenant_context: options.tenant,
+    require_rbac: enforcement.production_enforcement,
+  };
 
   return {
     ok: true,
@@ -131,7 +136,7 @@ export async function createDojoControlPlaneStoresFromEnv(
     license_store: new PostgresDojoLicenseStore(baseStoreOptions),
     proof_store: new PostgresDojoProofStore(baseStoreOptions),
     proof_key_registry: new PostgresDojoProofKeyRegistry(baseStoreOptions),
-    governance_store: new PostgresDojoGovernanceStore(baseStoreOptions),
+    governance_store: new PostgresDojoGovernanceStore(governanceStoreOptions),
     ghost_shadow_evidence_store: new PostgresDojoGhostShadowEvidenceStore(baseStoreOptions),
     graph_run_store: new PostgresDojoGraphRunStore(baseStoreOptions),
     close: options.queryable ? undefined : async () => {

@@ -2346,6 +2346,7 @@ async function dojoReviewPermissionUpgradeTool(args: unknown): Promise<ToolRespo
     ? { ok: true as const, tenant: durableResolution.context.tenant }
     : authorizeTenantForDojoSkill(args, skill);
   if (!authorization.ok) return authorization.error;
+  const productionGovernanceRbacRequired = resolveDojoEnforcementConfig().production_enforcement;
 
   const review = decideDojoPermissionUpgradeRequest({
     request: storedRequest,
@@ -2357,6 +2358,8 @@ async function dojoReviewPermissionUpgradeTool(args: unknown): Promise<ToolRespo
     decided_at: stringOpt(a["decided_at"]) ?? stringOpt(a["now"]),
     reason: stringOpt(a["reason"]),
     evidence_refs: stringArrayOpt(a["evidence_refs"]),
+    tenant_context: productionGovernanceRbacRequired ? authorization.tenant : undefined,
+    require_rbac: productionGovernanceRbacRequired,
   });
   if (!review.ok) {
     await durableResolution.context?.close?.();
@@ -2432,6 +2435,7 @@ async function dojoReviewCaseLawTool(args: unknown): Promise<ToolResponse> {
       }
     : authorizeTenantForCaseLawRecord(args, record, selectedSkill);
   if (!authorization.ok) return authorization.error;
+  const productionGovernanceRbacRequired = resolveDojoEnforcementConfig().production_enforcement;
 
   const review = decideDojoCaseLawReview({
     case_law: record,
@@ -2444,6 +2448,8 @@ async function dojoReviewCaseLawTool(args: unknown): Promise<ToolResponse> {
     reason: stringOpt(a["reason"]),
     evidence_refs: stringArrayOpt(a["evidence_refs"]),
     superseded_by: stringOpt(a["superseded_by"]),
+    tenant_context: productionGovernanceRbacRequired ? authorization.tenant : undefined,
+    require_rbac: productionGovernanceRbacRequired,
   });
   if (!review.ok) {
     await durableResolution.context?.close?.();
