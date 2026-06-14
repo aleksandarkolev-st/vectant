@@ -1313,8 +1313,23 @@ export function validateDojoSourceDriftEvidenceForRelease(evidence) {
     ["unrelated_token_no_expiry_required", "source_drift_unrelated_no_expiry_requirement_missing"],
     ["tamper_rejection_required", "source_drift_tamper_rejection_requirement_missing"],
     ["license_store_expiry_application_required", "source_drift_license_store_expiry_requirement_missing"],
+    ["self_check_executes_tests_required", "source_drift_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution || typeof testExecution !== "object") {
+    errors.push("source_drift_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`source_drift_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("source_drift_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("source_drift_test_execution_args_missing");
+    }
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("source_drift_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -4011,6 +4026,7 @@ async function runSelfCheck({ outDir }) {
         changed_token_expiry_required: false,
         tamper_rejection_required: false,
         license_store_expiry_application_required: false,
+        self_check_executes_tests_required: false,
       },
     },
   });
@@ -4023,6 +4039,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedSourceDrift.errors.includes("source_drift_changed_token_expiry_requirement_missing"));
   assert(rejectedSourceDrift.errors.includes("source_drift_tamper_rejection_requirement_missing"));
   assert(rejectedSourceDrift.errors.includes("source_drift_license_store_expiry_requirement_missing"));
+  assert(rejectedSourceDrift.errors.includes("source_drift_self_check_execution_requirement_missing"));
 
   const agentReadyUiContractDir = path.join(outDir, "agent-ready-ui-contract");
   await mkdir(agentReadyUiContractDir, { recursive: true });
@@ -5093,6 +5110,7 @@ async function writeSourceDriftEvidenceForSelfCheck({
       unrelated_token_no_expiry_required: true,
       tamper_rejection_required: true,
       license_store_expiry_application_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_SOURCE_DRIFT_TEST_FILES],
     test_file_count: DOJO_SOURCE_DRIFT_TEST_FILES.length,
@@ -5113,6 +5131,18 @@ async function writeSourceDriftEvidenceForSelfCheck({
     json_report_path: jsonReportPath,
     json_report_sha256: sha256(jsonReport),
     json_report_bytes: Buffer.byteLength(jsonReport),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_SOURCE_DRIFT_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 100,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");

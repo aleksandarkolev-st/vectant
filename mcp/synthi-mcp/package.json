@@ -258,7 +258,7 @@
     "proof:dojo:api-tool-compiler:self-check": "node scripts/dojo-api-tool-compiler-self-check.mjs --from-json ../../tmp/dojo-api-tool-compiler/dojo-api-tool-compiler.vitest.json",
     "proof:dojo:checkride-license:self-check": "node scripts/dojo-checkride-license-self-check.mjs --from-json ../../tmp/dojo-checkride-license/dojo-checkride-license.vitest.json --run-tests",
     "proof:dojo:evidence-authority:self-check": "node scripts/dojo-evidence-authority-self-check.mjs --from-json ../../tmp/dojo-evidence-authority/dojo-evidence-authority.vitest.json --run-tests",
-    "proof:dojo:source-drift:self-check": "node scripts/dojo-source-drift-self-check.mjs --from-json ../../tmp/dojo-source-drift/dojo-source-drift.vitest.json",
+    "proof:dojo:source-drift:self-check": "node scripts/dojo-source-drift-self-check.mjs --from-json ../../tmp/dojo-source-drift/dojo-source-drift.vitest.json --run-tests",
     "proof:dojo:case-law-runtime:self-check": "node scripts/dojo-case-law-runtime-self-check.mjs --from-json ../../tmp/dojo-case-law-runtime/dojo-case-law-runtime.vitest.json --run-tests",
     "proof:dojo:generated-pr:self-check": "node scripts/dojo-generated-pr-self-check.mjs --from-json ../../tmp/dojo-generated-pr/dojo-generated-pr.vitest.json --run-tests",
     "proof:dojo:governance-lifecycle:self-check": "node scripts/dojo-governance-lifecycle-self-check.mjs --from-json ../../tmp/dojo-governance-lifecycle/dojo-governance-lifecycle.vitest.json",

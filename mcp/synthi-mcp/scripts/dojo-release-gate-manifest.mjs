@@ -399,7 +399,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T2",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:source-drift:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_source_snapshot.test.ts tests/unit/dojo_source_drift.test.ts -- --reporter=json --outputFile ../../tmp/dojo-source-drift/dojo-source-drift.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:source-drift:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:source-drift:self-check",
     required_for: ["milestone", "release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.sourceDriftEvidence.v1",
@@ -417,6 +417,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_unrelated_token_no_expiry: true,
       require_tamper_rejection: true,
       require_license_store_expiry_application: true,
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -1602,6 +1603,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_unrelated_token_no_expiry", "source_drift_missing_unrelated_no_expiry_requirement"],
       ["require_tamper_rejection", "source_drift_missing_tamper_rejection_requirement"],
       ["require_license_store_expiry_application", "source_drift_missing_license_store_expiry_requirement"],
+      ["require_self_check_executes_tests", "source_drift_missing_self_check_execution_requirement"],
     ]) {
       if (!sourceDriftGate.artifact_requirements?.[requirement]) errors.push(errorCode);
     }
