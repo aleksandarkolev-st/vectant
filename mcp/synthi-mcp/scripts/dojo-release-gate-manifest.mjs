@@ -13,6 +13,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES,
+  DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES,
+} from "./dojo-agent-ready-ui-contract-self-check.mjs";
+import {
   DOJO_API_TOOL_COMPILER_CAPABILITIES,
   DOJO_API_TOOL_COMPILER_TEST_FILES,
 } from "./dojo-api-tool-compiler-self-check.mjs";
@@ -335,6 +339,36 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_added_risky_affordance_review: true,
       require_unrelated_token_no_expiry: true,
       require_tamper_rejection: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
+    id: "dojo_agent_ready_ui_contract_self_check",
+    tier: "T2",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:agent-ready-ui-contract:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_agent_ready_ui_contract.test.ts -- --reporter=json --outputFile ../../tmp/dojo-agent-ready-ui-contract/dojo-agent-ready-ui-contract.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:agent-ready-ui-contract:self-check",
+    required_for: ["milestone", "release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.agentReadyUiContractEvidence.v1",
+    default_evidence_path: "tmp/dojo-agent-ready-ui-contract/dojo-agent-ready-ui-contract.evidence.json",
+    artifact_requirements: {
+      require_all_agent_ready_ui_contract_capabilities_covered: true,
+      required_agent_ready_ui_contract_capabilities: [...DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES],
+      required_test_files: [...DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES],
+      require_schema_linter: true,
+      require_stable_locator: true,
+      require_success_hook: true,
+      require_proof_hook: true,
+      require_proof_required_for_risky_action: true,
+      require_accessibility_label: true,
+      require_blocked_contexts: true,
+      require_runtime_enum_validation: true,
+      require_malformed_array_safety: true,
+      require_proof_risk_mismatch_warning: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -1119,6 +1153,7 @@ export const DOJO_MILESTONE_GATE_IDS = [
   "dojo_mcp_host_conformance_self_check",
   "dojo_affordance_codemod_self_check",
   "dojo_source_drift_self_check",
+  "dojo_agent_ready_ui_contract_self_check",
   "dojo_api_tool_compiler_self_check",
   "docker_integration",
   "dojo_full_visual_proof",
@@ -1357,6 +1392,57 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!sourceDriftGate.artifact_requirements?.require_json_report_digest_match) {
       errors.push("source_drift_missing_json_report_digest_requirement");
+    }
+  }
+  const agentReadyUiContractGate = gates.find((gate) => gate.id === "dojo_agent_ready_ui_contract_self_check");
+  if (agentReadyUiContractGate) {
+    if (agentReadyUiContractGate.evidence_schema_version !== "synthi.dojo.agentReadyUiContractEvidence.v1") {
+      errors.push("agent_ready_ui_contract_missing_evidence_schema");
+    }
+    if (agentReadyUiContractGate.package_script !== "proof:dojo:agent-ready-ui-contract:self-check") {
+      errors.push("agent_ready_ui_contract_missing_package_script");
+    }
+    if (!agentReadyUiContractGate.default_evidence_path) errors.push("agent_ready_ui_contract_missing_default_evidence_path");
+    if (!agentReadyUiContractGate.artifact_requirements?.require_all_agent_ready_ui_contract_capabilities_covered) {
+      errors.push("agent_ready_ui_contract_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_schema_linter", "agent_ready_ui_contract_missing_schema_linter_requirement"],
+      ["require_stable_locator", "agent_ready_ui_contract_missing_stable_locator_requirement"],
+      ["require_success_hook", "agent_ready_ui_contract_missing_success_hook_requirement"],
+      ["require_proof_hook", "agent_ready_ui_contract_missing_proof_hook_requirement"],
+      ["require_proof_required_for_risky_action", "agent_ready_ui_contract_missing_proof_required_requirement"],
+      ["require_accessibility_label", "agent_ready_ui_contract_missing_accessibility_requirement"],
+      ["require_blocked_contexts", "agent_ready_ui_contract_missing_blocked_contexts_requirement"],
+      ["require_runtime_enum_validation", "agent_ready_ui_contract_missing_enum_validation_requirement"],
+      ["require_malformed_array_safety", "agent_ready_ui_contract_missing_malformed_array_requirement"],
+      ["require_proof_risk_mismatch_warning", "agent_ready_ui_contract_missing_mismatch_warning_requirement"],
+    ]) {
+      if (!agentReadyUiContractGate.artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredAgentReadyUiContractCapabilities = Array.isArray(agentReadyUiContractGate.artifact_requirements?.required_agent_ready_ui_contract_capabilities)
+      ? agentReadyUiContractGate.artifact_requirements.required_agent_ready_ui_contract_capabilities
+      : [];
+    const missingAgentReadyUiContractCapabilities = DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES
+      .filter((capability) => !requiredAgentReadyUiContractCapabilities.includes(capability));
+    if (missingAgentReadyUiContractCapabilities.length > 0) {
+      errors.push(`agent_ready_ui_contract_missing_required_capabilities:${missingAgentReadyUiContractCapabilities.join(",")}`);
+    }
+    const missingAgentReadyUiContractTestFiles = missingRequiredEntries(
+      DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES,
+      agentReadyUiContractGate.artifact_requirements?.required_test_files,
+    );
+    if (missingAgentReadyUiContractTestFiles.length > 0) {
+      errors.push(`agent_ready_ui_contract_missing_required_test_files:${missingAgentReadyUiContractTestFiles.join(",")}`);
+    }
+    if (!agentReadyUiContractGate.artifact_requirements?.require_no_skipped_tests) {
+      errors.push("agent_ready_ui_contract_missing_no_skipped_requirement");
+    }
+    if (!agentReadyUiContractGate.artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("agent_ready_ui_contract_missing_digest_requirement");
+    }
+    if (!agentReadyUiContractGate.artifact_requirements?.require_json_report_digest_match) {
+      errors.push("agent_ready_ui_contract_missing_json_report_digest_requirement");
     }
   }
   const apiToolCompilerGate = gates.find((gate) => gate.id === "dojo_api_tool_compiler_self_check");

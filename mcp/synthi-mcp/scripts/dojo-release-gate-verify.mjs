@@ -18,6 +18,10 @@ import {
   validateDojoVisualProofReport,
 } from "./dojo-release-gate-manifest.mjs";
 import {
+  DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES,
+  DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES,
+} from "./dojo-agent-ready-ui-contract-self-check.mjs";
+import {
   DOJO_API_TOOL_COMPILER_CAPABILITIES,
   DOJO_API_TOOL_COMPILER_TEST_FILES,
 } from "./dojo-api-tool-compiler-self-check.mjs";
@@ -121,6 +125,7 @@ const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tm
 const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-postgres-control-plane");
 const DEFAULT_AFFORDANCE_CODEMOD_DIR = path.join(REPO_ROOT, "tmp", "dojo-affordance-codemod-self-check");
 const DEFAULT_SOURCE_DRIFT_DIR = path.join(REPO_ROOT, "tmp", "dojo-source-drift");
+const DEFAULT_AGENT_READY_UI_CONTRACT_DIR = path.join(REPO_ROOT, "tmp", "dojo-agent-ready-ui-contract");
 const DEFAULT_API_TOOL_COMPILER_DIR = path.join(REPO_ROOT, "tmp", "dojo-api-tool-compiler");
 const DEFAULT_GENERATED_PR_DIR = path.join(REPO_ROOT, "tmp", "dojo-generated-pr");
 const DEFAULT_MCP_SKILL_BUS_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-skill-bus");
@@ -255,6 +260,15 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       evidencePath: resolveRepoPath(args["source-drift-evidence"]
         || sourceDriftGate.default_evidence_path
         || path.join(DEFAULT_SOURCE_DRIFT_DIR, "dojo-source-drift.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+  if (truthy(args["release-candidate"]) || truthy(args["include-agent-ready-ui-contract"]) || args["agent-ready-ui-contract-evidence"]) {
+    const agentReadyGate = findGate(manifest, "dojo_agent_ready_ui_contract_self_check") || {};
+    sourceApiResults.push(await verifyDojoAgentReadyUiContractEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["agent-ready-ui-contract-evidence"]
+        || agentReadyGate.default_evidence_path
+        || path.join(DEFAULT_AGENT_READY_UI_CONTRACT_DIR, "dojo-agent-ready-ui-contract.evidence.json")),
       releaseCandidate: truthy(args["release-candidate"]),
     }));
   }
@@ -1059,6 +1073,90 @@ export function validateDojoSourceDriftEvidenceForRelease(evidence) {
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("source_drift_no_reported_tests");
   if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
     errors.push(`source_drift_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoAgentReadyUiContractEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoAgentReadyUiContractEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_agent_ready_ui_contract_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoAgentReadyUiContractEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.agentReadyUiContractEvidence.v1") {
+    errors.push(`agent_ready_ui_contract_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("agent_ready_ui_contract_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`agent_ready_ui_contract_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("agent_ready_ui_contract_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`agent_ready_ui_contract_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`agent_ready_ui_contract_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES,
+    prefix: "agent_ready_ui_contract",
+  }));
+  const untestedRequiredCapabilities = DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`agent_ready_ui_contract_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`agent_ready_ui_contract_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`agent_ready_ui_contract_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.agent_ready_ui_contract || {};
+  for (const [field, errorCode] of [
+    ["schema_linter_required", "agent_ready_ui_contract_schema_linter_requirement_missing"],
+    ["stable_locator_required", "agent_ready_ui_contract_stable_locator_requirement_missing"],
+    ["success_hook_required", "agent_ready_ui_contract_success_hook_requirement_missing"],
+    ["proof_hook_required", "agent_ready_ui_contract_proof_hook_requirement_missing"],
+    ["proof_required_for_risky_action_required", "agent_ready_ui_contract_proof_required_requirement_missing"],
+    ["accessibility_label_required", "agent_ready_ui_contract_accessibility_requirement_missing"],
+    ["blocked_contexts_required", "agent_ready_ui_contract_blocked_contexts_requirement_missing"],
+    ["runtime_enum_validation_required", "agent_ready_ui_contract_enum_validation_requirement_missing"],
+    ["malformed_array_safety_required", "agent_ready_ui_contract_malformed_array_requirement_missing"],
+    ["proof_risk_mismatch_warning_required", "agent_ready_ui_contract_mismatch_warning_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("agent_ready_ui_contract_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`agent_ready_ui_contract_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`agent_ready_ui_contract_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("agent_ready_ui_contract_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`agent_ready_ui_contract_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
   }
   return {
     ok: errors.length === 0,
@@ -3430,6 +3528,37 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedSourceDrift.errors.includes("source_drift_changed_token_expiry_requirement_missing"));
   assert(rejectedSourceDrift.errors.includes("source_drift_tamper_rejection_requirement_missing"));
 
+  const agentReadyUiContractDir = path.join(outDir, "agent-ready-ui-contract");
+  await mkdir(agentReadyUiContractDir, { recursive: true });
+  const agentReadyUiContractArtifacts = await writeAgentReadyUiContractEvidenceForSelfCheck({ outDir: agentReadyUiContractDir });
+  const agentReadyUiContractResult = await verifyDojoAgentReadyUiContractEvidenceArtifact({
+    evidencePath: agentReadyUiContractArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(agentReadyUiContractResult.ok, true, agentReadyUiContractResult.errors.join(";"));
+  const rejectedAgentReadyUiContractArtifacts = await writeAgentReadyUiContractEvidenceForSelfCheck({
+    outDir: agentReadyUiContractDir,
+    basename: "dojo-agent-ready-ui-contract-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["agent_ready_ui_contract_requires_proof_hook"],
+      agent_ready_ui_contract: {
+        ...agentReadyUiContractArtifacts.evidence.agent_ready_ui_contract,
+        proof_hook_required: false,
+        stable_locator_required: false,
+      },
+    },
+  });
+  const rejectedAgentReadyUiContract = await verifyDojoAgentReadyUiContractEvidenceArtifact({
+    evidencePath: rejectedAgentReadyUiContractArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedAgentReadyUiContract.errors.includes("agent_ready_ui_contract_coverage_incomplete"));
+  assert(rejectedAgentReadyUiContract.errors.includes("agent_ready_ui_contract_missing_capabilities:agent_ready_ui_contract_requires_proof_hook"));
+  assert(rejectedAgentReadyUiContract.errors.includes("agent_ready_ui_contract_proof_hook_requirement_missing"));
+  assert(rejectedAgentReadyUiContract.errors.includes("agent_ready_ui_contract_stable_locator_requirement_missing"));
+
   const apiToolCompilerDir = path.join(outDir, "api-tool-compiler");
   await mkdir(apiToolCompilerDir, { recursive: true });
   const apiToolCompilerArtifacts = await writeApiToolCompilerEvidenceForSelfCheck({ outDir: apiToolCompilerDir });
@@ -4139,6 +4268,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(caseLawRuntimeResult),
       summarizeSection(hostedRuntimeGatewayResult),
       summarizeSection(sourceDriftResult),
+      summarizeSection(agentReadyUiContractResult),
       summarizeSection(apiToolCompilerResult),
       summarizeSection(generatedPrResult),
       summarizeSection(mcpSkillBusResult),
@@ -4167,6 +4297,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedCaseLawRuntime),
       summarizeSection(rejectedHostedRuntimeGateway),
       summarizeSection(rejectedSourceDrift),
+      summarizeSection(rejectedAgentReadyUiContract),
       summarizeSection(rejectedApiToolCompiler),
       summarizeSection(rejectedGeneratedPr),
       summarizeSection(rejectedMcpSkillBus),
@@ -4433,6 +4564,93 @@ async function writeSourceDriftEvidenceForSelfCheck({
     test_summary: {
       total_tests: DOJO_SOURCE_DRIFT_CAPABILITIES.length,
       passed_tests: DOJO_SOURCE_DRIFT_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    budget_evaluation: { ok: true },
+    stdout_path: stdoutPath,
+    stdout_sha256: sha256(stdout),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_path: stderrPath,
+    stderr_sha256: sha256(stderr),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeAgentReadyUiContractEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-agent-ready-ui-contract",
+  overrides = {},
+}) {
+  const stdout = "agent-ready ui contract focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES.length,
+    numPassedTests: DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: 1,
+    numPassedTestSuites: 1,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.agentReadyUiContractEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES],
+    tested_capabilities: [...DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES.length,
+    configured_capability_count: DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    agent_ready_ui_contract: {
+      schema_linter_required: true,
+      stable_locator_required: true,
+      success_hook_required: true,
+      proof_hook_required: true,
+      proof_required_for_risky_action_required: true,
+      accessibility_label_required: true,
+      blocked_contexts_required: true,
+      runtime_enum_validation_required: true,
+      malformed_array_safety_required: true,
+      proof_risk_mismatch_warning_required: true,
+    },
+    test_files: [...DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES],
+    test_file_count: DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES.length,
+    reported_test_file_count: DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES.length,
+    test_summary: {
+      total_tests: DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES.length,
+      passed_tests: DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES.length,
       failed_tests: 0,
       pending_tests: 0,
     },

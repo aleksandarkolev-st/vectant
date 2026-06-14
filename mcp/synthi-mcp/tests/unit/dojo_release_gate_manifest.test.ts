@@ -14,6 +14,10 @@ import {
   validateDojoVisualProofReport,
 } from "../../scripts/dojo-release-gate-manifest.mjs";
 import {
+  DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES,
+  DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES,
+} from "../../scripts/dojo-agent-ready-ui-contract-self-check.mjs";
+import {
   DOJO_API_TOOL_COMPILER_CAPABILITIES,
   DOJO_API_TOOL_COMPILER_TEST_FILES,
 } from "../../scripts/dojo-api-tool-compiler-self-check.mjs";
@@ -107,6 +111,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:docker-integration:self-check": "node scripts/dojo-docker-integration-self-check.mjs",
     "proof:dojo:postgres-control-plane:self-check": "node scripts/dojo-postgres-control-plane-self-check.mjs",
     "proof:dojo:affordance-codemod:self-check": "node scripts/dojo-affordance-codemod-self-check.mjs",
+    "proof:dojo:agent-ready-ui-contract:self-check": "node scripts/dojo-agent-ready-ui-contract-self-check.mjs",
     "proof:dojo:api-tool-compiler:self-check": "node scripts/dojo-api-tool-compiler-self-check.mjs",
     "proof:dojo:generated-pr:self-check": "node scripts/dojo-generated-pr-self-check.mjs",
     "proof:dojo:mcp-skill-bus:self-check": "node scripts/dojo-mcp-skill-bus-self-check.mjs",
@@ -244,6 +249,30 @@ describe("Dojo release gate manifest", () => {
           require_added_risky_affordance_review: true,
           require_unrelated_token_no_expiry: true,
           require_tamper_rejection: true,
+        }),
+      }),
+      expect.objectContaining({
+        id: "dojo_agent_ready_ui_contract_self_check",
+        tier: "T2",
+        package_script: "proof:dojo:agent-ready-ui-contract:self-check",
+        evidence_kind: "proof_artifact",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.agentReadyUiContractEvidence.v1",
+        default_evidence_path: "tmp/dojo-agent-ready-ui-contract/dojo-agent-ready-ui-contract.evidence.json",
+        artifact_requirements: expect.objectContaining({
+          require_all_agent_ready_ui_contract_capabilities_covered: true,
+          required_agent_ready_ui_contract_capabilities: DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES,
+          required_test_files: DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES,
+          require_schema_linter: true,
+          require_stable_locator: true,
+          require_success_hook: true,
+          require_proof_hook: true,
+          require_proof_required_for_risky_action: true,
+          require_accessibility_label: true,
+          require_blocked_contexts: true,
+          require_runtime_enum_validation: true,
+          require_malformed_array_safety: true,
+          require_proof_risk_mismatch_warning: true,
         }),
       }),
       expect.objectContaining({
@@ -900,6 +929,22 @@ describe("Dojo release gate manifest", () => {
       `source_drift_missing_required_test_files:${missingSourceDriftTestFile}`,
     ]));
 
+    const brokenAgentReadyUiContract = JSON.parse(JSON.stringify(manifest));
+    const agentReadyUiContractGate = brokenAgentReadyUiContract.gates.find((gate) => gate.id === "dojo_agent_ready_ui_contract_self_check");
+    const missingAgentReadyUiContractTestFile = DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES[0];
+    agentReadyUiContractGate.artifact_requirements.required_agent_ready_ui_contract_capabilities = DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES
+      .filter((capability) => capability !== "agent_ready_ui_contract_requires_proof_hook");
+    agentReadyUiContractGate.artifact_requirements.required_test_files = DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES
+      .filter((file) => file !== missingAgentReadyUiContractTestFile);
+    agentReadyUiContractGate.artifact_requirements.require_proof_hook = false;
+    agentReadyUiContractGate.artifact_requirements.require_stable_locator = false;
+    expect(validateDojoReleaseGateManifest(brokenAgentReadyUiContract, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "agent_ready_ui_contract_missing_proof_hook_requirement",
+      "agent_ready_ui_contract_missing_stable_locator_requirement",
+      "agent_ready_ui_contract_missing_required_capabilities:agent_ready_ui_contract_requires_proof_hook",
+      `agent_ready_ui_contract_missing_required_test_files:${missingAgentReadyUiContractTestFile}`,
+    ]));
+
     const brokenApiToolCompiler = JSON.parse(JSON.stringify(manifest));
     const apiToolCompilerGate = brokenApiToolCompiler.gates.find((gate) => gate.id === "dojo_api_tool_compiler_self_check");
     const missingApiToolCompilerTestFile = DOJO_API_TOOL_COMPILER_TEST_FILES[0];
@@ -1265,12 +1310,13 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 27,
+      proof_artifact_gate_count: 28,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
         "dojo_mcp_host_conformance_self_check",
         "dojo_source_drift_self_check",
+        "dojo_agent_ready_ui_contract_self_check",
         "dojo_api_tool_compiler_self_check",
         "docker_integration",
         "workflow_e2e_hosted",
