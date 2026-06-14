@@ -764,6 +764,7 @@ describe("Dojo release gate manifest", () => {
           require_honest_projection_status: true,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
+          require_self_check_executes_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -1325,9 +1326,11 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingTimeMachineTestFile);
     timeMachineGate.release_artifact_requirements.require_replay_plan = false;
     timeMachineGate.release_artifact_requirements.require_honest_projection_status = false;
+    timeMachineGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenTimeMachine, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "time_machine_missing_replay_plan_requirement",
       "time_machine_missing_honest_status_requirement",
+      "time_machine_missing_self_check_execution_requirement",
       "time_machine_missing_required_capabilities:time_machine_replay_plan",
       `time_machine_missing_required_test_files:${missingTimeMachineTestFile}`,
     ]));

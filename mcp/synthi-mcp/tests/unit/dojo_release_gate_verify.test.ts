@@ -2337,6 +2337,7 @@ describe("Dojo release gate artifact verifier", () => {
         ...timeMachineDebuggerEvidenceFixture().time_machine_contract,
         replay_plan_required: false,
         honest_projection_status_required: false,
+        self_check_executes_tests_required: false,
       },
     });
     const incompletePath = await writeTimeMachineDebuggerEvidenceFixture({
@@ -2352,6 +2353,23 @@ describe("Dojo release gate artifact verifier", () => {
       "time_machine_missing_capabilities:time_machine_replay_plan",
       "time_machine_replay_plan_requirement_missing",
       "time_machine_honest_status_requirement_missing",
+      "time_machine_self_check_execution_requirement_missing",
+    ]));
+
+    const missingExecutionPath = await writeTimeMachineDebuggerEvidenceFixture({
+      dir,
+      basename: "time-machine-missing-execution",
+      evidence: timeMachineDebuggerEvidenceFixture({
+        time_machine_contract: {
+          ...timeMachineDebuggerEvidenceFixture().time_machine_contract,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    expect((await verifyDojoTimeMachineDebuggerEvidenceArtifact({ evidencePath: missingExecutionPath })).errors).toEqual(expect.arrayContaining([
+      "time_machine_self_check_execution_requirement_missing",
+      "time_machine_test_execution_missing",
     ]));
 
     const driftedPath = await writeTimeMachineDebuggerEvidenceFixture({
@@ -5569,6 +5587,19 @@ function timeMachineDebuggerEvidenceFixture(overrides = {}) {
       counterfactual_license_impact_required: true,
       replay_plan_required: true,
       honest_projection_status_required: true,
+      self_check_executes_tests_required: true,
+    },
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 1000,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
     },
     test_files: [...DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES],
     test_file_count: DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES.length,

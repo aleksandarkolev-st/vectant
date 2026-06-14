@@ -989,7 +989,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:time-machine-debugger:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_time_machine_debugger.test.ts -- --reporter=json --outputFile ../../tmp/dojo-time-machine-debugger/dojo-time-machine-debugger.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:time-machine-debugger:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:time-machine-debugger:self-check",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.timeMachineDebuggerEvidence.v1",
@@ -1010,6 +1010,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_honest_projection_status: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
+      require_self_check_executes_tests: true,
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
     },
@@ -2374,6 +2375,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_counterfactual_license_impact", "time_machine_missing_license_impact_requirement"],
       ["require_replay_plan", "time_machine_missing_replay_plan_requirement"],
       ["require_honest_projection_status", "time_machine_missing_honest_status_requirement"],
+      ["require_self_check_executes_tests", "time_machine_missing_self_check_execution_requirement"],
     ]) {
       if (!timeMachineGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }

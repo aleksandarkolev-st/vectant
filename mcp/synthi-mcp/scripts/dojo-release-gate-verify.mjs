@@ -2830,6 +2830,7 @@ export function validateDojoTimeMachineDebuggerEvidenceForRelease(evidence) {
     ["counterfactual_license_impact_required", "time_machine_license_impact_requirement_missing"],
     ["replay_plan_required", "time_machine_replay_plan_requirement_missing"],
     ["honest_projection_status_required", "time_machine_honest_status_requirement_missing"],
+    ["self_check_executes_tests_required", "time_machine_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
   }
@@ -2843,6 +2844,20 @@ export function validateDojoTimeMachineDebuggerEvidenceForRelease(evidence) {
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("time_machine_no_reported_tests");
   if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
     errors.push(`time_machine_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution) {
+    errors.push("time_machine_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`time_machine_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("time_machine_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("time_machine_test_execution_args_missing");
+    }
   }
   return {
     ok: errors.length === 0,
@@ -4620,6 +4635,7 @@ async function runSelfCheck({ outDir }) {
         ...timeMachineArtifacts.evidence.time_machine_contract,
         replay_plan_required: false,
         honest_projection_status_required: false,
+        self_check_executes_tests_required: false,
       },
     },
   });
@@ -4631,6 +4647,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedTimeMachine.errors.includes("time_machine_missing_capabilities:time_machine_replay_plan"));
   assert(rejectedTimeMachine.errors.includes("time_machine_replay_plan_requirement_missing"));
   assert(rejectedTimeMachine.errors.includes("time_machine_honest_status_requirement_missing"));
+  assert(rejectedTimeMachine.errors.includes("time_machine_self_check_execution_requirement_missing"));
 
   const vivariumRuntimeDir = path.join(outDir, "vivarium-runtime");
   await mkdir(vivariumRuntimeDir, { recursive: true });
@@ -7156,6 +7173,7 @@ async function writeTimeMachineDebuggerEvidenceForSelfCheck({
       counterfactual_license_impact_required: true,
       replay_plan_required: true,
       honest_projection_status_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES],
     test_file_count: DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES.length,
@@ -7188,6 +7206,18 @@ async function writeTimeMachineDebuggerEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 1000,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);
