@@ -750,7 +750,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:mcp-skill-bus:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_mcp_manifest_signing.test.ts tests/unit/dojo_mcp_skill_bus.test.ts tests/integration/dojo_postgres_mcp_skill_bus_store.test.ts -- --reporter=json --outputFile ../../tmp/dojo-mcp-skill-bus/dojo-mcp-skill-bus.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:mcp-skill-bus:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:mcp-skill-bus:self-check",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.mcpSkillBusEvidence.v1",
@@ -781,6 +781,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_tenant_boundary: true,
       require_direct_call_policy: true,
       require_postgres_registry: true,
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -1823,6 +1824,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_tenant_boundary", "mcp_skill_bus_missing_tenant_boundary_requirement"],
       ["require_direct_call_policy", "mcp_skill_bus_missing_direct_call_policy_requirement"],
       ["require_postgres_registry", "mcp_skill_bus_missing_postgres_registry_requirement"],
+      ["require_self_check_executes_tests", "mcp_skill_bus_missing_self_check_execution_requirement"],
     ]) {
       if (!mcpSkillBusGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }

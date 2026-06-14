@@ -908,6 +908,24 @@ describe("Dojo release gate artifact verifier", () => {
       "mcp_skill_bus_tenant_boundary_requirement_missing",
     ]));
 
+    const missingExecutionPath = await writeMcpSkillBusEvidenceFixture({
+      dir,
+      basename: "missing-execution-mcp-skill-bus",
+      evidence: mcpSkillBusEvidenceFixture({
+        mcp_skill_bus_contract: {
+          ...mcpSkillBusEvidenceFixture().mcp_skill_bus_contract,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    const missingExecution = await verifyDojoMcpSkillBusEvidenceArtifact({ evidencePath: missingExecutionPath });
+    expect(missingExecution.ok).toBe(false);
+    expect(missingExecution.errors).toEqual(expect.arrayContaining([
+      "mcp_skill_bus_self_check_execution_requirement_missing",
+      "mcp_skill_bus_test_execution_missing",
+    ]));
+
     const driftedPath = await writeMcpSkillBusEvidenceFixture({
       dir,
       basename: "drifted-mcp-skill-bus",
@@ -4191,6 +4209,7 @@ function mcpSkillBusEvidenceFixture(overrides = {}) {
       tenant_boundary_required: true,
       direct_call_policy_required: true,
       postgres_registry_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_MCP_SKILL_BUS_TEST_FILES],
     test_file_count: DOJO_MCP_SKILL_BUS_TEST_FILES.length,
@@ -4211,6 +4230,18 @@ function mcpSkillBusEvidenceFixture(overrides = {}) {
     json_report_path: path.join(tmpdir(), "dojo-mcp-skill-bus.vitest.json"),
     json_report_sha256: sha256(jsonReport),
     json_report_bytes: Buffer.byteLength(jsonReport),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_MCP_SKILL_BUS_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 123,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
 }

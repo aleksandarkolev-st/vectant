@@ -1675,8 +1675,23 @@ export function validateDojoMcpSkillBusEvidenceForRelease(evidence) {
     ["tenant_boundary_required", "mcp_skill_bus_tenant_boundary_requirement_missing"],
     ["direct_call_policy_required", "mcp_skill_bus_direct_call_policy_requirement_missing"],
     ["postgres_registry_required", "mcp_skill_bus_postgres_registry_requirement_missing"],
+    ["self_check_executes_tests_required", "mcp_skill_bus_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution || typeof testExecution !== "object") {
+    errors.push("mcp_skill_bus_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`mcp_skill_bus_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("mcp_skill_bus_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("mcp_skill_bus_test_execution_args_missing");
+    }
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("mcp_skill_bus_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -7276,6 +7291,7 @@ async function writeMcpSkillBusEvidenceForSelfCheck({
       tenant_boundary_required: true,
       direct_call_policy_required: true,
       postgres_registry_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_MCP_SKILL_BUS_TEST_FILES],
     test_file_count: DOJO_MCP_SKILL_BUS_TEST_FILES.length,
@@ -7308,6 +7324,18 @@ async function writeMcpSkillBusEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_MCP_SKILL_BUS_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 100,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);

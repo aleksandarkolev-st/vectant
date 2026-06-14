@@ -560,6 +560,7 @@ describe("Dojo release gate manifest", () => {
           require_tenant_boundary: true,
           require_direct_call_policy: true,
           require_postgres_registry: true,
+          require_self_check_executes_tests: true,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -1176,10 +1177,12 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingMcpSkillBusTestFile);
     mcpSkillBusGate.release_artifact_requirements.require_proof_consume = false;
     mcpSkillBusGate.release_artifact_requirements.require_tenant_boundary = false;
+    mcpSkillBusGate.release_artifact_requirements.require_self_check_executes_tests = false;
     mcpSkillBusGate.requires_env = [];
     expect(validateDojoReleaseGateManifest(brokenMcpSkillBus, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "mcp_skill_bus_missing_proof_consume_requirement",
       "mcp_skill_bus_missing_tenant_boundary_requirement",
+      "mcp_skill_bus_missing_self_check_execution_requirement",
       "mcp_skill_bus_missing_postgres_env",
       "mcp_skill_bus_missing_required_capabilities:mcp_skill_bus_consumes_proof_before_non_dry_dispatch",
       `mcp_skill_bus_missing_required_test_files:${missingMcpSkillBusTestFile}`,
