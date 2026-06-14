@@ -107,6 +107,11 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_OAUTH_RELAY_TTL_MS
+            - name: NEXT_PUBLIC_VECTANT_OAUTH_RELAY_EXTENSION_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: NEXT_PUBLIC_VECTANT_OAUTH_RELAY_EXTENSION_URL
             - name: CODE_INTEL_URL
               valueFrom:
                 configMapKeyRef:

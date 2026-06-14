@@ -3,9 +3,12 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 
 const rootDir = process.cwd();
-const sourceDir = path.join(rootDir, 'extensions', 'synthi-oauth-relay');
-const publicDir = path.join(rootDir, 'synthi', 'public', 'extensions');
-const unpackedDir = path.join(publicDir, 'synthi-oauth-relay');
+const sourceDir = path.join(rootDir, 'extensions', 'vectant-oauth-relay');
+const publicRootDir = path.join(rootDir, 'synthi', 'public');
+const publicDir = path.join(publicRootDir, 'vectant', 'extensions');
+const legacyPublicDir = path.join(publicRootDir, 'extensions');
+const unpackedDir = path.join(publicDir, 'vectant-oauth-relay');
+const legacyUnpackedDir = path.join(legacyPublicDir, 'synthi-oauth-relay');
 
 const files = [
   'manifest.json',
@@ -40,7 +43,7 @@ function dosDateTime(date = new Date('2026-01-01T00:00:00Z')) {
 
 function assertSafeManifest(manifest) {
   if (manifest.manifest_version !== 3) {
-    throw new Error('Synthi OAuth Relay extension must use Manifest V3.');
+    throw new Error('Vectant OAuth Relay extension must use Manifest V3.');
   }
   if (!manifest.background?.service_worker) {
     throw new Error('Manifest must define a background service worker.');
@@ -129,25 +132,34 @@ async function main() {
   assertSafeManifest(manifest);
 
   await rm(unpackedDir, { recursive: true, force: true });
+  await rm(legacyUnpackedDir, { recursive: true, force: true });
   await mkdir(unpackedDir, { recursive: true });
+  await mkdir(legacyUnpackedDir, { recursive: true });
 
   const entries = [];
   for (const file of files) {
     const data = await readFile(path.join(sourceDir, file));
     await writeFile(path.join(unpackedDir, file), data);
+    await writeFile(path.join(legacyUnpackedDir, file), data);
     entries.push({ name: file, data });
   }
 
   const zip = createZip(entries);
-  const versionedZipPath = path.join(publicDir, `synthi-oauth-relay-v${manifest.version}.zip`);
-  const stableZipPath = path.join(publicDir, 'synthi-oauth-relay.zip');
+  await mkdir(legacyPublicDir, { recursive: true });
+  const versionedZipPath = path.join(publicDir, `vectant-oauth-relay-v${manifest.version}.zip`);
+  const stableZipPath = path.join(publicDir, 'vectant-oauth-relay.zip');
+  const legacyVersionedZipPath = path.join(legacyPublicDir, `synthi-oauth-relay-v${manifest.version}.zip`);
+  const legacyStableZipPath = path.join(legacyPublicDir, 'synthi-oauth-relay.zip');
   await writeFile(versionedZipPath, zip);
   await writeFile(stableZipPath, zip);
+  await writeFile(legacyVersionedZipPath, zip);
+  await writeFile(legacyStableZipPath, zip);
 
-  console.log(`Built Synthi OAuth Relay extension v${manifest.version}`);
+  console.log(`Built Vectant OAuth Relay extension v${manifest.version}`);
   console.log(`Unpacked: ${path.relative(rootDir, unpackedDir)}`);
   console.log(`Zip:      ${path.relative(rootDir, versionedZipPath)}`);
   console.log(`Stable:   ${path.relative(rootDir, stableZipPath)}`);
+  console.log(`Legacy:   ${path.relative(rootDir, legacyStableZipPath)}`);
 }
 
 main().catch((error) => {

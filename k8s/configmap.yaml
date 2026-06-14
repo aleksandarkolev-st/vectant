@@ -72,6 +72,7 @@ data:
   NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.vectant.dev"
   NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER: "true"
   NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH: "/auth/loopback"
+  NEXT_PUBLIC_VECTANT_OAUTH_RELAY_EXTENSION_URL: "/vectant/extensions/vectant-oauth-relay.zip"
 
   # ── Terminal loopback auth callback bridge ────────────────────────────────
   SYNTHI_RUNTIME_CALLBACK_BODY_LIMIT_BYTES: "65536"

@@ -1,12 +1,12 @@
-# Synthi OAuth Relay Extension
+# Vectant OAuth Relay Extension
 
-This optional extension improves terminal OAuth flows for Synthi workspaces.
+This optional extension improves terminal OAuth flows for Vectant workspaces.
 
 The default product flow still works without the extension: open the auth link in
 your normal browser, copy the redirected `localhost` callback URL, and paste it
-into Synthi.
+into Vectant.
 
-The extension removes that paste step. When a Synthi relay session is armed, the
+The extension removes that paste step. When a Vectant relay session is armed, the
 extension watches browser navigation attempts for top-level loopback URLs:
 
 - `http://localhost:<port>/...`
@@ -14,7 +14,7 @@ extension watches browser navigation attempts for top-level loopback URLs:
 - `http://[::1]:<port>/...`
 
 When the navigation matches the active relay session, the extension sends the
-full callback URL to `/api/oauth-relay/callback`. Synthi validates workspace
+full callback URL to `/api/oauth-relay/callback`. Vectant validates workspace
 access and forwards the exact URL into the workspace runtime.
 
 ## Security Model
@@ -24,7 +24,7 @@ access and forwards the exact URL into the workspace runtime.
 - Callback URLs are not stored.
 - The extension only stores short-lived relay metadata and the last submit
   result, without callback query params.
-- Capture must be armed from a Synthi page for a specific workspace/runtime.
+- Capture must be armed from a Vectant page for a specific workspace/runtime.
 - The extension only communicates with `https://beta.vectant.dev/*`.
 
 ## Build
@@ -37,21 +37,22 @@ npm run build:oauth-relay-extension
 
 The build writes:
 
-- `synthi/public/extensions/synthi-oauth-relay/` for unpacked installs
-- `synthi/public/extensions/synthi-oauth-relay.zip` as the stable download
-- `synthi/public/extensions/synthi-oauth-relay-v<version>.zip` as the versioned artifact
+- `synthi/public/vectant/extensions/vectant-oauth-relay/` for unpacked installs
+- `synthi/public/vectant/extensions/vectant-oauth-relay.zip` as the stable Vectant download
+- `synthi/public/vectant/extensions/vectant-oauth-relay-v<version>.zip` as the versioned artifact
+- legacy aliases under `synthi/public/extensions/synthi-oauth-relay*` for older beta links
 
 ## Development Install
 
 1. Open `chrome://extensions`.
 2. Enable Developer mode.
 3. Click "Load unpacked".
-4. Select this `extensions/synthi-oauth-relay` directory, or select the built
-   `synthi/public/extensions/synthi-oauth-relay` directory.
+4. Select this `extensions/vectant-oauth-relay` directory, or select the built
+   `synthi/public/vectant/extensions/vectant-oauth-relay` directory.
 
 ## Beta Install From Zip
 
-1. Download `https://beta.vectant.dev/extensions/synthi-oauth-relay.zip`.
+1. Download `https://beta.vectant.dev/vectant/extensions/vectant-oauth-relay.zip`.
 2. Unzip it locally.
 3. Open `chrome://extensions`.
 4. Enable Developer mode.

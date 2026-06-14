@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Synthi OAuth Relay",
+  "name": "Vectant OAuth Relay",
   "version": "0.1.0",
-  "description": "Relays redirected localhost OAuth callbacks from your browser into an active Synthi workspace.",
+  "description": "Relays redirected localhost OAuth callbacks from your browser into an active Vectant workspace.",
   "permissions": [
     "webNavigation",
     "storage"
@@ -31,6 +31,6 @@
     ]
   },
   "action": {
-    "default_title": "Synthi OAuth Relay"
+    "default_title": "Vectant OAuth Relay"
   }
 }

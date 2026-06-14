@@ -6,11 +6,12 @@ import { AnimatePresence, motion } from 'framer-motion';
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
 const CALLBACK_PARAM_RE = /(redirect|callback|return|continue|next|url|uri)/i;
-const EXTENSION_PAGE_SOURCE = 'synthi-oauth-relay-page';
-const EXTENSION_SOURCE = 'synthi-oauth-relay-extension';
+const EXTENSION_PAGE_SOURCES = ['vectant-oauth-relay-page', 'synthi-oauth-relay-page'];
+const EXTENSION_SOURCES = new Set(['vectant-oauth-relay-extension', 'synthi-oauth-relay-extension']);
 const EXTENSION_INSTALL_URL =
+  process.env.NEXT_PUBLIC_VECTANT_OAUTH_RELAY_EXTENSION_URL ||
   process.env.NEXT_PUBLIC_SYNTHI_OAUTH_RELAY_EXTENSION_URL ||
-  '/extensions/synthi-oauth-relay.zip';
+  '/vectant/extensions/vectant-oauth-relay.zip';
 const MOTION_EASE = [0.16, 1, 0.3, 1];
 const fadeUp = {
   hidden: { opacity: 0, y: 12 },
@@ -235,7 +236,7 @@ function sendExtensionMessage(type, payload = {}, timeoutMs = 900) {
     function onMessage(event) {
       if (event.source !== window) return;
       const data = event.data;
-      if (!data || data.source !== EXTENSION_SOURCE || data.messageId !== messageId) return;
+      if (!data || !EXTENSION_SOURCES.has(data.source) || data.messageId !== messageId) return;
       settled = true;
       window.clearTimeout(timer);
       window.removeEventListener('message', onMessage);
@@ -243,12 +244,14 @@ function sendExtensionMessage(type, payload = {}, timeoutMs = 900) {
     }
 
     window.addEventListener('message', onMessage);
-    window.postMessage({
-      source: EXTENSION_PAGE_SOURCE,
-      type,
-      messageId,
-      payload,
-    }, window.location.origin);
+    for (const source of EXTENSION_PAGE_SOURCES) {
+      window.postMessage({
+        source,
+        type,
+        messageId,
+        payload,
+      }, window.location.origin);
+    }
   });
 }
 
@@ -771,7 +774,7 @@ function LoopbackAuthPage() {
                   Optional extension
                 </h3>
                 <p className="mt-1 text-[13px] leading-5 text-[#9ba2b8]">
-                  Install once to auto-capture matching localhost callbacks.
+                  Install once to auto-capture matching localhost callbacks. Until the store listing is approved, this downloads the beta package.
                 </p>
               </div>
             </div>
@@ -784,7 +787,7 @@ function LoopbackAuthPage() {
                 className="inline-flex h-9 items-center border border-[#2b2d3e] bg-[#101119] px-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#9ba2b8] transition-colors hover:border-[#3a3d55] hover:text-[#f4f5f8]"
                 style={{ fontFamily: monoFont }}
               >
-                Download zip
+                Install extension
               </motion.a>
               <motion.button
                 type="button"
