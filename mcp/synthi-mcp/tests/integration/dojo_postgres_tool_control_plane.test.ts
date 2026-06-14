@@ -549,6 +549,21 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         reason: "integration_postgres_recertification",
         evidence_refs: ["evidence:integration-postgres-recertification"],
         previous_license_version: published.license.license_version,
+        executable_checkride: expect.objectContaining({
+          schema_version: "synthi.dojo.executableCheckrideReport.v1",
+          scenario_count: expect.any(Number),
+          evidence_refs: expect.any(Array),
+        }),
+        entrustment_decision: expect.objectContaining({
+          level: expect.any(String),
+          production_recommendation: expect.any(String),
+          evidence_refs: expect.any(Array),
+        }),
+        readiness_decision: expect.objectContaining({
+          level: expect.any(Number),
+          blocked_by: expect.any(Array),
+          next_required: expect.any(Array),
+        }),
         control_plane_persistence: expect.objectContaining({
           ok: true,
           store_kind: "postgres",
@@ -559,9 +574,19 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       }),
     }));
     const recertContent = recertified?.structuredContent as {
-      license: { license_id: string; license_version: string };
+      license: {
+        license_id: string;
+        license_version: string;
+        allowed_actions: Array<{ action: string; constraints: string[] }>;
+      };
       recertification: { control_plane_persistence: { audit_event_id: string } };
     };
+    expect(recertContent.license.allowed_actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "run_workflow",
+        constraints: expect.arrayContaining(["executable_checkride_constrained"]),
+      }),
+    ]));
 
     const skillStore = new PostgresDojoSkillStore({
       tenant_id: tenantId,

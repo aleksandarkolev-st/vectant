@@ -97,7 +97,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_run_evil_twin: syntheticRuntime("Runs targeted Evil Twin attacks through materialized Vivarium fixtures, graph runtime execution, and oracle-derived attack classification."),
   synthi_dojo_run_checkride: syntheticRuntime("Runs compatibility checkride scoring and an executable graph/Vivarium/oracle checkride with scenario evidence records."),
   synthi_dojo_publish_skill: executable("Builds, stores, and publishes a Dojo skill and backing private tool manifest."),
-  synthi_dojo_recertify_skill: deterministic("Rebuilds skill artifacts using the current deterministic checkride and report builders."),
+  synthi_dojo_recertify_skill: syntheticRuntime("Re-runs executable graph/Vivarium/oracle checkride, derives renewed entrustment/SRL/license constraints, and records audited recertification evidence."),
   synthi_dojo_get_license_health: executable("Computes license health from current license and proof registry state."),
   synthi_dojo_revoke_license: executable("Mutates the stored license into a revoked/blocked state."),
   synthi_dojo_record_case_law: executable("Records a binding case-law entry and guardrail into the current skill store."),

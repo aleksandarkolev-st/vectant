@@ -121,7 +121,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_run_wind_tunnel` | `executable` |
 | `synthi_dojo_run_checkride` | `executable` |
 | `synthi_dojo_publish_skill` | `executable` |
-| `synthi_dojo_recertify_skill` | `deterministic_projection` |
+| `synthi_dojo_recertify_skill` | `executable` |
 | `synthi_dojo_get_license_health` | `executable` |
 | `synthi_dojo_revoke_license` | `executable` |
 | `synthi_dojo_record_case_law` | `executable` |

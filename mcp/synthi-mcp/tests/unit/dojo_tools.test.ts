@@ -2333,6 +2333,29 @@ describe("Agent Dojo MCP tools", () => {
           }),
           evidence_refs: ["evidence:recertification"],
         }),
+        executable_checkride: expect.objectContaining({
+          schema_version: "synthi.dojo.executableCheckrideReport.v1",
+          scenario_count: expect.any(Number),
+          evidence_refs: expect.any(Array),
+        }),
+        entrustment_decision: expect.objectContaining({
+          level: expect.any(String),
+          production_recommendation: expect.any(String),
+          evidence_refs: expect.any(Array),
+        }),
+        readiness_decision: expect.objectContaining({
+          level: expect.any(Number),
+          blocked_by: expect.any(Array),
+          next_required: expect.any(Array),
+        }),
+      }),
+      license: expect.objectContaining({
+        allowed_actions: expect.arrayContaining([
+          expect.objectContaining({
+            action: "run_workflow",
+            constraints: expect.arrayContaining(["executable_checkride_constrained"]),
+          }),
+        ]),
       }),
       license_health: expect.objectContaining({ schema_version: "synthi.dojo.licenseHealth.v1" }),
       governance_service: expect.objectContaining({

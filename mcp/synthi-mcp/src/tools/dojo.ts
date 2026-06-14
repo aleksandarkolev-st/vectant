@@ -3083,6 +3083,15 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
     private_tool_manifest: manifest,
     ...(publishedToolName ? { published_tool_name: publishedToolName } : {}),
   });
+  const recertificationCheckride = await executableCheckrideForSkillPublication({
+    skill: recertified,
+    tenant,
+    now,
+  });
+  recertified = applyExecutableCheckrideToPublishedSkill(
+    recertified,
+    recertificationCheckride
+  );
   if (previousLicenseVersion) {
     recertified = skillWithLicenseVersion(recertified, bumpVersion(previousLicenseVersion));
   }
@@ -3180,6 +3189,9 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
       evidence_refs: evidenceRefs,
       previous_license_version: previousLicenseVersion,
       license_version: recertified.permission_license.license_version,
+      executable_checkride: recertificationCheckride.executable_checkride,
+      entrustment_decision: recertificationCheckride.entrustment_decision,
+      readiness_decision: recertificationCheckride.readiness_decision,
       audit_event: auditEvent,
       control_plane_persistence: controlPlanePersistence,
       ...(durableAuditEvent ? { durable_audit_event: durableAuditEvent } : {}),
