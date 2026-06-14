@@ -238,6 +238,7 @@
     "spike:E3": "tsx tests/spike/E3_p99_load.ts",
     "spike:E4": "tsx tests/spike/E4_cost_budget.ts",
     "soak": "node tests/soak/soak_loop.mjs",
+    "chaos:dojo:preflight": "node tests/chaos/runner.mjs --require-scenarios --json ../../tmp/dojo-chaos-runner/chaos-runner.report.json",
     "live:phase3": "node scripts/live-test-phase3.mjs",
     "live:browser": "node scripts/live-browser-smoke.mjs",
     "live:browser:workspace": "node scripts/live-browser-smoke.mjs --workspace",

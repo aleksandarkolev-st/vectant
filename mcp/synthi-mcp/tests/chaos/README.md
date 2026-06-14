@@ -1,86 +1,60 @@
-# Chaos suite — phase 2e
+# Dojo Chaos Preflight Suite
 
-Structured fault-injection tests that run the MCP + worker under
-degraded-network / flapping-process / corrupted-payload conditions and
-assert the correctness table still holds.
+This directory contains deterministic fault-injection preflight scenarios for
+Agent Dojo. The suite is intentionally lighter than the future long-running
+Docker/network chaos program, but it is no longer a placeholder: concrete
+scenario modules run focused tests and verify evidence from Vitest JSON reports.
 
-**Status: scaffold.** The harness + scenario registry are in tree;
-individual scenarios are the phase-2e landing (per
-`PHASE_2_PLUS_BACKLOG.md:G3` sub-phase 2e, ~1 week).
+## What Runs Today
 
-## Why a separate suite
+Current scenarios:
 
-The integration suite (`tests/integration/`) runs under `docker-compose up -d`
-against a cooperating stack. Chaos breaks that assumption deliberately:
+- `api_fault_server` checks synthetic API timeout, partial write, fake visual
+  success, validation error, and downstream failure paths.
+- `vivarium_oracle` checks deterministic synthetic fixtures, prompt-injection
+  quarantine, oracle classification, fake-success detection, and Evil Twin
+  hardening evidence.
+- `runtime_preflight_fail_closed` checks hosted-runtime preflight failure and
+  proof-not-consumed behavior for production proof-gated dispatch.
 
-- **Latency injection** — `tc netem` on the signaling / worker bridge to
-  push signaling-response tails from 5ms to 500ms. Asserts the MCP's
-  attach-budget + frame-age SLA still degrade gracefully.
-- **Data-channel packet loss** — inject 5% / 20% / 50% random drop on
-  the worker→browser DC. Asserts input-dispatch-ack timeout + retry
-  logic surfaces `input_ack_timeout` at the right threshold.
-- **Frame freeze** — pause the worker's GStreamer pipeline for 10s.
-  Asserts `frame_stale` (priority 7 in the correctness ladder) fires
-  with the right evidence.
-- **Worker kill** — SIGKILL the worker process mid-session. Asserts
-  the MCP surfaces `session_terminated` + the correct
-  `required_tool_call: synthi_attach` remediation.
-- **Signaling-server partition** — drop the MCP↔signaling WS for 5s,
-  restore. Asserts `synthi_reconnect` recovers without losing the
-  event log (ultraplan §Reconnect preservation).
-- **Redis eviction mid-session** — flush the session map on the shared
-  Redis instance. Asserts `session_migrating` fires for any peer that
-  was mid-operation; `session_not_ready` for a fresh attach.
-- **Payload corruption** — inject one invalid UTF-8 byte into a
-  `build-log` message. Asserts the injection-heuristic prescreen
-  flags it and the MCP keeps going.
+Each scenario owns the evidence it requires. The runner fails if a scenario's
+focused tests pass but the expected evidence titles are absent from the JSON
+report.
 
-Each scenario is one deterministic reproduction; assertions are of the
-form "correctness ladder surfaced error X with evidence Y" rather than
-"MCP was slow." Chaos is about whether the contract holds under duress,
-not about perf numbers.
-
-## Layout
-
-```
-tests/chaos/
-├── README.md                 ← this file
-├── runner.mjs                ← scenario dispatcher + assertion harness
-└── scenarios/
-    ├── _template.mjs         ← shape every scenario conforms to
-    ├── latency_injection.mjs (planned)
-    ├── dc_packet_loss.mjs    (planned)
-    ├── frame_freeze.mjs      (planned)
-    ├── worker_kill.mjs       (planned)
-    ├── signaling_partition.mjs (planned)
-    ├── redis_eviction.mjs    (planned)
-    └── payload_corruption.mjs (planned)
-```
-
-## Running (when populated)
+## Running
 
 ```bash
-# against a live docker-compose stack
-SYNTHI_CHAOS_DOCKER_PROJECT=synthi-ide \
-SYNTHI_SIGNALING_URL=ws://localhost:9000 \
-  node tests/chaos/runner.mjs
+node tests/chaos/runner.mjs --require-scenarios --json ../../tmp/dojo-chaos-runner/report.json
 
-# run one scenario
-node tests/chaos/runner.mjs --only worker_kill
+node tests/chaos/runner.mjs --list
 
-# increase iteration count for soak-ish runs
-node tests/chaos/runner.mjs --iterations 10
+node tests/chaos/runner.mjs --only api_fault_server --iterations 3
 ```
 
-Phase-2e landing adds a `ci-chaos` GitHub Actions workflow that runs
-the full suite nightly against a docker-compose stack spun up in CI.
-Per-PR runs are opt-in (`[run-chaos]` label) because the failure modes
-are load-bearing but slow to reproduce (~10 min for the full suite).
+The Dojo T8 preflight gate also invokes this runner through:
 
-## Not in scope
+```bash
+npm run proof:dojo:chaos-performance:self-check
+```
 
-- **Performance regression** is a different tool (`H1` in the phase-2+
-  backlog: `benchmarks/` + baseline comparison).
-- **Long-haul soak** is phase 3 (`layer 5` per ultraplan §Testing).
-- **Multi-agent stress** gated on phase-2c broker; chaos runs one
-  agent per scenario today.
+## Report Contract
+
+The runner writes `synthi.chaosRunnerReport.v1` when `--json` is provided.
+Each result includes:
+
+- scenario name and description
+- iteration number
+- pass/fail status
+- duration
+- focused test files
+- Vitest JSON report digest
+- stdout/stderr digests
+- evidence coverage entries
+
+## Future Live Chaos
+
+The mature release plan still calls for slower live chaos scenarios such as
+worker kill, signaling partition, Redis restart, browser crash, proof signing
+service outage, and source drift during a run. Those should land as additional
+scenario modules using the same runner contract, with environment-gated live
+requirements instead of replacing the deterministic preflight.

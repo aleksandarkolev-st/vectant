@@ -123,6 +123,40 @@ const VITEST_REPORT = {
   ],
 };
 
+const CHAOS_RUNNER_REPORT = {
+  schema_version: "synthi.chaosRunnerReport.v1",
+  ok: true,
+  scenario_count: 3,
+  iteration_count: 1,
+  expected_run_count: 3,
+  passed_run_count: 3,
+  failed_run_count: 0,
+  scenarios: [
+    { name: "api_fault_server", description: "API faults" },
+    { name: "runtime_preflight_fail_closed", description: "Preflight failure" },
+    { name: "vivarium_oracle", description: "Vivarium oracle" },
+  ],
+  results: [
+    { ok: true, scenario: "api_fault_server", name: "api_fault_server#1" },
+    { ok: true, scenario: "runtime_preflight_fail_closed", name: "runtime_preflight_fail_closed#1" },
+    { ok: true, scenario: "vivarium_oracle", name: "vivarium_oracle#1" },
+  ],
+};
+
+function chaosRunnerEvidenceFixture() {
+  return {
+    chaosRunnerReport: CHAOS_RUNNER_REPORT,
+    chaosRunnerReportPath: "tmp/chaos-runner.json",
+    chaosRunnerReportText: JSON.stringify(CHAOS_RUNNER_REPORT),
+    chaosRunnerStdout: "PASS api_fault_server#1\nPASS runtime_preflight_fail_closed#1\nPASS vivarium_oracle#1\n",
+    chaosRunnerStderr: "",
+    chaosRunnerStdoutPath: "tmp/chaos-runner.stdout.log",
+    chaosRunnerStderrPath: "tmp/chaos-runner.stderr.log",
+    chaosRunnerExitCode: 0,
+    chaosRunnerSignal: null,
+  };
+}
+
 describe("Dojo chaos performance self-check script", () => {
   it("defines executable integration tests for T8 preflight coverage", () => {
     expect(DOJO_CHAOS_PERFORMANCE_TEST_FILES).toEqual([
@@ -157,6 +191,7 @@ describe("Dojo chaos performance self-check script", () => {
       stderrPath: "tmp/stderr.log",
       jsonReport: VITEST_REPORT,
       jsonReportPath: "tmp/vitest.json",
+      ...chaosRunnerEvidenceFixture(),
       timeoutMs: 120000,
     });
 
@@ -197,7 +232,23 @@ describe("Dojo chaos performance self-check script", () => {
           no_failed_tests: true,
           all_reported_tests_passed: true,
           scenario_coverage_complete: true,
+          chaos_runner_report_ok: true,
+          chaos_runner_has_scenarios: true,
+          chaos_runner_all_runs_passed: true,
         }),
+      }),
+      chaos_runner_required: true,
+      chaos_runner: expect.objectContaining({
+        ok: true,
+        scenario_count: 3,
+        expected_run_count: 3,
+        passed_run_count: 3,
+        failed_run_count: 0,
+        scenarios: expect.arrayContaining([
+          "api_fault_server",
+          "runtime_preflight_fail_closed",
+          "vivarium_oracle",
+        ]),
       }),
       budget: expect.objectContaining({
         intended_gate: "lightweight_preflight_not_long_soak",
@@ -232,12 +283,51 @@ describe("Dojo chaos performance self-check script", () => {
       stderrPath: "tmp/stderr.log",
       jsonReport: partialReport,
       jsonReportPath: "tmp/vitest.json",
+      ...chaosRunnerEvidenceFixture(),
       timeoutMs: 120000,
     });
 
     expect(evidence.ok).toBe(false);
     expect(evidence.reported_test_file_count).toBe(DOJO_CHAOS_PERFORMANCE_TEST_FILES.length - 1);
     expect(evidence.budget_evaluation.checks.all_test_files_reported).toBe(false);
+  });
+
+  it("fails metrics evidence when the chaos runner report is missing or failed", () => {
+    const evidence = buildDojoChaosPerformanceEvidenceManifest({
+      now: "2026-06-11T00:00:00.000Z",
+      exitCode: 0,
+      signal: null,
+      durationMs: 2345.6789,
+      testFiles: DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+      scenarios: DOJO_CHAOS_SCENARIOS,
+      stdout: "chaos integration tests passed",
+      stderr: "",
+      stdoutPath: "tmp/stdout.log",
+      stderrPath: "tmp/stderr.log",
+      jsonReport: VITEST_REPORT,
+      jsonReportPath: "tmp/vitest.json",
+      chaosRunnerReport: {
+        ...CHAOS_RUNNER_REPORT,
+        ok: false,
+        failed_run_count: 1,
+        passed_run_count: 2,
+      },
+      chaosRunnerReportPath: "tmp/chaos-runner.json",
+      chaosRunnerReportText: JSON.stringify({ ...CHAOS_RUNNER_REPORT, ok: false }),
+      chaosRunnerStdout: "FAIL api_fault_server#1\n",
+      chaosRunnerStderr: "scenario failed",
+      chaosRunnerStdoutPath: "tmp/chaos-runner.stdout.log",
+      chaosRunnerStderrPath: "tmp/chaos-runner.stderr.log",
+      chaosRunnerExitCode: 1,
+      chaosRunnerSignal: null,
+      chaosRunnerError: "chaos_runner_exit_1",
+      timeoutMs: 120000,
+    });
+
+    expect(evidence.ok).toBe(false);
+    expect(evidence.chaos_runner.ok).toBe(false);
+    expect(evidence.budget_evaluation.checks.chaos_runner_report_ok).toBe(false);
+    expect(evidence.budget_evaluation.checks.chaos_runner_all_runs_passed).toBe(false);
   });
 
   it("summarizes Vitest JSON and reports scenario coverage gaps honestly", () => {

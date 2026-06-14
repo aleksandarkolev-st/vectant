@@ -3087,6 +3087,14 @@ describe("Dojo release gate artifact verifier", () => {
       "chaos_performance_pending_tests:1",
     ]));
 
+    expect(validateDojoChaosPerformanceEvidenceForEnterprise(chaosEvidenceFixture({
+      chaos_runner_required: false,
+      chaos_runner: null,
+    })).errors).toEqual(expect.arrayContaining([
+      "chaos_runner_requirement_missing",
+      "chaos_runner_missing",
+    ]));
+
     const tamperedJson = path.join(dir, "tampered-chaos.vitest.json");
     await writeFile(tamperedJson, JSON.stringify({ success: false, numFailedTests: 1 }), "utf8");
     const expectedChaosJson = chaosJsonReportFixtureText();
@@ -6461,12 +6469,21 @@ async function writeChaosEvidenceFixture({
   const stdout = "chaos suite passed\n";
   const stderr = "";
   const jsonReport = chaosJsonReportFixtureText();
+  const chaosRunnerReport = chaosRunnerReportFixtureText();
+  const chaosRunnerStdout = "PASS api_fault_server#1\nPASS runtime_preflight_fail_closed#1\nPASS vivarium_oracle#1\n";
+  const chaosRunnerStderr = "";
   const stdoutPath = path.join(dir, `${basename}.stdout.log`);
   const stderrPath = path.join(dir, `${basename}.stderr.log`);
   const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  const chaosRunnerReportPath = path.join(dir, `${basename}.chaos-runner.json`);
+  const chaosRunnerStdoutPath = path.join(dir, `${basename}.chaos-runner.stdout.log`);
+  const chaosRunnerStderrPath = path.join(dir, `${basename}.chaos-runner.stderr.log`);
   await writeFile(stdoutPath, stdout, "utf8");
   await writeFile(stderrPath, stderr, "utf8");
   await writeFile(jsonReportPath, jsonReport, "utf8");
+  await writeFile(chaosRunnerReportPath, chaosRunnerReport, "utf8");
+  await writeFile(chaosRunnerStdoutPath, chaosRunnerStdout, "utf8");
+  await writeFile(chaosRunnerStderrPath, chaosRunnerStderr, "utf8");
   const body = evidence ?? chaosEvidenceFixture({ stdout_path: stdoutPath, stderr_path: stderrPath, json_report_path: jsonReportPath });
   const withLogDefaults = {
     ...body,
@@ -6477,6 +6494,24 @@ async function writeChaosEvidenceFixture({
     json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
       ? body.json_report_bytes
       : Buffer.byteLength(jsonReport),
+    chaos_runner: {
+      ...(body.chaos_runner ?? {}),
+      report_path: body.chaos_runner?.report_path && body.chaos_runner.report_path !== "chaos-runner.json"
+        ? body.chaos_runner.report_path
+        : chaosRunnerReportPath,
+      report_sha256: body.chaos_runner?.report_sha256 ?? sha256(chaosRunnerReport),
+      report_bytes: body.chaos_runner?.report_bytes ?? Buffer.byteLength(chaosRunnerReport),
+      stdout_path: body.chaos_runner?.stdout_path && body.chaos_runner.stdout_path !== "chaos-runner.stdout.log"
+        ? body.chaos_runner.stdout_path
+        : chaosRunnerStdoutPath,
+      stderr_path: body.chaos_runner?.stderr_path && body.chaos_runner.stderr_path !== "chaos-runner.stderr.log"
+        ? body.chaos_runner.stderr_path
+        : chaosRunnerStderrPath,
+      stdout_sha256: body.chaos_runner?.stdout_sha256 ?? sha256(chaosRunnerStdout),
+      stderr_sha256: body.chaos_runner?.stderr_sha256 ?? sha256(chaosRunnerStderr),
+      stdout_bytes: body.chaos_runner?.stdout_bytes ?? Buffer.byteLength(chaosRunnerStdout),
+      stderr_bytes: body.chaos_runner?.stderr_bytes ?? Buffer.byteLength(chaosRunnerStderr),
+    },
   };
   const evidencePath = path.join(dir, `${basename}.evidence.json`);
   await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
@@ -6486,6 +6521,9 @@ async function writeChaosEvidenceFixture({
 function chaosEvidenceFixture(overrides = {}) {
   const stdout = "chaos suite passed\n";
   const stderr = "";
+  const chaosRunnerStdout = "PASS api_fault_server#1\nPASS runtime_preflight_fail_closed#1\nPASS vivarium_oracle#1\n";
+  const chaosRunnerStderr = "";
+  const chaosRunnerReport = chaosRunnerReportFixtureText();
   return {
     schema_version: "synthi.dojo.chaosPerformanceEvidence.v1",
     generated_at: "2026-06-11T00:00:00.000Z",
@@ -6500,7 +6538,34 @@ function chaosEvidenceFixture(overrides = {}) {
     test_files: [...DOJO_CHAOS_PERFORMANCE_TEST_FILES],
     test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
     reported_test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
-    budget_evaluation: { ok: true },
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        chaos_runner_report_ok: true,
+        chaos_runner_has_scenarios: true,
+        chaos_runner_all_runs_passed: true,
+      },
+    },
+    chaos_runner_required: true,
+    chaos_runner: {
+      ok: true,
+      exit_code: 0,
+      signal: null,
+      report_path: "chaos-runner.json",
+      report_sha256: sha256(chaosRunnerReport),
+      report_bytes: Buffer.byteLength(chaosRunnerReport),
+      stdout_path: "chaos-runner.stdout.log",
+      stderr_path: "chaos-runner.stderr.log",
+      stdout_sha256: sha256(chaosRunnerStdout),
+      stderr_sha256: sha256(chaosRunnerStderr),
+      stdout_bytes: Buffer.byteLength(chaosRunnerStdout),
+      stderr_bytes: Buffer.byteLength(chaosRunnerStderr),
+      scenario_count: 3,
+      expected_run_count: 3,
+      passed_run_count: 3,
+      failed_run_count: 0,
+      scenarios: ["api_fault_server", "runtime_preflight_fail_closed", "vivarium_oracle"],
+    },
     test_summary: {
       total_tests: 9,
       passed_tests: 9,
@@ -6534,6 +6599,28 @@ function chaosJsonReportFixtureText() {
     numPassedTests: 9,
     numFailedTests: 0,
     testResults: [],
+  }, null, 2);
+}
+
+function chaosRunnerReportFixtureText() {
+  return JSON.stringify({
+    schema_version: "synthi.chaosRunnerReport.v1",
+    ok: true,
+    scenario_count: 3,
+    iteration_count: 1,
+    expected_run_count: 3,
+    passed_run_count: 3,
+    failed_run_count: 0,
+    scenarios: [
+      { name: "api_fault_server", description: "API faults" },
+      { name: "runtime_preflight_fail_closed", description: "Runtime preflight" },
+      { name: "vivarium_oracle", description: "Vivarium oracle" },
+    ],
+    results: [
+      { ok: true, name: "api_fault_server#1", scenario: "api_fault_server" },
+      { ok: true, name: "runtime_preflight_fail_closed#1", scenario: "runtime_preflight_fail_closed" },
+      { ok: true, name: "vivarium_oracle#1", scenario: "vivarium_oracle" },
+    ],
   }, null, 2);
 }
 

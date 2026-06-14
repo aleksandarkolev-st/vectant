@@ -3512,6 +3512,7 @@ export async function verifyDojoChaosPerformanceEvidenceArtifact({ evidencePath,
   const evidence = await readJsonFile(evidencePath);
   const errors = validateDojoChaosPerformanceEvidenceForEnterprise(evidence).errors;
   errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  errors.push(...await validateDojoChaosRunnerReferencedArtifacts(evidence, evidencePath));
   return {
     id: "dojo_chaos_performance_self_check",
     ok: errors.length === 0,
@@ -3561,6 +3562,24 @@ export function validateDojoChaosPerformanceEvidenceForEnterprise(evidence) {
     errors.push(`chaos_performance_tested_scenario_count_mismatch:${evidence?.scenario_count ?? "missing"}:${testedScenarios.length}`);
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("chaos_performance_budget_not_ok");
+  if (evidence?.chaos_runner_required !== true) errors.push("chaos_runner_requirement_missing");
+  const chaosRunner = evidence?.chaos_runner;
+  if (!chaosRunner || typeof chaosRunner !== "object") {
+    errors.push("chaos_runner_missing");
+  } else {
+    if (chaosRunner.ok !== true) errors.push("chaos_runner_not_ok");
+    if (Number(chaosRunner.exit_code) !== 0) errors.push(`chaos_runner_exit_code:${chaosRunner.exit_code ?? "missing"}`);
+    if (Number(chaosRunner.scenario_count || 0) <= 0) errors.push("chaos_runner_no_scenarios");
+    if (Number(chaosRunner.expected_run_count || 0) <= 0) errors.push("chaos_runner_no_expected_runs");
+    if (Number(chaosRunner.failed_run_count || 0) !== 0) errors.push(`chaos_runner_failed_runs:${chaosRunner.failed_run_count}`);
+    if (Number(chaosRunner.passed_run_count || 0) !== Number(chaosRunner.expected_run_count || 0)) {
+      errors.push(`chaos_runner_passed_run_count_mismatch:${chaosRunner.passed_run_count ?? "missing"}:${chaosRunner.expected_run_count ?? "missing"}`);
+    }
+    const scenarioNames = Array.isArray(chaosRunner.scenarios) ? chaosRunner.scenarios.map(String) : [];
+    for (const requiredScenario of ["api_fault_server", "runtime_preflight_fail_closed", "vivarium_oracle"]) {
+      if (!scenarioNames.includes(requiredScenario)) errors.push(`chaos_runner_required_scenario_missing:${requiredScenario}`);
+    }
+  }
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
     errors.push(`chaos_performance_failed_tests:${evidence.test_summary.failed_tests}`);
   }
@@ -3892,6 +3911,34 @@ async function validateDigestReferencedLogArtifacts(evidence, evidencePath) {
     filePath: evidence?.stderr_path,
     expectedSha256: evidence?.stderr_sha256,
     expectedBytes: evidence?.stderr_bytes,
+    evidencePath,
+  }));
+  return errors;
+}
+
+async function validateDojoChaosRunnerReferencedArtifacts(evidence, evidencePath) {
+  const runner = evidence?.chaos_runner;
+  if (!runner || typeof runner !== "object") return [];
+  const errors = [];
+  errors.push(...await validateDigestReferencedFile({
+    label: "chaos_runner_report",
+    filePath: runner.report_path,
+    expectedSha256: runner.report_sha256,
+    expectedBytes: runner.report_bytes,
+    evidencePath,
+  }));
+  errors.push(...await validateDigestReferencedFile({
+    label: "chaos_runner_stdout",
+    filePath: runner.stdout_path,
+    expectedSha256: runner.stdout_sha256,
+    expectedBytes: runner.stdout_bytes,
+    evidencePath,
+  }));
+  errors.push(...await validateDigestReferencedFile({
+    label: "chaos_runner_stderr",
+    filePath: runner.stderr_path,
+    expectedSha256: runner.stderr_sha256,
+    expectedBytes: runner.stderr_bytes,
     evidencePath,
   }));
   return errors;
@@ -8131,12 +8178,39 @@ async function writeChaosEvidenceForSelfCheck({
   const stdout = "chaos performance preflight passed\n";
   const stderr = "";
   const jsonReport = JSON.stringify({ success: true, numTotalTests: 9, numPassedTests: 9, numFailedTests: 0, testResults: [] }, null, 2);
+  const chaosRunnerReport = JSON.stringify({
+    schema_version: "synthi.chaosRunnerReport.v1",
+    ok: true,
+    scenario_count: 3,
+    iteration_count: 1,
+    expected_run_count: 3,
+    passed_run_count: 3,
+    failed_run_count: 0,
+    scenarios: [
+      { name: "api_fault_server", description: "API faults" },
+      { name: "runtime_preflight_fail_closed", description: "Runtime preflight" },
+      { name: "vivarium_oracle", description: "Vivarium oracle" },
+    ],
+    results: [
+      { ok: true, name: "api_fault_server#1", scenario: "api_fault_server" },
+      { ok: true, name: "runtime_preflight_fail_closed#1", scenario: "runtime_preflight_fail_closed" },
+      { ok: true, name: "vivarium_oracle#1", scenario: "vivarium_oracle" },
+    ],
+  }, null, 2);
+  const chaosRunnerStdout = "PASS api_fault_server#1\nPASS runtime_preflight_fail_closed#1\nPASS vivarium_oracle#1\n";
+  const chaosRunnerStderr = "";
   const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
   const stderrPath = path.join(outDir, `${basename}.stderr.log`);
   const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  const chaosRunnerReportPath = path.join(outDir, `${basename}.chaos-runner.json`);
+  const chaosRunnerStdoutPath = path.join(outDir, `${basename}.chaos-runner.stdout.log`);
+  const chaosRunnerStderrPath = path.join(outDir, `${basename}.chaos-runner.stderr.log`);
   await writeFile(stdoutPath, stdout, "utf8");
   await writeFile(stderrPath, stderr, "utf8");
   await writeFile(jsonReportPath, jsonReport, "utf8");
+  await writeFile(chaosRunnerReportPath, chaosRunnerReport, "utf8");
+  await writeFile(chaosRunnerStdoutPath, chaosRunnerStdout, "utf8");
+  await writeFile(chaosRunnerStderrPath, chaosRunnerStderr, "utf8");
   const evidence = {
     schema_version: "synthi.dojo.chaosPerformanceEvidence.v1",
     generated_at: new Date().toISOString(),
@@ -8154,11 +8228,34 @@ async function writeChaosEvidenceForSelfCheck({
         no_spawn_error: true,
         no_failed_tests: true,
         all_reported_tests_passed: true,
+        chaos_runner_report_ok: true,
+        chaos_runner_has_scenarios: true,
+        chaos_runner_all_runs_passed: true,
         scenario_coverage_complete: true,
         self_check_within_timeout: true,
         test_case_p95_recorded: true,
         test_file_p95_recorded: true,
       },
+    },
+    chaos_runner_required: true,
+    chaos_runner: {
+      ok: true,
+      exit_code: 0,
+      signal: null,
+      report_path: chaosRunnerReportPath,
+      report_sha256: sha256(chaosRunnerReport),
+      report_bytes: Buffer.byteLength(chaosRunnerReport),
+      stdout_path: chaosRunnerStdoutPath,
+      stderr_path: chaosRunnerStderrPath,
+      stdout_sha256: sha256(chaosRunnerStdout),
+      stderr_sha256: sha256(chaosRunnerStderr),
+      stdout_bytes: Buffer.byteLength(chaosRunnerStdout),
+      stderr_bytes: Buffer.byteLength(chaosRunnerStderr),
+      scenario_count: 3,
+      expected_run_count: 3,
+      passed_run_count: 3,
+      failed_run_count: 0,
+      scenarios: ["api_fault_server", "runtime_preflight_fail_closed", "vivarium_oracle"],
     },
     test_summary: {
       total_tests: 9,
