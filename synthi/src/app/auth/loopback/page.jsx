@@ -10,7 +10,7 @@ const EXTENSION_PAGE_SOURCE = 'synthi-oauth-relay-page';
 const EXTENSION_SOURCE = 'synthi-oauth-relay-extension';
 const EXTENSION_INSTALL_URL =
   process.env.NEXT_PUBLIC_SYNTHI_OAUTH_RELAY_EXTENSION_URL ||
-  'https://github.com/vectant/vectant-ade/tree/main/extensions/synthi-oauth-relay';
+  '/extensions/synthi-oauth-relay.zip';
 const MOTION_EASE = [0.16, 1, 0.3, 1];
 const fadeUp = {
   hidden: { opacity: 0, y: 12 },
@@ -704,7 +704,7 @@ function LoopbackAuthPage() {
                 rel="noreferrer"
                 className="inline-flex h-9 items-center border border-[#343434] bg-[#121212] px-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#EAEAEA] transition-colors hover:bg-[#1A1A1A]"
               >
-                View setup
+                Download zip
               </motion.a>
               <motion.button
                 type="button"
