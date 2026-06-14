@@ -1987,6 +1987,24 @@ describe("Dojo release gate artifact verifier", () => {
       "graph_runtime_proof_gate_requirement_missing",
     ]));
 
+    const missingExecutionPath = await writeGraphRuntimeEvidenceFixture({
+      dir,
+      basename: "missing-execution-graph-runtime",
+      evidence: graphRuntimeEvidenceFixture({
+        graph_runtime_contract: {
+          ...graphRuntimeEvidenceFixture().graph_runtime_contract,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    const missingExecution = await verifyDojoGraphRuntimeEvidenceArtifact({ evidencePath: missingExecutionPath });
+    expect(missingExecution.ok).toBe(false);
+    expect(missingExecution.errors).toEqual(expect.arrayContaining([
+      "graph_runtime_self_check_execution_requirement_missing",
+      "graph_runtime_test_execution_missing",
+    ]));
+
     const driftedPath = await writeGraphRuntimeEvidenceFixture({
       dir,
       basename: "drifted-graph-runtime",
@@ -4921,6 +4939,7 @@ function graphRuntimeEvidenceFixture(overrides = {}) {
       human_resume_required: true,
       validation_fail_closed_required: true,
       predicate_dsl_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_GRAPH_RUNTIME_TEST_FILES],
     test_file_count: DOJO_GRAPH_RUNTIME_TEST_FILES.length,
@@ -4941,6 +4960,18 @@ function graphRuntimeEvidenceFixture(overrides = {}) {
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
     json_report_bytes: Buffer.byteLength(jsonReport),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_GRAPH_RUNTIME_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 123,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
 }

@@ -262,7 +262,7 @@
     "proof:dojo:case-law-runtime:self-check": "node scripts/dojo-case-law-runtime-self-check.mjs --from-json ../../tmp/dojo-case-law-runtime/dojo-case-law-runtime.vitest.json",
     "proof:dojo:generated-pr:self-check": "node scripts/dojo-generated-pr-self-check.mjs --from-json ../../tmp/dojo-generated-pr/dojo-generated-pr.vitest.json --run-tests",
     "proof:dojo:governance-lifecycle:self-check": "node scripts/dojo-governance-lifecycle-self-check.mjs --from-json ../../tmp/dojo-governance-lifecycle/dojo-governance-lifecycle.vitest.json",
-    "proof:dojo:graph-runtime:self-check": "node scripts/dojo-graph-runtime-self-check.mjs --from-json ../../tmp/dojo-graph-runtime/dojo-graph-runtime.vitest.json",
+    "proof:dojo:graph-runtime:self-check": "node scripts/dojo-graph-runtime-self-check.mjs --from-json ../../tmp/dojo-graph-runtime/dojo-graph-runtime.vitest.json --run-tests",
     "proof:dojo:ghost-mode-evidence:self-check": "node scripts/dojo-ghost-mode-evidence-self-check.mjs --from-json ../../tmp/dojo-ghost-mode-evidence/dojo-ghost-mode-evidence.vitest.json",
     "proof:dojo:hosted-runtime-gateway:self-check": "node scripts/dojo-hosted-runtime-gateway-self-check.mjs --from-json ../../tmp/dojo-hosted-runtime-gateway/dojo-hosted-runtime-gateway.vitest.json",
     "proof:dojo:implementation-status:self-check": "node scripts/dojo-implementation-status-self-check.mjs --from-json ../../tmp/dojo-implementation-status/dojo-implementation-status.vitest.json",

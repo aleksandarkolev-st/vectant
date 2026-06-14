@@ -2442,8 +2442,23 @@ export function validateDojoGraphRuntimeEvidenceForRelease(evidence) {
     ["human_resume_required", "graph_runtime_human_resume_requirement_missing"],
     ["validation_fail_closed_required", "graph_runtime_validation_fail_closed_requirement_missing"],
     ["predicate_dsl_required", "graph_runtime_predicate_dsl_requirement_missing"],
+    ["self_check_executes_tests_required", "graph_runtime_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution || typeof testExecution !== "object") {
+    errors.push("graph_runtime_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`graph_runtime_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("graph_runtime_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("graph_runtime_test_execution_args_missing");
+    }
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("graph_runtime_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -6548,6 +6563,7 @@ async function writeGraphRuntimeEvidenceForSelfCheck({
       human_resume_required: true,
       validation_fail_closed_required: true,
       predicate_dsl_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_GRAPH_RUNTIME_TEST_FILES],
     test_file_count: DOJO_GRAPH_RUNTIME_TEST_FILES.length,
@@ -6579,6 +6595,18 @@ async function writeGraphRuntimeEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_GRAPH_RUNTIME_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 100,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);

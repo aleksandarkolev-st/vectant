@@ -672,6 +672,7 @@ describe("Dojo release gate manifest", () => {
           require_human_resume: true,
           require_validation_fail_closed: true,
           require_predicate_dsl: true,
+          require_self_check_executes_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -1243,9 +1244,11 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingGraphRuntimeTestFile);
     graphRuntimeGate.release_artifact_requirements.require_rollback_runtime = false;
     graphRuntimeGate.release_artifact_requirements.require_proof_gate = false;
+    graphRuntimeGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenGraphRuntime, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "graph_runtime_missing_rollback_requirement",
       "graph_runtime_missing_proof_gate_requirement",
+      "graph_runtime_missing_self_check_execution_requirement",
       "graph_runtime_missing_required_capabilities:graph_runtime_executes_available_rollback",
       `graph_runtime_missing_required_test_files:${missingGraphRuntimeTestFile}`,
     ]));

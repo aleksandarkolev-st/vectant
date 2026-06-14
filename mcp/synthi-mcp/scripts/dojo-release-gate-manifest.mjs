@@ -878,7 +878,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:graph-runtime:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_graph_types.test.ts tests/unit/dojo_graph_compiler.test.ts tests/unit/dojo_graph_runtime.test.ts -- --reporter=json --outputFile ../../tmp/dojo-graph-runtime/dojo-graph-runtime.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:graph-runtime:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:graph-runtime:self-check",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.graphRuntimeEvidence.v1",
@@ -907,6 +907,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_human_resume: true,
       require_validation_fail_closed: true,
       require_predicate_dsl: true,
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -2195,6 +2196,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_human_resume", "graph_runtime_missing_human_resume_requirement"],
       ["require_validation_fail_closed", "graph_runtime_missing_validation_fail_closed_requirement"],
       ["require_predicate_dsl", "graph_runtime_missing_predicate_dsl_requirement"],
+      ["require_self_check_executes_tests", "graph_runtime_missing_self_check_execution_requirement"],
     ]) {
       if (!graphRuntimeGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }
