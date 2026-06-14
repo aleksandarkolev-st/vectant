@@ -4,8 +4,11 @@ import {
   DOJO_EVIDENCE_LEDGER_STORE_ENV,
   resolveDojoEvidenceLedgerStoreConfig,
 } from "../config/enforcement.js";
+import type { DojoTenantContext } from "../mcp/execution_policy_gate.js";
+import { ensureDojoTenantWorkspace } from "../store/control_plane_resolver.js";
+import type { DojoPostgresQueryable } from "../store/postgres_proof_store.js";
 import { PostgresDojoEvidenceLedgerStore } from "./ledger_store.js";
-import type { DojoEvidenceLedgerRecord, DojoLedgerVerification } from "./types.js";
+import type { DojoEvidenceLedgerRecord, DojoEvidenceRecordInput, DojoLedgerVerification } from "./types.js";
 
 export interface DojoEvidenceLedgerRecordResolutionInput {
   tenant_id: string;
@@ -25,6 +28,20 @@ export interface DojoEvidenceLedgerRecordResolution {
   ledger_checkpoint_hash?: string;
   missing_record_ids: string[];
   blocked_by: string[];
+}
+
+export interface DojoEvidenceLedgerAppendStore {
+  append(input: Omit<DojoEvidenceRecordInput, "tenant_id" | "workspace_id" | "previous_hash">): Promise<DojoEvidenceLedgerRecord>;
+}
+
+export interface DojoEvidenceLedgerAppendStoreResolution {
+  ok: boolean;
+  store_kind: string;
+  configured_env: string[];
+  blocked_by: string[];
+  evidence_ledger?: DojoEvidenceLedgerAppendStore;
+  queryable?: DojoPostgresQueryable;
+  close?: () => Promise<void>;
 }
 
 export async function resolveDojoEvidenceLedgerRecords(
@@ -115,6 +132,72 @@ export async function resolveDojoEvidenceLedgerRecords(
   } finally {
     await pool.end().catch(() => undefined);
   }
+}
+
+export async function resolveDojoEvidenceLedgerAppendStore(input: {
+  tenant_id: string;
+  workspace_id: string;
+  tenant_context?: DojoTenantContext;
+  app_origin?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<DojoEvidenceLedgerAppendStoreResolution> {
+  const env = input.env ?? process.env;
+  const storeConfig = resolveDojoEvidenceLedgerStoreConfig(env);
+  if (storeConfig.store_kind !== "postgres") {
+    return {
+      ok: false,
+      store_kind: storeConfig.store_kind,
+      configured_env: storeConfig.configured_env,
+      blocked_by: [
+        ...storeConfig.blocked_by,
+        `evidence_ledger_append_store_kind_unsupported:${storeConfig.store_kind}`,
+      ],
+    };
+  }
+
+  const connectionString = postgresConnectionStringFromEnv(env);
+  if (!connectionString) {
+    return {
+      ok: false,
+      store_kind: storeConfig.store_kind,
+      configured_env: storeConfig.configured_env,
+      blocked_by: [...storeConfig.blocked_by, "evidence_ledger_postgres_url_missing"],
+    };
+  }
+
+  const pool = new Pool({ connectionString });
+  if (input.tenant_context) {
+    try {
+      await ensureDojoTenantWorkspace({
+        queryable: pool,
+        tenant: input.tenant_context,
+        app_origin: input.app_origin,
+      });
+    } catch {
+      await pool.end().catch(() => undefined);
+      return {
+        ok: false,
+        store_kind: storeConfig.store_kind,
+        configured_env: storeConfig.configured_env,
+        blocked_by: ["evidence_ledger_scope_initialization_failed"],
+      };
+    }
+  }
+  return {
+    ok: true,
+    store_kind: storeConfig.store_kind,
+    configured_env: storeConfig.configured_env,
+    blocked_by: [],
+    evidence_ledger: new PostgresDojoEvidenceLedgerStore({
+      tenant_id: input.tenant_id,
+      workspace_id: input.workspace_id,
+      queryable: pool,
+    }),
+    queryable: pool,
+    close: async () => {
+      await pool.end().catch(() => undefined);
+    },
+  };
 }
 
 function postgresConnectionStringFromEnv(env: NodeJS.ProcessEnv): string | undefined {

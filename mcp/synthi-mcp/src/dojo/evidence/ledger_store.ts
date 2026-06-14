@@ -155,7 +155,7 @@ export class PostgresDojoEvidenceLedgerStore {
         signature, created_at, created_by, retention_class, legal_hold, source_refs
       FROM dojo_evidence_records
       WHERE tenant_id = $1 AND workspace_id = $2
-      ORDER BY created_at ASC, record_id ASC`,
+      ORDER BY append_sequence ASC, created_at ASC, record_id ASC`,
       [this.tenantId, this.workspaceId]
     );
     return result.rows.map(rowToEvidenceRecord);
@@ -168,7 +168,7 @@ export class PostgresDojoEvidenceLedgerStore {
       `SELECT ledger_head_hash, record_count, created_at
       FROM dojo_ledger_checkpoints
       WHERE tenant_id = $1 AND workspace_id = $2
-      ORDER BY created_at DESC, checkpoint_id DESC
+      ORDER BY record_count DESC, created_at DESC, checkpoint_id DESC
       LIMIT 1`,
       [this.tenantId, this.workspaceId]
     );

@@ -1096,7 +1096,7 @@ describe("Agent Dojo MCP tools", () => {
     }
   });
 
-  it("requires ledger-backed evidence before issuing proof capsules in production enforcement", async () => {
+  it("blocks production skill publication when executable checkride evidence cannot be ledger-backed", async () => {
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
     process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
 
@@ -1109,8 +1109,37 @@ describe("Agent Dojo MCP tools", () => {
         correlation_id: "corr-production-proof-publish",
       }),
     }));
+    expect(publish?.isError).toBe(true);
+    expect(publish?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_publication_evidence_ledger_required",
+      ok: false,
+      operation: "synthi_dojo_publish_or_recertify_skill",
+      enforcement_mode: "production",
+      require_evidence_ledger: true,
+      evidence_ledger_store_kind: "unconfigured",
+      blocked_by: expect.arrayContaining([
+        "evidence_ledger_store_unconfigured",
+        "evidence_ledger_append_store_kind_unsupported:unconfigured",
+      ]),
+      error_codes: ["proof_evidence_claim_unverified"],
+    }));
+    expect(dojoSkillRegistry.list()).toHaveLength(0);
+  });
+
+  it("requires ledger-backed evidence before issuing proof capsules in production enforcement", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
+      ...productionTenantContextArgs({
+        actor_id: "unit-publisher",
+        actor_type: "human",
+        request_id: "req-production-proof-publish",
+        correlation_id: "corr-production-proof-publish",
+      }),
+    }));
     expect(publish?.isError).toBeUndefined();
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
 
     const missingEvidence = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
@@ -1249,10 +1278,6 @@ describe("Agent Dojo MCP tools", () => {
   });
 
   it("fails production proof issuance by evidence record ID when the configured ledger cannot resolve records", async () => {
-    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
-    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
-    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE = "postgres";
-
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
       ...productionTenantContextArgs({
@@ -1264,6 +1289,9 @@ describe("Agent Dojo MCP tools", () => {
     }));
     expect(publish?.isError).toBeUndefined();
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE = "postgres";
 
     const response = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,

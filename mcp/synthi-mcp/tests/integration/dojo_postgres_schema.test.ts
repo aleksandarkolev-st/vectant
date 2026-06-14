@@ -84,6 +84,7 @@ describe("Dojo Postgres schema migration", () => {
     const checkpoints = normalizedStatements()["dojo_ledger_checkpoints"];
 
     expect(evidenceRecords).toContain("primary key (tenant_id, workspace_id, record_id)");
+    expect(evidenceRecords).toContain("append_sequence bigserial");
     expect(evidenceRecords).toContain("unique (tenant_id, workspace_id, record_hash)");
     expect(evidenceRecords).toContain(
       "foreign key (tenant_id, workspace_id) references dojo_workspaces(tenant_id, workspace_id) on delete restrict"
@@ -92,6 +93,7 @@ describe("Dojo Postgres schema migration", () => {
     expect(evidenceRecords).toContain("check (retention_class in ('ephemeral', 'standard', 'regulated', 'legal_hold'))");
     expect(checkpoints).toContain("primary key (tenant_id, workspace_id, checkpoint_id)");
     expect(checkpoints).toContain("check (record_count >= 0)");
+    expect(normalizedSql(dojoPostgresMigrationSql())).toContain("create index if not exists dojo_evidence_records_append_sequence_idx");
   });
 
   it("defines hosted runtime session custody with tenant, skill, credential, and status constraints", () => {

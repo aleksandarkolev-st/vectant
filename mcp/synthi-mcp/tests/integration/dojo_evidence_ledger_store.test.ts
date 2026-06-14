@@ -74,6 +74,27 @@ describeWithPostgres("PostgresDojoEvidenceLedgerStore", () => {
     }));
   });
 
+  it("verifies records in append order when multiple records share the same creation timestamp", async () => {
+    const store = new PostgresDojoEvidenceLedgerStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
+    const createdAt = "2026-06-11T00:01:00.000Z";
+
+    const first = await store.append(evidenceInput("evidence_z_first", skillId, "run_same_time_a", "3".repeat(64), createdAt));
+    const second = await store.append(evidenceInput("evidence_a_second", skillId, "run_same_time_b", "4".repeat(64), createdAt));
+
+    expect(first.previous_hash).toBe("0".repeat(64));
+    expect(second.previous_hash).toBe(first.record_hash);
+    expect((await store.listRecords()).map((record) => record.record_id)).toEqual([
+      "evidence_z_first",
+      "evidence_a_second",
+    ]);
+    expect(await store.verifyRecordChain("2026-06-11T00:03:00.000Z")).toEqual({
+      ok: true,
+      checked_at: "2026-06-11T00:03:00.000Z",
+      ledger_head_hash: second.record_hash,
+      blocked_by: [],
+    });
+  });
+
   it("rejects evidence record updates and deletes at the database layer", async () => {
     const store = new PostgresDojoEvidenceLedgerStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
     const record = await store.append(evidenceInput("evidence_tamper", skillId, "run_a", "c".repeat(64), "2026-06-11T00:01:00.000Z"));

@@ -65,7 +65,11 @@ import {
   resolveDojoEvidenceLedgerStoreConfig,
 } from "../dojo/config/enforcement.js";
 import { createDojoControlPlaneStoresFromEnv } from "../dojo/store/control_plane_resolver.js";
-import { resolveDojoEvidenceLedgerRecords } from "../dojo/evidence/ledger_resolver.js";
+import {
+  resolveDojoEvidenceLedgerAppendStore,
+  resolveDojoEvidenceLedgerRecords,
+  type DojoEvidenceLedgerAppendStore,
+} from "../dojo/evidence/ledger_resolver.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { buildDojoProofKeyRecord, type DojoProofKeyRecord } from "../dojo/proof/key_registry.js";
 import { buildDojoProofPublicVerificationBundle } from "../dojo/proof/public_verification_export.js";
@@ -92,6 +96,7 @@ import type {
   DojoProofCapsuleRecord,
   DojoProofConsumeResult,
 } from "../dojo/store/interfaces.js";
+import { PostgresDojoSkillStore } from "../dojo/store/postgres_skill_store.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
 import {
   blockDojoMcpSkillBusExecution,
@@ -2845,13 +2850,24 @@ interface DojoPublicationExecutableCheckride {
   executable_checkride: DojoExecutableCheckrideReport;
   entrustment_decision: ReturnType<typeof decideDojoEntrustment>;
   readiness_decision: ReturnType<typeof decideDojoSkillReadiness>;
+  evidence_policy: {
+    require_evidence_ledger: boolean;
+    evidence_backed: boolean;
+    evidence_backing: "ledger" | "inline_or_ledger";
+    evidence_ledger_store_kind: string;
+    configured_env: string[];
+    ledger_record_count: number;
+    scenario_count: number;
+  };
 }
 
 async function executableCheckrideForSkillPublication(input: {
   skill: DojoSkill;
   tenant: DojoTenantContext;
   now: string;
-}): Promise<DojoPublicationExecutableCheckride> {
+}): Promise<{ ok: true; publication_checkride: DojoPublicationExecutableCheckride } | { ok: false; error: ToolResponse }> {
+  const ledgerResolution = await resolvePublicationCheckrideEvidenceLedger(input.tenant, input.skill);
+  if (!ledgerResolution.ok) return { ok: false, error: ledgerResolution.error };
   const runtimeSkill = withExecutableCheckrideGuardrails(input.skill);
   const compiledGraph = compileDojoSkillGraphForSkill(runtimeSkill, {
     mode: "checkride",
@@ -2860,26 +2876,56 @@ async function executableCheckrideForSkillPublication(input: {
   const scenarioDefinitions = toDojoScenarioDefinitions(runtimeSkill.scenarios, {
     target_graph_node_ids: ["action"],
   });
-  const executableCheckride = await runDojoExecutableCheckride({
-    graph: compiledGraph.graph,
-    scenarios: scenarioDefinitions,
-    base_inputs: checkrideRuntimeInputsFor(runtimeSkill),
-    build_inputs: ({ materialized }) => buildDojoVivariumGraphInputsForFixture(runtimeSkill, materialized.fixture),
-    evidence_context: {
-      tenant_id: input.tenant.tenant_id,
-      workspace_id: input.tenant.workspace_id,
-      skill_id: runtimeSkill.skill_id,
-      created_at: input.now,
-      created_by: input.tenant.actor_id,
-      run_id_prefix: `publish_checkride_${hashId(`${runtimeSkill.skill_id}:${input.now}`)}`,
-    },
-    now: input.now,
-  });
+  let executableCheckride: DojoExecutableCheckrideReport;
+  try {
+    executableCheckride = await runDojoExecutableCheckride({
+      graph: compiledGraph.graph,
+      scenarios: scenarioDefinitions,
+      base_inputs: checkrideRuntimeInputsFor(runtimeSkill),
+      build_inputs: ({ materialized }) => buildDojoVivariumGraphInputsForFixture(runtimeSkill, materialized.fixture),
+      evidence_context: {
+        tenant_id: input.tenant.tenant_id,
+        workspace_id: input.tenant.workspace_id,
+        skill_id: runtimeSkill.skill_id,
+        created_at: input.now,
+        created_by: input.tenant.actor_id,
+        run_id_prefix: `publish_checkride_${hashId(`${runtimeSkill.skill_id}:${input.now}`)}`,
+      },
+      ...(ledgerResolution.evidence_ledger ? { evidence_ledger: ledgerResolution.evidence_ledger } : {}),
+      require_evidence_ledger: ledgerResolution.require_evidence_ledger,
+      now: input.now,
+    });
+  } catch (err) {
+    if (!ledgerResolution.require_evidence_ledger) throw err;
+    return {
+      ok: false,
+      error: errorResponse("dojo_publication_evidence_ledger_append_failed", {
+        ok: false,
+        operation: "synthi_dojo_publish_or_recertify_skill",
+        skill_id: runtimeSkill.skill_id,
+        workspace_id: input.tenant.workspace_id,
+        enforcement_mode: "production",
+        require_evidence_ledger: true,
+        evidence_ledger_store_kind: ledgerResolution.evidence_ledger_store_kind,
+        configured_env: ledgerResolution.configured_env,
+        blocked_by: ["publication_checkride_evidence_ledger_append_failed"],
+        message: err instanceof Error ? err.message : String(err),
+      }),
+    };
+  } finally {
+    await ledgerResolution.close?.();
+  }
   const graphHasBlockingGuardrails = compiledGraph.graph.nodes
     .filter((node) => node.kind === "Action")
     .some((node) => node.guardrails.some((guardrail) => guardrail.severity === "block"));
-  const evidenceBacked = executableCheckride.evidence_refs.length >= executableCheckride.scenario_count
+  const inlineOrLedgerEvidenceBacked = executableCheckride.evidence_refs.length >= executableCheckride.scenario_count
     && executableCheckride.results.every((result) => Boolean(result.evidence_record ?? result.ledger_record));
+  const ledgerEvidenceBacked = executableCheckride.scenario_count > 0
+    && executableCheckride.ledger_record_count >= executableCheckride.scenario_count
+    && executableCheckride.results.every((result) => Boolean(result.ledger_record));
+  const evidenceBacked = ledgerResolution.require_evidence_ledger
+    ? ledgerEvidenceBacked
+    : inlineOrLedgerEvidenceBacked;
   const entrustmentDecision = decideDojoEntrustment({
     checkride: executableCheckride,
     guardrails_active: graphHasBlockingGuardrails,
@@ -2902,9 +2948,138 @@ async function executableCheckrideForSkillPublication(input: {
     case_law_feedback_active: runtimeSkill.case_law.length > 0,
   });
   return {
-    executable_checkride: executableCheckride,
-    entrustment_decision: entrustmentDecision,
-    readiness_decision: readinessDecision,
+    ok: true,
+    publication_checkride: {
+      executable_checkride: executableCheckride,
+      entrustment_decision: entrustmentDecision,
+      readiness_decision: readinessDecision,
+      evidence_policy: {
+        require_evidence_ledger: ledgerResolution.require_evidence_ledger,
+        evidence_backed: evidenceBacked,
+        evidence_backing: ledgerResolution.require_evidence_ledger ? "ledger" : "inline_or_ledger",
+        evidence_ledger_store_kind: ledgerResolution.evidence_ledger_store_kind,
+        configured_env: ledgerResolution.configured_env,
+        ledger_record_count: executableCheckride.ledger_record_count,
+        scenario_count: executableCheckride.scenario_count,
+      },
+    },
+  };
+}
+
+async function resolvePublicationCheckrideEvidenceLedger(
+  tenant: DojoTenantContext,
+  skill: DojoSkill
+): Promise<
+  | {
+      ok: true;
+      require_evidence_ledger: boolean;
+      evidence_ledger_store_kind: string;
+      configured_env: string[];
+      evidence_ledger?: DojoEvidenceLedgerAppendStore;
+      close?: () => Promise<void>;
+    }
+  | { ok: false; error: ToolResponse }
+> {
+  const enforcement = resolveDojoEnforcementConfig();
+  const ledgerStore = resolveDojoEvidenceLedgerStoreConfig();
+  const requireEvidenceLedger = enforcement.production_enforcement && enforcement.require_evidence_ledger;
+  if (!requireEvidenceLedger) {
+    return {
+      ok: true,
+      require_evidence_ledger: false,
+      evidence_ledger_store_kind: ledgerStore.store_kind,
+      configured_env: ledgerStore.configured_env,
+    };
+  }
+
+  const resolution = await resolveDojoEvidenceLedgerAppendStore({
+    tenant_id: tenant.tenant_id,
+    workspace_id: tenant.workspace_id,
+    tenant_context: tenant,
+    app_origin: skill.app_origin,
+  });
+  if (!resolution.ok || !resolution.evidence_ledger) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_publication_evidence_ledger_required", {
+        ok: false,
+        operation: "synthi_dojo_publish_or_recertify_skill",
+        enforcement_mode: enforcement.enforcement_mode,
+        require_evidence_ledger: true,
+        evidence_ledger_store_kind: resolution.store_kind,
+        evidence_ledger_configured: ledgerStore.configured,
+        configured_env: [...new Set([...enforcement.configured_env, ...resolution.configured_env])],
+        required_env: [
+          "SYNTHI_DOJO_PRODUCTION_ENFORCEMENT=1",
+          "SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER=1",
+          "SYNTHI_DOJO_EVIDENCE_LEDGER_STORE=postgres",
+          "SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL",
+        ],
+        blocked_by: resolution.blocked_by,
+        error_codes: ["proof_evidence_claim_unverified"],
+        message: "Production skill publication and recertification require executable checkride evidence to be appended to the configured evidence ledger.",
+      }),
+    };
+  }
+  if (!resolution.queryable) {
+    await resolution.close?.();
+    return {
+      ok: false,
+      error: errorResponse("dojo_publication_evidence_ledger_required", {
+        ok: false,
+        operation: "synthi_dojo_publish_or_recertify_skill",
+        enforcement_mode: enforcement.enforcement_mode,
+        require_evidence_ledger: true,
+        evidence_ledger_store_kind: resolution.store_kind,
+        evidence_ledger_configured: ledgerStore.configured,
+        configured_env: [...new Set([...enforcement.configured_env, ...resolution.configured_env])],
+        blocked_by: ["evidence_ledger_postgres_queryable_missing"],
+        error_codes: ["proof_evidence_claim_unverified"],
+      }),
+    };
+  }
+  try {
+    const skillStore = new PostgresDojoSkillStore({
+      tenant_id: tenant.tenant_id,
+      workspace_id: tenant.workspace_id,
+      queryable: resolution.queryable,
+    });
+    await skillStore.saveSkill(skill, {
+      status: "draft",
+      created_by: {
+        actor_id: tenant.actor_id,
+        actor_type: tenant.actor_type,
+      },
+      now: skill.generated_at,
+    });
+  } catch (err) {
+    await resolution.close?.();
+    return {
+      ok: false,
+      error: errorResponse("dojo_publication_evidence_ledger_scope_required", {
+        ok: false,
+        operation: "synthi_dojo_publish_or_recertify_skill",
+        skill_id: skill.skill_id,
+        workflow_id: skill.workflow_id,
+        enforcement_mode: enforcement.enforcement_mode,
+        require_evidence_ledger: true,
+        evidence_ledger_store_kind: resolution.store_kind,
+        evidence_ledger_configured: ledgerStore.configured,
+        configured_env: [...new Set([...enforcement.configured_env, ...resolution.configured_env])],
+        blocked_by: ["evidence_ledger_skill_scope_initialization_failed"],
+        error_codes: ["proof_evidence_claim_unverified"],
+        message: err instanceof Error ? err.message : String(err),
+      }),
+    };
+  }
+
+  return {
+    ok: true,
+    require_evidence_ledger: true,
+    evidence_ledger_store_kind: resolution.store_kind,
+    configured_env: [...new Set([...enforcement.configured_env, ...resolution.configured_env])],
+    evidence_ledger: resolution.evidence_ledger,
+    close: resolution.close,
   };
 }
 
@@ -3110,9 +3285,10 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
     tenant: workflow.tenant,
     now,
   });
+  if (!publicationCheckride.ok) return publicationCheckride.error;
   const executableSkill = applyExecutableCheckrideToPublishedSkill(
     candidateSkill,
-    publicationCheckride,
+    publicationCheckride.publication_checkride,
     "publish"
   );
   const controlPlanePersistence = await persistPublishedSkillToDurableControlPlaneIfRequired({
@@ -3156,9 +3332,10 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
       status: "applied",
       reason,
       evidence_refs: evidenceRefs,
-      executable_checkride: publicationCheckride.executable_checkride,
-      entrustment_decision: publicationCheckride.entrustment_decision,
-      readiness_decision: publicationCheckride.readiness_decision,
+      executable_checkride: publicationCheckride.publication_checkride.executable_checkride,
+      entrustment_decision: publicationCheckride.publication_checkride.entrustment_decision,
+      readiness_decision: publicationCheckride.publication_checkride.readiness_decision,
+      evidence_policy: publicationCheckride.publication_checkride.evidence_policy,
       audit_event: auditEvent,
       control_plane_persistence: controlPlanePersistence.persistence ?? {
         ok: true,
@@ -3222,9 +3399,10 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
     tenant,
     now,
   });
+  if (!recertificationCheckride.ok) return recertificationCheckride.error;
   recertified = applyExecutableCheckrideToPublishedSkill(
     recertified,
-    recertificationCheckride,
+    recertificationCheckride.publication_checkride,
     "recertification"
   );
   if (previousLicenseVersion) {
@@ -3324,9 +3502,10 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
       evidence_refs: evidenceRefs,
       previous_license_version: previousLicenseVersion,
       license_version: recertified.permission_license.license_version,
-      executable_checkride: recertificationCheckride.executable_checkride,
-      entrustment_decision: recertificationCheckride.entrustment_decision,
-      readiness_decision: recertificationCheckride.readiness_decision,
+      executable_checkride: recertificationCheckride.publication_checkride.executable_checkride,
+      entrustment_decision: recertificationCheckride.publication_checkride.entrustment_decision,
+      readiness_decision: recertificationCheckride.publication_checkride.readiness_decision,
+      evidence_policy: recertificationCheckride.publication_checkride.evidence_policy,
       audit_event: auditEvent,
       control_plane_persistence: controlPlanePersistence,
       ...(durableAuditEvent ? { durable_audit_event: durableAuditEvent } : {}),

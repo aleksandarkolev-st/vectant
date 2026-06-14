@@ -172,6 +172,7 @@ export const DOJO_POSTGRES_MIGRATIONS: DojoPostgresMigration[] = [
       `CREATE TABLE IF NOT EXISTS dojo_evidence_records (
         tenant_id TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
+        append_sequence BIGSERIAL,
         record_id TEXT NOT NULL,
         skill_id TEXT NOT NULL,
         run_id TEXT NOT NULL,
@@ -202,6 +203,7 @@ export const DOJO_POSTGRES_MIGRATIONS: DojoPostgresMigration[] = [
         CHECK (redaction_manifest_sha256 IS NULL OR redaction_manifest_sha256 ~ '^[A-Fa-f0-9]{64}$'),
         CHECK (retention_class IN ('ephemeral', 'standard', 'regulated', 'legal_hold'))
       )`,
+      "ALTER TABLE dojo_evidence_records ADD COLUMN IF NOT EXISTS append_sequence BIGSERIAL",
       `CREATE TABLE IF NOT EXISTS dojo_ledger_checkpoints (
         tenant_id TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
@@ -216,8 +218,9 @@ export const DOJO_POSTGRES_MIGRATIONS: DojoPostgresMigration[] = [
       )`,
       "CREATE INDEX IF NOT EXISTS dojo_evidence_records_run_idx ON dojo_evidence_records (tenant_id, workspace_id, run_id)",
       "CREATE INDEX IF NOT EXISTS dojo_evidence_records_skill_idx ON dojo_evidence_records (tenant_id, workspace_id, skill_id, created_at ASC)",
+      "CREATE INDEX IF NOT EXISTS dojo_evidence_records_append_sequence_idx ON dojo_evidence_records (tenant_id, workspace_id, append_sequence ASC)",
       "CREATE INDEX IF NOT EXISTS dojo_evidence_records_claim_idx ON dojo_evidence_records USING GIN (claim_ids)",
-      "CREATE INDEX IF NOT EXISTS dojo_ledger_checkpoints_head_idx ON dojo_ledger_checkpoints (tenant_id, workspace_id, created_at DESC)",
+      "CREATE INDEX IF NOT EXISTS dojo_ledger_checkpoints_head_idx ON dojo_ledger_checkpoints (tenant_id, workspace_id, record_count DESC, created_at DESC)",
     ],
   },
   {

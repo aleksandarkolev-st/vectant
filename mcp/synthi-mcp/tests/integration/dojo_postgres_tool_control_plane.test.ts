@@ -975,7 +975,40 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(publish?.isError).toBeUndefined();
     const published = publish?.structuredContent as {
       skill: { skill_id: string; workflow_id: string };
+      publication: {
+        executable_checkride: {
+          scenario_count: number;
+          ledger_record_count: number;
+          evidence_refs: string[];
+        };
+        entrustment_decision: {
+          level: string;
+          blocked_by: string[];
+        };
+        evidence_policy: {
+          require_evidence_ledger: boolean;
+          evidence_backed: boolean;
+          evidence_backing: string;
+          evidence_ledger_store_kind: string;
+          ledger_record_count: number;
+          scenario_count: number;
+        };
+      };
     };
+    expect(published.publication.executable_checkride.scenario_count).toBeGreaterThan(0);
+    expect(published.publication.executable_checkride.ledger_record_count).toBe(
+      published.publication.executable_checkride.scenario_count
+    );
+    expect(published.publication.executable_checkride.evidence_refs.every((ref) => ref.startsWith("ledger:"))).toBe(true);
+    expect(published.publication.evidence_policy).toEqual(expect.objectContaining({
+      require_evidence_ledger: true,
+      evidence_backed: true,
+      evidence_backing: "ledger",
+      evidence_ledger_store_kind: "postgres",
+      ledger_record_count: published.publication.executable_checkride.scenario_count,
+      scenario_count: published.publication.executable_checkride.scenario_count,
+    }));
+    expect(published.publication.entrustment_decision.blocked_by).not.toContain("entrustment_evidence_missing");
     const skill = dojoSkillRegistry.get(published.skill.skill_id);
     expect(skill).toBeTruthy();
 
