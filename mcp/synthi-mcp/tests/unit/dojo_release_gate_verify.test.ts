@@ -355,6 +355,40 @@ describe("Dojo release gate artifact verifier", () => {
       "dojo_self_check_runtime_screenshot_privacy_missing",
     ]));
 
+    const mismatchedArtifacts = await writeProofSelfCheckFixture({
+      dir,
+      basename: "dojo-proof-self-check-identity-rejected",
+      summary: proofSelfCheckSummaryFixture({
+        production_proof_capsule_id: "capsule-summary-other",
+      }),
+      productionEvidence: productionRuntimeEvidenceFixture({
+        proof_capsule_id: "capsule-evidence-other",
+        runtime_session: {
+          ...productionRuntimeEvidenceFixture().runtime_session,
+          run_id: "production-run-other",
+        },
+        runtime_authorization: {
+          ...productionRuntimeEvidenceFixture().runtime_authorization,
+          session_id: "runtime-session-other",
+        },
+        proof_record: {
+          ...productionRuntimeEvidenceFixture().proof_record,
+          capsule_id: "capsule-record-other",
+        },
+      }),
+    });
+    const mismatched = await verifyDojoProofSelfCheckArtifacts({
+      summaryPath: mismatchedArtifacts.summaryPath,
+      productionEvidencePath: mismatchedArtifacts.productionEvidencePath,
+    });
+    expect(mismatched.ok).toBe(false);
+    expect(mismatched.errors).toEqual(expect.arrayContaining([
+      "dojo_self_check_production_proof_capsule_mismatch:capsule-summary-other:capsule-evidence-other",
+      "dojo_self_check_proof_record_capsule_mismatch:capsule-record-other:capsule-evidence-other",
+      "dojo_self_check_runtime_session_run_mismatch:production-run-other:proof-self-check-production",
+      "dojo_self_check_runtime_authorization_session_mismatch:runtime-session-other:dojo_runtime_session_fixture",
+    ]));
+
     const rejectedVisualArtifacts = await writeProofSelfCheckFixture({
       dir,
       basename: "dojo-proof-self-check-visual-rejected",
@@ -3513,6 +3547,7 @@ function proofSelfCheckSummaryFixture(overrides = {}) {
     run_id: "proof-self-check-fixture",
     production_proof_consumed: true,
     production_proof_replay_blocked: true,
+    production_proof_capsule_id: "capsule-fixture",
     production_runtime_evidence: "dojo-proof-self-check.production-runtime-evidence.json",
     production_runtime_evidence_record_count: 1,
     visual_proof_ok: true,

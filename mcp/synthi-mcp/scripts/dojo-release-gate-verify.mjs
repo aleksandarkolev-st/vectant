@@ -942,6 +942,18 @@ export function validateDojoProofSelfCheckForRelease(summary, productionEvidence
   if (productionEvidence?.proof_record?.status !== "used") {
     errors.push(`dojo_self_check_proof_record_not_used:${productionEvidence?.proof_record?.status || "missing"}`);
   }
+  if (summary?.production_proof_capsule_id !== productionEvidence?.proof_capsule_id) {
+    errors.push(`dojo_self_check_production_proof_capsule_mismatch:${summary?.production_proof_capsule_id || "missing"}:${productionEvidence?.proof_capsule_id || "missing"}`);
+  }
+  if (productionEvidence?.proof_record?.capsule_id !== productionEvidence?.proof_capsule_id) {
+    errors.push(`dojo_self_check_proof_record_capsule_mismatch:${productionEvidence?.proof_record?.capsule_id || "missing"}:${productionEvidence?.proof_capsule_id || "missing"}`);
+  }
+  if (productionEvidence?.runtime_session?.run_id !== productionEvidence?.run_id) {
+    errors.push(`dojo_self_check_runtime_session_run_mismatch:${productionEvidence?.runtime_session?.run_id || "missing"}:${productionEvidence?.run_id || "missing"}`);
+  }
+  if (productionEvidence?.runtime_authorization?.session_id !== productionEvidence?.runtime_session?.session_id) {
+    errors.push(`dojo_self_check_runtime_authorization_session_mismatch:${productionEvidence?.runtime_authorization?.session_id || "missing"}:${productionEvidence?.runtime_session?.session_id || "missing"}`);
+  }
   if (JSON.stringify(productionEvidence ?? {}).includes("credential_secret")) {
     errors.push("dojo_self_check_runtime_credential_secret_leaked");
   }
@@ -6270,6 +6282,7 @@ async function writeProofSelfCheckArtifactsForSelfCheck({
     run_id: "dojo-release-gate-verifier-self-check",
     production_proof_consumed: true,
     production_proof_replay_blocked: true,
+    production_proof_capsule_id: productionEvidence.proof_capsule_id,
     production_runtime_evidence: path.basename(productionEvidencePath),
     production_runtime_evidence_record_count: 1,
     visual_proof_ok: true,
