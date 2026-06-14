@@ -280,13 +280,13 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         window.open(uri, '_blank', 'noopener,noreferrer');
       };
 
-      const openManualLoopbackFallback = async (uri, linkContext) => {
+      const openManualLoopbackFallback = async (uri, linkContext, popup = null) => {
         const fallbackUrl = await resolveTerminalLinkUrl(uri, linkContext.runtimeScope, {
           terminalHttpUrl: TERMINAL_HTTP_URL,
           windowOrigin: window.location.origin,
           loopbackCallbackBridgeUrl: linkContext.bridgeBaseUrl,
         });
-        openLocalBrowserUrl(fallbackUrl || uri);
+        openLocalBrowserUrl(fallbackUrl || uri, popup);
       };
 
       const openTerminalLink = (uri) => {
@@ -301,16 +301,29 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           const parsedLink = parseTerminalUrl(uri);
           const isHttpLink = parsedLink?.protocol === 'http:' || parsedLink?.protocol === 'https:';
           if (isHttpLink && terminalLinkHasNestedLoopbackCallback(uri)) {
+            const popup = window.open('about:blank', '_blank');
+            if (!popup) {
+              toast.warning('Browser blocked the workspace browser popup');
+            }
             openAgentWorkflowExternalUrl({
               targetUrl: uri,
               runtime: linkContext,
-            }).then(() => {
-              toast.success('Opened in workspace browser');
+            }).then((result) => {
+              const viewerUrl = result?.workspaceBrowser?.url;
+              if (!viewerUrl) {
+                toast.warning('Workspace browser viewer unavailable; opening sign-in helper');
+                openManualLoopbackFallback(uri, linkContext, popup).catch(() => {
+                  try { openLocalBrowserUrl(localBrowserHref, popup); } catch {}
+                });
+                return;
+              }
+              openLocalBrowserUrl(viewerUrl, popup);
+              toast.success('Opened workspace browser');
             }).catch((err) => {
               console.warn('[Terminal] Workspace browser auth open failed:', err);
               toast.warning('Workspace browser unavailable; opening fallback sign-in helper');
-              openManualLoopbackFallback(uri, linkContext).catch(() => {
-                try { openLocalBrowserUrl(localBrowserHref); } catch {}
+              openManualLoopbackFallback(uri, linkContext, popup).catch(() => {
+                try { openLocalBrowserUrl(localBrowserHref, popup); } catch {}
               });
             });
             return;
