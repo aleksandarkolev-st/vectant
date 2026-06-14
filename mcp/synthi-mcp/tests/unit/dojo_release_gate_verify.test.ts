@@ -1114,6 +1114,24 @@ describe("Dojo release gate artifact verifier", () => {
       "agent_ready_ui_contract_stable_locator_requirement_missing",
     ]));
 
+    const missingExecutionPath = await writeAgentReadyUiContractEvidenceFixture({
+      dir,
+      basename: "agent-ready-ui-contract-missing-execution",
+      evidence: agentReadyUiContractEvidenceFixture({
+        agent_ready_ui_contract: {
+          ...agentReadyUiContractEvidenceFixture().agent_ready_ui_contract,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    const missingExecution = await verifyDojoAgentReadyUiContractEvidenceArtifact({ evidencePath: missingExecutionPath });
+    expect(missingExecution.ok).toBe(false);
+    expect(missingExecution.errors).toEqual(expect.arrayContaining([
+      "agent_ready_ui_contract_self_check_execution_requirement_missing",
+      "agent_ready_ui_contract_test_execution_missing",
+    ]));
+
     const driftedPath = await writeAgentReadyUiContractEvidenceFixture({
       dir,
       basename: "drifted-agent-ready-ui-contract",
@@ -4531,6 +4549,19 @@ function agentReadyUiContractEvidenceFixture(overrides = {}) {
       runtime_enum_validation_required: true,
       malformed_array_safety_required: true,
       proof_risk_mismatch_warning_required: true,
+      self_check_executes_tests_required: true,
+    },
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 123,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
     },
     test_files: [...DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES],
     test_file_count: DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES.length,

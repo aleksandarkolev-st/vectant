@@ -429,7 +429,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T2",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:agent-ready-ui-contract:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_agent_ready_ui_contract.test.ts -- --reporter=json --outputFile ../../tmp/dojo-agent-ready-ui-contract/dojo-agent-ready-ui-contract.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:agent-ready-ui-contract:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:agent-ready-ui-contract:self-check",
     required_for: ["milestone", "release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.agentReadyUiContractEvidence.v1",
@@ -448,6 +448,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_runtime_enum_validation: true,
       require_malformed_array_safety: true,
       require_proof_risk_mismatch_warning: true,
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -1655,6 +1656,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_runtime_enum_validation", "agent_ready_ui_contract_missing_enum_validation_requirement"],
       ["require_malformed_array_safety", "agent_ready_ui_contract_missing_malformed_array_requirement"],
       ["require_proof_risk_mismatch_warning", "agent_ready_ui_contract_missing_mismatch_warning_requirement"],
+      ["require_self_check_executes_tests", "agent_ready_ui_contract_missing_self_check_execution_requirement"],
     ]) {
       if (!agentReadyUiContractGate.artifact_requirements?.[requirement]) errors.push(errorCode);
     }

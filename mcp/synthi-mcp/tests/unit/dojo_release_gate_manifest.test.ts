@@ -351,6 +351,7 @@ describe("Dojo release gate manifest", () => {
           require_runtime_enum_validation: true,
           require_malformed_array_safety: true,
           require_proof_risk_mismatch_warning: true,
+          require_self_check_executes_tests: true,
         }),
       }),
       expect.objectContaining({
@@ -1098,9 +1099,11 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingAgentReadyUiContractTestFile);
     agentReadyUiContractGate.artifact_requirements.require_proof_hook = false;
     agentReadyUiContractGate.artifact_requirements.require_stable_locator = false;
+    agentReadyUiContractGate.artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenAgentReadyUiContract, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "agent_ready_ui_contract_missing_proof_hook_requirement",
       "agent_ready_ui_contract_missing_stable_locator_requirement",
+      "agent_ready_ui_contract_missing_self_check_execution_requirement",
       "agent_ready_ui_contract_missing_required_capabilities:agent_ready_ui_contract_requires_proof_hook",
       `agent_ready_ui_contract_missing_required_test_files:${missingAgentReadyUiContractTestFile}`,
     ]));

@@ -1412,8 +1412,23 @@ export function validateDojoAgentReadyUiContractEvidenceForRelease(evidence) {
     ["runtime_enum_validation_required", "agent_ready_ui_contract_enum_validation_requirement_missing"],
     ["malformed_array_safety_required", "agent_ready_ui_contract_malformed_array_requirement_missing"],
     ["proof_risk_mismatch_warning_required", "agent_ready_ui_contract_mismatch_warning_requirement_missing"],
+    ["self_check_executes_tests_required", "agent_ready_ui_contract_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution || typeof testExecution !== "object") {
+    errors.push("agent_ready_ui_contract_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`agent_ready_ui_contract_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("agent_ready_ui_contract_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("agent_ready_ui_contract_test_execution_args_missing");
+    }
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("agent_ready_ui_contract_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -4060,6 +4075,7 @@ async function runSelfCheck({ outDir }) {
         ...agentReadyUiContractArtifacts.evidence.agent_ready_ui_contract,
         proof_hook_required: false,
         stable_locator_required: false,
+        self_check_executes_tests_required: false,
       },
     },
   });
@@ -4071,6 +4087,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedAgentReadyUiContract.errors.includes("agent_ready_ui_contract_missing_capabilities:agent_ready_ui_contract_requires_proof_hook"));
   assert(rejectedAgentReadyUiContract.errors.includes("agent_ready_ui_contract_proof_hook_requirement_missing"));
   assert(rejectedAgentReadyUiContract.errors.includes("agent_ready_ui_contract_stable_locator_requirement_missing"));
+  assert(rejectedAgentReadyUiContract.errors.includes("agent_ready_ui_contract_self_check_execution_requirement_missing"));
 
   const apiToolCompilerDir = path.join(outDir, "api-tool-compiler");
   await mkdir(apiToolCompilerDir, { recursive: true });
@@ -5210,6 +5227,7 @@ async function writeAgentReadyUiContractEvidenceForSelfCheck({
       runtime_enum_validation_required: true,
       malformed_array_safety_required: true,
       proof_risk_mismatch_warning_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES],
     test_file_count: DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES.length,
@@ -5230,6 +5248,18 @@ async function writeAgentReadyUiContractEvidenceForSelfCheck({
     json_report_path: jsonReportPath,
     json_report_sha256: sha256(jsonReport),
     json_report_bytes: Buffer.byteLength(jsonReport),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 100,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
