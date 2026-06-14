@@ -38,7 +38,9 @@ import type { DojoMaterializedScenario } from "../dojo/vivarium/runner.js";
 import { explainDojoRuntimeRefusal } from "../dojo/case_law/refusal.js";
 import { bindCaseLawGuardrailsToGraph } from "../dojo/case_law/guardrail_synthesizer.js";
 import type { DojoCaseLawRecord } from "../dojo/case_law/registry.js";
-import { runDojoExecutableCheckride } from "../dojo/checkride/runner.js";
+import { decideDojoEntrustment } from "../dojo/checkride/entrustment.js";
+import { decideDojoSkillReadiness } from "../dojo/checkride/readiness.js";
+import { runDojoExecutableCheckride, type DojoExecutableCheckrideReport } from "../dojo/checkride/runner.js";
 import {
   buildDojoGovernanceServiceView,
   decideDojoCaseLawReview,
@@ -2747,6 +2749,185 @@ function checkrideRuntimeInputsFor(skill: DojoSkill): Record<string, unknown> {
   return inputs;
 }
 
+interface DojoPublicationExecutableCheckride {
+  executable_checkride: DojoExecutableCheckrideReport;
+  entrustment_decision: ReturnType<typeof decideDojoEntrustment>;
+  readiness_decision: ReturnType<typeof decideDojoSkillReadiness>;
+}
+
+async function executableCheckrideForSkillPublication(input: {
+  skill: DojoSkill;
+  tenant: DojoTenantContext;
+  now: string;
+}): Promise<DojoPublicationExecutableCheckride> {
+  const runtimeSkill = withExecutableCheckrideGuardrails(input.skill);
+  const compiledGraph = compileDojoSkillGraphForSkill(runtimeSkill, {
+    mode: "checkride",
+    created_at: input.now,
+  });
+  const scenarioDefinitions = toDojoScenarioDefinitions(runtimeSkill.scenarios, {
+    target_graph_node_ids: ["action"],
+  });
+  const executableCheckride = await runDojoExecutableCheckride({
+    graph: compiledGraph.graph,
+    scenarios: scenarioDefinitions,
+    base_inputs: checkrideRuntimeInputsFor(runtimeSkill),
+    build_inputs: ({ materialized }) => buildDojoVivariumGraphInputsForFixture(runtimeSkill, materialized.fixture),
+    evidence_context: {
+      tenant_id: input.tenant.tenant_id,
+      workspace_id: input.tenant.workspace_id,
+      skill_id: runtimeSkill.skill_id,
+      created_at: input.now,
+      created_by: input.tenant.actor_id,
+      run_id_prefix: `publish_checkride_${hashId(`${runtimeSkill.skill_id}:${input.now}`)}`,
+    },
+    now: input.now,
+  });
+  const graphHasBlockingGuardrails = compiledGraph.graph.nodes
+    .filter((node) => node.kind === "Action")
+    .some((node) => node.guardrails.some((guardrail) => guardrail.severity === "block"));
+  const evidenceBacked = executableCheckride.evidence_refs.length >= executableCheckride.scenario_count
+    && executableCheckride.results.every((result) => Boolean(result.evidence_record ?? result.ledger_record));
+  const entrustmentDecision = decideDojoEntrustment({
+    checkride: executableCheckride,
+    guardrails_active: graphHasBlockingGuardrails,
+    evidence_backed: evidenceBacked,
+    evidence_fresh: true,
+    stable_substrate_available: hasStableExecutionSubstrate(runtimeSkill),
+    shadow_runs_match: false,
+  });
+  const readinessDecision = decideDojoSkillReadiness({
+    raw_trace_exists: runtimeSkill.skill_seed.observed_trace.step_count > 0,
+    seed_exists: true,
+    graph_compiled: compiledGraph.validation.ok,
+    assertions_defined: runtimeSkill.skill_seed.candidate_success_assertions.length > 0,
+    organoid_generated: runtimeSkill.workspace_organoid.data_policy.synthetic_data_only,
+    checkride: executableCheckride,
+    shadow_runs_match: false,
+    limited_production_license_issued: entrustmentDecision.production_recommendation !== "blocked",
+    stable_substrate_available: hasStableExecutionSubstrate(runtimeSkill),
+    monitoring_active: false,
+    case_law_feedback_active: runtimeSkill.case_law.length > 0,
+  });
+  return {
+    executable_checkride: executableCheckride,
+    entrustment_decision: entrustmentDecision,
+    readiness_decision: readinessDecision,
+  };
+}
+
+function applyExecutableCheckrideToPublishedSkill(
+  skill: DojoSkill,
+  publicationCheckride: DojoPublicationExecutableCheckride
+): DojoSkill {
+  const updated = cloneJson(skill);
+  const decision = publicationCheckride.entrustment_decision;
+  const readiness = publicationCheckride.readiness_decision;
+  const license = {
+    ...updated.permission_license,
+    license_id: `license_${hashId(`${updated.workflow_id}:${publicationCheckride.executable_checkride.checkride_id}:${decision.level}:${decision.production_recommendation}`)}`,
+    entrustment_level: decision.level,
+    autonomy_level: autonomyLevelForEntrustment(decision.level),
+  };
+  const constrainedRunWorkflow = constrainRunWorkflowAction(
+    license.allowed_actions,
+    publicationCheckride.executable_checkride
+  );
+  if (decision.production_recommendation === "blocked" || decision.level === "EX") {
+    license.allowed_actions = license.allowed_actions.filter((action) => action.action !== "run_workflow");
+    license.blocked_actions = upsertLicenseAction(license.blocked_actions, {
+      action: "run_workflow",
+      constraints: [
+        "executable_checkride_not_passed",
+        ...decision.blocked_by,
+      ],
+    });
+  } else {
+    license.allowed_actions = constrainedRunWorkflow;
+  }
+  updated.permission_license = license;
+  updated.entrustment_level = decision.level;
+  updated.skill_readiness_level = readiness.level;
+  updated.license_expires_at = licenseExpiresAtFromIssuedAt(license.issued_at);
+  updated.skill_card = {
+    ...updated.skill_card,
+    status: `Licensed ${license.entrustment_level}`,
+    can_do_alone: license.allowed_actions.map((action) => action.action),
+    will_ask_before: license.gated_actions.map((action) => action.action),
+    will_not_do: license.blocked_actions.map((action) => action.action),
+    proof_badge: license.proof_requirements.required_evidence_claims.length > 0 ? "Proof required" : "Proof optional",
+  };
+  updated.assurance_case = {
+    ...updated.assurance_case,
+    claim: `This skill is licensed at ${license.entrustment_level} for ${updated.skill_seed.inferred_intent} under executable checkride constraints.`,
+    argument: `${updated.assurance_case.argument} Executable checkride result: ${publicationCheckride.executable_checkride.passed_scenarios}/${publicationCheckride.executable_checkride.scenario_count} passed, ${publicationCheckride.executable_checkride.blocked_scenarios} blocked, ${publicationCheckride.executable_checkride.failed_scenarios} failed, critical failures ${publicationCheckride.executable_checkride.critical_failures}.`,
+    evidence_refs: [...new Set([
+      ...updated.assurance_case.evidence_refs,
+      ...publicationCheckride.executable_checkride.evidence_refs,
+    ])],
+    limits: [...new Set([
+      ...updated.assurance_case.limits,
+      ...decision.limitations,
+      ...publicationCheckride.executable_checkride.license_constraints.map((constraint) => constraint.reason),
+    ])],
+  };
+  return updated;
+}
+
+function constrainRunWorkflowAction(
+  actions: DojoSkill["permission_license"]["allowed_actions"],
+  checkride: DojoExecutableCheckrideReport
+): DojoSkill["permission_license"]["allowed_actions"] {
+  if (checkride.license_constraints.length === 0) return actions;
+  return actions.map((action) => action.action === "run_workflow"
+    ? {
+        ...action,
+        constraints: [...new Set([
+          ...action.constraints,
+          "executable_checkride_constrained",
+          ...checkride.license_constraints.map((constraint) => `${constraint.constraint_kind}:${constraint.mutation_kind}`),
+        ])],
+      }
+    : action);
+}
+
+function upsertLicenseAction<T extends { action: string; constraints: string[] }>(actions: T[], next: T): T[] {
+  const existing = actions.find((action) => action.action === next.action);
+  if (!existing) return [...actions, next];
+  return actions.map((action) => action.action === next.action
+    ? { ...action, constraints: [...new Set([...action.constraints, ...next.constraints])] }
+    : action);
+}
+
+function hasStableExecutionSubstrate(skill: DojoSkill): boolean {
+  return skill.execution_substrates.some((substrate) => substrate === "mcp" || substrate === "api" || substrate === "source");
+}
+
+function autonomyLevelForEntrustment(level: DojoSkill["entrustment_level"]): DojoSkill["permission_license"]["autonomy_level"] {
+  switch (level) {
+    case "E0":
+      return "observe";
+    case "E1":
+      return "practice";
+    case "E2":
+      return "draft";
+    case "E3":
+      return "submit_limited";
+    case "E4":
+      return "submit_gated";
+    case "E5":
+      return "submit_gated";
+    case "EX":
+      return "blocked";
+  }
+}
+
+function licenseExpiresAtFromIssuedAt(issuedAt: string): string {
+  const issued = Date.parse(issuedAt);
+  const base = Number.isFinite(issued) ? issued : Date.now();
+  return new Date(base + 30 * 24 * 60 * 60 * 1000).toISOString();
+}
+
 async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
   const workflow = requiredAuthorizedWorkflowArtifact(args);
   if (!workflow.ok) return workflow.error;
@@ -2772,9 +2953,18 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
     private_tool_manifest: manifest,
     ...(publishedTool.ok ? { published_tool_name: publishedTool.tool_name } : {}),
   });
+  const publicationCheckride = await executableCheckrideForSkillPublication({
+    skill: candidateSkill,
+    tenant: workflow.tenant,
+    now,
+  });
+  const executableSkill = applyExecutableCheckrideToPublishedSkill(
+    candidateSkill,
+    publicationCheckride
+  );
   const controlPlanePersistence = await persistPublishedSkillToDurableControlPlaneIfRequired({
     tenant: workflow.tenant,
-    skill: candidateSkill,
+    skill: executableSkill,
     actor: {
       actor_id: actorId,
       actor_type: actorType,
@@ -2782,7 +2972,7 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
     now,
   });
   if (!controlPlanePersistence.ok) return controlPlanePersistence.error;
-  const skill = dojoSkillRegistry.publish(candidateSkill);
+  const skill = dojoSkillRegistry.publish(executableSkill);
   const auditEvent = {
     event_type: "skill_version_created" as const,
     actor: {
@@ -2813,6 +3003,9 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
       status: "applied",
       reason,
       evidence_refs: evidenceRefs,
+      executable_checkride: publicationCheckride.executable_checkride,
+      entrustment_decision: publicationCheckride.entrustment_decision,
+      readiness_decision: publicationCheckride.readiness_decision,
       audit_event: auditEvent,
       control_plane_persistence: controlPlanePersistence.persistence ?? {
         ok: true,

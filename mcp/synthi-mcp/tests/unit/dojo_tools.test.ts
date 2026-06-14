@@ -1519,6 +1519,47 @@ describe("Agent Dojo MCP tools", () => {
     }));
     const publishedSkill = dojoSkillRegistry.get(published.skill.skill_id);
     expect(publishedSkill).toBeTruthy();
+    const publication = (publish?.structuredContent as {
+      publication: {
+        executable_checkride: {
+          license_constraints: Array<{ constraint_kind: string; mutation_kind: string }>;
+          production_recommendation: string;
+          failed_scenarios: number;
+          critical_failures: number;
+        };
+        entrustment_decision: { level: string; production_recommendation: string };
+        readiness_decision: { level: number };
+      };
+    }).publication;
+    expect(publication.executable_checkride).toEqual(expect.objectContaining({
+      production_recommendation: "constrained",
+      failed_scenarios: 0,
+      critical_failures: 0,
+    }));
+    expect(publication.entrustment_decision).toEqual(expect.objectContaining({
+      level: "E3",
+      production_recommendation: "constrained",
+    }));
+    expect(publication.readiness_decision).toEqual(expect.objectContaining({ level: 5 }));
+    expect(publishedSkill).toEqual(expect.objectContaining({
+      entrustment_level: "E3",
+      skill_readiness_level: 5,
+      permission_license: expect.objectContaining({
+        entrustment_level: "E3",
+        autonomy_level: "submit_limited",
+      }),
+    }));
+    const runWorkflowAction = publishedSkill!.permission_license.allowed_actions.find((action) => action.action === "run_workflow");
+    expect(runWorkflowAction).toBeTruthy();
+    expect(publication.executable_checkride.license_constraints.length).toBeGreaterThan(0);
+    expect(runWorkflowAction?.constraints).toContain("executable_checkride_constrained");
+    for (const constraint of publication.executable_checkride.license_constraints) {
+      expect(runWorkflowAction?.constraints).toContain(`${constraint.constraint_kind}:${constraint.mutation_kind}`);
+    }
+    expect(publishedSkill!.permission_license.approval_requirements).not.toContain("run_workflow");
+    expect(publishedSkill!.permission_license.gated_actions).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ action: "run_workflow" })])
+    );
     const graphRuntimeClaims = runtimeClaimsForSkillGuardrails(publishedSkill!);
     const publishedManifest = (publish?.structuredContent as {
       mcp_skill_manifest: DojoMcpSkillManifestV1;
