@@ -2019,6 +2019,7 @@ describe("Dojo release gate artifact verifier", () => {
       missing_capabilities: ["governance_revokes_license_to_blocked_scope_with_audit"],
       governance_contract: {
         ...governanceLifecycleEvidenceFixture().governance_contract,
+        rbac_required: false,
         license_revocation_required: false,
         compliance_pack_required: false,
         self_check_executes_tests_required: false,
@@ -2035,6 +2036,7 @@ describe("Dojo release gate artifact verifier", () => {
       "governance_lifecycle_not_ok",
       "governance_lifecycle_coverage_incomplete",
       "governance_lifecycle_missing_capabilities:governance_revokes_license_to_blocked_scope_with_audit",
+      "governance_lifecycle_rbac_requirement_missing",
       "governance_lifecycle_license_revocation_requirement_missing",
       "governance_lifecycle_compliance_pack_requirement_missing",
       "governance_lifecycle_self_check_execution_requirement_missing",
@@ -5161,6 +5163,7 @@ function governanceLifecycleEvidenceFixture(overrides = {}) {
       license_health_required: true,
       approval_queue_required: true,
       approval_decision_audit_required: true,
+      rbac_required: true,
       case_law_review_required: true,
       license_revocation_required: true,
       recertification_queue_required: true,

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { DojoSkill } from "../../src/browser/dojo.js";
 import type { DojoCaseLawRecord } from "../../src/dojo/case_law/registry.js";
+import type { DojoTenantContext } from "../../src/dojo/mcp/execution_policy_gate.js";
 import { buildDojoProofKeyRecord } from "../../src/dojo/proof/key_registry.js";
 import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
 import type { DojoAuditEventRecord, DojoPermissionUpgradeRequestRecord } from "../../src/dojo/store/interfaces.js";
 import {
+  authorizeDojoGovernanceAction,
   buildDojoGovernanceServiceView,
   buildDojoComplianceEvidencePack,
   decideDojoCaseLawReview,
@@ -85,6 +87,61 @@ describe("Dojo governance service", () => {
     }));
   });
 
+  it("authorizes governance actions from generic RBAC roles", () => {
+    expect(authorizeDojoGovernanceAction({
+      action: "permission_upgrade_review",
+      tenant_context: tenantContextFixture({ roles: ["dojo:license:review"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:license:review"],
+      blocked_by: [],
+    }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "case_law_review",
+      tenant_context: tenantContextFixture({ roles: ["dojo:operator"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:operator"],
+    }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "license_revocation",
+      tenant_context: tenantContextFixture({ roles: ["finance:reviewer"] }),
+      policy: {
+        action_roles: {
+          license_revocation: ["finance:reviewer"],
+        },
+      },
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["finance:reviewer"],
+    }));
+  });
+
+  it("fails closed for governance actions without required RBAC roles", () => {
+    expect(authorizeDojoGovernanceAction({
+      action: "governance_view",
+      tenant_context: tenantContextFixture({ roles: [] }),
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: expect.arrayContaining([
+        "governance_actor_roles_required",
+        "governance_role_required:dojo:governance:view|dojo:auditor",
+      ]),
+    }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "case_law_review",
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: expect.arrayContaining([
+        "governance_tenant_context_required",
+        "governance_actor_required",
+      ]),
+    }));
+  });
+
   it("records permission upgrade approval and denial decisions with review evidence", () => {
     const skill = skillFixture({ skillId: "skill-review" });
     const request = permissionUpgradeRequestFixture(skill);
@@ -130,6 +187,45 @@ describe("Dojo governance service", () => {
         status: "denied",
         reviewed_by: { actor_id: "reviewer-b", actor_type: "human" },
         decision_evidence_refs: ["evidence-denial"],
+      }),
+    }));
+  });
+
+  it("enforces RBAC for permission upgrade review decisions when tenant context is supplied", () => {
+    const skill = skillFixture({ skillId: "skill-rbac-review" });
+    const request = permissionUpgradeRequestFixture(skill);
+
+    const rejected = decideDojoPermissionUpgradeRequest({
+      request,
+      decision: "approved",
+      decided_by: { actor_id: "reviewer-a", actor_type: "human" },
+      decided_at: "2026-06-11T00:02:00.000Z",
+      evidence_refs: ["evidence-review"],
+      tenant_context: tenantContextFixture({ actorId: "reviewer-a", roles: ["dojo:viewer"] }),
+    });
+    const approved = decideDojoPermissionUpgradeRequest({
+      request,
+      decision: "approved",
+      decided_by: { actor_id: "reviewer-a", actor_type: "human" },
+      decided_at: "2026-06-11T00:02:00.000Z",
+      evidence_refs: ["evidence-review"],
+      tenant_context: tenantContextFixture({ actorId: "reviewer-a", roles: ["dojo:approval:review"] }),
+    });
+
+    expect(rejected).toEqual(expect.objectContaining({
+      ok: false,
+      error: "permission_upgrade_reviewer_role_required",
+      blocked_by: ["governance_role_required:dojo:approval:review|dojo:license:review"],
+      rbac_authorization: expect.objectContaining({
+        action: "permission_upgrade_review",
+        roles: ["dojo:viewer"],
+      }),
+    }));
+    expect(approved).toEqual(expect.objectContaining({
+      ok: true,
+      rbac_authorization: expect.objectContaining({
+        action: "permission_upgrade_review",
+        matched_roles: ["dojo:approval:review"],
       }),
     }));
   });
@@ -253,6 +349,39 @@ describe("Dojo governance service", () => {
         reviewer: "case-reviewer-b",
         superseded_by: "case-narrower-rule",
         evidence_refs: ["evidence-external", "evidence-case-review", "evidence-superseded"],
+      }),
+    }));
+  });
+
+  it("enforces RBAC for case-law review decisions when tenant context is supplied", () => {
+    const proposed = externalCaseFixture();
+    const rejected = decideDojoCaseLawReview({
+      case_law: proposed,
+      decision: "approved",
+      decided_by: { actor_id: "case-reviewer-a", actor_type: "human" },
+      decided_at: "2026-06-11T00:06:00.000Z",
+      evidence_refs: ["evidence-case-review"],
+      tenant_context: tenantContextFixture({ actorId: "case-reviewer-a", roles: ["dojo:approval:review"] }),
+    });
+    const approved = decideDojoCaseLawReview({
+      case_law: proposed,
+      decision: "approved",
+      decided_by: { actor_id: "case-reviewer-a", actor_type: "human" },
+      decided_at: "2026-06-11T00:06:00.000Z",
+      evidence_refs: ["evidence-case-review"],
+      tenant_context: tenantContextFixture({ actorId: "case-reviewer-a", roles: ["dojo:case-law:review"] }),
+    });
+
+    expect(rejected).toEqual(expect.objectContaining({
+      ok: false,
+      error: "case_law_reviewer_role_required",
+      blocked_by: ["governance_role_required:dojo:case-law:review"],
+    }));
+    expect(approved).toEqual(expect.objectContaining({
+      ok: true,
+      rbac_authorization: expect.objectContaining({
+        action: "case_law_review",
+        matched_roles: ["dojo:case-law:review"],
       }),
     }));
   });
@@ -419,6 +548,36 @@ describe("Dojo governance service", () => {
       revoked_by: { actor_id: "operator-a", actor_type: "human" },
       evidence_refs: [],
     })).toThrow("dojo_license_revocation_evidence_required");
+  });
+
+  it("enforces RBAC for license revocation when tenant context is supplied", () => {
+    const skill = skillFixture({ skillId: "skill-revoke-rbac" });
+
+    expect(() => revokeDojoSkillLicense({
+      skill,
+      reason: "policy_review",
+      revoked_at: "2026-06-11T00:05:00.000Z",
+      revoked_by: { actor_id: "operator-a", actor_type: "human" },
+      evidence_refs: ["evidence-revocation"],
+      tenant_context: tenantContextFixture({ actorId: "operator-a", roles: ["dojo:auditor"] }),
+    })).toThrow("dojo_license_revocation_role_required:governance_role_required:dojo:license:revoke");
+
+    const revoked = revokeDojoSkillLicense({
+      skill,
+      reason: "policy_review",
+      revoked_at: "2026-06-11T00:05:00.000Z",
+      revoked_by: { actor_id: "operator-a", actor_type: "human" },
+      evidence_refs: ["evidence-revocation"],
+      tenant_context: tenantContextFixture({ actorId: "operator-a", roles: ["dojo:license:revoke"] }),
+    });
+
+    expect(revoked).toEqual(expect.objectContaining({
+      ok: true,
+      rbac_authorization: expect.objectContaining({
+        action: "license_revocation",
+        matched_roles: ["dojo:license:revoke"],
+      }),
+    }));
   });
 
   it("builds approval queue items from gated actions and explicit requirements", () => {
@@ -936,6 +1095,22 @@ function permissionUpgradeRequestFixture(skill: DojoSkill): DojoPermissionUpgrad
       request_id: `upgrade-${skill.skill_id}`,
       correlation_id: `upgrade-${skill.skill_id}-correlation`,
     },
+  };
+}
+
+function tenantContextFixture(input: {
+  actorId?: string;
+  roles?: string[];
+} = {}): DojoTenantContext {
+  return {
+    tenant_id: "tenant-a",
+    organization_id: "org-a",
+    workspace_id: "workspace-a",
+    actor_id: input.actorId ?? "governance-reviewer",
+    actor_type: "human",
+    roles: input.roles ?? ["dojo:operator"],
+    request_id: "request-governance-rbac",
+    correlation_id: "correlation-governance-rbac",
   };
 }
 

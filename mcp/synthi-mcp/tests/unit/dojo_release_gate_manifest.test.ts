@@ -637,6 +637,7 @@ describe("Dojo release gate manifest", () => {
           require_license_health: true,
           require_approval_queue: true,
           require_approval_decision_audit: true,
+          require_rbac: true,
           require_case_law_review: true,
           require_license_revocation: true,
           require_recertification_queue: true,
@@ -1259,10 +1260,12 @@ describe("Dojo release gate manifest", () => {
     governanceLifecycleGate.release_artifact_requirements.required_test_files = DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES
       .filter((file) => file !== missingGovernanceTestFile);
     governanceLifecycleGate.release_artifact_requirements.require_license_revocation = false;
+    governanceLifecycleGate.release_artifact_requirements.require_rbac = false;
     governanceLifecycleGate.release_artifact_requirements.require_compliance_pack = false;
     governanceLifecycleGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenGovernanceLifecycle, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "governance_lifecycle_missing_license_revocation_requirement",
+      "governance_lifecycle_missing_rbac_requirement",
       "governance_lifecycle_missing_compliance_pack_requirement",
       "governance_lifecycle_missing_self_check_execution_requirement",
       "governance_lifecycle_missing_required_capabilities:governance_revokes_license_to_blocked_scope_with_audit",

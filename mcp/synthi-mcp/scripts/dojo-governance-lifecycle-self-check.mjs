@@ -31,6 +31,7 @@ export const DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES = [
   "governance_reports_expired_and_active_license_health",
   "governance_reports_revoked_licenses_before_expiry",
   "governance_fails_closed_on_malformed_license_expiry",
+  "governance_enforces_rbac_for_review_and_revocation",
   "governance_records_permission_upgrade_decisions_with_evidence",
   "governance_rejects_non_pending_permission_upgrade_decisions",
   "governance_requires_permission_upgrade_review_attribution_time_evidence",
@@ -188,6 +189,7 @@ export function buildDojoGovernanceLifecycleEvidenceManifest({
       license_health_required: true,
       approval_queue_required: true,
       approval_decision_audit_required: true,
+      rbac_required: true,
       case_law_review_required: true,
       license_revocation_required: true,
       recertification_queue_required: true,
@@ -231,11 +233,7 @@ export function buildDojoGovernanceLifecycleEvidenceManifest({
 export function buildGovernanceLifecycleCapabilityCoverage({ capabilities, jsonReport }) {
   const titles = summarizeVitestJsonReport(jsonReport).assertion_titles;
   return capabilities.map((capability) => {
-    const matchers = capabilityMatchers(capability);
-    const evidenceTitles = titles.filter((title) => {
-      const normalizedTitle = normalizeText(title);
-      return matchers.every((matcher) => normalizedTitle.includes(matcher));
-    });
+    const evidenceTitles = evidenceTitlesForCapability(capability, titles);
     return {
       capability,
       covered: evidenceTitles.length > 0,
@@ -261,6 +259,33 @@ function buildGovernanceLifecycleBudgetEvaluation({ capabilityCoverage, testSumm
   };
 }
 
+function evidenceTitlesForCapability(capability, titles) {
+  if (capability === "governance_enforces_rbac_for_review_and_revocation") {
+    const requiredTitleMatchers = [
+      ["authorizes governance actions", "generic rbac roles"],
+      ["fails closed", "governance actions", "required rbac roles"],
+      ["enforces rbac", "permission upgrade review"],
+      ["enforces rbac", "case law review"],
+      ["enforces rbac", "license revocation"],
+    ];
+    const matched = [];
+    for (const matchers of requiredTitleMatchers) {
+      const title = titles.find((candidate) => {
+        const normalizedTitle = normalizeText(candidate);
+        return matchers.every((matcher) => normalizedTitle.includes(matcher));
+      });
+      if (!title) return [];
+      matched.push(title);
+    }
+    return matched;
+  }
+  const matchers = capabilityMatchers(capability);
+  return titles.filter((title) => {
+    const normalizedTitle = normalizeText(title);
+    return matchers.every((matcher) => normalizedTitle.includes(matcher));
+  });
+}
+
 function capabilityMatchers(capability) {
   switch (capability) {
     case "governance_reports_expired_and_active_license_health":
@@ -269,6 +294,8 @@ function capabilityMatchers(capability) {
       return ["reports revoked licenses before expiry checks"];
     case "governance_fails_closed_on_malformed_license_expiry":
       return ["fails closed", "license health expiry metadata", "malformed"];
+    case "governance_enforces_rbac_for_review_and_revocation":
+      return ["enforces rbac"];
     case "governance_records_permission_upgrade_decisions_with_evidence":
       return ["records permission upgrade approval and denial decisions", "review evidence"];
     case "governance_rejects_non_pending_permission_upgrade_decisions":

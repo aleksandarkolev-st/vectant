@@ -14,6 +14,7 @@ import type {
 } from "../store/interfaces.js";
 import type { DojoCaseLawRecord } from "../case_law/registry.js";
 import type { DojoProofKeyRecord } from "../proof/key_registry.js";
+import type { DojoTenantContext } from "../mcp/execution_policy_gate.js";
 
 const LICENSE_EXPIRY_INVALID_TRIGGER = "license_expiry_invalid";
 const GOVERNANCE_VALIDATION_TIME_INVALID_TRIGGER = "governance_validation_time_invalid";
@@ -27,6 +28,43 @@ export type DojoGovernanceApprovalStatus = "pending" | "approved" | "denied";
 export type DojoGovernanceActionStatus = "applied" | "rejected";
 export type DojoPermissionUpgradeDecision = "approved" | "denied";
 export type DojoCaseLawReviewDecision = "approved" | "deprecated";
+export type DojoGovernanceRbacAction =
+  | "permission_upgrade_review"
+  | "case_law_review"
+  | "license_revocation"
+  | "governance_view";
+
+export interface DojoGovernanceRbacPolicy {
+  administrator_roles?: string[];
+  action_roles?: Partial<Record<DojoGovernanceRbacAction, string[]>>;
+}
+
+export interface DojoGovernanceNormalizedRbacPolicy {
+  administrator_roles: string[];
+  action_roles: Record<DojoGovernanceRbacAction, string[]>;
+}
+
+export interface DojoGovernanceRbacDecision {
+  ok: boolean;
+  action: DojoGovernanceRbacAction;
+  actor_id: string;
+  actor_type: DojoTenantContext["actor_type"] | "";
+  roles: string[];
+  administrator_roles: string[];
+  required_roles: string[];
+  matched_roles: string[];
+  blocked_by: string[];
+}
+
+export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPolicy = {
+  administrator_roles: ["admin", "dojo:admin", "dojo:operator"],
+  action_roles: {
+    permission_upgrade_review: ["dojo:approval:review", "dojo:license:review"],
+    case_law_review: ["dojo:case-law:review"],
+    license_revocation: ["dojo:license:revoke"],
+    governance_view: ["dojo:governance:view", "dojo:auditor"],
+  },
+};
 
 export interface DojoGovernanceActionAuditSummary {
   event_type: DojoAuditEventType;
@@ -50,8 +88,10 @@ export interface DojoPermissionUpgradeDecisionResult {
     | "permission_upgrade_reviewer_required"
     | "permission_upgrade_reviewer_actor_type_required"
     | "permission_upgrade_review_timestamp_invalid"
-    | "permission_upgrade_review_evidence_required";
+    | "permission_upgrade_review_evidence_required"
+    | "permission_upgrade_reviewer_role_required";
   blocked_by: string[];
+  rbac_authorization?: DojoGovernanceRbacDecision;
 }
 
 export interface DojoSkillLicenseRevocationResult {
@@ -62,6 +102,7 @@ export interface DojoSkillLicenseRevocationResult {
   revoked_license_version: string;
   blocked_actions: string[];
   audit_event?: DojoGovernanceActionAuditSummary;
+  rbac_authorization?: DojoGovernanceRbacDecision;
 }
 
 export interface DojoCaseLawReviewDecisionResult {
@@ -75,8 +116,10 @@ export interface DojoCaseLawReviewDecisionResult {
     | "case_law_reviewer_required"
     | "case_law_reviewer_actor_type_required"
     | "case_law_review_timestamp_invalid"
-    | "case_law_review_evidence_required";
+    | "case_law_review_evidence_required"
+    | "case_law_reviewer_role_required";
   blocked_by: string[];
+  rbac_authorization?: DojoGovernanceRbacDecision;
 }
 
 export interface DojoGovernanceLicenseHealth {
@@ -215,6 +258,36 @@ export interface DojoGovernanceServiceView {
   };
 }
 
+export function authorizeDojoGovernanceAction(input: {
+  tenant_context?: DojoTenantContext;
+  action: DojoGovernanceRbacAction;
+  policy?: DojoGovernanceRbacPolicy;
+}): DojoGovernanceRbacDecision {
+  const policy = normalizeGovernanceRbacPolicy(input.policy);
+  const roles = uniqueStrings(input.tenant_context?.roles ?? []);
+  const administratorRoles = policy.administrator_roles;
+  const requiredRoles = policy.action_roles[input.action];
+  const matchedRoles = roles.filter((role) => administratorRoles.includes(role) || requiredRoles.includes(role));
+  const blockedBy: string[] = [];
+  if (!input.tenant_context) blockedBy.push("governance_tenant_context_required");
+  if (!input.tenant_context?.actor_id?.trim()) blockedBy.push("governance_actor_required");
+  if (roles.length === 0) blockedBy.push("governance_actor_roles_required");
+  if (input.tenant_context && matchedRoles.length === 0) {
+    blockedBy.push(`governance_role_required:${requiredRoles.join("|")}`);
+  }
+  return {
+    ok: blockedBy.length === 0,
+    action: input.action,
+    actor_id: input.tenant_context?.actor_id?.trim() ?? "",
+    actor_type: input.tenant_context?.actor_type ?? "",
+    roles,
+    administrator_roles: administratorRoles,
+    required_roles: requiredRoles,
+    matched_roles: matchedRoles,
+    blocked_by: blockedBy,
+  };
+}
+
 export function decideDojoPermissionUpgradeRequest(input: {
   request: DojoPermissionUpgradeRequestRecord;
   decision: DojoPermissionUpgradeDecision;
@@ -222,6 +295,9 @@ export function decideDojoPermissionUpgradeRequest(input: {
   decided_at?: string;
   reason?: string;
   evidence_refs?: string[];
+  tenant_context?: DojoTenantContext;
+  rbac_policy?: DojoGovernanceRbacPolicy;
+  require_rbac?: boolean;
 }): DojoPermissionUpgradeDecisionResult {
   const request = cloneJson(input.request);
   const decidedAt = input.decided_at ?? new Date().toISOString();
@@ -243,6 +319,22 @@ export function decideDojoPermissionUpgradeRequest(input: {
       request,
       error: actorValidation.error as DojoPermissionUpgradeDecisionResult["error"],
       blocked_by: actorValidation.blocked_by,
+    };
+  }
+  const rbac = governanceRbacForInput({
+    action: "permission_upgrade_review",
+    tenant_context: input.tenant_context,
+    policy: input.rbac_policy,
+    required: input.require_rbac,
+  });
+  if (rbac && !rbac.ok) {
+    return {
+      ok: false,
+      status: "rejected",
+      request,
+      error: "permission_upgrade_reviewer_role_required",
+      blocked_by: rbac.blocked_by,
+      rbac_authorization: rbac,
     };
   }
   if (!isValidTimestamp(decidedAt)) {
@@ -293,6 +385,7 @@ export function decideDojoPermissionUpgradeRequest(input: {
       evidence_refs: decisionEvidenceRefs,
     },
     blocked_by: [],
+    ...(rbac ? { rbac_authorization: rbac } : {}),
   };
 }
 
@@ -302,6 +395,9 @@ export function revokeDojoSkillLicense(input: {
   revoked_at?: string;
   revoked_by: DojoAuditActor;
   evidence_refs?: string[];
+  tenant_context?: DojoTenantContext;
+  rbac_policy?: DojoGovernanceRbacPolicy;
+  require_rbac?: boolean;
 }): DojoSkillLicenseRevocationResult {
   const revokedAt = input.revoked_at ?? new Date().toISOString();
   const reason = normalizedReason(input.reason, "");
@@ -309,6 +405,15 @@ export function revokeDojoSkillLicense(input: {
   if (!input.revoked_by?.actor_id) throw new Error("dojo_license_revocation_actor_required");
   if (!["human", "agent", "service"].includes(input.revoked_by.actor_type)) {
     throw new Error("dojo_license_revocation_actor_type_required");
+  }
+  const rbac = governanceRbacForInput({
+    action: "license_revocation",
+    tenant_context: input.tenant_context,
+    policy: input.rbac_policy,
+    required: input.require_rbac,
+  });
+  if (rbac && !rbac.ok) {
+    throw new Error(`dojo_license_revocation_role_required:${rbac.blocked_by.join(",")}`);
   }
   const evidenceRefs = uniqueStrings(input.evidence_refs ?? []);
   if (evidenceRefs.length === 0) throw new Error("dojo_license_revocation_evidence_required");
@@ -399,6 +504,7 @@ export function revokeDojoSkillLicense(input: {
       reason,
       evidence_refs: evidenceRefs,
     },
+    ...(rbac ? { rbac_authorization: rbac } : {}),
   };
 }
 
@@ -410,6 +516,9 @@ export function decideDojoCaseLawReview(input: {
   reason?: string;
   evidence_refs?: string[];
   superseded_by?: string;
+  tenant_context?: DojoTenantContext;
+  rbac_policy?: DojoGovernanceRbacPolicy;
+  require_rbac?: boolean;
 }): DojoCaseLawReviewDecisionResult {
   const record = cloneJson(input.case_law);
   const decidedAt = input.decided_at ?? new Date().toISOString();
@@ -442,6 +551,22 @@ export function decideDojoCaseLawReview(input: {
       case_law: record,
       error: actorValidation.error as DojoCaseLawReviewDecisionResult["error"],
       blocked_by: actorValidation.blocked_by,
+    };
+  }
+  const rbac = governanceRbacForInput({
+    action: "case_law_review",
+    tenant_context: input.tenant_context,
+    policy: input.rbac_policy,
+    required: input.require_rbac,
+  });
+  if (rbac && !rbac.ok) {
+    return {
+      ok: false,
+      status: "rejected",
+      case_law: record,
+      error: "case_law_reviewer_role_required",
+      blocked_by: rbac.blocked_by,
+      rbac_authorization: rbac,
     };
   }
   if (!isValidTimestamp(decidedAt)) {
@@ -485,6 +610,7 @@ export function decideDojoCaseLawReview(input: {
       evidence_refs: decisionEvidenceRefs,
     },
     blocked_by: [],
+    ...(rbac ? { rbac_authorization: rbac } : {}),
   };
 }
 
@@ -1032,6 +1158,49 @@ function validateReviewActor(
     };
   }
   return null;
+}
+
+function governanceRbacForInput(input: {
+  action: DojoGovernanceRbacAction;
+  tenant_context?: DojoTenantContext;
+  policy?: DojoGovernanceRbacPolicy;
+  required?: boolean;
+}): DojoGovernanceRbacDecision | null {
+  if (!input.required && !input.tenant_context) return null;
+  return authorizeDojoGovernanceAction({
+    tenant_context: input.tenant_context,
+    action: input.action,
+    policy: input.policy,
+  });
+}
+
+function normalizeGovernanceRbacPolicy(
+  policy: DojoGovernanceRbacPolicy = {}
+): DojoGovernanceNormalizedRbacPolicy {
+  return {
+    administrator_roles: uniqueStrings([
+      ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.administrator_roles,
+      ...(policy.administrator_roles ?? []),
+    ]),
+    action_roles: {
+      permission_upgrade_review: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.permission_upgrade_review,
+        ...(policy.action_roles?.permission_upgrade_review ?? []),
+      ]),
+      case_law_review: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.case_law_review,
+        ...(policy.action_roles?.case_law_review ?? []),
+      ]),
+      license_revocation: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.license_revocation,
+        ...(policy.action_roles?.license_revocation ?? []),
+      ]),
+      governance_view: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.governance_view,
+        ...(policy.action_roles?.governance_view ?? []),
+      ]),
+    },
+  };
 }
 
 function isValidTimestamp(value: string): boolean {

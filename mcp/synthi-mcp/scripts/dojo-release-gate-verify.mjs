@@ -2432,6 +2432,7 @@ export function validateDojoGovernanceLifecycleEvidenceForRelease(evidence) {
     ["license_health_required", "governance_lifecycle_license_health_requirement_missing"],
     ["approval_queue_required", "governance_lifecycle_approval_queue_requirement_missing"],
     ["approval_decision_audit_required", "governance_lifecycle_approval_audit_requirement_missing"],
+    ["rbac_required", "governance_lifecycle_rbac_requirement_missing"],
     ["case_law_review_required", "governance_lifecycle_case_law_review_requirement_missing"],
     ["license_revocation_required", "governance_lifecycle_license_revocation_requirement_missing"],
     ["recertification_queue_required", "governance_lifecycle_recertification_requirement_missing"],
@@ -4588,6 +4589,7 @@ async function runSelfCheck({ outDir }) {
       missing_capabilities: ["governance_revokes_license_to_blocked_scope_with_audit"],
       governance_contract: {
         ...governanceLifecycleArtifacts.evidence.governance_contract,
+        rbac_required: false,
         license_revocation_required: false,
         compliance_pack_required: false,
         self_check_executes_tests_required: false,
@@ -4600,6 +4602,7 @@ async function runSelfCheck({ outDir }) {
   });
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_coverage_incomplete"));
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_missing_capabilities:governance_revokes_license_to_blocked_scope_with_audit"));
+  assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_rbac_requirement_missing"));
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_license_revocation_requirement_missing"));
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_compliance_pack_requirement_missing"));
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_self_check_execution_requirement_missing"));
@@ -6810,6 +6813,7 @@ async function writeGovernanceLifecycleEvidenceForSelfCheck({
       license_health_required: true,
       approval_queue_required: true,
       approval_decision_audit_required: true,
+      rbac_required: true,
       case_law_review_required: true,
       license_revocation_required: true,
       recertification_queue_required: true,
