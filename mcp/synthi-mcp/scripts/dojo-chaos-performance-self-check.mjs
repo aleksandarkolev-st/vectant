@@ -21,6 +21,10 @@ const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 
 export const DOJO_CHAOS_PERFORMANCE_TEST_FILES = [
   "tests/unit/dojo_fixture_materializer.test.ts",
+  "tests/unit/dojo_evidence_record.test.ts",
+  "tests/unit/dojo_graph_runtime.test.ts",
+  "tests/unit/dojo_proof_signing.test.ts",
+  "tests/unit/dojo_source_drift.test.ts",
   "tests/integration/dojo_api_fault_server.test.ts",
   "tests/integration/dojo_vivarium_runner.test.ts",
   "tests/integration/dojo_checkride_runner.test.ts",
@@ -40,6 +44,9 @@ export const DOJO_CHAOS_SCENARIOS = [
   "evil_twin_attack_hardening",
   "hosted_runtime_preflight_fail_closed",
   "proof_not_consumed_on_failed_preflight",
+  "evidence_store_unavailable",
+  "proof_signing_service_unavailable",
+  "source_contract_drift_mid_run",
 ];
 
 const args = parseArgs(process.argv.slice(2));
@@ -389,6 +396,23 @@ function scenarioMatchers(scenario) {
     evil_twin_attack_hardening: ["evil twin", "attack hardening", "hardening"],
     hosted_runtime_preflight_fail_closed: ["authorizes hosted runtime sessions before consuming production proof capsules", "runtime session not found"],
     proof_not_consumed_on_failed_preflight: ["proof not consumed", "before consuming production proof capsules"],
+    evidence_store_unavailable: [
+      "evidence writing fails",
+      "evidence writer does not return a ledger backed ref",
+      "ledger backed checkride evidence is required but unavailable",
+      "required evidence signature is unavailable",
+    ],
+    proof_signing_service_unavailable: [
+      "external command signer exits",
+      "kms unavailable",
+      "managed key service returns mismatched custody metadata",
+    ],
+    source_contract_drift_mid_run: [
+      "source drift expiry",
+      "expiry trigger active source drift",
+      "one of its expiry triggers is active",
+      "expires graph nodes mapped to changed source tokens",
+    ],
   };
   return [...new Set([normalized, ...(aliases[scenario] ?? [])].map(normalizeScenarioText))];
 }

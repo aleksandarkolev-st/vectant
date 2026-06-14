@@ -13,8 +13,8 @@ const VITEST_REPORT = {
   numTotalTestSuites: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
   numPassedTestSuites: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
   numFailedTestSuites: 0,
-  numTotalTests: 10,
-  numPassedTests: 10,
+  numTotalTests: 18,
+  numPassedTests: 18,
   numFailedTests: 0,
   numPendingTests: 0,
   testResults: [
@@ -38,9 +38,85 @@ const VITEST_REPORT = {
       ],
     },
     {
+      name: "tests/unit/dojo_evidence_record.test.ts",
+      startTime: 910,
+      endTime: 960,
+      assertionResults: [
+        {
+          fullName: "Dojo evidence ledger record fails closed when a required evidence signature is unavailable",
+          title: "fails closed when a required evidence signature is unavailable",
+          status: "passed",
+          duration: 20,
+        },
+      ],
+    },
+    {
+      name: "tests/unit/dojo_graph_runtime.test.ts",
+      startTime: 970,
+      endTime: 1120,
+      assertionResults: [
+        {
+          fullName: "Dojo graph runtime returns a blocked run when graph evidence writing fails",
+          title: "returns a blocked run when graph evidence writing fails",
+          status: "passed",
+          duration: 35,
+        },
+        {
+          fullName: "Dojo graph runtime blocks production actions when evidence writer does not return a ledger-backed ref",
+          title: "blocks production actions when evidence writer does not return a ledger-backed ref",
+          status: "passed",
+          duration: 42,
+        },
+        {
+          fullName: "Dojo graph runtime blocks a node when one of its expiry triggers is active",
+          title: "blocks a node when one of its expiry triggers is active",
+          status: "passed",
+          duration: 24,
+        },
+      ],
+    },
+    {
+      name: "tests/unit/dojo_proof_signing.test.ts",
+      startTime: 1130,
+      endTime: 1210,
+      assertionResults: [
+        {
+          fullName: "Dojo proof signing fails closed when an external command signer exits or returns the wrong key",
+          title: "fails closed when an external command signer exits or returns the wrong key",
+          status: "passed",
+          duration: 30,
+        },
+        {
+          fullName: "Dojo proof signing fails closed when a managed key service returns mismatched custody metadata",
+          title: "fails closed when a managed key service returns mismatched custody metadata",
+          status: "passed",
+          duration: 28,
+        },
+      ],
+    },
+    {
+      name: "tests/unit/dojo_source_drift.test.ts",
+      startTime: 1220,
+      endTime: 1310,
+      assertionResults: [
+        {
+          fullName: "Dojo source drift expiry expires graph nodes mapped to changed source tokens",
+          title: "expires graph nodes mapped to changed source tokens",
+          status: "passed",
+          duration: 36,
+        },
+        {
+          fullName: "Dojo source drift expiry rejects drift reports from tampered or unverifiable source snapshots",
+          title: "rejects drift reports from tampered or unverifiable source snapshots",
+          status: "passed",
+          duration: 18,
+        },
+      ],
+    },
+    {
       name: "tests/integration/dojo_api_fault_server.test.ts",
-      startTime: 1000,
-      endTime: 1130,
+      startTime: 1320,
+      endTime: 1450,
       assertionResults: [
         {
           fullName: "Dojo API fault server returns fake visual success while durable state remains uncommitted",
@@ -64,8 +140,8 @@ const VITEST_REPORT = {
     },
     {
       name: "tests/integration/dojo_vivarium_runner.test.ts",
-      startTime: 1140,
-      endTime: 1230,
+      startTime: 1460,
+      endTime: 1550,
       assertionResults: [
         {
           fullName: "Dojo Vivarium runner executes scenario against materialized synthetic fixtures and records observed evidence",
@@ -77,8 +153,8 @@ const VITEST_REPORT = {
     },
     {
       name: "tests/integration/dojo_checkride_runner.test.ts",
-      startTime: 1240,
-      endTime: 1320,
+      startTime: 1560,
+      endTime: 1660,
       assertionResults: [
         {
           fullName: "Dojo executable checkride runner derives entrustment from evidence-backed results",
@@ -86,12 +162,18 @@ const VITEST_REPORT = {
           status: "passed",
           duration: 14,
         },
+        {
+          fullName: "Dojo executable checkride runner fails closed when ledger-backed checkride evidence is required but unavailable",
+          title: "fails closed when ledger-backed checkride evidence is required but unavailable",
+          status: "passed",
+          duration: 22,
+        },
       ],
     },
     {
       name: "tests/integration/dojo_evil_twin_runner.test.ts",
-      startTime: 1330,
-      endTime: 1390,
+      startTime: 1670,
+      endTime: 1730,
       assertionResults: [
         {
           fullName: "Dojo Evil Twin runtime reruns attacks after guardrail hardening and reduces attack success rate",
@@ -109,8 +191,8 @@ const VITEST_REPORT = {
     },
     {
       name: "tests/unit/dojo_tools.test.ts",
-      startTime: 1400,
-      endTime: 1580,
+      startTime: 1740,
+      endTime: 1920,
       assertionResults: [
         {
           fullName: "Agent Dojo MCP tools authorizes hosted runtime sessions before consuming production proof capsules",
@@ -126,19 +208,25 @@ const VITEST_REPORT = {
 const CHAOS_RUNNER_REPORT = {
   schema_version: "synthi.chaosRunnerReport.v1",
   ok: true,
-  scenario_count: 3,
+  scenario_count: 6,
   iteration_count: 1,
-  expected_run_count: 3,
-  passed_run_count: 3,
+  expected_run_count: 6,
+  passed_run_count: 6,
   failed_run_count: 0,
   scenarios: [
     { name: "api_fault_server", description: "API faults" },
+    { name: "evidence_custody_fail_closed", description: "Evidence custody failure" },
+    { name: "proof_signing_outage", description: "Proof signing outage" },
     { name: "runtime_preflight_fail_closed", description: "Preflight failure" },
+    { name: "source_drift_mid_run", description: "Source drift during run" },
     { name: "vivarium_oracle", description: "Vivarium oracle" },
   ],
   results: [
     { ok: true, scenario: "api_fault_server", name: "api_fault_server#1" },
+    { ok: true, scenario: "evidence_custody_fail_closed", name: "evidence_custody_fail_closed#1" },
+    { ok: true, scenario: "proof_signing_outage", name: "proof_signing_outage#1" },
     { ok: true, scenario: "runtime_preflight_fail_closed", name: "runtime_preflight_fail_closed#1" },
+    { ok: true, scenario: "source_drift_mid_run", name: "source_drift_mid_run#1" },
     { ok: true, scenario: "vivarium_oracle", name: "vivarium_oracle#1" },
   ],
 };
@@ -148,7 +236,7 @@ function chaosRunnerEvidenceFixture() {
     chaosRunnerReport: CHAOS_RUNNER_REPORT,
     chaosRunnerReportPath: "tmp/chaos-runner.json",
     chaosRunnerReportText: JSON.stringify(CHAOS_RUNNER_REPORT),
-    chaosRunnerStdout: "PASS api_fault_server#1\nPASS runtime_preflight_fail_closed#1\nPASS vivarium_oracle#1\n",
+    chaosRunnerStdout: "PASS api_fault_server#1\nPASS evidence_custody_fail_closed#1\nPASS proof_signing_outage#1\nPASS runtime_preflight_fail_closed#1\nPASS source_drift_mid_run#1\nPASS vivarium_oracle#1\n",
     chaosRunnerStderr: "",
     chaosRunnerStdoutPath: "tmp/chaos-runner.stdout.log",
     chaosRunnerStderrPath: "tmp/chaos-runner.stderr.log",
@@ -161,6 +249,10 @@ describe("Dojo chaos performance self-check script", () => {
   it("defines executable integration tests for T8 preflight coverage", () => {
     expect(DOJO_CHAOS_PERFORMANCE_TEST_FILES).toEqual([
       "tests/unit/dojo_fixture_materializer.test.ts",
+      "tests/unit/dojo_evidence_record.test.ts",
+      "tests/unit/dojo_graph_runtime.test.ts",
+      "tests/unit/dojo_proof_signing.test.ts",
+      "tests/unit/dojo_source_drift.test.ts",
       "tests/integration/dojo_api_fault_server.test.ts",
       "tests/integration/dojo_vivarium_runner.test.ts",
       "tests/integration/dojo_checkride_runner.test.ts",
@@ -174,6 +266,9 @@ describe("Dojo chaos performance self-check script", () => {
       "evil_twin_attack_hardening",
       "hosted_runtime_preflight_fail_closed",
       "proof_not_consumed_on_failed_preflight",
+      "evidence_store_unavailable",
+      "proof_signing_service_unavailable",
+      "source_contract_drift_mid_run",
     ]));
   });
 
@@ -213,10 +308,13 @@ describe("Dojo chaos performance self-check script", () => {
         "fake_success_ui",
         "runtime_oracle_classification",
         "evil_twin_attack_hardening",
+        "evidence_store_unavailable",
+        "proof_signing_service_unavailable",
+        "source_contract_drift_mid_run",
       ]),
       test_summary: expect.objectContaining({
-        total_tests: 10,
-        passed_tests: 10,
+        total_tests: 18,
+        passed_tests: 18,
         failed_tests: 0,
         assertion_duration_p95_ms: 60,
         test_file_duration_p95_ms: 180,
@@ -240,13 +338,16 @@ describe("Dojo chaos performance self-check script", () => {
       chaos_runner_required: true,
       chaos_runner: expect.objectContaining({
         ok: true,
-        scenario_count: 3,
-        expected_run_count: 3,
-        passed_run_count: 3,
+        scenario_count: 6,
+        expected_run_count: 6,
+        passed_run_count: 6,
         failed_run_count: 0,
         scenarios: expect.arrayContaining([
           "api_fault_server",
+          "evidence_custody_fail_closed",
+          "proof_signing_outage",
           "runtime_preflight_fail_closed",
+          "source_drift_mid_run",
           "vivarium_oracle",
         ]),
       }),
@@ -334,8 +435,8 @@ describe("Dojo chaos performance self-check script", () => {
     const summary = summarizeVitestJsonReport(VITEST_REPORT);
     expect(summary).toEqual(expect.objectContaining({
       success: true,
-      total_tests: 10,
-      passed_tests: 10,
+      total_tests: 18,
+      passed_tests: 18,
       failed_tests: 0,
       assertion_duration_p95_ms: 60,
       test_file_duration_p95_ms: 180,

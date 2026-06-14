@@ -11,6 +11,13 @@ Current scenarios:
 
 - `api_fault_server` checks synthetic API timeout, partial write, fake visual
   success, validation error, and downstream failure paths.
+- `evidence_custody_fail_closed` checks evidence signature absence, graph
+  evidence-writer failure, unbacked evidence refs, and ledger-backed checkride
+  evidence unavailability.
+- `proof_signing_outage` checks external proof signer outages and managed-key
+  custody metadata mismatch.
+- `source_drift_mid_run` checks source drift license expiry and active graph
+  expiry triggers.
 - `vivarium_oracle` checks deterministic synthetic fixtures, prompt-injection
   quarantine, oracle classification, fake-success detection, and Evil Twin
   hardening evidence.
@@ -54,7 +61,7 @@ Each result includes:
 ## Future Live Chaos
 
 The mature release plan still calls for slower live chaos scenarios such as
-worker kill, signaling partition, Redis restart, browser crash, proof signing
-service outage, and source drift during a run. Those should land as additional
-scenario modules using the same runner contract, with environment-gated live
-requirements instead of replacing the deterministic preflight.
+worker kill, signaling partition, Redis restart, Postgres restart during proof
+validation, and browser crash. Those should land as additional scenario modules
+using the same runner contract, with environment-gated live requirements instead
+of replacing the deterministic preflight.
