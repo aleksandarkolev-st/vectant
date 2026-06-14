@@ -1615,6 +1615,47 @@ describe("Agent Dojo MCP tools", () => {
     };
     expect(entrustmentContent.executable_entrustment.evidence_refs.length).toBeGreaterThan(0);
     expect(entrustmentContent.evidence_refs.length).toBeGreaterThan(0);
+    const assurance = await dispatchDojoTool("synthi_dojo_get_skill_assurance_case", {
+      skill_id: published.skill.skill_id,
+      workspace_id: "workspace-a",
+    });
+    expect(assurance?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill_id: published.skill.skill_id,
+      assurance_case: expect.objectContaining({
+        assurance_case_id: publishedSkill!.assurance_case.assurance_case_id,
+      }),
+      assurance_artifact: expect.objectContaining({
+        schema_version: "synthi.dojo.skillAssuranceArtifact.v1",
+        entrustment_source: "executable_checkride",
+        executable_entrustment: expect.objectContaining({
+          schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1",
+          source: "publish",
+          checkride_id: publication.executable_checkride.checkride_id,
+          evidence_refs: expect.any(Array),
+        }),
+        license_scope: expect.objectContaining({
+          allowed_actions: publishedSkill!.permission_license.allowed_actions,
+          gated_actions: publishedSkill!.permission_license.gated_actions,
+          blocked_actions: publishedSkill!.permission_license.blocked_actions,
+        }),
+        evidence_refs: expect.any(Array),
+        ledger_checkpoint_hashes: expect.any(Array),
+      }),
+      entrustment_source: "executable_checkride",
+      executable_entrustment: expect.objectContaining({
+        checkride_id: publication.executable_checkride.checkride_id,
+      }),
+      evidence_refs: expect.any(Array),
+    }));
+    const assuranceContent = assurance?.structuredContent as {
+      assurance_artifact: {
+        executable_entrustment: { evidence_refs: string[] };
+        evidence_refs: string[];
+      };
+    };
+    expect(assuranceContent.assurance_artifact.executable_entrustment.evidence_refs.length).toBeGreaterThan(0);
+    expect(assuranceContent.assurance_artifact.evidence_refs.length).toBeGreaterThan(0);
     expect(publishedSkill!.permission_license.approval_requirements).not.toContain("run_workflow");
     expect(publishedSkill!.permission_license.gated_actions).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ action: "run_workflow" })])
@@ -2584,6 +2625,14 @@ describe("Agent Dojo MCP tools", () => {
     const exportedArtifacts = (exported?.structuredContent as {
       artifacts: Array<{ path: string; content: string }>;
     }).artifacts;
+    const exportedAssuranceArtifact = exportedArtifacts.find((artifact) =>
+      artifact.path === ".synthi/dojo/skills/open_details/assurance.case.md"
+    );
+    const exportedSkill = dojoSkillRegistry.get(published.skill.skill_id);
+    expect(exportedAssuranceArtifact?.content).toContain("Artifact schema: synthi.dojo.skillAssuranceArtifact.v1");
+    expect(exportedAssuranceArtifact?.content).toContain("## Executable Entrustment");
+    expect(exportedAssuranceArtifact?.content).toContain(exportedSkill?.executable_entrustment?.checkride_id);
+    expect(exportedAssuranceArtifact?.content).toContain("## Runtime Evidence");
     const exportedManifest = JSON.parse(exportedArtifacts.find((artifact) =>
       artifact.path === ".synthi/dojo/skills/open_details/mcp.manifest.json"
     )?.content ?? "null") as DojoMcpSkillManifestV1;

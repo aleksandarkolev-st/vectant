@@ -843,6 +843,21 @@ async function main() {
   );
   const licenseHealth = structured(await dispatchDojoTool("synthi_dojo_get_license_health", { skill_id: publish.skill.skill_id }));
   assert.equal(licenseHealth.license_health.schema_version, "synthi.dojo.licenseHealth.v1", "license health schema should match");
+  const assuranceCase = structured(await dispatchDojoTool("synthi_dojo_get_skill_assurance_case", { skill_id: publish.skill.skill_id }));
+  assert.equal(
+    assuranceCase.assurance_artifact?.schema_version,
+    "synthi.dojo.skillAssuranceArtifact.v1",
+    "assurance case response should include the versioned assurance artifact schema"
+  );
+  assert.equal(
+    assuranceCase.executable_entrustment?.schema_version,
+    "synthi.dojo.executableEntrustmentSnapshot.v1",
+    "assurance case response should include executable entrustment provenance"
+  );
+  assert(
+    Array.isArray(assuranceCase.evidence_refs) && assuranceCase.evidence_refs.length > 0,
+    "assurance case response should include runtime evidence refs"
+  );
   log("ok", "queried universe, source affordance, and license health reports");
 
   const exported = structured(await dispatchDojoTool("synthi_dojo_export_artifacts", { skill_id: publish.skill.skill_id }));
@@ -876,6 +891,24 @@ async function main() {
   assert(
     Array.isArray(exportedPassport.evidence_refs) && exportedPassport.evidence_refs.length > 0,
     "exported skill-passport.json should include evidence refs"
+  );
+  const exportedAssuranceArtifact = exported.artifacts.find((artifact) => artifact.path.endsWith("/assurance.case.md"));
+  assert(exportedAssuranceArtifact, "Dojo export should include assurance.case.md");
+  assert(
+    exportedAssuranceArtifact.content.includes("Artifact schema: synthi.dojo.skillAssuranceArtifact.v1"),
+    "exported assurance.case.md should include the versioned assurance artifact schema"
+  );
+  assert(
+    exportedAssuranceArtifact.content.includes("## Executable Entrustment"),
+    "exported assurance.case.md should include executable entrustment provenance"
+  );
+  assert(
+    exportedAssuranceArtifact.content.includes(assuranceCase.executable_entrustment.checkride_id),
+    "exported assurance.case.md should reference the executable checkride"
+  );
+  assert(
+    exportedAssuranceArtifact.content.includes("## Runtime Evidence"),
+    "exported assurance.case.md should include runtime evidence refs"
   );
   const written = await writeArtifacts(RUN_ROOT, exported.artifacts);
   const parsedJson = validateJsonArtifacts(exported.artifacts);

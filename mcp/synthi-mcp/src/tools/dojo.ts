@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { browserBroker } from "../browser/broker.js";
 import {
   buildDojoSkill,
+  buildDojoSkillAssuranceArtifact,
   assertDojoProofSignerProductionReady,
   dojoSkillRegistry,
   exportDojoRepoArtifacts,
@@ -1922,7 +1923,18 @@ async function dojoGetRegistryTool(args: unknown): Promise<ToolResponse> {
 function dojoGetAssuranceCaseTool(args: unknown): ToolResponse {
   const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, assurance_case: skill.skill.assurance_case });
+  const assuranceArtifact = buildDojoSkillAssuranceArtifact(skill.skill);
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    assurance_case: skill.skill.assurance_case,
+    assurance_artifact: assuranceArtifact,
+    entrustment_source: assuranceArtifact.entrustment_source,
+    executable_entrustment: assuranceArtifact.executable_entrustment,
+    license_scope: assuranceArtifact.license_scope,
+    evidence_refs: assuranceArtifact.evidence_refs,
+    ledger_checkpoint_hashes: assuranceArtifact.ledger_checkpoint_hashes,
+  });
 }
 
 function dojoGetEntrustmentLevelTool(args: unknown): ToolResponse {

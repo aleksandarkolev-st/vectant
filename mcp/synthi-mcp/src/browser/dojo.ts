@@ -396,6 +396,17 @@ export interface DojoExecutableEntrustmentSnapshot {
   ledger_checkpoint_hashes: string[];
 }
 
+export interface DojoSkillAssuranceArtifact {
+  schema_version: "synthi.dojo.skillAssuranceArtifact.v1";
+  skill_id: string;
+  assurance_case: DojoAssuranceCase;
+  entrustment_source: "executable_checkride" | "legacy_license_artifact";
+  executable_entrustment: DojoExecutableEntrustmentSnapshot | null;
+  license_scope: Pick<DojoPermissionLicense, "allowed_actions" | "gated_actions" | "blocked_actions" | "approval_requirements">;
+  evidence_refs: string[];
+  ledger_checkpoint_hashes: string[];
+}
+
 export interface DojoNodeMemory {
   confidence: number;
   rehearsal_count: number;
@@ -2970,13 +2981,34 @@ function skillPassportArtifact(skill: DojoSkill): Record<string, unknown> {
     skill_passport: skill.skill_passport,
     entrustment_source: skill.executable_entrustment ? "executable_checkride" : "legacy_license_artifact",
     executable_entrustment: skill.executable_entrustment ?? null,
-    license_scope: {
-      allowed_actions: skill.permission_license.allowed_actions,
-      gated_actions: skill.permission_license.gated_actions,
-      blocked_actions: skill.permission_license.blocked_actions,
-      approval_requirements: skill.permission_license.approval_requirements,
-    },
+    license_scope: skillLicenseScopeArtifact(skill),
     evidence_refs: skill.executable_entrustment?.evidence_refs ?? skill.assurance_case.evidence_refs,
+  };
+}
+
+export function buildDojoSkillAssuranceArtifact(skill: DojoSkill): DojoSkillAssuranceArtifact {
+  const executableEntrustment = skill.executable_entrustment ?? null;
+  return {
+    schema_version: "synthi.dojo.skillAssuranceArtifact.v1",
+    skill_id: skill.skill_id,
+    assurance_case: skill.assurance_case,
+    entrustment_source: executableEntrustment ? "executable_checkride" : "legacy_license_artifact",
+    executable_entrustment: executableEntrustment,
+    license_scope: skillLicenseScopeArtifact(skill),
+    evidence_refs: executableEntrustment?.evidence_refs ?? skill.assurance_case.evidence_refs,
+    ledger_checkpoint_hashes: executableEntrustment?.ledger_checkpoint_hashes ?? [],
+  };
+}
+
+function skillLicenseScopeArtifact(skill: DojoSkill): Pick<
+  DojoPermissionLicense,
+  "allowed_actions" | "gated_actions" | "blocked_actions" | "approval_requirements"
+> {
+  return {
+    allowed_actions: skill.permission_license.allowed_actions,
+    gated_actions: skill.permission_license.gated_actions,
+    blocked_actions: skill.permission_license.blocked_actions,
+    approval_requirements: skill.permission_license.approval_requirements,
   };
 }
 
@@ -3029,8 +3061,29 @@ function checkrideMarkdown(skill: DojoSkill): string {
 
 function assuranceMarkdown(skill: DojoSkill): string {
   const assurance = skill.assurance_case;
+  const artifact = buildDojoSkillAssuranceArtifact(skill);
+  const executable = artifact.executable_entrustment;
+  const executableLines = executable ? [
+    `- Source: ${executable.source}`,
+    `- Checkride: ${executable.checkride_id}`,
+    `- Production recommendation: ${executable.production_recommendation}`,
+    `- Entrustment: ${executable.entrustment_decision.level}`,
+    `- Readiness: SRL ${executable.readiness_decision.level}`,
+    `- Scenarios: ${executable.passed_scenarios}/${executable.scenario_count} passed, ${executable.blocked_scenarios} blocked, ${executable.failed_scenarios} failed`,
+    `- Critical failures: ${executable.critical_failures}`,
+    `- License constraints: ${executable.license_constraints.length}`,
+  ] : [
+    "- No executable checkride provenance has been persisted for this skill.",
+  ];
+  const ledgerCheckpointLines = artifact.ledger_checkpoint_hashes.length > 0
+    ? artifact.ledger_checkpoint_hashes.map((hash) => `- ${hash}`)
+    : ["- No ledger checkpoints recorded for this artifact."];
   return [
     `# Skill Assurance Case: ${skill.name}`,
+    "",
+    `Artifact schema: ${artifact.schema_version}`,
+    `Skill: ${artifact.skill_id}`,
+    `Entrustment source: ${artifact.entrustment_source}`,
     "",
     `Claim: ${assurance.claim}`,
     "",
@@ -3041,6 +3094,18 @@ function assuranceMarkdown(skill: DojoSkill): string {
     "## Evidence",
     "",
     ...assurance.evidence_refs.map((ref) => `- ${ref}`),
+    "",
+    "## Executable Entrustment",
+    "",
+    ...executableLines,
+    "",
+    "## Runtime Evidence",
+    "",
+    ...artifact.evidence_refs.map((ref) => `- ${ref}`),
+    "",
+    "## Ledger Checkpoints",
+    "",
+    ...ledgerCheckpointLines,
     "",
     "## Limits",
     "",
