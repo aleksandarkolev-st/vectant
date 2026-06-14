@@ -40,6 +40,7 @@ const WebSocket = require('ws');
 const { watchWorkspace } = require('./fsWatcherService');
 const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimePodTerminal');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
+const { buildPersistentRuntimeEnv, ensurePersistentRuntimeDirs } = require('./runtimePersistence');
 
 // node-pty is a native add-on. Fail fast with a clear message if missing.
 let pty;
@@ -195,17 +196,19 @@ function once(fn) {
   };
 }
 
-async function buildRuntimeLaunch({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId }) {
+async function buildRuntimeLaunch({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId, cwd = '' }) {
   const port = shouldUseRuntimePodTerminal(runtimeScope) ? null : await leaseRuntimePort(runtimeScope);
+  if (cwd) ensurePersistentRuntimeDirs(cwd);
   return {
-    env: buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId, port }),
+    env: buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId, port, cwd }),
     port,
     releasePort: once(() => releaseRuntimePort(runtimeScope)),
   };
 }
 
-function buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId, port = null }) {
+function buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId, port = null, cwd = '' }) {
   const env = {};
+  if (cwd) Object.assign(env, buildPersistentRuntimeEnv(cwd));
   if (runtimeScope) {
     env.SYNTHI_RUNTIME_SCOPE = runtimeScope;
     if (port) {
@@ -973,7 +976,7 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
   // pin a few of the worst offenders to the original home dir below so
   // they don't pollute the user's repo. Set SYNTHI_NO_HOME_OVERRIDE=1 to
   // restore the old behavior.
-  if (cwd && !process.env.SYNTHI_NO_HOME_OVERRIDE) {
+  if (cwd && !process.env.SYNTHI_NO_HOME_OVERRIDE && !ptyEnv.SYNTHI_PERSISTENT_HOME) {
     ptyEnv.HOME = cwd;
     // Keep auth + global config files outside the workspace so the user
     // doesn't accidentally commit them and doesn't have to re-auth claude
@@ -989,7 +992,11 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
 
   // Prepend discovered SDK paths (Flutter, Dart, Android, etc.) and per-user
   // dev-CLI bin dirs (Claude Code, npm-global on Windows, ~/.local/bin) to PATH.
-  const extraPaths = getSdkPaths().concat(getDevCliPaths());
+  const persistentPaths = String(ptyEnv.SYNTHI_PERSISTENT_PATH_PREFIX || '')
+    .split(path.delimiter)
+    .map(p => p.trim())
+    .filter(Boolean);
+  const extraPaths = persistentPaths.concat(getSdkPaths()).concat(getDevCliPaths());
   if (extraPaths.length > 0) {
     const sep = os.platform() === 'win32' ? ';' : ':';
     ptyEnv.PATH = extraPaths.join(sep) + sep + (ptyEnv.PATH || '');
@@ -1289,6 +1296,7 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     workspaceSlug: slug,
     actorUserId: userId,
     filesystemUserId,
+    cwd,
   });
   let ptyProcess;
   let shell;
@@ -1566,6 +1574,7 @@ function createTerminalWSS() {
         workspaceSlug,
         actorUserId: requestedUserId,
         filesystemUserId: requestedFilesystemUserId,
+        cwd,
       });
       ({ ptyProcess, shell } = await createTerminalProcess({
         cwd,

@@ -3,6 +3,7 @@
 const { PassThrough } = require('stream');
 const k8s = require('@kubernetes/client-node');
 const spawner = require('./spawner');
+const { persistentRuntimeShellSetup } = require('./runtimePersistence');
 
 const NAMESPACE = process.env.K8S_NAMESPACE || 'synthi';
 const CONTAINER_NAME = process.env.SYNTHI_TERMINAL_K8S_CONTAINER || 'worker';
@@ -139,6 +140,7 @@ async function createRuntimePodPty({
     .join('; ');
   const commandScript = [
     exports,
+    persistentRuntimeShellSetup(),
     `export WORKSPACE_DIR=${shellQuote(cwd)}`,
     'mkdir -p "$WORKSPACE_DIR"',
     'cd "$WORKSPACE_DIR"',

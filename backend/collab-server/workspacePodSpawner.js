@@ -35,6 +35,7 @@
 const k8s = require('@kubernetes/client-node');
 const { runtimeResourceId, metadataHash, dnsLabelValue } = require('./runtimeIdentity');
 const { ensureRuntimeFilesystem, releaseRuntimeFilesystem } = require('./runtimeFilesystem');
+const { persistentRuntimeEnvEntries, persistentRuntimeShellSetup } = require('./runtimePersistence');
 const lifecycle = require('./sessionLifecycle');
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -701,6 +702,7 @@ async function ensurePod(sessionId, userId, metadata = {}) {
 
   // 3. Create the Deployment.
   const workspaceDir = workspaceDirForMetadata({ ...metadata, filesystemUserId });
+  const persistentEnv = persistentRuntimeEnvEntries(workspaceDir);
   const deployment = {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -743,6 +745,7 @@ async function ensurePod(sessionId, userId, metadata = {}) {
               command: ['/bin/bash', '-c'],
               args: [
                 `export PATH="/usr/local/cargo/bin:/usr/local/bin:\${PATH}"
+${persistentRuntimeShellSetup()}
 exec worker`,
               ],
               env: [
@@ -792,6 +795,7 @@ exec worker`,
                 { name: 'REPOS_DIR', value: WORKSPACE_REPOS_PATH },
                 { name: 'SYNTHI_REPOS_PATH', value: WORKSPACE_REPOS_PATH },
                 { name: 'WORKSPACE_DIR', value: workspaceDir },
+                ...persistentEnv,
               ],
               resources: {
                 requests: { cpu: '2', memory: '4Gi' },
