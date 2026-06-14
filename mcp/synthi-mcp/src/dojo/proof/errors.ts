@@ -6,6 +6,7 @@ export const DOJO_PROOF_ERROR_CODES = [
   "proof_capsule_replay_detected",
   "proof_capsule_registry_mismatch",
   "proof_signature_invalid",
+  "proof_key_unavailable",
   "proof_context_claim_unverified",
   "proof_evidence_claim_unverified",
   "license_expired",
@@ -39,11 +40,14 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
   ) {
     return "proof_capsule_missing";
   }
-  if (reason === "proof_capsule_revoked") return "proof_capsule_revoked";
+  if (reason === "proof_capsule_revoked" || reason === "proof_key_revoked" || reason === "dojo_proof_key_revoked") return "proof_capsule_revoked";
   if (reason === "proof_capsule_replay_detected") return "proof_capsule_replay_detected";
   if (reason === "proof_capsule_not_issued_by_registry" || reason === "proof_capsule_not_issued") return "proof_capsule_not_issued";
   if (reason.startsWith("proof_record_")) return "proof_capsule_registry_mismatch";
   if (reason === "proof_capsule_signature_invalid" || reason === "proof_capsule_signature_algorithm_mismatch") return "proof_signature_invalid";
+  if (reason.startsWith("proof_key_") || reason.startsWith("dojo_proof_key_")) {
+    return "proof_key_unavailable";
+  }
   if (
     reason === "proof_capsule_schema_version_mismatch" ||
     reason === "proof_capsule_skill_mismatch" ||
@@ -177,6 +181,7 @@ export function dojoProofRefusalCategoryFor(code: DojoProofErrorCode): DojoProof
     case "proof_capsule_invalid":
     case "proof_capsule_not_issued":
     case "proof_signature_invalid":
+    case "proof_key_unavailable":
       return "missing_or_invalid_proof";
     case "proof_capsule_revoked":
     case "proof_capsule_replay_detected":

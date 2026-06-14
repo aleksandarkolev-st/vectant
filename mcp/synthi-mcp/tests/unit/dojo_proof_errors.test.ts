@@ -47,6 +47,15 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("license_expiry_invalid")).toBe("license_expired");
     expect(normalizeDojoProofErrorCode("proof_self_attestation_not_allowed_in_production")).toBe("proof_capsule_invalid");
     expect(normalizeDojoProofErrorCode("proof_validator_missing")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("proof_key_registry_write_failed")).toBe("proof_key_unavailable");
+    expect(normalizeDojoProofErrorCode("dojo_proof_key_registry_write_failed")).toBe("proof_key_unavailable");
+    expect(normalizeDojoProofErrorCode("proof_key_public_key_missing")).toBe("proof_key_unavailable");
+    expect(normalizeDojoProofErrorCode("dojo_proof_key_public_key_required")).toBe("proof_key_unavailable");
+    expect(normalizeDojoProofErrorCode("proof_key_public_verifier_unavailable")).toBe("proof_key_unavailable");
+    expect(normalizeDojoProofErrorCode("dojo_proof_key_verifier_unavailable")).toBe("proof_key_unavailable");
+    expect(normalizeDojoProofErrorCode("proof_key_not_found")).toBe("proof_key_unavailable");
+    expect(normalizeDojoProofErrorCode("dojo_proof_key_key_uri_required")).toBe("proof_key_unavailable");
+    expect(normalizeDojoProofErrorCode("proof_key_revoked")).toBe("proof_capsule_revoked");
     expect(normalizeDojoProofErrorCode("api_tool_proof_capsule_required")).toBe("proof_capsule_missing");
     expect(normalizeDojoProofErrorCode("api_tool_proof_validator_required")).toBe("proof_capsule_invalid");
     expect(normalizeDojoProofErrorCode("api_tool_graph_proof_required")).toBe("proof_capsule_invalid");
@@ -71,6 +80,7 @@ describe("Dojo proof error taxonomy", () => {
 
   it("maps normalized codes to refusal categories", () => {
     expect(dojoProofRefusalCategoryFor("proof_capsule_replay_detected")).toBe("proof_replay_or_revocation");
+    expect(dojoProofRefusalCategoryFor("proof_key_unavailable")).toBe("missing_or_invalid_proof");
     expect(dojoProofRefusalCategoryFor("proof_evidence_claim_unverified")).toBe("claim_verification_failed");
     expect(dojoProofRefusalCategoryFor("action_not_licensed")).toBe("license_scope_failed");
     expect(dojoProofRefusalCategoryFor("guardrail_failed")).toBe("approval_or_guardrail_required");
