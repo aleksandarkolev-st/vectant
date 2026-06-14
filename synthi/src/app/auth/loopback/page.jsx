@@ -2,21 +2,123 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import {
-  CheckCircle2,
-  Clipboard,
-  ExternalLink,
-  Loader2,
-  MonitorUp,
-  PlugZap,
-  RefreshCw,
-  ShieldAlert,
-} from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
 const CALLBACK_PARAM_RE = /(redirect|callback|return|continue|next|url|uri)/i;
 const EXTENSION_PAGE_SOURCE = 'synthi-oauth-relay-page';
 const EXTENSION_SOURCE = 'synthi-oauth-relay-extension';
+const EXTENSION_INSTALL_URL =
+  process.env.NEXT_PUBLIC_SYNTHI_OAUTH_RELAY_EXTENSION_URL ||
+  'https://github.com/vectant/vectant-ade/tree/main/extensions/synthi-oauth-relay';
+const MOTION_EASE = [0.16, 1, 0.3, 1];
+const fadeUp = {
+  hidden: { opacity: 0, y: 12 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.55, ease: MOTION_EASE } },
+};
+const stepList = {
+  hidden: {},
+  visible: { transition: { staggerChildren: 0.08, delayChildren: 0.08 } },
+};
+
+function MiniIcon({ name, className = '' }) {
+  const common = {
+    className,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 2.4,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+    'aria-hidden': 'true',
+  };
+
+  if (name === 'external') {
+    return (
+      <svg {...common}>
+        <path d="M14 5h5v5" />
+        <path d="M19 5l-9 9" />
+        <path d="M19 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4" />
+      </svg>
+    );
+  }
+  if (name === 'clipboard') {
+    return (
+      <svg {...common}>
+        <path d="M9 5h6" />
+        <path d="M9 4h6a1 1 0 0 1 1 1v2H8V5a1 1 0 0 1 1-1Z" />
+        <path d="M7 6H5.8A1.8 1.8 0 0 0 4 7.8v10.4A1.8 1.8 0 0 0 5.8 20h12.4a1.8 1.8 0 0 0 1.8-1.8V7.8A1.8 1.8 0 0 0 18.2 6H17" />
+      </svg>
+    );
+  }
+  if (name === 'browser') {
+    return (
+      <svg {...common}>
+        <rect x="4" y="5" width="16" height="14" rx="2" />
+        <path d="M4 9h16" />
+        <path d="M8 15h8" />
+      </svg>
+    );
+  }
+  if (name === 'plug') {
+    return (
+      <svg {...common}>
+        <path d="M9 7V3" />
+        <path d="M15 7V3" />
+        <path d="M7 7h10v4a5 5 0 0 1-10 0V7Z" />
+        <path d="M12 16v5" />
+      </svg>
+    );
+  }
+  if (name === 'check') {
+    return (
+      <svg {...common}>
+        <path d="M20 7 10 17l-5-5" />
+      </svg>
+    );
+  }
+  if (name === 'retry') {
+    return (
+      <svg {...common}>
+        <path d="M20 7v5h-5" />
+        <path d="M20 12a8 8 0 1 1-2.3-5.7L20 8" />
+      </svg>
+    );
+  }
+  if (name === 'shield') {
+    return (
+      <svg {...common}>
+        <path d="M12 3 19 6v5c0 4.2-2.7 7.7-7 10-4.3-2.3-7-5.8-7-10V6l7-3Z" />
+        <path d="M12 8v5" />
+        <path d="M12 16h.01" />
+      </svg>
+    );
+  }
+  return null;
+}
+
+function Spinner({ className = '' }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`inline-block h-4 w-4 animate-spin rounded-[999px] border-2 border-current border-r-transparent ${className}`}
+    />
+  );
+}
+
+function StepNumber({ value, complete = false }) {
+  return (
+    <span
+      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-[999px] border text-xs font-semibold ${
+        complete
+          ? 'border-[#346538] bg-[#EDF3EC] text-[#346538]'
+          : 'border-[#EAEAEA] bg-[#FBFBFA] text-[#2F3437]'
+      }`}
+    >
+      {complete ? <MiniIcon name="check" className="h-3.5 w-3.5" /> : value}
+    </span>
+  );
+}
 
 function parseUrl(value) {
   try {
@@ -180,6 +282,7 @@ function LoopbackAuthPage() {
   const [message, setMessage] = useState('');
   const [messageTone, setMessageTone] = useState('error');
   const [opened, setOpened] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
 
   const context = useMemo(() => ({
     workspaceSlug,
@@ -344,7 +447,7 @@ function LoopbackAuthPage() {
 
   const armExtension = async () => {
     setExtensionBusy(true);
-      setMessage('');
+    setMessage('');
     try {
       const session = await createRelaySession();
       const response = await sendExtensionMessage('SYNTHI_OAUTH_RELAY_ARM', {
@@ -370,123 +473,314 @@ function LoopbackAuthPage() {
     }
   };
 
-  const canSubmit = status !== 'loading' && relayStatus === 'ready';
+  const hasValidCallback = isLoopbackCallback(callbackUrl);
+  const isComplete = status === 'success';
+  const canSubmit = status !== 'loading' && relayStatus === 'ready' && hasValidCallback && !isComplete;
   const callbackHint = loopbackRedirect
     ? `${normalizeLoopbackHost(loopbackRedirect.hostname)}:${loopbackRedirect.port}${loopbackRedirect.pathname || '/'}`
     : 'localhost callback from the failed browser tab';
 
+  const returnToTerminal = () => {
+    notifyWorkspaceRelayComplete({ workspaceSlug, runtimeScope, terminalId, status: 'success' });
+    try { window.opener?.focus(); } catch {}
+    try { window.close(); } catch {}
+  };
+
   return (
-    <main className="min-h-screen bg-[#08090d] text-[#f5f4ef] flex items-center justify-center p-6">
-      <section className="w-full max-w-[720px] border border-[#34313a] bg-[#101119] rounded-[8px] p-6 shadow-2xl">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="text-xs uppercase tracking-[0.18em] text-[#55d6be]">Workspace auth</div>
-            <h1 className="mt-3 text-2xl font-semibold">Complete terminal sign-in</h1>
+    <motion.main
+      initial="hidden"
+      animate="visible"
+      className="min-h-screen bg-[#F7F6F3] px-5 py-16 text-[#2F3437] md:py-24"
+      style={{ fontFamily: "'SF Pro Display', 'Geist Sans', 'Helvetica Neue', sans-serif" }}
+    >
+      <motion.section
+        variants={fadeUp}
+        className="relative mx-auto w-full max-w-[920px] rounded-[12px] border border-[#EAEAEA] bg-[#FFFFFF] p-6 md:p-10"
+        style={{ boxShadow: '0 12px 40px rgba(17,17,17,0.035)' }}
+      >
+        <div className="flex items-start justify-between gap-6 border-b border-[#EAEAEA] pb-8">
+          <div className="max-w-2xl">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#787774]">
+              Workspace auth
+            </div>
+            <h1
+              className="mt-4 text-[38px] font-semibold leading-[1.06] tracking-[-0.035em] text-[#111111] md:text-[56px]"
+              style={{ fontFamily: "'Newsreader', 'Lyon Text', 'Instrument Serif', serif" }}
+            >
+              Complete terminal sign-in
+            </h1>
+            <p className="mt-5 max-w-[620px] text-[15px] leading-[1.7] text-[#787774]">
+              Keep this tab open. Sign in with your normal browser, then send the failed localhost callback back to the workspace.
+            </p>
           </div>
-          <ShieldAlert className="mt-1 h-6 w-6 text-[#55d6be]" />
-        </div>
-
-        <div className="mt-6 rounded-[6px] border border-[#2b3340] bg-[#0b0d13] p-4 text-sm leading-6 text-[#c6c2bd]">
-          <p>Keep this tab open. Sign in in the tab that opens.</p>
-          <p className="mt-2">
-            If that tab ends on a localhost error, copy its full address and paste it below.
-            Synthi will send that callback to the workspace runtime.
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2 text-xs text-[#8f8a84]">
-            <span className="rounded-[4px] border border-[#303846] px-2 py-1">workspace {workspaceSlug || 'missing'}</span>
-            <span className="rounded-[4px] border border-[#303846] px-2 py-1">runtime {runtimeScope || 'missing'}</span>
-            <span className="rounded-[4px] border border-[#303846] px-2 py-1">expects {callbackHint}</span>
+          <div className="hidden h-10 w-10 items-center justify-center rounded-[10px] border border-[#EAEAEA] bg-[#FBFBFA] text-[#346538] md:flex">
+            <MiniIcon name="shield" className="h-5 w-5" />
           </div>
         </div>
 
-        <div className="mt-5 flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={openAuth}
-            disabled={relayStatus === 'loading'}
-            className="inline-flex items-center gap-2 rounded-[6px] bg-[#55d6be] px-4 py-2 text-sm font-semibold text-[#07110f] hover:bg-[#72ead5] disabled:opacity-60"
-          >
-            {relayStatus === 'loading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
-            Open sign-in
-          </button>
-          <button
-            type="button"
-            onClick={pasteFromClipboard}
-            className="inline-flex items-center gap-2 rounded-[6px] border border-[#3a4452] px-4 py-2 text-sm font-semibold text-[#e8e4dc] hover:bg-[#181b25]"
-          >
-            <Clipboard className="h-4 w-4" />
-            Paste URL
-          </button>
-          <button
-            type="button"
-            onClick={openWorkspaceBrowser}
-            disabled={browserStatus === 'loading'}
-            className="inline-flex items-center gap-2 rounded-[6px] border border-[#3a4452] px-4 py-2 text-sm font-semibold text-[#e8e4dc] hover:bg-[#181b25] disabled:opacity-60"
-          >
-            {browserStatus === 'loading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <MonitorUp className="h-4 w-4" />}
-            Workspace browser
-          </button>
-          <button
-            type="button"
-            onClick={armExtension}
-            disabled={extensionBusy || relayStatus !== 'ready' || !extensionStatus.installed}
-            className="inline-flex items-center gap-2 rounded-[6px] border border-[#3a4452] px-4 py-2 text-sm font-semibold text-[#e8e4dc] hover:bg-[#181b25] disabled:opacity-45"
-          >
-            {extensionBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlugZap className="h-4 w-4" />}
-            {extensionStatus.armed ? 'Auto-capture on' : extensionStatus.installed ? 'Enable auto-capture' : 'Extension not detected'}
-          </button>
-        </div>
-
-        {relayStatus === 'error' && (
-          <button
-            type="button"
-            onClick={() => {
-              setRelayStatus('idle');
-              setRelaySession(null);
-              setMessageTone('error');
-              setMessage('');
-            }}
-            className="mt-3 inline-flex items-center gap-2 rounded-[6px] border border-[#5b4a33] px-3 py-2 text-xs font-semibold text-[#f2c078] hover:bg-[#1d1710]"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            Retry relay session
-          </button>
-        )}
-
-        <label className="mt-6 block text-xs uppercase tracking-[0.16em] text-[#8f8a84]">
-          Localhost callback URL
-        </label>
-        <textarea
-          value={callbackUrl}
-          onChange={(event) => setCallbackUrl(event.target.value)}
-          spellCheck={false}
-          className="mt-2 min-h-[112px] w-full resize-y rounded-[6px] border border-[#3a3440] bg-[#06070b] p-3 font-mono text-sm text-[#f5f4ef] outline-none focus:border-[#55d6be]"
-          placeholder="http://localhost:1455/auth/callback?code=..."
-        />
-
-        <button
-          type="button"
-          onClick={complete}
-          disabled={!canSubmit}
-          className="mt-4 inline-flex items-center gap-2 rounded-[6px] bg-[#f5f4ef] px-4 py-2 text-sm font-semibold text-[#090a0e] disabled:opacity-60"
-        >
-          {status === 'loading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-          Send to workspace
-        </button>
-
-        {message && (
-          <div
-            className={`mt-4 rounded-[6px] border p-3 text-sm ${
-              status === 'success' || messageTone === 'success'
-                ? 'border-[#245f50] bg-[#0d221d] text-[#9ef2df]'
-                : 'border-[#612c33] bg-[#241014] text-[#ff9aa8]'
+        <motion.div variants={stepList} className="mt-8 grid gap-4">
+          <motion.article
+            variants={fadeUp}
+            className={`rounded-[12px] border border-[#EAEAEA] bg-[#FBFBFA] p-5 transition-opacity md:p-6 ${
+              isComplete ? 'opacity-55' : ''
             }`}
           >
-            {message}
+            <div className="flex gap-4">
+              <StepNumber value="1" complete={opened || isComplete} />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <h2 className="text-[17px] font-semibold tracking-[-0.01em] text-[#111111]">
+                      Open the sign-in page
+                    </h2>
+                    <p className="mt-1 text-sm leading-6 text-[#787774]">
+                      Sign in, then copy the address from the localhost error tab.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <motion.button
+                      type="button"
+                      whileTap={{ scale: 0.98 }}
+                      onClick={openAuth}
+                      disabled={relayStatus === 'loading' || isComplete}
+                      className={`inline-flex h-10 items-center gap-2 rounded-[6px] px-4 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+                        hasValidCallback || isComplete
+                          ? 'border border-[#EAEAEA] bg-[#FFFFFF] text-[#2F3437] hover:bg-[#F7F6F3]'
+                          : 'bg-[#111111] text-[#FFFFFF] hover:bg-[#333333]'
+                      }`}
+                    >
+                      {relayStatus === 'loading' ? <Spinner /> : <MiniIcon name="external" className="h-4 w-4" />}
+                      Open sign-in
+                    </motion.button>
+                    <motion.button
+                      type="button"
+                      whileTap={{ scale: 0.98 }}
+                      onClick={openWorkspaceBrowser}
+                      disabled={browserStatus === 'loading' || isComplete}
+                      className="inline-flex h-10 items-center gap-2 rounded-[6px] border border-[#EAEAEA] bg-[#FFFFFF] px-4 text-sm font-semibold text-[#2F3437] transition-colors hover:bg-[#F7F6F3] disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      {browserStatus === 'loading' ? <Spinner /> : <MiniIcon name="browser" className="h-4 w-4" />}
+                      Workspace browser
+                    </motion.button>
+                  </div>
+                </div>
+
+                {relayStatus === 'error' && (
+                  <motion.button
+                    type="button"
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => {
+                      setRelayStatus('idle');
+                      setRelaySession(null);
+                      setMessageTone('error');
+                      setMessage('');
+                    }}
+                    className="mt-4 inline-flex h-9 items-center gap-2 rounded-[6px] border border-[#EAEAEA] bg-[#FBF3DB] px-3 text-xs font-semibold text-[#956400]"
+                  >
+                    <MiniIcon name="retry" className="h-3.5 w-3.5" />
+                    Retry relay session
+                  </motion.button>
+                )}
+              </div>
+            </div>
+          </motion.article>
+
+          <motion.article
+            variants={fadeUp}
+            className={`rounded-[12px] border border-[#EAEAEA] bg-[#FFFFFF] p-5 md:p-6 ${
+              isComplete ? 'bg-[#FBFBFA]' : ''
+            }`}
+          >
+            <div className="flex gap-4">
+              <StepNumber value="2" complete={isComplete} />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-col gap-1">
+                  <h2 className="text-[17px] font-semibold tracking-[-0.01em] text-[#111111]">
+                    Provide the callback
+                  </h2>
+                  <p className="text-sm leading-6 text-[#787774]">
+                    Paste the full localhost callback URL from the browser address bar.
+                  </p>
+                </div>
+
+                <AnimatePresence mode="wait">
+                  {isComplete ? (
+                    <motion.div
+                      key="complete"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.35, ease: MOTION_EASE }}
+                      className="mt-5 rounded-[8px] border border-[#EAEAEA] bg-[#EDF3EC] p-4 text-sm leading-6 text-[#346538]"
+                    >
+                      Callback delivered. Your workspace terminal has been notified.
+                    </motion.div>
+                  ) : (
+                    <motion.div
+                      key="form"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.35, ease: MOTION_EASE }}
+                      className="mt-5"
+                    >
+                      <div className="overflow-hidden rounded-[8px] border border-[#EAEAEA] bg-[#FBFBFA]">
+                        <div className="flex items-center justify-between gap-3 border-b border-[#EAEAEA] px-3 py-2">
+                          <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#787774]">
+                            Localhost callback URL
+                          </label>
+                          <motion.button
+                            type="button"
+                            whileTap={{ scale: 0.98 }}
+                            onClick={pasteFromClipboard}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-[5px] border border-[#EAEAEA] bg-[#FFFFFF] px-2.5 text-xs font-semibold text-[#2F3437] transition-colors hover:bg-[#F7F6F3]"
+                          >
+                            <MiniIcon name="clipboard" className="h-3.5 w-3.5" />
+                            Paste
+                          </motion.button>
+                        </div>
+                        <textarea
+                          value={callbackUrl}
+                          onChange={(event) => setCallbackUrl(event.target.value)}
+                          spellCheck={false}
+                          className="min-h-[132px] w-full resize-y border-0 bg-[#FFFFFF] p-4 text-[13px] leading-6 text-[#111111] outline-none placeholder:text-[#A5A29D]"
+                          style={{ fontFamily: "'Geist Mono', 'SF Mono', 'JetBrains Mono', monospace" }}
+                          placeholder="http://localhost:1455/auth/callback?code=..."
+                        />
+                      </div>
+
+                      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-xs leading-5 text-[#787774]">
+                          {hasValidCallback ? 'Ready to deliver to the workspace.' : `Expected ${callbackHint}.`}
+                        </p>
+                        <motion.button
+                          type="button"
+                          whileTap={{ scale: 0.98 }}
+                          onClick={complete}
+                          disabled={!canSubmit}
+                          className={`inline-flex h-11 items-center justify-center gap-2 rounded-[6px] px-4 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+                            hasValidCallback
+                              ? 'bg-[#111111] text-[#FFFFFF] hover:bg-[#333333]'
+                              : 'border border-[#EAEAEA] bg-[#FBFBFA] text-[#787774]'
+                          }`}
+                        >
+                          {status === 'loading' ? <Spinner /> : <MiniIcon name="check" className="h-4 w-4" />}
+                          Send to workspace
+                        </motion.button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </div>
+          </motion.article>
+        </motion.div>
+
+        <motion.div
+          variants={fadeUp}
+          className="mt-4 rounded-[12px] border border-[#EAEAEA] bg-[#FBFBFA] p-5"
+        >
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div className="flex gap-3">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] bg-[#E1F3FE] text-[#1F6C9F]">
+                <MiniIcon name="plug" className="h-4 w-4" />
+              </span>
+              <div>
+                <h3 className="text-sm font-semibold text-[#111111]">
+                  Skip copy and paste next time
+                </h3>
+                <p className="mt-1 text-sm leading-6 text-[#787774]">
+                  Install the Synthi OAuth Relay extension to capture matching localhost callbacks automatically.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <motion.a
+                whileTap={{ scale: 0.98 }}
+                href={EXTENSION_INSTALL_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-10 items-center rounded-[6px] border border-[#EAEAEA] bg-[#FFFFFF] px-4 text-sm font-semibold text-[#2F3437] transition-colors hover:bg-[#F7F6F3]"
+              >
+                View setup
+              </motion.a>
+              <motion.button
+                type="button"
+                whileTap={{ scale: 0.98 }}
+                onClick={armExtension}
+                disabled={extensionBusy || relayStatus !== 'ready' || !extensionStatus.installed || isComplete}
+                className="inline-flex h-10 items-center gap-2 rounded-[6px] border border-[#EAEAEA] bg-[#FFFFFF] px-4 text-sm font-semibold text-[#2F3437] transition-colors hover:bg-[#F7F6F3] disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                {extensionBusy ? <Spinner /> : <MiniIcon name="plug" className="h-4 w-4" />}
+                {extensionStatus.armed ? 'Auto-capture on' : extensionStatus.installed ? 'Enable' : 'Not detected'}
+              </motion.button>
+            </div>
           </div>
-        )}
-      </section>
-    </main>
+        </motion.div>
+
+        <AnimatePresence>
+          {message && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.35, ease: MOTION_EASE }}
+              className={`mt-4 rounded-[8px] border p-4 text-sm leading-6 ${
+                status === 'success' || messageTone === 'success'
+                  ? 'border-[#EAEAEA] bg-[#EDF3EC] text-[#346538]'
+                  : 'border-[#EAEAEA] bg-[#FDEBEC] text-[#9F2F2D]'
+              }`}
+            >
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <span>{message}</span>
+                {isComplete && (
+                  <motion.button
+                    type="button"
+                    whileTap={{ scale: 0.98 }}
+                    onClick={returnToTerminal}
+                    className="inline-flex h-9 shrink-0 items-center justify-center rounded-[6px] bg-[#111111] px-3 text-xs font-semibold text-[#FFFFFF] hover:bg-[#333333]"
+                  >
+                    Return to terminal
+                  </motion.button>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="mt-6 border-t border-[#EAEAEA] pt-4">
+          <button
+            type="button"
+            onClick={() => setShowDetails((value) => !value)}
+            className="text-xs font-semibold uppercase tracking-[0.08em] text-[#787774] transition-colors hover:text-[#2F3437]"
+          >
+            {showDetails ? 'Hide connection details' : 'Show connection details'}
+          </button>
+          <AnimatePresence initial={false}>
+            {showDetails && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.3, ease: MOTION_EASE }}
+                className="overflow-hidden"
+              >
+                <div
+                  className="mt-4 grid gap-2 rounded-[8px] border border-[#EAEAEA] bg-[#FBFBFA] p-3 text-xs leading-5 text-[#787774] md:grid-cols-3"
+                  style={{ fontFamily: "'Geist Mono', 'SF Mono', 'JetBrains Mono', monospace" }}
+                >
+                  <div>workspace {workspaceSlug || 'missing'}</div>
+                  <div>runtime {runtimeScope || 'missing'}</div>
+                  <div>expects {callbackHint}</div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </motion.section>
+    </motion.main>
   );
 }
 
