@@ -102,6 +102,11 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: COLLAB_SERVER_URL
+            - name: SYNTHI_OAUTH_RELAY_TTL_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_OAUTH_RELAY_TTL_MS
             - name: CODE_INTEL_URL
               valueFrom:
                 configMapKeyRef:
