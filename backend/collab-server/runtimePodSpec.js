@@ -36,6 +36,12 @@ const RUNTIME_POD_IMAGE = (process.env.RUNTIME_POD_IMAGE || 'vectant-runtime:loc
 // DOCKER_HOST points at the pod's OWN in-pod daemon socket — never a host socket.
 const RUNTIME_DOCKER_HOST = (process.env.RUNTIME_DOCKER_HOST || 'unix:///var/run/docker.sock').trim();
 
+// managed-by label value. The worker uses 'workspace-spawner'; the runtime uses
+// this DISTINCT value so the worker culler/count never match (and delete) runtime
+// pods. The spawner imports this to build its count/cull label selectors, so this
+// is the single source of truth — keep them from drifting.
+const RUNTIME_MANAGED_BY = 'runtime-spawner';
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function safePathSegment(value) {
   return String(value || '').replace(/[^a-zA-Z0-9_@.\-]/g, '_');
@@ -62,8 +68,18 @@ function runtimeLabels(sessionId, userId) {
     'synthi/runtime-id': runtimeResourceId(sessionId),
     ...(userId ? { 'synthi/user-hash': metadataHash(userId) } : {}),
     'app.kubernetes.io/part-of': 'synthi-ide',
-    'app.kubernetes.io/managed-by': 'workspace-spawner',
+    'app.kubernetes.io/managed-by': RUNTIME_MANAGED_BY,
   };
+}
+
+/**
+ * Deployment name for the RUNTIME pod. MUST differ from the worker Deployment
+ * name (which is `runtimeResourceId(sessionId)`) so a session's worker and
+ * runtime pods can coexist in the same namespace without a 409 name collision.
+ * Derived from the session resource id (so it's traceable) with an `-rt` suffix.
+ */
+function runtimeDeploymentName(sessionId) {
+  return `${runtimeResourceId(sessionId)}-rt`;
 }
 
 /** nodeSelector + tolerations confining the runtime pod to the sysbox node pool. */
@@ -92,7 +108,7 @@ function isSysboxRuntimeEnabled() {
 }
 
 function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
-  const name = runtimeResourceId(sessionId);
+  const name = runtimeDeploymentName(sessionId);
   const labels = runtimeLabels(sessionId, userId);
   const selectorLabels = {
     app: 'runtime',
@@ -127,6 +143,17 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
                 { name: 'SYNTHI_WORKSPACE_SLUG', value: String(metadata.workspaceSlug || '') },
                 { name: 'SYNTHI_RUNTIME_FS_USER_ID', value: String(filesystemUserId || '') },
               ],
+              // Readiness = "dockerd answers", not merely "pod Running". This makes
+              // the all-containers-ready watch double as the dockerd-ready gate.
+              // `docker info` talks to the in-pod daemon via DOCKER_HOST above.
+              // High failureThreshold tolerates rootless dockerd's cold start.
+              readinessProbe: {
+                exec: { command: ['sh', '-c', 'docker info >/dev/null 2>&1'] },
+                initialDelaySeconds: 3,
+                periodSeconds: 5,
+                timeoutSeconds: 5,
+                failureThreshold: 12,
+              },
               volumeMounts: [
                 {
                   name: RUNTIME_DATA_VOLUME_NAME,
@@ -150,8 +177,10 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
 
 module.exports = {
   buildRuntimeDeployment,
+  runtimeDeploymentName,
   workspaceSubPath,
   runtimeLabels,
   buildRuntimeScheduling,
   isSysboxRuntimeEnabled,
+  RUNTIME_MANAGED_BY,
 };

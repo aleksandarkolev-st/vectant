@@ -108,3 +108,49 @@ test('isSysboxRuntimeEnabled is gated on RUNTIME_BACKEND=sysbox-pod (default off
     else process.env.RUNTIME_BACKEND = prev;
   }
 });
+
+// S2-T8 — the runtime Deployment and the worker Deployment for the SAME session
+// must NOT share a name (both would otherwise be `runtimeResourceId(sessionId)` and
+// 409-collide). The runtime name is derived from the session id (for traceability)
+// but distinct; the `synthi/runtime-id` label still ties it to the session.
+test('runtime Deployment name is distinct from the worker resource id', () => {
+  const sessionId = 'ws-abc:user-1';
+  const dep = buildRuntimeDeployment({
+    sessionId,
+    userId: 'user-1',
+    metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' },
+  });
+  const workerName = runtimeResourceId(sessionId);
+  assert.notEqual(dep.metadata.name, workerName, 'runtime name must differ from the worker Deployment name');
+  assert.ok(dep.metadata.name.startsWith(workerName), 'runtime name is derived from the session resource id');
+  assert.equal(dep.spec.template.metadata.labels['synthi/runtime-id'], workerName, 'identity label still ties it to the session');
+});
+
+// S2-T9 — the runtime pod must be managed-by `runtime-spawner`, NOT `workspace-spawner`.
+// The worker culler/count filter on `managed-by=workspace-spawner`; sharing it would
+// make the worker culler delete runtime pods (they carry no lastActive annotation).
+test('runtime pods are managed-by runtime-spawner (not workspace-spawner)', () => {
+  const dep = buildRuntimeDeployment({
+    sessionId: 'ws-abc:user-1',
+    userId: 'user-1',
+    metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' },
+  });
+  assert.equal(dep.metadata.labels['app.kubernetes.io/managed-by'], 'runtime-spawner');
+  assert.equal(dep.spec.template.metadata.labels['app.kubernetes.io/managed-by'], 'runtime-spawner');
+});
+
+// S2-T10 — readiness must mean "dockerd is up", not merely "pod Running". A readiness
+// probe that execs a docker-daemon check lets the existing all-containers-ready watch
+// double as the dockerd-ready gate. Still never privileged (Sysbox provides isolation).
+test('runtime container has a dockerd-readiness probe and stays non-privileged', () => {
+  const dep = buildRuntimeDeployment({
+    sessionId: 'ws-abc:user-1',
+    userId: 'user-1',
+    metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' },
+  });
+  const runtime = dep.spec.template.spec.containers.find((c) => c.name === 'runtime');
+  assert.ok(runtime.readinessProbe, 'runtime container has a readinessProbe');
+  const cmd = (runtime.readinessProbe.exec && runtime.readinessProbe.exec.command) || [];
+  assert.ok(cmd.join(' ').includes('docker'), 'readiness probe checks the docker daemon');
+  assert.notEqual(runtime.securityContext && runtime.securityContext.privileged, true);
+});

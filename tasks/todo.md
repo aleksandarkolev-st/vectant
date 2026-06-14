@@ -518,5 +518,31 @@ Test gate (lessons — scope it): `node --test --test-timeout=20000 backend/coll
 - [x] T4 sysbox-pool nodeSelector + toleration `workload=sysbox:NoSchedule` (env-driven `RUNTIME_NODE_*`, separate from worker's). (test 4)
 - [x] T5 runtime container: image (`RUNTIME_POD_IMAGE`) + env `DOCKER_HOST` (in-pod unix socket) + slug/scope/fs-user. (test 5)
 - [x] T6→ flag predicate `isSysboxRuntimeEnabled()` (`RUNTIME_BACKEND=sysbox-pod`, default off, read at call time). (test 6)
-- [ ] **NEXT** `spawnRuntimePod()` in `workspacePodSpawner.js` — flag-gated, uses `buildRuntimeDeployment`, mirrors `ensurePod` (create / ready-watch + dockerd-ready / teardown releases FS pin); reuse cull + max-guard. Create/watch is integration-tested later (deferred, #1006); flag-gating + local-bypass are unit-testable now.
+- [x] **Slice 2 — DONE (scope: function + wire call-site; 2026-06-14 on `b741c7eb`). Suite 71: 69 pass + 2 skip.**
+  Pure spec fixes (`runtimePodSpec.js`) — RED→GREEN, all safe vs T1–T6 (none assert these):
+  - [x] S2-T8 runtime Deployment `metadata.name` DISTINCT from the worker's `runtimeResourceId(sessionId)` (worker+runtime coexist per session → no 409). Name `rt-<hash>-rt` via `runtimeDeploymentName()`; `synthi/runtime-id` label stays `runtimeResourceId`.
+  - [x] S2-T9 runtime pods labeled `app.kubernetes.io/managed-by=runtime-spawner` (NOT `workspace-spawner`) so the worker culler/count never match/delete them. Value is the exported single-source `RUNTIME_MANAGED_BY`.
+  - [x] S2-T10 runtime container has a dockerd-readiness `readinessProbe` (exec `sh -c 'docker info'`, failureThreshold 12 for cold start); still never privileged.
+  spawnRuntimePod + separate runtime lifecycle (`workspacePodSpawner.js`):
+  - [x] S2-T11 `spawnRuntimePod()` no-ops (no k8s) when `!isSysboxRuntimeEnabled()` → `{skipped, reason:'runtime_backend_disabled'}`.
+  - [x] S2-T12 `spawnRuntimePod()` local-bypass when `SPAWNER_MODE=local` → `{skipped, reason:'local_mode'}` (leaves `workspaceRuntimeContainer.js` path untouched).
+  - [x] S2-T13 pure `runtimeCullDecision(deployments, now, timeoutMs)` selects idle runtime deployments (excludes fresh).
+  - [x] S2-T14 pure `runtimeAtCapacity(count, max)` guard.
+  - [x] S2-T15 `workspacePodSpawner` exports `spawnRuntimePod` (so the `/api/spawner/ensure` call-site resolves in k8s mode).
+  - [x] FS pin: runtime pins under its OWN scope (`runtimeDeploymentName(sessionId)`); refcounted `repoCache` → repo stays pinned until BOTH worker+runtime release. `runtimeTeardown`/cull releases the runtime scope only (never the worker's).
+  k8s integration (written now, tests SKIPPED — reason: #1006 substrate):
+  - [x] S2-T16 (skip) create + dockerd-ready watch (`app=runtime` scoped) — written; `waitForRuntimePodReady` + `getReadyRuntimePodForSession` live, validation deferred.
+  - [x] S2-T17 (skip) cross-tenant subPath confinement (live) — skipped pending cluster.
+  Wiring (DARK; every path a no-op when flag off — all runtime fns self-gate):
+  - [x] `/api/spawner/ensure` → fire-and-forget `spawner.spawnRuntimePod?.(...)` after `ensurePod` (existence-guarded for non-k8s modes).
+  - [x] extend `teardown()` (covers release + session-ended + culler), `touch()` (bump runtime `lastActive`), `startCuller()`/`stopCuller()` (runtime culler) inside `workspacePodSpawner.js`.
+  - [x] Necessary worker fix: `waitForPodRunning`/`getReadyPodForSession`/`getPodSnapshotForSession` now scope to `app=workspace` (runtime pods share `synthi/runtime-id`, so unscoped selectors would have matched them).
+  - [x] Gate: full collab-server suite green — **71 (69 pass + 2 skip)**, syntax-checked (`node --check`). Frontend/Prisma untouched.
+  - [ ] DEFERRED follow-ups: runtime container resources block (env-driven) for the sysbox-pool; on-demand spawn trigger (only when a container runtime is actually requested) — currently spawns alongside every session when the flag is on. Both fine for DARK validation.
 - [x] T7 Regression: full collab-server suite green — **61/61** (55 existing + 6 new). Local-dev path untouched.
+
+## Reconciled with origin/main (2026-06-12, commit 5382e8d8)
+Merged `origin/main` (the prod "cloud-deploy runtime stack", 39 commits ahead of our dev base) into the feature branch so `spawnRuntimePod()` builds on the CURRENT prod spawner. `workspacePodSpawner.js` is now **main's +285-line version** (gained `warm()`, `lifecycleSnapshot()`, `getPodSnapshotForSession()`, `workflowBridgeContainers()`, beta runtime caps — reuse these for Slices 2/5). main has NOT started Sysbox work, so ours stays purely additive. Conflicts resolved (4): spawner←main, schema.prisma kept-both (+`invitedByEmail`), route.js CRLF-inflated (merged/ours), package-lock←main. Verified: 61/61 green, prisma schema valid, `HEAD..origin/main`=0. **→ Re-read main's `workspacePodSpawner.js` before writing `spawnRuntimePod()` (it's a different, larger file now).**
+
+## Reconciled with origin/main again (2026-06-14, merge `b741c7eb`)
+`origin/main` had advanced **8** commits since the last merge (wildcard-subdomain previews `proxyService.js` +362, preview asset rewriting, re-enable beta IAP, **explicit runtime cleanup**, idle-timeout/node-pool-cap/runtime-cap tuning). `merge-tree` predicted a CLEAN merge (LF-normalized via `.gitattributes`); merged with the `ort` strategy, **0 conflicts**, `HEAD..origin/main`=0. Re-read `workspacePodSpawner.js` on the merged commit before coding (lessons #24). **Scratch cluster (priority 1): re-probed `gcloud` on 2026-06-14 — auth tokens STILL expired (non-interactive reauth fails); cluster existence UNKNOWN (describe EXIT=1 was the auth failure, not proof of deletion). Blocked on user `gcloud auth login`.**

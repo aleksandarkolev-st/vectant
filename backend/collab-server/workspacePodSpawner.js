@@ -35,6 +35,7 @@
 const k8s = require('@kubernetes/client-node');
 const { runtimeResourceId, metadataHash, dnsLabelValue } = require('./runtimeIdentity');
 const { ensureRuntimeFilesystem, releaseRuntimeFilesystem } = require('./runtimeFilesystem');
+const { buildRuntimeDeployment, runtimeDeploymentName, isSysboxRuntimeEnabled, RUNTIME_MANAGED_BY } = require('./runtimePodSpec');
 const lifecycle = require('./sessionLifecycle');
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -59,6 +60,14 @@ const PREVIEW_SIDECAR_IMAGE = (process.env.SYNTHI_PREVIEW_SIDECAR_IMAGE || 'node
 const WORKFLOW_BRIDGE_IMAGE = (process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE || '').trim();
 const WORKFLOW_BRIDGE_PORT = parseSinglePort(process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT, 9466);
 const HOSTED_BROWSER_CDP_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT, 9222);
+
+// ── Sysbox runtime-pod config (Slice 2; dark behind RUNTIME_BACKEND=sysbox-pod) ──
+// Separate caps/timeouts from the worker's so the two untrusted workloads are
+// tuned independently; default to the worker's values when unset.
+const MAX_RUNTIME_PODS = Number(process.env.MAX_RUNTIME_PODS) || MAX_WORKSPACE_PODS;
+const RUNTIME_IDLE_TIMEOUT_MS = Number(process.env.RUNTIME_IDLE_TIMEOUT_MS) || IDLE_TIMEOUT_MS;
+const RUNTIME_CULL_INTERVAL_MS = Number(process.env.RUNTIME_CULL_INTERVAL_MS) || CULL_INTERVAL_MS;
+const RUNTIME_POD_READY_TIMEOUT_MS = Number(process.env.RUNTIME_POD_READY_TIMEOUT_MS) || POD_READY_TIMEOUT_MS;
 
 // ── K8s client ─────────────────────────────────────────────────────────────
 
@@ -388,9 +397,8 @@ function previewSidecarScript() {
  * @param {string} sessionId
  * @returns {Promise<{podIP: string, podName: string}>}
  */
-function waitForPodRunning(sessionId) {
+function watchPodReady({ labelSelector, timeoutMs, describe }) {
   return new Promise((resolve, reject) => {
-    const labelSelector = `synthi/runtime-id=${runtimeResourceId(sessionId)}`;
     const watchPath = `/api/v1/namespaces/${NAMESPACE}/pods`;
     let resolved = false;
     let watchReq = null;
@@ -401,14 +409,14 @@ function waitForPodRunning(sessionId) {
         if (watchReq) {
           try { watchReq.destroy(); } catch (_) { /* ignore */ }
         }
-        reject(new Error(`Pod for session ${sessionId} did not become Ready within ${POD_READY_TIMEOUT_MS}ms`));
+        reject(new Error(`Pod for ${describe} did not become Ready within ${timeoutMs}ms`));
       }
-    }, POD_READY_TIMEOUT_MS);
+    }, timeoutMs);
 
     watcher.watch(
       watchPath,
       { labelSelector },
-      (phase, pod) => {
+      (_phase, pod) => {
         if (resolved) return;
 
         // Check for Running phase with a PodIP
@@ -440,8 +448,30 @@ function waitForPodRunning(sessionId) {
   });
 }
 
+// Scope the worker watch to app=workspace: the runtime pod shares the same
+// synthi/runtime-id, so without the app label this would also match (and resolve
+// on) the runtime pod.
+function waitForPodRunning(sessionId) {
+  return watchPodReady({
+    labelSelector: `app=workspace,synthi/runtime-id=${runtimeResourceId(sessionId)}`,
+    timeoutMs: POD_READY_TIMEOUT_MS,
+    describe: `session ${sessionId}`,
+  });
+}
+
+// Runtime-pod readiness — scoped to app=runtime. "All containers ready" already
+// implies dockerd-ready because the runtime container's readinessProbe execs
+// `docker info` (see runtimePodSpec.js).
+function waitForRuntimePodReady(sessionId) {
+  return watchPodReady({
+    labelSelector: `app=runtime,synthi/runtime-id=${runtimeResourceId(sessionId)}`,
+    timeoutMs: RUNTIME_POD_READY_TIMEOUT_MS,
+    describe: `runtime ${sessionId}`,
+  });
+}
+
 async function getReadyPodForSession(sessionId) {
-  const labelSelector = `synthi/runtime-id=${runtimeResourceId(sessionId)}`;
+  const labelSelector = `app=workspace,synthi/runtime-id=${runtimeResourceId(sessionId)}`;
   try {
     const { body } = await coreApi.listNamespacedPod(
       NAMESPACE,
@@ -467,7 +497,7 @@ async function getReadyPodForSession(sessionId) {
 }
 
 async function getPodSnapshotForSession(sessionId) {
-  const labelSelector = `synthi/runtime-id=${runtimeResourceId(sessionId)}`;
+  const labelSelector = `app=workspace,synthi/runtime-id=${runtimeResourceId(sessionId)}`;
   try {
     const { body } = await coreApi.listNamespacedPod(
       NAMESPACE,
@@ -877,6 +907,9 @@ async function touch(sessionId) {
       console.error(`[Spawner] touch() failed for ${name}:`, err.message);
     }
   }
+
+  // Keep the per-session runtime pod alive too (self-gated; no-op when flag off).
+  await touchRuntime(sessionId);
 }
 
 /**
@@ -981,6 +1014,11 @@ async function teardown(sessionId, options = {}) {
   releaseRuntimeFilesystem(sessionId);
   lifecycle.markTerminated(sessionId, reason);
 
+  // Tear down the per-session Sysbox runtime pod too (self-gated; no-op when flag
+  // off). Done before the worker delete so an early 404-return can't skip it.
+  await runtimeTeardown(sessionId, reason).catch((err) =>
+    console.error(`[RuntimeSpawner] teardown error for ${sessionId}:`, err.message));
+
   // Delete Service first (non-fatal).
   await deleteService(sessionId);
 
@@ -1041,20 +1079,33 @@ async function cullIdleWorkspaces() {
 // ── Culler timer ───────────────────────────────────────────────────────────
 
 let cullerInterval = null;
+let runtimeCullerInterval = null;
 
 function startCuller() {
   if (process.env.SPAWNER_MODE === 'local') return;
-  if (cullerInterval) return;
-  cullerInterval = setInterval(cullIdleWorkspaces, CULL_INTERVAL_MS);
-  // Unref so the timer doesn't keep the process alive on shutdown.
-  if (cullerInterval.unref) cullerInterval.unref();
-  console.log(`[Culler] Started (interval=${CULL_INTERVAL_MS}ms, timeout=${IDLE_TIMEOUT_MS}ms)`);
+  if (!cullerInterval) {
+    cullerInterval = setInterval(cullIdleWorkspaces, CULL_INTERVAL_MS);
+    // Unref so the timer doesn't keep the process alive on shutdown.
+    if (cullerInterval.unref) cullerInterval.unref();
+    console.log(`[Culler] Started (interval=${CULL_INTERVAL_MS}ms, timeout=${IDLE_TIMEOUT_MS}ms)`);
+  }
+  // Runtime-pod culler — cullIdleRuntimePods self-gates on the flag, so it's safe
+  // to always start in k8s (lets a flag flip-on take effect without a restart).
+  if (!runtimeCullerInterval) {
+    runtimeCullerInterval = setInterval(cullIdleRuntimePods, RUNTIME_CULL_INTERVAL_MS);
+    if (runtimeCullerInterval.unref) runtimeCullerInterval.unref();
+    console.log(`[RuntimeCuller] Started (interval=${RUNTIME_CULL_INTERVAL_MS}ms, timeout=${RUNTIME_IDLE_TIMEOUT_MS}ms)`);
+  }
 }
 
 function stopCuller() {
   if (cullerInterval) {
     clearInterval(cullerInterval);
     cullerInterval = null;
+  }
+  if (runtimeCullerInterval) {
+    clearInterval(runtimeCullerInterval);
+    runtimeCullerInterval = null;
   }
 }
 
@@ -1131,6 +1182,235 @@ async function handleSessionEnded(req, res) {
   res.end(JSON.stringify({ ok: true }));
 }
 
+// ── Sysbox runtime pod (Slice 2 — dark behind RUNTIME_BACKEND=sysbox-pod) ─────
+//
+// A per-workspace "runtime pod" runs rootless dockerd under the sysbox-runc
+// RuntimeClass on the sysbox node pool, SEPARATE from the compile/preview worker
+// pod. It mirrors the worker lifecycle (create / dockerd-ready watch / idle cull /
+// capacity guard / teardown-releases-FS-pin) but with its OWN identity so the two
+// never interfere: distinct Deployment name (`*-rt`), distinct managed-by label
+// (`runtime-spawner`), and its own refcounted FS-pin scope (so the workspace repo
+// stays pinned until BOTH the worker and the runtime release it).
+//
+// Every function self-gates on isSysboxRuntimeEnabled(), so with the flag off the
+// wiring in teardown()/touch()/startCuller() is a zero-cost no-op.
+
+/** Pure capacity guard — true once the active runtime-pod count reaches the cap. */
+function runtimeAtCapacity(count, max) {
+  return count >= max;
+}
+
+/**
+ * Pure idle-cull decision for runtime Deployments. Returns [{ name, sessionId }]
+ * for each Deployment whose synthi/lastActive is older than timeoutMs. A missing
+ * annotation counts as idle (mirrors the worker culler's `|| 0` default).
+ */
+function runtimeCullDecision(deployments, now, timeoutMs) {
+  const out = [];
+  for (const dep of deployments || []) {
+    const annotations = (dep && dep.metadata && dep.metadata.annotations) || {};
+    const lastActive = Number(annotations['synthi/lastActive'] || 0);
+    if (now - lastActive > timeoutMs) {
+      out.push({
+        name: dep.metadata && dep.metadata.name,
+        sessionId: annotations['synthi/runtimeScopeFull'] || null,
+      });
+    }
+  }
+  return out;
+}
+
+/** FS-pin scope for the runtime pod — distinct from the worker's sessionId scope. */
+function runtimePinScope(sessionId) {
+  return runtimeDeploymentName(sessionId);
+}
+
+/** Count active runtime Deployments (managed-by=runtime-spawner). */
+async function getActiveRuntimeCount() {
+  try {
+    const { body } = await appsApi.listNamespacedDeployment(
+      NAMESPACE, undefined, undefined, undefined, undefined,
+      `app.kubernetes.io/managed-by=${RUNTIME_MANAGED_BY}`,
+    );
+    return body.items.length;
+  } catch (err) {
+    console.error('[RuntimeSpawner] Failed to count runtime pods:', err.message);
+    return 0;
+  }
+}
+
+/** Return the ready runtime pod for a session ({podIP,podName} or nulls). */
+async function getReadyRuntimePodForSession(sessionId) {
+  const labelSelector = `app=runtime,synthi/runtime-id=${runtimeResourceId(sessionId)}`;
+  try {
+    const { body } = await coreApi.listNamespacedPod(
+      NAMESPACE, undefined, undefined, undefined, undefined, labelSelector,
+    );
+    for (const pod of body.items || []) {
+      if (pod?.status?.phase !== 'Running' || !pod?.status?.podIP) continue;
+      const statuses = pod.status.containerStatuses || [];
+      if (statuses.length > 0 && statuses.every((c) => c.ready)) {
+        return { podIP: pod.status.podIP, podName: pod.metadata.name };
+      }
+    }
+  } catch (err) {
+    console.warn(`[RuntimeSpawner] Failed to list ready runtime pod for ${runtimeResourceId(sessionId)}:`, err.message);
+  }
+  return { podIP: null, podName: null };
+}
+
+/**
+ * Ensure the per-workspace Sysbox runtime pod exists for a session.
+ * Dark-launched: a no-op unless RUNTIME_BACKEND=sysbox-pod. Mirrors ensurePod().
+ *
+ * @returns {Promise<object>} {name, created, podIP, podName} on success, or
+ *   {skipped, reason} when the runtime backend is off / running in local mode.
+ */
+async function spawnRuntimePod(sessionId, userId, metadata = {}) {
+  // Dark-launch gate — OFF unless RUNTIME_BACKEND=sysbox-pod. No k8s touched.
+  if (!isSysboxRuntimeEnabled()) {
+    return { skipped: true, reason: 'runtime_backend_disabled' };
+  }
+  // Local dev has no Sysbox/k8s — the rootless-docker path lives in
+  // workspaceRuntimeContainer.js; leave it untouched.
+  if (process.env.SPAWNER_MODE === 'local') {
+    return { skipped: true, reason: 'local_mode' };
+  }
+
+  const name = runtimeDeploymentName(sessionId);
+  const filesystemUserId = metadata.filesystemUserId || metadata.filesystem_user_id || userId;
+  const pinScope = runtimePinScope(sessionId);
+  const pinRuntimeFs = async () => {
+    if (!metadata.workspaceSlug) return null;
+    return ensureRuntimeFilesystem({
+      workspaceSlug: metadata.workspaceSlug,
+      filesystemUserId,
+      runtimeScope: pinScope,
+      pin: true,
+      reason: 'runtime_pod',
+    });
+  };
+
+  // 1. Fast path — runtime Deployment already exists: bump activity + return ready.
+  try {
+    await appsApi.readNamespacedDeployment(name, NAMESPACE);
+    await pinRuntimeFs();
+    await touchRuntime(sessionId);
+    try {
+      const ready = await getReadyRuntimePodForSession(sessionId);
+      if (ready.podName) return { name, created: false, ...ready };
+      return { name, created: false, ...(await waitForRuntimePodReady(sessionId)) };
+    } catch (readyErr) {
+      releaseRuntimeFilesystem(pinScope);
+      throw readyErr;
+    }
+  } catch (err) {
+    if (!(err.response && err.response.statusCode === 404)) throw err;
+    // 404 → does not exist; fall through to creation.
+  }
+
+  // 2. Capacity guard (mirrors the worker's MAX_WORKSPACE_PODS).
+  const count = await getActiveRuntimeCount();
+  if (runtimeAtCapacity(count, MAX_RUNTIME_PODS)) {
+    throw new Error(`Runtime limit reached (${MAX_RUNTIME_PODS}). Try again later.`);
+  }
+
+  // 3. Pin the workspace FS under the runtime's OWN scope before create.
+  await pinRuntimeFs();
+
+  // 4. Build spec + stamp lifecycle annotations (lastActive drives the culler).
+  const deployment = buildRuntimeDeployment({ sessionId, userId, metadata });
+  const annotations = runtimeAnnotations(sessionId, userId, metadata);
+  deployment.metadata.annotations = { ...(deployment.metadata.annotations || {}), ...annotations };
+  deployment.spec.template.metadata.annotations = {
+    ...(deployment.spec.template.metadata.annotations || {}),
+    ...annotations,
+  };
+
+  try {
+    await appsApi.createNamespacedDeployment(NAMESPACE, deployment);
+    console.log(`[RuntimeSpawner] Created runtime pod: ${name} (session=${sessionId})`);
+  } catch (err) {
+    if (err.response && err.response.statusCode === 409) {
+      console.log(`[RuntimeSpawner] Runtime deployment ${name} already exists (conflict).`);
+    } else {
+      releaseRuntimeFilesystem(pinScope);
+      throw err;
+    }
+  }
+
+  // 5. Wait for dockerd-ready (runtime container readinessProbe → all-ready).
+  try {
+    const ready = await waitForRuntimePodReady(sessionId);
+    console.log(`[RuntimeSpawner] Runtime pod ${ready.podName} is dockerd-ready (IP=${ready.podIP})`);
+    return { name, created: true, ...ready };
+  } catch (err) {
+    console.error(`[RuntimeSpawner] Runtime readiness timeout for ${name}, tearing down:`, err.message);
+    await runtimeTeardown(sessionId, 'runtime_readiness_timeout');
+    throw new Error(`Runtime pod failed to become dockerd-ready within ${RUNTIME_POD_READY_TIMEOUT_MS / 1000}s`);
+  }
+}
+
+/** Bump the runtime Deployment's lastActive (heartbeat). Self-gated. */
+async function touchRuntime(sessionId) {
+  if (!isSysboxRuntimeEnabled()) return;
+  if (process.env.SPAWNER_MODE === 'local') return;
+  const name = runtimeDeploymentName(sessionId);
+  const patch = { metadata: { annotations: { 'synthi/lastActive': String(Date.now()) } } };
+  try {
+    await appsApi.patchNamespacedDeployment(name, NAMESPACE, patch, undefined, undefined, undefined, undefined, undefined, {
+      headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
+    });
+  } catch (err) {
+    if (err.response && err.response.statusCode !== 404) {
+      console.error(`[RuntimeSpawner] touchRuntime() failed for ${name}:`, err.message);
+    }
+  }
+}
+
+/** Delete the runtime Deployment + release its FS pin. Self-gated. */
+async function runtimeTeardown(sessionId, reason = 'teardown') {
+  if (!isSysboxRuntimeEnabled()) return;
+  releaseRuntimeFilesystem(runtimePinScope(sessionId));
+  if (process.env.SPAWNER_MODE === 'local') return;
+  const name = runtimeDeploymentName(sessionId);
+  try {
+    await appsApi.deleteNamespacedDeployment(name, NAMESPACE);
+    console.log(`[RuntimeSpawner] Deleted runtime pod: ${name} (reason=${reason})`);
+  } catch (err) {
+    if (err.response && err.response.statusCode === 404) return;
+    console.error(`[RuntimeSpawner] runtimeTeardown() failed for ${name}:`, err.message);
+  }
+}
+
+/** Cull idle runtime pods (own timeout, own managed-by selector). Self-gated. */
+async function cullIdleRuntimePods() {
+  if (!isSysboxRuntimeEnabled()) return;
+  try {
+    const { body } = await appsApi.listNamespacedDeployment(
+      NAMESPACE, undefined, undefined, undefined, undefined,
+      `app.kubernetes.io/managed-by=${RUNTIME_MANAGED_BY}`,
+    );
+    const toCull = runtimeCullDecision(body.items || [], Date.now(), RUNTIME_IDLE_TIMEOUT_MS);
+    for (const { name, sessionId } of toCull) {
+      console.log(`[RuntimeCuller] Deleting idle runtime ${name} (session=${sessionId || '?'})`);
+      if (sessionId) {
+        await runtimeTeardown(sessionId, 'idle_timeout');
+      } else {
+        try {
+          await appsApi.deleteNamespacedDeployment(name, NAMESPACE);
+        } catch (delErr) {
+          if (delErr.response?.statusCode !== 404) {
+            console.error(`[RuntimeCuller] Failed to delete ${name}:`, delErr.message);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[RuntimeCuller] Scan failed:', err.message);
+  }
+}
+
 // ── Exports ────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -1145,4 +1425,12 @@ module.exports = {
   handleSessionEnded,
   gracefulShutdown,
   getActiveWorkspaceCount,
+  // Sysbox runtime pod (Slice 2, dark behind RUNTIME_BACKEND=sysbox-pod)
+  spawnRuntimePod,
+  runtimeTeardown,
+  touchRuntime,
+  cullIdleRuntimePods,
+  getActiveRuntimeCount,
+  runtimeCullDecision,
+  runtimeAtCapacity,
 };

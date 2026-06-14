@@ -1427,6 +1427,15 @@ const server = http.createServer(async (req, res) => {
         runtimeKind,
         filesystemUserId,
       });
+      // Sysbox runtime pod (dark): bring up the per-workspace container engine
+      // alongside the worker. Fire-and-forget + self-gated on RUNTIME_BACKEND, so
+      // it's a no-op unless the flag is on and never blocks/breaks the worker
+      // session. Only the k8s spawner exposes spawnRuntimePod.
+      if (typeof spawner.spawnRuntimePod === 'function') {
+        Promise.resolve(
+          spawner.spawnRuntimePod(session_id, user_id, { workspaceSlug, runtimeKind, filesystemUserId }),
+        ).catch((err) => console.error('[Spawner] spawnRuntimePod failed:', err && err.message ? err.message : err));
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (e) {
