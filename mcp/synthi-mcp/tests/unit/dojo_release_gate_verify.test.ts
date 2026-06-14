@@ -22,6 +22,10 @@ import {
   DOJO_CASE_LAW_RUNTIME_TEST_FILES,
 } from "../../scripts/dojo-case-law-runtime-self-check.mjs";
 import {
+  DOJO_CHECKRIDE_LICENSE_CAPABILITIES,
+  DOJO_CHECKRIDE_LICENSE_TEST_FILES,
+} from "../../scripts/dojo-checkride-license-self-check.mjs";
+import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
@@ -123,6 +127,7 @@ import {
   validateDojoTimeMachineDebuggerEvidenceForRelease,
   validateDojoHostedRuntimeGatewayEvidenceForRelease,
   validateDojoVivariumRuntimeEvidenceForRelease,
+  validateDojoCheckrideLicenseEvidenceForRelease,
   validateDojoCaseLawRuntimeEvidenceForRelease,
   validateDojoManagedKeySigningEvidenceForRelease,
   validateDojoPublicProofVerificationEvidenceForRelease,
@@ -151,6 +156,7 @@ import {
   verifyDojoTimeMachineDebuggerEvidenceArtifact,
   verifyDojoHostedRuntimeGatewayEvidenceArtifact,
   verifyDojoVivariumRuntimeEvidenceArtifact,
+  verifyDojoCheckrideLicenseEvidenceArtifact,
   verifyDojoCaseLawRuntimeEvidenceArtifact,
   verifyDojoManagedKeySigningEvidenceArtifact,
   verifyDojoPublicProofVerificationEvidenceArtifact,
@@ -1262,6 +1268,7 @@ describe("Dojo release gate artifact verifier", () => {
     const skillPassportEvidencePath = await writeSkillPassportEvidenceFixture({ dir });
     const timeMachineDebuggerEvidencePath = await writeTimeMachineDebuggerEvidenceFixture({ dir });
     const vivariumRuntimeEvidencePath = await writeVivariumRuntimeEvidenceFixture({ dir });
+    const checkrideLicenseEvidencePath = await writeCheckrideLicenseEvidenceFixture({ dir });
     const caseLawRuntimeEvidencePath = await writeCaseLawRuntimeEvidenceFixture({ dir });
     const hostedRuntimeGatewayEvidencePath = await writeHostedRuntimeGatewayEvidenceFixture({ dir });
     const complianceEvidencePath = await writeComplianceExportEvidenceFixture({ dir });
@@ -1324,6 +1331,7 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "dojo_skill_passport_self_check").default_evidence_path = skillPassportEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_time_machine_debugger_self_check").default_evidence_path = timeMachineDebuggerEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_vivarium_runtime_self_check").default_evidence_path = vivariumRuntimeEvidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_checkride_license_self_check").default_evidence_path = checkrideLicenseEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_case_law_runtime_self_check").default_evidence_path = caseLawRuntimeEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check").default_evidence_path = hostedRuntimeGatewayEvidencePath;
     manifest.gates.find((gate) => gate.id === "privacy_redaction_suite").default_evidence_path = privacyEvidencePath;
@@ -1361,6 +1369,7 @@ describe("Dojo release gate artifact verifier", () => {
         "skill-passport-evidence": skillPassportEvidencePath,
         "time-machine-debugger-evidence": timeMachineDebuggerEvidencePath,
         "vivarium-runtime-evidence": vivariumRuntimeEvidencePath,
+        "checkride-license-evidence": checkrideLicenseEvidencePath,
         "case-law-runtime-evidence": caseLawRuntimeEvidencePath,
         "hosted-runtime-gateway-evidence": hostedRuntimeGatewayEvidencePath,
         "source-drift-evidence": sourceDriftEvidencePath,
@@ -1508,6 +1517,13 @@ describe("Dojo release gate artifact verifier", () => {
         id: "dojo_vivarium_runtime_self_check",
         ok: true,
         evidence_path: vivariumRuntimeEvidencePath,
+      }),
+    ]);
+    expect(verified.checkride_license).toEqual([
+      expect.objectContaining({
+        id: "dojo_checkride_license_self_check",
+        ok: true,
+        evidence_path: checkrideLicenseEvidencePath,
       }),
     ]);
     expect(verified.case_law_runtime).toEqual([
@@ -2111,6 +2127,71 @@ describe("Dojo release gate artifact verifier", () => {
       "vivarium_runtime_required_capabilities_missing:vivarium_runner_executes_baseline_through_fixtures_graph_oracle",
       "vivarium_runtime_required_capabilities_untested:vivarium_runner_executes_baseline_through_fixtures_graph_oracle",
       `vivarium_runtime_required_test_files_missing:${DOJO_VIVARIUM_RUNTIME_TEST_FILES.join(",")}`,
+    ]));
+  });
+
+  it("verifies checkride and license evidence coverage and entrustment contract", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-checkride-license-verify-"));
+    const evidencePath = await writeCheckrideLicenseEvidenceFixture({ dir });
+
+    expect(validateDojoCheckrideLicenseEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoCheckrideLicenseEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_checkride_license_self_check",
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = checkrideLicenseEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["checkride_blocked_scenario_emits_license_constraint_and_evidence_record"],
+      checkride_license: {
+        ...checkrideLicenseEvidenceFixture().checkride_license,
+        license_constraints_required: false,
+        stale_evidence_downgrade_required: false,
+      },
+    });
+    const incompletePath = await writeCheckrideLicenseEvidenceFixture({
+      dir,
+      basename: "incomplete-checkride-license",
+      evidence: incomplete,
+    });
+    const rejected = await verifyDojoCheckrideLicenseEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "checkride_license_not_ok",
+      "checkride_license_coverage_incomplete",
+      "checkride_license_missing_capabilities:checkride_blocked_scenario_emits_license_constraint_and_evidence_record",
+      "checkride_license_constraint_requirement_missing",
+      "checkride_license_stale_evidence_requirement_missing",
+    ]));
+
+    const driftedPath = await writeCheckrideLicenseEvidenceFixture({
+      dir,
+      basename: "drifted-checkride-license",
+      evidence: checkrideLicenseEvidenceFixture({
+        configured_capabilities: DOJO_CHECKRIDE_LICENSE_CAPABILITIES
+          .filter((capability) => capability !== "checkride_runtime_oracle_blocks_happy_path_only"),
+        tested_capabilities: DOJO_CHECKRIDE_LICENSE_CAPABILITIES
+          .filter((capability) => capability !== "checkride_runtime_oracle_blocks_happy_path_only"),
+        capability_count: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length - 1,
+        test_files: [],
+        test_file_count: 0,
+        reported_test_file_count: 0,
+      }),
+    });
+    expect((await verifyDojoCheckrideLicenseEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "checkride_license_required_capabilities_missing:checkride_runtime_oracle_blocks_happy_path_only",
+      "checkride_license_required_capabilities_untested:checkride_runtime_oracle_blocks_happy_path_only",
+      `checkride_license_required_test_files_missing:${DOJO_CHECKRIDE_LICENSE_TEST_FILES.join(",")}`,
     ]));
   });
 
@@ -5032,6 +5113,123 @@ function vivariumRuntimeJsonReportFixtureText() {
         startTime: 0,
         endTime: 100,
         assertionResults: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+}
+
+async function writeCheckrideLicenseEvidenceFixture({
+  dir,
+  basename = "dojo-checkride-license",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "checkride license suite passed\n";
+  const stderr = "";
+  const jsonReport = checkrideLicenseJsonReportFixtureText();
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? checkrideLicenseEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  const withLogDefaults = {
+    ...body,
+    stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
+    stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
+    json_report_path: body.json_report_path && body.json_report_path !== "vitest.json" ? body.json_report_path : jsonReportPath,
+    json_report_sha256: body.json_report_sha256 && body.json_report_sha256 !== "json-report-sha256" ? body.json_report_sha256 : sha256(jsonReport),
+    json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
+      ? body.json_report_bytes
+      : Buffer.byteLength(jsonReport),
+  };
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
+  return evidencePath;
+}
+
+function checkrideLicenseEvidenceFixture(overrides = {}) {
+  const stdout = "checkride license suite passed\n";
+  const stderr = "";
+  const jsonReport = checkrideLicenseJsonReportFixtureText();
+  return {
+    schema_version: "synthi.dojo.checkrideLicenseEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_CHECKRIDE_LICENSE_CAPABILITIES],
+    tested_capabilities: [...DOJO_CHECKRIDE_LICENSE_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length,
+    configured_capability_count: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    checkride_license: {
+      executable_checkride_required: true,
+      graph_runtime_required: true,
+      vivarium_oracle_required: true,
+      observed_evidence_required: true,
+      evidence_record_required: true,
+      license_constraints_required: true,
+      critical_failure_block_required: true,
+      substrate_assertion_required: true,
+      entrustment_policy_required: true,
+      guardrail_evidence_e3_required: true,
+      stale_evidence_downgrade_required: true,
+      shadow_mismatch_limit_required: true,
+      srl_policy_required: true,
+      limited_license_srl7_required: true,
+      operational_feedback_srl9_required: true,
+    },
+    test_files: [...DOJO_CHECKRIDE_LICENSE_TEST_FILES],
+    test_file_count: DOJO_CHECKRIDE_LICENSE_TEST_FILES.length,
+    reported_test_file_count: DOJO_CHECKRIDE_LICENSE_TEST_FILES.length,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length,
+      passed_tests: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: overrides.stdout_path || path.join(tmpdir(), "dojo-checkride-license.stdout.log"),
+    stderr_path: overrides.stderr_path || path.join(tmpdir(), "dojo-checkride-license.stderr.log"),
+    json_report_path: overrides.json_report_path || path.join(tmpdir(), "dojo-checkride-license.vitest.json"),
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    json_report_sha256: sha256(jsonReport),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function checkrideLicenseJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length,
+    numPassedTests: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_CHECKRIDE_LICENSE_TEST_FILES.length,
+    numPassedTestSuites: DOJO_CHECKRIDE_LICENSE_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.map((capability, index) => ({
           fullName: `release verifier fixture covers ${capability}`,
           title: `release verifier fixture covers ${capability}`,
           status: "passed",

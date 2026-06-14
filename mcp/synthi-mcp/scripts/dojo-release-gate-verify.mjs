@@ -30,6 +30,10 @@ import {
   DOJO_CASE_LAW_RUNTIME_TEST_FILES,
 } from "./dojo-case-law-runtime-self-check.mjs";
 import {
+  DOJO_CHECKRIDE_LICENSE_CAPABILITIES,
+  DOJO_CHECKRIDE_LICENSE_TEST_FILES,
+} from "./dojo-checkride-license-self-check.mjs";
+import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
   DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS,
@@ -144,6 +148,7 @@ const DEFAULT_HOSTED_RUNTIME_GATEWAY_DIR = path.join(REPO_ROOT, "tmp", "dojo-hos
 const DEFAULT_MANAGED_KEY_SIGNING_DIR = path.join(REPO_ROOT, "tmp", "dojo-managed-key-signing");
 const DEFAULT_PUBLIC_PROOF_VERIFICATION_DIR = path.join(REPO_ROOT, "tmp", "dojo-public-proof-verification");
 const DEFAULT_CASE_LAW_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-case-law-runtime");
+const DEFAULT_CHECKRIDE_LICENSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-checkride-license");
 const DEFAULT_VIVARIUM_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-vivarium-runtime");
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_COMPLIANCE_EXPORT_DIR = path.join(REPO_ROOT, "tmp", "dojo-compliance-export");
@@ -464,6 +469,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
+  const checkrideLicenseResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-checkride-license"]) || args["checkride-license-evidence"]) {
+    const checkrideLicenseGate = findGate(manifest, "dojo_checkride_license_self_check") || {};
+    checkrideLicenseResults.push(await verifyDojoCheckrideLicenseEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["checkride-license-evidence"]
+        || checkrideLicenseGate.default_evidence_path
+        || path.join(DEFAULT_CHECKRIDE_LICENSE_DIR, "dojo-checkride-license.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
   const caseLawRuntimeResults = [];
   if (truthy(args["release-candidate"]) || truthy(args["include-case-law-runtime"]) || args["case-law-runtime-evidence"]) {
     const caseLawRuntimeGate = findGate(manifest, "dojo_case_law_runtime_self_check") || {};
@@ -534,7 +550,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -560,6 +576,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     skill_passport: skillPassportResults.map(summarizeSection),
     time_machine_debugger: timeMachineDebuggerResults.map(summarizeSection),
     vivarium_runtime: vivariumRuntimeResults.map(summarizeSection),
+    checkride_license: checkrideLicenseResults.map(summarizeSection),
     case_law_runtime: caseLawRuntimeResults.map(summarizeSection),
     hosted_runtime_gateway: hostedRuntimeGatewayResults.map(summarizeSection),
     security_abuse: securityResults.map(summarizeSection),
@@ -2643,6 +2660,95 @@ export function validateDojoVivariumRuntimeEvidenceForRelease(evidence) {
   };
 }
 
+export async function verifyDojoCheckrideLicenseEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoCheckrideLicenseEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_checkride_license_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+  };
+}
+
+export function validateDojoCheckrideLicenseEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.checkrideLicenseEvidence.v1") {
+    errors.push(`checkride_license_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("checkride_license_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`checkride_license_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("checkride_license_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`checkride_license_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_CHECKRIDE_LICENSE_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`checkride_license_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_CHECKRIDE_LICENSE_TEST_FILES,
+    prefix: "checkride_license",
+  }));
+  const untestedRequiredCapabilities = DOJO_CHECKRIDE_LICENSE_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`checkride_license_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`checkride_license_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`checkride_license_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.checkride_license || {};
+  for (const [field, errorCode] of [
+    ["executable_checkride_required", "checkride_license_executable_requirement_missing"],
+    ["graph_runtime_required", "checkride_license_graph_runtime_requirement_missing"],
+    ["vivarium_oracle_required", "checkride_license_oracle_requirement_missing"],
+    ["observed_evidence_required", "checkride_license_observed_evidence_requirement_missing"],
+    ["evidence_record_required", "checkride_license_evidence_record_requirement_missing"],
+    ["license_constraints_required", "checkride_license_constraint_requirement_missing"],
+    ["critical_failure_block_required", "checkride_license_critical_failure_requirement_missing"],
+    ["substrate_assertion_required", "checkride_license_substrate_assertion_requirement_missing"],
+    ["entrustment_policy_required", "checkride_license_entrustment_requirement_missing"],
+    ["guardrail_evidence_e3_required", "checkride_license_e3_requirement_missing"],
+    ["stale_evidence_downgrade_required", "checkride_license_stale_evidence_requirement_missing"],
+    ["shadow_mismatch_limit_required", "checkride_license_shadow_mismatch_requirement_missing"],
+    ["srl_policy_required", "checkride_license_srl_requirement_missing"],
+    ["limited_license_srl7_required", "checkride_license_srl7_requirement_missing"],
+    ["operational_feedback_srl9_required", "checkride_license_srl9_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("checkride_license_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`checkride_license_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`checkride_license_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("checkride_license_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`checkride_license_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
 export async function verifyDojoCaseLawRuntimeEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
   const evidence = await readJsonFile(evidencePath);
   const errors = validateDojoCaseLawRuntimeEvidenceForRelease(evidence).errors;
@@ -4184,6 +4290,37 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_evil_twin_hardening_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_checkride_requirement_missing"));
 
+  const checkrideLicenseDir = path.join(outDir, "checkride-license");
+  await mkdir(checkrideLicenseDir, { recursive: true });
+  const checkrideLicenseArtifacts = await writeCheckrideLicenseEvidenceForSelfCheck({ outDir: checkrideLicenseDir });
+  const checkrideLicenseResult = await verifyDojoCheckrideLicenseEvidenceArtifact({
+    evidencePath: checkrideLicenseArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert.equal(checkrideLicenseResult.ok, true, checkrideLicenseResult.errors.join(";"));
+  const rejectedCheckrideLicenseArtifacts = await writeCheckrideLicenseEvidenceForSelfCheck({
+    outDir: checkrideLicenseDir,
+    basename: "dojo-checkride-license-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["checkride_blocked_scenario_emits_license_constraint_and_evidence_record"],
+      checkride_license: {
+        ...checkrideLicenseArtifacts.evidence.checkride_license,
+        license_constraints_required: false,
+        stale_evidence_downgrade_required: false,
+      },
+    },
+  });
+  const rejectedCheckrideLicense = await verifyDojoCheckrideLicenseEvidenceArtifact({
+    evidencePath: rejectedCheckrideLicenseArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedCheckrideLicense.errors.includes("checkride_license_coverage_incomplete"));
+  assert(rejectedCheckrideLicense.errors.includes("checkride_license_missing_capabilities:checkride_blocked_scenario_emits_license_constraint_and_evidence_record"));
+  assert(rejectedCheckrideLicense.errors.includes("checkride_license_constraint_requirement_missing"));
+  assert(rejectedCheckrideLicense.errors.includes("checkride_license_stale_evidence_requirement_missing"));
+
   const caseLawRuntimeDir = path.join(outDir, "case-law-runtime");
   await mkdir(caseLawRuntimeDir, { recursive: true });
   const caseLawRuntimeArtifacts = await writeCaseLawRuntimeEvidenceForSelfCheck({ outDir: caseLawRuntimeDir });
@@ -4402,6 +4539,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(skillPassportResult),
       summarizeSection(timeMachineResult),
       summarizeSection(vivariumRuntimeResult),
+      summarizeSection(checkrideLicenseResult),
       summarizeSection(caseLawRuntimeResult),
       summarizeSection(hostedRuntimeGatewayResult),
       summarizeSection(sourceDriftResult),
@@ -4432,6 +4570,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedSkillPassport),
       summarizeSection(rejectedTimeMachine),
       summarizeSection(rejectedVivariumRuntime),
+      summarizeSection(rejectedCheckrideLicense),
       summarizeSection(rejectedCaseLawRuntime),
       summarizeSection(rejectedHostedRuntimeGateway),
       summarizeSection(rejectedSourceDrift),
@@ -6546,6 +6685,110 @@ async function writeVivariumRuntimeEvidenceForSelfCheck({
     test_summary: {
       total_tests: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.length,
       passed_tests: DOJO_VIVARIUM_RUNTIME_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+async function writeCheckrideLicenseEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-checkride-license",
+  overrides = {},
+}) {
+  const stdout = "checkride license focused suite passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length,
+    numPassedTests: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_CHECKRIDE_LICENSE_TEST_FILES.length,
+    numPassedTestSuites: DOJO_CHECKRIDE_LICENSE_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.checkrideLicenseEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_CHECKRIDE_LICENSE_CAPABILITIES],
+    tested_capabilities: [...DOJO_CHECKRIDE_LICENSE_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length,
+    configured_capability_count: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    checkride_license: {
+      executable_checkride_required: true,
+      graph_runtime_required: true,
+      vivarium_oracle_required: true,
+      observed_evidence_required: true,
+      evidence_record_required: true,
+      license_constraints_required: true,
+      critical_failure_block_required: true,
+      substrate_assertion_required: true,
+      entrustment_policy_required: true,
+      guardrail_evidence_e3_required: true,
+      stale_evidence_downgrade_required: true,
+      shadow_mismatch_limit_required: true,
+      srl_policy_required: true,
+      limited_license_srl7_required: true,
+      operational_feedback_srl9_required: true,
+    },
+    test_files: [...DOJO_CHECKRIDE_LICENSE_TEST_FILES],
+    test_file_count: DOJO_CHECKRIDE_LICENSE_TEST_FILES.length,
+    reported_test_file_count: DOJO_CHECKRIDE_LICENSE_TEST_FILES.length,
+    budget_evaluation: {
+      ok: true,
+      checks: {
+        no_report_error: true,
+        no_failed_tests: true,
+        no_skipped_tests: true,
+        all_reported_tests_passed: true,
+        capability_coverage_complete: true,
+        all_test_files_reported: true,
+        self_check_within_timeout: true,
+      },
+      failed_checks: [],
+    },
+    test_summary: {
+      total_tests: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length,
+      passed_tests: DOJO_CHECKRIDE_LICENSE_CAPABILITIES.length,
       failed_tests: 0,
       pending_tests: 0,
     },

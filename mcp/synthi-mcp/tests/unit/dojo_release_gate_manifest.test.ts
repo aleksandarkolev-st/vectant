@@ -26,6 +26,10 @@ import {
   DOJO_CASE_LAW_RUNTIME_TEST_FILES,
 } from "../../scripts/dojo-case-law-runtime-self-check.mjs";
 import {
+  DOJO_CHECKRIDE_LICENSE_CAPABILITIES,
+  DOJO_CHECKRIDE_LICENSE_TEST_FILES,
+} from "../../scripts/dojo-checkride-license-self-check.mjs";
+import {
   DOJO_CHAOS_PERFORMANCE_TEST_FILES,
   DOJO_CHAOS_SCENARIOS,
 } from "../../scripts/dojo-chaos-performance-self-check.mjs";
@@ -128,6 +132,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:skill-passport:self-check": "node scripts/dojo-skill-passport-self-check.mjs",
     "proof:dojo:time-machine-debugger:self-check": "node scripts/dojo-time-machine-debugger-self-check.mjs",
     "proof:dojo:vivarium-runtime:self-check": "node scripts/dojo-vivarium-runtime-self-check.mjs",
+    "proof:dojo:checkride-license:self-check": "node scripts/dojo-checkride-license-self-check.mjs",
     "proof:dojo:case-law-runtime:self-check": "node scripts/dojo-case-law-runtime-self-check.mjs",
     "proof:dojo:hosted-runtime-gateway:self-check": "node scripts/dojo-hosted-runtime-gateway-self-check.mjs",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
@@ -748,6 +753,38 @@ describe("Dojo release gate manifest", () => {
         }),
       }),
       expect.objectContaining({
+        id: "dojo_checkride_license_self_check",
+        tier: "T7",
+        package_script: "proof:dojo:checkride-license:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.checkrideLicenseEvidence.v1",
+        default_evidence_path: "tmp/dojo-checkride-license/dojo-checkride-license.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          require_all_checkride_license_capabilities_covered: true,
+          required_checkride_license_capabilities: DOJO_CHECKRIDE_LICENSE_CAPABILITIES,
+          required_test_files: DOJO_CHECKRIDE_LICENSE_TEST_FILES,
+          require_executable_checkride: true,
+          require_graph_runtime: true,
+          require_vivarium_oracle: true,
+          require_observed_evidence: true,
+          require_evidence_record: true,
+          require_license_constraints: true,
+          require_critical_failure_block: true,
+          require_substrate_assertion: true,
+          require_entrustment_policy: true,
+          require_guardrail_evidence_e3: true,
+          require_stale_evidence_downgrade: true,
+          require_shadow_mismatch_limit: true,
+          require_srl_policy: true,
+          require_limited_license_srl7: true,
+          require_operational_feedback_srl9: true,
+          require_no_failed_tests: true,
+          require_no_skipped_tests: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "dojo_case_law_runtime_self_check",
         tier: "T7",
         package_script: "proof:dojo:case-law-runtime:self-check",
@@ -1216,6 +1253,24 @@ describe("Dojo release gate manifest", () => {
       `vivarium_runtime_missing_required_test_files:${missingVivariumRuntimeTestFile}`,
     ]));
 
+    const brokenCheckrideLicense = JSON.parse(JSON.stringify(manifest));
+    const checkrideLicenseGate = brokenCheckrideLicense.gates.find((gate) => gate.id === "dojo_checkride_license_self_check");
+    const missingCheckrideLicenseTestFile = DOJO_CHECKRIDE_LICENSE_TEST_FILES[0];
+    checkrideLicenseGate.release_artifact_requirements.required_checkride_license_capabilities = DOJO_CHECKRIDE_LICENSE_CAPABILITIES
+      .filter((capability) => capability !== "checkride_runtime_oracle_blocks_happy_path_only");
+    checkrideLicenseGate.release_artifact_requirements.required_test_files = DOJO_CHECKRIDE_LICENSE_TEST_FILES
+      .filter((file) => file !== missingCheckrideLicenseTestFile);
+    checkrideLicenseGate.release_artifact_requirements.require_executable_checkride = false;
+    checkrideLicenseGate.release_artifact_requirements.require_license_constraints = false;
+    checkrideLicenseGate.release_artifact_requirements.require_stale_evidence_downgrade = false;
+    expect(validateDojoReleaseGateManifest(brokenCheckrideLicense, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "checkride_license_missing_executable_requirement",
+      "checkride_license_missing_license_constraint_requirement",
+      "checkride_license_missing_stale_evidence_requirement",
+      "checkride_license_missing_required_capabilities:checkride_runtime_oracle_blocks_happy_path_only",
+      `checkride_license_missing_required_test_files:${missingCheckrideLicenseTestFile}`,
+    ]));
+
     const brokenCaseLawRuntime = JSON.parse(JSON.stringify(manifest));
     const caseLawRuntimeGate = brokenCaseLawRuntime.gates.find((gate) => gate.id === "dojo_case_law_runtime_self_check");
     const missingCaseLawRuntimeTestFile = DOJO_CASE_LAW_RUNTIME_TEST_FILES[0];
@@ -1332,6 +1387,7 @@ describe("Dojo release gate manifest", () => {
       "dojo_skill_passport_self_check",
       "dojo_time_machine_debugger_self_check",
       "dojo_vivarium_runtime_self_check",
+      "dojo_checkride_license_self_check",
       "dojo_case_law_runtime_self_check",
       "dojo_hosted_runtime_gateway_self_check",
       "security_abuse_suite",
@@ -1364,7 +1420,7 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 29,
+      proof_artifact_gate_count: 30,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
@@ -1386,6 +1442,7 @@ describe("Dojo release gate manifest", () => {
         "dojo_skill_passport_self_check",
         "dojo_time_machine_debugger_self_check",
         "dojo_vivarium_runtime_self_check",
+        "dojo_checkride_license_self_check",
         "dojo_case_law_runtime_self_check",
         "dojo_hosted_runtime_gateway_self_check",
         "compliance_export_suite",

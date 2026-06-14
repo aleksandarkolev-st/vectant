@@ -25,6 +25,10 @@ import {
   DOJO_CASE_LAW_RUNTIME_TEST_FILES,
 } from "./dojo-case-law-runtime-self-check.mjs";
 import {
+  DOJO_CHECKRIDE_LICENSE_CAPABILITIES,
+  DOJO_CHECKRIDE_LICENSE_TEST_FILES,
+} from "./dojo-checkride-license-self-check.mjs";
+import {
   DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
   DOJO_COMPLIANCE_EXPORT_TEST_FILES,
 } from "./dojo-compliance-export-self-check.mjs";
@@ -999,6 +1003,41 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
   },
   {
+    id: "dojo_checkride_license_self_check",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:checkride-license:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/integration/dojo_checkride_runner.test.ts tests/unit/dojo_entrustment_policy.test.ts tests/unit/dojo_srl_policy.test.ts -- --reporter=json --outputFile ../../tmp/dojo-checkride-license/dojo-checkride-license.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:checkride-license:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.checkrideLicenseEvidence.v1",
+    default_evidence_path: "tmp/dojo-checkride-license/dojo-checkride-license.evidence.json",
+    release_artifact_requirements: {
+      require_all_checkride_license_capabilities_covered: true,
+      required_checkride_license_capabilities: [...DOJO_CHECKRIDE_LICENSE_CAPABILITIES],
+      required_test_files: [...DOJO_CHECKRIDE_LICENSE_TEST_FILES],
+      require_executable_checkride: true,
+      require_graph_runtime: true,
+      require_vivarium_oracle: true,
+      require_observed_evidence: true,
+      require_evidence_record: true,
+      require_license_constraints: true,
+      require_critical_failure_block: true,
+      require_substrate_assertion: true,
+      require_entrustment_policy: true,
+      require_guardrail_evidence_e3: true,
+      require_stale_evidence_downgrade: true,
+      require_shadow_mismatch_limit: true,
+      require_srl_policy: true,
+      require_limited_license_srl7: true,
+      require_operational_feedback_srl9: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "dojo_case_law_runtime_self_check",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -1216,6 +1255,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "dojo_skill_passport_self_check",
   "dojo_time_machine_debugger_self_check",
   "dojo_vivarium_runtime_self_check",
+  "dojo_checkride_license_self_check",
   "dojo_case_law_runtime_self_check",
   "dojo_hosted_runtime_gateway_self_check",
   "security_abuse_suite",
@@ -2297,6 +2337,62 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!vivariumRuntimeGate.release_artifact_requirements?.require_json_report_digest_match) {
       errors.push("vivarium_runtime_missing_json_report_digest_requirement");
+    }
+  }
+  const checkrideLicenseGate = gates.find((gate) => gate.id === "dojo_checkride_license_self_check");
+  if (checkrideLicenseGate) {
+    if (checkrideLicenseGate.evidence_schema_version !== "synthi.dojo.checkrideLicenseEvidence.v1") {
+      errors.push("checkride_license_missing_evidence_schema");
+    }
+    if (checkrideLicenseGate.package_script !== "proof:dojo:checkride-license:self-check") {
+      errors.push("checkride_license_missing_package_script");
+    }
+    if (!checkrideLicenseGate.default_evidence_path) errors.push("checkride_license_missing_default_evidence_path");
+    if (!checkrideLicenseGate.release_artifact_requirements?.require_all_checkride_license_capabilities_covered) {
+      errors.push("checkride_license_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_executable_checkride", "checkride_license_missing_executable_requirement"],
+      ["require_graph_runtime", "checkride_license_missing_graph_runtime_requirement"],
+      ["require_vivarium_oracle", "checkride_license_missing_oracle_requirement"],
+      ["require_observed_evidence", "checkride_license_missing_observed_evidence_requirement"],
+      ["require_evidence_record", "checkride_license_missing_evidence_record_requirement"],
+      ["require_license_constraints", "checkride_license_missing_license_constraint_requirement"],
+      ["require_critical_failure_block", "checkride_license_missing_critical_failure_requirement"],
+      ["require_substrate_assertion", "checkride_license_missing_substrate_assertion_requirement"],
+      ["require_entrustment_policy", "checkride_license_missing_entrustment_requirement"],
+      ["require_guardrail_evidence_e3", "checkride_license_missing_e3_requirement"],
+      ["require_stale_evidence_downgrade", "checkride_license_missing_stale_evidence_requirement"],
+      ["require_shadow_mismatch_limit", "checkride_license_missing_shadow_mismatch_requirement"],
+      ["require_srl_policy", "checkride_license_missing_srl_requirement"],
+      ["require_limited_license_srl7", "checkride_license_missing_srl7_requirement"],
+      ["require_operational_feedback_srl9", "checkride_license_missing_srl9_requirement"],
+    ]) {
+      if (!checkrideLicenseGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredCheckrideLicenseCapabilities = Array.isArray(checkrideLicenseGate.release_artifact_requirements?.required_checkride_license_capabilities)
+      ? checkrideLicenseGate.release_artifact_requirements.required_checkride_license_capabilities
+      : [];
+    const missingCheckrideLicenseCapabilities = DOJO_CHECKRIDE_LICENSE_CAPABILITIES
+      .filter((capability) => !requiredCheckrideLicenseCapabilities.includes(capability));
+    if (missingCheckrideLicenseCapabilities.length > 0) {
+      errors.push(`checkride_license_missing_required_capabilities:${missingCheckrideLicenseCapabilities.join(",")}`);
+    }
+    const missingCheckrideLicenseTestFiles = missingRequiredEntries(
+      DOJO_CHECKRIDE_LICENSE_TEST_FILES,
+      checkrideLicenseGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingCheckrideLicenseTestFiles.length > 0) {
+      errors.push(`checkride_license_missing_required_test_files:${missingCheckrideLicenseTestFiles.join(",")}`);
+    }
+    if (!checkrideLicenseGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("checkride_license_missing_no_skipped_requirement");
+    }
+    if (!checkrideLicenseGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("checkride_license_missing_digest_requirement");
+    }
+    if (!checkrideLicenseGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("checkride_license_missing_json_report_digest_requirement");
     }
   }
   const caseLawRuntimeGate = gates.find((gate) => gate.id === "dojo_case_law_runtime_self_check");
