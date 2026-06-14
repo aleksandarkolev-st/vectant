@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { AnimatePresence, motion } from 'framer-motion';
 
@@ -13,6 +13,7 @@ const EXTENSION_INSTALL_URL =
   process.env.NEXT_PUBLIC_SYNTHI_OAUTH_RELAY_EXTENSION_URL ||
   '/vectant/extensions/vectant-oauth-relay.zip';
 const MOTION_EASE = [0.16, 1, 0.3, 1];
+const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/;
 const fadeUp = {
   hidden: { opacity: 0, y: 12 },
   visible: { opacity: 1, y: 0, transition: { duration: 0.55, ease: MOTION_EASE } },
@@ -185,9 +186,147 @@ function findLoopbackRedirect(authUrl) {
 function expectedCallbackFromUrl(url) {
   if (!url) return null;
   return {
+    protocol: url.protocol,
     host: normalizeLoopbackHost(url.hostname),
     port: Number(url.port),
     pathPrefix: url.pathname || '/',
+  };
+}
+
+function combinedUrlParams(parsedUrl) {
+  const params = new URLSearchParams(parsedUrl.search);
+  const hash = parsedUrl.hash ? parsedUrl.hash.slice(1) : '';
+  if (!hash.includes('=')) return params;
+
+  const hashParams = new URLSearchParams(hash.startsWith('?') ? hash.slice(1) : hash);
+  for (const [key, value] of hashParams) {
+    if (!params.has(key)) params.append(key, value);
+  }
+  return params;
+}
+
+function getUrlParam(rawUrl, key) {
+  const parsed = parseUrl(rawUrl);
+  if (!parsed) return '';
+  return combinedUrlParams(parsed).get(key) || '';
+}
+
+function validateOAuthValue(value, { min = 4, max = 4096 } = {}) {
+  if (!value || value.length < min) return false;
+  if (value.length > max) return false;
+  if (value.trim() !== value) return false;
+  return !CONTROL_CHAR_RE.test(value);
+}
+
+function validateCallbackUrl(value, expectedCallback, expectedState) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return {
+      ok: false,
+      reason: 'empty',
+      message: 'Paste the redirected localhost URL from the browser address bar.',
+    };
+  }
+
+  const parsed = parseUrl(trimmed);
+  if (!parsed) {
+    return {
+      ok: false,
+      reason: 'invalid_url',
+      message: 'That does not look like a complete URL.',
+    };
+  }
+
+  const host = normalizeLoopbackHost(parsed.hostname);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return {
+      ok: false,
+      reason: 'invalid_protocol',
+      message: 'Use the redirected local callback URL from the browser address bar.',
+    };
+  }
+  if (!parsed.port) {
+    return {
+      ok: false,
+      reason: 'missing_port',
+      message: 'The callback URL is missing its localhost port.',
+    };
+  }
+  if (!LOOPBACK_HOSTS.has(host)) {
+    return {
+      ok: false,
+      reason: 'not_loopback',
+      message: 'This is not a localhost callback URL.',
+    };
+  }
+
+  if (expectedCallback?.protocol && parsed.protocol !== expectedCallback.protocol) {
+    return {
+      ok: false,
+      reason: 'wrong_protocol',
+      message: `This sign-in expects ${expectedCallback.protocol}//${expectedCallback.host}:${expectedCallback.port}.`,
+    };
+  }
+
+  if (expectedCallback?.port && Number(parsed.port) !== Number(expectedCallback.port)) {
+    return {
+      ok: false,
+      reason: 'wrong_port',
+      message: `This sign-in expects ${expectedCallback.host}:${expectedCallback.port}.`,
+    };
+  }
+
+  if (expectedCallback?.pathPrefix) {
+    const expectedPath = expectedCallback.pathPrefix.endsWith('/')
+      ? expectedCallback.pathPrefix
+      : expectedCallback.pathPrefix;
+    const actualPath = parsed.pathname || '/';
+    if (expectedPath !== '/' && actualPath !== expectedPath && !actualPath.startsWith(`${expectedPath}/`)) {
+      return {
+        ok: false,
+        reason: 'wrong_path',
+        message: `This sign-in expects ${expectedPath}.`,
+      };
+    }
+  }
+
+  const params = combinedUrlParams(parsed);
+  const code = params.get('code') || '';
+  const state = params.get('state') || '';
+  if (!validateOAuthValue(code, { min: 8 })) {
+    return {
+      ok: false,
+      reason: 'missing_code',
+      message: 'The callback URL is missing a complete authorization code.',
+    };
+  }
+  if (expectedState && !validateOAuthValue(state, { min: 4, max: 4096 })) {
+    return {
+      ok: false,
+      reason: 'missing_state',
+      message: 'The callback URL is missing a complete state value.',
+    };
+  }
+  if (!expectedState && state && !validateOAuthValue(state, { min: 4, max: 4096 })) {
+    return {
+      ok: false,
+      reason: 'invalid_state',
+      message: 'The callback URL contains an incomplete state value.',
+    };
+  }
+  if (expectedState && state !== expectedState) {
+    return {
+      ok: false,
+      reason: 'state_mismatch',
+      message: 'The callback state does not match this terminal sign-in.',
+    };
+  }
+
+  return {
+    ok: true,
+    reason: 'valid',
+    message: 'Ready to send to the workspace.',
+    url: trimmed,
   };
 }
 
@@ -293,6 +432,7 @@ function LoopbackAuthPage() {
   const collabSessionId = searchParams.get('collabSessionId') || '';
   const loopbackRedirect = useMemo(() => findLoopbackRedirect(authUrl), [authUrl]);
   const expectedCallback = useMemo(() => expectedCallbackFromUrl(loopbackRedirect), [loopbackRedirect]);
+  const expectedState = useMemo(() => getUrlParam(authUrl, 'state'), [authUrl]);
   const [relaySession, setRelaySession] = useState(null);
   const [relayStatus, setRelayStatus] = useState('idle');
   const [callbackUrl, setCallbackUrl] = useState('');
@@ -304,6 +444,11 @@ function LoopbackAuthPage() {
   const [messageTone, setMessageTone] = useState('error');
   const [opened, setOpened] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const openButtonRef = useRef(null);
+  const callbackInputRef = useRef(null);
+  const lastClipboardCandidateRef = useRef('');
+  const submittingRef = useRef(false);
+  const completedRef = useRef(false);
 
   const context = useMemo(() => ({
     workspaceSlug,
@@ -397,48 +542,143 @@ function LoopbackAuthPage() {
     return () => clearTimeout(timer);
   }, [authUrl, openAuth, opened, relaySession]);
 
-  const pasteFromClipboard = async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) setCallbackUrl(text.trim());
-    } catch {
-      setMessageTone('error');
-      setMessage('Clipboard access was blocked. Paste the callback URL manually.');
-    }
-  };
+  const callbackValidation = useMemo(
+    () => validateCallbackUrl(callbackUrl, expectedCallback, expectedState),
+    [callbackUrl, expectedCallback, expectedState],
+  );
 
-  const complete = async () => {
+  const complete = useCallback(async (candidateUrl = callbackUrl, options = {}) => {
+    if (submittingRef.current || completedRef.current) return;
     setMessage('');
+    const trimmedCallbackUrl = String(candidateUrl || '').trim();
+    const validation = validateCallbackUrl(trimmedCallbackUrl, expectedCallback, expectedState);
+
     if (!relaySession?.sessionId) {
       setStatus('error');
       setMessageTone('error');
       setMessage('The relay session is not ready yet.');
       return;
     }
-    if (!isLoopbackCallback(callbackUrl)) {
+    if (!validation.ok) {
       setStatus('error');
       setMessageTone('error');
-      setMessage('Paste the full localhost callback URL from the failed browser tab.');
+      setMessage(validation.message);
       return;
     }
 
+    setCallbackUrl(trimmedCallbackUrl);
     setStatus('loading');
+    submittingRef.current = true;
     try {
       await postJson('/api/oauth-relay/callback', {
         sessionId: relaySession.sessionId,
         workspaceSlug,
-        callbackUrl,
+        callbackUrl: trimmedCallbackUrl,
       });
+      completedRef.current = true;
       setStatus('success');
       setMessageTone('success');
       notifyWorkspaceRelayComplete({ workspaceSlug, runtimeScope, terminalId, status: 'success' });
-      setMessage('The callback was delivered to the workspace. Return to the terminal. If the CLI stays on the same screen, restart the command; many CLIs will now see the saved credentials.');
+      setMessage(options.source === 'clipboard'
+        ? 'Callback detected from your clipboard and delivered to the workspace. Return to the terminal.'
+        : 'The callback was delivered to the workspace. Return to the terminal. If the CLI stays on the same screen, restart the command; many CLIs will now see the saved credentials.');
     } catch (err) {
       setStatus('error');
       setMessageTone('error');
       setMessage(err?.message || 'Failed to send the callback to the workspace.');
+    } finally {
+      submittingRef.current = false;
+    }
+  }, [callbackUrl, expectedCallback, expectedState, relaySession, runtimeScope, terminalId, workspaceSlug]);
+
+  const tryCompleteCandidate = useCallback((candidateUrl, source) => {
+    const trimmed = String(candidateUrl || '').trim();
+    if (!trimmed || status === 'success' || status === 'loading') return false;
+    setCallbackUrl(trimmed);
+    const validation = validateCallbackUrl(trimmed, expectedCallback, expectedState);
+    if (!validation.ok || relayStatus !== 'ready') return false;
+    complete(trimmed, { source });
+    return true;
+  }, [complete, expectedCallback, expectedState, relayStatus, status]);
+
+  const pasteFromClipboard = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) return;
+      const submitted = tryCompleteCandidate(text, 'paste');
+      if (!submitted) setCallbackUrl(text.trim());
+    } catch {
+      setMessageTone('error');
+      setMessage('Clipboard access was blocked. Paste the callback URL manually.');
     }
   };
+
+  const handleCallbackPaste = (event) => {
+    const text = event.clipboardData?.getData('text') || '';
+    if (!text) return;
+    const validation = validateCallbackUrl(text, expectedCallback, expectedState);
+    if (!validation.ok) return;
+    event.preventDefault();
+    tryCompleteCandidate(text, 'paste');
+  };
+
+  const handleCallbackKeyDown = (event) => {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    event.preventDefault();
+    if (relayStatus === 'ready' && callbackValidation.ok && status !== 'loading') {
+      complete(callbackUrl, { source: 'keyboard' });
+    }
+  };
+
+  useEffect(() => {
+    if (status === 'success') return;
+    const timer = window.setTimeout(() => {
+      if (opened || relayStatus === 'ready') {
+        callbackInputRef.current?.focus();
+      } else {
+        openButtonRef.current?.focus();
+      }
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [opened, relayStatus, status]);
+
+  useEffect(() => {
+    if (relayStatus !== 'ready' || status === 'success' || status === 'loading') return;
+    if (!navigator.clipboard?.readText) return;
+
+    let cancelled = false;
+    const inspectClipboard = async () => {
+      if (cancelled || document.visibilityState !== 'visible' || !document.hasFocus()) return;
+      try {
+        const text = await navigator.clipboard.readText();
+        const trimmed = String(text || '').trim();
+        if (!trimmed || trimmed === lastClipboardCandidateRef.current) return;
+        const validation = validateCallbackUrl(trimmed, expectedCallback, expectedState);
+        if (!validation.ok) return;
+        lastClipboardCandidateRef.current = trimmed;
+        setMessageTone('success');
+        setMessage('Callback URL found on your clipboard. Sending it to the workspace.');
+        tryCompleteCandidate(trimmed, 'clipboard');
+      } catch {
+        // Browsers may block background clipboard reads. Manual paste remains available.
+      }
+    };
+
+    const onFocus = () => window.setTimeout(inspectClipboard, 120);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') onFocus();
+    };
+
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    const initialTimer = window.setTimeout(inspectClipboard, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(initialTimer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [expectedCallback, expectedState, relayStatus, status, tryCompleteCandidate]);
 
   const openWorkspaceBrowser = async () => {
     setBrowserStatus('loading');
@@ -494,7 +734,7 @@ function LoopbackAuthPage() {
     }
   };
 
-  const hasValidCallback = isLoopbackCallback(callbackUrl);
+  const hasValidCallback = callbackValidation.ok;
   const isComplete = status === 'success';
   const canSubmit = status !== 'loading' && relayStatus === 'ready' && hasValidCallback && !isComplete;
   const expectedHost = loopbackRedirect ? normalizeLoopbackHost(loopbackRedirect.hostname) : 'localhost';
@@ -510,6 +750,12 @@ function LoopbackAuthPage() {
   const callbackHint = loopbackRedirect
     ? `${normalizeLoopbackHost(loopbackRedirect.hostname)}:${loopbackRedirect.port}${loopbackRedirect.pathname || '/'}`
     : 'redirected localhost URL from the browser tab';
+  const callbackPlaceholder = loopbackRedirect
+    ? `${loopbackRedirect.protocol}//${normalizeLoopbackHost(loopbackRedirect.hostname)}:${loopbackRedirect.port}${loopbackRedirect.pathname || '/'}?code=...&state=...`
+    : 'http://localhost:<port>/callback?code=...&state=...';
+  const callbackHelperText = callbackUrl.trim()
+    ? callbackValidation.message
+    : `Expected ${callbackHint}.`;
 
   const returnToTerminal = () => {
     notifyWorkspaceRelayComplete({ workspaceSlug, runtimeScope, terminalId, status: 'success' });
@@ -610,6 +856,7 @@ function LoopbackAuthPage() {
               <div className="flex flex-wrap gap-2">
                 <motion.button
                   type="button"
+                  ref={openButtonRef}
                   whileTap={{ scale: 0.98 }}
                   onClick={openAuth}
                   disabled={relayStatus === 'loading' || isComplete}
@@ -720,26 +967,37 @@ function LoopbackAuthPage() {
                           </motion.button>
                         </div>
                         <textarea
+                          ref={callbackInputRef}
                           value={callbackUrl}
                           onChange={(event) => setCallbackUrl(event.target.value)}
+                          onPaste={handleCallbackPaste}
+                          onKeyDown={handleCallbackKeyDown}
                           spellCheck={false}
+                          disabled={isComplete}
                           className="min-h-[88px] w-full resize-y border-0 bg-[#06060a] p-3 text-[13px] leading-5 text-[#f4f5f8] outline-none placeholder:text-[#5a6178]"
                           style={{ fontFamily: monoFont }}
-                          placeholder="http://localhost:1455/auth/callback?code=..."
+                          placeholder={callbackPlaceholder}
                         />
                       </div>
 
                       <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <p
-                          className="text-[11px] uppercase leading-5 tracking-[0.08em] text-[#9ba2b8]"
+                          className={`text-[11px] uppercase leading-5 tracking-[0.08em] ${
+                            callbackValidation.ok
+                              ? 'text-[#9be8c4]'
+                              : callbackUrl.trim()
+                                ? 'text-[#ff8a8a]'
+                                : 'text-[#9ba2b8]'
+                          }`}
                           style={{ fontFamily: monoFont }}
                         >
-                          {hasValidCallback ? 'Ready to deliver to the workspace.' : `Expected ${callbackHint}.`}
+                          {callbackHelperText}
                         </p>
                         <motion.button
                           type="button"
+                          aria-disabled={!canSubmit}
                           whileTap={{ scale: 0.98 }}
-                          onClick={complete}
+                          onClick={() => complete(callbackUrl, { source: 'button' })}
                           disabled={!canSubmit}
                           className={`inline-flex h-10 items-center justify-center gap-2 border px-4 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
                             hasValidCallback
