@@ -38,6 +38,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "./dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_EVIDENCE_AUTHORITY_CAPABILITIES,
+  DOJO_EVIDENCE_AUTHORITY_TEST_FILES,
+} from "./dojo-evidence-authority-self-check.mjs";
+import {
   DOJO_GENERATED_PR_CAPABILITIES,
   DOJO_GENERATED_PR_TEST_FILES,
 } from "./dojo-generated-pr-self-check.mjs";
@@ -274,6 +278,39 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_json_report_digest_match: true,
     },
     requires_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
+  },
+  {
+    id: "dojo_evidence_authority_self_check",
+    tier: "T2",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:evidence-authority:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_evidence_record.test.ts tests/unit/dojo_evidence_claim_verifier.test.ts tests/unit/dojo_evidence_ledger_resolver.test.ts tests/unit/dojo_evidence_redaction.test.ts tests/unit/dojo_evidence_export.test.ts tests/unit/dojo_proof_claims.test.ts -- --reporter=json --outputFile ../../tmp/dojo-evidence-authority/dojo-evidence-authority.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:evidence-authority:self-check",
+    required_for: ["milestone", "release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.evidenceAuthorityEvidence.v1",
+    default_evidence_path: "tmp/dojo-evidence-authority/dojo-evidence-authority.evidence.json",
+    artifact_requirements: {
+      require_all_evidence_authority_capabilities_covered: true,
+      required_evidence_authority_capabilities: [...DOJO_EVIDENCE_AUTHORITY_CAPABILITIES],
+      required_test_files: [...DOJO_EVIDENCE_AUTHORITY_TEST_FILES],
+      require_canonical_record_hash: true,
+      require_record_signature_verification: true,
+      require_tamper_detection: true,
+      require_claim_freshness: true,
+      require_claim_scope: true,
+      require_claim_kind: true,
+      require_ledger_resolver_fail_closed: true,
+      require_redaction_manifest: true,
+      require_redacted_export: true,
+      require_proof_issue_claim_verification: true,
+      require_self_attested_claim_rejection: true,
+      require_durable_postgres_ledger_gate: true,
+      durable_postgres_ledger_gate_id: "dojo_postgres_control_plane_self_check",
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
   },
   {
     id: "dojo_self_check",
@@ -1149,6 +1186,7 @@ export const DOJO_MILESTONE_GATE_IDS = [
   ...DOJO_MINIMAL_PR_GATE_IDS,
   "mcp_integration_tests",
   "dojo_postgres_control_plane_self_check",
+  "dojo_evidence_authority_self_check",
   "dojo_self_check",
   "dojo_mcp_host_conformance_self_check",
   "dojo_affordance_codemod_self_check",
@@ -1343,6 +1381,62 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!Array.isArray(postgresControlPlaneGate.requires_env)
       || !postgresControlPlaneGate.requires_env.includes("SYNTHI_DOJO_POSTGRES_TEST_URL")) {
       errors.push("postgres_control_plane_missing_postgres_env");
+    }
+  }
+  const evidenceAuthorityGate = gates.find((gate) => gate.id === "dojo_evidence_authority_self_check");
+  if (evidenceAuthorityGate) {
+    if (evidenceAuthorityGate.evidence_schema_version !== "synthi.dojo.evidenceAuthorityEvidence.v1") {
+      errors.push("evidence_authority_missing_evidence_schema");
+    }
+    if (evidenceAuthorityGate.package_script !== "proof:dojo:evidence-authority:self-check") {
+      errors.push("evidence_authority_missing_package_script");
+    }
+    if (!evidenceAuthorityGate.default_evidence_path) errors.push("evidence_authority_missing_default_evidence_path");
+    if (!evidenceAuthorityGate.artifact_requirements?.require_all_evidence_authority_capabilities_covered) {
+      errors.push("evidence_authority_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_canonical_record_hash", "evidence_authority_missing_canonical_hash_requirement"],
+      ["require_record_signature_verification", "evidence_authority_missing_signature_requirement"],
+      ["require_tamper_detection", "evidence_authority_missing_tamper_requirement"],
+      ["require_claim_freshness", "evidence_authority_missing_claim_freshness_requirement"],
+      ["require_claim_scope", "evidence_authority_missing_claim_scope_requirement"],
+      ["require_claim_kind", "evidence_authority_missing_claim_kind_requirement"],
+      ["require_ledger_resolver_fail_closed", "evidence_authority_missing_resolver_requirement"],
+      ["require_redaction_manifest", "evidence_authority_missing_redaction_manifest_requirement"],
+      ["require_redacted_export", "evidence_authority_missing_redacted_export_requirement"],
+      ["require_proof_issue_claim_verification", "evidence_authority_missing_proof_issue_requirement"],
+      ["require_self_attested_claim_rejection", "evidence_authority_missing_self_attested_rejection_requirement"],
+      ["require_durable_postgres_ledger_gate", "evidence_authority_missing_durable_postgres_gate_requirement"],
+    ]) {
+      if (!evidenceAuthorityGate.artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    if (evidenceAuthorityGate.artifact_requirements?.durable_postgres_ledger_gate_id !== "dojo_postgres_control_plane_self_check") {
+      errors.push("evidence_authority_missing_durable_postgres_gate_id");
+    }
+    const requiredEvidenceAuthorityCapabilities = Array.isArray(evidenceAuthorityGate.artifact_requirements?.required_evidence_authority_capabilities)
+      ? evidenceAuthorityGate.artifact_requirements.required_evidence_authority_capabilities
+      : [];
+    const missingEvidenceAuthorityCapabilities = DOJO_EVIDENCE_AUTHORITY_CAPABILITIES
+      .filter((capability) => !requiredEvidenceAuthorityCapabilities.includes(capability));
+    if (missingEvidenceAuthorityCapabilities.length > 0) {
+      errors.push(`evidence_authority_missing_required_capabilities:${missingEvidenceAuthorityCapabilities.join(",")}`);
+    }
+    const missingEvidenceAuthorityTestFiles = missingRequiredEntries(
+      DOJO_EVIDENCE_AUTHORITY_TEST_FILES,
+      evidenceAuthorityGate.artifact_requirements?.required_test_files,
+    );
+    if (missingEvidenceAuthorityTestFiles.length > 0) {
+      errors.push(`evidence_authority_missing_required_test_files:${missingEvidenceAuthorityTestFiles.join(",")}`);
+    }
+    if (!evidenceAuthorityGate.artifact_requirements?.require_no_skipped_tests) {
+      errors.push("evidence_authority_missing_no_skipped_requirement");
+    }
+    if (!evidenceAuthorityGate.artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("evidence_authority_missing_digest_requirement");
+    }
+    if (!evidenceAuthorityGate.artifact_requirements?.require_json_report_digest_match) {
+      errors.push("evidence_authority_missing_json_report_digest_requirement");
     }
   }
   const sourceDriftGate = gates.find((gate) => gate.id === "dojo_source_drift_self_check");

@@ -49,6 +49,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "./dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_EVIDENCE_AUTHORITY_CAPABILITIES,
+  DOJO_EVIDENCE_AUTHORITY_TEST_FILES,
+} from "./dojo-evidence-authority-self-check.mjs";
+import {
   DOJO_GENERATED_PR_CAPABILITIES,
   DOJO_GENERATED_PR_TEST_FILES,
 } from "./dojo-generated-pr-self-check.mjs";
@@ -123,6 +127,7 @@ const DEFAULT_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-mcp-host-confo
 const DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-stdio-host-conformance");
 const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-host-conformance");
 const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-postgres-control-plane");
+const DEFAULT_EVIDENCE_AUTHORITY_DIR = path.join(REPO_ROOT, "tmp", "dojo-evidence-authority");
 const DEFAULT_AFFORDANCE_CODEMOD_DIR = path.join(REPO_ROOT, "tmp", "dojo-affordance-codemod-self-check");
 const DEFAULT_SOURCE_DRIFT_DIR = path.join(REPO_ROOT, "tmp", "dojo-source-drift");
 const DEFAULT_AGENT_READY_UI_CONTRACT_DIR = path.join(REPO_ROOT, "tmp", "dojo-agent-ready-ui-contract");
@@ -226,6 +231,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       evidencePath: resolveRepoPath(args["postgres-control-plane-evidence"]
         || postgresGate.default_evidence_path
         || path.join(DEFAULT_POSTGRES_CONTROL_PLANE_DIR, "dojo-postgres-control-plane.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
+  const evidenceAuthorityResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-evidence-authority"]) || args["evidence-authority-evidence"]) {
+    const evidenceAuthorityGate = findGate(manifest, "dojo_evidence_authority_self_check") || {};
+    evidenceAuthorityResults.push(await verifyDojoEvidenceAuthorityEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["evidence-authority-evidence"]
+        || evidenceAuthorityGate.default_evidence_path
+        || path.join(DEFAULT_EVIDENCE_AUTHORITY_DIR, "dojo-evidence-authority.evidence.json")),
       releaseCandidate: truthy(args["release-candidate"]),
     }));
   }
@@ -518,7 +534,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
@@ -529,6 +545,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     dojo_self_check: proofSelfCheckResults.map(summarizeSection),
     visual_reports: visualResults.map(summarizeSection),
     postgres_control_plane: postgresControlPlaneResults.map(summarizeSection),
+    evidence_authority: evidenceAuthorityResults.map(summarizeSection),
     docker_integration: dockerIntegrationResults.map(summarizeSection),
     source_api: sourceApiResults.map(summarizeSection),
     generated_pr: generatedPrResults.map(summarizeSection),
@@ -861,6 +878,96 @@ function validateRequiredEvidenceTestFiles({ evidence, requiredTestFiles, prefix
     errors.push(`${prefix}_declared_test_file_count_mismatch:${evidence?.test_file_count ?? "missing"}:${testFiles.length}`);
   }
   return errors;
+}
+
+export async function verifyDojoEvidenceAuthorityEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoEvidenceAuthorityEvidenceForMilestone(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_evidence_authority_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+    result_count: Number(evidence?.test_summary?.total_tests || 0),
+  };
+}
+
+export function validateDojoEvidenceAuthorityEvidenceForMilestone(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.evidenceAuthorityEvidence.v1") {
+    errors.push(`evidence_authority_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("evidence_authority_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`evidence_authority_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("evidence_authority_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`evidence_authority_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_EVIDENCE_AUTHORITY_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`evidence_authority_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_EVIDENCE_AUTHORITY_TEST_FILES,
+    prefix: "evidence_authority",
+  }));
+  const untestedRequiredCapabilities = DOJO_EVIDENCE_AUTHORITY_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`evidence_authority_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`evidence_authority_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`evidence_authority_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.evidence_authority || {};
+  for (const [field, errorCode] of [
+    ["canonical_record_hash_required", "evidence_authority_canonical_hash_requirement_missing"],
+    ["record_signature_verification_required", "evidence_authority_signature_requirement_missing"],
+    ["tamper_detection_required", "evidence_authority_tamper_requirement_missing"],
+    ["claim_freshness_required", "evidence_authority_claim_freshness_requirement_missing"],
+    ["claim_scope_required", "evidence_authority_claim_scope_requirement_missing"],
+    ["claim_kind_required", "evidence_authority_claim_kind_requirement_missing"],
+    ["ledger_resolver_fail_closed_required", "evidence_authority_resolver_requirement_missing"],
+    ["redaction_manifest_required", "evidence_authority_redaction_manifest_requirement_missing"],
+    ["redacted_export_required", "evidence_authority_redacted_export_requirement_missing"],
+    ["proof_issue_claim_verification_required", "evidence_authority_proof_issue_requirement_missing"],
+    ["proof_validation_rejects_self_attested_claims_required", "evidence_authority_self_attested_rejection_requirement_missing"],
+    ["durable_postgres_ledger_gate_required", "evidence_authority_durable_postgres_gate_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (contract.durable_postgres_ledger_gate_id !== "dojo_postgres_control_plane_self_check") {
+    errors.push("evidence_authority_durable_postgres_gate_id_missing");
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("evidence_authority_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`evidence_authority_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`evidence_authority_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("evidence_authority_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`evidence_authority_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
 }
 
 export async function verifyDojoDockerIntegrationEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
@@ -3434,6 +3541,35 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedPostgres.errors.includes("postgres_control_plane_capability_coverage_incomplete"));
   assert(rejectedPostgres.errors.includes("postgres_control_plane_missing_capabilities:atomic_proof_consume"));
 
+  const evidenceAuthorityDir = path.join(outDir, "evidence-authority");
+  await mkdir(evidenceAuthorityDir, { recursive: true });
+  const evidenceAuthorityArtifacts = await writeEvidenceAuthorityEvidenceForSelfCheck({ outDir: evidenceAuthorityDir });
+  const evidenceAuthorityResult = await verifyDojoEvidenceAuthorityEvidenceArtifact({
+    evidencePath: evidenceAuthorityArtifacts.evidence_path,
+  });
+  assert.equal(evidenceAuthorityResult.ok, true, evidenceAuthorityResult.errors.join(";"));
+  const rejectedEvidenceAuthorityArtifacts = await writeEvidenceAuthorityEvidenceForSelfCheck({
+    outDir: evidenceAuthorityDir,
+    basename: "dojo-evidence-authority-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["proof_issuance_requires_verified_evidence_records"],
+      evidence_authority: {
+        ...evidenceAuthorityArtifacts.evidence.evidence_authority,
+        proof_issue_claim_verification_required: false,
+        proof_validation_rejects_self_attested_claims_required: false,
+      },
+    },
+  });
+  const rejectedEvidenceAuthority = await verifyDojoEvidenceAuthorityEvidenceArtifact({
+    evidencePath: rejectedEvidenceAuthorityArtifacts.evidence_path,
+  });
+  assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_coverage_incomplete"));
+  assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_missing_capabilities:proof_issuance_requires_verified_evidence_records"));
+  assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_proof_issue_requirement_missing"));
+  assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_self_attested_rejection_requirement_missing"));
+
   const dockerDir = path.join(outDir, "docker-integration");
   await mkdir(dockerDir, { recursive: true });
   const dockerArtifacts = await writeDockerIntegrationEvidenceForSelfCheck({ outDir: dockerDir });
@@ -4250,6 +4386,7 @@ async function runSelfCheck({ outDir }) {
     verified_sections: [
       summarizeSection(manifestResult),
       summarizeSection(postgresControlPlaneResult),
+      summarizeSection(evidenceAuthorityResult),
       summarizeSection(dockerIntegrationResult),
       summarizeSection(workflowE2EResult),
       summarizeSection(stdioAcceptanceResult),
@@ -4282,6 +4419,7 @@ async function runSelfCheck({ outDir }) {
     rejected_controls: [
       summarizeSection(rejectedSelfCheck),
       summarizeSection(rejectedPostgres),
+      summarizeSection(rejectedEvidenceAuthority),
       summarizeSection(rejectedDocker),
       summarizeSection(rejectedCodexAcceptance),
       summarizeSection(rejectedDryRun),
@@ -5239,6 +5377,107 @@ function postgresControlPlaneJsonReportFixtureText() {
     numPassedTestSuites: 4,
     numFailedTestSuites: 0,
     testResults: [],
+  }, null, 2);
+}
+
+async function writeEvidenceAuthorityEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-evidence-authority",
+  overrides = {},
+}) {
+  const stdout = "evidence authority suite passed\n";
+  const stderr = "";
+  const jsonReport = evidenceAuthorityJsonReportFixtureText();
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.evidenceAuthorityEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    signal: null,
+    duration_ms: 400,
+    configured_capabilities: [...DOJO_EVIDENCE_AUTHORITY_CAPABILITIES],
+    tested_capabilities: [...DOJO_EVIDENCE_AUTHORITY_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_EVIDENCE_AUTHORITY_CAPABILITIES.length,
+    configured_capability_count: DOJO_EVIDENCE_AUTHORITY_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    evidence_authority: {
+      canonical_record_hash_required: true,
+      record_signature_verification_required: true,
+      tamper_detection_required: true,
+      claim_freshness_required: true,
+      claim_scope_required: true,
+      claim_kind_required: true,
+      ledger_resolver_fail_closed_required: true,
+      redaction_manifest_required: true,
+      redacted_export_required: true,
+      proof_issue_claim_verification_required: true,
+      proof_validation_rejects_self_attested_claims_required: true,
+      durable_postgres_ledger_gate_required: true,
+      durable_postgres_ledger_gate_id: "dojo_postgres_control_plane_self_check",
+    },
+    test_files: [...DOJO_EVIDENCE_AUTHORITY_TEST_FILES],
+    test_file_count: DOJO_EVIDENCE_AUTHORITY_TEST_FILES.length,
+    reported_test_file_count: DOJO_EVIDENCE_AUTHORITY_TEST_FILES.length,
+    test_summary: {
+      success: true,
+      total_tests: DOJO_EVIDENCE_AUTHORITY_CAPABILITIES.length,
+      passed_tests: DOJO_EVIDENCE_AUTHORITY_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+      total_suites: DOJO_EVIDENCE_AUTHORITY_TEST_FILES.length,
+      passed_suites: DOJO_EVIDENCE_AUTHORITY_TEST_FILES.length,
+      failed_suites: 0,
+      reported_test_file_count: DOJO_EVIDENCE_AUTHORITY_TEST_FILES.length,
+    },
+    budget_evaluation: { ok: true },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+function evidenceAuthorityJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_EVIDENCE_AUTHORITY_CAPABILITIES.length,
+    numPassedTests: DOJO_EVIDENCE_AUTHORITY_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_EVIDENCE_AUTHORITY_TEST_FILES.length,
+    numPassedTestSuites: DOJO_EVIDENCE_AUTHORITY_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_EVIDENCE_AUTHORITY_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
   }, null, 2);
 }
 

@@ -39,6 +39,10 @@ import {
   DOJO_DOCKER_REQUIRED_SERVICES,
 } from "../../scripts/dojo-docker-integration-self-check.mjs";
 import {
+  DOJO_EVIDENCE_AUTHORITY_CAPABILITIES,
+  DOJO_EVIDENCE_AUTHORITY_TEST_FILES,
+} from "../../scripts/dojo-evidence-authority-self-check.mjs";
+import {
   DOJO_GENERATED_PR_CAPABILITIES,
   DOJO_GENERATED_PR_TEST_FILES,
 } from "../../scripts/dojo-generated-pr-self-check.mjs";
@@ -113,6 +117,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:affordance-codemod:self-check": "node scripts/dojo-affordance-codemod-self-check.mjs",
     "proof:dojo:agent-ready-ui-contract:self-check": "node scripts/dojo-agent-ready-ui-contract-self-check.mjs",
     "proof:dojo:api-tool-compiler:self-check": "node scripts/dojo-api-tool-compiler-self-check.mjs",
+    "proof:dojo:evidence-authority:self-check": "node scripts/dojo-evidence-authority-self-check.mjs",
     "proof:dojo:generated-pr:self-check": "node scripts/dojo-generated-pr-self-check.mjs",
     "proof:dojo:mcp-skill-bus:self-check": "node scripts/dojo-mcp-skill-bus-self-check.mjs",
     "proof:dojo:source-drift:self-check": "node scripts/dojo-source-drift-self-check.mjs",
@@ -219,6 +224,37 @@ describe("Dojo release gate manifest", () => {
           require_json_report_digest_match: true,
         }),
         requires_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
+      }),
+      expect.objectContaining({
+        id: "dojo_evidence_authority_self_check",
+        tier: "T2",
+        package_script: "proof:dojo:evidence-authority:self-check",
+        evidence_kind: "proof_artifact",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.evidenceAuthorityEvidence.v1",
+        default_evidence_path: "tmp/dojo-evidence-authority/dojo-evidence-authority.evidence.json",
+        artifact_requirements: expect.objectContaining({
+          require_all_evidence_authority_capabilities_covered: true,
+          required_evidence_authority_capabilities: DOJO_EVIDENCE_AUTHORITY_CAPABILITIES,
+          required_test_files: DOJO_EVIDENCE_AUTHORITY_TEST_FILES,
+          require_canonical_record_hash: true,
+          require_record_signature_verification: true,
+          require_tamper_detection: true,
+          require_claim_freshness: true,
+          require_claim_scope: true,
+          require_claim_kind: true,
+          require_ledger_resolver_fail_closed: true,
+          require_redaction_manifest: true,
+          require_redacted_export: true,
+          require_proof_issue_claim_verification: true,
+          require_self_attested_claim_rejection: true,
+          require_durable_postgres_ledger_gate: true,
+          durable_postgres_ledger_gate_id: "dojo_postgres_control_plane_self_check",
+          require_no_failed_tests: true,
+          require_no_skipped_tests: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
       }),
       expect.objectContaining({
         id: "dojo_affordance_codemod_self_check",
@@ -913,6 +949,24 @@ describe("Dojo release gate manifest", () => {
       `postgres_control_plane_missing_required_test_files:${missingPostgresTestFile}`,
     ]));
 
+    const brokenEvidenceAuthority = JSON.parse(JSON.stringify(manifest));
+    const evidenceAuthorityGate = brokenEvidenceAuthority.gates.find((gate) => gate.id === "dojo_evidence_authority_self_check");
+    const missingEvidenceAuthorityTestFile = DOJO_EVIDENCE_AUTHORITY_TEST_FILES[0];
+    evidenceAuthorityGate.artifact_requirements.required_evidence_authority_capabilities = DOJO_EVIDENCE_AUTHORITY_CAPABILITIES
+      .filter((capability) => capability !== "proof_issuance_requires_verified_evidence_records");
+    evidenceAuthorityGate.artifact_requirements.required_test_files = DOJO_EVIDENCE_AUTHORITY_TEST_FILES
+      .filter((file) => file !== missingEvidenceAuthorityTestFile);
+    evidenceAuthorityGate.artifact_requirements.require_proof_issue_claim_verification = false;
+    evidenceAuthorityGate.artifact_requirements.require_self_attested_claim_rejection = false;
+    evidenceAuthorityGate.artifact_requirements.durable_postgres_ledger_gate_id = "wrong_gate";
+    expect(validateDojoReleaseGateManifest(brokenEvidenceAuthority, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "evidence_authority_missing_proof_issue_requirement",
+      "evidence_authority_missing_self_attested_rejection_requirement",
+      "evidence_authority_missing_durable_postgres_gate_id",
+      "evidence_authority_missing_required_capabilities:proof_issuance_requires_verified_evidence_records",
+      `evidence_authority_missing_required_test_files:${missingEvidenceAuthorityTestFile}`,
+    ]));
+
     const brokenSourceDrift = JSON.parse(JSON.stringify(manifest));
     const sourceDriftGate = brokenSourceDrift.gates.find((gate) => gate.id === "dojo_source_drift_self_check");
     const missingSourceDriftTestFile = DOJO_SOURCE_DRIFT_TEST_FILES[0];
@@ -1310,10 +1364,11 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 28,
+      proof_artifact_gate_count: 29,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
+        "dojo_evidence_authority_self_check",
         "dojo_mcp_host_conformance_self_check",
         "dojo_source_drift_self_check",
         "dojo_agent_ready_ui_contract_self_check",
