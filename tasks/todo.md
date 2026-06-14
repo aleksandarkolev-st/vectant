@@ -555,3 +555,10 @@ Merged `origin/main` (the prod "cloud-deploy runtime stack", 39 commits ahead of
 - [ ] ⚠️ **CRITICAL-vuln gate NOT completed locally:** `docker scout` needs a Docker Hub login; `trivy` (container) hit a transport EOF and the retry **crashed Docker Desktop's WSL engine** (lesson #19/#27). Did not retry — the running dev stack was live in that daemon. → move the gate to CI.
 - [ ] **CI/deploy TODO (no local Docker needed):** add Kaniko build of the runtime image + a **trivy CRITICAL gate** to `cloudbuild.yaml`; digest-pin the AR image; wire `RUNTIME_POD_IMAGE` in `k8s/configmap.yaml` (currently defaults to `vectant-runtime:local`).
 - [ ] Live acceptance (`docker run hello-world`, `kind create cluster`, `kubectl`) — #1006-blocked.
+
+## Slice 3 — Terminal routing into the runtime pod (2026-06-14, DARK, unit-tested)
+When `RUNTIME_BACKEND=sysbox-pod` (+ `SYNTHI_TERMINAL_BACKEND=k8s-exec` + `spawner.mode=k8s`), terminals exec into the **runtime pod's `runtime` container** (the workspace's own dockerd → `docker`/`kind` work in the shell) at `/workspace`; otherwise the existing worker-pod exec (`worker` container) and the local 3-way fallback are preserved. Wired through the existing `terminalService.createRuntimeProcess` → `createRuntimePodPty` path (no new call-site).
+- [x] S3-T1 pure `runtimeTerminalTarget(sysboxEnabled)` selector (runtime vs worker container) — unit-tested both branches.
+- [x] `createRuntimePodPty` routes via the selector: `spawner.spawnRuntimePod` + `runtime` container + `/workspace` cwd when on; `ensurePod` + `worker` otherwise.
+- [x] S3-T2 (skip) integration: terminal execs into the runtime pod, docker works — #1006-blocked.
+- [x] Gate: full suite **73 (70 pass + 3 skip)**, `node --check` clean. Local 3-way terminal path untouched.

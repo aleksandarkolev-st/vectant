@@ -3,9 +3,15 @@
 const { PassThrough } = require('stream');
 const k8s = require('@kubernetes/client-node');
 const spawner = require('./spawner');
+const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
 
 const NAMESPACE = process.env.K8S_NAMESPACE || 'synthi';
 const CONTAINER_NAME = process.env.SYNTHI_TERMINAL_K8S_CONTAINER || 'worker';
+// Sysbox runtime pod: terminals route into its `runtime` container (matches
+// runtimePodSpec.buildRuntimeDeployment) where the workspace's own dockerd lives;
+// the workspace is mounted at /workspace there (vs the worker's WORKSPACE_DIR).
+const RUNTIME_POD_CONTAINER = 'runtime';
+const RUNTIME_POD_WORKSPACE_MOUNT = '/workspace';
 
 function sanitizeDimension(value, fallback, max) {
   const number = Math.floor(Number(value) || fallback);
@@ -36,6 +42,19 @@ function shouldUseRuntimePodTerminal(runtimeScope) {
     process.env.SYNTHI_TERMINAL_BACKEND === 'k8s-exec' &&
     spawner.mode === 'k8s'
   );
+}
+
+/**
+ * Pure terminal-target selector. When the Sysbox per-workspace runtime backend is
+ * ON, terminals exec into the RUNTIME pod's `runtime` container (the workspace's
+ * own dockerd lives there, so `docker`/`kind` work). When OFF, preserve the
+ * existing worker-pod k8s-exec path (`worker` container). Read at call time so it
+ * tracks the flag (and is unit-testable by passing the value explicitly).
+ */
+function runtimeTerminalTarget(sysboxEnabled = isSysboxRuntimeEnabled()) {
+  return sysboxEnabled
+    ? { useSysboxRuntime: true, container: RUNTIME_POD_CONTAINER }
+    : { useSysboxRuntime: false, container: CONTAINER_NAME };
 }
 
 function kubeConfig() {
@@ -117,14 +136,19 @@ async function createRuntimePodPty({
   const safeCols = sanitizeDimension(cols, 80, 500);
   const safeRows = sanitizeDimension(rows, 24, 200);
 
-  const pod = await spawner.ensurePod(runtimeScope, actorUserId || filesystemUserId || runtimeScope, {
-    workspaceSlug,
-    runtimeKind: 'terminal',
-    filesystemUserId,
-  });
+  // Route to the Sysbox runtime pod (its own dockerd) when the flag is on; else
+  // preserve the worker-pod exec. effectiveCwd is the runtime pod's /workspace
+  // mount in the sysbox case (vs the worker's passed-in cwd).
+  const target = runtimeTerminalTarget();
+  const actor = actorUserId || filesystemUserId || runtimeScope;
+  const podMeta = { workspaceSlug, runtimeKind: 'terminal', filesystemUserId };
+  const pod = target.useSysboxRuntime
+    ? await spawner.spawnRuntimePod(runtimeScope, actor, podMeta)
+    : await spawner.ensurePod(runtimeScope, actor, podMeta);
   if (!pod?.podName) {
     throw new Error(`Runtime pod for ${runtimeScope} is not ready`);
   }
+  const effectiveCwd = target.useSysboxRuntime ? RUNTIME_POD_WORKSPACE_MOUNT : cwd;
 
   const terminalEnv = {
     ...env,
@@ -139,7 +163,7 @@ async function createRuntimePodPty({
     .join('; ');
   const commandScript = [
     exports,
-    `export WORKSPACE_DIR=${shellQuote(cwd)}`,
+    `export WORKSPACE_DIR=${shellQuote(effectiveCwd)}`,
     'mkdir -p "$WORKSPACE_DIR"',
     'cd "$WORKSPACE_DIR"',
     `stty rows ${safeRows} cols ${safeCols} 2>/dev/null || true`,
@@ -153,7 +177,7 @@ async function createRuntimePodPty({
   const ws = await exec.exec(
     NAMESPACE,
     pod.podName,
-    CONTAINER_NAME,
+    target.container,
     ['/bin/bash', '-lc', commandScript],
     stdout,
     stderr,
@@ -177,5 +201,6 @@ async function createRuntimePodPty({
 
 module.exports = {
   shouldUseRuntimePodTerminal,
+  runtimeTerminalTarget,
   createRuntimePodPty,
 };
