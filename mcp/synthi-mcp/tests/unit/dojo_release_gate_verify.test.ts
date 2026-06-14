@@ -825,6 +825,24 @@ describe("Dojo release gate artifact verifier", () => {
       "generated_pr_contract_tests_requirement_missing",
     ]));
 
+    const missingExecutionPath = await writeGeneratedPrEvidenceFixture({
+      dir,
+      basename: "missing-execution-generated-pr",
+      evidence: generatedPrEvidenceFixture({
+        generated_pr_contract: {
+          ...generatedPrEvidenceFixture().generated_pr_contract,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    const missingExecution = await verifyDojoGeneratedPrEvidenceArtifact({ evidencePath: missingExecutionPath });
+    expect(missingExecution.ok).toBe(false);
+    expect(missingExecution.errors).toEqual(expect.arrayContaining([
+      "generated_pr_self_check_execution_requirement_missing",
+      "generated_pr_test_execution_missing",
+    ]));
+
     const driftedPath = await writeGeneratedPrEvidenceFixture({
       dir,
       basename: "drifted-generated-pr",
@@ -4060,6 +4078,7 @@ function generatedPrEvidenceFixture(overrides = {}) {
       git_branch_creation_required: true,
       dirty_worktree_rejection_required: true,
       existing_branch_rejection_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_GENERATED_PR_TEST_FILES],
     test_file_count: DOJO_GENERATED_PR_TEST_FILES.length,
@@ -4080,6 +4099,18 @@ function generatedPrEvidenceFixture(overrides = {}) {
     json_report_path: path.join(tmpdir(), "dojo-generated-pr.vitest.json"),
     json_report_sha256: sha256(jsonReport),
     json_report_bytes: Buffer.byteLength(jsonReport),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_GENERATED_PR_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 123,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
 }

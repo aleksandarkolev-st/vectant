@@ -707,7 +707,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:generated-pr:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_generated_pr_metadata.test.ts tests/integration/dojo_generated_source_patch_bundle.test.ts tests/integration/dojo_source_patch_writer.test.ts tests/integration/dojo_generated_pr_branch_applier.test.ts tests/integration/dojo_generated_pr_git_branch.test.ts -- --reporter=json --outputFile ../../tmp/dojo-generated-pr/dojo-generated-pr.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:generated-pr:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:generated-pr:self-check",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.generatedPrEvidence.v1",
@@ -738,6 +738,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_git_branch_creation: true,
       require_dirty_worktree_rejection: true,
       require_existing_branch_rejection: true,
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -1758,6 +1759,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_git_branch_creation", "generated_pr_missing_git_branch_requirement"],
       ["require_dirty_worktree_rejection", "generated_pr_missing_dirty_worktree_requirement"],
       ["require_existing_branch_rejection", "generated_pr_missing_existing_branch_requirement"],
+      ["require_self_check_executes_tests", "generated_pr_missing_self_check_execution_requirement"],
     ]) {
       if (!generatedPrGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }

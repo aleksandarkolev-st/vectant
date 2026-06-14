@@ -6,9 +6,11 @@
  */
 
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -16,6 +18,7 @@ import { summarizeVitestJsonReport } from "./dojo-chaos-performance-self-check.m
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
 const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 
@@ -83,27 +86,38 @@ export async function runDojoGeneratedPrSelfCheck({
   assert.deepEqual(missing, [], `missing generated PR test files: ${missing.join(", ")}`);
   const startedAt = performance.now();
   const jsonReportPath = path.resolve(args["from-json"] || args["vitest-json"] || path.join(outputDir, "dojo-generated-pr.vitest.json"));
+  const shouldRunTests = args["run-tests"] === "1"
+    || args["run-tests"] === "true"
+    || (!existsSync(jsonReportPath) && args["no-run-tests"] !== "1" && args["no-run-tests"] !== "true");
+  const testRun = shouldRunTests
+    ? await runGeneratedPrVitestJson({ jsonReportPath, timeoutMs })
+    : null;
   const jsonReportError = existsSync(jsonReportPath) ? undefined : `json_report_missing:${jsonReportPath}`;
   const jsonReportText = jsonReportError ? "" : await readFile(jsonReportPath, "utf8");
   const jsonReport = jsonReportError ? null : JSON.parse(jsonReportText);
   const durationMs = performance.now() - startedAt;
   const testSummary = summarizeVitestJsonReport(jsonReport);
-  const stdout = [
+  const builderSummary = [
     "Dojo generated PR self-check evidence builder",
     `vitest_json=${jsonReportPath}`,
+    `vitest_executed=${testRun ? "true" : "false"}`,
     `test_files=${DOJO_GENERATED_PR_TEST_FILES.join(",")}`,
     `reported_tests=${testSummary.total_tests}`,
     `reported_test_files=${testSummary.reported_test_file_count}`,
   ].join("\n") + "\n";
-  const stderr = jsonReportError ? `${jsonReportError}\n` : "";
+  const stdout = testRun ? `${builderSummary}\n${testRun.stdout}` : builderSummary;
+  const stderr = [
+    testRun?.stderr ?? "",
+    jsonReportError ? `${jsonReportError}\n` : "",
+  ].filter(Boolean).join("\n");
   const stdoutPath = path.join(outputDir, "dojo-generated-pr.evidence-builder.stdout.log");
   const stderrPath = path.join(outputDir, "dojo-generated-pr.evidence-builder.stderr.log");
   await writeFile(stdoutPath, stdout);
   await writeFile(stderrPath, stderr);
   const evidence = buildDojoGeneratedPrEvidenceManifest({
     now,
-    exitCode: jsonReport?.success === true ? 0 : 1,
-    signal: null,
+    exitCode: testRun?.exitCode ?? (jsonReport?.success === true ? 0 : 1),
+    signal: testRun?.signal ?? null,
     durationMs,
     testFiles: DOJO_GENERATED_PR_TEST_FILES,
     stdout,
@@ -114,7 +128,8 @@ export async function runDojoGeneratedPrSelfCheck({
     jsonReportPath,
     jsonReportText,
     timeoutMs,
-    error: jsonReportError,
+    error: jsonReportError ?? testRun?.error,
+    testRun,
   });
   const evidencePath = path.join(outputDir, "dojo-generated-pr.evidence.json");
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
@@ -126,6 +141,71 @@ export async function runDojoGeneratedPrSelfCheck({
     stderr_path: stderrPath,
     evidence,
   };
+}
+
+async function runGeneratedPrVitestJson({ jsonReportPath, timeoutMs }) {
+  await mkdir(path.dirname(jsonReportPath), { recursive: true });
+  const vitestBin = require.resolve("vitest/vitest.mjs");
+  const args = [
+    vitestBin,
+    "run",
+    ...DOJO_GENERATED_PR_TEST_FILES,
+    "--reporter=json",
+    "--outputFile",
+    jsonReportPath,
+  ];
+  const command = process.execPath;
+  const startedAt = performance.now();
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: MCP_ROOT,
+      env: { ...process.env, CI: "1" },
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({
+        command,
+        args,
+        exitCode: 1,
+        signal: null,
+        stdout,
+        stderr: stderr || error.message,
+        durationMs: performance.now() - startedAt,
+        timedOut,
+        error: `vitest_spawn_error:${error.message}`,
+      });
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      resolve({
+        command,
+        args,
+        exitCode: code ?? 1,
+        signal,
+        stdout,
+        stderr,
+        durationMs: performance.now() - startedAt,
+        timedOut,
+        error: timedOut ? "vitest_timeout" : undefined,
+      });
+    });
+  });
 }
 
 export function buildDojoGeneratedPrEvidenceManifest({
@@ -143,6 +223,7 @@ export function buildDojoGeneratedPrEvidenceManifest({
   jsonReportText,
   timeoutMs = 180000,
   error,
+  testRun,
 }) {
   const testSummary = summarizeVitestJsonReport(jsonReport);
   const capabilityCoverage = buildGeneratedPrCapabilityCoverage({
@@ -194,6 +275,7 @@ export function buildDojoGeneratedPrEvidenceManifest({
       git_branch_creation_required: true,
       dirty_worktree_rejection_required: true,
       existing_branch_rejection_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...testFiles],
     test_file_count: testFiles.length,
@@ -209,6 +291,18 @@ export function buildDojoGeneratedPrEvidenceManifest({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: testRun ? {
+      command: testRun.command,
+      args: testRun.args,
+      exit_code: testRun.exitCode,
+      signal: testRun.signal ?? null,
+      duration_ms: Number(testRun.durationMs.toFixed(3)),
+      timed_out: testRun.timedOut,
+      stdout_sha256: sha256(testRun.stdout),
+      stderr_sha256: sha256(testRun.stderr),
+      stdout_bytes: Buffer.byteLength(testRun.stdout),
+      stderr_bytes: Buffer.byteLength(testRun.stderr),
+    } : null,
   };
 }
 

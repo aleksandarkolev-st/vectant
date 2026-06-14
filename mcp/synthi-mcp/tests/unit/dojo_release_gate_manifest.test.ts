@@ -522,6 +522,7 @@ describe("Dojo release gate manifest", () => {
           require_git_branch_creation: true,
           require_dirty_worktree_rejection: true,
           require_existing_branch_rejection: true,
+          require_self_check_executes_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -1157,9 +1158,11 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingGeneratedPrTestFile);
     generatedPrGate.release_artifact_requirements.require_git_branch_creation = false;
     generatedPrGate.release_artifact_requirements.require_generated_contract_tests = false;
+    generatedPrGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenGeneratedPr, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "generated_pr_missing_git_branch_requirement",
       "generated_pr_missing_contract_tests_requirement",
+      "generated_pr_missing_self_check_execution_requirement",
       "generated_pr_missing_required_capabilities:generated_pr_git_branch_creates_branch_and_tests",
       `generated_pr_missing_required_test_files:${missingGeneratedPrTestFile}`,
     ]));
