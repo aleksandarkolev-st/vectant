@@ -62,7 +62,7 @@ function parseTerminalUrl(rawUri) {
   }
 }
 
-function buildRuntimePreviewUrl(rawUri, runtimeScope) {
+function buildRuntimePreviewPathUrl(rawUri, runtimeScope) {
   if (!runtimeScope || typeof window === 'undefined') return null;
   const parsed = parseTerminalUrl(rawUri);
   if (!parsed || !parsed.port) return null;
@@ -71,6 +71,33 @@ function buildRuntimePreviewUrl(rawUri, runtimeScope) {
 
   const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '/';
   return `${window.location.origin}/collab/runtime/${encodeURIComponent(runtimeScope)}/port/${encodeURIComponent(parsed.port)}${path}${parsed.search}${parsed.hash}`;
+}
+
+async function resolveRuntimePreviewUrl(rawUri, runtimeScope) {
+  const fallbackUrl = buildRuntimePreviewPathUrl(rawUri, runtimeScope);
+  const parsed = parseTerminalUrl(rawUri);
+  if (!runtimeScope || !parsed || !parsed.port || !LOCAL_PREVIEW_HOSTS.has(parsed.hostname)) {
+    return fallbackUrl || rawUri;
+  }
+
+  try {
+    const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '/';
+    const previewPath = `${path}${parsed.search}${parsed.hash}`;
+    const params = new URLSearchParams({
+      runtimeScope,
+      port: parsed.port,
+      path: previewPath,
+    });
+    const response = await fetch(`${TERMINAL_HTTP_URL.replace(/\/+$/, '')}/preview-url?${params.toString()}`, {
+      method: 'GET',
+      credentials: 'same-origin',
+    });
+    if (!response.ok) return fallbackUrl || rawUri;
+    const data = await response.json();
+    return data?.url || data?.publicUrl || fallbackUrl || rawUri;
+  } catch (_) {
+    return fallbackUrl || rawUri;
+  }
 }
 
 // ─── Terminal Theme (from ThemeProvider) ───────────────────────────────
@@ -274,8 +301,23 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         try {
           const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
           const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
-          const previewUrl = buildRuntimePreviewUrl(uri, runtimeIdentity.runtimeScope);
-          window.open(previewUrl || uri, '_blank', 'noopener,noreferrer');
+          const fallbackUrl = buildRuntimePreviewPathUrl(uri, runtimeIdentity.runtimeScope);
+          const isRuntimePreview = Boolean(fallbackUrl);
+          if (!isRuntimePreview) {
+            window.open(uri, '_blank', 'noopener,noreferrer');
+            return;
+          }
+
+          const popup = window.open('about:blank', '_blank');
+          resolveRuntimePreviewUrl(uri, runtimeIdentity.runtimeScope).then((previewUrl) => {
+            const targetUrl = previewUrl || fallbackUrl || uri;
+            if (popup) {
+              try { popup.opener = null; } catch {}
+              popup.location.href = targetUrl;
+            } else {
+              window.open(targetUrl, '_blank', 'noopener,noreferrer');
+            }
+          });
         } catch (_) {
           try { window.open(uri, '_blank', 'noopener,noreferrer'); } catch {}
         }

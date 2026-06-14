@@ -1066,6 +1066,14 @@ const server = http.createServer(async (req, res) => {
   req.url = originalUrl.replace(/^\/collab(?=\/|$)/, '');
   if (!req.url.startsWith('/')) req.url = '/' + req.url;
 
+  // Wildcard preview hosts (p<port>-rt-*.preview.vectant.dev) are user app
+  // traffic, not collab API traffic. Route them into the reverse proxy before
+  // app-level CORS/origin checks so POSTs, HMR, and absolute root assets work.
+  if (proxyService.isPreviewHostRequest(req)) {
+    proxyService.proxyHttpRequest(req, res);
+    return;
+  }
+
   // CORS headers — must echo the exact Origin (not '*') when credentials are included
   const requestOrigin = req.headers.origin;
   res.setHeader('Access-Control-Allow-Origin', requestOrigin || '*');
@@ -1314,6 +1322,13 @@ const server = http.createServer(async (req, res) => {
   // ========================================================================
   if (req.url.startsWith('/port/') || req.url.startsWith('/runtime/')) {
     proxyService.proxyHttpRequest(req, res);
+    return;
+  }
+
+  // GET /preview-url — resolve localhost terminal links to the canonical
+  // production preview URL. The client cannot compute the rt-* HMAC itself.
+  if (req.method === 'GET' && (req.url === '/preview-url' || req.url.startsWith('/preview-url?'))) {
+    proxyService.handlePreviewUrlRequest(req, res);
     return;
   }
 
@@ -4108,6 +4123,14 @@ function sendToSessionUser(sessionId, targetUserId, eventType, payload) {
 
 
 server.on('upgrade', (request, socket, head) => {
+  if (proxyService.isPreviewHostRequest(request)) {
+    if (!proxyService.proxyWsUpgrade(request, socket, head)) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+    }
+    return;
+  }
+
   // Use replace to safely strip the prefix while retaining the public mount
   // prefix for runtime preview WebSocket URL reconstruction.
   const originalUrl = request.url || '/';

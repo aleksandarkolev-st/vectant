@@ -149,6 +149,48 @@ Create a DNS A record pointing your domain to this IP:
 **HTTP to HTTPS redirect:**
 The Ingress uses a `FrontendConfig` to redirect all HTTP traffic to HTTPS with a 301 status code. No additional configuration needed.
 
+### Configure Preview Subdomains
+
+Workspace app previews are served from wildcard subdomains instead of path
+prefixes:
+
+```text
+https://p3000-rt-<runtime-id>.preview.vectant.dev/
+```
+
+This keeps user app assets, HMR WebSockets, cookies, localStorage, and service
+workers rooted at `/` on an isolated origin. The fallback path proxy under
+`/collab/runtime/.../port/...` remains only for local/debug use.
+
+The `preview.vectant.dev` sub-zone is delegated to Cloud DNS, and
+`*.preview.vectant.dev` points at the same static IP as `beta.vectant.dev`.
+Wildcard TLS is issued by cert-manager using ACME DNS-01 with Cloud DNS:
+
+```bash
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.20.2/cert-manager.yaml
+
+gcloud iam service-accounts create synthi-cert-manager-dns01 \
+  --project=vectant-proj \
+  --display-name="Synthi cert-manager Cloud DNS01"
+
+gcloud projects add-iam-policy-binding vectant-proj \
+  --member="serviceAccount:synthi-cert-manager-dns01@vectant-proj.iam.gserviceaccount.com" \
+  --role="roles/dns.admin"
+
+gcloud iam service-accounts add-iam-policy-binding \
+  synthi-cert-manager-dns01@vectant-proj.iam.gserviceaccount.com \
+  --project=vectant-proj \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="serviceAccount:vectant-proj.svc.id.goog[cert-manager/cert-manager]"
+
+kubectl -n cert-manager annotate serviceaccount cert-manager \
+  iam.gke.io/gcp-service-account=synthi-cert-manager-dns01@vectant-proj.iam.gserviceaccount.com \
+  --overwrite
+```
+
+After the Workload Identity binding is in place, `k8s/preview-certificate.yaml`
+creates the `preview-wildcard-tls` secret used by `k8s/ingress.yaml`.
+
 ### Configure Registry
 
 Image references in all manifests default to `us-central1-docker.pkg.dev/overview-synti/synthi/`.

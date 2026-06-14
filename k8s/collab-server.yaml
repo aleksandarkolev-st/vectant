@@ -75,6 +75,16 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_PREVIEW_PUBLIC_PREFIX
+            - name: SYNTHI_PREVIEW_PUBLIC_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_PUBLIC_DOMAIN
+            - name: SYNTHI_PREVIEW_PUBLIC_PROTOCOL
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_PUBLIC_PROTOCOL
             - name: SYNTHI_PREVIEW_SIDECAR_PORT
               valueFrom:
                 configMapKeyRef:
