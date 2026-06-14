@@ -54,6 +54,11 @@ describe("Dojo graph compiler", () => {
       ]),
       guardrails: expect.arrayContaining([
         expect.objectContaining({ severity: "block" }),
+        expect.objectContaining({
+          guardrail_id: "guard_durable_postcondition_evidence",
+          predicate: "durable_state_evidence == true",
+          severity: "block",
+        }),
       ]),
     }));
     expect(

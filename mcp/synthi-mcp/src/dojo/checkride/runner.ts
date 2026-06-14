@@ -8,7 +8,7 @@ import {
   type DojoScenarioOracleEvaluation,
   type DojoScenarioOracleEvidenceContext,
 } from "../vivarium/oracle.js";
-import { DojoVivariumRunner, type DojoScenarioRunResult } from "../vivarium/runner.js";
+import { DojoVivariumRunner, type DojoMaterializedScenario, type DojoScenarioRunResult } from "../vivarium/runner.js";
 import type { DojoScenarioDefinition } from "../vivarium/scenario_dsl.js";
 import type { DojoEvidenceLedgerRecord, DojoEvidenceRecordInput } from "../evidence/types.js";
 
@@ -69,6 +69,10 @@ export interface DojoExecutableCheckrideInput {
   scenario_runtimes?: Record<string, DojoSkillGraphRuntime>;
   scenario_substrate_executors?: Record<string, DojoSubstrateExecutor>;
   base_inputs?: Record<string, unknown>;
+  build_inputs?: (input: {
+    scenario: DojoScenarioDefinition;
+    materialized: DojoMaterializedScenario;
+  }) => Record<string, unknown> | Promise<Record<string, unknown>>;
   scenario_inputs?: Record<string, Record<string, unknown>>;
   observed_evidence_by_scenario?: Record<string, string[]>;
   budget_by_scenario?: Record<string, DojoScenarioDefinition["budget"]>;
@@ -99,8 +103,12 @@ export async function runDojoExecutableCheckride(
       scenario,
       now,
     });
+    const builtInputs = input.build_inputs
+      ? await input.build_inputs({ scenario, materialized })
+      : {};
     const scenarioInputs = {
       ...(input.base_inputs ?? {}),
+      ...builtInputs,
       ...(input.scenario_inputs?.[scenario.scenario_id] ?? {}),
     };
     const scenarioRun = await vivarium.run({

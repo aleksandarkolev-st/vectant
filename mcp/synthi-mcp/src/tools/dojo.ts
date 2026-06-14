@@ -2670,6 +2670,7 @@ async function dojoRunCheckrideTool(args: unknown): Promise<ToolResponse> {
     graph: compiledGraph.graph,
     scenarios: scenarioDefinitions,
     base_inputs: checkrideRuntimeInputsFor(runtimeSkill),
+    build_inputs: ({ materialized }) => buildDojoVivariumGraphInputsForFixture(runtimeSkill, materialized.fixture),
     evidence_context: {
       tenant_id: workflow.tenant.tenant_id,
       workspace_id: workflow.tenant.workspace_id,
@@ -4188,6 +4189,7 @@ function dojoGraphRuntimeInputsForProofRun(input: {
   for (const claim of input.proof_capsule.evidence_claims) {
     inputs[claim.claim] = claim.satisfied;
   }
+  applyGraphRuntimeInputsFromProofClaims(inputs);
   for (const guardrailId of input.proof_capsule.guardrails_active) {
     inputs[`guardrail:${guardrailId}`] = true;
   }
@@ -4209,6 +4211,18 @@ function dojoGraphRuntimeInputsForProofRun(input: {
     inputs["runtime_authorization_evidence_record_ids"] = [...input.runtime_authorization.evidence_record_ids];
   }
   return inputs;
+}
+
+function applyGraphRuntimeInputsFromProofClaims(inputs: Record<string, unknown>): void {
+  const proofClaimDerivations: Array<{ claim: string; runtime_input: string }> = [
+    { claim: "success_assertions_defined", runtime_input: "durable_state_evidence" },
+  ];
+  for (const { claim, runtime_input: runtimeInput } of proofClaimDerivations) {
+    if (inputs[runtimeInput] !== undefined) continue;
+    if (inputs[claim] === true) {
+      inputs[runtimeInput] = true;
+    }
+  }
 }
 
 function allowedSubstratesForProofRun(skill: DojoSkill, requestedAction: string): DojoExecutionSubstrate[] {

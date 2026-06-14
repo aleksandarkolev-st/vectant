@@ -146,6 +146,15 @@ function proofNode(skill: DojoSkill): DojoGraphNode {
 function actionNode(skill: DojoSkill): DojoGraphNode {
   const risk = actionRisk(skill);
   const guardrails = graphGuardrailsForSkill(skill);
+  const evidencePolicy = ["append_action_trace", "append_postcondition_evidence"];
+  const actionGuardrails = [
+    ...guardrails,
+    ...intrinsicActionGuardrailsFor({
+      risk,
+      evidence_policy: evidencePolicy,
+      assertions: skill.skill_seed.candidate_success_assertions,
+    }),
+  ];
   const sourceBindings = sourceBindingsForSkill(skill);
   const apiBindings = apiBindingsForSkill(skill);
   return {
@@ -153,7 +162,7 @@ function actionNode(skill: DojoSkill): DojoGraphNode {
     action: "run_workflow",
     preconditions: [],
     postconditions: skill.skill_seed.candidate_success_assertions.map((assertion) => assertion.label),
-    guardrails,
+    guardrails: actionGuardrails,
     proof: {
       required: true,
       required_claims: skill.permission_license.proof_requirements.required_evidence_claims,
@@ -161,14 +170,14 @@ function actionNode(skill: DojoSkill): DojoGraphNode {
     },
     assertions: skill.skill_seed.candidate_success_assertions.map(assertionRequirement),
     substrate_options: skill.execution_substrates,
-    evidence_policy: ["append_action_trace", "append_postcondition_evidence"],
+    evidence_policy: evidencePolicy,
     case_law_refs: skill.case_law.map((item) => item.case_id),
     expiry_triggers: skill.permission_license.expiry_policy.expires_on,
     source_bindings: sourceBindings,
     api_bindings: apiBindings,
     metadata: {
       rollback_policy: skill.rollback_policy,
-      guardrail_predicates: guardrails.map((guardrail) => ({
+      guardrail_predicates: actionGuardrails.map((guardrail) => ({
         guardrail_id: guardrail.guardrail_id,
         predicate: guardrail.predicate,
       })),
@@ -206,6 +215,17 @@ function actionNodeForContractStep({
   const risk = step.mutation ? actionRisk(skill) : "safe";
   const guardrails = step.mutation ? graphGuardrailsForSkill(skill) : [];
   const assertions = step.mutation ? skill.skill_seed.candidate_success_assertions.map(assertionRequirement) : [];
+  const evidencePolicy = step.mutation
+    ? ["append_action_trace", "append_postcondition_evidence"]
+    : ["append_action_trace"];
+  const actionGuardrails = [
+    ...guardrails,
+    ...intrinsicActionGuardrailsFor({
+      risk,
+      evidence_policy: evidencePolicy,
+      assertions: step.mutation ? skill.skill_seed.candidate_success_assertions : [],
+    }),
+  ];
   const sourceBindings = sourceBindingsForSkill(skill, step.stepId);
   const apiBindings = apiBindingsForSkill(skill, step.stepId);
   return {
@@ -213,7 +233,7 @@ function actionNodeForContractStep({
     action: step.action.kind,
     preconditions: [],
     postconditions: [...step.expectedEffects],
-    guardrails,
+    guardrails: actionGuardrails,
     proof: {
       required: true,
       required_claims: skill.permission_license.proof_requirements.required_evidence_claims,
@@ -221,9 +241,7 @@ function actionNodeForContractStep({
     },
     assertions,
     substrate_options: skill.execution_substrates,
-    evidence_policy: step.mutation
-      ? ["append_action_trace", "append_postcondition_evidence"]
-      : ["append_action_trace"],
+    evidence_policy: evidencePolicy,
     case_law_refs: step.mutation ? skill.case_law.map((item) => item.case_id) : [],
     expiry_triggers: skill.permission_license.expiry_policy.expires_on,
     source_bindings: sourceBindings,
@@ -245,7 +263,7 @@ function actionNodeForContractStep({
       limitations: step.limitations,
       mutation: step.mutation ?? null,
       rollback_policy: step.mutation ? skill.rollback_policy : [],
-      guardrail_predicates: guardrails.map((guardrail) => ({
+      guardrail_predicates: actionGuardrails.map((guardrail) => ({
         guardrail_id: guardrail.guardrail_id,
         predicate: guardrail.predicate,
       })),
@@ -272,6 +290,22 @@ function graphGuardrailsForSkill(skill: DojoSkill) {
       severity: "block" as const,
     };
   });
+}
+
+function intrinsicActionGuardrailsFor(input: {
+  risk: DojoGraphNodeRisk;
+  evidence_policy: string[];
+  assertions: DojoAssertion[];
+}) {
+  if (input.risk === "safe") return [];
+  const requiresPostconditionEvidence = input.evidence_policy.includes("append_postcondition_evidence")
+    || input.assertions.some((assertion) => assertion.required);
+  if (!requiresPostconditionEvidence) return [];
+  return [{
+    guardrail_id: "guard_durable_postcondition_evidence",
+    predicate: "durable_state_evidence == true",
+    severity: "block" as const,
+  }];
 }
 
 function sourceBindingsForSkill(skill: DojoSkill, sourceStepId?: string): DojoGraphSourceBinding[] {

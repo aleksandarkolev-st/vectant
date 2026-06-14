@@ -113,6 +113,57 @@ describe("Dojo executable checkride runner", () => {
     expect(report.ledger_checkpoint_hashes).toEqual([]);
   });
 
+  it("uses materialized fixture inputs to block risky scenarios instead of happy-path claims", async () => {
+    const duplicate = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "duplicate_entity",
+      layer: "risk",
+      risk_tags: ["ambiguous_entity_match"],
+    }));
+
+    const report = await runDojoExecutableCheckride({
+      graph: graphFixture(),
+      scenarios: [duplicate],
+      base_inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      build_inputs: ({ materialized }) => {
+        const displayNameCounts = new Map<string, number>();
+        for (const record of materialized.fixture.records) {
+          displayNameCounts.set(record.display_name, (displayNameCounts.get(record.display_name) ?? 0) + 1);
+        }
+        return {
+          client_id_verified: materialized.fixture.records.length > 0
+            && [...displayNameCounts.values()].every((count) => count === 1),
+        };
+      },
+      now: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(report).toEqual(expect.objectContaining({
+      scenario_count: 1,
+      passed_scenarios: 0,
+      failed_scenarios: 0,
+      blocked_scenarios: 1,
+      critical_failures: 0,
+      production_recommendation: "constrained",
+    }));
+    expect(report.results[0]).toEqual(expect.objectContaining({
+      scenario_id: duplicate.scenario_id,
+      status: "blocked",
+      graph_status: "blocked",
+      blocked_by: ["guardrail_failed:guard_client_stable_id"],
+    }));
+    expect(report.license_constraints).toEqual([
+      expect.objectContaining({
+        scenario_id: duplicate.scenario_id,
+        mutation_kind: "duplicate_entity",
+        constraint_kind: "ask_before",
+      }),
+    ]);
+  });
+
   it("appends checkride scenario evidence to the ledger when required", async () => {
     const authExpiry = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "auth_expiry",

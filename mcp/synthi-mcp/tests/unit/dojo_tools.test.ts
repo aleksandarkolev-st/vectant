@@ -1403,9 +1403,29 @@ describe("Agent Dojo MCP tools", () => {
       executable_checkride: expect.objectContaining({
         schema_version: "synthi.dojo.executableCheckrideReport.v1",
         scenario_count: 20,
+        failed_scenarios: 0,
+        critical_failures: 0,
+        production_recommendation: "constrained",
         graph_id: expect.stringContaining("graph_dojo_open_details"),
         evidence_refs: expect.arrayContaining([expect.stringMatching(/^evidence:evidence_oracle_/)]),
         results: expect.arrayContaining([
+          expect.objectContaining({
+            mutation_kind: "duplicate_entity",
+            status: "blocked",
+            graph_status: "blocked",
+          }),
+          expect.objectContaining({
+            mutation_kind: "fake_success",
+            status: "blocked",
+            graph_status: "blocked",
+            blocked_by: expect.arrayContaining(["guardrail_failed:guard_durable_postcondition_evidence"]),
+          }),
+          expect.objectContaining({
+            mutation_kind: "partial_write",
+            status: "blocked",
+            graph_status: "blocked",
+            blocked_by: expect.arrayContaining(["guardrail_failed:guard_durable_postcondition_evidence"]),
+          }),
           expect.objectContaining({
             scenario_run: expect.objectContaining({ schema_version: "synthi.dojo.scenarioRunResult.v1" }),
             oracle: expect.objectContaining({ schema_version: "synthi.dojo.scenarioOracleResult.v1" }),
