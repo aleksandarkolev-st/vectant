@@ -652,6 +652,7 @@ describe("Dojo release gate manifest", () => {
           required_test_files: DOJO_GRAPH_RUNTIME_TEST_FILES,
           require_graph_ir_validation: true,
           require_graph_compiler: true,
+          require_workflow_step_nodes: true,
           require_source_api_binding: true,
           require_production_execution: true,
           require_edge_order: true,

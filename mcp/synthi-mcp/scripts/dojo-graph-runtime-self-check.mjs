@@ -38,6 +38,7 @@ export const DOJO_GRAPH_RUNTIME_CAPABILITIES = [
   "graph_ir_validates_branch_predicates",
   "graph_ir_rejects_unreachable_nodes",
   "graph_compiler_emits_validated_ir",
+  "graph_compiler_preserves_workflow_step_nodes",
   "graph_compiler_inserts_permission_guardrail_proof_assertion",
   "graph_compiler_preserves_source_api_bindings",
   "graph_compiler_adapts_repo_artifacts",
@@ -198,6 +199,7 @@ export function buildDojoGraphRuntimeEvidenceManifest({
     graph_runtime_contract: {
       graph_ir_validation_required: true,
       graph_compiler_required: true,
+      workflow_step_nodes_required: true,
       source_api_binding_required: true,
       production_execution_required: true,
       edge_order_required: true,
@@ -292,6 +294,8 @@ function capabilityMatchers(capability) {
       return ["rejects graph nodes", "not reachable"];
     case "graph_compiler_emits_validated_ir":
       return ["graph compiler compiles", "validated graph ir"];
+    case "graph_compiler_preserves_workflow_step_nodes":
+      return ["compiles workflow contract steps", "per step action nodes"];
     case "graph_compiler_inserts_permission_guardrail_proof_assertion":
       return ["inserts permission guardrail proof and assertion semantics"];
     case "graph_compiler_preserves_source_api_bindings":

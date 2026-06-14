@@ -1,5 +1,5 @@
 import type { DojoAssertion, DojoGuardrail, DojoSkill, DojoSourceAnchor } from "../../browser/dojo.js";
-import type { WorkflowContractV7 } from "../../browser/workflow.js";
+import type { WorkflowContractV7, WorkflowStepContractV7 } from "../../browser/workflow.js";
 import {
   type DojoGraphEdge,
   type DojoGraphApiBinding,
@@ -56,10 +56,35 @@ export function compileDojoSkillGraphFromContract(
     created_at?: string;
   } = {}
 ): DojoGraphCompileResult {
-  return compileDojoSkillGraphForSkill({
+  const skillForContract = {
     ...skill,
     workflow_id: contract.workflowId,
-  }, input);
+  };
+  if (contract.steps.length === 0) {
+    return compileDojoSkillGraphForSkill(skillForContract, input);
+  }
+  const mode = input.mode ?? "production";
+  const actionNodes = actionNodesForContractSteps(contract, skillForContract);
+  const graph: DojoSkillGraph = {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: `graph_${skillForContract.skill_id}_${skillForContract.skill_version}`,
+    skill_id: skillForContract.skill_id,
+    skill_version: skillForContract.skill_version,
+    graph_version: input.graph_version ?? `graph_${skillForContract.skill_version}`,
+    mode,
+    created_at: input.created_at ?? skillForContract.generated_at,
+    nodes: [
+      triggerNode(),
+      inputNode(skillForContract),
+      permissionNode(skillForContract),
+      ...skillForContract.guardrails.map(guardrailNode),
+      proofNode(skillForContract),
+      ...actionNodes,
+      assertionNode(skillForContract.skill_seed.candidate_success_assertions),
+    ],
+    edges: graphEdgesForActionSequence(skillForContract, actionNodes.map((node) => node.node_id)),
+  };
+  return { graph, validation: validateDojoSkillGraph(graph) };
 }
 
 function triggerNode(): DojoGraphNode {
@@ -120,18 +145,7 @@ function proofNode(skill: DojoSkill): DojoGraphNode {
 
 function actionNode(skill: DojoSkill): DojoGraphNode {
   const risk = actionRisk(skill);
-  const guardrails = skill.guardrails.map((guardrail) => {
-    const normalized = normalizeDojoGuardrailPredicate({
-      rule: guardrail.rule,
-      title: guardrail.title,
-      guardrail_id: guardrail.guardrail_id,
-    });
-    return {
-      guardrail_id: guardrail.guardrail_id,
-      predicate: normalized.predicate,
-      severity: "block" as const,
-    };
-  });
+  const guardrails = graphGuardrailsForSkill(skill);
   const sourceBindings = sourceBindingsForSkill(skill);
   const apiBindings = apiBindingsForSkill(skill);
   return {
@@ -168,9 +182,102 @@ function actionNode(skill: DojoSkill): DojoGraphNode {
   };
 }
 
-function sourceBindingsForSkill(skill: DojoSkill): DojoGraphSourceBinding[] {
+function actionNodesForContractSteps(contract: WorkflowContractV7, skill: DojoSkill): DojoGraphNode[] {
+  const usedNodeIds = new Set<string>();
+  return contract.steps.map((step, index) => actionNodeForContractStep({
+    contract,
+    skill,
+    step,
+    nodeId: uniqueActionNodeId(step, index, usedNodeIds),
+  }));
+}
+
+function actionNodeForContractStep({
+  contract,
+  skill,
+  step,
+  nodeId,
+}: {
+  contract: WorkflowContractV7;
+  skill: DojoSkill;
+  step: WorkflowStepContractV7;
+  nodeId: string;
+}): DojoGraphNode {
+  const risk = step.mutation ? actionRisk(skill) : "safe";
+  const guardrails = step.mutation ? graphGuardrailsForSkill(skill) : [];
+  const assertions = step.mutation ? skill.skill_seed.candidate_success_assertions.map(assertionRequirement) : [];
+  const sourceBindings = sourceBindingsForSkill(skill, step.stepId);
+  const apiBindings = apiBindingsForSkill(skill, step.stepId);
+  return {
+    ...baseNode(nodeId, "Action", step.label || step.intent || step.action.kind, risk),
+    action: step.action.kind,
+    preconditions: [],
+    postconditions: [...step.expectedEffects],
+    guardrails,
+    proof: {
+      required: true,
+      required_claims: skill.permission_license.proof_requirements.required_evidence_claims,
+      required_guardrails: step.mutation ? skill.permission_license.proof_requirements.required_guardrails : [],
+    },
+    assertions,
+    substrate_options: skill.execution_substrates,
+    evidence_policy: step.mutation
+      ? ["append_action_trace", "append_postcondition_evidence"]
+      : ["append_action_trace"],
+    case_law_refs: step.mutation ? skill.case_law.map((item) => item.case_id) : [],
+    expiry_triggers: skill.permission_license.expiry_policy.expires_on,
+    source_bindings: sourceBindings,
+    api_bindings: apiBindings,
+    metadata: {
+      workflow_id: contract.workflowId,
+      workflow_step_id: step.stepId,
+      event_seq: step.eventSeq,
+      intent: step.intent,
+      action_kind: step.action.kind,
+      action_target: step.action.target ?? null,
+      value_ref: step.action.valueRef ?? null,
+      locator_plan: step.locatorPlan,
+      source_plan: step.sourcePlan,
+      api_plan: step.apiPlan ?? null,
+      semantic_plan: step.semanticPlan ?? null,
+      surface_plan: step.surfacePlan,
+      expected_effects: step.expectedEffects,
+      limitations: step.limitations,
+      mutation: step.mutation ?? null,
+      rollback_policy: step.mutation ? skill.rollback_policy : [],
+      guardrail_predicates: guardrails.map((guardrail) => ({
+        guardrail_id: guardrail.guardrail_id,
+        predicate: guardrail.predicate,
+      })),
+      source_anchor_ids: sourceBindings.map((binding) => binding.anchor_id),
+      api_anchor_ids: apiBindings.map((binding) => binding.anchor_id),
+      ...(apiBindings.length === 1 && apiBindings[0]?.api_candidate_id ? { api_candidate_id: apiBindings[0].api_candidate_id } : {}),
+      ...(apiBindings.length > 0
+        ? { api_candidate_ids: apiBindings.map((binding) => binding.api_candidate_id).filter(isNonEmptyString) }
+        : {}),
+    },
+  };
+}
+
+function graphGuardrailsForSkill(skill: DojoSkill) {
+  return skill.guardrails.map((guardrail) => {
+    const normalized = normalizeDojoGuardrailPredicate({
+      rule: guardrail.rule,
+      title: guardrail.title,
+      guardrail_id: guardrail.guardrail_id,
+    });
+    return {
+      guardrail_id: guardrail.guardrail_id,
+      predicate: normalized.predicate,
+      severity: "block" as const,
+    };
+  });
+}
+
+function sourceBindingsForSkill(skill: DojoSkill, sourceStepId?: string): DojoGraphSourceBinding[] {
   return uniqueAnchorsForSkill(skill)
     .filter((anchor) => anchor.kind === "source")
+    .filter((anchor) => sourceStepId === undefined || anchor.source_step_id === sourceStepId)
     .map((anchor) => ({
       binding_id: `source_binding_${anchor.anchor_id}`,
       anchor_id: anchor.anchor_id,
@@ -183,9 +290,10 @@ function sourceBindingsForSkill(skill: DojoSkill): DojoGraphSourceBinding[] {
     }));
 }
 
-function apiBindingsForSkill(skill: DojoSkill): DojoGraphApiBinding[] {
+function apiBindingsForSkill(skill: DojoSkill, sourceStepId?: string): DojoGraphApiBinding[] {
   return uniqueAnchorsForSkill(skill)
     .filter((anchor) => anchor.kind === "api")
+    .filter((anchor) => sourceStepId === undefined || anchor.source_step_id === sourceStepId)
     .map((anchor) => ({
       binding_id: `api_binding_${anchor.anchor_id}`,
       anchor_id: anchor.anchor_id,
@@ -225,6 +333,11 @@ function assertionRequirement(assertion: DojoAssertion) {
 }
 
 function graphEdges(skill: DojoSkill): DojoGraphEdge[] {
+  return graphEdgesForActionSequence(skill, ["action"]);
+}
+
+function graphEdgesForActionSequence(skill: DojoSkill, actionNodeIds: string[]): DojoGraphEdge[] {
+  const normalizedActionNodeIds = actionNodeIds.length > 0 ? actionNodeIds : ["action"];
   const guardrailEdges = skill.guardrails.map((guardrail): DojoGraphEdge => ({
     edge_id: `edge_permission_${guardrail.guardrail_id}`,
     from_node_id: "permission",
@@ -239,13 +352,19 @@ function graphEdges(skill: DojoSkill): DojoGraphEdge[] {
     confidence: 1,
     observed_variants: [],
   }));
+  const actionEdges = normalizedActionNodeIds.flatMap((nodeId, index): DojoGraphEdge[] => {
+    if (index === 0) return [edge(`edge_proof_${nodeId}`, "proof", nodeId)];
+    const previousNodeId = normalizedActionNodeIds[index - 1]!;
+    return [edge(`edge_${previousNodeId}_${nodeId}`, previousNodeId, nodeId)];
+  });
+  const finalActionNodeId = normalizedActionNodeIds[normalizedActionNodeIds.length - 1]!;
   return [
     edge("edge_trigger_input", "trigger", "input"),
     edge("edge_input_permission", "input", "permission"),
     ...guardrailEdges,
     ...(skill.guardrails.length === 0 ? [edge("edge_permission_proof", "permission", "proof")] : guardrailToProofEdges),
-    edge("edge_proof_action", "proof", "action"),
-    edge("edge_action_assertion", "action", "assertion"),
+    ...actionEdges,
+    edge(`edge_${finalActionNodeId}_assertion`, finalActionNodeId, "assertion"),
   ];
 }
 
@@ -285,6 +404,26 @@ function actionRisk(skill: DojoSkill): DojoGraphNodeRisk {
   return skill.permission_license.gated_actions.length > 0 || skill.permission_license.blocked_actions.length > 0
     ? "dangerous"
     : "mutation";
+}
+
+function uniqueActionNodeId(step: WorkflowStepContractV7, index: number, usedNodeIds: Set<string>): string {
+  const base = `action_${sanitizeGraphId(step.stepId || `step_${index + 1}`)}`;
+  let candidate = base;
+  let suffix = 2;
+  while (usedNodeIds.has(candidate)) {
+    candidate = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  usedNodeIds.add(candidate);
+  return candidate;
+}
+
+function sanitizeGraphId(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "step";
 }
 
 function isNonEmptyString(value: string | undefined): value is string {

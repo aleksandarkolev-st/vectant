@@ -887,6 +887,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       required_test_files: [...DOJO_GRAPH_RUNTIME_TEST_FILES],
       require_graph_ir_validation: true,
       require_graph_compiler: true,
+      require_workflow_step_nodes: true,
       require_source_api_binding: true,
       require_production_execution: true,
       require_edge_order: true,
@@ -2170,6 +2171,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     for (const [requirement, errorCode] of [
       ["require_graph_ir_validation", "graph_runtime_missing_ir_validation_requirement"],
       ["require_graph_compiler", "graph_runtime_missing_compiler_requirement"],
+      ["require_workflow_step_nodes", "graph_runtime_missing_workflow_step_nodes_requirement"],
       ["require_source_api_binding", "graph_runtime_missing_source_api_requirement"],
       ["require_production_execution", "graph_runtime_missing_production_execution_requirement"],
       ["require_edge_order", "graph_runtime_missing_edge_order_requirement"],

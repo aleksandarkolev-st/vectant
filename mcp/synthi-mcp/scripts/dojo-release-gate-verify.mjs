@@ -2394,6 +2394,7 @@ export function validateDojoGraphRuntimeEvidenceForRelease(evidence) {
   for (const [field, errorCode] of [
     ["graph_ir_validation_required", "graph_runtime_ir_validation_requirement_missing"],
     ["graph_compiler_required", "graph_runtime_compiler_requirement_missing"],
+    ["workflow_step_nodes_required", "graph_runtime_workflow_step_nodes_requirement_missing"],
     ["source_api_binding_required", "graph_runtime_source_api_requirement_missing"],
     ["production_execution_required", "graph_runtime_production_execution_requirement_missing"],
     ["edge_order_required", "graph_runtime_edge_order_requirement_missing"],
@@ -6497,6 +6498,7 @@ async function writeGraphRuntimeEvidenceForSelfCheck({
     graph_runtime_contract: {
       graph_ir_validation_required: true,
       graph_compiler_required: true,
+      workflow_step_nodes_required: true,
       source_api_binding_required: true,
       production_execution_required: true,
       edge_order_required: true,

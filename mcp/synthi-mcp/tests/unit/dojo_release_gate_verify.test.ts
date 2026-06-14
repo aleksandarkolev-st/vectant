@@ -4839,6 +4839,7 @@ function graphRuntimeEvidenceFixture(overrides = {}) {
     graph_runtime_contract: {
       graph_ir_validation_required: true,
       graph_compiler_required: true,
+      workflow_step_nodes_required: true,
       source_api_binding_required: true,
       production_execution_required: true,
       edge_order_required: true,
