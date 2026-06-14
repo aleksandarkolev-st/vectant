@@ -991,11 +991,26 @@ export function validateDojoEvidenceAuthorityEvidenceForMilestone(evidence) {
     ["proof_issue_claim_verification_required", "evidence_authority_proof_issue_requirement_missing"],
     ["proof_validation_rejects_self_attested_claims_required", "evidence_authority_self_attested_rejection_requirement_missing"],
     ["durable_postgres_ledger_gate_required", "evidence_authority_durable_postgres_gate_requirement_missing"],
+    ["self_check_executes_tests_required", "evidence_authority_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
   }
   if (contract.durable_postgres_ledger_gate_id !== "dojo_postgres_control_plane_self_check") {
     errors.push("evidence_authority_durable_postgres_gate_id_missing");
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution || typeof testExecution !== "object") {
+    errors.push("evidence_authority_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`evidence_authority_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("evidence_authority_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("evidence_authority_test_execution_args_missing");
+    }
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("evidence_authority_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -5804,6 +5819,7 @@ async function writeEvidenceAuthorityEvidenceForSelfCheck({
       proof_validation_rejects_self_attested_claims_required: true,
       durable_postgres_ledger_gate_required: true,
       durable_postgres_ledger_gate_id: "dojo_postgres_control_plane_self_check",
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_EVIDENCE_AUTHORITY_TEST_FILES],
     test_file_count: DOJO_EVIDENCE_AUTHORITY_TEST_FILES.length,
@@ -5829,6 +5845,18 @@ async function writeEvidenceAuthorityEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_EVIDENCE_AUTHORITY_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 100,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);

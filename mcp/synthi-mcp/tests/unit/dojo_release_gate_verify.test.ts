@@ -476,6 +476,24 @@ describe("Dojo release gate artifact verifier", () => {
       "evidence_authority_durable_postgres_gate_id_missing",
     ]));
 
+    const missingExecutionPath = await writeEvidenceAuthorityEvidenceFixture({
+      dir,
+      basename: "dojo-evidence-authority-missing-execution",
+      evidence: evidenceAuthorityEvidenceFixture({
+        evidence_authority: {
+          ...evidenceAuthorityEvidenceFixture().evidence_authority,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    const missingExecution = await verifyDojoEvidenceAuthorityEvidenceArtifact({ evidencePath: missingExecutionPath });
+    expect(missingExecution.ok).toBe(false);
+    expect(missingExecution.errors).toEqual(expect.arrayContaining([
+      "evidence_authority_self_check_execution_requirement_missing",
+      "evidence_authority_test_execution_missing",
+    ]));
+
     const driftedPath = await writeEvidenceAuthorityEvidenceFixture({
       dir,
       basename: "dojo-evidence-authority-drifted",
@@ -3695,6 +3713,7 @@ function evidenceAuthorityEvidenceFixture(overrides = {}) {
       proof_validation_rejects_self_attested_claims_required: true,
       durable_postgres_ledger_gate_required: true,
       durable_postgres_ledger_gate_id: "dojo_postgres_control_plane_self_check",
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_EVIDENCE_AUTHORITY_TEST_FILES],
     budget_evaluation: { ok: true },
@@ -3715,6 +3734,18 @@ function evidenceAuthorityEvidenceFixture(overrides = {}) {
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_EVIDENCE_AUTHORITY_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 123,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
 }

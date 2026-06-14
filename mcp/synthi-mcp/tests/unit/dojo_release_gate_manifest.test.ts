@@ -289,6 +289,7 @@ describe("Dojo release gate manifest", () => {
           require_self_attested_claim_rejection: true,
           require_durable_postgres_ledger_gate: true,
           durable_postgres_ledger_gate_id: "dojo_postgres_control_plane_self_check",
+          require_self_check_executes_tests: true,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -1057,10 +1058,12 @@ describe("Dojo release gate manifest", () => {
     evidenceAuthorityGate.artifact_requirements.require_proof_issue_claim_verification = false;
     evidenceAuthorityGate.artifact_requirements.require_self_attested_claim_rejection = false;
     evidenceAuthorityGate.artifact_requirements.durable_postgres_ledger_gate_id = "wrong_gate";
+    evidenceAuthorityGate.artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenEvidenceAuthority, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "evidence_authority_missing_proof_issue_requirement",
       "evidence_authority_missing_self_attested_rejection_requirement",
       "evidence_authority_missing_durable_postgres_gate_id",
+      "evidence_authority_missing_self_check_execution_requirement",
       "evidence_authority_missing_required_capabilities:proof_issuance_requires_verified_evidence_records",
       `evidence_authority_missing_required_test_files:${missingEvidenceAuthorityTestFile}`,
     ]));

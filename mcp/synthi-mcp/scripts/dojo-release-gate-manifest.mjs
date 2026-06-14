@@ -323,7 +323,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T2",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:evidence-authority:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_evidence_record.test.ts tests/unit/dojo_evidence_claim_verifier.test.ts tests/unit/dojo_evidence_ledger_resolver.test.ts tests/unit/dojo_evidence_redaction.test.ts tests/unit/dojo_evidence_export.test.ts tests/unit/dojo_proof_claims.test.ts -- --reporter=json --outputFile ../../tmp/dojo-evidence-authority/dojo-evidence-authority.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:evidence-authority:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:evidence-authority:self-check",
     required_for: ["milestone", "release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.evidenceAuthorityEvidence.v1",
@@ -345,6 +345,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_self_attested_claim_rejection: true,
       require_durable_postgres_ledger_gate: true,
       durable_postgres_ledger_gate_id: "dojo_postgres_control_plane_self_check",
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -1547,6 +1548,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_proof_issue_claim_verification", "evidence_authority_missing_proof_issue_requirement"],
       ["require_self_attested_claim_rejection", "evidence_authority_missing_self_attested_rejection_requirement"],
       ["require_durable_postgres_ledger_gate", "evidence_authority_missing_durable_postgres_gate_requirement"],
+      ["require_self_check_executes_tests", "evidence_authority_missing_self_check_execution_requirement"],
     ]) {
       if (!evidenceAuthorityGate.artifact_requirements?.[requirement]) errors.push(errorCode);
     }
