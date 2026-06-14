@@ -95,6 +95,11 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_PREVIEW_SIDECAR_PREFIX
+            - name: SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS
             - name: SYNTHI_PREVIEW_SIDECAR_IMAGE
               valueFrom:
                 configMapKeyRef:
@@ -145,6 +150,26 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_PREVIEW_BIND_HOST
+            - name: SYNTHI_RUNTIME_CALLBACK_BODY_LIMIT_BYTES
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_RUNTIME_CALLBACK_BODY_LIMIT_BYTES
+            - name: SYNTHI_RUNTIME_CALLBACK_RESPONSE_LIMIT_BYTES
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_RUNTIME_CALLBACK_RESPONSE_LIMIT_BYTES
+            - name: SYNTHI_RUNTIME_CALLBACK_BODY_PREVIEW_CHARS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_RUNTIME_CALLBACK_BODY_PREVIEW_CHARS
+            - name: SYNTHI_RUNTIME_CALLBACK_TIMEOUT_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_RUNTIME_CALLBACK_TIMEOUT_MS
             - name: WORKSPACE_DATA_PVC
               valueFrom:
                 configMapKeyRef:

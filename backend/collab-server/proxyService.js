@@ -23,6 +23,7 @@
 'use strict';
 
 const http = require('http');
+const https = require('https');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
@@ -71,6 +72,10 @@ const PROBE_TIMEOUT_MS = 300;
 
 /** HTTP proxy request timeout (ms). */
 const PROXY_TIMEOUT_MS = 30_000;
+const CALLBACK_BODY_LIMIT_BYTES = parsePositiveInt(process.env.SYNTHI_RUNTIME_CALLBACK_BODY_LIMIT_BYTES, 64 * 1024);
+const CALLBACK_RESPONSE_LIMIT_BYTES = parsePositiveInt(process.env.SYNTHI_RUNTIME_CALLBACK_RESPONSE_LIMIT_BYTES, 128 * 1024);
+const CALLBACK_BODY_PREVIEW_CHARS = parsePositiveInt(process.env.SYNTHI_RUNTIME_CALLBACK_BODY_PREVIEW_CHARS, 2000);
+const CALLBACK_TIMEOUT_MS = parsePositiveInt(process.env.SYNTHI_RUNTIME_CALLBACK_TIMEOUT_MS, 15_000);
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -286,6 +291,11 @@ function normalizeHostname(value) {
 function normalizePreviewProtocol(value) {
   const raw = String(value || '').trim().toLowerCase().replace(/:$/, '');
   return raw === 'http' ? 'http' : 'https';
+}
+
+function parsePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? '').trim(), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function hostnameFromHostHeader(hostHeader) {
@@ -835,6 +845,163 @@ function handlePreviewUrlRequest(req, res) {
   }
 }
 
+function readJsonBody(req, limitBytes = CALLBACK_BODY_LIMIT_BYTES) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    req.on('data', (chunk) => {
+      total += chunk.length;
+      if (total > limitBytes) {
+        reject(new Error('request_body_too_large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      try {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch {
+        reject(new Error('invalid_json'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function parseLoopbackCallbackUrl(callbackUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(callbackUrl || '').trim());
+  } catch {
+    return { error: 'invalid_callback_url' };
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  const isLoopback =
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '0.0.0.0' ||
+    host === '::1' ||
+    host === '[::1]';
+  const port = Number(parsed.port);
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { error: 'unsupported_callback_protocol' };
+  }
+  if (!isLoopback || !Number.isInteger(port) || port < 1 || port > 65535) {
+    return { error: 'callback_must_target_loopback_port' };
+  }
+
+  return {
+    port,
+    downstream: `${parsed.pathname || '/'}${parsed.search || ''}`,
+  };
+}
+
+function sendRuntimeCallback(runtimeScope, callbackUrl) {
+  return new Promise((resolve, reject) => {
+    if (!runtimeScope) {
+      reject(new Error('runtimeScope is required'));
+      return;
+    }
+
+    const callback = parseLoopbackCallbackUrl(callbackUrl);
+    if (callback.error) {
+      reject(Object.assign(new Error(callback.error), { statusCode: 400 }));
+      return;
+    }
+
+    const target = previewTargetFor(callback.port, runtimeScope);
+    if (!target) {
+      reject(Object.assign(new Error('preview_target_not_configured'), { statusCode: 502 }));
+      return;
+    }
+
+    const targetPath = joinTargetPath(target.pathPrefix, callback.downstream);
+    const transport = target.protocol === 'https:' ? https : http;
+    const proxyReq = transport.request({
+      hostname: target.hostname,
+      port: target.port,
+      path: targetPath,
+      method: 'GET',
+      headers: {
+        host: target.requestHost || `localhost:${callback.port}`,
+        accept: 'text/html,text/plain,application/json,*/*',
+        'user-agent': 'SynthiLoopbackCallbackBridge/1.0',
+      },
+      timeout: CALLBACK_TIMEOUT_MS,
+    }, (upstreamRes) => {
+      const chunks = [];
+      let total = 0;
+      upstreamRes.on('data', (chunk) => {
+        total += chunk.length;
+        if (total <= CALLBACK_RESPONSE_LIMIT_BYTES) chunks.push(chunk);
+      });
+      upstreamRes.on('end', () => {
+        resolve({
+          statusCode: upstreamRes.statusCode || 0,
+          contentType: upstreamRes.headers['content-type'] || '',
+          body: Buffer.concat(chunks).toString('utf8'),
+        });
+      });
+    });
+
+    proxyReq.on('timeout', () => proxyReq.destroy(new Error('callback_timeout')));
+    proxyReq.on('error', reject);
+    proxyReq.end();
+  });
+}
+
+async function handleRuntimeCallbackRequest(req, res) {
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'content-type',
+    });
+    res.end();
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'method_not_allowed' }));
+    return;
+  }
+
+  try {
+    const body = await readJsonBody(req);
+    const runtimeScope = String(body.runtimeScope || '').trim();
+    const callbackUrl = String(body.callbackUrl || '').trim();
+    if (!runtimeScope || !callbackUrl) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'runtimeScope and callbackUrl are required' }));
+      return;
+    }
+
+    const result = await sendRuntimeCallback(runtimeScope, callbackUrl);
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify({
+      ok: result.statusCode >= 200 && result.statusCode < 400,
+      statusCode: result.statusCode,
+      contentType: result.contentType,
+      bodyPreview: result.body.slice(0, CALLBACK_BODY_PREVIEW_CHARS),
+    }));
+  } catch (err) {
+    const status = err.statusCode || (err.message === 'request_body_too_large' ? 413 : err.message === 'invalid_json' ? 400 : 502);
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify({ error: err.message || 'callback_bridge_failed' }));
+  }
+}
+
 function workspaceFilterFromReq(req) {
   try {
     const parsed = new URL(req.url || '/ports', 'http://collab.local');
@@ -1031,6 +1198,7 @@ module.exports = {
   proxyWsUpgrade,
   handlePortsStatus,
   handlePreviewUrlRequest,
+  handleRuntimeCallbackRequest,
   isPreviewHostRequest,
   parsePortUrl,
   rewriteRootAbsoluteUrls,

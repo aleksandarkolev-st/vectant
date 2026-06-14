@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   resolveTerminalLinkUrl,
+  rewriteTerminalOutputLoopbackAuthLinks,
   terminalLinkNeedsRuntimeResolution,
 } from '../terminal-preview-links';
 
@@ -42,36 +43,48 @@ describe('terminal-preview-links', () => {
     ).resolves.toBe('https://p5173-rt-demo.preview.vectant.dev/');
   });
 
-  it('rewrites loopback callback parameters inside external auth links', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ url: 'https://p1455-rt-demo.preview.vectant.dev/auth/callback' }),
-    });
+  it('routes external auth links with loopback callbacks through the helper page', async () => {
     const authUrl = 'https://auth.example.test/oauth/authorize?client_id=cli&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid';
 
     expect(terminalLinkNeedsRuntimeResolution(authUrl)).toBe(true);
-    const result = await resolveTerminalLinkUrl(authUrl, 'ws-demo-user-demo', { ...options, fetchImpl });
+    const result = await resolveTerminalLinkUrl(authUrl, 'ws-demo-user-demo', {
+      ...options,
+      loopbackCallbackBridgeUrl: 'https://beta.vectant.dev/auth/loopback',
+    });
     const parsed = new URL(result);
 
-    expect(parsed.origin).toBe('https://auth.example.test');
-    expect(parsed.searchParams.get('client_id')).toBe('cli');
-    expect(parsed.searchParams.get('redirect_uri')).toBe('https://p1455-rt-demo.preview.vectant.dev/auth/callback');
-    expect(parsed.searchParams.get('scope')).toBe('openid');
+    expect(parsed.origin).toBe('https://beta.vectant.dev');
+    expect(parsed.pathname).toBe('/auth/loopback');
+    expect(parsed.searchParams.get('runtimeScope')).toBe('ws-demo-user-demo');
+    expect(parsed.searchParams.get('authUrl')).toBe(authUrl);
   });
 
-  it('rewrites loopback callback parameters inside URL hashes', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ url: 'https://p8765-rt-demo.preview.vectant.dev/callback?mode=cli' }),
-    });
+  it('routes hash-based loopback callback parameters through the helper page', async () => {
     const authUrl = 'https://auth.example.test/start#redirect_uri=http%3A%2F%2F127.0.0.1%3A8765%2Fcallback%3Fmode%3Dcli&state=abc';
 
-    const result = await resolveTerminalLinkUrl(authUrl, 'ws-demo-user-demo', { ...options, fetchImpl });
+    const result = await resolveTerminalLinkUrl(authUrl, 'ws-demo-user-demo', {
+      ...options,
+      loopbackCallbackBridgeUrl: 'https://beta.vectant.dev/auth/loopback',
+    });
     const parsed = new URL(result);
-    const hashParams = new URLSearchParams(parsed.hash.slice(1));
 
-    expect(hashParams.get('redirect_uri')).toBe('https://p8765-rt-demo.preview.vectant.dev/callback?mode=cli');
-    expect(hashParams.get('state')).toBe('abc');
+    expect(parsed.pathname).toBe('/auth/loopback');
+    expect(parsed.searchParams.get('authUrl')).toBe(authUrl);
+  });
+
+  it('rewrites terminal output auth links to the helper page', () => {
+    const authUrl = 'https://auth.example.test/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&state=abc';
+    const text = `Open this link: ${authUrl}`;
+    const rewritten = rewriteTerminalOutputLoopbackAuthLinks(text, {
+      runtimeScope: 'ws-demo-user-demo',
+      bridgeBaseUrl: 'https://beta.vectant.dev/auth/loopback',
+    });
+    const helperUrl = rewritten.replace('Open this link: ', '');
+    const parsed = new URL(helperUrl);
+
+    expect(parsed.pathname).toBe('/auth/loopback');
+    expect(parsed.searchParams.get('runtimeScope')).toBe('ws-demo-user-demo');
+    expect(parsed.searchParams.get('authUrl')).toBe(authUrl);
   });
 
   it('leaves ordinary external links untouched', async () => {

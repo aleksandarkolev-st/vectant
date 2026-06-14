@@ -1,6 +1,7 @@
 const LOCAL_PREVIEW_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
 const LOOPBACK_CALLBACK_PARAM_RE = /(redirect|callback|return|continue|next|url|uri)/i;
 const SCHEMELESS_LOOPBACK_RE = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1):\d+(?:[/?#]|$)/i;
+const TERMINAL_URL_RE = /\bhttps?:\/\/[^\s"'<>]+/gi;
 
 export function parseTerminalUrl(rawUri) {
   if (!rawUri || typeof rawUri !== 'string') return null;
@@ -62,6 +63,14 @@ export function terminalLinkNeedsRuntimeResolution(rawUri) {
   return hashParams ? hasRuntimeLoopbackParam(hashParams) : false;
 }
 
+export function terminalLinkHasNestedLoopbackCallback(rawUri) {
+  const parsed = parseTerminalUrl(rawUri);
+  if (!parsed || isRuntimeLoopbackUrl(parsed)) return false;
+  if (hasRuntimeLoopbackParam(parsed.searchParams)) return true;
+  const hashParams = hashParamsFromUrl(parsed);
+  return hashParams ? hasRuntimeLoopbackParam(hashParams) : false;
+}
+
 export async function resolveRuntimePreviewUrl(rawUri, runtimeScope, options = {}) {
   const windowOrigin = options.windowOrigin || '';
   const fallbackUrl = buildRuntimePreviewPathUrl(rawUri, runtimeScope, windowOrigin);
@@ -90,6 +99,7 @@ export async function resolveRuntimePreviewUrl(rawUri, runtimeScope, options = {
     });
     if (!response.ok) return fallbackUrl || rawUri;
     const data = await response.json();
+    if (options.preferPathUrl && data?.pathUrl) return data.pathUrl;
     return data?.url || data?.publicUrl || fallbackUrl || rawUri;
   } catch (_) {
     return fallbackUrl || rawUri;
@@ -113,6 +123,9 @@ async function rewriteLoopbackParams(params, runtimeScope, options) {
 }
 
 export async function resolveTerminalLinkUrl(rawUri, runtimeScope, options = {}) {
+  const bridgeUrl = buildLoopbackCallbackBridgeUrl(rawUri, runtimeScope, options.loopbackCallbackBridgeUrl);
+  if (bridgeUrl) return bridgeUrl;
+
   const directPreview = await resolveRuntimePreviewUrl(rawUri, runtimeScope, options);
   if (directPreview !== rawUri) return directPreview;
 
@@ -131,4 +144,30 @@ export async function resolveTerminalLinkUrl(rawUri, runtimeScope, options = {})
   }
 
   return rewrittenSearch.changed || hashChanged ? parsed.toString() : rawUri;
+}
+
+export function buildLoopbackCallbackBridgeUrl(rawUri, runtimeScope, bridgeBaseUrl) {
+  if (!runtimeScope || !bridgeBaseUrl || !terminalLinkHasNestedLoopbackCallback(rawUri)) {
+    return null;
+  }
+
+  try {
+    const bridge = new URL(bridgeBaseUrl);
+    bridge.searchParams.set('runtimeScope', runtimeScope);
+    bridge.searchParams.set('authUrl', rawUri);
+    return bridge.toString();
+  } catch (_) {
+    return null;
+  }
+}
+
+export function rewriteTerminalOutputLoopbackAuthLinks(text, { runtimeScope, bridgeBaseUrl } = {}) {
+  if (!text || !runtimeScope || !bridgeBaseUrl || !/localhost|127\.0\.0\.1|0\.0\.0\.0|%2f%2flocalhost|%2f%2f127\.0\.0\.1|%2f%2f0\.0\.0\.0/i.test(text)) {
+    return text;
+  }
+
+  return String(text).replace(TERMINAL_URL_RE, (match) => {
+    const bridgeUrl = buildLoopbackCallbackBridgeUrl(match, runtimeScope, bridgeBaseUrl);
+    return bridgeUrl || match;
+  });
 }

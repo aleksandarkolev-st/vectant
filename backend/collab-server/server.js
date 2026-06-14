@@ -1332,6 +1332,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /runtime-callback — replay a browser localhost OAuth callback into
+  // the correct runtime pod, where the CLI's loopback listener is running.
+  if (req.url === '/runtime-callback' || req.url.startsWith('/runtime-callback?')) {
+    proxyService.handleRuntimeCallbackRequest(req, res);
+    return;
+  }
+
   // GET /ports — list active dev-server ports
   if (req.method === 'GET' && (req.url === '/ports' || req.url.startsWith('/ports?'))) {
     proxyService.handlePortsStatus(req, res);

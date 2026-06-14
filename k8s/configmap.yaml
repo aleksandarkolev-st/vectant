@@ -36,6 +36,7 @@ data:
   SYNTHI_PREVIEW_PUBLIC_PROTOCOL: "https"
   SYNTHI_PREVIEW_SIDECAR_PORT: "18080"
   SYNTHI_PREVIEW_SIDECAR_PREFIX: "/__synthi_preview"
+  SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS: "30000"
   SYNTHI_PREVIEW_SIDECAR_IMAGE: "node:20-alpine"
   SYNTHI_PREVIEW_SCAN_PORTS: ""
   SYNTHI_TERMINAL_PORT_POOL: ""
@@ -66,6 +67,13 @@ data:
   NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.vectant.dev"
   NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.vectant.dev"
   NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER: "true"
+  NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH: "/auth/loopback"
+
+  # ── Terminal loopback auth callback bridge ────────────────────────────────
+  SYNTHI_RUNTIME_CALLBACK_BODY_LIMIT_BYTES: "65536"
+  SYNTHI_RUNTIME_CALLBACK_RESPONSE_LIMIT_BYTES: "131072"
+  SYNTHI_RUNTIME_CALLBACK_BODY_PREVIEW_CHARS: "2000"
+  SYNTHI_RUNTIME_CALLBACK_TIMEOUT_MS: "15000"
 
   # ── Feature flags ──────────────────────────────────────────────────────────
   GCS_SYNC_ON_FLUSH: "true"

@@ -12,6 +12,7 @@ import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/
 import {
   resolveTerminalLinkUrl,
   terminalLinkNeedsRuntimeResolution,
+  rewriteTerminalOutputLoopbackAuthLinks,
 } from '@/lib/terminal-preview-links';
 import {
   TERMINAL_COLOR_KEYS,
@@ -48,9 +49,21 @@ const TERMINAL_SERVER_URL = process.env.NEXT_PUBLIC_TERMINAL_URL
   ? process.env.NEXT_PUBLIC_TERMINAL_URL
   : resolveCollabWsUrl();
 const TERMINAL_HTTP_URL = resolveCollabHttpUrl();
+const LOOPBACK_AUTH_BRIDGE_PATH = process.env.NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH || '/auth/loopback';
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
+
+function resolveLoopbackAuthBridgeBaseUrl(origin) {
+  try {
+    const url = new URL(LOOPBACK_AUTH_BRIDGE_PATH, `${origin}/`);
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return `${origin}/auth/loopback`;
+  }
+}
 
 // ─── Terminal Theme (from ThemeProvider) ───────────────────────────────
 // The `useTheme()` hook provides `terminalTheme` generated from the active
@@ -248,11 +261,27 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         convertEol: true,   // Required on Windows — ConPTY can emit bare \n
       });
 
+      const runtimeLinkContext = () => {
+        const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
+        const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
+        return {
+          runtimeScope: runtimeIdentity.runtimeScope,
+          bridgeBaseUrl: resolveLoopbackAuthBridgeBaseUrl(window.location.origin),
+        };
+      };
+
+      const rewriteTerminalOutput = (text) => {
+        try {
+          return rewriteTerminalOutputLoopbackAuthLinks(text, runtimeLinkContext());
+        } catch (_) {
+          return text;
+        }
+      };
+
       const fitAddon = new FitAddon();
       const linksAddon = new WebLinksAddon((_event, uri) => {
         try {
-          const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
-          const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
+          const linkContext = runtimeLinkContext();
           const needsRuntimeResolution = terminalLinkNeedsRuntimeResolution(uri);
           if (!needsRuntimeResolution) {
             window.open(uri, '_blank', 'noopener,noreferrer');
@@ -260,9 +289,10 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           }
 
           const popup = window.open('about:blank', '_blank');
-          resolveTerminalLinkUrl(uri, runtimeIdentity.runtimeScope, {
+          resolveTerminalLinkUrl(uri, linkContext.runtimeScope, {
             terminalHttpUrl: TERMINAL_HTTP_URL,
             windowOrigin: window.location.origin,
+            loopbackCallbackBridgeUrl: linkContext.bridgeBaseUrl,
           }).then((previewUrl) => {
             const targetUrl = previewUrl || uri;
             if (popup) {
@@ -654,7 +684,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         // Binary frame → raw PTY output
         if (event.data instanceof ArrayBuffer) {
           const text = new TextDecoder().decode(new Uint8Array(event.data));
-          term.write(text);
+          term.write(rewriteTerminalOutput(text));
           return;
         }
 
@@ -698,7 +728,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             }
           } catch (_) {
             // Not JSON — treat as plain text output
-            term.write(event.data);
+            term.write(rewriteTerminalOutput(event.data));
           }
         }
       };
