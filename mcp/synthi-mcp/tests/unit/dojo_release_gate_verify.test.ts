@@ -75,6 +75,10 @@ import {
   DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
 } from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
 import {
+  DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES,
+  DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES,
+} from "../../scripts/dojo-public-proof-verification-self-check.mjs";
+import {
   DOJO_PRIVACY_REDACTION_CAPABILITIES,
   DOJO_PRIVACY_REDACTION_TEST_FILES,
 } from "../../scripts/dojo-privacy-redaction-self-check.mjs";
@@ -111,6 +115,7 @@ import {
   validateDojoVivariumRuntimeEvidenceForRelease,
   validateDojoCaseLawRuntimeEvidenceForRelease,
   validateDojoManagedKeySigningEvidenceForRelease,
+  validateDojoPublicProofVerificationEvidenceForRelease,
   validateDojoPostgresControlPlaneEvidenceForMilestone,
   validateDojoWorkflowPipelineE2EForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
@@ -136,6 +141,7 @@ import {
   verifyDojoVivariumRuntimeEvidenceArtifact,
   verifyDojoCaseLawRuntimeEvidenceArtifact,
   verifyDojoManagedKeySigningEvidenceArtifact,
+  verifyDojoPublicProofVerificationEvidenceArtifact,
   verifyDojoMcpHostConformanceArtifacts,
   verifyDojoPrivateToolCodexAcceptanceArtifact,
   verifyDojoPrivateToolCodexHostConformanceArtifact,
@@ -1084,6 +1090,7 @@ describe("Dojo release gate artifact verifier", () => {
     });
     const securityEvidencePath = await writeSecurityEvidenceFixture({ dir });
     const managedKeySigningEvidencePath = await writeManagedKeySigningEvidenceFixture({ dir });
+    const publicProofVerificationEvidencePath = await writePublicProofVerificationEvidenceFixture({ dir });
     const governanceLifecycleEvidencePath = await writeGovernanceLifecycleEvidenceFixture({ dir });
     const graphRuntimeEvidencePath = await writeGraphRuntimeEvidenceFixture({ dir });
     const ghostModeEvidencePath = await writeGhostModeEvidenceFixture({ dir });
@@ -1143,6 +1150,7 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "dojo_mcp_skill_bus_self_check").default_evidence_path = mcpSkillBusEvidencePath;
     manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path = managedKeySigningEvidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_public_proof_verification_self_check").default_evidence_path = publicProofVerificationEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check").default_evidence_path = governanceLifecycleEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_graph_runtime_self_check").default_evidence_path = graphRuntimeEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_ghost_mode_evidence_self_check").default_evidence_path = ghostModeEvidencePath;
@@ -1178,6 +1186,7 @@ describe("Dojo release gate artifact verifier", () => {
         "mcp-host-conformance-evidence": conformanceEvidencePath,
         "security-abuse-evidence": securityEvidencePath,
         "managed-key-signing-evidence": managedKeySigningEvidencePath,
+        "public-proof-verification-evidence": publicProofVerificationEvidencePath,
         "governance-lifecycle-evidence": governanceLifecycleEvidencePath,
         "graph-runtime-evidence": graphRuntimeEvidencePath,
         "ghost-mode-evidence": ghostModeEvidencePath,
@@ -1269,6 +1278,13 @@ describe("Dojo release gate artifact verifier", () => {
         id: "dojo_managed_key_signing_self_check",
         ok: true,
         evidence_path: managedKeySigningEvidencePath,
+      }),
+    ]);
+    expect(verified.public_proof_verification).toEqual([
+      expect.objectContaining({
+        id: "dojo_public_proof_verification_self_check",
+        ok: true,
+        evidence_path: publicProofVerificationEvidencePath,
       }),
     ]);
     expect(verified.governance_lifecycle).toEqual([
@@ -1458,6 +1474,72 @@ describe("Dojo release gate artifact verifier", () => {
     expect(tamperedJsonResult.errors).toEqual(expect.arrayContaining([
       expect.stringMatching(/^json_report_sha256_mismatch:/),
       expect.stringMatching(/^json_report_bytes_mismatch:/),
+    ]));
+  });
+
+  it("verifies public proof verification evidence coverage and public-only custody contract", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-public-proof-verify-"));
+    const evidencePath = await writePublicProofVerificationEvidenceFixture({ dir });
+
+    expect(validateDojoPublicProofVerificationEvidenceForRelease(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoPublicProofVerificationEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_public_proof_verification_self_check",
+      ok: true,
+      errors: [],
+      release_candidate: true,
+    }));
+
+    const incomplete = publicProofVerificationEvidenceFixture({
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["public_proof_verifies_ed25519_public_key"],
+      public_proof_verification_contract: {
+        ...publicProofVerificationEvidenceFixture().public_proof_verification_contract,
+        ed25519_public_key_required: false,
+        private_secret_exclusion_required: false,
+      },
+    });
+    const incompletePath = await writePublicProofVerificationEvidenceFixture({
+      dir,
+      basename: "incomplete-public-proof-verification",
+      evidence: incomplete,
+    });
+    const rejected = await verifyDojoPublicProofVerificationEvidenceArtifact({ evidencePath: incompletePath });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "public_proof_not_ok",
+      "public_proof_coverage_incomplete",
+      "public_proof_missing_capabilities:public_proof_verifies_ed25519_public_key",
+      "public_proof_ed25519_requirement_missing",
+      "public_proof_secret_exclusion_requirement_missing",
+    ]));
+
+    const driftedPath = await writePublicProofVerificationEvidenceFixture({
+      dir,
+      basename: "drifted-public-proof-verification",
+      evidence: publicProofVerificationEvidenceFixture({
+        configured_capabilities: DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES
+          .filter((capability) => capability !== "public_proof_verifies_ed25519_public_key"),
+        tested_capabilities: DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES
+          .filter((capability) => capability !== "public_proof_verifies_ed25519_public_key"),
+        capability_count: DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES.length - 1,
+        configured_capability_count: DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES.length - 1,
+        test_files: DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES
+          .filter((file) => file !== DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES[0]),
+        test_file_count: DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES.length - 1,
+        reported_test_file_count: DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES.length - 1,
+      }),
+    });
+    expect((await verifyDojoPublicProofVerificationEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
+      "public_proof_required_capabilities_missing:public_proof_verifies_ed25519_public_key",
+      "public_proof_required_capabilities_untested:public_proof_verifies_ed25519_public_key",
+      `public_proof_required_test_files_missing:${DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES[0]}`,
     ]));
   });
 
@@ -3845,6 +3927,94 @@ function managedKeySigningJsonReportFixtureText() {
     success: true,
     numTotalTests: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
     numPassedTests: DOJO_MANAGED_KEY_SIGNING_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    testResults: [],
+  }, null, 2);
+}
+
+async function writePublicProofVerificationEvidenceFixture({
+  dir,
+  basename = "dojo-public-proof-verification",
+  evidence,
+  writeLogs = true,
+}) {
+  const stdout = "public proof verification suite passed\n";
+  const stderr = "";
+  const jsonReport = publicProofVerificationJsonReportFixtureText();
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  if (writeLogs) {
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    await writeFile(jsonReportPath, jsonReport, "utf8");
+  }
+  const body = evidence ?? publicProofVerificationEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+  });
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(body, null, 2), "utf8");
+  return evidencePath;
+}
+
+function publicProofVerificationEvidenceFixture(overrides = {}) {
+  const stdout = "public proof verification suite passed\n";
+  const stderr = "";
+  const jsonReport = publicProofVerificationJsonReportFixtureText();
+  return {
+    schema_version: "synthi.dojo.publicProofVerificationEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    configured_capabilities: [...DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES],
+    tested_capabilities: [...DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES.length,
+    configured_capability_count: DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    public_proof_verification_contract: {
+      external_verifier_required: true,
+      ed25519_public_key_required: true,
+      evidence_claim_ledger_binding_required: true,
+      tamper_and_context_blocks_required: true,
+      timestamp_window_required: true,
+      proof_key_custody_policy_required: true,
+      public_export_required: true,
+      private_secret_exclusion_required: true,
+      tenant_scoped_key_export_required: true,
+      unavailable_key_marking_required: true,
+    },
+    test_files: [...DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES],
+    test_file_count: DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES.length,
+    reported_test_file_count: DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES.length,
+    budget_evaluation: { ok: true },
+    test_summary: {
+      total_tests: DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES.length,
+      passed_tests: DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    stdout_path: overrides.stdout_path || path.join(tmpdir(), "dojo-public-proof-verification.stdout.log"),
+    stderr_path: overrides.stderr_path || path.join(tmpdir(), "dojo-public-proof-verification.stderr.log"),
+    json_report_path: overrides.json_report_path || path.join(tmpdir(), "dojo-public-proof-verification.vitest.json"),
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    json_report_sha256: sha256(jsonReport),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function publicProofVerificationJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES.length,
+    numPassedTests: DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES.length,
     numFailedTests: 0,
     numPendingTests: 0,
     testResults: [],

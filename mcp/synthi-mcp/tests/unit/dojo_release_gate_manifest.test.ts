@@ -75,6 +75,10 @@ import {
   DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
 } from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
 import {
+  DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES,
+  DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES,
+} from "../../scripts/dojo-public-proof-verification-self-check.mjs";
+import {
   DOJO_PRIVACY_REDACTION_CAPABILITIES,
   DOJO_PRIVACY_REDACTION_TEST_FILES,
 } from "../../scripts/dojo-privacy-redaction-self-check.mjs";
@@ -120,6 +124,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
     "proof:dojo:privacy-redaction:self-check": "node scripts/dojo-privacy-redaction-self-check.mjs",
     "proof:dojo:chaos-performance:self-check": "node scripts/dojo-chaos-performance-self-check.mjs",
+    "proof:dojo:public-proof-verification:self-check": "node scripts/dojo-public-proof-verification-self-check.mjs",
     "live:browser:workflow-pipeline": "node scripts/workflow-pipeline-e2e.mjs",
     "live:browser:private-tool-stdio": "node scripts/private-tool-stdio-acceptance.mjs",
     "live:browser:private-tool-codex": "node scripts/private-tool-codex-acceptance.mjs",
@@ -472,6 +477,33 @@ describe("Dojo release gate manifest", () => {
           require_managed_key_service_provider: true,
           require_managed_key_custody: true,
           require_public_verifier_material: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
+        id: "dojo_public_proof_verification_self_check",
+        tier: "T7",
+        package_script: "proof:dojo:public-proof-verification:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.publicProofVerificationEvidence.v1",
+        default_evidence_path: "tmp/dojo-public-proof-verification/dojo-public-proof-verification.evidence.json",
+        release_artifact_requirements: expect.objectContaining({
+          require_all_public_proof_verification_capabilities_covered: true,
+          required_public_proof_verification_capabilities: DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES,
+          required_test_files: DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES,
+          require_external_verifier: true,
+          require_ed25519_public_key: true,
+          require_evidence_claim_ledger_binding: true,
+          require_tamper_and_context_blocks: true,
+          require_timestamp_window: true,
+          require_proof_key_custody_policy: true,
+          require_public_export: true,
+          require_private_secret_exclusion: true,
+          require_tenant_scoped_key_export: true,
+          require_unavailable_key_marking: true,
+          require_no_failed_tests: true,
+          require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -971,6 +1003,22 @@ describe("Dojo release gate manifest", () => {
       `managed_key_signing_missing_required_test_files:${missingManagedKeySigningTestFile}`,
     ]));
 
+    const brokenPublicProof = JSON.parse(JSON.stringify(manifest));
+    const publicProofGate = brokenPublicProof.gates.find((gate) => gate.id === "dojo_public_proof_verification_self_check");
+    const missingPublicProofTestFile = DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES[0];
+    publicProofGate.release_artifact_requirements.required_public_proof_verification_capabilities = DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES
+      .filter((capability) => capability !== "public_proof_verifies_ed25519_public_key");
+    publicProofGate.release_artifact_requirements.required_test_files = DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES
+      .filter((file) => file !== missingPublicProofTestFile);
+    publicProofGate.release_artifact_requirements.require_ed25519_public_key = false;
+    publicProofGate.release_artifact_requirements.require_private_secret_exclusion = false;
+    expect(validateDojoReleaseGateManifest(brokenPublicProof, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "public_proof_missing_ed25519_requirement",
+      "public_proof_missing_secret_exclusion_requirement",
+      "public_proof_missing_required_capabilities:public_proof_verifies_ed25519_public_key",
+      `public_proof_missing_required_test_files:${missingPublicProofTestFile}`,
+    ]));
+
     const brokenGovernanceLifecycle = JSON.parse(JSON.stringify(manifest));
     const governanceLifecycleGate = brokenGovernanceLifecycle.gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check");
     const missingGovernanceTestFile = DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES[0];
@@ -1178,6 +1226,7 @@ describe("Dojo release gate manifest", () => {
       "dojo_generated_pr_self_check",
       "dojo_mcp_skill_bus_self_check",
       "dojo_managed_key_signing_self_check",
+      "dojo_public_proof_verification_self_check",
       "dojo_governance_lifecycle_self_check",
       "dojo_graph_runtime_self_check",
       "dojo_ghost_mode_evidence_self_check",
@@ -1216,7 +1265,7 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 26,
+      proof_artifact_gate_count: 27,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
@@ -1229,6 +1278,7 @@ describe("Dojo release gate manifest", () => {
         "dojo_generated_pr_self_check",
         "dojo_mcp_skill_bus_self_check",
         "dojo_managed_key_signing_self_check",
+        "dojo_public_proof_verification_self_check",
         "dojo_governance_lifecycle_self_check",
         "dojo_graph_runtime_self_check",
         "dojo_ghost_mode_evidence_self_check",

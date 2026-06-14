@@ -66,6 +66,10 @@ import {
   DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
 } from "./dojo-postgres-control-plane-self-check.mjs";
 import {
+  DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES,
+  DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES,
+} from "./dojo-public-proof-verification-self-check.mjs";
+import {
   DOJO_PRIVACY_REDACTION_CAPABILITIES,
   DOJO_PRIVACY_REDACTION_TEST_FILES,
 } from "./dojo-privacy-redaction-self-check.mjs";
@@ -696,6 +700,36 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
   },
   {
+    id: "dojo_public_proof_verification_self_check",
+    tier: "T7",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:public-proof-verification:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_public_proof_verifier.test.ts tests/unit/dojo_proof_public_verification_export.test.ts -- --reporter=json --outputFile ../../tmp/dojo-public-proof-verification/dojo-public-proof-verification.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:public-proof-verification:self-check",
+    required_for: ["release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.publicProofVerificationEvidence.v1",
+    default_evidence_path: "tmp/dojo-public-proof-verification/dojo-public-proof-verification.evidence.json",
+    release_artifact_requirements: {
+      require_all_public_proof_verification_capabilities_covered: true,
+      required_public_proof_verification_capabilities: [...DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES],
+      required_test_files: [...DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES],
+      require_external_verifier: true,
+      require_ed25519_public_key: true,
+      require_evidence_claim_ledger_binding: true,
+      require_tamper_and_context_blocks: true,
+      require_timestamp_window: true,
+      require_proof_key_custody_policy: true,
+      require_public_export: true,
+      require_private_secret_exclusion: true,
+      require_tenant_scoped_key_export: true,
+      require_unavailable_key_marking: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "dojo_governance_lifecycle_self_check",
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
@@ -1102,6 +1136,7 @@ export const DOJO_RELEASE_GATE_IDS = [
   "dojo_generated_pr_self_check",
   "dojo_mcp_skill_bus_self_check",
   "dojo_managed_key_signing_self_check",
+  "dojo_public_proof_verification_self_check",
   "dojo_governance_lifecycle_self_check",
   "dojo_graph_runtime_self_check",
   "dojo_ghost_mode_evidence_self_check",
@@ -1704,6 +1739,57 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!managedKeySigningGate.release_artifact_requirements?.require_json_report_digest_match) {
       errors.push("managed_key_signing_missing_json_report_digest_requirement");
+    }
+  }
+  const publicProofVerificationGate = gates.find((gate) => gate.id === "dojo_public_proof_verification_self_check");
+  if (publicProofVerificationGate) {
+    if (publicProofVerificationGate.evidence_schema_version !== "synthi.dojo.publicProofVerificationEvidence.v1") {
+      errors.push("public_proof_missing_evidence_schema");
+    }
+    if (publicProofVerificationGate.package_script !== "proof:dojo:public-proof-verification:self-check") {
+      errors.push("public_proof_missing_package_script");
+    }
+    if (!publicProofVerificationGate.default_evidence_path) errors.push("public_proof_missing_default_evidence_path");
+    if (!publicProofVerificationGate.release_artifact_requirements?.require_all_public_proof_verification_capabilities_covered) {
+      errors.push("public_proof_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_external_verifier", "public_proof_missing_external_verifier_requirement"],
+      ["require_ed25519_public_key", "public_proof_missing_ed25519_requirement"],
+      ["require_evidence_claim_ledger_binding", "public_proof_missing_evidence_claim_requirement"],
+      ["require_tamper_and_context_blocks", "public_proof_missing_tamper_requirement"],
+      ["require_timestamp_window", "public_proof_missing_timestamp_requirement"],
+      ["require_proof_key_custody_policy", "public_proof_missing_custody_requirement"],
+      ["require_public_export", "public_proof_missing_export_requirement"],
+      ["require_private_secret_exclusion", "public_proof_missing_secret_exclusion_requirement"],
+      ["require_tenant_scoped_key_export", "public_proof_missing_tenant_export_requirement"],
+      ["require_unavailable_key_marking", "public_proof_missing_unavailable_key_requirement"],
+    ]) {
+      if (!publicProofVerificationGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredPublicProofCapabilities = Array.isArray(publicProofVerificationGate.release_artifact_requirements?.required_public_proof_verification_capabilities)
+      ? publicProofVerificationGate.release_artifact_requirements.required_public_proof_verification_capabilities
+      : [];
+    const missingPublicProofCapabilities = DOJO_PUBLIC_PROOF_VERIFICATION_CAPABILITIES
+      .filter((capability) => !requiredPublicProofCapabilities.includes(capability));
+    if (missingPublicProofCapabilities.length > 0) {
+      errors.push(`public_proof_missing_required_capabilities:${missingPublicProofCapabilities.join(",")}`);
+    }
+    const missingPublicProofTestFiles = missingRequiredEntries(
+      DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES,
+      publicProofVerificationGate.release_artifact_requirements?.required_test_files,
+    );
+    if (missingPublicProofTestFiles.length > 0) {
+      errors.push(`public_proof_missing_required_test_files:${missingPublicProofTestFiles.join(",")}`);
+    }
+    if (!publicProofVerificationGate.release_artifact_requirements?.require_no_skipped_tests) {
+      errors.push("public_proof_missing_no_skipped_requirement");
+    }
+    if (!publicProofVerificationGate.release_artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("public_proof_missing_digest_requirement");
+    }
+    if (!publicProofVerificationGate.release_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("public_proof_missing_json_report_digest_requirement");
     }
   }
   const governanceLifecycleGate = gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check");
