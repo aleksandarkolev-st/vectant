@@ -2848,6 +2848,7 @@ function applyExecutableCheckrideToPublishedSkill(
   updated.permission_license = license;
   updated.entrustment_level = decision.level;
   updated.skill_readiness_level = readiness.level;
+  updated.coverage_score = publicationCheckride.executable_checkride.coverage_score;
   updated.license_expires_at = licenseExpiresAtFromIssuedAt(license.issued_at);
   updated.skill_card = {
     ...updated.skill_card,
@@ -2856,6 +2857,24 @@ function applyExecutableCheckrideToPublishedSkill(
     will_ask_before: license.gated_actions.map((action) => action.action),
     will_not_do: license.blocked_actions.map((action) => action.action),
     proof_badge: license.proof_requirements.required_evidence_claims.length > 0 ? "Proof required" : "Proof optional",
+  };
+  updated.skill_passport = {
+    ...updated.skill_passport,
+    passport_id: `passport_${hashId(`${updated.skill_id}:${updated.skill_version}:${license.license_id}`)}`,
+    entrustment_level: license.entrustment_level,
+    readiness_level: readiness.level,
+    license_id: license.license_id,
+    proof_required: license.proof_requirements.required_evidence_claims.length > 0,
+    coverage_score: updated.coverage_score,
+    attack_success_rate: updated.attack_success_rate,
+    license_expires_at: updated.license_expires_at,
+    published_tools: [
+      ...new Set([
+        ...updated.skill_passport.published_tools,
+        ...(updated.published_tool_name ? [updated.published_tool_name] : []),
+      ]),
+    ],
+    issued_at: license.issued_at,
   };
   updated.assurance_case = {
     ...updated.assurance_case,
