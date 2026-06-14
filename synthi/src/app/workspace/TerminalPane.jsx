@@ -11,9 +11,10 @@ import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 import {
   resolveTerminalLinkUrl,
+  terminalLinkHasNestedLoopbackCallback,
   terminalLinkNeedsRuntimeResolution,
-  rewriteTerminalOutputLoopbackAuthLinks,
 } from '@/lib/terminal-preview-links';
+import { openAgentWorkflowExternalUrl } from '@/services/agentWorkflowClient';
 import {
   TERMINAL_COLOR_KEYS,
   getTerminalOverrides,
@@ -265,23 +266,41 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
         const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
         return {
-          runtimeScope: runtimeIdentity.runtimeScope,
+          workspaceSlug,
+          ...runtimeIdentity,
           bridgeBaseUrl: resolveLoopbackAuthBridgeBaseUrl(window.location.origin),
         };
       };
 
-      const rewriteTerminalOutput = (text) => {
-        try {
-          return rewriteTerminalOutputLoopbackAuthLinks(text, runtimeLinkContext());
-        } catch (_) {
-          return text;
-        }
+      const openManualLoopbackFallback = async (uri, linkContext) => {
+        const fallbackUrl = await resolveTerminalLinkUrl(uri, linkContext.runtimeScope, {
+          terminalHttpUrl: TERMINAL_HTTP_URL,
+          windowOrigin: window.location.origin,
+          loopbackCallbackBridgeUrl: linkContext.bridgeBaseUrl,
+        });
+        window.open(fallbackUrl || uri, '_blank', 'noopener,noreferrer');
       };
 
       const fitAddon = new FitAddon();
       const linksAddon = new WebLinksAddon((_event, uri) => {
         try {
           const linkContext = runtimeLinkContext();
+          if (terminalLinkHasNestedLoopbackCallback(uri)) {
+            openAgentWorkflowExternalUrl({
+              targetUrl: uri,
+              runtime: linkContext,
+            }).then(() => {
+              toast.success('Opened in workspace browser');
+            }).catch((err) => {
+              console.warn('[Terminal] Workspace browser auth open failed:', err);
+              toast.warning('Workspace browser unavailable; opening fallback sign-in helper');
+              openManualLoopbackFallback(uri, linkContext).catch(() => {
+                try { window.open(uri, '_blank', 'noopener,noreferrer'); } catch {}
+              });
+            });
+            return;
+          }
+
           const needsRuntimeResolution = terminalLinkNeedsRuntimeResolution(uri);
           if (!needsRuntimeResolution) {
             window.open(uri, '_blank', 'noopener,noreferrer');
@@ -684,7 +703,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         // Binary frame → raw PTY output
         if (event.data instanceof ArrayBuffer) {
           const text = new TextDecoder().decode(new Uint8Array(event.data));
-          term.write(rewriteTerminalOutput(text));
+          term.write(text);
           return;
         }
 
@@ -728,7 +747,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             }
           } catch (_) {
             // Not JSON — treat as plain text output
-            term.write(rewriteTerminalOutput(event.data));
+            term.write(event.data);
           }
         }
       };

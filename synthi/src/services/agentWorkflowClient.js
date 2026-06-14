@@ -101,3 +101,23 @@ export async function callAgentWorkflowTool({
   if (!res.ok) throw bridgeError('workflow_tool_failed', res.status, body);
   return body;
 }
+
+export async function openAgentWorkflowExternalUrl({
+  url,
+  token,
+  runtime,
+  targetUrl,
+  signal,
+}) {
+  const bridgeUrl = url || resolveAgentWorkflowBridgeUrl();
+  const bridgeToken = token ?? resolveAgentWorkflowBridgeToken();
+  const res = await fetch(`${bridgeUrl}/browser-workflows/open-external`, {
+    method: 'POST',
+    headers: bridgeHeaders(bridgeToken, true, runtime),
+    body: JSON.stringify({ url: targetUrl }),
+    signal,
+  });
+  const body = await readJsonOrEmpty(res);
+  if (!res.ok || body?.ok === false) throw bridgeError('workflow_open_external_failed', res.status, body);
+  return body;
+}
