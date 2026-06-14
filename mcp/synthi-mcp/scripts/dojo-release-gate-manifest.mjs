@@ -851,7 +851,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:governance-lifecycle:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_governance_service.test.ts -- --reporter=json --outputFile ../../tmp/dojo-governance-lifecycle/dojo-governance-lifecycle.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:governance-lifecycle:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:governance-lifecycle:self-check",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.governanceLifecycleEvidence.v1",
@@ -871,6 +871,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_compliance_pack: true,
       require_proof_public_verification_custody: true,
       require_malformed_expiry_fails_closed: true,
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -2146,6 +2147,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_compliance_pack", "governance_lifecycle_missing_compliance_pack_requirement"],
       ["require_proof_public_verification_custody", "governance_lifecycle_missing_public_verification_requirement"],
       ["require_malformed_expiry_fails_closed", "governance_lifecycle_missing_malformed_expiry_requirement"],
+      ["require_self_check_executes_tests", "governance_lifecycle_missing_self_check_execution_requirement"],
     ]) {
       if (!governanceLifecycleGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }

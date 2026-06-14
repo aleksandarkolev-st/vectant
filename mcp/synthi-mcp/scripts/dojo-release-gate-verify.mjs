@@ -2408,8 +2408,23 @@ export function validateDojoGovernanceLifecycleEvidenceForRelease(evidence) {
     ["compliance_pack_required", "governance_lifecycle_compliance_pack_requirement_missing"],
     ["proof_public_verification_custody_required", "governance_lifecycle_public_verification_requirement_missing"],
     ["malformed_expiry_fails_closed_required", "governance_lifecycle_malformed_expiry_requirement_missing"],
+    ["self_check_executes_tests_required", "governance_lifecycle_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution || typeof testExecution !== "object") {
+    errors.push("governance_lifecycle_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`governance_lifecycle_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("governance_lifecycle_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("governance_lifecycle_test_execution_args_missing");
+    }
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("governance_lifecycle_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -4428,6 +4443,7 @@ async function runSelfCheck({ outDir }) {
         ...governanceLifecycleArtifacts.evidence.governance_contract,
         license_revocation_required: false,
         compliance_pack_required: false,
+        self_check_executes_tests_required: false,
       },
     },
   });
@@ -4439,6 +4455,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_missing_capabilities:governance_revokes_license_to_blocked_scope_with_audit"));
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_license_revocation_requirement_missing"));
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_compliance_pack_requirement_missing"));
+  assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_self_check_execution_requirement_missing"));
 
   const graphRuntimeDir = path.join(outDir, "graph-runtime");
   await mkdir(graphRuntimeDir, { recursive: true });
@@ -6618,6 +6635,7 @@ async function writeGovernanceLifecycleEvidenceForSelfCheck({
       compliance_pack_required: true,
       proof_public_verification_custody_required: true,
       malformed_expiry_fails_closed_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES],
     test_file_count: DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES.length,
@@ -6649,6 +6667,18 @@ async function writeGovernanceLifecycleEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 100,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);
