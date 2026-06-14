@@ -1,4 +1,9 @@
-# vectant-runtime:local — per-workspace rootless Docker engine + default-program toolchain.
+# vectant-runtime — per-workspace rootless Docker engine + k8s/default-program toolchain.
+#
+# Runs under Sysbox in prod (runtimeClassName sysbox-runc, NO privilege) and under
+# local Docker Desktop (--privileged) in dev; the image itself is privilege-agnostic
+# (no dind privileged hacks baked in). Carries kind/kubectl/helm so the workspace's
+# own rootless daemon can drive real container + Kubernetes workflows.
 #
 # Based on docker:dind-rootless so each workspace gets its OWN isolated rootless
 # daemon: `docker`/`docker compose` inside a container program never touch the
@@ -38,6 +43,21 @@ RUN npm install -g http-server
 
 # Claude Code CLI — exposed in the terminal (lands in /usr/local/bin, on PATH).
 RUN npm install -g @anthropic-ai/claude-code
+
+# ── Container + k8s orchestration toolchain (Sysbox runtime — Slice 1) ─────────
+# The workspace's OWN rootless daemon (under Sysbox in prod) drives real
+# `docker build/run/compose`, `kind create cluster`, `kubectl`, and `helm`.
+# compose + buildx are already bundled in the dind base, so only kubectl + helm
+# are added (Alpine community, apk-signed).
+RUN apk add --no-cache kubectl helm
+
+# kind is not packaged for Alpine — install a pinned release binary verified by
+# its published SHA-256. Bump KIND_VERSION + KIND_SHA256 together, deliberately.
+ARG KIND_VERSION=v0.25.0
+ARG KIND_SHA256=b22ff7e5c02b8011e82cc3223d069d178b9e1543f1deb21e936d11764780a3d8
+RUN curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" \
+ && echo "${KIND_SHA256}  /usr/local/bin/kind" | sha256sum -c - \
+ && chmod +x /usr/local/bin/kind
 
 # sudo for ad-hoc installs from the terminal, passwordless for the rootless user
 # (this container is the user's own isolated sandbox).
