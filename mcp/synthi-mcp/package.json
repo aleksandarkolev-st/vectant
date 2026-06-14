@@ -274,7 +274,7 @@
     "proof:dojo:release-gates:verify": "node scripts/dojo-release-gate-verify.mjs",
     "proof:dojo:release-gates:verify:self-check": "node scripts/dojo-release-gate-verify.mjs --self-check",
     "proof:dojo:managed-key-signing:self-check": "node scripts/dojo-managed-key-signing-self-check.mjs",
-    "proof:dojo:public-proof-verification:self-check": "node scripts/dojo-public-proof-verification-self-check.mjs --from-json ../../tmp/dojo-public-proof-verification/dojo-public-proof-verification.vitest.json",
+    "proof:dojo:public-proof-verification:self-check": "node scripts/dojo-public-proof-verification-self-check.mjs --from-json ../../tmp/dojo-public-proof-verification/dojo-public-proof-verification.vitest.json --run-tests",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
     "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
     "proof:dojo:privacy-redaction:self-check": "node scripts/dojo-privacy-redaction-self-check.mjs",

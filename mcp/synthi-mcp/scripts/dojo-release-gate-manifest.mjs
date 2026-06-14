@@ -822,7 +822,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:public-proof-verification:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_public_proof_verifier.test.ts tests/unit/dojo_proof_public_verification_export.test.ts -- --reporter=json --outputFile ../../tmp/dojo-public-proof-verification/dojo-public-proof-verification.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:public-proof-verification:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:public-proof-verification:self-check",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.publicProofVerificationEvidence.v1",
@@ -843,6 +843,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_unavailable_key_marking: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
+      require_self_check_executes_tests: true,
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
     },
@@ -2101,6 +2102,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_private_secret_exclusion", "public_proof_missing_secret_exclusion_requirement"],
       ["require_tenant_scoped_key_export", "public_proof_missing_tenant_export_requirement"],
       ["require_unavailable_key_marking", "public_proof_missing_unavailable_key_requirement"],
+      ["require_self_check_executes_tests", "public_proof_missing_self_check_execution_requirement"],
     ]) {
       if (!publicProofVerificationGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }

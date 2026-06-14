@@ -616,6 +616,7 @@ describe("Dojo release gate manifest", () => {
           require_unavailable_key_marking: true,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
+          require_self_check_executes_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -1235,9 +1236,11 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingPublicProofTestFile);
     publicProofGate.release_artifact_requirements.require_ed25519_public_key = false;
     publicProofGate.release_artifact_requirements.require_private_secret_exclusion = false;
+    publicProofGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenPublicProof, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "public_proof_missing_ed25519_requirement",
       "public_proof_missing_secret_exclusion_requirement",
+      "public_proof_missing_self_check_execution_requirement",
       "public_proof_missing_required_capabilities:public_proof_verifies_ed25519_public_key",
       `public_proof_missing_required_test_files:${missingPublicProofTestFile}`,
     ]));

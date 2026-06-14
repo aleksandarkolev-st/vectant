@@ -1933,6 +1933,7 @@ describe("Dojo release gate artifact verifier", () => {
         ...publicProofVerificationEvidenceFixture().public_proof_verification_contract,
         ed25519_public_key_required: false,
         private_secret_exclusion_required: false,
+        self_check_executes_tests_required: false,
       },
     });
     const incompletePath = await writePublicProofVerificationEvidenceFixture({
@@ -1948,6 +1949,23 @@ describe("Dojo release gate artifact verifier", () => {
       "public_proof_missing_capabilities:public_proof_verifies_ed25519_public_key",
       "public_proof_ed25519_requirement_missing",
       "public_proof_secret_exclusion_requirement_missing",
+      "public_proof_self_check_execution_requirement_missing",
+    ]));
+
+    const missingExecutionPath = await writePublicProofVerificationEvidenceFixture({
+      dir,
+      basename: "public-proof-missing-execution",
+      evidence: publicProofVerificationEvidenceFixture({
+        public_proof_verification_contract: {
+          ...publicProofVerificationEvidenceFixture().public_proof_verification_contract,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    expect((await verifyDojoPublicProofVerificationEvidenceArtifact({ evidencePath: missingExecutionPath })).errors).toEqual(expect.arrayContaining([
+      "public_proof_self_check_execution_requirement_missing",
+      "public_proof_test_execution_missing",
     ]));
 
     const driftedPath = await writePublicProofVerificationEvidenceFixture({
@@ -5035,6 +5053,19 @@ function publicProofVerificationEvidenceFixture(overrides = {}) {
       private_secret_exclusion_required: true,
       tenant_scoped_key_export_required: true,
       unavailable_key_marking_required: true,
+      self_check_executes_tests_required: true,
+    },
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 1000,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
     },
     test_files: [...DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES],
     test_file_count: DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES.length,

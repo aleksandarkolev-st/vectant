@@ -2338,6 +2338,7 @@ export function validateDojoPublicProofVerificationEvidenceForRelease(evidence) 
     ["private_secret_exclusion_required", "public_proof_secret_exclusion_requirement_missing"],
     ["tenant_scoped_key_export_required", "public_proof_tenant_export_requirement_missing"],
     ["unavailable_key_marking_required", "public_proof_unavailable_key_requirement_missing"],
+    ["self_check_executes_tests_required", "public_proof_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
   }
@@ -2351,6 +2352,20 @@ export function validateDojoPublicProofVerificationEvidenceForRelease(evidence) 
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("public_proof_no_reported_tests");
   if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
     errors.push(`public_proof_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution) {
+    errors.push("public_proof_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`public_proof_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("public_proof_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("public_proof_test_execution_args_missing");
+    }
   }
   return {
     ok: errors.length === 0,
@@ -4489,6 +4504,7 @@ async function runSelfCheck({ outDir }) {
         ...publicProofArtifacts.evidence.public_proof_verification_contract,
         ed25519_public_key_required: false,
         private_secret_exclusion_required: false,
+        self_check_executes_tests_required: false,
       },
     },
   });
@@ -4500,6 +4516,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedPublicProof.errors.includes("public_proof_missing_capabilities:public_proof_verifies_ed25519_public_key"));
   assert(rejectedPublicProof.errors.includes("public_proof_ed25519_requirement_missing"));
   assert(rejectedPublicProof.errors.includes("public_proof_secret_exclusion_requirement_missing"));
+  assert(rejectedPublicProof.errors.includes("public_proof_self_check_execution_requirement_missing"));
 
   const governanceLifecycleDir = path.join(outDir, "governance-lifecycle");
   await mkdir(governanceLifecycleDir, { recursive: true });
@@ -6633,6 +6650,7 @@ async function writePublicProofVerificationEvidenceForSelfCheck({
       private_secret_exclusion_required: true,
       tenant_scoped_key_export_required: true,
       unavailable_key_marking_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES],
     test_file_count: DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES.length,
@@ -6665,6 +6683,18 @@ async function writePublicProofVerificationEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 1000,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);

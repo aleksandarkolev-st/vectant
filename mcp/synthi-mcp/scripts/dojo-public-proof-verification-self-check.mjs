@@ -14,6 +14,10 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { summarizeVitestJsonReport } from "./dojo-chaos-performance-self-check.mjs";
+import {
+  runVitestJsonForSelfCheck,
+  shouldRunVitestForSelfCheck,
+} from "./dojo-vitest-self-check-runner.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -72,27 +76,41 @@ export async function runDojoPublicProofVerificationSelfCheck({
   assert.deepEqual(missing, [], `missing public proof verification test files: ${missing.join(", ")}`);
   const startedAt = performance.now();
   const jsonReportPath = path.resolve(args["from-json"] || args["vitest-json"] || path.join(outputDir, "dojo-public-proof-verification.vitest.json"));
+  const shouldRunTests = shouldRunVitestForSelfCheck(args, jsonReportPath, existsSync);
+  const testRun = shouldRunTests
+    ? await runVitestJsonForSelfCheck({
+      testFiles: DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES,
+      jsonReportPath,
+      timeoutMs,
+      cwd: MCP_ROOT,
+    })
+    : null;
   const jsonReportError = existsSync(jsonReportPath) ? undefined : `json_report_missing:${jsonReportPath}`;
   const jsonReportText = jsonReportError ? "" : await readFile(jsonReportPath, "utf8");
   const jsonReport = jsonReportError ? null : JSON.parse(jsonReportText);
   const durationMs = performance.now() - startedAt;
   const testSummary = summarizeVitestJsonReport(jsonReport);
-  const stdout = [
+  const builderSummary = [
     "Dojo public proof verification evidence self-check builder",
     `vitest_json=${jsonReportPath}`,
+    `vitest_executed=${testRun ? "true" : "false"}`,
     `test_files=${DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES.join(",")}`,
     `reported_tests=${testSummary.total_tests}`,
     `reported_test_files=${testSummary.reported_test_file_count}`,
   ].join("\n") + "\n";
-  const stderr = jsonReportError ? `${jsonReportError}\n` : "";
+  const stdout = testRun?.stdout ? `${builderSummary}${testRun.stdout}` : builderSummary;
+  const stderrParts = [];
+  if (testRun?.stderr) stderrParts.push(testRun.stderr);
+  if (jsonReportError) stderrParts.push(jsonReportError);
+  const stderr = stderrParts.length > 0 ? `${stderrParts.join("\n")}\n` : "";
   const stdoutPath = path.join(outputDir, "dojo-public-proof-verification.evidence-builder.stdout.log");
   const stderrPath = path.join(outputDir, "dojo-public-proof-verification.evidence-builder.stderr.log");
   await writeFile(stdoutPath, stdout);
   await writeFile(stderrPath, stderr);
   const evidence = buildDojoPublicProofVerificationEvidenceManifest({
     now,
-    exitCode: jsonReport?.success === true ? 0 : 1,
-    signal: null,
+    exitCode: testRun?.exitCode ?? (jsonReport?.success === true ? 0 : 1),
+    signal: testRun?.signal ?? null,
     durationMs,
     testFiles: DOJO_PUBLIC_PROOF_VERIFICATION_TEST_FILES,
     stdout,
@@ -103,7 +121,8 @@ export async function runDojoPublicProofVerificationSelfCheck({
     jsonReportPath,
     jsonReportText,
     timeoutMs,
-    error: jsonReportError,
+    error: jsonReportError ?? testRun?.error,
+    testRun,
   });
   const evidencePath = path.join(outputDir, "dojo-public-proof-verification.evidence.json");
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
@@ -132,6 +151,7 @@ export function buildDojoPublicProofVerificationEvidenceManifest({
   jsonReportText,
   timeoutMs = 120000,
   error,
+  testRun,
 }) {
   const testSummary = summarizeVitestJsonReport(jsonReport);
   const capabilityCoverage = buildPublicProofVerificationCapabilityCoverage({
@@ -171,6 +191,7 @@ export function buildDojoPublicProofVerificationEvidenceManifest({
       private_secret_exclusion_required: true,
       tenant_scoped_key_export_required: true,
       unavailable_key_marking_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...testFiles],
     test_file_count: testFiles.length,
@@ -186,6 +207,20 @@ export function buildDojoPublicProofVerificationEvidenceManifest({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: testRun
+      ? {
+        command: testRun.command,
+        args: testRun.args,
+        exit_code: testRun.exitCode,
+        signal: testRun.signal ?? null,
+        duration_ms: Number(testRun.durationMs.toFixed(3)),
+        timed_out: testRun.timedOut,
+        stdout_sha256: sha256(testRun.stdout),
+        stderr_sha256: sha256(testRun.stderr),
+        stdout_bytes: Buffer.byteLength(testRun.stdout),
+        stderr_bytes: Buffer.byteLength(testRun.stderr),
+      }
+      : null,
     ...(error ? { error } : {}),
   };
 }
