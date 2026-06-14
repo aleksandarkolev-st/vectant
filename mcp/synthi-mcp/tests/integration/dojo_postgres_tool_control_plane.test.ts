@@ -543,7 +543,15 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(recertified?.structuredContent).toEqual(expect.objectContaining({
       ok: true,
       control_plane_source: "postgres",
-      skill: expect.objectContaining({ skill_id: published.skill.skill_id }),
+      skill: expect.objectContaining({
+        skill_id: published.skill.skill_id,
+        executable_entrustment: expect.objectContaining({
+          schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1",
+          source: "recertification",
+          checkride_id: expect.any(String),
+          evidence_refs: expect.any(Array),
+        }),
+      }),
       recertification: expect.objectContaining({
         status: "applied",
         reason: "integration_postgres_recertification",

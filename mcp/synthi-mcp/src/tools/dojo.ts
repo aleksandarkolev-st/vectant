@@ -14,6 +14,7 @@ import {
   type DojoProofCarryingSkillCapsule,
   type DojoEvidenceClaim,
   type DojoExecutionSubstrate,
+  type DojoExecutableEntrustmentSnapshot,
   type DojoRepoArtifact,
   type DojoSkill,
 } from "../browser/dojo.js";
@@ -1913,6 +1914,7 @@ function dojoGetAssuranceCaseTool(args: unknown): ToolResponse {
 function dojoGetEntrustmentLevelTool(args: unknown): ToolResponse {
   const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
+  const executableEntrustment = skill.skill.executable_entrustment;
   return jsonResponse({
     ok: true,
     skill_id: skill.skill.skill_id,
@@ -1920,6 +1922,15 @@ function dojoGetEntrustmentLevelTool(args: unknown): ToolResponse {
     skill_readiness_level: skill.skill.skill_readiness_level,
     proof_required: skill.skill.skill_passport.proof_required,
     license_id: skill.skill.permission_license.license_id,
+    entrustment_source: executableEntrustment ? "executable_checkride" : "legacy_license_artifact",
+    executable_entrustment: executableEntrustment ?? null,
+    license_scope: {
+      allowed_actions: skill.skill.permission_license.allowed_actions,
+      gated_actions: skill.skill.permission_license.gated_actions,
+      blocked_actions: skill.skill.permission_license.blocked_actions,
+      approval_requirements: skill.skill.permission_license.approval_requirements,
+    },
+    evidence_refs: executableEntrustment?.evidence_refs ?? skill.skill.assurance_case.evidence_refs,
   });
 }
 
@@ -2818,7 +2829,8 @@ async function executableCheckrideForSkillPublication(input: {
 
 function applyExecutableCheckrideToPublishedSkill(
   skill: DojoSkill,
-  publicationCheckride: DojoPublicationExecutableCheckride
+  publicationCheckride: DojoPublicationExecutableCheckride,
+  source: DojoExecutableEntrustmentSnapshot["source"]
 ): DojoSkill {
   const updated = cloneJson(skill);
   const decision = publicationCheckride.entrustment_decision;
@@ -2849,6 +2861,7 @@ function applyExecutableCheckrideToPublishedSkill(
   updated.entrustment_level = decision.level;
   updated.skill_readiness_level = readiness.level;
   updated.coverage_score = publicationCheckride.executable_checkride.coverage_score;
+  updated.executable_entrustment = executableEntrustmentSnapshotFor(publicationCheckride, source);
   updated.license_expires_at = licenseExpiresAtFromIssuedAt(license.issued_at);
   updated.skill_card = {
     ...updated.skill_card,
@@ -2891,6 +2904,45 @@ function applyExecutableCheckrideToPublishedSkill(
     ])],
   };
   return updated;
+}
+
+function executableEntrustmentSnapshotFor(
+  publicationCheckride: DojoPublicationExecutableCheckride,
+  source: DojoExecutableEntrustmentSnapshot["source"]
+): DojoExecutableEntrustmentSnapshot {
+  const checkride = publicationCheckride.executable_checkride;
+  const entrustment = publicationCheckride.entrustment_decision;
+  const readiness = publicationCheckride.readiness_decision;
+  return {
+    schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1",
+    source,
+    checkride_id: checkride.checkride_id,
+    generated_at: checkride.finished_at,
+    started_at: checkride.started_at,
+    finished_at: checkride.finished_at,
+    scenario_count: checkride.scenario_count,
+    passed_scenarios: checkride.passed_scenarios,
+    failed_scenarios: checkride.failed_scenarios,
+    blocked_scenarios: checkride.blocked_scenarios,
+    critical_failures: checkride.critical_failures,
+    coverage_score: checkride.coverage_score,
+    production_recommendation: checkride.production_recommendation,
+    license_constraints: checkride.license_constraints.map((constraint) => ({ ...constraint })),
+    entrustment_decision: {
+      level: entrustment.level,
+      production_recommendation: entrustment.production_recommendation,
+      blocked_by: [...entrustment.blocked_by],
+      limitations: [...entrustment.limitations],
+      evidence_refs: [...entrustment.evidence_refs],
+    },
+    readiness_decision: {
+      level: readiness.level,
+      blocked_by: [...readiness.blocked_by],
+      next_required: [...readiness.next_required],
+    },
+    evidence_refs: [...checkride.evidence_refs],
+    ledger_checkpoint_hashes: [...checkride.ledger_checkpoint_hashes],
+  };
 }
 
 function constrainRunWorkflowAction(
@@ -2979,7 +3031,8 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
   });
   const executableSkill = applyExecutableCheckrideToPublishedSkill(
     candidateSkill,
-    publicationCheckride
+    publicationCheckride,
+    "publish"
   );
   const controlPlanePersistence = await persistPublishedSkillToDurableControlPlaneIfRequired({
     tenant: workflow.tenant,
@@ -3090,7 +3143,8 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
   });
   recertified = applyExecutableCheckrideToPublishedSkill(
     recertified,
-    recertificationCheckride
+    recertificationCheckride,
+    "recertification"
   );
   if (previousLicenseVersion) {
     recertified = skillWithLicenseVersion(recertified, bumpVersion(previousLicenseVersion));
@@ -5211,6 +5265,7 @@ function skillListItem(skill: DojoSkill): Record<string, unknown> {
       critical_failures: skill.checkride.critical_failures,
       blocked_scenarios: skill.checkride.blocked_scenarios,
     },
+    executable_entrustment: skill.executable_entrustment ?? null,
     license: {
       license_id: skill.permission_license.license_id,
       license_version: skill.permission_license.license_version,

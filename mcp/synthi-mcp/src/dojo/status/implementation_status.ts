@@ -70,7 +70,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_get_source_affordance_pr_plan: sourceProjection("Returns a typed generated source-affordance PR plan; the codemod harness can patch controlled React fixtures and prove generated tests."),
   synthi_dojo_get_registry: governanceReport("Returns organization registry report data with governance-service view models."),
   synthi_dojo_get_skill_assurance_case: report("Returns an assurance case artifact assembled from current reports."),
-  synthi_dojo_get_entrustment_level: syntheticProjection("Returns entrustment and readiness calculated from current checkride and runtime evidence artifacts."),
+  synthi_dojo_get_entrustment_level: reportWithRuntimeEvidence("Returns stored entrustment and readiness with executable checkride provenance when the skill was published or recertified through the runtime path."),
   synthi_dojo_get_license: executable("Returns the currently stored permission license for a skill."),
   synthi_dojo_get_guardrails: graphProjection("Returns guardrails generated from current case-law/checkride artifacts; approved runtime guardrail predicates are supported."),
   synthi_dojo_get_case_law: governanceReport("Returns generated or recorded case law with lifecycle state for review and binding guardrail use."),

@@ -584,6 +584,16 @@ async function main() {
     `backing private workflow tool should publish: ${JSON.stringify(publish.private_tool, null, 2)}`
   );
   assert.equal(publish.private_tool.tool_name, "synthi_app_open_details", "published backing tool name should be stable");
+  assert.equal(
+    publish.skill.executable_entrustment?.schema_version,
+    "synthi.dojo.executableEntrustmentSnapshot.v1",
+    "published skill summary should include executable entrustment provenance"
+  );
+  assert.equal(
+    publish.skill.executable_entrustment?.source,
+    "publish",
+    "published skill summary should mark executable entrustment source"
+  );
   log("ok", "published licensed skill and backing tool");
 
   const direct = await dispatchBrowserTool(publish.private_tool.tool_name, {});
@@ -593,6 +603,11 @@ async function main() {
 
   const skill = dojoSkillRegistry.get(publish.skill.skill_id);
   assert(skill, "published skill should be registered");
+  assert.equal(
+    skill.executable_entrustment?.schema_version,
+    "synthi.dojo.executableEntrustmentSnapshot.v1",
+    "registered skill should retain executable entrustment provenance"
+  );
   const graphRuntimeClaims = runtimeClaimsForSkillGuardrails(
     skill,
     normalizeDojoGuardrailPredicate,
@@ -832,6 +847,19 @@ async function main() {
 
   const exported = structured(await dispatchDojoTool("synthi_dojo_export_artifacts", { skill_id: publish.skill.skill_id }));
   assert(exported.artifact_count > 35, "Dojo export should include the full Vivarium Cortex artifact set");
+  const exportedSkillArtifact = exported.artifacts.find((artifact) => artifact.path.endsWith("/skill.json"));
+  assert(exportedSkillArtifact, "Dojo export should include skill.json");
+  const exportedSkill = JSON.parse(exportedSkillArtifact.content);
+  assert.equal(
+    exportedSkill.executable_entrustment?.schema_version,
+    "synthi.dojo.executableEntrustmentSnapshot.v1",
+    "exported skill.json should include executable entrustment provenance"
+  );
+  assert(
+    Array.isArray(exportedSkill.executable_entrustment.evidence_refs)
+      && exportedSkill.executable_entrustment.evidence_refs.length > 0,
+    "exported executable entrustment should include evidence refs"
+  );
   const written = await writeArtifacts(RUN_ROOT, exported.artifacts);
   const parsedJson = validateJsonArtifacts(exported.artifacts);
   const generatedSpec = written.find((file) => file.endsWith(path.normalize(".synthi/dojo/skills/open_details/playwright.spec.ts")));

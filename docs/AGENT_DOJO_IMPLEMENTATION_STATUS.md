@@ -104,7 +104,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_get_source_affordance_pr_plan` | `deterministic_projection` |
 | `synthi_dojo_get_registry` | `report_only` |
 | `synthi_dojo_get_skill_assurance_case` | `report_only` |
-| `synthi_dojo_get_entrustment_level` | `deterministic_projection` |
+| `synthi_dojo_get_entrustment_level` | `report_only` |
 | `synthi_dojo_get_license` | `executable` |
 | `synthi_dojo_get_guardrails` | `deterministic_projection` |
 | `synthi_dojo_get_case_law` | `report_only` |

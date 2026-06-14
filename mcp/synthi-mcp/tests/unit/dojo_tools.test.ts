@@ -1544,6 +1544,23 @@ describe("Agent Dojo MCP tools", () => {
     expect(publishedSkill).toEqual(expect.objectContaining({
       entrustment_level: "E3",
       skill_readiness_level: 5,
+      executable_entrustment: expect.objectContaining({
+        schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1",
+        source: "publish",
+        checkride_id: expect.any(String),
+        scenario_count: expect.any(Number),
+        production_recommendation: "constrained",
+        entrustment_decision: expect.objectContaining({
+          level: "E3",
+          production_recommendation: "constrained",
+          evidence_refs: expect.any(Array),
+        }),
+        readiness_decision: expect.objectContaining({
+          level: 5,
+          blocked_by: expect.any(Array),
+          next_required: expect.any(Array),
+        }),
+      }),
       permission_license: expect.objectContaining({
         entrustment_level: "E3",
         autonomy_level: "submit_limited",
@@ -1556,6 +1573,48 @@ describe("Agent Dojo MCP tools", () => {
     for (const constraint of publication.executable_checkride.license_constraints) {
       expect(runWorkflowAction?.constraints).toContain(`${constraint.constraint_kind}:${constraint.mutation_kind}`);
     }
+    const exportedSkillArtifact = exportDojoRepoArtifacts(publishedSkill!)
+      .find((artifact) => artifact.path.endsWith("/skill.json"));
+    expect(exportedSkillArtifact).toBeTruthy();
+    expect(JSON.parse(exportedSkillArtifact!.content)).toEqual(expect.objectContaining({
+      executable_entrustment: expect.objectContaining({
+        schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1",
+        source: "publish",
+        checkride_id: publication.executable_checkride.checkride_id,
+      }),
+    }));
+    const entrustment = await dispatchDojoTool("synthi_dojo_get_entrustment_level", {
+      skill_id: published.skill.skill_id,
+      workspace_id: "workspace-a",
+    });
+    expect(entrustment?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill_id: published.skill.skill_id,
+      entrustment_level: "E3",
+      skill_readiness_level: 5,
+      entrustment_source: "executable_checkride",
+      executable_entrustment: expect.objectContaining({
+        schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1",
+        source: "publish",
+        checkride_id: publication.executable_checkride.checkride_id,
+        production_recommendation: "constrained",
+      }),
+      license_scope: expect.objectContaining({
+        allowed_actions: expect.arrayContaining([
+          expect.objectContaining({
+            action: "run_workflow",
+            constraints: expect.arrayContaining(["executable_checkride_constrained"]),
+          }),
+        ]),
+      }),
+      evidence_refs: expect.any(Array),
+    }));
+    const entrustmentContent = entrustment?.structuredContent as {
+      executable_entrustment: { evidence_refs: string[] };
+      evidence_refs: string[];
+    };
+    expect(entrustmentContent.executable_entrustment.evidence_refs.length).toBeGreaterThan(0);
+    expect(entrustmentContent.evidence_refs.length).toBeGreaterThan(0);
     expect(publishedSkill!.permission_license.approval_requirements).not.toContain("run_workflow");
     expect(publishedSkill!.permission_license.gated_actions).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ action: "run_workflow" })])
@@ -2317,7 +2376,21 @@ describe("Agent Dojo MCP tools", () => {
     });
     expect(recertified?.structuredContent).toEqual(expect.objectContaining({
       ok: true,
-      skill: expect.objectContaining({ skill_id: published.skill.skill_id }),
+      skill: expect.objectContaining({
+        skill_id: published.skill.skill_id,
+        executable_entrustment: expect.objectContaining({
+          schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1",
+          source: "recertification",
+          checkride_id: expect.any(String),
+          entrustment_decision: expect.objectContaining({
+            level: expect.any(String),
+            production_recommendation: expect.any(String),
+          }),
+          readiness_decision: expect.objectContaining({
+            level: expect.any(Number),
+          }),
+        }),
+      }),
       recertification: expect.objectContaining({
         ok: true,
         status: "applied",

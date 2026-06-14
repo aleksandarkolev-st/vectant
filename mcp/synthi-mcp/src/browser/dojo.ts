@@ -360,6 +360,42 @@ export interface DojoSkillPassport {
   issued_at: string;
 }
 
+export interface DojoExecutableEntrustmentSnapshot {
+  schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1";
+  source: "publish" | "recertification" | "checkride";
+  checkride_id: string;
+  generated_at: string;
+  started_at: string;
+  finished_at: string;
+  scenario_count: number;
+  passed_scenarios: number;
+  failed_scenarios: number;
+  blocked_scenarios: number;
+  critical_failures: number;
+  coverage_score: number;
+  production_recommendation: "allowed" | "constrained" | "blocked";
+  license_constraints: Array<{
+    scenario_id: string;
+    mutation_kind: string;
+    constraint_kind: "exclude_context" | "ask_before" | "requires_guardrail";
+    reason: string;
+  }>;
+  entrustment_decision: {
+    level: DojoEntrustmentLevel;
+    production_recommendation: "allowed" | "constrained" | "blocked";
+    blocked_by: string[];
+    limitations: string[];
+    evidence_refs: string[];
+  };
+  readiness_decision: {
+    level: DojoSkillReadinessLevel;
+    blocked_by: string[];
+    next_required: string[];
+  };
+  evidence_refs: string[];
+  ledger_checkpoint_hashes: string[];
+}
+
 export interface DojoNodeMemory {
   confidence: number;
   rehearsal_count: number;
@@ -685,6 +721,7 @@ export interface DojoSkill {
   assurance_case: DojoAssuranceCase;
   skill_card: DojoSkillCard;
   skill_passport: DojoSkillPassport;
+  executable_entrustment?: DojoExecutableEntrustmentSnapshot;
   skill_genome: DojoSkillGenome;
   agent_ready_ui_contract: DojoAgentReadyUiContract;
   cost_control_policy: DojoCostControlPolicy;
@@ -2921,6 +2958,7 @@ function redactedSkillArtifact(skill: DojoSkill): Record<string, unknown> {
     source_links: skill.source_links,
     published_tools: skill.published_tools,
     published_tool_name: skill.published_tool_name ?? null,
+    executable_entrustment: skill.executable_entrustment ?? null,
     generated_at: skill.generated_at,
   };
 }
@@ -3100,6 +3138,11 @@ function evidenceManifestFor(skill: DojoSkill): Record<string, unknown> {
       { ref: `counterfactual_twin:${skill.counterfactual_twin.twin_id}`, kind: "counterfactual_twin", path: "counterfactual-twin.report.json" },
       { ref: `evil_twin:${skill.evil_twin.red_team_id}`, kind: "evil_twin", path: "evil-twin.report.json" },
       { ref: `license:${skill.permission_license.license_id}`, kind: "permission_license", path: "license.json" },
+      ...(skill.executable_entrustment ? [{
+        ref: `executable_entrustment:${skill.executable_entrustment.checkride_id}`,
+        kind: "executable_entrustment",
+        path: "skill.json",
+      }] : []),
       { ref: `assurance:${skill.assurance_case.assurance_case_id}`, kind: "assurance_case", path: "assurance.case.md" },
       ...skill.case_law.map((item) => ({ ref: `case:${item.case_id}`, kind: "case_law", path: "case-law.md" })),
       ...skill.guardrails.map((guardrail) => ({ ref: `guardrail:${guardrail.guardrail_id}`, kind: "guardrail", path: "guardrails.json" })),
