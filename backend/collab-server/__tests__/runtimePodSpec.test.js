@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { buildRuntimeDeployment, isSysboxRuntimeEnabled } = require('../runtimePodSpec');
+const { buildRuntimeDeployment, buildRuntimeService, isSysboxRuntimeEnabled } = require('../runtimePodSpec');
 const { runtimeResourceId } = require('../runtimeIdentity');
 
 // T1 — the core security invariant: the per-workspace runtime pod runs under the
@@ -154,3 +154,25 @@ test('runtime container has a dockerd-readiness probe and stays non-privileged',
   assert.ok(cmd.join(' ').includes('docker'), 'readiness probe checks the docker daemon');
   assert.notEqual(runtime.securityContext && runtime.securityContext.privileged, true);
 });
+
+// S4-T1 — Slice 4: the runtime pod's preview Service. Headless, selects app=runtime
+// pods, exposes the preview-sidecar port, and is NAMED distinctly from the worker
+// Service (worker Service = runtimeResourceId; runtime must not collide).
+test('buildRuntimeService is a headless Service for the runtime pod on the preview port', () => {
+  const sessionId = 'ws-abc:user-1';
+  const svc = buildRuntimeService(sessionId);
+  assert.equal(svc.kind, 'Service');
+  assert.notEqual(svc.metadata.name, runtimeResourceId(sessionId), 'distinct from the worker Service name');
+  assert.ok(svc.metadata.name.startsWith(runtimeResourceId(sessionId)), 'derived from the session resource id');
+  assert.equal(svc.spec.clusterIP, 'None', 'headless');
+  assert.equal(svc.spec.selector.app, 'runtime');
+  assert.equal(svc.spec.selector['synthi/runtime-id'], runtimeResourceId(sessionId));
+  const port = (svc.spec.ports || []).find((p) => p.name === 'preview-proxy');
+  assert.ok(port, 'exposes the preview-proxy port');
+  assert.ok(Number.isInteger(port.port) && port.port > 0, 'preview-proxy port is a valid port');
+});
+
+// S4-T2 — DEFERRED (written + skipped): ports opened inside the runtime pod are
+// detected (k8s-exec port monitor) and reachable via the preview sidecar+Service +
+// PREVIEW_TARGET_TEMPLATE. Needs a live Sysbox cluster.
+test('runtime pod opened ports surface in the Ports panel and proxy', { skip: 'integration — blocked on nestybox/sysbox#1006 substrate' }, () => {});

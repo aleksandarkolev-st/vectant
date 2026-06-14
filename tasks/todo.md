@@ -562,3 +562,12 @@ When `RUNTIME_BACKEND=sysbox-pod` (+ `SYNTHI_TERMINAL_BACKEND=k8s-exec` + `spawn
 - [x] `createRuntimePodPty` routes via the selector: `spawner.spawnRuntimePod` + `runtime` container + `/workspace` cwd when on; `ensurePod` + `worker` otherwise.
 - [x] S3-T2 (skip) integration: terminal execs into the runtime pod, docker works — #1006-blocked.
 - [x] Gate: full suite **73 (70 pass + 3 skip)**, `node --check` clean. Local 3-way terminal path untouched.
+
+## Slice 4 — Port routing (2026-06-14, PARTIAL: reachability done; detection+config deferred)
+main's `proxyService.js` (+362) already routes runtime-scoped previews (`/runtime/<scope>/port/<port>`, `PREVIEW_TARGET_TEMPLATE`, wildcard URLs) → the proxy needs **no code change**, only (a) the runtime pod exposing a preview sidecar+Service, (b) the deploy pointing `PREVIEW_TARGET_TEMPLATE` at the runtime Service.
+- [x] S4-T1 pure `buildRuntimeService(sessionId)` — headless Service, `app=runtime` selector, preview-proxy port, name distinct from the worker Service (`runtimeDeploymentName` = `rt-<hash>-rt`). Unit-tested.
+- [x] **Reachability:** `spawnRuntimePod` pushes the preview-proxy sidecar (reuses the worker's `previewSidecarScript`) + `ensureRuntimeService` (fast-path + create); `runtimeTeardown` deletes the Service. (integration validated on a cluster — #1006.)
+- [ ] **Detection (remainder):** k8s-exec one-shot `runOnce` into the runtime pod (`runtime` container, `cat /proc/net/tcp[6]`) + a 2nd `createContainerPortMonitor` for active runtime pods → reuses the already-tested parse/baseline + broadcast.
+- [ ] **Config (remainder):** set `PREVIEW_TARGET_TEMPLATE` to the runtime Service pattern (e.g. `http://{runtimeScope}-rt.<ns>.svc.cluster.local:18080/__synthi_preview/{port}`) in `k8s/configmap.yaml` when sysbox is on.
+- [x] S4-T2 (skip) integration: opened ports detected + reachable — #1006.
+- [x] Gate: full suite **74 (71 pass + 3 skip)**, `node --check` clean.

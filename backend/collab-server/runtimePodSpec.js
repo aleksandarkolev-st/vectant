@@ -42,6 +42,13 @@ const RUNTIME_DOCKER_HOST = (process.env.RUNTIME_DOCKER_HOST || 'unix:///var/run
 // is the single source of truth — keep them from drifting.
 const RUNTIME_MANAGED_BY = 'runtime-spawner';
 
+// Preview-proxy sidecar port for the runtime pod's Service (Slice 4). Mirrors the
+// worker's SYNTHI_PREVIEW_SIDECAR_PORT so a single env drives both pods.
+const PREVIEW_SIDECAR_PORT = (() => {
+  const p = Number(process.env.SYNTHI_PREVIEW_SIDECAR_PORT);
+  return Number.isInteger(p) && p > 0 && p <= 65535 ? p : 18080;
+})();
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function safePathSegment(value) {
   return String(value || '').replace(/[^a-zA-Z0-9_@.\-]/g, '_');
@@ -175,12 +182,44 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
   };
 }
 
+/**
+ * Headless ClusterIP Service for the RUNTIME pod's preview-proxy sidecar (Slice 4).
+ * Named distinctly from the worker Service (= runtimeResourceId) so they coexist,
+ * selects app=runtime pods, and exposes the preview sidecar port. The preview proxy
+ * targets this Service (via PREVIEW_TARGET_TEMPLATE) to reach ports the user opens
+ * inside the runtime pod.
+ */
+function buildRuntimeService(sessionId) {
+  return {
+    apiVersion: 'v1',
+    kind: 'Service',
+    metadata: {
+      name: runtimeDeploymentName(sessionId),
+      namespace: NAMESPACE,
+      labels: runtimeLabels(sessionId, null),
+    },
+    spec: {
+      type: 'ClusterIP',
+      clusterIP: 'None',
+      selector: {
+        app: 'runtime',
+        'synthi/runtime-id': runtimeResourceId(sessionId),
+      },
+      ports: [
+        { name: 'preview-proxy', port: PREVIEW_SIDECAR_PORT, targetPort: PREVIEW_SIDECAR_PORT },
+      ],
+    },
+  };
+}
+
 module.exports = {
   buildRuntimeDeployment,
+  buildRuntimeService,
   runtimeDeploymentName,
   workspaceSubPath,
   runtimeLabels,
   buildRuntimeScheduling,
   isSysboxRuntimeEnabled,
   RUNTIME_MANAGED_BY,
+  PREVIEW_SIDECAR_PORT,
 };

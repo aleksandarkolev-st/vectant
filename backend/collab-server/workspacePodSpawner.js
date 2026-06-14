@@ -35,7 +35,7 @@
 const k8s = require('@kubernetes/client-node');
 const { runtimeResourceId, metadataHash, dnsLabelValue } = require('./runtimeIdentity');
 const { ensureRuntimeFilesystem, releaseRuntimeFilesystem } = require('./runtimeFilesystem');
-const { buildRuntimeDeployment, runtimeDeploymentName, isSysboxRuntimeEnabled, RUNTIME_MANAGED_BY } = require('./runtimePodSpec');
+const { buildRuntimeDeployment, buildRuntimeService, runtimeDeploymentName, isSysboxRuntimeEnabled, RUNTIME_MANAGED_BY } = require('./runtimePodSpec');
 const lifecycle = require('./sessionLifecycle');
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -1260,6 +1260,55 @@ async function getReadyRuntimePodForSession(sessionId) {
 }
 
 /**
+ * Preview-proxy sidecar for the RUNTIME pod (Slice 4) — mirrors the worker's
+ * sidecar: forwards /__synthi_preview/<port> → localhost:port inside the pod, so
+ * ports the user opens in the runtime pod are reachable via the preview proxy.
+ */
+function buildRuntimePreviewSidecar() {
+  return {
+    name: 'preview-proxy',
+    image: PREVIEW_SIDECAR_IMAGE,
+    securityContext: { runAsUser: 0, runAsGroup: 0, allowPrivilegeEscalation: true },
+    command: ['node', '-e', previewSidecarScript()],
+    env: [
+      { name: 'SYNTHI_PREVIEW_SIDECAR_PORT', value: String(PREVIEW_SIDECAR_PORT) },
+      { name: 'SYNTHI_PREVIEW_SIDECAR_PREFIX', value: PREVIEW_SIDECAR_PREFIX },
+    ],
+    ports: [{ name: 'preview-proxy', containerPort: PREVIEW_SIDECAR_PORT }],
+    resources: {
+      requests: { cpu: '25m', memory: '64Mi' },
+      limits: { cpu: '250m', memory: '256Mi' },
+    },
+    readinessProbe: { httpGet: { path: '/healthz', port: PREVIEW_SIDECAR_PORT }, initialDelaySeconds: 1, periodSeconds: 5 },
+    livenessProbe: { httpGet: { path: '/healthz', port: PREVIEW_SIDECAR_PORT }, initialDelaySeconds: 5, periodSeconds: 10 },
+  };
+}
+
+/** Create the runtime pod's preview Service (idempotent; 409 = already exists). */
+async function ensureRuntimeService(sessionId) {
+  const service = buildRuntimeService(sessionId);
+  try {
+    await coreApi.createNamespacedService(NAMESPACE, service);
+    console.log(`[RuntimeSpawner] Created runtime Service: ${service.metadata.name}`);
+  } catch (err) {
+    if (err.response?.statusCode !== 409) {
+      console.error('[RuntimeSpawner] runtime Service creation failed:', err.message);
+    }
+  }
+}
+
+/** Delete the runtime pod's preview Service. */
+async function deleteRuntimeService(sessionId) {
+  try {
+    await coreApi.deleteNamespacedService(runtimeDeploymentName(sessionId), NAMESPACE);
+  } catch (err) {
+    if (err.response?.statusCode !== 404) {
+      console.error('[RuntimeSpawner] runtime Service deletion failed:', err.message);
+    }
+  }
+}
+
+/**
  * Ensure the per-workspace Sysbox runtime pod exists for a session.
  * Dark-launched: a no-op unless RUNTIME_BACKEND=sysbox-pod. Mirrors ensurePod().
  *
@@ -1296,6 +1345,7 @@ async function spawnRuntimePod(sessionId, userId, metadata = {}) {
     await appsApi.readNamespacedDeployment(name, NAMESPACE);
     await pinRuntimeFs();
     await touchRuntime(sessionId);
+    await ensureRuntimeService(sessionId);
     try {
       const ready = await getReadyRuntimePodForSession(sessionId);
       if (ready.podName) return { name, created: false, ...ready };
@@ -1326,6 +1376,9 @@ async function spawnRuntimePod(sessionId, userId, metadata = {}) {
     ...(deployment.spec.template.metadata.annotations || {}),
     ...annotations,
   };
+  // Preview-proxy sidecar so ports opened inside the runtime pod are reachable via
+  // the preview proxy (Slice 4) — mirrors the worker pod.
+  deployment.spec.template.spec.containers.push(buildRuntimePreviewSidecar());
 
   try {
     await appsApi.createNamespacedDeployment(NAMESPACE, deployment);
@@ -1338,6 +1391,9 @@ async function spawnRuntimePod(sessionId, userId, metadata = {}) {
       throw err;
     }
   }
+
+  // Create the runtime preview Service (non-fatal) so opened ports are reachable.
+  await ensureRuntimeService(sessionId);
 
   // 5. Wait for dockerd-ready (runtime container readinessProbe → all-ready).
   try {
@@ -1374,6 +1430,7 @@ async function runtimeTeardown(sessionId, reason = 'teardown') {
   releaseRuntimeFilesystem(runtimePinScope(sessionId));
   if (process.env.SPAWNER_MODE === 'local') return;
   const name = runtimeDeploymentName(sessionId);
+  await deleteRuntimeService(sessionId);
   try {
     await appsApi.deleteNamespacedDeployment(name, NAMESPACE);
     console.log(`[RuntimeSpawner] Deleted runtime pod: ${name} (reason=${reason})`);
