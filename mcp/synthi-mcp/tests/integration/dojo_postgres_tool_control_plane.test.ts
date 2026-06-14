@@ -1862,11 +1862,56 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
           expect.stringMatching(/^evidence:dojo_graph_preflight_support_action_/),
         ]),
       }),
+      graph_runtime_persistence: expect.objectContaining({
+        ok: true,
+        persisted: true,
+        store_kind: "postgres",
+        operation: "synthi_dojo_run_with_proof_capsule",
+        graph_run_id: "postgres-proof-run-1_graph_preflight",
+        graph_run_status: "completed",
+        graph_status: "licensed",
+        evidence_refs: expect.arrayContaining([
+          expect.stringMatching(/^evidence:dojo_graph_preflight_support_action_/),
+        ]),
+      }),
       proof_record: expect.objectContaining({
         capsule_id: issued.proof_capsule.capsule_id,
         status: "used",
         first_used_at: "2026-06-11T00:02:00.000Z",
       }),
+    }));
+    const runContent = run?.structuredContent as {
+      graph_runtime_persistence: {
+        graph_id: string;
+        graph_run_id: string;
+        evidence_refs: string[];
+      };
+    };
+    const graphRunStore = new PostgresDojoGraphRunStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(graphRunStore.getSkillGraph(runContent.graph_runtime_persistence.graph_id)).resolves.toEqual(expect.objectContaining({
+      graph_id: runContent.graph_runtime_persistence.graph_id,
+      skill_id: published.skill.skill_id,
+      status: "licensed",
+      validation: expect.objectContaining({ ok: true }),
+    }));
+    await expect(graphRunStore.getGraphRun(runContent.graph_runtime_persistence.graph_run_id)).resolves.toEqual(expect.objectContaining({
+      graph_run_id: runContent.graph_runtime_persistence.graph_run_id,
+      graph_id: runContent.graph_runtime_persistence.graph_id,
+      skill_id: published.skill.skill_id,
+      mode: "production",
+      status: "completed",
+      evidence_refs: runContent.graph_runtime_persistence.evidence_refs,
+      result: expect.objectContaining({
+        run_id: "postgres-proof-run-1_graph_preflight",
+        status: "completed",
+      }),
+      started_at: "2026-06-11T00:02:00.000Z",
+      completed_at: "2026-06-11T00:02:00.000Z",
+      created_by: "postgres-proof-agent",
     }));
     expect(await proofStore.getProofRecord(issued.proof_capsule.capsule_id)).toEqual(expect.objectContaining({
       status: "used",

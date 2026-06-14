@@ -471,6 +471,9 @@ type DojoDurableProofRegistryContext =
     license_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
       ? T extends { ok: true; license_store: infer Store } ? Store : never
       : never;
+    graph_run_store: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> extends infer T
+      ? T extends { ok: true; graph_run_store: infer Store } ? Store : never
+      : never;
     close?: () => Promise<void>;
   };
 
@@ -545,6 +548,7 @@ async function durableProofRegistryForTenantIfRequired(input: {
       proof_key_registry: resolution.proof_key_registry,
       skill_store: resolution.skill_store,
       license_store: resolution.license_store,
+      graph_run_store: resolution.graph_run_store,
       close: resolution.close,
     },
   };
@@ -4530,6 +4534,16 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       now,
     });
     if (!graphRuntimePreflight.ok) return graphRuntimePreflight.error;
+    const graphRuntimePersistence = await persistDurableGraphRuntimePreflightForProofRun({
+      context: durableProofRegistry.context,
+      tenant,
+      skill: skill.skill,
+      graph: graphRuntimePreflight.graph,
+      graph_run: graphRuntimePreflight.graph_runtime_preflight,
+      now,
+      operation: "synthi_dojo_run_with_proof_capsule",
+    });
+    if (!graphRuntimePersistence.ok) return graphRuntimePersistence.error;
 
     const skillBusExecution = await skillBus.dispatch({
       tenant,
@@ -4569,6 +4583,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
         runtime_authorization: runtimeAuthorization.decision ?? null,
         graph_validation: graphRuntimePreflight.graph_validation,
         graph_runtime_preflight: graphRuntimePreflight.graph_runtime_preflight,
+        graph_runtime_persistence: graphRuntimePersistence.persistence,
         refusal: refusalFor(skill.skill, blockedBy),
       });
     }
@@ -4601,6 +4616,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       runtime_authorization: runtimeAuthorization.decision ?? null,
       graph_validation: graphRuntimePreflight.graph_validation,
       graph_runtime_preflight: graphRuntimePreflight.graph_runtime_preflight,
+      graph_runtime_persistence: graphRuntimePersistence.persistence,
       proof_capsule_id: capsule.capsule_id,
       proof_consume: proofConsume,
       proof_record: proofConsume?.record,
@@ -4611,6 +4627,83 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
     if (durableProofRegistry.context.required) {
       await durableProofRegistry.context.close?.();
     }
+  }
+}
+
+async function persistDurableGraphRuntimePreflightForProofRun(input: {
+  context: DojoDurableProofRegistryContext;
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  graph: DojoSkillGraph;
+  graph_run: DojoGraphRunResult;
+  now?: string;
+  operation: string;
+}): Promise<{ ok: true; persistence: Record<string, unknown> } | { ok: false; error: ToolResponse }> {
+  const common = {
+    ok: true,
+    operation: input.operation,
+    graph_id: input.graph.graph_id,
+    graph_run_id: input.graph_run.run_id,
+    graph_run_status: input.graph_run.status,
+    evidence_refs: input.graph_run.evidence_refs,
+  };
+  if (!input.context.required) {
+    return {
+      ok: true,
+      persistence: {
+        ...common,
+        persisted: false,
+        store_kind: "compatibility_registry",
+      },
+    };
+  }
+
+  try {
+    const graphRecord = await input.context.graph_run_store.saveSkillGraph(input.graph, {
+      status: "licensed",
+      created_by: input.tenant.actor_id,
+    });
+    const timestamp = input.now ?? new Date().toISOString();
+    const runRecord = await input.context.graph_run_store.saveGraphRun(input.graph_run, {
+      graph_id: input.graph.graph_id,
+      skill_id: input.skill.skill_id,
+      started_at: timestamp,
+      completed_at: timestamp,
+      created_by: input.tenant.actor_id,
+    });
+    return {
+      ok: true,
+      persistence: {
+        ...common,
+        persisted: true,
+        store_kind: input.context.source,
+        graph_status: graphRecord.status,
+        graph_sha256: graphRecord.graph_sha256,
+        graph_run_status: runRecord.status,
+        blocked_by: runRecord.blocked_by,
+        evidence_refs: runRecord.evidence_refs,
+        started_at: runRecord.started_at,
+        completed_at: runRecord.completed_at ?? null,
+        created_by: runRecord.created_by,
+      },
+    };
+  } catch (err) {
+    const blockedBy = ["dojo_graph_runtime_persistence_failed"];
+    return {
+      ok: false,
+      error: errorResponse("dojo_graph_runtime_persistence_failed", {
+        ok: false,
+        operation: input.operation,
+        store_kind: input.context.source,
+        skill_id: input.skill.skill_id,
+        graph_id: input.graph.graph_id,
+        graph_run_id: input.graph_run.run_id,
+        message: err instanceof Error ? err.message : String(err),
+        proof_not_consumed: true,
+        blocked_by: blockedBy,
+        error_codes: normalizeDojoProofErrorCodes(blockedBy),
+      }),
+    };
   }
 }
 
