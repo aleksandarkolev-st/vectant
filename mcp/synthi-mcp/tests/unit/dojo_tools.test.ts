@@ -3376,6 +3376,37 @@ describe("Agent Dojo MCP tools", () => {
     expect(dojoSkillRegistry.list()).toHaveLength(0);
   });
 
+  it("does not expose a backing private tool when durable skill persistence fails", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = "postgres://synthi:password@127.0.0.1:1/synthi?connect_timeout=1";
+
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
+      ...productionTenantContextArgs({
+        actor_id: "durable-publisher",
+        actor_type: "human",
+        request_id: "req-production-durable-publish-failure",
+        correlation_id: "corr-production-durable-publish-failure",
+      }),
+    }));
+
+    expect(publish?.isError).toBe(true);
+    expect(publish?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_control_plane_persistence_failed",
+      ok: false,
+      operation: "synthi_dojo_publish_skill",
+      skill_id: "dojo_open_details",
+      workflow_id: expect.any(String),
+      blocked_by: ["dojo_control_plane_postgres_persistence_failed"],
+      error_codes: ["dojo_control_plane_persistence_failed"],
+    }));
+    expect(dojoSkillRegistry.list()).toHaveLength(0);
+    expect(privateWorkflowToolRegistry.get("synthi_app_open_details")).toBeNull();
+    expect(await dispatchBrowserTool("synthi_app_open_details", {})).toBeNull();
+  });
+
   it("blocks proof execution before consuming proof when production requires a durable control plane but none is configured", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());

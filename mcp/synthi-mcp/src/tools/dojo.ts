@@ -29,7 +29,11 @@ import {
   runDojoTimeMachineDebugger,
 } from "../browser/dojo_universe.js";
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
-import { privateWorkflowToolDefinition, privateWorkflowToolRegistry } from "../browser/private_tool_registry.js";
+import {
+  privateWorkflowToolDefinition,
+  privateWorkflowToolRegistry,
+  validatePrivateWorkflowToolPublication,
+} from "../browser/private_tool_registry.js";
 import { evaluateDojoLicenseKernel, markDojoProofExecution } from "../dojo/license/kernel.js";
 import {
   buildDojoVivariumGraphInputsForFixture,
@@ -294,10 +298,28 @@ async function persistPublishedSkillToDurableControlPlaneIfRequired(input: {
     return { ok: true };
   }
 
-  const resolution = await createDojoControlPlaneStoresFromEnv({
-    tenant: input.tenant,
-    app_origin: input.skill.app_origin,
-  });
+  let resolution: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>>;
+  try {
+    resolution = await createDojoControlPlaneStoresFromEnv({
+      tenant: input.tenant,
+      app_origin: input.skill.app_origin,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_control_plane_persistence_failed", {
+        ok: false,
+        operation: "synthi_dojo_publish_skill",
+        store_kind: "postgres",
+        skill_id: input.skill.skill_id,
+        workflow_id: input.skill.workflow_id,
+        license_id: input.skill.permission_license.license_id,
+        message: err instanceof Error ? err.message : String(err),
+        blocked_by: ["dojo_control_plane_postgres_persistence_failed"],
+        error_codes: ["dojo_control_plane_persistence_failed"],
+      }),
+    };
+  }
   if (!resolution.ok) {
     return {
       ok: false,
@@ -3274,12 +3296,12 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const contract = workflow.artifact.workflow.contract;
   const manifest = generatePrivateWorkflowToolManifest(contract);
-  const publishedTool = publishBackingPrivateTool(manifest, workflow.artifact);
+  const backingToolPublication = backingPrivateToolPublicationPreflight(manifest, workflow.artifact);
   const candidateSkill = buildDojoSkill(contract, {
     workspace_id: workspaceId,
     now,
     private_tool_manifest: manifest,
-    ...(publishedTool.ok ? { published_tool_name: publishedTool.tool_name } : {}),
+    ...(backingToolPublication.ok ? { published_tool_name: backingToolPublication.tool_name } : {}),
   });
   const publicationCheckride = await executableCheckrideForSkillPublication({
     skill: candidateSkill,
@@ -3303,6 +3325,11 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
   });
   if (!controlPlanePersistence.ok) return controlPlanePersistence.error;
   const skill = dojoSkillRegistry.publish(executableSkill);
+  const publishedTool = publishBackingPrivateToolAfterSkillPublication({
+    preflight: backingToolPublication,
+    manifest,
+    artifact: workflow.artifact,
+  });
   const auditEvent = {
     event_type: "skill_version_created" as const,
     actor: {
@@ -4966,11 +4993,12 @@ function publishBackingPrivateTool(
   manifest: ReturnType<typeof generatePrivateWorkflowToolManifest>,
   artifact: BrowserWorkflowArtifact
 ): { ok: true; tool_name: string; tool: ReturnType<typeof privateWorkflowToolDefinition>; registered_at: number } | { ok: false; error: string; tool_name: string; manifest_status: string } {
-  if (manifest.status === "blocked") {
+  const validation = backingPrivateToolPublicationPreflight(manifest, artifact);
+  if (!validation.ok) {
     return {
       ok: false,
-      error: "private_tool_manifest_blocked",
-      tool_name: manifest.tool_name,
+      error: validation.error,
+      tool_name: validation.tool_name,
       manifest_status: manifest.status,
     };
   }
@@ -4992,6 +5020,32 @@ function publishBackingPrivateTool(
     tool: privateWorkflowToolDefinition(published.registration),
     registered_at: published.registration.registered_at,
   };
+}
+
+function backingPrivateToolPublicationPreflight(
+  manifest: ReturnType<typeof generatePrivateWorkflowToolManifest>,
+  artifact: BrowserWorkflowArtifact
+): { ok: true; tool_name: string } | { ok: false; error: string; tool_name: string; manifest_status: string } {
+  const validation = validatePrivateWorkflowToolPublication(manifest, {
+    reservedToolNames: ADVERTISED_TOOLS,
+    workflowArtifact: artifact,
+  });
+  if (!validation.ok) {
+    return {
+      ...validation,
+      manifest_status: manifest.status,
+    };
+  }
+  return validation;
+}
+
+function publishBackingPrivateToolAfterSkillPublication(input: {
+  preflight: ReturnType<typeof backingPrivateToolPublicationPreflight>;
+  manifest: ReturnType<typeof generatePrivateWorkflowToolManifest>;
+  artifact: BrowserWorkflowArtifact;
+}): ReturnType<typeof publishBackingPrivateTool> {
+  if (!input.preflight.ok) return input.preflight;
+  return publishBackingPrivateTool(input.manifest, input.artifact);
 }
 
 function requiredWorkflowArtifact(args: unknown): { ok: true; artifact: BrowserWorkflowArtifact } | { ok: false; error: ToolResponse } {

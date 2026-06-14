@@ -45,6 +45,16 @@ export interface PrivateWorkflowToolStore {
   clear(): void;
 }
 
+export interface PrivateWorkflowToolPublishOptions {
+  reservedToolNames?: Iterable<string>;
+  now?: number;
+  workflowArtifact?: BrowserWorkflowArtifact;
+}
+
+export type PrivateWorkflowToolPublishValidation =
+  | { ok: true; tool_name: string }
+  | { ok: false; error: string; tool_name: string };
+
 export class InMemoryPrivateWorkflowToolStore implements PrivateWorkflowToolStore {
   private readonly registrations = new Map<string, PrivateWorkflowToolRegistration>();
 
@@ -206,22 +216,11 @@ export class PrivateWorkflowToolRegistry {
 
   publish(
     manifest: PrivateWorkflowToolManifestV7,
-    options: { reservedToolNames?: Iterable<string>; now?: number; workflowArtifact?: BrowserWorkflowArtifact } = {}
+    options: PrivateWorkflowToolPublishOptions = {}
   ): { ok: true; registration: PrivateWorkflowToolRegistration } | { ok: false; error: string; tool_name: string } {
+    const validation = validatePrivateWorkflowToolPublication(manifest, options);
+    if (!validation.ok) return validation;
     const toolName = manifest.tool_name;
-    if (!toolName.startsWith(PRIVATE_TOOL_PREFIX)) {
-      return { ok: false, error: "private_tool_name_must_use_synthi_app_prefix", tool_name: toolName };
-    }
-    if (options.workflowArtifact && options.workflowArtifact.workflow_id !== manifest.workflow_id) {
-      return { ok: false, error: "private_tool_workflow_artifact_mismatch", tool_name: toolName };
-    }
-    if (manifest.status === "blocked") {
-      return { ok: false, error: "private_tool_manifest_blocked", tool_name: toolName };
-    }
-    const reserved = new Set(options.reservedToolNames ?? []);
-    if (reserved.has(toolName)) {
-      return { ok: false, error: "private_tool_name_reserved", tool_name: toolName };
-    }
     const registration: PrivateWorkflowToolRegistration = {
       workflow_id: manifest.workflow_id,
       tool_name: toolName,
@@ -270,6 +269,27 @@ export class PrivateWorkflowToolRegistry {
       }
     }
   }
+}
+
+export function validatePrivateWorkflowToolPublication(
+  manifest: PrivateWorkflowToolManifestV7,
+  options: PrivateWorkflowToolPublishOptions = {}
+): PrivateWorkflowToolPublishValidation {
+  const toolName = manifest.tool_name;
+  if (!toolName.startsWith(PRIVATE_TOOL_PREFIX)) {
+    return { ok: false, error: "private_tool_name_must_use_synthi_app_prefix", tool_name: toolName };
+  }
+  if (options.workflowArtifact && options.workflowArtifact.workflow_id !== manifest.workflow_id) {
+    return { ok: false, error: "private_tool_workflow_artifact_mismatch", tool_name: toolName };
+  }
+  if (manifest.status === "blocked") {
+    return { ok: false, error: "private_tool_manifest_blocked", tool_name: toolName };
+  }
+  const reserved = new Set(options.reservedToolNames ?? []);
+  if (reserved.has(toolName)) {
+    return { ok: false, error: "private_tool_name_reserved", tool_name: toolName };
+  }
+  return { ok: true, tool_name: toolName };
 }
 
 export const privateWorkflowToolRegistry = new PrivateWorkflowToolRegistry(createDefaultPrivateWorkflowToolStore());
