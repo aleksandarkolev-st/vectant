@@ -53,8 +53,8 @@ RUN apk add --no-cache kubectl helm
 
 # kind is not packaged for Alpine — install a pinned release binary verified by
 # its published SHA-256. Bump KIND_VERSION + KIND_SHA256 together, deliberately.
-ARG KIND_VERSION=v0.25.0
-ARG KIND_SHA256=b22ff7e5c02b8011e82cc3223d069d178b9e1543f1deb21e936d11764780a3d8
+ARG KIND_VERSION=v0.32.0
+ARG KIND_SHA256=50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54
 RUN curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" \
  && echo "${KIND_SHA256}  /usr/local/bin/kind" | sha256sum -c - \
  && chmod +x /usr/local/bin/kind
