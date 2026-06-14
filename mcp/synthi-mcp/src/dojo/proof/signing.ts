@@ -10,6 +10,8 @@ import { spawnSync } from "node:child_process";
 import { DOJO_DEFAULT_LOCAL_PROOF_SIGNING_KEY } from "../config/enforcement.js";
 
 export type DojoProofSigningAlgorithm = "hmac-sha256" | "ed25519";
+export type DojoProofSigningProvider = "hmac-local" | "ed25519-local" | "external-command" | "managed-key-service";
+export type DojoProofKeyCustody = "local" | "external" | "managed";
 
 export interface DojoProofSignatureEnvelope {
   algorithm: DojoProofSigningAlgorithm;
@@ -20,6 +22,8 @@ export interface DojoProofSignatureEnvelope {
 export interface DojoProofSigner {
   algorithm: DojoProofSigningAlgorithm;
   key_id: string;
+  provider: DojoProofSigningProvider;
+  key_custody: DojoProofKeyCustody;
   local_development_only: boolean;
   sign(payload: string): DojoProofSignatureEnvelope;
 }
@@ -83,6 +87,8 @@ export function createLocalHmacDojoProofSigner(input: {
   return {
     algorithm: "hmac-sha256",
     key_id: keyId,
+    provider: "hmac-local",
+    key_custody: "local",
     local_development_only: key === DOJO_DEFAULT_LOCAL_PROOF_SIGNING_KEY,
     sign(payload: string): DojoProofSignatureEnvelope {
       return {
@@ -115,6 +121,8 @@ export function createEd25519DojoProofSigner(input: {
   return {
     algorithm: "ed25519",
     key_id: input.key_id,
+    provider: "ed25519-local",
+    key_custody: "local",
     local_development_only: false,
     sign(payload: string): DojoProofSignatureEnvelope {
       return {
@@ -158,6 +166,8 @@ export function createExternalCommandDojoProofSigner(input: {
   return {
     algorithm: "ed25519",
     key_id: input.key_id,
+    provider: "external-command",
+    key_custody: "external",
     local_development_only: false,
     sign(payload: string): DojoProofSignatureEnvelope {
       const request: ExternalCommandDojoProofSignerRequest = {
@@ -209,6 +219,8 @@ export function createManagedKeyServiceDojoProofSigner(input: {
   return {
     algorithm: "ed25519",
     key_id: input.key_id,
+    provider: "managed-key-service",
+    key_custody: "managed",
     local_development_only: false,
     sign(payload: string): DojoProofSignatureEnvelope {
       const request: ManagedKeyServiceDojoProofSignerRequest = {
@@ -291,6 +303,16 @@ export function parseDojoProofSignatureEnvelope(input: {
 export function assertProductionDojoProofSigner(signer: DojoProofSigner): void {
   if (signer.local_development_only || signer.algorithm === "hmac-sha256") {
     throw new Error("dojo_proof_signer_not_production_ready");
+  }
+}
+
+export function assertExternalDojoProofSigner(signer: DojoProofSigner): void {
+  assertProductionDojoProofSigner(signer);
+  if (
+    signer.key_custody === "local"
+    || (signer.provider !== "external-command" && signer.provider !== "managed-key-service")
+  ) {
+    throw new Error("dojo_proof_signer_external_required");
   }
 }
 

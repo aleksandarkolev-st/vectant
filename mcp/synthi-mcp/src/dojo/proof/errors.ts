@@ -61,6 +61,7 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     reason === "proof_capsule_expired" ||
     reason === "proof_self_attestation_not_allowed_in_production" ||
     reason === "dojo_proof_signer_not_production_ready" ||
+    reason === "dojo_proof_signer_external_required" ||
     reason === "proof_validator_missing" ||
     reason === "api_tool_proof_validator_required" ||
     reason === "api_tool_proof_validation_failed" ||

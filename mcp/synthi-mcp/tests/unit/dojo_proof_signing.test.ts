@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertExternalDojoProofSigner,
   assertProductionDojoProofSigner,
   createEd25519DojoProofSigner,
   createEd25519DojoProofVerifier,
@@ -21,6 +22,8 @@ describe("Dojo proof signing", () => {
       key_id: "hmac-key-a",
       signature: expect.stringMatching(/^hmac-sha256:/),
     }));
+    expect(signer.provider).toBe("hmac-local");
+    expect(signer.key_custody).toBe("local");
     expect(signer.verify(payload(), signature)).toBe(true);
     expect(signer.verify(`${payload()}-tampered`, signature)).toBe(false);
   });
@@ -42,6 +45,8 @@ describe("Dojo proof signing", () => {
       key_id: "ed-key-a",
       signature: expect.stringMatching(/^ed25519:/),
     }));
+    expect(signer.provider).toBe("ed25519-local");
+    expect(signer.key_custody).toBe("local");
     expect(verifier.verify(payload(), signature)).toBe(true);
     expect(verifier.verify(`${payload()}-tampered`, signature)).toBe(false);
   });
@@ -78,6 +83,8 @@ describe("Dojo proof signing", () => {
     const signature = signer.sign(payload());
 
     expect(signer.local_development_only).toBe(false);
+    expect(signer.provider).toBe("external-command");
+    expect(signer.key_custody).toBe("external");
     expect(signature).toEqual(expect.objectContaining({
       algorithm: "ed25519",
       key_id: keyPair.key_id,
@@ -106,6 +113,8 @@ describe("Dojo proof signing", () => {
     const signature = signer.sign(payload());
 
     expect(signer.local_development_only).toBe(false);
+    expect(signer.provider).toBe("managed-key-service");
+    expect(signer.key_custody).toBe("managed");
     expect(signature).toEqual(expect.objectContaining({
       algorithm: "ed25519",
       key_id: keyPair.key_id,
@@ -211,6 +220,41 @@ describe("Dojo proof signing", () => {
     expect(() => assertProductionDojoProofSigner(createEd25519DojoProofSigner({
       key_id: keyPair.key_id,
       private_key_pem: keyPair.private_key_pem,
+    }))).not.toThrow();
+  });
+
+  it("requires external custody when external proof signing is required", () => {
+    expect(() => assertExternalDojoProofSigner(createLocalHmacDojoProofSigner())).toThrow(
+      "dojo_proof_signer_not_production_ready"
+    );
+
+    const localKeyPair = generateEd25519DojoProofKeyPair("ed-key-local-custody");
+    expect(() => assertExternalDojoProofSigner(createEd25519DojoProofSigner({
+      key_id: localKeyPair.key_id,
+      private_key_pem: localKeyPair.private_key_pem,
+    }))).toThrow("dojo_proof_signer_external_required");
+
+    const externalKeyPair = generateEd25519DojoProofKeyPair("external-ed-key-prod");
+    expect(() => assertExternalDojoProofSigner(createExternalCommandDojoProofSigner({
+      key_id: externalKeyPair.key_id,
+      command: process.execPath,
+      args: ["-e", externalSignerCommandSource()],
+      env: {
+        ...process.env,
+        DOJO_TEST_PRIVATE_KEY_PEM: externalKeyPair.private_key_pem,
+      },
+    }))).not.toThrow();
+
+    const managedKeyPair = generateEd25519DojoProofKeyPair("managed-ed-key-prod");
+    expect(() => assertExternalDojoProofSigner(createManagedKeyServiceDojoProofSigner({
+      key_id: managedKeyPair.key_id,
+      key_uri: "kms://tenant-a/proof/managed-ed-key-prod",
+      command: process.execPath,
+      args: ["-e", managedKeySignerCommandSource()],
+      env: {
+        ...process.env,
+        DOJO_TEST_PRIVATE_KEY_PEM: managedKeyPair.private_key_pem,
+      },
     }))).not.toThrow();
   });
 });

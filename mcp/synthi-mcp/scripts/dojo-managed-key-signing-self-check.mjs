@@ -35,6 +35,7 @@ export const DOJO_MANAGED_KEY_SIGNING_CAPABILITIES = [
   "production_readiness_accepts_managed_key_service",
   "production_readiness_rejects_incomplete_managed_key_service",
   "production_readiness_rejects_local_signing_material",
+  "external_signing_requirement_rejects_local_custody",
   "public_verifier_accepts_ed25519_key_material",
 ];
 
@@ -262,6 +263,8 @@ function capabilityMatchers(capability) {
       return ["fails production readiness", "incomplete managed key service proof signing"];
     case "production_readiness_rejects_local_signing_material":
       return ["fails production readiness", "local ed25519 proof signing material"];
+    case "external_signing_requirement_rejects_local_custody":
+      return ["requires external custody", "external proof signing is required"];
     case "public_verifier_accepts_ed25519_key_material":
       return ["verifies an ed25519 capsule", "public key material"];
     default:

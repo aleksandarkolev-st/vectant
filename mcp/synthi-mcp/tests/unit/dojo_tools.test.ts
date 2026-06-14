@@ -21,6 +21,7 @@ import type { BrowserTraceEvent } from "../../src/browser/types.js";
 import type { DojoSkill } from "../../src/browser/dojo.js";
 import { createSynthiServer } from "../../src/server.js";
 import { validateDojoMcpSkillManifest, type DojoMcpSkillManifestV1 } from "../../src/dojo/mcp/manifest_signing.js";
+import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
 import { dispatchBrowserTool } from "../../src/tools/browser.js";
 import { dispatchDojoTool } from "../../src/tools/dojo.js";
 import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_record.js";
@@ -3007,6 +3008,46 @@ describe("Agent Dojo MCP tools", () => {
       requested_action: "run_workflow",
       require_external_signing: true,
       blocked_by: ["dojo_proof_signer_not_production_ready"],
+      error_codes: ["proof_capsule_invalid"],
+    }));
+    expect(dojoSkillRegistry.listProofRecords()).toEqual([]);
+  });
+
+  it("blocks proof issuance when external proof signing is required but signer custody is local Ed25519", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const publishedSkill = dojoSkillRegistry.get(skillId);
+    expect(publishedSkill).toBeTruthy();
+    const keyPair = generateEd25519DojoProofKeyPair("local-ed25519-external-required");
+    process.env.SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING = "1";
+    process.env.SYNTHI_DOJO_PROOF_SIGNING_PROVIDER = "ed25519-local";
+    process.env.SYNTHI_DOJO_PROOF_SIGNING_KEY_ID = keyPair.key_id;
+    process.env.SYNTHI_DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM = keyPair.private_key_pem;
+    delete process.env.SYNTHI_DOJO_PROOF_SIGNING_COMMAND;
+    delete process.env.SYNTHI_DOJO_PROOF_SIGNING_MANAGED_KEY_URI;
+
+    const response = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, {
+        record_id: "evidence-external-custody-required",
+      }),
+      require_verified_evidence: true,
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_signer_external_required",
+      ok: false,
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      require_external_signing: true,
+      blocked_by: ["dojo_proof_signer_external_required"],
       error_codes: ["proof_capsule_invalid"],
     }));
     expect(dojoSkillRegistry.listProofRecords()).toEqual([]);

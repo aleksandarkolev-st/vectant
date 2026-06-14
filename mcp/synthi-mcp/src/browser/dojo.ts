@@ -59,6 +59,7 @@ import {
   createManagedKeyServiceDojoProofSigner,
   encodeDojoProofSignatureEnvelope,
   parseDojoProofSignatureEnvelope,
+  assertExternalDojoProofSigner,
   assertProductionDojoProofSigner,
   type DojoProofSigner,
   type DojoProofSigningAlgorithm,
@@ -1522,6 +1523,10 @@ export function validateDojoProofCapsule(
 
 export function assertDojoProofSignerProductionReady(): void {
   assertProductionDojoProofSigner(dojoProofSigner());
+}
+
+export function assertDojoProofSignerExternalReady(): void {
+  assertExternalDojoProofSigner(dojoProofSigner());
 }
 
 export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {

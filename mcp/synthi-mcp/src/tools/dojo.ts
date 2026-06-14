@@ -3,7 +3,7 @@ import { browserBroker } from "../browser/broker.js";
 import {
   buildDojoSkill,
   buildDojoSkillAssuranceArtifact,
-  assertDojoProofSignerProductionReady,
+  assertDojoProofSignerExternalReady,
   dojoSkillRegistry,
   exportDojoRepoArtifacts,
   extractDojoSkillSeed,
@@ -3627,10 +3627,11 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
     || enforcement.require_evidence_ledger;
   if (enforcement.require_external_signing) {
     try {
-      assertDojoProofSignerProductionReady();
-    } catch {
-      const blockedBy = ["dojo_proof_signer_not_production_ready"];
-      return errorResponse("dojo_proof_signer_not_production_ready", {
+      assertDojoProofSignerExternalReady();
+    } catch (err) {
+      const error = err instanceof Error ? err.message : "dojo_proof_signer_external_required";
+      const blockedBy = [error];
+      return errorResponse(error, {
         ok: false,
         skill_id: skill.skill.skill_id,
         requested_action: requestedAction,
@@ -3639,7 +3640,7 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
         require_verified_evidence: requireVerifiedEvidence,
         blocked_by: blockedBy,
         error_codes: normalizeDojoProofErrorCodes(blockedBy),
-        message: "Production proof issuance requires an external or asymmetric proof signer.",
+        message: "Production proof issuance requires an external or managed-key proof signer.",
       });
     }
   }
