@@ -18,7 +18,7 @@ import { InMemoryPrivateWorkflowToolStore, privateWorkflowToolRegistry } from ".
 import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
-import type { DojoSkill } from "../../src/browser/dojo.js";
+import type { DojoEvidenceClaim, DojoSkill } from "../../src/browser/dojo.js";
 import { createSynthiServer } from "../../src/server.js";
 import { validateDojoMcpSkillManifest, type DojoMcpSkillManifestV1 } from "../../src/dojo/mcp/manifest_signing.js";
 import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
@@ -3656,6 +3656,84 @@ describe("Agent Dojo MCP tools", () => {
     }));
     expect(dojoSkillRegistry.getProofRecord(capsuleId)?.status).toBe("issued");
     expect(dojoSkillRegistry.getProofRecord(capsuleId)?.used_at).toBeUndefined();
+  });
+
+  it("requires explicit durable evidence claims for graph runtime preflight", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const skill = dojoSkillRegistry.get(skillId);
+    expect(skill).toBeTruthy();
+    expect(skill!.permission_license.proof_requirements.required_evidence_claims).toContain("durable_state_evidence");
+
+    const legacyRequiredClaims = skill!.permission_license.proof_requirements.required_evidence_claims
+      .filter((claim) => claim !== "durable_state_evidence");
+    dojoSkillRegistry.publish({
+      ...skill!,
+      permission_license: {
+        ...skill!.permission_license,
+        evidence_requirements: skill!.permission_license.evidence_requirements
+          .filter((requirement) => requirement.claim !== "durable_state_evidence"),
+        proof_requirements: {
+          ...skill!.permission_license.proof_requirements,
+          required_evidence_claims: legacyRequiredClaims,
+        },
+      },
+    });
+    const legacySkill = dojoSkillRegistry.get(skillId);
+    expect(legacySkill).toBeTruthy();
+    const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true, ...runtimeClaimsForSkillGuardrails(legacySkill!) },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(legacySkill!, { record_id: "evidence-legacy-no-durable-proof" }),
+      require_verified_evidence: true,
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(capsuleResponse?.isError).toBeUndefined();
+    const capsule = (capsuleResponse?.structuredContent as { proof_capsule: { capsule_id: string; evidence_claims: DojoEvidenceClaim[] } }).proof_capsule;
+    expect(capsule.evidence_claims).toEqual(expect.arrayContaining([
+      expect.objectContaining({ claim: "success_assertions_defined", satisfied: true }),
+    ]));
+    expect(capsule.evidence_claims).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ claim: "durable_state_evidence", satisfied: true }),
+    ]));
+
+    const blocked = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      tool_args: {
+        durable_state_evidence: true,
+        proof_capsule_valid: true,
+        client_name: "Acme",
+      },
+      dry_run: true,
+      run_id: "run-legacy-no-durable-proof",
+      now: "2026-06-11T00:01:00.000Z",
+    });
+
+    expect(blocked?.isError).toBe(true);
+    expect(blocked?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_not_consumed: true,
+      validation: expect.objectContaining({
+        ok: false,
+        status: "blocked",
+        blocked_by: expect.arrayContaining(["guardrail_failed:guard_durable_postcondition_evidence"]),
+      }),
+      graph_runtime_preflight: expect.objectContaining({
+        ok: false,
+        status: "blocked",
+        blocked_by: expect.arrayContaining(["guardrail_failed:guard_durable_postcondition_evidence"]),
+      }),
+    }));
+    expect(dojoSkillRegistry.getProofRecord(capsule.capsule_id)?.status).toBe("issued");
+    expect(dojoSkillRegistry.getProofRecord(capsule.capsule_id)?.used_at).toBeUndefined();
   });
 });
 

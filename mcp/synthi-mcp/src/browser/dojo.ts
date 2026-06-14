@@ -76,6 +76,12 @@ export type DojoExecutionSubstrate = "vision" | "dom" | "source" | "api" | "mcp"
 export type DojoScenarioTier = 0 | 1 | 2 | 3 | 4 | 5;
 export type DojoCheckrideLayer = "knowledge" | "risk" | "skill";
 export type DojoCheckrideStatus = "passed" | "failed" | "blocked";
+const DOJO_BASE_LICENSE_EVIDENCE_CLAIMS = [
+  "checkride_passed",
+  "success_assertions_defined",
+  "guardrails_active",
+  "durable_state_evidence",
+] as const;
 export type DojoWorkflowNodeKind =
   | "Trigger"
   | "Input"
@@ -2049,11 +2055,7 @@ function licenseFor(
     allowed_actions: allowed,
     gated_actions: gated,
     blocked_actions: blocked,
-    evidence_requirements: [
-      { claim: "checkride_passed", required: true },
-      { claim: "success_assertions_defined", required: true },
-      { claim: "guardrails_active", required: true },
-    ],
+    evidence_requirements: DOJO_BASE_LICENSE_EVIDENCE_CLAIMS.map((claim) => ({ claim, required: true })),
     approval_requirements: gated.map((action) => action.action),
     substrate_requirements: [
       {
@@ -2063,7 +2065,7 @@ function licenseFor(
     ],
     proof_requirements: {
       required_context_claims: ["workspace_verified"],
-      required_evidence_claims: ["checkride_passed", "success_assertions_defined", "guardrails_active"],
+      required_evidence_claims: [...DOJO_BASE_LICENSE_EVIDENCE_CLAIMS],
       required_guardrails: guardrails.map((guardrail) => guardrail.guardrail_id),
     },
     expiry_policy: {

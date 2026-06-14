@@ -70,6 +70,7 @@ import {
   resolveDojoEvidenceLedgerRecords,
   type DojoEvidenceLedgerAppendStore,
 } from "../dojo/evidence/ledger_resolver.js";
+import { DOJO_SUPPORTED_EVIDENCE_CLAIMS } from "../dojo/evidence/claims.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { buildDojoProofKeyRecord, type DojoProofKeyRecord } from "../dojo/proof/key_registry.js";
 import { buildDojoProofPublicVerificationBundle } from "../dojo/proof/public_verification_export.js";
@@ -4730,9 +4731,10 @@ function dojoGraphRuntimeInputsForProofRun(input: {
   license_tool_args: Record<string, unknown>;
   runtime_authorization?: DojoHostedRuntimeActionDecision;
 }): Record<string, unknown> {
+  const authoritativeInputKeys = authoritativeGraphRuntimeInputKeys(input.skill);
   const inputs: Record<string, unknown> = {
-    ...input.tool_args,
-    ...input.license_tool_args,
+    ...stripAuthoritativeGraphRuntimeInputs(input.tool_args, authoritativeInputKeys),
+    ...stripAuthoritativeGraphRuntimeInputs(input.license_tool_args, authoritativeInputKeys),
     ...input.proof_capsule.context_claims,
     proof_capsule_valid: true,
     proof_capsule_id: input.proof_capsule.capsule_id,
@@ -4757,7 +4759,6 @@ function dojoGraphRuntimeInputsForProofRun(input: {
   for (const claim of input.proof_capsule.evidence_claims) {
     inputs[claim.claim] = claim.satisfied;
   }
-  applyGraphRuntimeInputsFromProofClaims(inputs);
   for (const guardrailId of input.proof_capsule.guardrails_active) {
     inputs[`guardrail:${guardrailId}`] = true;
   }
@@ -4781,16 +4782,52 @@ function dojoGraphRuntimeInputsForProofRun(input: {
   return inputs;
 }
 
-function applyGraphRuntimeInputsFromProofClaims(inputs: Record<string, unknown>): void {
-  const proofClaimDerivations: Array<{ claim: string; runtime_input: string }> = [
-    { claim: "success_assertions_defined", runtime_input: "durable_state_evidence" },
-  ];
-  for (const { claim, runtime_input: runtimeInput } of proofClaimDerivations) {
-    if (inputs[runtimeInput] !== undefined) continue;
-    if (inputs[claim] === true) {
-      inputs[runtimeInput] = true;
-    }
+function authoritativeGraphRuntimeInputKeys(skill: DojoSkill): Set<string> {
+  const proofContextClaims = skill.permission_license.proof_requirements.required_context_claims;
+  const proofEvidenceClaims = skill.permission_license.proof_requirements.required_evidence_claims;
+  return new Set([
+    ...DOJO_SUPPORTED_EVIDENCE_CLAIMS,
+    ...proofContextClaims,
+    ...proofEvidenceClaims,
+    "proof_capsule_valid",
+    "proof_capsule_id",
+    "proof_evidence_record_ids",
+    "proof_guardrails_active",
+    "entrustment_level",
+    "readiness_level",
+    "license_id",
+    "license_version",
+    "requested_action",
+    "requested_substrate",
+    "tenant_id",
+    "organization_id",
+    "workspace_id",
+    "actor_id",
+    "actor_type",
+    "request_id",
+    "correlation_id",
+    "roles",
+    "license_allowed_substrates",
+    "runtime_authorized",
+    "runtime_session_id",
+    "runtime_authorization_status",
+    "runtime_authorization_evidence_record_ids",
+  ]);
+}
+
+function stripAuthoritativeGraphRuntimeInputs(
+  args: Record<string, unknown>,
+  authoritativeKeys: Set<string>
+): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (authoritativeKeys.has(key)) continue;
+    if (key.startsWith("proof_")) continue;
+    if (key.startsWith("license_")) continue;
+    if (key.startsWith("runtime_authorization_")) continue;
+    sanitized[key] = value;
   }
+  return sanitized;
 }
 
 function allowedSubstratesForProofRun(skill: DojoSkill, requestedAction: string): DojoExecutionSubstrate[] {

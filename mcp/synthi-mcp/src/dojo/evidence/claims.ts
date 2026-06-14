@@ -1,7 +1,9 @@
 export const DOJO_SUPPORTED_EVIDENCE_CLAIMS = [
   "workspace_verified",
   "checkride_passed",
+  "success_assertions_defined",
   "guardrails_active",
+  "durable_state_evidence",
   "evidence_fresh",
   "critical_failures_open",
   "client_id_verified",
@@ -31,7 +33,9 @@ export const DOJO_EVIDENCE_CLAIM_SOURCE_KINDS: Partial<Record<
 >> = {
   workspace_verified: ["trace", "scenario", "checkride", "audit"],
   checkride_passed: ["checkride"],
+  success_assertions_defined: ["checkride", "artifact"],
   guardrails_active: ["guardrail", "case_law", "checkride"],
+  durable_state_evidence: ["scenario", "checkride", "artifact"],
   critical_failures_open: ["checkride", "case_law", "audit"],
   client_id_verified: ["trace", "scenario", "checkride", "artifact"],
   line_items_total_verified: ["trace", "scenario", "checkride", "artifact"],
