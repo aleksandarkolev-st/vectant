@@ -2020,6 +2020,7 @@ describe("Dojo release gate artifact verifier", () => {
       governance_contract: {
         ...governanceLifecycleEvidenceFixture().governance_contract,
         rbac_required: false,
+        store_rbac_required: false,
         license_revocation_required: false,
         compliance_pack_required: false,
         self_check_executes_tests_required: false,
@@ -2037,6 +2038,7 @@ describe("Dojo release gate artifact verifier", () => {
       "governance_lifecycle_coverage_incomplete",
       "governance_lifecycle_missing_capabilities:governance_revokes_license_to_blocked_scope_with_audit",
       "governance_lifecycle_rbac_requirement_missing",
+      "governance_lifecycle_store_rbac_requirement_missing",
       "governance_lifecycle_license_revocation_requirement_missing",
       "governance_lifecycle_compliance_pack_requirement_missing",
       "governance_lifecycle_self_check_execution_requirement_missing",
@@ -2078,7 +2080,7 @@ describe("Dojo release gate artifact verifier", () => {
     expect((await verifyDojoGovernanceLifecycleEvidenceArtifact({ evidencePath: driftedPath })).errors).toEqual(expect.arrayContaining([
       "governance_lifecycle_required_capabilities_missing:governance_builds_approval_queue",
       "governance_lifecycle_required_capabilities_untested:governance_builds_approval_queue",
-      `governance_lifecycle_required_test_files_missing:${DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES[0]}`,
+      `governance_lifecycle_required_test_files_missing:${DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES.join(",")}`,
     ]));
   });
 
@@ -5164,6 +5166,7 @@ function governanceLifecycleEvidenceFixture(overrides = {}) {
       approval_queue_required: true,
       approval_decision_audit_required: true,
       rbac_required: true,
+      store_rbac_required: true,
       case_law_review_required: true,
       license_revocation_required: true,
       recertification_queue_required: true,

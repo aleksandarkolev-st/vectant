@@ -2433,6 +2433,7 @@ export function validateDojoGovernanceLifecycleEvidenceForRelease(evidence) {
     ["approval_queue_required", "governance_lifecycle_approval_queue_requirement_missing"],
     ["approval_decision_audit_required", "governance_lifecycle_approval_audit_requirement_missing"],
     ["rbac_required", "governance_lifecycle_rbac_requirement_missing"],
+    ["store_rbac_required", "governance_lifecycle_store_rbac_requirement_missing"],
     ["case_law_review_required", "governance_lifecycle_case_law_review_requirement_missing"],
     ["license_revocation_required", "governance_lifecycle_license_revocation_requirement_missing"],
     ["recertification_queue_required", "governance_lifecycle_recertification_requirement_missing"],
@@ -4590,6 +4591,7 @@ async function runSelfCheck({ outDir }) {
       governance_contract: {
         ...governanceLifecycleArtifacts.evidence.governance_contract,
         rbac_required: false,
+        store_rbac_required: false,
         license_revocation_required: false,
         compliance_pack_required: false,
         self_check_executes_tests_required: false,
@@ -6814,6 +6816,7 @@ async function writeGovernanceLifecycleEvidenceForSelfCheck({
       approval_queue_required: true,
       approval_decision_audit_required: true,
       rbac_required: true,
+      store_rbac_required: true,
       case_law_review_required: true,
       license_revocation_required: true,
       recertification_queue_required: true,

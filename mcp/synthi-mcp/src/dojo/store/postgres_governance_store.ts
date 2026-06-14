@@ -1,5 +1,11 @@
 import type { QueryResultRow } from "pg";
 import { validateCaseLawRecord, type DojoCaseLawRecord } from "../case_law/registry.js";
+import type { DojoTenantContext } from "../mcp/execution_policy_gate.js";
+import {
+  authorizeDojoGovernanceAction,
+  type DojoGovernanceRbacAction,
+  type DojoGovernanceRbacPolicy,
+} from "../governance/service.js";
 import type {
   DojoAuditActor,
   DojoAuditStore,
@@ -17,6 +23,9 @@ export interface PostgresDojoGovernanceStoreOptions {
   audit_actor?: DojoAuditActor;
   request_id?: string;
   correlation_id?: string;
+  tenant_context?: DojoTenantContext;
+  rbac_policy?: DojoGovernanceRbacPolicy;
+  require_rbac?: boolean;
 }
 
 interface ApprovalRow extends QueryResultRow {
@@ -35,6 +44,9 @@ export class PostgresDojoGovernanceStore {
   private readonly auditActor: DojoAuditActor;
   private readonly requestId: string;
   private readonly correlationId: string;
+  private readonly tenantContext?: DojoTenantContext;
+  private readonly rbacPolicy?: DojoGovernanceRbacPolicy;
+  private readonly requireRbac: boolean;
 
   constructor(options: PostgresDojoGovernanceStoreOptions) {
     this.tenantId = requiredId(options.tenant_id, "tenant_id");
@@ -44,10 +56,15 @@ export class PostgresDojoGovernanceStore {
     this.auditActor = options.audit_actor ?? { actor_id: "dojo-postgres-governance-store", actor_type: "service" };
     this.requestId = options.request_id ?? "dojo-postgres-governance-store";
     this.correlationId = options.correlation_id ?? this.requestId;
+    this.tenantContext = options.tenant_context;
+    this.rbacPolicy = options.rbac_policy;
+    this.requireRbac = options.require_rbac === true;
+    this.assertTenantContextScope();
   }
 
   async savePermissionUpgradeRequest(record: DojoPermissionUpgradeRequestRecord): Promise<void> {
     this.assertPermissionUpgradeScope(record);
+    this.assertPermissionUpgradeReviewAuthorization(record);
     await this.queryable.query(
       `INSERT INTO dojo_approvals (
         tenant_id,
@@ -131,6 +148,7 @@ export class PostgresDojoGovernanceStore {
 
   async saveCaseLawRecord(record: DojoCaseLawRecord): Promise<void> {
     validateCaseLawRecord(record);
+    this.assertCaseLawReviewAuthorization(record);
     const skillId = record.binding_scope.kind === "skill" ? record.binding_scope.id : null;
     await this.queryable.query(
       `INSERT INTO dojo_case_law (
@@ -233,6 +251,53 @@ export class PostgresDojoGovernanceStore {
 
   private assertPermissionUpgradeScope(record: DojoPermissionUpgradeRequestRecord): void {
     if (record.workspace_id !== this.workspaceId) throw new Error("dojo_postgres_governance_workspace_mismatch");
+  }
+
+  private assertTenantContextScope(): void {
+    if (!this.tenantContext) return;
+    if (this.tenantContext.tenant_id !== this.tenantId) {
+      throw new Error("dojo_postgres_governance_tenant_context_tenant_mismatch");
+    }
+    if (this.tenantContext.workspace_id !== this.workspaceId) {
+      throw new Error("dojo_postgres_governance_tenant_context_workspace_mismatch");
+    }
+  }
+
+  private assertPermissionUpgradeReviewAuthorization(record: DojoPermissionUpgradeRequestRecord): void {
+    if (record.status !== "approved" && record.status !== "denied") return;
+    if (!record.reviewed_by?.actor_id?.trim()) {
+      throw new Error("dojo_postgres_governance_permission_upgrade_reviewer_required");
+    }
+    this.assertReviewActorMatchesTenantContext(record.reviewed_by, "permission_upgrade");
+    this.assertGovernanceActionAuthorized("permission_upgrade_review", "permission_upgrade");
+  }
+
+  private assertCaseLawReviewAuthorization(record: DojoCaseLawRecord): void {
+    if (record.status !== "approved" && record.status !== "deprecated") return;
+    if (!record.reviewer?.trim()) {
+      throw new Error("dojo_postgres_governance_case_law_reviewer_required");
+    }
+    this.assertReviewActorMatchesTenantContext({ actor_id: record.reviewer, actor_type: "human" }, "case_law");
+    this.assertGovernanceActionAuthorized("case_law_review", "case_law");
+  }
+
+  private assertReviewActorMatchesTenantContext(actor: DojoAuditActor, actionName: string): void {
+    if (!this.tenantContext) return;
+    if (this.tenantContext.actor_id !== actor.actor_id) {
+      throw new Error(`dojo_postgres_governance_${actionName}_review_actor_mismatch`);
+    }
+  }
+
+  private assertGovernanceActionAuthorized(action: DojoGovernanceRbacAction, actionName: string): void {
+    if (!this.requireRbac && !this.tenantContext) return;
+    const decision = authorizeDojoGovernanceAction({
+      tenant_context: this.tenantContext,
+      action,
+      policy: this.rbacPolicy,
+    });
+    if (!decision.ok) {
+      throw new Error(`dojo_postgres_governance_${actionName}_reviewer_role_required:${decision.blocked_by.join(",")}`);
+    }
   }
 
   private async appendPermissionUpgradeAudit(record: DojoPermissionUpgradeRequestRecord): Promise<void> {
