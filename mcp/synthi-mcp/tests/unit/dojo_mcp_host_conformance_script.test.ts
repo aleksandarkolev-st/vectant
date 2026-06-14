@@ -18,6 +18,15 @@ describe("Dojo MCP host conformance harness", () => {
     expect(classifyMcpHost("http://127.0.0.1:3000/mcp")).toBe("loopback");
     expect(classifyMcpHost("http://localhost:3000/mcp")).toBe("loopback");
     expect(classifyMcpHost("http://0.0.0.0:3000/mcp")).toBe("local-bind");
+    expect(classifyMcpHost("http://10.0.0.12:3000/mcp")).toBe("private-network");
+    expect(classifyMcpHost("http://172.16.0.12:3000/mcp")).toBe("private-network");
+    expect(classifyMcpHost("http://172.31.255.12:3000/mcp")).toBe("private-network");
+    expect(classifyMcpHost("http://172.32.0.12:3000/mcp")).toBe("remote");
+    expect(classifyMcpHost("http://192.168.1.12:3000/mcp")).toBe("private-network");
+    expect(classifyMcpHost("http://100.64.0.12:3000/mcp")).toBe("private-network");
+    expect(classifyMcpHost("http://169.254.1.12:3000/mcp")).toBe("link-local");
+    expect(classifyMcpHost("http://[fd00::1]:3000/mcp")).toBe("private-network");
+    expect(classifyMcpHost("http://[fe80::1]:3000/mcp")).toBe("link-local");
     expect(classifyMcpHost("ws://mcp.example.test/session")).toBe("unsupported-url");
     expect(classifyMcpHost("https://mcp.example.test/mcp")).toBe("remote");
   });
@@ -44,6 +53,17 @@ describe("Dojo MCP host conformance harness", () => {
       require_non_loopback_mcp_host: true,
       non_loopback_mcp_host: false,
       mcp_host_class: "loopback",
+    });
+    expect(mcpHostConformance({
+      transport: "http-json-rpc",
+      mcpHostUrl: "http://10.0.0.12:3000/mcp",
+      requireNonLoopbackMcpHost: true,
+    })).toEqual({
+      ok: false,
+      transport: "http-json-rpc",
+      require_non_loopback_mcp_host: true,
+      non_loopback_mcp_host: false,
+      mcp_host_class: "private-network",
     });
   });
 
