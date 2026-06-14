@@ -191,6 +191,9 @@ async function main() {
 
 export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {}) {
   const releaseCandidate = truthy(args["release-candidate"]);
+  const requireCompleteReleaseGateCoverage = releaseCandidate
+    || truthy(args["require-complete-release-gate-coverage"])
+    || truthy(args["strict-release-gate-coverage"]);
   const manifestPath = resolveRepoPath(args.manifest || args["manifest-path"] || path.join(DEFAULT_RELEASE_GATE_DIR, "dojo-release-gate-manifest.json"));
   const evidencePath = resolveRepoPath(args.evidence || args["manifest-evidence"] || path.join(DEFAULT_RELEASE_GATE_DIR, "dojo-release-gate-manifest.evidence.json"));
   const manifestResult = await verifyArtifactSection({
@@ -786,7 +789,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     sections,
   });
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
-  if (truthy(args["release-candidate"]) && releaseGateCoverage.missing_verifiable_release_gate_ids.length > 0) {
+  if (requireCompleteReleaseGateCoverage && releaseGateCoverage.missing_verifiable_release_gate_ids.length > 0) {
     errors.push(`release_gate_artifact_verification_missing:${releaseGateCoverage.missing_verifiable_release_gate_ids.join(",")}`);
   }
   return {
@@ -794,6 +797,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     generated_at: new Date().toISOString(),
     ok: errors.length === 0,
     errors,
+    complete_release_gate_coverage_required: requireCompleteReleaseGateCoverage,
     verifiable_release_gate_ids: releaseGateCoverage.verifiable_release_gate_ids,
     attempted_release_gate_ids: releaseGateCoverage.attempted_release_gate_ids,
     verified_release_gate_ids: releaseGateCoverage.verified_release_gate_ids,

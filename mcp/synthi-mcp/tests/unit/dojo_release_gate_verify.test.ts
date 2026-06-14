@@ -1590,6 +1590,35 @@ describe("Dojo release gate artifact verifier", () => {
     ]);
   });
 
+  it("can require complete release-gate artifact coverage outside release-candidate mode", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-strict-release-gate-coverage-"));
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+    });
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+
+    const verified = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        "require-complete-release-gate-coverage": "1",
+        manifest: manifestPath,
+        evidence: evidencePath,
+      },
+    });
+
+    expect(verified.ok).toBe(false);
+    expect(verified.complete_release_gate_coverage_required).toBe(true);
+    expect(verified.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^release_gate_artifact_verification_missing:/),
+    ]));
+    expect(verified.missing_verifiable_release_gate_ids).toEqual(expect.arrayContaining([
+      "dojo_self_check",
+      "dojo_implementation_status_self_check",
+    ]));
+    expect(verified.attempted_release_gate_ids).toEqual([]);
+  });
+
   it("includes manifest-declared Dojo proof self-check artifacts in release candidate verification", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-candidate-self-check-"));
     const selfCheck = await writeProofSelfCheckFixture({ dir });
