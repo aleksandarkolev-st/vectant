@@ -1612,7 +1612,7 @@ export function exportDojoRepoArtifacts(skill: DojoSkill): DojoRepoArtifact[] {
       path: `${root}/skill-passport.json`,
       content_type: "application/json",
       sensitive: false,
-      content: json(skill.skill_passport),
+      content: json(skillPassportArtifact(skill)),
     },
     {
       path: `${root}/skill-genome.json`,
@@ -2960,6 +2960,23 @@ function redactedSkillArtifact(skill: DojoSkill): Record<string, unknown> {
     published_tool_name: skill.published_tool_name ?? null,
     executable_entrustment: skill.executable_entrustment ?? null,
     generated_at: skill.generated_at,
+  };
+}
+
+function skillPassportArtifact(skill: DojoSkill): Record<string, unknown> {
+  return {
+    schema_version: "synthi.dojo.skillPassportArtifact.v1",
+    skill_id: skill.skill_id,
+    skill_passport: skill.skill_passport,
+    entrustment_source: skill.executable_entrustment ? "executable_checkride" : "legacy_license_artifact",
+    executable_entrustment: skill.executable_entrustment ?? null,
+    license_scope: {
+      allowed_actions: skill.permission_license.allowed_actions,
+      gated_actions: skill.permission_license.gated_actions,
+      blocked_actions: skill.permission_license.blocked_actions,
+      approval_requirements: skill.permission_license.approval_requirements,
+    },
+    evidence_refs: skill.executable_entrustment?.evidence_refs ?? skill.assurance_case.evidence_refs,
   };
 }
 

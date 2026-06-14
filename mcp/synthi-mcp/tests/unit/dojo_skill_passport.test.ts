@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserBroker } from "../../src/browser/broker.js";
-import { dojoSkillRegistry } from "../../src/browser/dojo.js";
+import { dojoSkillRegistry, exportDojoRepoArtifacts } from "../../src/browser/dojo.js";
 import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import { InMemoryPrivateWorkflowToolStore, privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
 import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
@@ -105,13 +105,40 @@ describe("Dojo Skill Passport and consumer Skill Card contract", () => {
     const { skill, repoArtifacts } = await publishApproverWorkflowSkill();
 
     const passportArtifact = repoArtifacts.find((artifact) => artifact.path.endsWith("/skill-passport.json"));
+    const exportedPassportArtifact = exportDojoRepoArtifacts(skill)
+      .find((artifact) => artifact.path.endsWith("/skill-passport.json"));
+    const exportedPassport = JSON.parse(exportedPassportArtifact?.content ?? "null") as {
+      schema_version?: string;
+      skill_passport?: { skill_id: string };
+      entrustment_source?: string;
+      executable_entrustment?: { schema_version: string; evidence_refs: string[] };
+      license_scope?: { allowed_actions: unknown[]; gated_actions: unknown[]; blocked_actions: unknown[] };
+      evidence_refs?: string[];
+    };
 
     expect(passportArtifact).toEqual(expect.objectContaining({
       path: expect.stringContaining(`/${skill.skill_id.replace(/^dojo_/, "")}/skill-passport.json`),
       content_type: "application/json",
       sensitive: false,
     }));
+    expect(exportedPassport).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.skillPassportArtifact.v1",
+      skill_passport: expect.objectContaining({ skill_id: skill.skill_id }),
+      entrustment_source: "executable_checkride",
+      executable_entrustment: expect.objectContaining({
+        schema_version: "synthi.dojo.executableEntrustmentSnapshot.v1",
+        evidence_refs: expect.any(Array),
+      }),
+      license_scope: expect.objectContaining({
+        allowed_actions: skill.permission_license.allowed_actions,
+        gated_actions: skill.permission_license.gated_actions,
+        blocked_actions: skill.permission_license.blocked_actions,
+      }),
+      evidence_refs: skill.executable_entrustment?.evidence_refs,
+    }));
+    expect(exportedPassport.executable_entrustment?.evidence_refs.length).toBeGreaterThan(0);
     expect(JSON.stringify(passportArtifact)).not.toMatch(/cookie|authorization|bearer|password|secret/i);
+    expect(JSON.stringify(exportedPassportArtifact)).not.toMatch(/cookie|authorization|bearer|password|secret/i);
   });
 });
 

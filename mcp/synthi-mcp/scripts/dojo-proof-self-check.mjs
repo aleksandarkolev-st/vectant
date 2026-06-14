@@ -860,6 +860,23 @@ async function main() {
       && exportedSkill.executable_entrustment.evidence_refs.length > 0,
     "exported executable entrustment should include evidence refs"
   );
+  const exportedPassportArtifact = exported.artifacts.find((artifact) => artifact.path.endsWith("/skill-passport.json"));
+  assert(exportedPassportArtifact, "Dojo export should include skill-passport.json");
+  const exportedPassport = JSON.parse(exportedPassportArtifact.content);
+  assert.equal(
+    exportedPassport.schema_version,
+    "synthi.dojo.skillPassportArtifact.v1",
+    "exported skill-passport.json should use the versioned passport artifact schema"
+  );
+  assert.equal(
+    exportedPassport.executable_entrustment?.schema_version,
+    "synthi.dojo.executableEntrustmentSnapshot.v1",
+    "exported skill-passport.json should include executable entrustment provenance"
+  );
+  assert(
+    Array.isArray(exportedPassport.evidence_refs) && exportedPassport.evidence_refs.length > 0,
+    "exported skill-passport.json should include evidence refs"
+  );
   const written = await writeArtifacts(RUN_ROOT, exported.artifacts);
   const parsedJson = validateJsonArtifacts(exported.artifacts);
   const generatedSpec = written.find((file) => file.endsWith(path.normalize(".synthi/dojo/skills/open_details/playwright.spec.ts")));
