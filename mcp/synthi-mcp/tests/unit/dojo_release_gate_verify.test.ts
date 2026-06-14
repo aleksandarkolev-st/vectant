@@ -1469,6 +1469,57 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("reports missing release-candidate artifacts as structured gate failures", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-candidate-missing-artifacts-"));
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+    });
+    const workflowSummaryPath = path.join(dir, "missing-workflow-summary.json");
+    const stdioTranscriptPath = path.join(dir, "missing-stdio-acceptance.json");
+    const codexTranscriptPath = path.join(dir, "missing-codex-acceptance.json");
+    manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowSummaryPath;
+    manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioTranscriptPath;
+    manifest.gates.find((gate) => gate.id === "private_tool_codex_acceptance").default_report_path = codexTranscriptPath;
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+
+    const verified = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        "release-candidate": "1",
+        manifest: manifestPath,
+        evidence: evidencePath,
+      },
+    });
+
+    expect(verified.ok).toBe(false);
+    expect(verified.errors).toEqual(expect.arrayContaining([
+      `workflow_e2e_hosted:artifact_missing:${workflowSummaryPath}`,
+      `private_tool_stdio_acceptance:artifact_missing:${stdioTranscriptPath}`,
+      `private_tool_codex_acceptance:artifact_missing:${codexTranscriptPath}`,
+    ]));
+    expect(verified.live_hosted_runtime).toEqual([
+      expect.objectContaining({
+        id: "workflow_e2e_hosted",
+        ok: false,
+        artifact_path: workflowSummaryPath,
+        errors: [`artifact_missing:${workflowSummaryPath}`],
+      }),
+      expect.objectContaining({
+        id: "private_tool_stdio_acceptance",
+        ok: false,
+        artifact_path: stdioTranscriptPath,
+        errors: [`artifact_missing:${stdioTranscriptPath}`],
+      }),
+      expect.objectContaining({
+        id: "private_tool_codex_acceptance",
+        ok: false,
+        artifact_path: codexTranscriptPath,
+        errors: [`artifact_missing:${codexTranscriptPath}`],
+      }),
+    ]);
+  });
+
   it("includes manifest-declared Dojo proof self-check artifacts in release candidate verification", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-candidate-self-check-"));
     const selfCheck = await writeProofSelfCheckFixture({ dir });

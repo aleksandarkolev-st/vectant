@@ -189,13 +189,18 @@ async function main() {
 }
 
 export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {}) {
+  const releaseCandidate = truthy(args["release-candidate"]);
   const manifestPath = resolveRepoPath(args.manifest || args["manifest-path"] || path.join(DEFAULT_RELEASE_GATE_DIR, "dojo-release-gate-manifest.json"));
   const evidencePath = resolveRepoPath(args.evidence || args["manifest-evidence"] || path.join(DEFAULT_RELEASE_GATE_DIR, "dojo-release-gate-manifest.evidence.json"));
-  const manifestResult = await verifyDojoReleaseGateManifestArtifacts({ manifestPath, evidencePath });
-  const manifest = manifestResult.manifest;
+  const manifestResult = await verifyArtifactSection({
+    id: "release_gate_manifest",
+    artifactPath: manifestPath,
+    evidencePath,
+  }, () => verifyDojoReleaseGateManifestArtifacts({ manifestPath, evidencePath }));
+  const manifest = manifestResult.manifest || { gates: [], release_gate_ids: [] };
 
   const proofSelfCheckResults = [];
-  const shouldVerifyDojoSelfCheck = truthy(args["release-candidate"])
+  const shouldVerifyDojoSelfCheck = releaseCandidate
     || truthy(args["include-dojo-self-check-default"])
     || args["dojo-self-check-summary"]
     || args["dojo-self-check-production-evidence"];
@@ -209,140 +214,207 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       : selfCheckGate.default_evidence_path
         ? resolveRepoPath(selfCheckGate.default_evidence_path)
         : undefined;
-    proofSelfCheckResults.push(await verifyDojoProofSelfCheckArtifacts({
+    proofSelfCheckResults.push(await verifyArtifactSection({
+      id: "dojo_self_check",
+      artifactPath: summaryPath,
+      evidencePath: productionEvidencePath,
+      releaseCandidate,
+    }, () => verifyDojoProofSelfCheckArtifacts({
       summaryPath,
       productionEvidencePath,
-    }));
+    })));
   }
 
   const visualResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-visual-defaults"])) {
+  if (releaseCandidate || truthy(args["include-visual-defaults"])) {
     for (const gate of manifest?.gates || []) {
       if (gate.evidence_kind !== "visual_report" || !gate.default_report_path) continue;
-      visualResults.push(await verifyVisualProofArtifact({
+      const reportPath = resolveRepoPath(gate.default_report_path);
+      visualResults.push(await verifyArtifactSection({
+        id: gate.id,
+        artifactPath: reportPath,
+        releaseCandidate,
+      }, () => verifyVisualProofArtifact({
         manifest,
         gateId: gate.id,
-        reportPath: resolveRepoPath(gate.default_report_path),
-      }));
+        reportPath,
+      })));
     }
   }
   for (const request of parseVisualReportArgs(args)) {
-    visualResults.push(await verifyVisualProofArtifact({
+    const reportPath = resolveRepoPath(request.reportPath);
+    visualResults.push(await verifyArtifactSection({
+      id: request.gateId,
+      artifactPath: reportPath,
+      releaseCandidate,
+    }, () => verifyVisualProofArtifact({
       manifest,
       gateId: request.gateId,
-      reportPath: resolveRepoPath(request.reportPath),
-    }));
+      reportPath,
+    })));
   }
 
   const postgresControlPlaneResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-postgres-control-plane"]) || args["postgres-control-plane-evidence"]) {
+  if (releaseCandidate || truthy(args["include-postgres-control-plane"]) || args["postgres-control-plane-evidence"]) {
     const postgresGate = findGate(manifest, "dojo_postgres_control_plane_self_check") || {};
-    postgresControlPlaneResults.push(await verifyDojoPostgresControlPlaneEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["postgres-control-plane-evidence"]
-        || postgresGate.default_evidence_path
-        || path.join(DEFAULT_POSTGRES_CONTROL_PLANE_DIR, "dojo-postgres-control-plane.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["postgres-control-plane-evidence"]
+      || postgresGate.default_evidence_path
+      || path.join(DEFAULT_POSTGRES_CONTROL_PLANE_DIR, "dojo-postgres-control-plane.evidence.json"));
+    postgresControlPlaneResults.push(await verifyArtifactSection({
+      id: "dojo_postgres_control_plane_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoPostgresControlPlaneEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const evidenceAuthorityResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-evidence-authority"]) || args["evidence-authority-evidence"]) {
+  if (releaseCandidate || truthy(args["include-evidence-authority"]) || args["evidence-authority-evidence"]) {
     const evidenceAuthorityGate = findGate(manifest, "dojo_evidence_authority_self_check") || {};
-    evidenceAuthorityResults.push(await verifyDojoEvidenceAuthorityEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["evidence-authority-evidence"]
-        || evidenceAuthorityGate.default_evidence_path
-        || path.join(DEFAULT_EVIDENCE_AUTHORITY_DIR, "dojo-evidence-authority.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["evidence-authority-evidence"]
+      || evidenceAuthorityGate.default_evidence_path
+      || path.join(DEFAULT_EVIDENCE_AUTHORITY_DIR, "dojo-evidence-authority.evidence.json"));
+    evidenceAuthorityResults.push(await verifyArtifactSection({
+      id: "dojo_evidence_authority_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoEvidenceAuthorityEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const implementationStatusResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-implementation-status"]) || args["implementation-status-evidence"]) {
+  if (releaseCandidate || truthy(args["include-implementation-status"]) || args["implementation-status-evidence"]) {
     const implementationStatusGate = findGate(manifest, "dojo_implementation_status_self_check") || {};
-    implementationStatusResults.push(await verifyDojoImplementationStatusEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["implementation-status-evidence"]
-        || implementationStatusGate.default_evidence_path
-        || path.join(DEFAULT_IMPLEMENTATION_STATUS_DIR, "dojo-implementation-status.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["implementation-status-evidence"]
+      || implementationStatusGate.default_evidence_path
+      || path.join(DEFAULT_IMPLEMENTATION_STATUS_DIR, "dojo-implementation-status.evidence.json"));
+    implementationStatusResults.push(await verifyArtifactSection({
+      id: "dojo_implementation_status_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoImplementationStatusEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const dockerIntegrationResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-docker-integration"]) || args["docker-integration-evidence"]) {
+  if (releaseCandidate || truthy(args["include-docker-integration"]) || args["docker-integration-evidence"]) {
     const dockerGate = findGate(manifest, "docker_integration") || {};
-    dockerIntegrationResults.push(await verifyDojoDockerIntegrationEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["docker-integration-evidence"]
-        || dockerGate.default_evidence_path
-        || path.join(DEFAULT_DOCKER_INTEGRATION_DIR, "dojo-docker-integration.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["docker-integration-evidence"]
+      || dockerGate.default_evidence_path
+      || path.join(DEFAULT_DOCKER_INTEGRATION_DIR, "dojo-docker-integration.evidence.json"));
+    dockerIntegrationResults.push(await verifyArtifactSection({
+      id: "docker_integration",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoDockerIntegrationEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const sourceApiResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-affordance-codemod"]) || args["affordance-codemod-report"] || args["affordance-codemod-evidence"]) {
+  if (releaseCandidate || truthy(args["include-affordance-codemod"]) || args["affordance-codemod-report"] || args["affordance-codemod-evidence"]) {
     const affordanceGate = findGate(manifest, "dojo_affordance_codemod_self_check") || {};
-    sourceApiResults.push(await verifyDojoAffordanceCodemodEvidenceArtifact({
-      reportPath: resolveRepoPath(args["affordance-codemod-report"]
-        || affordanceGate.default_report_path
-        || path.join(DEFAULT_AFFORDANCE_CODEMOD_DIR, "dojo-affordance-codemod-self-check.json")),
-      evidencePath: resolveRepoPath(args["affordance-codemod-evidence"]
-        || affordanceGate.default_evidence_path
-        || path.join(DEFAULT_AFFORDANCE_CODEMOD_DIR, "dojo-affordance-codemod-self-check.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const reportPath = resolveRepoPath(args["affordance-codemod-report"]
+      || affordanceGate.default_report_path
+      || path.join(DEFAULT_AFFORDANCE_CODEMOD_DIR, "dojo-affordance-codemod-self-check.json"));
+    const evidencePath = resolveRepoPath(args["affordance-codemod-evidence"]
+      || affordanceGate.default_evidence_path
+      || path.join(DEFAULT_AFFORDANCE_CODEMOD_DIR, "dojo-affordance-codemod-self-check.evidence.json"));
+    sourceApiResults.push(await verifyArtifactSection({
+      id: "dojo_affordance_codemod_self_check",
+      artifactPath: reportPath,
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoAffordanceCodemodEvidenceArtifact({
+      reportPath,
+      evidencePath,
+      releaseCandidate,
+    })));
   }
-  if (truthy(args["release-candidate"]) || truthy(args["include-source-drift"]) || args["source-drift-evidence"]) {
+  if (releaseCandidate || truthy(args["include-source-drift"]) || args["source-drift-evidence"]) {
     const sourceDriftGate = findGate(manifest, "dojo_source_drift_self_check") || {};
-    sourceApiResults.push(await verifyDojoSourceDriftEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["source-drift-evidence"]
-        || sourceDriftGate.default_evidence_path
-        || path.join(DEFAULT_SOURCE_DRIFT_DIR, "dojo-source-drift.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["source-drift-evidence"]
+      || sourceDriftGate.default_evidence_path
+      || path.join(DEFAULT_SOURCE_DRIFT_DIR, "dojo-source-drift.evidence.json"));
+    sourceApiResults.push(await verifyArtifactSection({
+      id: "dojo_source_drift_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoSourceDriftEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
-  if (truthy(args["release-candidate"]) || truthy(args["include-agent-ready-ui-contract"]) || args["agent-ready-ui-contract-evidence"]) {
+  if (releaseCandidate || truthy(args["include-agent-ready-ui-contract"]) || args["agent-ready-ui-contract-evidence"]) {
     const agentReadyGate = findGate(manifest, "dojo_agent_ready_ui_contract_self_check") || {};
-    sourceApiResults.push(await verifyDojoAgentReadyUiContractEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["agent-ready-ui-contract-evidence"]
-        || agentReadyGate.default_evidence_path
-        || path.join(DEFAULT_AGENT_READY_UI_CONTRACT_DIR, "dojo-agent-ready-ui-contract.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["agent-ready-ui-contract-evidence"]
+      || agentReadyGate.default_evidence_path
+      || path.join(DEFAULT_AGENT_READY_UI_CONTRACT_DIR, "dojo-agent-ready-ui-contract.evidence.json"));
+    sourceApiResults.push(await verifyArtifactSection({
+      id: "dojo_agent_ready_ui_contract_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoAgentReadyUiContractEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
-  if (truthy(args["release-candidate"]) || truthy(args["include-api-tool-compiler"]) || args["api-tool-compiler-evidence"]) {
+  if (releaseCandidate || truthy(args["include-api-tool-compiler"]) || args["api-tool-compiler-evidence"]) {
     const apiToolCompilerGate = findGate(manifest, "dojo_api_tool_compiler_self_check") || {};
-    sourceApiResults.push(await verifyDojoApiToolCompilerEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["api-tool-compiler-evidence"]
-        || apiToolCompilerGate.default_evidence_path
-        || path.join(DEFAULT_API_TOOL_COMPILER_DIR, "dojo-api-tool-compiler.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["api-tool-compiler-evidence"]
+      || apiToolCompilerGate.default_evidence_path
+      || path.join(DEFAULT_API_TOOL_COMPILER_DIR, "dojo-api-tool-compiler.evidence.json"));
+    sourceApiResults.push(await verifyArtifactSection({
+      id: "dojo_api_tool_compiler_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoApiToolCompilerEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const generatedPrResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-generated-pr"]) || args["generated-pr-evidence"]) {
+  if (releaseCandidate || truthy(args["include-generated-pr"]) || args["generated-pr-evidence"]) {
     const generatedPrGate = findGate(manifest, "dojo_generated_pr_self_check") || {};
-    generatedPrResults.push(await verifyDojoGeneratedPrEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["generated-pr-evidence"]
-        || generatedPrGate.default_evidence_path
-        || path.join(DEFAULT_GENERATED_PR_DIR, "dojo-generated-pr.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["generated-pr-evidence"]
+      || generatedPrGate.default_evidence_path
+      || path.join(DEFAULT_GENERATED_PR_DIR, "dojo-generated-pr.evidence.json"));
+    generatedPrResults.push(await verifyArtifactSection({
+      id: "dojo_generated_pr_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoGeneratedPrEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const mcpSkillBusResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-mcp-skill-bus"]) || args["mcp-skill-bus-evidence"]) {
+  if (releaseCandidate || truthy(args["include-mcp-skill-bus"]) || args["mcp-skill-bus-evidence"]) {
     const mcpSkillBusGate = findGate(manifest, "dojo_mcp_skill_bus_self_check") || {};
-    mcpSkillBusResults.push(await verifyDojoMcpSkillBusEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["mcp-skill-bus-evidence"]
-        || mcpSkillBusGate.default_evidence_path
-        || path.join(DEFAULT_MCP_SKILL_BUS_DIR, "dojo-mcp-skill-bus.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["mcp-skill-bus-evidence"]
+      || mcpSkillBusGate.default_evidence_path
+      || path.join(DEFAULT_MCP_SKILL_BUS_DIR, "dojo-mcp-skill-bus.evidence.json"));
+    mcpSkillBusResults.push(await verifyArtifactSection({
+      id: "dojo_mcp_skill_bus_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoMcpSkillBusEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const liveHostedRuntimeResults = [];
-  const shouldVerifyLiveHostedRuntime = truthy(args["release-candidate"])
+  const shouldVerifyLiveHostedRuntime = releaseCandidate
     || args["workflow-e2e-summary"]
     || args["private-tool-stdio-acceptance"]
     || args["private-tool-codex-acceptance"];
@@ -350,236 +422,357 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     const workflowGate = findGate(manifest, "workflow_e2e_hosted") || {};
     const stdioGate = findGate(manifest, "private_tool_stdio_acceptance") || {};
     const codexGate = findGate(manifest, "private_tool_codex_acceptance") || {};
-    liveHostedRuntimeResults.push(await verifyDojoWorkflowPipelineE2EArtifact({
-      summaryPath: resolveRepoPath(args["workflow-e2e-summary"]
-        || workflowGate.default_report_path
-        || path.join(DEFAULT_WORKFLOW_PIPELINE_E2E_DIR, "summary.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
-    liveHostedRuntimeResults.push(await verifyDojoPrivateToolStdioAcceptanceArtifact({
-      transcriptPath: resolveRepoPath(args["private-tool-stdio-acceptance"]
-        || stdioGate.default_report_path
-        || path.join(DEFAULT_PRIVATE_TOOL_STDIO_ACCEPTANCE_DIR, "mcp-stdio-private-tool-acceptance.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
-    liveHostedRuntimeResults.push(await verifyDojoPrivateToolCodexAcceptanceArtifact({
-      transcriptPath: resolveRepoPath(args["private-tool-codex-acceptance"]
-        || codexGate.default_report_path
-        || path.join(DEFAULT_PRIVATE_TOOL_CODEX_ACCEPTANCE_DIR, "codex-private-tool-acceptance.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const workflowSummaryPath = resolveRepoPath(args["workflow-e2e-summary"]
+      || workflowGate.default_report_path
+      || path.join(DEFAULT_WORKFLOW_PIPELINE_E2E_DIR, "summary.json"));
+    const stdioTranscriptPath = resolveRepoPath(args["private-tool-stdio-acceptance"]
+      || stdioGate.default_report_path
+      || path.join(DEFAULT_PRIVATE_TOOL_STDIO_ACCEPTANCE_DIR, "mcp-stdio-private-tool-acceptance.json"));
+    const codexTranscriptPath = resolveRepoPath(args["private-tool-codex-acceptance"]
+      || codexGate.default_report_path
+      || path.join(DEFAULT_PRIVATE_TOOL_CODEX_ACCEPTANCE_DIR, "codex-private-tool-acceptance.json"));
+    liveHostedRuntimeResults.push(await verifyArtifactSection({
+      id: "workflow_e2e_hosted",
+      artifactPath: workflowSummaryPath,
+      releaseCandidate,
+    }, () => verifyDojoWorkflowPipelineE2EArtifact({
+      summaryPath: workflowSummaryPath,
+      releaseCandidate,
+    })));
+    liveHostedRuntimeResults.push(await verifyArtifactSection({
+      id: "private_tool_stdio_acceptance",
+      artifactPath: stdioTranscriptPath,
+      releaseCandidate,
+    }, () => verifyDojoPrivateToolStdioAcceptanceArtifact({
+      transcriptPath: stdioTranscriptPath,
+      releaseCandidate,
+    })));
+    liveHostedRuntimeResults.push(await verifyArtifactSection({
+      id: "private_tool_codex_acceptance",
+      artifactPath: codexTranscriptPath,
+      releaseCandidate,
+    }, () => verifyDojoPrivateToolCodexAcceptanceArtifact({
+      transcriptPath: codexTranscriptPath,
+      releaseCandidate,
+    })));
   }
 
   const conformanceResults = [];
   const conformanceSelfCheckResults = [];
-  const shouldVerifyDeployedHostConformance = truthy(args["release-candidate"])
+  const shouldVerifyDeployedHostConformance = releaseCandidate
     || args["mcp-host-conformance-report"]
     || args["private-tool-stdio-host-conformance"]
     || args["private-tool-codex-host-conformance"];
-  const shouldVerifyMcpHostConformanceSelfCheck = truthy(args["release-candidate"])
+  const shouldVerifyMcpHostConformanceSelfCheck = releaseCandidate
     || args["mcp-host-conformance-self-check-report"]
     || args["mcp-host-conformance-self-check-evidence"];
   if (shouldVerifyMcpHostConformanceSelfCheck) {
     const selfCheckGate = findGate(manifest, "dojo_mcp_host_conformance_self_check") || {};
-    conformanceSelfCheckResults.push(await verifyDojoMcpHostConformanceSelfCheckArtifacts({
-      reportPath: resolveRepoPath(args["mcp-host-conformance-self-check-report"]
-        || selfCheckGate.default_report_path
-        || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.json")),
-      evidencePath: resolveRepoPath(args["mcp-host-conformance-self-check-evidence"]
-        || selfCheckGate.default_evidence_path
-        || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const reportPath = resolveRepoPath(args["mcp-host-conformance-self-check-report"]
+      || selfCheckGate.default_report_path
+      || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.json"));
+    const evidencePath = resolveRepoPath(args["mcp-host-conformance-self-check-evidence"]
+      || selfCheckGate.default_evidence_path
+      || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.evidence.json"));
+    conformanceSelfCheckResults.push(await verifyArtifactSection({
+      id: "dojo_mcp_host_conformance_self_check",
+      artifactPath: reportPath,
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoMcpHostConformanceSelfCheckArtifacts({
+      reportPath,
+      evidencePath,
+      releaseCandidate,
+    })));
   }
   if (shouldVerifyDeployedHostConformance) {
     const stdioHostGate = findGate(manifest, "private_tool_stdio_host_conformance") || {};
     const codexHostGate = findGate(manifest, "private_tool_codex_host_conformance") || {};
-    conformanceResults.push(await verifyDojoMcpHostConformanceArtifacts({
-      reportPath: resolveRepoPath(args["mcp-host-conformance-report"] || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.json")),
-      evidencePath: resolveRepoPath(args["mcp-host-conformance-evidence"] || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
-    conformanceResults.push(await verifyDojoPrivateToolStdioHostConformanceArtifact({
-      transcriptPath: resolveRepoPath(args["private-tool-stdio-host-conformance"]
-        || stdioHostGate.default_report_path
-        || path.join(DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR, "mcp-stdio-private-tool-acceptance.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
-    conformanceResults.push(await verifyDojoPrivateToolCodexHostConformanceArtifact({
-      transcriptPath: resolveRepoPath(args["private-tool-codex-host-conformance"]
-        || codexHostGate.default_report_path
-        || path.join(DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR, "codex-private-tool-acceptance.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const reportPath = resolveRepoPath(args["mcp-host-conformance-report"] || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.json"));
+    const evidencePath = resolveRepoPath(args["mcp-host-conformance-evidence"] || path.join(DEFAULT_CONFORMANCE_DIR, "dojo-mcp-host-conformance.evidence.json"));
+    const stdioTranscriptPath = resolveRepoPath(args["private-tool-stdio-host-conformance"]
+      || stdioHostGate.default_report_path
+      || path.join(DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR, "mcp-stdio-private-tool-acceptance.json"));
+    const codexTranscriptPath = resolveRepoPath(args["private-tool-codex-host-conformance"]
+      || codexHostGate.default_report_path
+      || path.join(DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR, "codex-private-tool-acceptance.json"));
+    conformanceResults.push(await verifyArtifactSection({
+      id: "dojo_mcp_host_conformance",
+      artifactPath: reportPath,
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoMcpHostConformanceArtifacts({
+      reportPath,
+      evidencePath,
+      releaseCandidate,
+    })));
+    conformanceResults.push(await verifyArtifactSection({
+      id: "private_tool_stdio_host_conformance",
+      artifactPath: stdioTranscriptPath,
+      releaseCandidate,
+    }, () => verifyDojoPrivateToolStdioHostConformanceArtifact({
+      transcriptPath: stdioTranscriptPath,
+      releaseCandidate,
+    })));
+    conformanceResults.push(await verifyArtifactSection({
+      id: "private_tool_codex_host_conformance",
+      artifactPath: codexTranscriptPath,
+      releaseCandidate,
+    }, () => verifyDojoPrivateToolCodexHostConformanceArtifact({
+      transcriptPath: codexTranscriptPath,
+      releaseCandidate,
+    })));
   }
 
   const managedKeySigningResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-managed-key-signing"]) || args["managed-key-signing-evidence"]) {
+  if (releaseCandidate || truthy(args["include-managed-key-signing"]) || args["managed-key-signing-evidence"]) {
     const managedKeyGate = findGate(manifest, "dojo_managed_key_signing_self_check") || {};
-    managedKeySigningResults.push(await verifyDojoManagedKeySigningEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["managed-key-signing-evidence"]
-        || managedKeyGate.default_evidence_path
-        || path.join(DEFAULT_MANAGED_KEY_SIGNING_DIR, "dojo-managed-key-signing.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["managed-key-signing-evidence"]
+      || managedKeyGate.default_evidence_path
+      || path.join(DEFAULT_MANAGED_KEY_SIGNING_DIR, "dojo-managed-key-signing.evidence.json"));
+    managedKeySigningResults.push(await verifyArtifactSection({
+      id: "dojo_managed_key_signing_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoManagedKeySigningEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const publicProofVerificationResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-public-proof-verification"]) || args["public-proof-verification-evidence"]) {
+  if (releaseCandidate || truthy(args["include-public-proof-verification"]) || args["public-proof-verification-evidence"]) {
     const publicProofGate = findGate(manifest, "dojo_public_proof_verification_self_check") || {};
-    publicProofVerificationResults.push(await verifyDojoPublicProofVerificationEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["public-proof-verification-evidence"]
-        || publicProofGate.default_evidence_path
-        || path.join(DEFAULT_PUBLIC_PROOF_VERIFICATION_DIR, "dojo-public-proof-verification.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["public-proof-verification-evidence"]
+      || publicProofGate.default_evidence_path
+      || path.join(DEFAULT_PUBLIC_PROOF_VERIFICATION_DIR, "dojo-public-proof-verification.evidence.json"));
+    publicProofVerificationResults.push(await verifyArtifactSection({
+      id: "dojo_public_proof_verification_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoPublicProofVerificationEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const governanceLifecycleResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-governance-lifecycle"]) || args["governance-lifecycle-evidence"]) {
+  if (releaseCandidate || truthy(args["include-governance-lifecycle"]) || args["governance-lifecycle-evidence"]) {
     const governanceGate = findGate(manifest, "dojo_governance_lifecycle_self_check") || {};
-    governanceLifecycleResults.push(await verifyDojoGovernanceLifecycleEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["governance-lifecycle-evidence"]
-        || governanceGate.default_evidence_path
-        || path.join(DEFAULT_GOVERNANCE_LIFECYCLE_DIR, "dojo-governance-lifecycle.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["governance-lifecycle-evidence"]
+      || governanceGate.default_evidence_path
+      || path.join(DEFAULT_GOVERNANCE_LIFECYCLE_DIR, "dojo-governance-lifecycle.evidence.json"));
+    governanceLifecycleResults.push(await verifyArtifactSection({
+      id: "dojo_governance_lifecycle_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoGovernanceLifecycleEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const graphRuntimeResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-graph-runtime"]) || args["graph-runtime-evidence"]) {
+  if (releaseCandidate || truthy(args["include-graph-runtime"]) || args["graph-runtime-evidence"]) {
     const graphRuntimeGate = findGate(manifest, "dojo_graph_runtime_self_check") || {};
-    graphRuntimeResults.push(await verifyDojoGraphRuntimeEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["graph-runtime-evidence"]
-        || graphRuntimeGate.default_evidence_path
-        || path.join(DEFAULT_GRAPH_RUNTIME_DIR, "dojo-graph-runtime.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["graph-runtime-evidence"]
+      || graphRuntimeGate.default_evidence_path
+      || path.join(DEFAULT_GRAPH_RUNTIME_DIR, "dojo-graph-runtime.evidence.json"));
+    graphRuntimeResults.push(await verifyArtifactSection({
+      id: "dojo_graph_runtime_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoGraphRuntimeEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const ghostModeEvidenceResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-ghost-mode-evidence"]) || args["ghost-mode-evidence"]) {
+  if (releaseCandidate || truthy(args["include-ghost-mode-evidence"]) || args["ghost-mode-evidence"]) {
     const ghostModeGate = findGate(manifest, "dojo_ghost_mode_evidence_self_check") || {};
-    ghostModeEvidenceResults.push(await verifyDojoGhostModeEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["ghost-mode-evidence"]
-        || ghostModeGate.default_evidence_path
-        || path.join(DEFAULT_GHOST_MODE_EVIDENCE_DIR, "dojo-ghost-mode-evidence.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["ghost-mode-evidence"]
+      || ghostModeGate.default_evidence_path
+      || path.join(DEFAULT_GHOST_MODE_EVIDENCE_DIR, "dojo-ghost-mode-evidence.evidence.json"));
+    ghostModeEvidenceResults.push(await verifyArtifactSection({
+      id: "dojo_ghost_mode_evidence_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoGhostModeEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const skillPassportResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-skill-passport"]) || args["skill-passport-evidence"]) {
+  if (releaseCandidate || truthy(args["include-skill-passport"]) || args["skill-passport-evidence"]) {
     const skillPassportGate = findGate(manifest, "dojo_skill_passport_self_check") || {};
-    skillPassportResults.push(await verifyDojoSkillPassportEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["skill-passport-evidence"]
-        || skillPassportGate.default_evidence_path
-        || path.join(DEFAULT_SKILL_PASSPORT_DIR, "dojo-skill-passport.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["skill-passport-evidence"]
+      || skillPassportGate.default_evidence_path
+      || path.join(DEFAULT_SKILL_PASSPORT_DIR, "dojo-skill-passport.evidence.json"));
+    skillPassportResults.push(await verifyArtifactSection({
+      id: "dojo_skill_passport_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoSkillPassportEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const timeMachineDebuggerResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-time-machine-debugger"]) || args["time-machine-debugger-evidence"]) {
+  if (releaseCandidate || truthy(args["include-time-machine-debugger"]) || args["time-machine-debugger-evidence"]) {
     const timeMachineGate = findGate(manifest, "dojo_time_machine_debugger_self_check") || {};
-    timeMachineDebuggerResults.push(await verifyDojoTimeMachineDebuggerEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["time-machine-debugger-evidence"]
-        || timeMachineGate.default_evidence_path
-        || path.join(DEFAULT_TIME_MACHINE_DEBUGGER_DIR, "dojo-time-machine-debugger.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["time-machine-debugger-evidence"]
+      || timeMachineGate.default_evidence_path
+      || path.join(DEFAULT_TIME_MACHINE_DEBUGGER_DIR, "dojo-time-machine-debugger.evidence.json"));
+    timeMachineDebuggerResults.push(await verifyArtifactSection({
+      id: "dojo_time_machine_debugger_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoTimeMachineDebuggerEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const vivariumRuntimeResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-vivarium-runtime"]) || args["vivarium-runtime-evidence"]) {
+  if (releaseCandidate || truthy(args["include-vivarium-runtime"]) || args["vivarium-runtime-evidence"]) {
     const vivariumRuntimeGate = findGate(manifest, "dojo_vivarium_runtime_self_check") || {};
-    vivariumRuntimeResults.push(await verifyDojoVivariumRuntimeEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["vivarium-runtime-evidence"]
-        || vivariumRuntimeGate.default_evidence_path
-        || path.join(DEFAULT_VIVARIUM_RUNTIME_DIR, "dojo-vivarium-runtime.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["vivarium-runtime-evidence"]
+      || vivariumRuntimeGate.default_evidence_path
+      || path.join(DEFAULT_VIVARIUM_RUNTIME_DIR, "dojo-vivarium-runtime.evidence.json"));
+    vivariumRuntimeResults.push(await verifyArtifactSection({
+      id: "dojo_vivarium_runtime_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoVivariumRuntimeEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const checkrideLicenseResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-checkride-license"]) || args["checkride-license-evidence"]) {
+  if (releaseCandidate || truthy(args["include-checkride-license"]) || args["checkride-license-evidence"]) {
     const checkrideLicenseGate = findGate(manifest, "dojo_checkride_license_self_check") || {};
-    checkrideLicenseResults.push(await verifyDojoCheckrideLicenseEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["checkride-license-evidence"]
-        || checkrideLicenseGate.default_evidence_path
-        || path.join(DEFAULT_CHECKRIDE_LICENSE_DIR, "dojo-checkride-license.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["checkride-license-evidence"]
+      || checkrideLicenseGate.default_evidence_path
+      || path.join(DEFAULT_CHECKRIDE_LICENSE_DIR, "dojo-checkride-license.evidence.json"));
+    checkrideLicenseResults.push(await verifyArtifactSection({
+      id: "dojo_checkride_license_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoCheckrideLicenseEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const caseLawRuntimeResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-case-law-runtime"]) || args["case-law-runtime-evidence"]) {
+  if (releaseCandidate || truthy(args["include-case-law-runtime"]) || args["case-law-runtime-evidence"]) {
     const caseLawRuntimeGate = findGate(manifest, "dojo_case_law_runtime_self_check") || {};
-    caseLawRuntimeResults.push(await verifyDojoCaseLawRuntimeEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["case-law-runtime-evidence"]
-        || caseLawRuntimeGate.default_evidence_path
-        || path.join(DEFAULT_CASE_LAW_RUNTIME_DIR, "dojo-case-law-runtime.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["case-law-runtime-evidence"]
+      || caseLawRuntimeGate.default_evidence_path
+      || path.join(DEFAULT_CASE_LAW_RUNTIME_DIR, "dojo-case-law-runtime.evidence.json"));
+    caseLawRuntimeResults.push(await verifyArtifactSection({
+      id: "dojo_case_law_runtime_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoCaseLawRuntimeEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const hostedRuntimeGatewayResults = [];
-  if (truthy(args["release-candidate"]) || truthy(args["include-hosted-runtime-gateway"]) || args["hosted-runtime-gateway-evidence"]) {
+  if (releaseCandidate || truthy(args["include-hosted-runtime-gateway"]) || args["hosted-runtime-gateway-evidence"]) {
     const hostedRuntimeGatewayGate = findGate(manifest, "dojo_hosted_runtime_gateway_self_check") || {};
-    hostedRuntimeGatewayResults.push(await verifyDojoHostedRuntimeGatewayEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["hosted-runtime-gateway-evidence"]
-        || hostedRuntimeGatewayGate.default_evidence_path
-        || path.join(DEFAULT_HOSTED_RUNTIME_GATEWAY_DIR, "dojo-hosted-runtime-gateway.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["hosted-runtime-gateway-evidence"]
+      || hostedRuntimeGatewayGate.default_evidence_path
+      || path.join(DEFAULT_HOSTED_RUNTIME_GATEWAY_DIR, "dojo-hosted-runtime-gateway.evidence.json"));
+    hostedRuntimeGatewayResults.push(await verifyArtifactSection({
+      id: "dojo_hosted_runtime_gateway_self_check",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoHostedRuntimeGatewayEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const securityResults = [];
-  if (truthy(args["release-candidate"]) || args["security-abuse-evidence"]) {
-    securityResults.push(await verifyDojoSecurityAbuseEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["security-abuse-evidence"] || path.join(DEFAULT_SECURITY_ABUSE_DIR, "dojo-security-abuse.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+  if (releaseCandidate || args["security-abuse-evidence"]) {
+    const evidencePath = resolveRepoPath(args["security-abuse-evidence"] || path.join(DEFAULT_SECURITY_ABUSE_DIR, "dojo-security-abuse.evidence.json"));
+    securityResults.push(await verifyArtifactSection({
+      id: "security_abuse_suite",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoSecurityAbuseEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const complianceExportResults = [];
-  if (truthy(args["release-candidate"]) || args["compliance-export-evidence"]) {
+  if (releaseCandidate || args["compliance-export-evidence"]) {
     const complianceGate = findGate(manifest, "compliance_export_suite") || {};
-    complianceExportResults.push(await verifyDojoComplianceExportEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["compliance-export-evidence"]
-        || complianceGate.default_evidence_path
-        || path.join(DEFAULT_COMPLIANCE_EXPORT_DIR, "dojo-compliance-export.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["compliance-export-evidence"]
+      || complianceGate.default_evidence_path
+      || path.join(DEFAULT_COMPLIANCE_EXPORT_DIR, "dojo-compliance-export.evidence.json"));
+    complianceExportResults.push(await verifyArtifactSection({
+      id: "compliance_export_suite",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoComplianceExportEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const privacyRedactionResults = [];
-  if (truthy(args["release-candidate"]) || args["privacy-redaction-evidence"]) {
+  if (releaseCandidate || args["privacy-redaction-evidence"]) {
     const privacyGate = findGate(manifest, "privacy_redaction_suite") || {};
-    privacyRedactionResults.push(await verifyDojoPrivacyRedactionEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["privacy-redaction-evidence"]
-        || privacyGate.default_evidence_path
-        || path.join(DEFAULT_PRIVACY_REDACTION_DIR, "dojo-privacy-redaction.evidence.json")),
-      releaseCandidate: truthy(args["release-candidate"]),
-    }));
+    const evidencePath = resolveRepoPath(args["privacy-redaction-evidence"]
+      || privacyGate.default_evidence_path
+      || path.join(DEFAULT_PRIVACY_REDACTION_DIR, "dojo-privacy-redaction.evidence.json"));
+    privacyRedactionResults.push(await verifyArtifactSection({
+      id: "privacy_redaction_suite",
+      evidencePath,
+      releaseCandidate,
+    }, () => verifyDojoPrivacyRedactionEvidenceArtifact({
+      evidencePath,
+      releaseCandidate,
+    })));
   }
 
   const chaosPerformanceResults = [];
   if (truthy(args["enterprise-release"]) || truthy(args["include-chaos-performance"]) || args["chaos-performance-evidence"]) {
-    chaosPerformanceResults.push(await verifyDojoChaosPerformanceEvidenceArtifact({
-      evidencePath: resolveRepoPath(args["chaos-performance-evidence"] || path.join(DEFAULT_CHAOS_PERFORMANCE_DIR, "dojo-chaos-performance.evidence.json")),
+    const evidencePath = resolveRepoPath(args["chaos-performance-evidence"] || path.join(DEFAULT_CHAOS_PERFORMANCE_DIR, "dojo-chaos-performance.evidence.json"));
+    chaosPerformanceResults.push(await verifyArtifactSection({
+      id: "chaos_performance_suite",
+      evidencePath,
       enterpriseRelease: truthy(args["enterprise-release"]),
-    }));
+    }, () => verifyDojoChaosPerformanceEvidenceArtifact({
+      evidencePath,
+      enterpriseRelease: truthy(args["enterprise-release"]),
+    })));
   }
 
   const soakPerformanceResults = [];
   if (truthy(args["enterprise-release"]) || args["soak-summary"]) {
-    soakPerformanceResults.push(await verifyDojoSoakPerformanceArtifacts({
-      summaryPath: resolveRepoPath(args["soak-summary"] || path.join(DEFAULT_SOAK_DIR, "soak-summary.json")),
-      eventsPath: resolveRepoPath(args["soak-events"] || path.join(DEFAULT_SOAK_DIR, "soak-events.ndjson")),
+    const summaryPath = resolveRepoPath(args["soak-summary"] || path.join(DEFAULT_SOAK_DIR, "soak-summary.json"));
+    const eventsPath = resolveRepoPath(args["soak-events"] || path.join(DEFAULT_SOAK_DIR, "soak-events.ndjson"));
+    soakPerformanceResults.push(await verifyArtifactSection({
+      id: "soak_performance",
+      artifactPath: summaryPath,
+      evidencePath: eventsPath,
+      enterpriseRelease: truthy(args["enterprise-release"]),
+    }, () => verifyDojoSoakPerformanceArtifacts({
+      summaryPath,
+      eventsPath,
       enterpriseRelease: truthy(args["enterprise-release"]),
       minDurationSeconds: parseOptionalNumber(args["min-soak-duration-s"]),
-    }));
+    })));
   }
 
   const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
@@ -8569,6 +8762,74 @@ function findGate(manifest, gateId) {
   const gates = Array.isArray(manifest?.gates) ? manifest.gates : [];
   if (gateId) return gates.find((gate) => gate.id === gateId);
   return gates.find((gate) => gate.evidence_kind === "visual_report");
+}
+
+async function verifyArtifactSection({
+  id,
+  artifactPath,
+  evidencePath,
+  releaseCandidate = false,
+  enterpriseRelease = false,
+}, verify) {
+  try {
+    return await verify();
+  } catch (error) {
+    if (!isArtifactReadError(error)) throw error;
+    return buildArtifactReadFailureSection({
+      id,
+      artifactPath,
+      evidencePath,
+      releaseCandidate,
+      enterpriseRelease,
+      error,
+    });
+  }
+}
+
+function buildArtifactReadFailureSection({
+  id,
+  artifactPath,
+  evidencePath,
+  releaseCandidate = false,
+  enterpriseRelease = false,
+  error,
+}) {
+  const failedPath = String(error?.path || artifactPath || evidencePath || "unknown");
+  const failureKind = classifyArtifactReadFailure({
+    failedPath,
+    artifactPath,
+    evidencePath,
+    code: error?.code,
+  });
+  return {
+    id,
+    ok: false,
+    errors: [`${failureKind}:${failedPath}`],
+    artifact_path: artifactPath,
+    evidence_path: evidencePath,
+    report_schema_version: null,
+    result_count: 0,
+    release_candidate: Boolean(releaseCandidate),
+    enterprise_release: Boolean(enterpriseRelease),
+  };
+}
+
+function classifyArtifactReadFailure({ failedPath, artifactPath, evidencePath, code }) {
+  const prefix = pathsReferToSameFile(failedPath, evidencePath) && !pathsReferToSameFile(failedPath, artifactPath)
+    ? "evidence"
+    : "artifact";
+  return code === "ENOENT"
+    ? `${prefix}_missing`
+    : `${prefix}_read_failed`;
+}
+
+function isArtifactReadError(error) {
+  return Boolean(error && ["EACCES", "EISDIR", "ENOENT", "ENOTDIR", "EPERM"].includes(error.code));
+}
+
+function pathsReferToSameFile(left, right) {
+  if (!left || !right) return false;
+  return path.resolve(String(left)) === path.resolve(String(right));
 }
 
 async function readJsonFile(filePath) {
