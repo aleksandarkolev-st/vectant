@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Synthi OAuth Relay",
+  "version": "0.1.0",
+  "description": "Relays failed localhost OAuth callbacks from your browser into an active Synthi workspace.",
+  "permissions": [
+    "webNavigation",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://beta.vectant.dev/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://beta.vectant.dev/*"
+      ],
+      "js": [
+        "content-bridge.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "externally_connectable": {
+    "matches": [
+      "https://beta.vectant.dev/*"
+    ]
+  },
+  "action": {
+    "default_title": "Synthi OAuth Relay"
+  }
+}

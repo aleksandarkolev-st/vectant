@@ -8,12 +8,15 @@ import {
   ExternalLink,
   Loader2,
   MonitorUp,
+  PlugZap,
   RefreshCw,
   ShieldAlert,
 } from 'lucide-react';
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
 const CALLBACK_PARAM_RE = /(redirect|callback|return|continue|next|url|uri)/i;
+const EXTENSION_PAGE_SOURCE = 'synthi-oauth-relay-page';
+const EXTENSION_SOURCE = 'synthi-oauth-relay-extension';
 
 function parseUrl(value) {
   try {
@@ -94,6 +97,41 @@ function runtimeHeaders(context) {
   );
 }
 
+function sendExtensionMessage(type, payload = {}, timeoutMs = 900) {
+  if (typeof window === 'undefined') {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    const messageId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('message', onMessage);
+      resolve(null);
+    }, timeoutMs);
+
+    function onMessage(event) {
+      if (event.source !== window) return;
+      const data = event.data;
+      if (!data || data.source !== EXTENSION_SOURCE || data.messageId !== messageId) return;
+      settled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener('message', onMessage);
+      resolve(data.payload || null);
+    }
+
+    window.addEventListener('message', onMessage);
+    window.postMessage({
+      source: EXTENSION_PAGE_SOURCE,
+      type,
+      messageId,
+      payload,
+    }, window.location.origin);
+  });
+}
+
 function LoopbackAuthPage() {
   const searchParams = useSearchParams();
   const runtimeScope = searchParams.get('runtimeScope') || '';
@@ -111,7 +149,10 @@ function LoopbackAuthPage() {
   const [callbackUrl, setCallbackUrl] = useState('');
   const [status, setStatus] = useState('idle');
   const [browserStatus, setBrowserStatus] = useState('idle');
+  const [extensionStatus, setExtensionStatus] = useState({ installed: false, armed: false });
+  const [extensionBusy, setExtensionBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState('error');
   const [opened, setOpened] = useState(false);
 
   const context = useMemo(() => ({
@@ -144,13 +185,44 @@ function LoopbackAuthPage() {
     return session;
   }, [authUrl, collabSessionId, expectedCallback, relaySession, runtimeKind, runtimeScope, terminalId, workspaceSlug]);
 
+  const refreshExtensionStatus = useCallback(async () => {
+    const response = await sendExtensionMessage('SYNTHI_OAUTH_RELAY_STATUS', {
+      sessionId: relaySession?.sessionId || '',
+    });
+    if (!response?.installed) {
+      setExtensionStatus({ installed: false, armed: false });
+      return null;
+    }
+    setExtensionStatus(response);
+    return response;
+  }, [relaySession]);
+
   useEffect(() => {
     if (!authUrl || relaySession || relayStatus === 'loading' || relayStatus === 'error') return;
     createRelaySession().catch((err) => {
       setRelayStatus('error');
+      setMessageTone('error');
       setMessage(err?.message || 'Failed to create a relay session.');
     });
   }, [authUrl, createRelaySession, relaySession, relayStatus]);
+
+  useEffect(() => {
+    refreshExtensionStatus();
+  }, [refreshExtensionStatus]);
+
+  useEffect(() => {
+    if (!extensionStatus.installed || !relaySession?.sessionId) return;
+    const timer = window.setInterval(async () => {
+      const statusResult = await refreshExtensionStatus();
+      const last = statusResult?.lastSubmission;
+      if (last?.sessionId === relaySession.sessionId && last.ok) {
+        setStatus('success');
+        setMessageTone('success');
+        setMessage('The extension sent the callback to the workspace. Return to the terminal.');
+      }
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [extensionStatus.installed, refreshExtensionStatus, relaySession]);
 
   const openAuth = useCallback(async () => {
     setMessage('');
@@ -160,6 +232,7 @@ function LoopbackAuthPage() {
       window.open(authUrl, '_blank', 'noopener,noreferrer');
     } catch (err) {
       setRelayStatus('error');
+      setMessageTone('error');
       setMessage(err?.message || 'Failed to start terminal sign-in.');
     }
   }, [authUrl, createRelaySession]);
@@ -178,6 +251,7 @@ function LoopbackAuthPage() {
       const text = await navigator.clipboard.readText();
       if (text) setCallbackUrl(text.trim());
     } catch {
+      setMessageTone('error');
       setMessage('Clipboard access was blocked. Paste the callback URL manually.');
     }
   };
@@ -186,11 +260,13 @@ function LoopbackAuthPage() {
     setMessage('');
     if (!relaySession?.sessionId) {
       setStatus('error');
+      setMessageTone('error');
       setMessage('The relay session is not ready yet.');
       return;
     }
     if (!isLoopbackCallback(callbackUrl)) {
       setStatus('error');
+      setMessageTone('error');
       setMessage('Paste the full localhost callback URL from the failed browser tab.');
       return;
     }
@@ -203,9 +279,11 @@ function LoopbackAuthPage() {
         callbackUrl,
       });
       setStatus('success');
+      setMessageTone('success');
       setMessage('The callback was sent to the workspace. Return to the terminal.');
     } catch (err) {
       setStatus('error');
+      setMessageTone('error');
       setMessage(err?.message || 'Failed to send the callback to the workspace.');
     }
   };
@@ -231,7 +309,36 @@ function LoopbackAuthPage() {
       setBrowserStatus('idle');
     } catch (err) {
       setBrowserStatus('error');
+      setMessageTone('error');
       setMessage(err?.message || 'Workspace browser is unavailable.');
+    }
+  };
+
+  const armExtension = async () => {
+    setExtensionBusy(true);
+      setMessage('');
+    try {
+      const session = await createRelaySession();
+      const response = await sendExtensionMessage('SYNTHI_OAUTH_RELAY_ARM', {
+        sessionId: session.sessionId,
+        workspaceSlug,
+        runtimeScope,
+        terminalId,
+        expectedCallback: session.expectedCallback || expectedCallback,
+        expiresAt: session.expiresAt,
+        endpoint: `${window.location.origin}/api/oauth-relay/callback`,
+      }, 1500);
+      if (!response?.ok) {
+        throw new Error(response?.error || 'oauth_relay_extension_unavailable');
+      }
+      setExtensionStatus({ installed: true, armed: true, lastSubmission: response.lastSubmission || null });
+      setMessageTone('success');
+      setMessage('Automatic callback capture is enabled for this sign-in.');
+    } catch (err) {
+      setMessageTone('error');
+      setMessage(err?.message || 'Could not enable automatic callback capture.');
+    } finally {
+      setExtensionBusy(false);
     }
   };
 
@@ -291,6 +398,15 @@ function LoopbackAuthPage() {
             {browserStatus === 'loading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <MonitorUp className="h-4 w-4" />}
             Workspace browser
           </button>
+          <button
+            type="button"
+            onClick={armExtension}
+            disabled={extensionBusy || relayStatus !== 'ready' || !extensionStatus.installed}
+            className="inline-flex items-center gap-2 rounded-[6px] border border-[#3a4452] px-4 py-2 text-sm font-semibold text-[#e8e4dc] hover:bg-[#181b25] disabled:opacity-45"
+          >
+            {extensionBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlugZap className="h-4 w-4" />}
+            {extensionStatus.armed ? 'Auto-capture on' : extensionStatus.installed ? 'Enable auto-capture' : 'Extension not detected'}
+          </button>
         </div>
 
         {relayStatus === 'error' && (
@@ -299,6 +415,7 @@ function LoopbackAuthPage() {
             onClick={() => {
               setRelayStatus('idle');
               setRelaySession(null);
+              setMessageTone('error');
               setMessage('');
             }}
             className="mt-3 inline-flex items-center gap-2 rounded-[6px] border border-[#5b4a33] px-3 py-2 text-xs font-semibold text-[#f2c078] hover:bg-[#1d1710]"
@@ -332,7 +449,7 @@ function LoopbackAuthPage() {
         {message && (
           <div
             className={`mt-4 rounded-[6px] border p-3 text-sm ${
-              status === 'success'
+              status === 'success' || messageTone === 'success'
                 ? 'border-[#245f50] bg-[#0d221d] text-[#9ef2df]'
                 : 'border-[#612c33] bg-[#241014] text-[#ff9aa8]'
             }`}
