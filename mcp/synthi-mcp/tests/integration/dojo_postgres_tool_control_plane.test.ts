@@ -1442,10 +1442,12 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     process.env.SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING = "1";
     process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
     process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
-    process.env.SYNTHI_DOJO_PROOF_SIGNING_PROVIDER = "ed25519-local";
+    process.env.SYNTHI_DOJO_PROOF_SIGNING_PROVIDER = "external-command";
     process.env.SYNTHI_DOJO_PROOF_SIGNING_KEY_ID = proofKeyPair.key_id;
-    process.env.SYNTHI_DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM = proofKeyPair.private_key_pem;
     process.env.SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM = proofKeyPair.public_key_pem;
+    process.env.SYNTHI_DOJO_PROOF_SIGNING_COMMAND = process.execPath;
+    process.env.SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS = JSON.stringify(["-e", externalCommandProofSignerSource()]);
+    process.env.DOJO_TEST_PRIVATE_KEY_PEM = proofKeyPair.private_key_pem;
 
     recordOpenDetailsWorkflowForToolTest(workspaceId);
     const tenant = productionTenantContextArgs({
@@ -1560,8 +1562,8 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(savedSkill).toBeTruthy();
     dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
     dojoSkillRegistry.resetForTests();
-    delete process.env.SYNTHI_DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM;
     delete process.env.SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM;
+    delete process.env.DOJO_TEST_PRIVATE_KEY_PEM;
     process.env.SYNTHI_DOJO_PROOF_SIGNING_KEY_ID = `lost-local-key-${proofKeyPair.key_id}`;
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
     expect(dojoSkillRegistry.getProofRecord(issued.proof_capsule.capsule_id)).toBeNull();
@@ -1912,6 +1914,37 @@ async function appendCaseLawEvidenceRecordForToolTest(
     retention_class: "standard",
     source_refs: [input.source_ref],
   });
+}
+
+function externalCommandProofSignerSource(): string {
+  return `
+    const { sign } = require("node:crypto");
+    let body = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { body += chunk; });
+    process.stdin.on("end", () => {
+      const request = JSON.parse(body);
+      if (request.schema_version !== "synthi.dojo.externalSignerRequest.v1") {
+        process.stderr.write("invalid external signer request schema");
+        process.exit(8);
+      }
+      if (request.algorithm !== "ed25519") {
+        process.stderr.write("invalid external signer request algorithm");
+        process.exit(9);
+      }
+      if (!process.env.DOJO_TEST_PRIVATE_KEY_PEM) {
+        process.stderr.write("missing test private key");
+        process.exit(10);
+      }
+      const signature = sign(null, Buffer.from(request.payload, "utf8"), process.env.DOJO_TEST_PRIVATE_KEY_PEM).toString("base64url");
+      process.stdout.write(JSON.stringify({
+        schema_version: "synthi.dojo.externalSignerResponse.v1",
+        algorithm: "ed25519",
+        key_id: request.key_id,
+        signature
+      }));
+    });
+  `;
 }
 
 function productionTenantContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
