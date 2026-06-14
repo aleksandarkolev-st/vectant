@@ -28,6 +28,8 @@ data:
   SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT: "9466"
   SYNTHI_HOSTED_BROWSER_CDP_PORT: "9222"
   SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-browser-workflow-bridge:build-tag-required"
+  SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES: "20000"
+  SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS: "15000"
   # Optional runtime-scoped preview proxy target. Production previews route to
   # a pod-local preview sidecar so user apps may bind localhost-only ports.
   SYNTHI_PREVIEW_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"

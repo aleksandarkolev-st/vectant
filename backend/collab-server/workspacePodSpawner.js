@@ -59,6 +59,8 @@ const PREVIEW_SIDECAR_IMAGE = (process.env.SYNTHI_PREVIEW_SIDECAR_IMAGE || 'node
 const PREVIEW_SIDECAR_TIMEOUT_MS = parsePositiveInt(process.env.SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS, 30_000);
 const WORKFLOW_BRIDGE_IMAGE = (process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE || '').trim();
 const WORKFLOW_BRIDGE_PORT = parseSinglePort(process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT, 9466);
+const WORKFLOW_EXTERNAL_OPEN_BODY_LIMIT_BYTES = parsePositiveInt(process.env.SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES, 20_000);
+const WORKFLOW_EXTERNAL_OPEN_TIMEOUT_MS = parsePositiveInt(process.env.SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS, 15_000);
 const HOSTED_BROWSER_CDP_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT, 9222);
 
 // ── K8s client ─────────────────────────────────────────────────────────────
@@ -207,6 +209,8 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
           valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN' } },
         },
         { name: 'SYNTHI_HOSTED_BROWSER_CDP_URL', value: `http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}` },
+        { name: 'SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES', value: String(WORKFLOW_EXTERNAL_OPEN_BODY_LIMIT_BYTES) },
+        { name: 'SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS', value: String(WORKFLOW_EXTERNAL_OPEN_TIMEOUT_MS) },
         { name: 'SYNTHI_WORKSPACE_ID', value: workspaceId },
         { name: 'SYNTHI_WORKSPACE_URL', value: workspaceUrl },
         { name: 'SYNTHI_HOSTED_BROWSER_WORKSPACE_URL', value: workspaceUrl },
