@@ -789,6 +789,7 @@ describe("Dojo release gate manifest", () => {
           require_substrate_hook_passthrough: true,
           require_evil_twin_attack_measurement: true,
           require_evil_twin_hardening_loop: true,
+          require_self_check_executes_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -1314,9 +1315,11 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingVivariumRuntimeTestFile);
     vivariumRuntimeGate.release_artifact_requirements.require_evil_twin_hardening_loop = false;
     vivariumRuntimeGate.release_artifact_requirements.require_executable_checkride = false;
+    vivariumRuntimeGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenVivariumRuntime, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "vivarium_runtime_missing_evil_twin_hardening_requirement",
       "vivarium_runtime_missing_checkride_requirement",
+      "vivarium_runtime_missing_self_check_execution_requirement",
       "vivarium_runtime_missing_required_capabilities:evil_twin_hardening_reduces_attack_success_rate",
       `vivarium_runtime_missing_required_test_files:${missingVivariumRuntimeTestFile}`,
     ]));

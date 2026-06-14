@@ -2267,6 +2267,24 @@ describe("Dojo release gate artifact verifier", () => {
       "vivarium_runtime_checkride_requirement_missing",
     ]));
 
+    const missingExecutionPath = await writeVivariumRuntimeEvidenceFixture({
+      dir,
+      basename: "missing-execution-vivarium-runtime",
+      evidence: vivariumRuntimeEvidenceFixture({
+        vivarium_contract: {
+          ...vivariumRuntimeEvidenceFixture().vivarium_contract,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    const missingExecution = await verifyDojoVivariumRuntimeEvidenceArtifact({ evidencePath: missingExecutionPath });
+    expect(missingExecution.ok).toBe(false);
+    expect(missingExecution.errors).toEqual(expect.arrayContaining([
+      "vivarium_runtime_self_check_execution_requirement_missing",
+      "vivarium_runtime_test_execution_missing",
+    ]));
+
     const driftedPath = await writeVivariumRuntimeEvidenceFixture({
       dir,
       basename: "drifted-vivarium-runtime",
@@ -5379,6 +5397,7 @@ function vivariumRuntimeEvidenceFixture(overrides = {}) {
       substrate_hook_passthrough_required: true,
       evil_twin_attack_measurement_required: true,
       evil_twin_hardening_loop_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_VIVARIUM_RUNTIME_TEST_FILES],
     test_file_count: DOJO_VIVARIUM_RUNTIME_TEST_FILES.length,
@@ -5399,6 +5418,18 @@ function vivariumRuntimeEvidenceFixture(overrides = {}) {
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
     json_report_bytes: Buffer.byteLength(jsonReport),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_VIVARIUM_RUNTIME_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 123,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
 }

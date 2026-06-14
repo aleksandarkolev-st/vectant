@@ -2802,8 +2802,23 @@ export function validateDojoVivariumRuntimeEvidenceForRelease(evidence) {
     ["substrate_hook_passthrough_required", "vivarium_runtime_substrate_hook_requirement_missing"],
     ["evil_twin_attack_measurement_required", "vivarium_runtime_evil_twin_measurement_requirement_missing"],
     ["evil_twin_hardening_loop_required", "vivarium_runtime_evil_twin_hardening_requirement_missing"],
+    ["self_check_executes_tests_required", "vivarium_runtime_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution || typeof testExecution !== "object") {
+    errors.push("vivarium_runtime_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`vivarium_runtime_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("vivarium_runtime_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("vivarium_runtime_test_execution_args_missing");
+    }
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("vivarium_runtime_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -6980,6 +6995,7 @@ async function writeVivariumRuntimeEvidenceForSelfCheck({
       substrate_hook_passthrough_required: true,
       evil_twin_attack_measurement_required: true,
       evil_twin_hardening_loop_required: true,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_VIVARIUM_RUNTIME_TEST_FILES],
     test_file_count: DOJO_VIVARIUM_RUNTIME_TEST_FILES.length,
@@ -7011,6 +7027,18 @@ async function writeVivariumRuntimeEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_VIVARIUM_RUNTIME_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 100,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);

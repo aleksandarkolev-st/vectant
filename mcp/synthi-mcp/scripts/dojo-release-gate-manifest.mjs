@@ -1011,7 +1011,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T7",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:vivarium-runtime:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_scenario_dsl.test.ts tests/unit/dojo_fixture_materializer.test.ts tests/unit/dojo_scenario_oracle.test.ts tests/integration/dojo_api_fault_server.test.ts tests/integration/dojo_vivarium_runner.test.ts tests/integration/dojo_checkride_runner.test.ts tests/integration/dojo_evil_twin_runner.test.ts -- --reporter=json --outputFile ../../tmp/dojo-vivarium-runtime/dojo-vivarium-runtime.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:vivarium-runtime:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:vivarium-runtime:self-check",
     required_for: ["release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.vivariumRuntimeEvidence.v1",
@@ -1038,6 +1038,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_substrate_hook_passthrough: true,
       require_evil_twin_attack_measurement: true,
       require_evil_twin_hardening_loop: true,
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -2414,6 +2415,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_substrate_hook_passthrough", "vivarium_runtime_missing_substrate_hook_requirement"],
       ["require_evil_twin_attack_measurement", "vivarium_runtime_missing_evil_twin_measurement_requirement"],
       ["require_evil_twin_hardening_loop", "vivarium_runtime_missing_evil_twin_hardening_requirement"],
+      ["require_self_check_executes_tests", "vivarium_runtime_missing_self_check_execution_requirement"],
     ]) {
       if (!vivariumRuntimeGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }

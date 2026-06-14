@@ -269,7 +269,7 @@
     "proof:dojo:mcp-skill-bus:self-check": "node scripts/dojo-mcp-skill-bus-self-check.mjs --from-json ../../tmp/dojo-mcp-skill-bus/dojo-mcp-skill-bus.vitest.json --run-tests",
     "proof:dojo:skill-passport:self-check": "node scripts/dojo-skill-passport-self-check.mjs --from-json ../../tmp/dojo-skill-passport/dojo-skill-passport.vitest.json",
     "proof:dojo:time-machine-debugger:self-check": "node scripts/dojo-time-machine-debugger-self-check.mjs --from-json ../../tmp/dojo-time-machine-debugger/dojo-time-machine-debugger.vitest.json",
-    "proof:dojo:vivarium-runtime:self-check": "node scripts/dojo-vivarium-runtime-self-check.mjs --from-json ../../tmp/dojo-vivarium-runtime/dojo-vivarium-runtime.vitest.json",
+    "proof:dojo:vivarium-runtime:self-check": "node scripts/dojo-vivarium-runtime-self-check.mjs --from-json ../../tmp/dojo-vivarium-runtime/dojo-vivarium-runtime.vitest.json --run-tests",
     "proof:dojo:release-gates:self-check": "node scripts/dojo-release-gate-manifest.mjs --self-check",
     "proof:dojo:release-gates:verify": "node scripts/dojo-release-gate-verify.mjs",
     "proof:dojo:release-gates:verify:self-check": "node scripts/dojo-release-gate-verify.mjs --self-check",
