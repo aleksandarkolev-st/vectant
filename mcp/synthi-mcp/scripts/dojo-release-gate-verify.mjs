@@ -795,7 +795,9 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     ok: errors.length === 0,
     errors,
     verifiable_release_gate_ids: releaseGateCoverage.verifiable_release_gate_ids,
+    attempted_release_gate_ids: releaseGateCoverage.attempted_release_gate_ids,
     verified_release_gate_ids: releaseGateCoverage.verified_release_gate_ids,
+    failed_verifiable_release_gate_ids: releaseGateCoverage.failed_verifiable_release_gate_ids,
     missing_verifiable_release_gate_ids: releaseGateCoverage.missing_verifiable_release_gate_ids,
     manifest: summarizeSection(manifestResult),
     dojo_self_check: proofSelfCheckResults.map(summarizeSection),
@@ -8871,16 +8873,23 @@ export function getVerifiableReleaseGateCoverage({ manifest, sections }) {
         || gate.default_events_path
       );
     });
-  const verifiedGateIds = [...new Set(
-    (Array.isArray(sections) ? sections : [])
-      .map((section) => section?.id)
-      .filter(Boolean)
-  )];
+  const sectionList = Array.isArray(sections) ? sections : [];
+  const attemptedGateIds = [...new Set(sectionList.map((section) => section?.id).filter(Boolean))];
+  const verifiedGateIds = [...new Set(sectionList
+    .filter((section) => section?.ok === true)
+    .map((section) => section?.id)
+    .filter(Boolean))];
+  const failedGateIds = [...new Set(sectionList
+    .filter((section) => section?.ok === false)
+    .map((section) => section?.id)
+    .filter(Boolean))];
   const missingVerifiableReleaseGateIds = verifiableReleaseGateIds
-    .filter((gateId) => !verifiedGateIds.includes(gateId));
+    .filter((gateId) => !attemptedGateIds.includes(gateId));
   return {
     verifiable_release_gate_ids: verifiableReleaseGateIds,
+    attempted_release_gate_ids: attemptedGateIds.filter((gateId) => verifiableReleaseGateIds.includes(gateId)),
     verified_release_gate_ids: verifiedGateIds.filter((gateId) => verifiableReleaseGateIds.includes(gateId)),
+    failed_verifiable_release_gate_ids: failedGateIds.filter((gateId) => verifiableReleaseGateIds.includes(gateId)),
     missing_verifiable_release_gate_ids: missingVerifiableReleaseGateIds,
   };
 }

@@ -226,19 +226,40 @@ describe("Dojo release gate artifact verifier", () => {
     });
     const fullCoverage = getVerifiableReleaseGateCoverage({
       manifest,
-      sections: manifest.release_gate_ids.map((id) => ({ id })),
+      sections: manifest.release_gate_ids.map((id) => ({ id, ok: true })),
     });
     expect(fullCoverage.missing_verifiable_release_gate_ids).toEqual([]);
+    expect(fullCoverage.failed_verifiable_release_gate_ids).toEqual([]);
+    expect(fullCoverage.verified_release_gate_ids).toEqual(fullCoverage.verifiable_release_gate_ids);
 
     const partialCoverage = getVerifiableReleaseGateCoverage({
       manifest,
       sections: manifest.release_gate_ids
         .filter((id) => id !== "dojo_implementation_status_self_check")
-        .map((id) => ({ id })),
+        .map((id) => ({ id, ok: true })),
     });
     expect(partialCoverage.missing_verifiable_release_gate_ids).toEqual([
       "dojo_implementation_status_self_check",
     ]);
+
+    const failedCoverage = getVerifiableReleaseGateCoverage({
+      manifest,
+      sections: [
+        { id: "dojo_implementation_status_self_check", ok: false },
+        { id: "dojo_postgres_control_plane_self_check", ok: true },
+      ],
+    });
+    expect(failedCoverage.attempted_release_gate_ids).toEqual([
+      "dojo_implementation_status_self_check",
+      "dojo_postgres_control_plane_self_check",
+    ]);
+    expect(failedCoverage.verified_release_gate_ids).toEqual([
+      "dojo_postgres_control_plane_self_check",
+    ]);
+    expect(failedCoverage.failed_verifiable_release_gate_ids).toEqual([
+      "dojo_implementation_status_self_check",
+    ]);
+    expect(failedCoverage.missing_verifiable_release_gate_ids).not.toContain("dojo_implementation_status_self_check");
   });
 
   it("requires release-candidate MCP host conformance to be real production execution", () => {
@@ -1497,6 +1518,21 @@ describe("Dojo release gate artifact verifier", () => {
       `workflow_e2e_hosted:artifact_missing:${workflowSummaryPath}`,
       `private_tool_stdio_acceptance:artifact_missing:${stdioTranscriptPath}`,
       `private_tool_codex_acceptance:artifact_missing:${codexTranscriptPath}`,
+    ]));
+    expect(verified.verified_release_gate_ids).not.toEqual(expect.arrayContaining([
+      "workflow_e2e_hosted",
+      "private_tool_stdio_acceptance",
+      "private_tool_codex_acceptance",
+    ]));
+    expect(verified.attempted_release_gate_ids).toEqual(expect.arrayContaining([
+      "workflow_e2e_hosted",
+      "private_tool_stdio_acceptance",
+      "private_tool_codex_acceptance",
+    ]));
+    expect(verified.failed_verifiable_release_gate_ids).toEqual(expect.arrayContaining([
+      "workflow_e2e_hosted",
+      "private_tool_stdio_acceptance",
+      "private_tool_codex_acceptance",
     ]));
     expect(verified.live_hosted_runtime).toEqual([
       expect.objectContaining({
