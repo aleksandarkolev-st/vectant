@@ -460,7 +460,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     tier: "T2",
     working_directory: "mcp/synthi-mcp",
     package_script: "proof:dojo:api-tool-compiler:self-check",
-    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_api_candidate.test.ts tests/unit/dojo_api_tool_compiler.test.ts tests/unit/dojo_substrate_executor.test.ts -- --reporter=json --outputFile ../../tmp/dojo-api-tool-compiler/dojo-api-tool-compiler.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:api-tool-compiler:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:api-tool-compiler:self-check",
     required_for: ["milestone", "release"],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.apiToolCompilerEvidence.v1",
@@ -478,6 +478,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_postcondition: true,
       require_evidence_write: true,
       require_graph_proof_match: true,
+      require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
@@ -1707,6 +1708,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_postcondition", "api_tool_compiler_missing_postcondition_requirement"],
       ["require_evidence_write", "api_tool_compiler_missing_evidence_requirement"],
       ["require_graph_proof_match", "api_tool_compiler_missing_graph_proof_requirement"],
+      ["require_self_check_executes_tests", "api_tool_compiler_missing_self_check_execution_requirement"],
     ]) {
       if (!apiToolCompilerGate.artifact_requirements?.[requirement]) errors.push(errorCode);
     }

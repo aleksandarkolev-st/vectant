@@ -739,6 +739,7 @@ describe("Dojo release gate artifact verifier", () => {
         ...apiToolCompilerEvidenceFixture().promotion_contract,
         proof_capsule_required: false,
         evidence_write_required: false,
+        self_check_executes_tests_required: false,
         production_candidate_only_execution_allowed: true,
       },
     });
@@ -755,7 +756,26 @@ describe("Dojo release gate artifact verifier", () => {
       "api_tool_compiler_missing_capabilities:api_tool_executes_with_idempotency_postcondition_and_evidence",
       "api_tool_compiler_proof_requirement_missing",
       "api_tool_compiler_evidence_requirement_missing",
+      "api_tool_compiler_self_check_execution_requirement_missing",
       "api_tool_compiler_candidate_only_production_allowed",
+    ]));
+
+    const missingExecutionPath = await writeApiToolCompilerEvidenceFixture({
+      dir,
+      basename: "api-tool-compiler-missing-execution",
+      evidence: apiToolCompilerEvidenceFixture({
+        promotion_contract: {
+          ...apiToolCompilerEvidenceFixture().promotion_contract,
+          self_check_executes_tests_required: false,
+        },
+        test_execution: null,
+      }),
+    });
+    const missingExecution = await verifyDojoApiToolCompilerEvidenceArtifact({ evidencePath: missingExecutionPath });
+    expect(missingExecution.ok).toBe(false);
+    expect(missingExecution.errors).toEqual(expect.arrayContaining([
+      "api_tool_compiler_self_check_execution_requirement_missing",
+      "api_tool_compiler_test_execution_missing",
     ]));
 
     const driftedPath = await writeApiToolCompilerEvidenceFixture({
@@ -4135,6 +4155,19 @@ function apiToolCompilerEvidenceFixture(overrides = {}) {
       evidence_write_required: true,
       graph_proof_match_required: true,
       production_candidate_only_execution_allowed: false,
+      self_check_executes_tests_required: true,
+    },
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_API_TOOL_COMPILER_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 123,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
     },
     test_file_count: DOJO_API_TOOL_COMPILER_TEST_FILES.length,
     configured_test_file_count: DOJO_API_TOOL_COMPILER_TEST_FILES.length,

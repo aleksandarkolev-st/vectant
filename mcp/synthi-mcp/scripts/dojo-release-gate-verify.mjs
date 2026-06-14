@@ -1510,11 +1510,26 @@ export function validateDojoApiToolCompilerEvidenceForRelease(evidence) {
     ["postcondition_required", "api_tool_compiler_postcondition_requirement_missing"],
     ["evidence_write_required", "api_tool_compiler_evidence_requirement_missing"],
     ["graph_proof_match_required", "api_tool_compiler_graph_proof_requirement_missing"],
+    ["self_check_executes_tests_required", "api_tool_compiler_self_check_execution_requirement_missing"],
   ]) {
     if (promotionContract[field] !== true) errors.push(errorCode);
   }
   if (promotionContract.production_candidate_only_execution_allowed !== false) {
     errors.push("api_tool_compiler_candidate_only_production_allowed");
+  }
+  const testExecution = evidence?.test_execution;
+  if (!testExecution || typeof testExecution !== "object") {
+    errors.push("api_tool_compiler_test_execution_missing");
+  } else {
+    if (Number(testExecution.exit_code) !== 0) {
+      errors.push(`api_tool_compiler_test_execution_exit_code:${testExecution.exit_code ?? "missing"}`);
+    }
+    if (testExecution.timed_out === true) {
+      errors.push("api_tool_compiler_test_execution_timed_out");
+    }
+    if (!Array.isArray(testExecution.args) || testExecution.args.length === 0) {
+      errors.push("api_tool_compiler_test_execution_args_missing");
+    }
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("api_tool_compiler_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -4107,6 +4122,7 @@ async function runSelfCheck({ outDir }) {
       promotion_contract: {
         ...apiToolCompilerArtifacts.evidence.promotion_contract,
         proof_capsule_required: false,
+        self_check_executes_tests_required: false,
         production_candidate_only_execution_allowed: true,
       },
     },
@@ -4118,6 +4134,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedApiToolCompiler.errors.includes("api_tool_compiler_coverage_incomplete"));
   assert(rejectedApiToolCompiler.errors.includes("api_tool_compiler_missing_capabilities:api_tool_executes_with_idempotency_postcondition_and_evidence"));
   assert(rejectedApiToolCompiler.errors.includes("api_tool_compiler_proof_requirement_missing"));
+  assert(rejectedApiToolCompiler.errors.includes("api_tool_compiler_self_check_execution_requirement_missing"));
   assert(rejectedApiToolCompiler.errors.includes("api_tool_compiler_candidate_only_production_allowed"));
 
   const generatedPrDir = path.join(outDir, "generated-pr");
@@ -5326,6 +5343,7 @@ async function writeApiToolCompilerEvidenceForSelfCheck({
       evidence_write_required: true,
       graph_proof_match_required: true,
       production_candidate_only_execution_allowed: false,
+      self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_API_TOOL_COMPILER_TEST_FILES],
     test_file_count: DOJO_API_TOOL_COMPILER_TEST_FILES.length,
@@ -5357,6 +5375,18 @@ async function writeApiToolCompilerEvidenceForSelfCheck({
     stderr_sha256: sha256(stderr),
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
+    test_execution: {
+      command: process.execPath,
+      args: ["vitest", "run", ...DOJO_API_TOOL_COMPILER_TEST_FILES],
+      exit_code: 0,
+      signal: null,
+      duration_ms: 100,
+      timed_out: false,
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+    },
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);

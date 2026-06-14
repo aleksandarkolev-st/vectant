@@ -375,6 +375,7 @@ describe("Dojo release gate manifest", () => {
           require_postcondition: true,
           require_evidence_write: true,
           require_graph_proof_match: true,
+          require_self_check_executes_tests: true,
         }),
       }),
       expect.objectContaining({
@@ -1117,9 +1118,11 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingApiToolCompilerTestFile);
     apiToolCompilerGate.artifact_requirements.require_proof_capsule = false;
     apiToolCompilerGate.artifact_requirements.require_evidence_write = false;
+    apiToolCompilerGate.artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenApiToolCompiler, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "api_tool_compiler_missing_proof_requirement",
       "api_tool_compiler_missing_evidence_requirement",
+      "api_tool_compiler_missing_self_check_execution_requirement",
       "api_tool_compiler_missing_required_capabilities:api_tool_executes_with_idempotency_postcondition_and_evidence",
       `api_tool_compiler_missing_required_test_files:${missingApiToolCompilerTestFile}`,
     ]));
