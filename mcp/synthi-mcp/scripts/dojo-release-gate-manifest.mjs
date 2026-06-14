@@ -66,6 +66,10 @@ import {
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "./dojo-hosted-runtime-gateway-self-check.mjs";
 import {
+  DOJO_IMPLEMENTATION_STATUS_CAPABILITIES,
+  DOJO_IMPLEMENTATION_STATUS_TEST_FILES,
+} from "./dojo-implementation-status-self-check.mjs";
+import {
   DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "./dojo-managed-key-signing-self-check.mjs";
@@ -251,6 +255,37 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     command: "npm --prefix mcp/synthi-mcp run test:unit",
     required_for: ["pr", "milestone", "release"],
     evidence_kind: "test_report",
+  },
+  {
+    id: "dojo_implementation_status_self_check",
+    tier: "T1",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:implementation-status:self-check",
+    command: "npm --prefix mcp/synthi-mcp test -- tests/unit/dojo_implementation_status.test.ts -- --reporter=json --outputFile ../../tmp/dojo-implementation-status/dojo-implementation-status.vitest.json && npm --prefix mcp/synthi-mcp run proof:dojo:implementation-status:self-check",
+    required_for: ["milestone", "release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.implementationStatusEvidence.v1",
+    default_evidence_path: "tmp/dojo-implementation-status/dojo-implementation-status.evidence.json",
+    artifact_requirements: {
+      require_all_implementation_status_capabilities_covered: true,
+      required_implementation_status_capabilities: [...DOJO_IMPLEMENTATION_STATUS_CAPABILITIES],
+      required_test_files: [...DOJO_IMPLEMENTATION_STATUS_TEST_FILES],
+      require_stable_vocabulary: true,
+      require_every_tool_classified: true,
+      require_machine_manifest_sync: true,
+      require_unknown_tool_fails_planned: true,
+      require_production_runtime_claim_boundary: true,
+      require_runtime_scope_for_executable: true,
+      require_report_surface_no_overclaim: true,
+      require_proof_dispatch_hosted_runtime_boundary: true,
+      require_ghost_mode_non_mutating_boundary: true,
+      require_control_plane_write_boundary: true,
+      require_immutable_metadata: true,
+      require_no_failed_tests: true,
+      require_no_skipped_tests: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
   },
   {
     id: "mcp_integration_tests",
@@ -1223,6 +1258,7 @@ export const DOJO_MINIMAL_PR_GATE_IDS = [
 
 export const DOJO_MILESTONE_GATE_IDS = [
   ...DOJO_MINIMAL_PR_GATE_IDS,
+  "dojo_implementation_status_self_check",
   "mcp_integration_tests",
   "dojo_postgres_control_plane_self_check",
   "dojo_evidence_authority_self_check",
@@ -1366,6 +1402,58 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!gate.release_artifact_requirements?.require_visual_proof) {
       errors.push(`live_hosted_gate_missing_visual_requirement:${gate.id}`);
+    }
+  }
+  const implementationStatusGate = gates.find((gate) => gate.id === "dojo_implementation_status_self_check");
+  if (implementationStatusGate) {
+    if (implementationStatusGate.evidence_schema_version !== "synthi.dojo.implementationStatusEvidence.v1") {
+      errors.push("implementation_status_missing_evidence_schema");
+    }
+    if (implementationStatusGate.package_script !== "proof:dojo:implementation-status:self-check") {
+      errors.push("implementation_status_missing_package_script");
+    }
+    if (!implementationStatusGate.default_evidence_path) errors.push("implementation_status_missing_default_evidence_path");
+    if (!implementationStatusGate.artifact_requirements?.require_all_implementation_status_capabilities_covered) {
+      errors.push("implementation_status_missing_capability_requirement");
+    }
+    for (const [requirement, errorCode] of [
+      ["require_stable_vocabulary", "implementation_status_missing_vocabulary_requirement"],
+      ["require_every_tool_classified", "implementation_status_missing_tool_classification_requirement"],
+      ["require_machine_manifest_sync", "implementation_status_missing_manifest_sync_requirement"],
+      ["require_unknown_tool_fails_planned", "implementation_status_missing_unknown_tool_requirement"],
+      ["require_production_runtime_claim_boundary", "implementation_status_missing_production_boundary_requirement"],
+      ["require_runtime_scope_for_executable", "implementation_status_missing_runtime_scope_requirement"],
+      ["require_report_surface_no_overclaim", "implementation_status_missing_report_boundary_requirement"],
+      ["require_proof_dispatch_hosted_runtime_boundary", "implementation_status_missing_proof_dispatch_boundary_requirement"],
+      ["require_ghost_mode_non_mutating_boundary", "implementation_status_missing_ghost_mode_boundary_requirement"],
+      ["require_control_plane_write_boundary", "implementation_status_missing_control_plane_boundary_requirement"],
+      ["require_immutable_metadata", "implementation_status_missing_immutable_metadata_requirement"],
+    ]) {
+      if (!implementationStatusGate.artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const requiredImplementationStatusCapabilities = Array.isArray(implementationStatusGate.artifact_requirements?.required_implementation_status_capabilities)
+      ? implementationStatusGate.artifact_requirements.required_implementation_status_capabilities
+      : [];
+    const missingImplementationStatusCapabilities = DOJO_IMPLEMENTATION_STATUS_CAPABILITIES
+      .filter((capability) => !requiredImplementationStatusCapabilities.includes(capability));
+    if (missingImplementationStatusCapabilities.length > 0) {
+      errors.push(`implementation_status_missing_required_capabilities:${missingImplementationStatusCapabilities.join(",")}`);
+    }
+    const missingImplementationStatusTestFiles = missingRequiredEntries(
+      DOJO_IMPLEMENTATION_STATUS_TEST_FILES,
+      implementationStatusGate.artifact_requirements?.required_test_files,
+    );
+    if (missingImplementationStatusTestFiles.length > 0) {
+      errors.push(`implementation_status_missing_required_test_files:${missingImplementationStatusTestFiles.join(",")}`);
+    }
+    if (!implementationStatusGate.artifact_requirements?.require_no_skipped_tests) {
+      errors.push("implementation_status_missing_no_skipped_requirement");
+    }
+    if (!implementationStatusGate.artifact_requirements?.require_stdout_stderr_digest_match) {
+      errors.push("implementation_status_missing_digest_requirement");
+    }
+    if (!implementationStatusGate.artifact_requirements?.require_json_report_digest_match) {
+      errors.push("implementation_status_missing_json_report_digest_requirement");
     }
   }
   const dojoSelfCheckGate = gates.find((gate) => gate.id === "dojo_self_check");

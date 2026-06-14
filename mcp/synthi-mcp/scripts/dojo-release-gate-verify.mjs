@@ -81,6 +81,10 @@ import {
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "./dojo-hosted-runtime-gateway-self-check.mjs";
 import {
+  DOJO_IMPLEMENTATION_STATUS_CAPABILITIES,
+  DOJO_IMPLEMENTATION_STATUS_TEST_FILES,
+} from "./dojo-implementation-status-self-check.mjs";
+import {
   DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "./dojo-managed-key-signing-self-check.mjs";
@@ -132,6 +136,7 @@ const DEFAULT_PRIVATE_TOOL_STDIO_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tm
 const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-host-conformance");
 const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-postgres-control-plane");
 const DEFAULT_EVIDENCE_AUTHORITY_DIR = path.join(REPO_ROOT, "tmp", "dojo-evidence-authority");
+const DEFAULT_IMPLEMENTATION_STATUS_DIR = path.join(REPO_ROOT, "tmp", "dojo-implementation-status");
 const DEFAULT_AFFORDANCE_CODEMOD_DIR = path.join(REPO_ROOT, "tmp", "dojo-affordance-codemod-self-check");
 const DEFAULT_SOURCE_DRIFT_DIR = path.join(REPO_ROOT, "tmp", "dojo-source-drift");
 const DEFAULT_AGENT_READY_UI_CONTRACT_DIR = path.join(REPO_ROOT, "tmp", "dojo-agent-ready-ui-contract");
@@ -247,6 +252,17 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       evidencePath: resolveRepoPath(args["evidence-authority-evidence"]
         || evidenceAuthorityGate.default_evidence_path
         || path.join(DEFAULT_EVIDENCE_AUTHORITY_DIR, "dojo-evidence-authority.evidence.json")),
+      releaseCandidate: truthy(args["release-candidate"]),
+    }));
+  }
+
+  const implementationStatusResults = [];
+  if (truthy(args["release-candidate"]) || truthy(args["include-implementation-status"]) || args["implementation-status-evidence"]) {
+    const implementationStatusGate = findGate(manifest, "dojo_implementation_status_self_check") || {};
+    implementationStatusResults.push(await verifyDojoImplementationStatusEvidenceArtifact({
+      evidencePath: resolveRepoPath(args["implementation-status-evidence"]
+        || implementationStatusGate.default_evidence_path
+        || path.join(DEFAULT_IMPLEMENTATION_STATUS_DIR, "dojo-implementation-status.evidence.json")),
       releaseCandidate: truthy(args["release-candidate"]),
     }));
   }
@@ -550,18 +566,29 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     }));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const releaseGateCoverage = getVerifiableReleaseGateCoverage({
+    manifest,
+    sections,
+  });
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
+  if (truthy(args["release-candidate"]) && releaseGateCoverage.missing_verifiable_release_gate_ids.length > 0) {
+    errors.push(`release_gate_artifact_verification_missing:${releaseGateCoverage.missing_verifiable_release_gate_ids.join(",")}`);
+  }
   return {
     schema_version: "synthi.dojo.releaseGateVerification.v1",
     generated_at: new Date().toISOString(),
     ok: errors.length === 0,
     errors,
+    verifiable_release_gate_ids: releaseGateCoverage.verifiable_release_gate_ids,
+    verified_release_gate_ids: releaseGateCoverage.verified_release_gate_ids,
+    missing_verifiable_release_gate_ids: releaseGateCoverage.missing_verifiable_release_gate_ids,
     manifest: summarizeSection(manifestResult),
     dojo_self_check: proofSelfCheckResults.map(summarizeSection),
     visual_reports: visualResults.map(summarizeSection),
     postgres_control_plane: postgresControlPlaneResults.map(summarizeSection),
     evidence_authority: evidenceAuthorityResults.map(summarizeSection),
+    implementation_status: implementationStatusResults.map(summarizeSection),
     docker_integration: dockerIntegrationResults.map(summarizeSection),
     source_api: sourceApiResults.map(summarizeSection),
     generated_pr: generatedPrResults.map(summarizeSection),
@@ -980,6 +1007,92 @@ export function validateDojoEvidenceAuthorityEvidenceForMilestone(evidence) {
   if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("evidence_authority_no_reported_tests");
   if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
     errors.push(`evidence_authority_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export async function verifyDojoImplementationStatusEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoImplementationStatusEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_implementation_status_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+    result_count: Number(evidence?.test_summary?.total_tests || 0),
+  };
+}
+
+export function validateDojoImplementationStatusEvidenceForRelease(evidence) {
+  const errors = [];
+  const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
+    ? evidence.configured_capabilities.map(String)
+    : [];
+  const testedCapabilities = Array.isArray(evidence?.tested_capabilities)
+    ? evidence.tested_capabilities.map(String)
+    : [];
+  if (evidence?.schema_version !== "synthi.dojo.implementationStatusEvidence.v1") {
+    errors.push(`implementation_status_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("implementation_status_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`implementation_status_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (evidence?.capability_coverage_complete !== true) errors.push("implementation_status_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_capabilities) && evidence.missing_capabilities.length > 0) {
+    errors.push(`implementation_status_missing_capabilities:${evidence.missing_capabilities.join(",")}`);
+  }
+  const missingConfiguredCapabilities = DOJO_IMPLEMENTATION_STATUS_CAPABILITIES
+    .filter((capability) => !configuredCapabilities.includes(capability));
+  if (missingConfiguredCapabilities.length > 0) {
+    errors.push(`implementation_status_required_capabilities_missing:${missingConfiguredCapabilities.join(",")}`);
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_IMPLEMENTATION_STATUS_TEST_FILES,
+    prefix: "implementation_status",
+  }));
+  const untestedRequiredCapabilities = DOJO_IMPLEMENTATION_STATUS_CAPABILITIES
+    .filter((capability) => !testedCapabilities.includes(capability));
+  if (untestedRequiredCapabilities.length > 0) {
+    errors.push(`implementation_status_required_capabilities_untested:${untestedRequiredCapabilities.join(",")}`);
+  }
+  if (Number(evidence?.configured_capability_count || 0) !== configuredCapabilities.length) {
+    errors.push(`implementation_status_configured_capability_count_mismatch:${evidence?.configured_capability_count ?? "missing"}:${configuredCapabilities.length}`);
+  }
+  if (Number(evidence?.capability_count || 0) !== testedCapabilities.length) {
+    errors.push(`implementation_status_tested_capability_count_mismatch:${evidence?.capability_count ?? "missing"}:${testedCapabilities.length}`);
+  }
+  const contract = evidence?.implementation_status_contract || {};
+  for (const [field, errorCode] of [
+    ["stable_vocabulary_required", "implementation_status_vocabulary_requirement_missing"],
+    ["every_tool_classified_required", "implementation_status_tool_classification_requirement_missing"],
+    ["machine_manifest_sync_required", "implementation_status_manifest_sync_requirement_missing"],
+    ["unknown_tool_fails_planned_required", "implementation_status_unknown_tool_requirement_missing"],
+    ["production_runtime_claim_boundary_required", "implementation_status_production_boundary_requirement_missing"],
+    ["runtime_scope_required_for_executable_required", "implementation_status_runtime_scope_requirement_missing"],
+    ["report_surface_no_overclaim_required", "implementation_status_report_boundary_requirement_missing"],
+    ["proof_dispatch_hosted_runtime_boundary_required", "implementation_status_proof_dispatch_boundary_requirement_missing"],
+    ["ghost_mode_non_mutating_boundary_required", "implementation_status_ghost_mode_boundary_requirement_missing"],
+    ["control_plane_write_boundary_required", "implementation_status_control_plane_boundary_requirement_missing"],
+    ["immutable_metadata_required", "implementation_status_immutable_metadata_requirement_missing"],
+  ]) {
+    if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("implementation_status_budget_not_ok");
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`implementation_status_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`implementation_status_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("implementation_status_no_reported_tests");
+  if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
+    errors.push(`implementation_status_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
   }
   return {
     ok: errors.length === 0,
@@ -3676,6 +3789,35 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_proof_issue_requirement_missing"));
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_self_attested_rejection_requirement_missing"));
 
+  const implementationStatusDir = path.join(outDir, "implementation-status");
+  await mkdir(implementationStatusDir, { recursive: true });
+  const implementationStatusArtifacts = await writeImplementationStatusEvidenceForSelfCheck({ outDir: implementationStatusDir });
+  const implementationStatusResult = await verifyDojoImplementationStatusEvidenceArtifact({
+    evidencePath: implementationStatusArtifacts.evidence_path,
+  });
+  assert.equal(implementationStatusResult.ok, true, implementationStatusResult.errors.join(";"));
+  const rejectedImplementationStatusArtifacts = await writeImplementationStatusEvidenceForSelfCheck({
+    outDir: implementationStatusDir,
+    basename: "dojo-implementation-status-rejected",
+    overrides: {
+      ok: false,
+      capability_coverage_complete: false,
+      missing_capabilities: ["no_mature_production_runtime_claims"],
+      implementation_status_contract: {
+        ...implementationStatusArtifacts.evidence.implementation_status_contract,
+        production_runtime_claim_boundary_required: false,
+        runtime_scope_required_for_executable_required: false,
+      },
+    },
+  });
+  const rejectedImplementationStatus = await verifyDojoImplementationStatusEvidenceArtifact({
+    evidencePath: rejectedImplementationStatusArtifacts.evidence_path,
+  });
+  assert(rejectedImplementationStatus.errors.includes("implementation_status_coverage_incomplete"));
+  assert(rejectedImplementationStatus.errors.includes("implementation_status_missing_capabilities:no_mature_production_runtime_claims"));
+  assert(rejectedImplementationStatus.errors.includes("implementation_status_production_boundary_requirement_missing"));
+  assert(rejectedImplementationStatus.errors.includes("implementation_status_runtime_scope_requirement_missing"));
+
   const dockerDir = path.join(outDir, "docker-integration");
   await mkdir(dockerDir, { recursive: true });
   const dockerArtifacts = await writeDockerIntegrationEvidenceForSelfCheck({ outDir: dockerDir });
@@ -4524,6 +4666,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(manifestResult),
       summarizeSection(postgresControlPlaneResult),
       summarizeSection(evidenceAuthorityResult),
+      summarizeSection(implementationStatusResult),
       summarizeSection(dockerIntegrationResult),
       summarizeSection(workflowE2EResult),
       summarizeSection(stdioAcceptanceResult),
@@ -4558,6 +4701,7 @@ async function runSelfCheck({ outDir }) {
       summarizeSection(rejectedSelfCheck),
       summarizeSection(rejectedPostgres),
       summarizeSection(rejectedEvidenceAuthority),
+      summarizeSection(rejectedImplementationStatus),
       summarizeSection(rejectedDocker),
       summarizeSection(rejectedCodexAcceptance),
       summarizeSection(rejectedDryRun),
@@ -5610,6 +5754,105 @@ function evidenceAuthorityJsonReportFixtureText() {
         startTime: 0,
         endTime: 100,
         assertionResults: DOJO_EVIDENCE_AUTHORITY_CAPABILITIES.map((capability, index) => ({
+          fullName: `release verifier fixture covers ${capability}`,
+          title: `release verifier fixture covers ${capability}`,
+          status: "passed",
+          duration: index + 1,
+        })),
+      },
+    ],
+  }, null, 2);
+}
+
+async function writeImplementationStatusEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-implementation-status",
+  overrides = {},
+}) {
+  const stdout = "implementation status suite passed\n";
+  const stderr = "";
+  const jsonReport = implementationStatusJsonReportFixtureText();
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  const evidence = {
+    schema_version: "synthi.dojo.implementationStatusEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    signal: null,
+    duration_ms: 100,
+    configured_capabilities: [...DOJO_IMPLEMENTATION_STATUS_CAPABILITIES],
+    tested_capabilities: [...DOJO_IMPLEMENTATION_STATUS_CAPABILITIES],
+    missing_capabilities: [],
+    capability_count: DOJO_IMPLEMENTATION_STATUS_CAPABILITIES.length,
+    configured_capability_count: DOJO_IMPLEMENTATION_STATUS_CAPABILITIES.length,
+    capability_coverage_complete: true,
+    implementation_status_contract: {
+      stable_vocabulary_required: true,
+      every_tool_classified_required: true,
+      machine_manifest_sync_required: true,
+      unknown_tool_fails_planned_required: true,
+      production_runtime_claim_boundary_required: true,
+      runtime_scope_required_for_executable_required: true,
+      report_surface_no_overclaim_required: true,
+      proof_dispatch_hosted_runtime_boundary_required: true,
+      ghost_mode_non_mutating_boundary_required: true,
+      control_plane_write_boundary_required: true,
+      immutable_metadata_required: true,
+    },
+    test_files: [...DOJO_IMPLEMENTATION_STATUS_TEST_FILES],
+    test_file_count: DOJO_IMPLEMENTATION_STATUS_TEST_FILES.length,
+    reported_test_file_count: DOJO_IMPLEMENTATION_STATUS_TEST_FILES.length,
+    test_summary: {
+      success: true,
+      total_tests: DOJO_IMPLEMENTATION_STATUS_CAPABILITIES.length,
+      passed_tests: DOJO_IMPLEMENTATION_STATUS_CAPABILITIES.length,
+      failed_tests: 0,
+      pending_tests: 0,
+      total_suites: DOJO_IMPLEMENTATION_STATUS_TEST_FILES.length,
+      passed_suites: DOJO_IMPLEMENTATION_STATUS_TEST_FILES.length,
+      failed_suites: 0,
+      reported_test_file_count: DOJO_IMPLEMENTATION_STATUS_TEST_FILES.length,
+    },
+    budget_evaluation: { ok: true },
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+function implementationStatusJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: DOJO_IMPLEMENTATION_STATUS_CAPABILITIES.length,
+    numPassedTests: DOJO_IMPLEMENTATION_STATUS_CAPABILITIES.length,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    numTotalTestSuites: DOJO_IMPLEMENTATION_STATUS_TEST_FILES.length,
+    numPassedTestSuites: DOJO_IMPLEMENTATION_STATUS_TEST_FILES.length,
+    numFailedTestSuites: 0,
+    testResults: [
+      {
+        startTime: 0,
+        endTime: 100,
+        assertionResults: DOJO_IMPLEMENTATION_STATUS_CAPABILITIES.map((capability, index) => ({
           fullName: `release verifier fixture covers ${capability}`,
           title: `release verifier fixture covers ${capability}`,
           status: "passed",
@@ -7583,6 +7826,34 @@ function summarizeSection(section) {
     result_count: section.result_count,
     release_candidate: section.release_candidate,
     enterprise_release: section.enterprise_release,
+  };
+}
+
+export function getVerifiableReleaseGateCoverage({ manifest, sections }) {
+  const gatesById = new Map((Array.isArray(manifest?.gates) ? manifest.gates : []).map((gate) => [gate.id, gate]));
+  const verifiableReleaseGateIds = (Array.isArray(manifest?.release_gate_ids) ? manifest.release_gate_ids : [])
+    .filter((gateId) => {
+      const gate = gatesById.get(gateId);
+      if (!gate) return false;
+      if (!["proof_artifact", "visual_report", "metrics"].includes(gate.evidence_kind)) return false;
+      return Boolean(
+        gate.default_evidence_path
+        || gate.default_report_path
+        || gate.default_summary_path
+        || gate.default_events_path
+      );
+    });
+  const verifiedGateIds = [...new Set(
+    (Array.isArray(sections) ? sections : [])
+      .map((section) => section?.id)
+      .filter(Boolean)
+  )];
+  const missingVerifiableReleaseGateIds = verifiableReleaseGateIds
+    .filter((gateId) => !verifiedGateIds.includes(gateId));
+  return {
+    verifiable_release_gate_ids: verifiableReleaseGateIds,
+    verified_release_gate_ids: verifiedGateIds.filter((gateId) => verifiableReleaseGateIds.includes(gateId)),
+    missing_verifiable_release_gate_ids: missingVerifiableReleaseGateIds,
   };
 }
 
