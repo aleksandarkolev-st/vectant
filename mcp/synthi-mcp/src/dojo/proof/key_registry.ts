@@ -1,10 +1,14 @@
 import {
   createEd25519DojoProofVerifier,
+  type DojoProofKeyCustody as DojoSignerKeyCustody,
   type DojoProofSigningAlgorithm,
+  type DojoProofSigningProvider,
   type DojoProofVerifier,
 } from "./signing.js";
 
 export type DojoProofKeyStatus = "active" | "retired" | "revoked";
+export type DojoProofKeySigningProvider = DojoProofSigningProvider | "unknown";
+export type DojoProofKeyCustody = DojoSignerKeyCustody | "unspecified";
 
 export interface DojoProofKeyRecord {
   schema_version: "synthi.dojo.proofKey.v1";
@@ -12,6 +16,9 @@ export interface DojoProofKeyRecord {
   key_id: string;
   issuer: string;
   algorithm: DojoProofSigningAlgorithm;
+  signing_provider: DojoProofKeySigningProvider;
+  key_custody: DojoProofKeyCustody;
+  key_uri?: string;
   public_key_pem: string;
   status: DojoProofKeyStatus;
   created_at: string;
@@ -19,6 +26,12 @@ export interface DojoProofKeyRecord {
   revoked_at?: string;
   retain_for_forensic_verification: boolean;
 }
+
+type DojoNormalizableProofKeyRecord =
+  Omit<DojoProofKeyRecord, "signing_provider" | "key_custody"> & {
+    signing_provider?: DojoProofKeySigningProvider;
+    key_custody?: DojoProofKeyCustody;
+  };
 
 export interface DojoProofKeyResolution {
   ok: boolean;
@@ -143,7 +156,9 @@ export class InMemoryDojoProofKeyRegistry {
   }
 }
 
-export function buildDojoProofKeyRecord(input: Omit<DojoProofKeyRecord, "schema_version" | "retain_for_forensic_verification"> & {
+export function buildDojoProofKeyRecord(input: Omit<DojoProofKeyRecord, "schema_version" | "retain_for_forensic_verification" | "signing_provider" | "key_custody"> & {
+  signing_provider?: DojoProofKeySigningProvider;
+  key_custody?: DojoProofKeyCustody;
   retain_for_forensic_verification?: boolean;
 }): DojoProofKeyRecord {
   return normalizeKeyRecord({
@@ -153,12 +168,18 @@ export function buildDojoProofKeyRecord(input: Omit<DojoProofKeyRecord, "schema_
   });
 }
 
-function normalizeKeyRecord(record: DojoProofKeyRecord): DojoProofKeyRecord {
+function normalizeKeyRecord(record: DojoNormalizableProofKeyRecord): DojoProofKeyRecord {
   if (record.schema_version !== "synthi.dojo.proofKey.v1") throw new Error("dojo_proof_key_schema_mismatch");
   requireNonEmpty(record.tenant_id, "tenant_id");
   requireNonEmpty(record.key_id, "key_id");
   requireNonEmpty(record.issuer, "issuer");
   if (record.algorithm !== "ed25519" && record.algorithm !== "hmac-sha256") throw new Error("dojo_proof_key_algorithm_invalid");
+  const signingProvider = normalizeSigningProvider(record.signing_provider);
+  const keyCustody = normalizeKeyCustody(record.key_custody);
+  if ((signingProvider === "managed-key-service" || keyCustody === "managed") && !record.key_uri?.trim()) {
+    throw new Error("dojo_proof_key_key_uri_required");
+  }
+  if (record.key_uri !== undefined) requireNonEmpty(record.key_uri, "key_uri");
   requireNonEmpty(record.public_key_pem, "public_key_pem");
   if (record.status !== "active" && record.status !== "retired" && record.status !== "revoked") throw new Error("dojo_proof_key_status_invalid");
   requireTimestamp(record.created_at, "created_at");
@@ -166,8 +187,33 @@ function normalizeKeyRecord(record: DojoProofKeyRecord): DojoProofKeyRecord {
   if (record.revoked_at !== undefined) requireTimestamp(record.revoked_at, "revoked_at");
   return {
     ...record,
+    signing_provider: signingProvider,
+    key_custody: keyCustody,
+    ...(record.key_uri ? { key_uri: record.key_uri.trim() } : {}),
     retain_for_forensic_verification: record.retain_for_forensic_verification === true,
   };
+}
+
+function normalizeSigningProvider(value: unknown): DojoProofKeySigningProvider {
+  if (value === undefined || value === null || value === "") return "unknown";
+  if (
+    value === "hmac-local"
+    || value === "ed25519-local"
+    || value === "external-command"
+    || value === "managed-key-service"
+    || value === "unknown"
+  ) {
+    return value;
+  }
+  throw new Error("dojo_proof_key_signing_provider_invalid");
+}
+
+function normalizeKeyCustody(value: unknown): DojoProofKeyCustody {
+  if (value === undefined || value === null || value === "") return "unspecified";
+  if (value === "local" || value === "external" || value === "managed" || value === "unspecified") {
+    return value;
+  }
+  throw new Error("dojo_proof_key_key_custody_invalid");
 }
 
 function recordKey(tenantId: string, keyId: string): string {

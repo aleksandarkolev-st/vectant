@@ -61,6 +61,24 @@ describe("Dojo proof key registry", () => {
     );
   });
 
+  it("normalizes proof key custody metadata without inventing claims for legacy records", () => {
+    const keyPair = generateEd25519DojoProofKeyPair("ed-key-custody");
+
+    expect(recordFor(keyPair)).toEqual(expect.objectContaining({
+      signing_provider: "unknown",
+      key_custody: "unspecified",
+    }));
+    expect(recordFor(keyPair, {
+      signing_provider: "managed-key-service",
+      key_custody: "managed",
+      key_uri: "kms://tenant-a/proof/ed-key-custody",
+    })).toEqual(expect.objectContaining({
+      signing_provider: "managed-key-service",
+      key_custody: "managed",
+      key_uri: "kms://tenant-a/proof/ed-key-custody",
+    }));
+  });
+
   it("retires old keys during rotation but keeps them usable for historical verification", () => {
     const registry = new InMemoryDojoProofKeyRegistry();
     const keyPair = generateEd25519DojoProofKeyPair("ed-key-a");
@@ -119,6 +137,17 @@ describe("Dojo proof key registry", () => {
       status: "active",
       created_at: "not-a-date",
     })).toThrow("dojo_proof_key_created_at_invalid");
+    expect(() => buildDojoProofKeyRecord({
+      tenant_id: "tenant-a",
+      key_id: "key-a",
+      issuer: "issuer-a",
+      algorithm: "ed25519",
+      signing_provider: "managed-key-service",
+      key_custody: "managed",
+      public_key_pem: "public",
+      status: "active",
+      created_at: "2026-06-11T00:00:00.000Z",
+    })).toThrow("dojo_proof_key_key_uri_required");
   });
 });
 

@@ -53,6 +53,8 @@ describeWithPostgres("PostgresDojoProofKeyRegistry", () => {
     expect(await registry.active({ issuer: "issuer-a", algorithm: "ed25519" })).toEqual(expect.objectContaining({
       tenant_id: tenantId,
       key_id: "ed-key-new",
+      signing_provider: "external-command",
+      key_custody: "external",
       status: "active",
     }));
     expect((await registry.list()).map((record) => record.key_id)).toEqual(["ed-key-old", "ed-key-new"]);
@@ -157,6 +159,32 @@ describeWithPostgres("PostgresDojoProofKeyRegistry", () => {
       "proof_key_rotated",
       "proof_key_revoked",
     ]);
+    expect(auditEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event_type: "proof_key_upserted",
+        details: expect.objectContaining({
+          signing_provider: "external-command",
+          key_custody: "external",
+          proof_key_status: "active",
+        }),
+      }),
+      expect.objectContaining({
+        event_type: "proof_key_rotated",
+        details: expect.objectContaining({
+          signing_provider: "external-command",
+          key_custody: "external",
+          proof_key_status: "retired",
+        }),
+      }),
+      expect.objectContaining({
+        event_type: "proof_key_revoked",
+        details: expect.objectContaining({
+          signing_provider: "external-command",
+          key_custody: "external",
+          proof_key_status: "revoked",
+        }),
+      }),
+    ]));
     expect(auditEvents.every((event) => event.actor.actor_id === "security-admin-a")).toBe(true);
     expect(auditEvents.every((event) => event.request_id === "proof-key-request-a")).toBe(true);
   });
@@ -187,6 +215,8 @@ function recordFor(
     key_id: keyPair.key_id,
     issuer: "issuer-a",
     algorithm: "ed25519",
+    signing_provider: "external-command",
+    key_custody: "external",
     public_key_pem: keyPair.public_key_pem,
     status: "active",
     created_at: "2026-06-11T00:00:00.000Z",

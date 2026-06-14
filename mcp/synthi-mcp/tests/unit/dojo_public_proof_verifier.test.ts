@@ -298,6 +298,8 @@ describe("Dojo public proof capsule verifier", () => {
       key_id: keyPair.key_id,
       proof_key_status: "active",
       proof_key_issuer: "unit-test-issuer",
+      proof_key_signing_provider: "external-command",
+      proof_key_custody: "external",
       signature_verified: true,
       blocked_by: [],
     }));
@@ -325,6 +327,8 @@ describe("Dojo public proof capsule verifier", () => {
       ok: true,
       status: "verified",
       proof_key_status: "retired",
+      proof_key_signing_provider: "external-command",
+      proof_key_custody: "external",
       signature_verified: true,
       blocked_by: [],
     }));
@@ -353,6 +357,8 @@ describe("Dojo public proof capsule verifier", () => {
       ok: false,
       status: "blocked",
       proof_key_status: "revoked",
+      proof_key_signing_provider: "external-command",
+      proof_key_custody: "external",
       signature_verified: true,
       blocked_by: ["proof_key_revoked"],
     }));
@@ -366,6 +372,8 @@ describe("Dojo public proof capsule verifier", () => {
       ok: true,
       status: "verified",
       proof_key_status: "revoked",
+      proof_key_signing_provider: "external-command",
+      proof_key_custody: "external",
       signature_verified: true,
       blocked_by: [],
     }));
@@ -432,6 +440,8 @@ function proofKeyRecordForPair(
     key_id: keyPair.key_id,
     issuer: "unit-test-issuer",
     algorithm: "ed25519",
+    signing_provider: "external-command",
+    key_custody: "external",
     public_key_pem: keyPair.public_key_pem,
     status: "active",
     created_at: "2026-06-10T00:00:00.000Z",

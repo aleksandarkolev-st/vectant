@@ -11,6 +11,9 @@ export interface DojoProofPublicVerificationKeyExport {
   key_id: string;
   issuer: string;
   algorithm: DojoProofKeyRecord["algorithm"];
+  signing_provider: DojoProofKeyRecord["signing_provider"];
+  key_custody: DojoProofKeyRecord["key_custody"];
+  key_uri?: string;
   status: DojoProofKeyRecord["status"];
   created_at: string;
   rotated_at?: string;
@@ -81,6 +84,9 @@ export function proofKeyPublicVerificationExport(record: DojoProofKeyRecord): Do
     key_id: record.key_id,
     issuer: record.issuer,
     algorithm: record.algorithm,
+    signing_provider: record.signing_provider,
+    key_custody: record.key_custody,
+    ...(record.key_uri ? { key_uri: record.key_uri } : {}),
     status: record.status,
     created_at: record.created_at,
     ...(record.rotated_at ? { rotated_at: record.rotated_at } : {}),

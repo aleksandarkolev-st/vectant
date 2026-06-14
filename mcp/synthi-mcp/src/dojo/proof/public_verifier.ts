@@ -41,6 +41,8 @@ export interface DojoPublicProofVerification {
   key_id?: string;
   proof_key_status?: string;
   proof_key_issuer?: string;
+  proof_key_signing_provider?: DojoProofKeyRecord["signing_provider"];
+  proof_key_custody?: DojoProofKeyRecord["key_custody"];
   signature_verified: boolean;
   blocked_by: string[];
 }
@@ -65,6 +67,8 @@ export function verifyDojoProofCapsulePublicWithKeyRecord(input: {
       key_id: input.capsule.key_id,
       proof_key_status: input.proof_key.status,
       proof_key_issuer: input.proof_key.issuer,
+      proof_key_signing_provider: input.proof_key.signing_provider,
+      proof_key_custody: input.proof_key.key_custody,
       signature_verified: false,
       blocked_by: [...new Set([
         ...proofKeyBlockedBy,
@@ -91,6 +95,8 @@ export function verifyDojoProofCapsulePublicWithKeyRecord(input: {
     status: blockedBy.length === 0 ? "verified" : "blocked",
     proof_key_status: input.proof_key.status,
     proof_key_issuer: input.proof_key.issuer,
+    proof_key_signing_provider: input.proof_key.signing_provider,
+    proof_key_custody: input.proof_key.key_custody,
     blocked_by: blockedBy,
   };
 }

@@ -1493,7 +1493,14 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(issue?.isError).toBeUndefined();
     const issued = issue?.structuredContent as {
       control_plane_source: string;
-      proof_key: { key_id: string; issuer: string; algorithm: string; status: string };
+      proof_key: {
+        key_id: string;
+        issuer: string;
+        algorithm: string;
+        signing_provider: string;
+        key_custody: string;
+        status: string;
+      };
       proof_capsule: { capsule_id: string; key_id: string; signature_algorithm: string };
       proof_record: { status: string };
     };
@@ -1501,6 +1508,8 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(issued.proof_key).toEqual(expect.objectContaining({
       key_id: proofKeyPair.key_id,
       algorithm: "ed25519",
+      signing_provider: "external-command",
+      key_custody: "external",
       status: "active",
     }));
     expect(issued.proof_capsule).toEqual(expect.objectContaining({
@@ -1533,6 +1542,8 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       key_id: proofKeyPair.key_id,
       issuer: issued.proof_key.issuer,
       algorithm: "ed25519",
+      signing_provider: "external-command",
+      key_custody: "external",
       public_key_pem: proofKeyPair.public_key_pem.trim(),
       status: "active",
     }));
@@ -1550,6 +1561,11 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         event_type: "proof_key_upserted",
         entity_kind: "proof_key",
         entity_id: proofKeyPair.key_id,
+        details: expect.objectContaining({
+          signing_provider: "external-command",
+          key_custody: "external",
+          proof_key_status: "active",
+        }),
       }),
     ]);
 
@@ -1613,6 +1629,8 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       proof_key: expect.objectContaining({
         key_id: proofKeyPair.key_id,
         algorithm: "ed25519",
+        signing_provider: "external-command",
+        key_custody: "external",
         status: "active",
       }),
       proof_record: expect.objectContaining({
@@ -1718,6 +1736,9 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       verifier: { package_export: string; function_name: string };
       proof_keys: Array<{
         key_id: string;
+        signing_provider: string;
+        key_custody: string;
+        key_uri?: string;
         public_key_pem: string;
         public_key_pem_sha256: string;
         verification_available: boolean;
@@ -1736,6 +1757,8 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(publicVerificationBundle.proof_keys).toEqual([
       expect.objectContaining({
         key_id: proofKeyPair.key_id,
+        signing_provider: "external-command",
+        key_custody: "external",
         public_key_pem: proofKeyPair.public_key_pem.trim(),
         public_key_pem_sha256: createHash("sha256").update(proofKeyPair.public_key_pem.trim(), "utf8").digest("hex"),
         verification_available: true,
@@ -1793,6 +1816,8 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       proof_key: expect.objectContaining({
         key_id: proofKeyPair.key_id,
         algorithm: "ed25519",
+        signing_provider: "external-command",
+        key_custody: "external",
         status: "active",
       }),
       proof_consume: expect.objectContaining({ ok: true, status: "used" }),

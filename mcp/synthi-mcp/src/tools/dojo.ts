@@ -57,6 +57,8 @@ import {
 } from "../dojo/graph/guardrail_predicates.js";
 import { DojoSkillGraphRuntime, type DojoGraphRunResult } from "../dojo/graph/runtime.js";
 import {
+  DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV,
+  DOJO_PROOF_SIGNING_PROVIDER_ENV,
   DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
   resolveDojoControlPlaneStoreConfig,
   resolveDojoEnforcementConfig,
@@ -549,11 +551,15 @@ async function persistDurableProofKeyForCapsule(input: {
   }
 
   try {
+    const custody = proofKeyCustodyMetadataForCurrentSigner();
     const proofKey = await input.context.proof_key_registry.upsert(buildDojoProofKeyRecord({
       tenant_id: input.tenant.tenant_id,
       key_id: input.capsule.key_id,
       issuer: input.capsule.issuer,
       algorithm: input.capsule.signature_algorithm,
+      signing_provider: custody.signing_provider,
+      key_custody: custody.key_custody,
+      ...(custody.key_uri ? { key_uri: custody.key_uri } : {}),
       public_key_pem: publicKeyPem,
       status: "active",
       created_at: input.capsule.issued_at,
@@ -634,6 +640,9 @@ function proofKeyPublicView(record: {
   key_id: string;
   issuer: string;
   algorithm: string;
+  signing_provider?: string;
+  key_custody?: string;
+  key_uri?: string;
   status: string;
   created_at: string;
   rotated_at?: string;
@@ -643,6 +652,9 @@ function proofKeyPublicView(record: {
   key_id: string;
   issuer: string;
   algorithm: string;
+  signing_provider: string;
+  key_custody: string;
+  key_uri?: string;
   status: string;
   created_at: string;
   rotated_at?: string;
@@ -653,11 +665,48 @@ function proofKeyPublicView(record: {
     key_id: record.key_id,
     issuer: record.issuer,
     algorithm: record.algorithm,
+    signing_provider: record.signing_provider ?? "unknown",
+    key_custody: record.key_custody ?? "unspecified",
+    ...(record.key_uri ? { key_uri: record.key_uri } : {}),
     status: record.status,
     created_at: record.created_at,
     ...(record.rotated_at ? { rotated_at: record.rotated_at } : {}),
     ...(record.revoked_at ? { revoked_at: record.revoked_at } : {}),
     retain_for_forensic_verification: record.retain_for_forensic_verification === true,
+  };
+}
+
+function proofKeyCustodyMetadataForCurrentSigner(): Pick<DojoProofKeyRecord, "signing_provider" | "key_custody" | "key_uri"> {
+  const provider = process.env[DOJO_PROOF_SIGNING_PROVIDER_ENV]?.trim() || "hmac-local";
+  if (provider === "managed-key-service") {
+    const keyUri = process.env[DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV]?.trim();
+    return {
+      signing_provider: "managed-key-service",
+      key_custody: "managed",
+      ...(keyUri ? { key_uri: keyUri } : {}),
+    };
+  }
+  if (provider === "external-command") {
+    return {
+      signing_provider: "external-command",
+      key_custody: "external",
+    };
+  }
+  if (provider === "ed25519-local") {
+    return {
+      signing_provider: "ed25519-local",
+      key_custody: "local",
+    };
+  }
+  if (provider === "hmac-local") {
+    return {
+      signing_provider: "hmac-local",
+      key_custody: "local",
+    };
+  }
+  return {
+    signing_provider: "unknown",
+    key_custody: "unspecified",
   };
 }
 

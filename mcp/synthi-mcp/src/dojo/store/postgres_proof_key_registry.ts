@@ -102,6 +102,8 @@ export class PostgresDojoProofKeyRegistry {
     await this.appendAudit("proof_key_upserted", saved, {
       issuer: saved.issuer,
       algorithm: saved.algorithm,
+      signing_provider: saved.signing_provider,
+      key_custody: saved.key_custody,
       proof_key_status: saved.status,
     });
     return saved;
@@ -184,6 +186,8 @@ export class PostgresDojoProofKeyRegistry {
     await this.appendAudit("proof_key_rotated", rotated, {
       issuer: rotated.issuer,
       algorithm: rotated.algorithm,
+      signing_provider: rotated.signing_provider,
+      key_custody: rotated.key_custody,
       proof_key_status: rotated.status,
       rotated_at: rotated.rotated_at,
     });
@@ -226,6 +230,8 @@ export class PostgresDojoProofKeyRegistry {
     await this.appendAudit("proof_key_revoked", revoked, {
       issuer: revoked.issuer,
       algorithm: revoked.algorithm,
+      signing_provider: revoked.signing_provider,
+      key_custody: revoked.key_custody,
       proof_key_status: revoked.status,
       revoked_at: revoked.revoked_at,
       retain_for_forensic_verification: revoked.retain_for_forensic_verification,
@@ -311,6 +317,7 @@ export class PostgresDojoProofKeyRegistry {
 
 function rowToProofKeyRecord(row: ProofKeyRow | undefined): DojoProofKeyRecord | null {
   if (!row) return null;
+  const keyJson = proofKeyJson(row.key_json);
   return buildDojoProofKeyRecord({
     tenant_id: row.tenant_id,
     key_id: row.key_id,
@@ -319,10 +326,18 @@ function rowToProofKeyRecord(row: ProofKeyRow | undefined): DojoProofKeyRecord |
     public_key_pem: row.public_key_pem,
     status: row.status,
     created_at: iso(row.created_at),
+    ...(typeof keyJson?.signing_provider === "string" ? { signing_provider: keyJson.signing_provider as DojoProofKeyRecord["signing_provider"] } : {}),
+    ...(typeof keyJson?.key_custody === "string" ? { key_custody: keyJson.key_custody as DojoProofKeyRecord["key_custody"] } : {}),
+    ...(typeof keyJson?.key_uri === "string" ? { key_uri: keyJson.key_uri } : {}),
     ...(row.rotated_at ? { rotated_at: iso(row.rotated_at) } : {}),
     ...(row.revoked_at ? { revoked_at: iso(row.revoked_at) } : {}),
     retain_for_forensic_verification: row.retain_for_forensic_verification,
   });
+}
+
+function proofKeyJson(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
 }
 
 function requiredId(value: string, field: string): string {
