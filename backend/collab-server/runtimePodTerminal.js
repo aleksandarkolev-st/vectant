@@ -199,8 +199,35 @@ async function createRuntimePodPty({
   };
 }
 
+/**
+ * One-shot exec into the runtime pod's `runtime` container; resolves the collected
+ * stdout. Used by the runtime port monitor (Slice 4) to read /proc/net/tcp[6].
+ * Non-TTY, best-effort: resolves '' if the pod isn't ready or the exec errors, so a
+ * transient hiccup never breaks the scan. Live-validated only on a Sysbox cluster.
+ */
+async function runtimeRunOnce(runtimeScope, argv) {
+  if (!runtimeScope || !Array.isArray(argv) || argv.length === 0) return '';
+  const ready = typeof spawner.getReadyRuntimePodForSession === 'function'
+    ? await spawner.getReadyRuntimePodForSession(runtimeScope)
+    : null;
+  if (!ready || !ready.podName) return '';
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  let buf = '';
+  stdout.on('data', (chunk) => { buf += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); });
+  const exec = new k8s.Exec(kubeConfig());
+  return await new Promise((resolve) => {
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; resolve(buf); } };
+    exec.exec(NAMESPACE, ready.podName, RUNTIME_POD_CONTAINER, argv, stdout, stderr, null, false, () => done())
+      .then((ws) => { if (ws && typeof ws.on === 'function') { ws.on('close', done); ws.on('error', done); } })
+      .catch(() => done());
+  });
+}
+
 module.exports = {
   shouldUseRuntimePodTerminal,
   runtimeTerminalTarget,
   createRuntimePodPty,
+  runtimeRunOnce,
 };

@@ -72,6 +72,35 @@ test('runtimeAtCapacity is true only at or above the max', () => {
   assert.equal(spawner.runtimeAtCapacity(6, 5), true);
 });
 
+// S4-T3 — pure mapper: runtime Deployment list → [{runtimeScope, slug}] for the
+// port monitor. Deployments missing the runtimeScope annotation are skipped (can't
+// address their pod); slug falls back to '' when unset.
+test('runtimeSessionsFromDeployments maps active runtime deployments to {runtimeScope, slug}', () => {
+  const deployments = [
+    { metadata: { annotations: { 'synthi/runtimeScopeFull': 'ws-a:u1', 'synthi/workspaceSlug': 'repo-a' } } },
+    { metadata: { annotations: { 'synthi/runtimeScopeFull': 'ws-b:u2' } } }, // slug missing -> ''
+    { metadata: { annotations: {} } }, // no runtimeScope -> skipped
+    {}, // malformed -> skipped
+  ];
+  const sessions = spawner.runtimeSessionsFromDeployments(deployments);
+  assert.deepEqual(sessions, [
+    { runtimeScope: 'ws-a:u1', slug: 'repo-a' },
+    { runtimeScope: 'ws-b:u2', slug: '' },
+  ]);
+});
+
+// S4-T4 — the runtime port monitor's primitives are on the spawner surface so the
+// server.js wiring (listContainers + runOnce target) resolves in k8s mode.
+test('workspacePodSpawner exports listActiveRuntimeSessions + getReadyRuntimePodForSession', () => {
+  assert.equal(typeof spawner.listActiveRuntimeSessions, 'function');
+  assert.equal(typeof spawner.getReadyRuntimePodForSession, 'function');
+});
+
+// S4-T5 — DEFERRED (written + skipped): ports opened inside the runtime pod are read
+// via k8s-exec (/proc/net/tcp[6]) by runtimeRunOnce and surfaced at /runtime/<scope>/
+// port/<N> — needs a live Sysbox pod. (parseListeningPorts/baseline already tested.)
+test('runtime pod opened ports are detected via k8s-exec and broadcast', { skip: 'integration — blocked on nestybox/sysbox#1006 substrate' }, () => {});
+
 // S2-T16 — DEFERRED (written + skipped): create + dockerd-ready watch needs a
 // working Sysbox substrate (sysbox-runc on the node) to actually run a pod.
 test('runtime pod reaches dockerd-ready on a real Sysbox cluster', { skip: 'integration — blocked on nestybox/sysbox#1006 substrate' }, () => {});

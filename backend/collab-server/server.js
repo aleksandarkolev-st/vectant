@@ -14,6 +14,8 @@ const proxyService = require('./proxyService');
 const { createRuntimeManager, runtimeContainerHost } = require('./workspaceRuntimeContainer');
 const { handleEnsureRuntime } = require('./ensureRuntime');
 const { createContainerPortMonitor } = require('./containerPortMonitor');
+const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
+const { runtimeRunOnce } = require('./runtimePodTerminal');
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
@@ -149,6 +151,24 @@ const containerPortMonitor = ENABLE_CONTAINER_RUNTIME
       }),
       runOnce: (slug, userId, argv) => workspaceRuntime.runOnce(slug, userId, argv),
       onPortsChanged: (slug, _userId, ports) => broadcastContainerPorts(slug, ports),
+      logger,
+    })
+  : null;
+
+// Slice 4 — detect ports opened INSIDE the per-workspace Sysbox runtime POD
+// (k8s-exec /proc/net/tcp[6]) and surface them at /runtime/<scope>/port/<N>. Dark:
+// only when RUNTIME_BACKEND=sysbox-pod. Reuses the same monitor (parse/baseline);
+// the key is (slug, runtimeScope) — slug routes the broadcast, scope addresses the pod.
+const runtimePortMonitor = isSysboxRuntimeEnabled()
+  ? createContainerPortMonitor({
+      listContainers: async () => {
+        const sp = require('./spawner');
+        if (typeof sp.listActiveRuntimeSessions !== 'function') return [];
+        const sessions = await sp.listActiveRuntimeSessions();
+        return sessions.map((s) => ({ slug: s.slug || s.runtimeScope, userId: s.runtimeScope }));
+      },
+      runOnce: (_slug, runtimeScope, argv) => runtimeRunOnce(runtimeScope, argv),
+      onPortsChanged: (slug, runtimeScope, ports) => broadcastRuntimePorts(slug, runtimeScope, ports),
       logger,
     })
   : null;
@@ -996,6 +1016,21 @@ function broadcastFileSaved(slug, filePath, scope = {}) {
 function broadcastContainerPorts(slug, ports) {
   if (!slug || !notifyWss) return;
   const message = JSON.stringify({ type: 'container-ports', slug, ports: Array.isArray(ports) ? ports : [] });
+  notifyWss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
+      try { ws.send(message); } catch (_) {}
+    }
+  });
+}
+
+/**
+ * Broadcast the live set of forwardable ports detected inside a workspace's Sysbox
+ * runtime POD (Slice 4). Routed to the workspace's clients by slug; carries the
+ * runtimeScope so the frontend builds /runtime/<scope>/port/<N> preview URLs.
+ */
+function broadcastRuntimePorts(slug, runtimeScope, ports) {
+  if (!slug || !notifyWss) return;
+  const message = JSON.stringify({ type: 'runtime-ports', slug, runtimeScope, ports: Array.isArray(ports) ? ports : [] });
   notifyWss.clients.forEach((ws) => {
     if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
       try { ws.send(message); } catch (_) {}
@@ -4968,6 +5003,10 @@ process.on('uncaughtException', (err) => {
     if (containerPortMonitor) {
       containerPortMonitor.start();
       logger.info('container_port_monitor_started', {});
+    }
+    if (runtimePortMonitor) {
+      runtimePortMonitor.start();
+      logger.info('runtime_port_monitor_started', {});
     }
     proxyService.onPortsChanged((ports) => {
       try {

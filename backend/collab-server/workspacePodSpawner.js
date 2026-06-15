@@ -1239,6 +1239,35 @@ async function getActiveRuntimeCount() {
   }
 }
 
+/**
+ * Pure mapper: runtime Deployment list → active runtime sessions for the Slice-4
+ * port monitor — { runtimeScope (full session id), slug }. Deployments missing the
+ * runtimeScope annotation are skipped (can't address their pod/preview).
+ */
+function runtimeSessionsFromDeployments(deployments) {
+  const out = [];
+  for (const dep of deployments || []) {
+    const ann = (dep && dep.metadata && dep.metadata.annotations) || {};
+    const runtimeScope = ann['synthi/runtimeScopeFull'];
+    if (runtimeScope) out.push({ runtimeScope, slug: ann['synthi/workspaceSlug'] || '' });
+  }
+  return out;
+}
+
+/** List active runtime sessions ([{runtimeScope, slug}]) for the runtime port monitor. */
+async function listActiveRuntimeSessions() {
+  try {
+    const { body } = await appsApi.listNamespacedDeployment(
+      NAMESPACE, undefined, undefined, undefined, undefined,
+      `app.kubernetes.io/managed-by=${RUNTIME_MANAGED_BY}`,
+    );
+    return runtimeSessionsFromDeployments(body.items || []);
+  } catch (err) {
+    console.error('[RuntimeSpawner] Failed to list runtime sessions:', err.message);
+    return [];
+  }
+}
+
 /** Return the ready runtime pod for a session ({podIP,podName} or nulls). */
 async function getReadyRuntimePodForSession(sessionId) {
   const labelSelector = `app=runtime,synthi/runtime-id=${runtimeResourceId(sessionId)}`;
@@ -1488,6 +1517,9 @@ module.exports = {
   touchRuntime,
   cullIdleRuntimePods,
   getActiveRuntimeCount,
+  getReadyRuntimePodForSession,
+  listActiveRuntimeSessions,
+  runtimeSessionsFromDeployments,
   runtimeCullDecision,
   runtimeAtCapacity,
 };

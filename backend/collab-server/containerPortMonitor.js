@@ -72,7 +72,9 @@ function createContainerPortMonitor({
   let timer = null;
 
   async function _scanOnce() {
-    const active = listContainers() || [];
+    // listContainers may be sync (local manager map) or async (k8s Deployment
+    // list for the Sysbox runtime pods) — await handles both.
+    const active = (await listContainers()) || [];
     const activeKeys = new Set(active.map((c) => keyOf(c.slug, c.userId)));
 
     // Containers that went away → emit [] once (if we'd reported any), then forget
