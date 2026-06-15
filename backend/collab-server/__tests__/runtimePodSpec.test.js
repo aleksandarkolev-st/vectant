@@ -222,6 +222,31 @@ test('runtime pod uses a registry mirror only when RUNTIME_REGISTRY_MIRROR is se
   }
 });
 
+// S6-T2 — Egress controls: an optional per-pod egress bandwidth cap. When
+// RUNTIME_EGRESS_BANDWIDTH is set, the runtime pod template carries the
+// kubernetes.io/egress-bandwidth annotation (GKE Dataplane-V2 bandwidth plugin),
+// bounding data-exfiltration / abuse throughput. Off by default → no annotation
+// (no cap = current behavior). Env read at call time.
+test('runtime pod gets an egress-bandwidth annotation only when RUNTIME_EGRESS_BANDWIDTH is set', () => {
+  const prev = process.env.RUNTIME_EGRESS_BANDWIDTH;
+  const args = { sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } };
+  try {
+    delete process.env.RUNTIME_EGRESS_BANDWIDTH;
+    let tmpl = buildRuntimeDeployment(args).spec.template;
+    assert.ok(
+      !(tmpl.metadata.annotations && tmpl.metadata.annotations['kubernetes.io/egress-bandwidth']),
+      'no egress-bandwidth annotation when unset',
+    );
+
+    process.env.RUNTIME_EGRESS_BANDWIDTH = '50M';
+    tmpl = buildRuntimeDeployment(args).spec.template;
+    assert.equal(tmpl.metadata.annotations['kubernetes.io/egress-bandwidth'], '50M', 'egress-bandwidth annotation set');
+  } finally {
+    if (prev === undefined) delete process.env.RUNTIME_EGRESS_BANDWIDTH;
+    else process.env.RUNTIME_EGRESS_BANDWIDTH = prev;
+  }
+});
+
 // S8-T1 — GPU on-demand: per-spawn metadata.gpu adds a GPU device limit + the GPU
 // node-taint toleration (off by default — never warm, requested per spawn). The
 // sysbox toleration is preserved (GPU pod still runs under sysbox-runc).

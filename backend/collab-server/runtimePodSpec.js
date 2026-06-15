@@ -175,6 +175,16 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
     ? { ...scheduling.nodeSelector, [RUNTIME_NODE_SELECTOR_KEY]: RUNTIME_GPU_NODE_SELECTOR_VALUE }
     : scheduling.nodeSelector;
 
+  // Egress controls (Slice 6): an optional per-pod bandwidth cap on the pod
+  // template, bounding data-exfiltration / abuse throughput from untrusted user
+  // code. Requires the GKE Dataplane-V2 bandwidth plugin. Off by default (no
+  // annotation = no cap = current behavior). Read at call time. (Ingress is a
+  // symmetric one-line add via kubernetes.io/ingress-bandwidth if ever needed.)
+  const egressBandwidth = String(process.env.RUNTIME_EGRESS_BANDWIDTH || '').trim();
+  const podAnnotations = egressBandwidth
+    ? { 'kubernetes.io/egress-bandwidth': egressBandwidth }
+    : undefined;
+
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -183,7 +193,7 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
       replicas: 1,
       selector: { matchLabels: selectorLabels },
       template: {
-        metadata: { labels },
+        metadata: { labels, ...(podAnnotations ? { annotations: podAnnotations } : {}) },
         spec: {
           ...(podNodeSelector ? { nodeSelector: podNodeSelector } : {}),
           ...(podTolerations.length ? { tolerations: podTolerations } : {}),
