@@ -110,21 +110,6 @@ function Spinner({ className = '' }) {
   );
 }
 
-function VectantMark() {
-  return (
-    <div className="relative flex h-9 w-11 items-center justify-center" aria-hidden="true">
-      <span className="absolute left-0 top-1 h-7 w-[7px] border-y-2 border-l-2 border-[#5dd6e4]" />
-      <span className="absolute right-0 top-1 h-7 w-[7px] border-y-2 border-r-2 border-[#ff9e64]" />
-      <img
-        src="/vectant/the_V.png"
-        alt=""
-        className="h-7 w-7 object-contain"
-        draggable={false}
-      />
-    </div>
-  );
-}
-
 function StepNumber({ value, complete = false }) {
   return (
     <span
@@ -826,18 +811,12 @@ function LoopbackAuthPage() {
         >
           <div className="min-w-0">
             <div className="flex items-center gap-3">
-              <VectantMark />
-              <div>
-                <div
-                  className="text-[12px] font-semibold tracking-[0.04em]"
-                  style={{ color: 'var(--text-primary, #f4f5f8)' }}
-                >
-                  Vectant ADE
-                </div>
-                <div className="mt-1 text-[12px]" style={{ color: 'var(--text-muted, #5a6178)' }}>
-                  Workspace auth relay
-                </div>
-              </div>
+              <img
+                src="/vectant-dark-theme.png"
+                alt="Vectant ADE"
+                className="h-11 w-auto object-contain"
+                draggable={false}
+              />
             </div>
             <h1 className="mt-6 text-[24px] font-semibold leading-tight tracking-normal md:text-[30px]">
               Complete terminal sign-in

@@ -306,6 +306,43 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     }
     setState('connecting');
 
+    const runtimeLinkContext = () => {
+      const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
+      const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
+      return {
+        workspaceSlug,
+        terminalId,
+        ...runtimeIdentity,
+        bridgeBaseUrl: resolveLoopbackAuthBridgeBaseUrl(window.location.origin),
+      };
+    };
+
+    const surfaceOauthRelayLinks = (outputText) => {
+      if (!outputText) return;
+      const nextBuffer = `${oauthOutputBufferRef.current}${outputText}`;
+      oauthOutputBufferRef.current = nextBuffer.slice(-12000);
+
+      const linkContext = runtimeLinkContext();
+      const links = findTerminalLoopbackAuthLinks(oauthOutputBufferRef.current, {
+        runtimeScope: linkContext.runtimeScope,
+        bridgeBaseUrl: linkContext.bridgeBaseUrl,
+        loopbackContext: linkContext,
+        limit: 2,
+      });
+
+      const nextLink = links.find((link) => !oauthRelaySeenLinksRef.current.has(link.bridgeUrl));
+      if (!nextLink) return;
+
+      oauthRelaySeenLinksRef.current.add(nextLink.bridgeUrl);
+      setOauthRelayPrompt({
+        id: nextLink.bridgeUrl,
+        bridgeUrl: nextLink.bridgeUrl,
+        originalUrl: nextLink.originalUrl,
+        opened: false,
+        detectedAt: Date.now(),
+      });
+    };
+
     const init = async () => {
       // Dynamic import to avoid SSR issues
       const [{ Terminal }, { FitAddon }, { WebLinksAddon }] = await Promise.all([
@@ -326,43 +363,6 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       }
 
       if (disposed || !containerRef.current) return;
-
-      const runtimeLinkContext = () => {
-        const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
-        const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
-        return {
-          workspaceSlug,
-          terminalId,
-          ...runtimeIdentity,
-          bridgeBaseUrl: resolveLoopbackAuthBridgeBaseUrl(window.location.origin),
-        };
-      };
-
-      const surfaceOauthRelayLinks = (outputText) => {
-        if (!outputText) return;
-        const nextBuffer = `${oauthOutputBufferRef.current}${outputText}`;
-        oauthOutputBufferRef.current = nextBuffer.slice(-12000);
-
-        const linkContext = runtimeLinkContext();
-        const links = findTerminalLoopbackAuthLinks(oauthOutputBufferRef.current, {
-          runtimeScope: linkContext.runtimeScope,
-          bridgeBaseUrl: linkContext.bridgeBaseUrl,
-          loopbackContext: linkContext,
-          limit: 2,
-        });
-
-        const nextLink = links.find((link) => !oauthRelaySeenLinksRef.current.has(link.bridgeUrl));
-        if (!nextLink) return;
-
-        oauthRelaySeenLinksRef.current.add(nextLink.bridgeUrl);
-        setOauthRelayPrompt({
-          id: nextLink.bridgeUrl,
-          bridgeUrl: nextLink.bridgeUrl,
-          originalUrl: nextLink.originalUrl,
-          opened: false,
-          detectedAt: Date.now(),
-        });
-      };
 
       const openLocalBrowserUrl = (uri, popup = null) => {
         if (popup) {
