@@ -176,3 +176,28 @@ test('buildRuntimeService is a headless Service for the runtime pod on the previ
 // detected (k8s-exec port monitor) and reachable via the preview sidecar+Service +
 // PREVIEW_TARGET_TEMPLATE. Needs a live Sysbox cluster.
 test('runtime pod opened ports surface in the Ports panel and proxy', { skip: 'integration — blocked on nestybox/sysbox#1006 substrate' }, () => {});
+
+// S5-T1 — Hibernate: docker-data persistence is opt-in (RUNTIME_PERSIST_DOCKER_DATA).
+// Off (default) → only the /workspace mount (ephemeral docker = current behavior).
+// On → an extra /var/lib/docker mount on a per-runtime PVC subPath so the image/build
+// cache survives idle-cull → respawn. Same PVC volume, distinct subPath.
+test('runtime pod persists /var/lib/docker only when RUNTIME_PERSIST_DOCKER_DATA is on', () => {
+  const prev = process.env.RUNTIME_PERSIST_DOCKER_DATA;
+  const args = { sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } };
+  try {
+    delete process.env.RUNTIME_PERSIST_DOCKER_DATA;
+    let runtime = buildRuntimeDeployment(args).spec.template.spec.containers.find((c) => c.name === 'runtime');
+    assert.ok(!runtime.volumeMounts.some((m) => m.mountPath === '/var/lib/docker'), 'no docker-data mount when off');
+    assert.equal(runtime.volumeMounts.length, 1);
+
+    process.env.RUNTIME_PERSIST_DOCKER_DATA = '1';
+    runtime = buildRuntimeDeployment(args).spec.template.spec.containers.find((c) => c.name === 'runtime');
+    const dockerMount = runtime.volumeMounts.find((m) => m.mountPath === '/var/lib/docker');
+    assert.ok(dockerMount, 'docker-data mount present when on');
+    assert.equal(dockerMount.name, runtime.volumeMounts[0].name, 'reuses the same PVC volume (subPath)');
+    assert.match(dockerMount.subPath, /^docker-data\//, 'per-runtime docker-data subPath');
+  } finally {
+    if (prev === undefined) delete process.env.RUNTIME_PERSIST_DOCKER_DATA;
+    else process.env.RUNTIME_PERSIST_DOCKER_DATA = prev;
+  }
+});

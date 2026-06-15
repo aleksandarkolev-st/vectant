@@ -572,6 +572,11 @@ main's `proxyService.js` (+362) already routes runtime-scoped previews (`/runtim
 - [x] S4-T2 (skip) integration: opened ports detected + reachable — #1006.
 - [x] Gate: full suite **74 (71 pass + 3 skip)**, `node --check` clean.
 
+## Slice 5 — Lifecycle & hibernate (2026-06-15, core pre-existing; cache-persist added)
+Core hibernate ALREADY works: worker culler (`cullIdleWorkspaces`) + runtime culler (`cullIdleRuntimePods`/`runtimeCullDecision`) scale idle pods to 0; `collab-data-pvc` persists `/workspace` across cull → respawn; `/api/spawner/ensure` re-spawns on resume (fast-path or create). So "idle ≈ storage only; resume restores files" is satisfied.
+- [x] **Docker image/build-cache survival (S5-T1):** opt-in `RUNTIME_PERSIST_DOCKER_DATA` (default OFF = ephemeral, current behavior) mounts a per-runtime PVC subPath `docker-data/<runtimeId>` at `/var/lib/docker` so `docker` images/cache survive idle-cull → respawn (resume = WARM docker). Same `collab-data-pvc` volume, distinct subPath (sibling to `repos/`, no git pollution). `isRuntimeDockerDataPersisted()` read at call time. Suite 79 (74 pass + 5 skip).
+- [ ] DEFERRED: tiered idle timeout by plan (currently single `RUNTIME_IDLE_TIMEOUT_MS`); honest `starting`/`resuming` UI states (frontend + a runtime `lifecycleSnapshot`); permanent-delete cleanup of the `docker-data/<id>` subPath (idle-cull keeps it by design); **Spike 2** resume-latency SLO + docker-data-on-PVC overlay2 validation — live cluster / #1006.
+
 ---
 
 # Task: Sysbox #1006 unblock spike (2026-06-14, feat/docker-sysbox-engine)

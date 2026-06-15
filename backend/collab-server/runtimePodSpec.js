@@ -49,6 +49,16 @@ const PREVIEW_SIDECAR_PORT = (() => {
   return Number.isInteger(p) && p > 0 && p <= 65535 ? p : 18080;
 })();
 
+// Hibernate (Slice 5): optionally persist the rootful daemon's data dir so the
+// image/build cache survives idle-cull → respawn (resume restores a WARM docker,
+// not a cold re-pull). Off by default (ephemeral /var/lib/docker = current
+// behavior); read at call time so it can be toggled without a restart / in tests.
+const RUNTIME_DOCKER_DATA_MOUNT = '/var/lib/docker';
+const RUNTIME_DOCKER_DATA_SUBDIR = 'docker-data';
+function isRuntimeDockerDataPersisted() {
+  return ['1', 'true', 'yes'].includes(String(process.env.RUNTIME_PERSIST_DOCKER_DATA || '').trim().toLowerCase());
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function safePathSegment(value) {
   return String(value || '').replace(/[^a-zA-Z0-9_@.\-]/g, '_');
@@ -124,6 +134,20 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
   const scheduling = buildRuntimeScheduling();
   const filesystemUserId = metadata.filesystemUserId || metadata.filesystem_user_id || userId;
 
+  // Workspace files at /workspace (subPath-confined). When docker-data persistence
+  // is on (Slice 5 hibernate), also mount a per-runtime PVC subPath at /var/lib/docker
+  // so the image/build cache survives idle-cull → respawn.
+  const runtimeVolumeMounts = [
+    { name: RUNTIME_DATA_VOLUME_NAME, mountPath: RUNTIME_WORKSPACE_MOUNT, subPath: workspaceSubPath(metadata) },
+  ];
+  if (isRuntimeDockerDataPersisted()) {
+    runtimeVolumeMounts.push({
+      name: RUNTIME_DATA_VOLUME_NAME,
+      mountPath: RUNTIME_DOCKER_DATA_MOUNT,
+      subPath: `${RUNTIME_DOCKER_DATA_SUBDIR}/${runtimeResourceId(sessionId)}`,
+    });
+  }
+
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -161,13 +185,7 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
                 timeoutSeconds: 5,
                 failureThreshold: 12,
               },
-              volumeMounts: [
-                {
-                  name: RUNTIME_DATA_VOLUME_NAME,
-                  mountPath: RUNTIME_WORKSPACE_MOUNT,
-                  subPath: workspaceSubPath(metadata),
-                },
-              ],
+              volumeMounts: runtimeVolumeMounts,
             },
           ],
           volumes: [
@@ -220,6 +238,7 @@ module.exports = {
   runtimeLabels,
   buildRuntimeScheduling,
   isSysboxRuntimeEnabled,
+  isRuntimeDockerDataPersisted,
   RUNTIME_MANAGED_BY,
   PREVIEW_SIDECAR_PORT,
 };
