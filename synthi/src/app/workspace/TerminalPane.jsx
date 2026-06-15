@@ -56,6 +56,7 @@ const TERMINAL_HTTP_URL = resolveCollabHttpUrl();
 const LOOPBACK_AUTH_BRIDGE_PATH = process.env.NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH || '/auth/loopback';
 const BLOCKED_TERMINAL_LINK_PROTOCOLS = new Set(['javascript:', 'data:', 'vbscript:']);
 const EXPLICIT_TERMINAL_LINK_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
+const TERMINAL_MOTION_EASE = [0.16, 1, 0.3, 1];
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
@@ -1064,37 +1065,13 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     <div className="terminal-pane-shell h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
       <div ref={containerRef} className="h-full w-full" />
 
-      {/* Palette button — opens the terminal color customizer */}
-      <button
-        type="button"
-        onClick={() => setColorPickerOpen(true)}
-        title="Customize terminal colors"
-        aria-label="Customize terminal colors"
-        className="absolute top-1.5 right-1.5 z-10 rounded p-1 opacity-40 hover:opacity-100 transition-opacity"
-        style={{
-          color: 'var(--text-muted)',
-          background: 'color-mix(in srgb, var(--bg-app) 60%, transparent)',
-        }}
-      >
-        <Palette className="w-3.5 h-3.5" />
-      </button>
-
-      {!fixedSessionId && (
-        <button
-          type="button"
-          onClick={handleStopRuntime}
-          disabled={stoppingRuntime}
-          title="Stop runtime"
-          aria-label="Stop runtime"
-          className="absolute top-1.5 right-8 z-10 rounded p-1 opacity-40 hover:opacity-100 disabled:opacity-30 transition-opacity"
-          style={{
-            color: stoppingRuntime ? 'var(--accent-warning)' : 'var(--text-muted)',
-            background: 'color-mix(in srgb, var(--bg-app) 60%, transparent)',
-          }}
-        >
-          <Power className="w-3.5 h-3.5" />
-        </button>
-      )}
+      <TerminalUtilityRail
+        state={state}
+        stoppingRuntime={stoppingRuntime}
+        canStop={!fixedSessionId}
+        onStopRuntime={handleStopRuntime}
+        onOpenColors={() => setColorPickerOpen(true)}
+      />
 
       {pasteConfirm && (
         <MultiLinePasteDialog
@@ -1106,76 +1083,11 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         />
       )}
 
-      <AnimatePresence>
-        {oauthRelayPrompt && (
-          <motion.div
-            key={oauthRelayPrompt.id}
-            initial={{ opacity: 0, y: 16, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 10, scale: 0.98 }}
-            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-            className="absolute bottom-4 left-4 z-20 w-[360px] max-w-[calc(100%-32px)] border shadow-2xl"
-            style={{
-              background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 96%, black)',
-              borderColor: 'color-mix(in srgb, var(--accent-primary, #327464) 34%, var(--border-medium, #3f3f46))',
-              color: 'var(--text-primary, #e4e4e7)',
-            }}
-            role="status"
-            aria-live="polite"
-          >
-            <div
-              className="flex items-start gap-3 border-b px-3 py-2.5"
-              style={{ borderColor: 'var(--border-subtle, #2a2b38)' }}
-            >
-              <div
-                className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center border"
-                style={{
-                  borderColor: 'color-mix(in srgb, var(--accent-primary, #327464) 40%, transparent)',
-                  color: 'var(--accent-primary, #327464)',
-                  background: 'color-mix(in srgb, var(--accent-primary, #327464) 10%, transparent)',
-                }}
-              >
-                <Terminal className="h-3.5 w-3.5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-[12px] font-semibold">Terminal sign-in detected</div>
-                <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
-                  {oauthRelayPrompt.opened
-                    ? 'Helper opened. Finish browser sign-in, then return to this terminal.'
-                    : 'This command wants to return to a localhost callback. Vectant can relay it back to this workspace.'}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={dismissOauthRelayPrompt}
-                className="rounded p-0.5 opacity-70 transition-opacity hover:opacity-100"
-                style={{ color: 'var(--text-muted, #6b7089)' }}
-                aria-label="Dismiss terminal sign-in prompt"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-            <div className="flex items-center justify-end gap-2 px-3 py-2.5">
-              <button
-                type="button"
-                onClick={dismissOauthRelayPrompt}
-                className="h-8 px-3 text-[11px] font-medium transition-colors hover:bg-white/5"
-                style={{ color: 'var(--text-secondary, #a1a1aa)' }}
-              >
-                Later
-              </button>
-              <button
-                type="button"
-                onClick={openOauthRelayPrompt}
-                className="h-8 px-3 text-[11px] font-semibold text-white transition-opacity hover:opacity-90"
-                style={{ background: 'var(--accent-primary, #327464)' }}
-              >
-                Open sign-in
-              </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <TerminalOAuthPrompt
+        prompt={oauthRelayPrompt}
+        onOpen={openOauthRelayPrompt}
+        onDismiss={dismissOauthRelayPrompt}
+      />
 
       {colorPickerOpen && (
         <TerminalColorPanel
@@ -1195,16 +1107,230 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         />
       )}
 
-      {/* Connecting indicator */}
-      {(state === 'connecting' || stoppingRuntime) && (
-        <div className="absolute bottom-2 right-3 flex items-center gap-1.5 text-[10px] z-10" style={{ color: 'var(--text-muted)' }}>
-          <Zap className="w-3 h-3 animate-pulse" style={{ color: 'var(--accent-primary)' }} />
-          <span>{stoppingRuntime ? 'Stopping…' : 'Connecting…'}</span>
-        </div>
-      )}
+      <TerminalActivityHint state={state} stoppingRuntime={stoppingRuntime} />
     </div>
   );
 }, /* freeze — never re-render from parent */ () => true);
+
+function terminalStatusMeta(state, stoppingRuntime) {
+  if (stoppingRuntime) {
+    return { label: 'Stopping', tone: 'warning', color: 'var(--accent-warning, #d89b2b)' };
+  }
+  if (state === 'connected') {
+    return { label: 'Live', tone: 'success', color: 'var(--accent-success, #3d8b78)' };
+  }
+  if (state === 'connecting') {
+    return { label: 'Connecting', tone: 'info', color: 'var(--accent-primary, #6c6885)' };
+  }
+  if (state === 'closed') {
+    return { label: 'Closed', tone: 'muted', color: 'var(--text-muted, #6b7089)' };
+  }
+  return { label: 'Issue', tone: 'warning', color: 'var(--accent-warning, #d89b2b)' };
+}
+
+function TerminalUtilityButton({ title, onClick, disabled = false, children, tone = 'neutral' }) {
+  const toneColor = tone === 'danger'
+    ? 'var(--accent-error, #d96c6c)'
+    : tone === 'active'
+      ? 'var(--text-primary, #f4f5f8)'
+      : 'var(--text-secondary, #a1a1aa)';
+
+  return (
+    <motion.button
+      type="button"
+      whileTap={{ scale: 0.96 }}
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={title}
+      className="flex h-7 w-7 items-center justify-center rounded-md border transition-colors hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-40"
+      style={{
+        borderColor: 'var(--border-subtle, #2a2b38)',
+        color: toneColor,
+        background: 'var(--bg-app, #0a0b10)',
+      }}
+    >
+      {children}
+    </motion.button>
+  );
+}
+
+function TerminalUtilityRail({ state, stoppingRuntime, canStop, onStopRuntime, onOpenColors }) {
+  const status = terminalStatusMeta(state, stoppingRuntime);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18, ease: TERMINAL_MOTION_EASE }}
+      className="absolute right-2 top-2 z-10 flex items-center gap-1.5 rounded-lg border px-1.5 py-1 shadow-xl"
+      style={{
+        background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 88%, var(--bg-app, #0a0b10))',
+        borderColor: 'var(--border-subtle, #2a2b38)',
+        color: 'var(--text-secondary, #a1a1aa)',
+        boxShadow: '0 10px 34px -24px rgba(0,0,0,0.9)',
+      }}
+    >
+      <div
+        className="flex h-7 items-center gap-2 rounded-md border px-2 text-[10px] font-medium"
+        style={{
+          borderColor: 'var(--border-subtle, #2a2b38)',
+          background: 'color-mix(in srgb, var(--bg-app, #0a0b10) 92%, transparent)',
+          color: 'var(--text-secondary, #a1a1aa)',
+        }}
+      >
+        <motion.span
+          aria-hidden="true"
+          className="h-1.5 w-1.5 rounded-full"
+          animate={status.tone === 'info' || status.tone === 'warning' ? { opacity: [0.35, 1, 0.35] } : { opacity: 1 }}
+          transition={{ duration: 1.2, repeat: status.tone === 'info' || status.tone === 'warning' ? Infinity : 0 }}
+          style={{ background: status.color }}
+        />
+        <span>{status.label}</span>
+      </div>
+      <TerminalUtilityButton title="Customize terminal colors" onClick={onOpenColors} tone="active">
+        <Palette className="h-3.5 w-3.5" />
+      </TerminalUtilityButton>
+      {canStop && (
+        <TerminalUtilityButton
+          title="Stop runtime"
+          onClick={onStopRuntime}
+          disabled={stoppingRuntime}
+          tone="danger"
+        >
+          <Power className="h-3.5 w-3.5" />
+        </TerminalUtilityButton>
+      )}
+    </motion.div>
+  );
+}
+
+function TerminalOAuthPrompt({ prompt, onOpen, onDismiss }) {
+  return (
+    <AnimatePresence>
+      {prompt && (
+        <motion.div
+          key={prompt.id}
+          initial={{ opacity: 0, y: 18, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 12, scale: 0.98 }}
+          transition={{ duration: 0.22, ease: TERMINAL_MOTION_EASE }}
+          className="absolute bottom-4 left-4 z-20 w-[390px] max-w-[calc(100%-32px)] overflow-hidden rounded-lg border shadow-2xl"
+          style={{
+            background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 91%, var(--bg-app, #0a0b10))',
+            borderColor: 'color-mix(in srgb, var(--accent-primary, #6c6885) 34%, var(--border-medium, #3f3f46))',
+            color: 'var(--text-primary, #e4e4e7)',
+          }}
+          role="status"
+          aria-live="polite"
+        >
+          <div
+            aria-hidden="true"
+            className="h-px w-full"
+            style={{ background: 'var(--brand-gradient-horizontal)' }}
+          />
+          <div className="flex items-start gap-3 px-3 py-3">
+            <div
+              className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
+              style={{
+                borderColor: 'color-mix(in srgb, var(--accent-primary, #6c6885) 42%, transparent)',
+                color: 'var(--text-primary, #f4f5f8)',
+                background: 'color-mix(in srgb, var(--bg-app, #0a0b10) 76%, var(--bg-elevated, #18181b))',
+              }}
+            >
+              <Terminal className="h-3.5 w-3.5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <div className="text-[12px] font-semibold">Terminal sign-in detected</div>
+                <span
+                  className="rounded-full px-1.5 py-0.5 text-[9px] font-medium"
+                  style={{
+                    background: 'color-mix(in srgb, var(--accent-primary, #6c6885) 14%, var(--bg-app, #0a0b10))',
+                    color: 'var(--text-secondary, #a1a1aa)',
+                  }}
+                >
+                  helper
+                </span>
+              </div>
+              <p className="mt-1.5 text-[11px] leading-5" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+                {prompt.opened
+                  ? 'Helper opened. Finish browser sign-in, then return to this terminal.'
+                  : 'This command is waiting on a local callback. Vectant can route it back into this workspace.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="rounded-md p-1 opacity-70 transition-opacity hover:opacity-100"
+              style={{ color: 'var(--text-muted, #6b7089)' }}
+              aria-label="Dismiss terminal sign-in prompt"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div
+            className="flex items-center justify-between gap-2 border-t px-3 py-2.5"
+            style={{ borderColor: 'var(--border-subtle, #2a2b38)' }}
+          >
+            <span className="truncate text-[10px]" style={{ color: 'var(--text-muted, #6b7089)' }}>
+              Callback relay is scoped to this terminal session.
+            </span>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={onDismiss}
+                className="h-8 rounded-md px-3 text-[11px] font-medium transition-colors hover:bg-white/5"
+                style={{ color: 'var(--text-secondary, #a1a1aa)' }}
+              >
+                Later
+              </button>
+              <motion.button
+                type="button"
+                whileTap={{ scale: 0.97 }}
+                onClick={onOpen}
+                className="h-8 rounded-md px-3 text-[11px] font-semibold transition-opacity hover:opacity-90"
+                style={{
+                  background: 'var(--text-primary, #f4f5f8)',
+                  color: 'var(--bg-app, #0a0b10)',
+                }}
+              >
+                Open sign-in
+              </motion.button>
+            </div>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function TerminalActivityHint({ state, stoppingRuntime }) {
+  const active = state === 'connecting' || stoppingRuntime;
+  const label = stoppingRuntime ? 'Stopping runtime' : 'Connecting terminal';
+
+  return (
+    <AnimatePresence>
+      {active && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 8 }}
+          transition={{ duration: 0.18, ease: TERMINAL_MOTION_EASE }}
+          className="absolute bottom-2 right-3 z-10 flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[10px]"
+          style={{
+            background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 92%, var(--bg-app, #0a0b10))',
+            borderColor: 'var(--border-subtle, #2a2b38)',
+            color: 'var(--text-secondary, #a1a1aa)',
+          }}
+        >
+          <Zap className="h-3 w-3" style={{ color: 'var(--accent-primary, #6c6885)' }} />
+          <span>{label}</span>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
 
 /**
  * Reusable: drag a panel by its titlebar within the viewport.
@@ -1300,101 +1426,128 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
   return createPortal(
     <div
       ref={panelRef}
-      className="fixed rounded-lg border shadow-2xl flex flex-col"
+      className="fixed"
       style={{
         ...placement,
-        width: 460,
+        width: 480,
         maxWidth: 'calc(100vw - 16px)',
         maxHeight: 'calc(100vh - 16px)',
-        background: 'var(--bg-elevated, #18181b)',
-        borderColor: 'var(--border-medium, #3f3f46)',
         zIndex: 2147483646,
       }}
     >
-      <div
-        onMouseDown={onTitleMouseDown}
-        className="flex items-center gap-2 px-3 py-2 border-b rounded-t-lg select-none"
+      <motion.div
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 8, scale: 0.98 }}
+        transition={{ duration: 0.18, ease: TERMINAL_MOTION_EASE }}
+        className="flex max-h-[calc(100vh-16px)] flex-col overflow-hidden rounded-lg border shadow-2xl"
         style={{
-          borderColor: 'var(--border-subtle, #2a2b38)',
-          background: 'var(--bg-app, #0a0b10)',
-          cursor: 'move',
+          background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 92%, var(--bg-app, #0a0b10))',
+          borderColor: 'var(--border-medium, #3f3f46)',
+          color: 'var(--text-primary, #e4e4e7)',
         }}
       >
-        <ClipboardPaste className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--accent-warning, #fbbf24)' }} />
-        <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
-          Paste multi-line text?
-        </span>
-        <button
-          type="button"
-          onClick={onCancel}
-          onMouseDown={(e) => e.stopPropagation()}
-          aria-label="Cancel paste"
-          className="rounded p-0.5 hover:bg-white/10"
-          style={{ color: 'var(--text-muted, #6b7089)' }}
-        >
-          <X className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      <div className="p-3 overflow-auto flex-1 min-h-0">
-        <p className="text-xs mb-2 leading-relaxed" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
-          {lineCount} lines ({charCount} chars). Each newline is sent as Enter
-          and may execute immediately.
-        </p>
-
-        <pre
-          className="font-mono text-[11px] leading-snug whitespace-pre overflow-auto rounded-md p-2 mb-2"
+        <div
+          aria-hidden="true"
+          className="h-px w-full"
+          style={{ background: 'var(--brand-gradient-horizontal)' }}
+        />
+        <div
+          onMouseDown={onTitleMouseDown}
+          className="flex items-start gap-3 border-b px-3 py-3 select-none"
           style={{
-            background: 'var(--bg-app, #0a0b10)',
-            border: '1px solid var(--border-subtle, #2a2b38)',
-            color: 'var(--text-primary, #e4e4e7)',
-            maxHeight: 200,
+            borderColor: 'var(--border-subtle, #2a2b38)',
+            cursor: 'move',
           }}
         >
-          {preview}
-        </pre>
-
-        {truncated && (
-          <p className="text-[10px] mb-2" style={{ color: 'var(--text-muted, #6b7089)' }}>
-            Preview truncated — full payload will still be pasted.
-          </p>
-        )}
-
-        <label
-          className="flex items-center gap-2 text-[11px] mb-3 cursor-pointer select-none"
-          style={{ color: 'var(--text-secondary, #a1a1aa)' }}
-        >
-          <input
-            type="checkbox"
-            checked={autoApprove}
-            onChange={(e) => setAutoApprove(e.target.checked)}
-            className="cursor-pointer"
-          />
-          Auto-approve multi-line pastes for the rest of this session
-        </label>
-
-        <div className="flex items-center justify-end gap-2">
+          <div
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--accent-warning, #fbbf24) 26%, transparent)',
+              color: 'var(--accent-warning, #fbbf24)',
+              background: 'color-mix(in srgb, var(--accent-warning, #fbbf24) 8%, var(--bg-app, #0a0b10))',
+            }}
+          >
+            <ClipboardPaste className="h-3.5 w-3.5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[12px] font-semibold">Review multi-line paste</div>
+            <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+              {lineCount} lines, {charCount} characters. Newlines are sent as Enter and may run commands immediately.
+            </p>
+          </div>
           <button
             type="button"
             onClick={onCancel}
-            autoFocus
-            className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors border"
-            style={{ borderColor: 'var(--border-medium, #3f3f46)', color: 'var(--text-secondary, #a1a1aa)' }}
+            onMouseDown={(e) => e.stopPropagation()}
+            aria-label="Cancel paste"
+            className="rounded-md p-1 opacity-70 transition-opacity hover:bg-white/5 hover:opacity-100"
+            style={{ color: 'var(--text-muted, #6b7089)' }}
           >
-            Cancel
-            <span className="ml-1.5 text-[10px] opacity-60">Esc</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onConfirm({ autoApprove })}
-            className="px-3 py-1.5 rounded-md text-xs font-semibold transition-colors text-white"
-            style={{ background: 'var(--accent-warning, #d97706)' }}
-          >
-            Paste
-            <span className="ml-1.5 text-[10px] opacity-80">Ctrl+Enter</span>
+            <X className="h-3.5 w-3.5" />
           </button>
         </div>
-      </div>
+
+        <div className="min-h-0 flex-1 overflow-auto p-3">
+          <pre
+            className="mb-2 max-h-[220px] overflow-auto rounded-md border p-2 font-mono text-[11px] leading-5 whitespace-pre"
+            style={{
+              background: 'var(--bg-app, #0a0b10)',
+              borderColor: 'var(--border-subtle, #2a2b38)',
+              color: 'var(--text-primary, #e4e4e7)',
+            }}
+          >
+            {preview}
+          </pre>
+
+          {truncated && (
+            <p className="mb-2 text-[10px]" style={{ color: 'var(--text-muted, #6b7089)' }}>
+              Preview truncated. The full payload will still be pasted.
+            </p>
+          )}
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <label
+              className="flex items-center gap-2 text-[11px] cursor-pointer select-none"
+              style={{ color: 'var(--text-secondary, #a1a1aa)' }}
+            >
+              <input
+                type="checkbox"
+                checked={autoApprove}
+                onChange={(e) => setAutoApprove(e.target.checked)}
+                className="cursor-pointer"
+              />
+              Trust multi-line pastes for this page session
+            </label>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={onCancel}
+                autoFocus
+                className="h-8 rounded-md border px-3 text-xs font-medium transition-colors hover:bg-white/[0.04]"
+                style={{ borderColor: 'var(--border-medium, #3f3f46)', color: 'var(--text-secondary, #a1a1aa)' }}
+              >
+                Cancel
+                <span className="ml-1.5 text-[10px] opacity-60">Esc</span>
+              </button>
+              <motion.button
+                type="button"
+                whileTap={{ scale: 0.97 }}
+                onClick={() => onConfirm({ autoApprove })}
+                className="h-8 rounded-md px-3 text-xs font-semibold transition-opacity hover:opacity-90"
+                style={{
+                  background: 'var(--text-primary, #f4f5f8)',
+                  color: 'var(--bg-app, #0a0b10)',
+                }}
+              >
+                Paste
+                <span className="ml-1.5 text-[10px] opacity-70">Ctrl+Enter</span>
+              </motion.button>
+            </div>
+          </div>
+        </div>
+      </motion.div>
     </div>,
     document.body
   );
@@ -1591,45 +1744,75 @@ function ConnectionStatusPanel({ state, onReconnect }) {
   return createPortal(
     <div
       ref={panelRef}
-      className="fixed rounded-lg border shadow-2xl flex flex-col"
+      className="fixed"
       style={{
         ...placement,
-        width: 340,
+        width: 360,
         maxWidth: 'calc(100vw - 16px)',
-        background: 'var(--bg-elevated, #18181b)',
-        borderColor: 'var(--border-medium, #3f3f46)',
         zIndex: 120,
       }}
     >
-      <div
-        onMouseDown={onTitleMouseDown}
-        className="flex items-center gap-2 px-3 py-2 border-b rounded-t-lg select-none"
+      <motion.div
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.18, ease: TERMINAL_MOTION_EASE }}
+        className="flex flex-col overflow-hidden rounded-lg border shadow-2xl"
         style={{
-          borderColor: 'var(--border-subtle, #2a2b38)',
-          background: 'var(--bg-app, #0a0b10)',
-          cursor: 'move',
+          background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 92%, var(--bg-app, #0a0b10))',
+          borderColor: 'var(--border-medium, #3f3f46)',
+          color: 'var(--text-primary, #e4e4e7)',
         }}
       >
-        <WifiOff className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--text-muted, #6b7089)' }} />
-        <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
-          {title}
-        </span>
-      </div>
-
-      <div className="p-4 flex flex-col items-center gap-3 text-center">
-        <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted, #6b7089)' }}>
-          {body}
-        </p>
-        <button
-          type="button"
-          onClick={onReconnect}
-          className="flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium text-white transition-colors"
-          style={{ background: 'var(--accent-primary, #b545ff)' }}
+        <div
+          aria-hidden="true"
+          className="h-px w-full"
+          style={{ background: 'var(--brand-gradient-horizontal)' }}
+        />
+        <div
+          onMouseDown={onTitleMouseDown}
+          className="flex items-start gap-3 border-b px-3 py-3 select-none"
+          style={{
+            borderColor: 'var(--border-subtle, #2a2b38)',
+            cursor: 'move',
+          }}
         >
-          <RefreshCw className="w-3.5 h-3.5" />
-          {actionLabel}
-        </button>
-      </div>
+          <div
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--text-muted, #6b7089) 35%, transparent)',
+              color: 'var(--text-secondary, #a1a1aa)',
+              background: 'color-mix(in srgb, var(--bg-app, #0a0b10) 76%, var(--bg-elevated, #18181b))',
+            }}
+          >
+            <WifiOff className="h-3.5 w-3.5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[12px] font-semibold">{title}</div>
+            <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+              {body}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+          <span className="text-[10px]" style={{ color: 'var(--text-muted, #6b7089)' }}>
+            Terminal state: {state}
+          </span>
+          <motion.button
+            type="button"
+            whileTap={{ scale: 0.97 }}
+            onClick={onReconnect}
+            className="flex h-8 items-center gap-2 rounded-md px-3 text-xs font-semibold transition-opacity hover:opacity-90"
+            style={{
+              background: 'var(--text-primary, #f4f5f8)',
+              color: 'var(--bg-app, #0a0b10)',
+            }}
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            {actionLabel}
+          </motion.button>
+        </div>
+      </motion.div>
     </div>,
     document.body
   );
