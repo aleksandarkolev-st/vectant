@@ -130,6 +130,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const inputBufferRef = useRef('');
   const oauthOutputBufferRef = useRef('');
   const oauthRelaySeenLinksRef = useRef(new Set());
+  const openTerminalLinkRef = useRef(null);
   const initializedRef = useRef(false);
   // ─── Ctrl+Z undo stack ───────────────────────────────────────────────
   // Each entry is one undoable input segment: a single typed character or
@@ -264,13 +265,26 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     try { terminalRef.current?.term?.focus(); } catch (_) {}
   }, []);
 
-  const markOauthRelayPromptOpened = useCallback(() => {
-    const prompt = oauthRelayPrompt;
-    if (!prompt?.bridgeUrl) return;
+  const openOauthRelayPrompt = useCallback((event) => {
+    event?.preventDefault?.();
+    const prompt = oauthRelayPromptRef.current;
+    if (!prompt?.originalUrl) return;
     setOauthRelayPrompt((current) => (
       current?.id === prompt.id ? { ...current, opened: true } : current
     ));
-  }, [oauthRelayPrompt]);
+
+    const openTerminalLink = openTerminalLinkRef.current;
+    if (typeof openTerminalLink === 'function') {
+      openTerminalLink(prompt.originalUrl);
+      return;
+    }
+
+    if (prompt.bridgeUrl) {
+      try {
+        window.open(prompt.bridgeUrl, '_blank', 'noopener,noreferrer');
+      } catch (_) {}
+    }
+  }, []);
 
   // ─── Cleanup helper ───────────────────────────────────────────────────
   const disposeInputHandlers = useCallback(() => {
@@ -303,6 +317,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     }
     sessionIdRef.current = null;
     currentSessionIdRef.current = null;
+    openTerminalLinkRef.current = null;
   }, [disposeInputHandlers]);
 
   // ─── Send resize to server ───────────────────────────────────────────
@@ -475,6 +490,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           }
         }
       };
+      openTerminalLinkRef.current = openTerminalLink;
 
       // ── Create xterm instance ───────────────────────────────────────
       const initialTheme = applyOverridesToTheme(
@@ -1119,7 +1135,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       <TerminalOAuthPrompt
         prompt={oauthRelayPrompt}
-        onOpen={markOauthRelayPromptOpened}
+        onOpen={openOauthRelayPrompt}
         onDismiss={dismissOauthRelayPrompt}
       />
 
@@ -1319,10 +1335,8 @@ function TerminalOAuthPrompt({ prompt, onOpen, onDismiss }) {
               >
                 Later
               </button>
-              <motion.a
-                href={prompt.bridgeUrl}
-                target="_blank"
-                rel="noopener noreferrer"
+              <motion.button
+                type="button"
                 whileTap={{ scale: 0.97 }}
                 onClick={onOpen}
                 className="inline-flex h-8 items-center rounded-md px-3 text-[11px] font-semibold transition-opacity hover:opacity-90"
@@ -1332,7 +1346,7 @@ function TerminalOAuthPrompt({ prompt, onOpen, onDismiss }) {
                 }}
               >
                 Open sign-in
-              </motion.a>
+              </motion.button>
             </div>
           </div>
         </motion.div>
