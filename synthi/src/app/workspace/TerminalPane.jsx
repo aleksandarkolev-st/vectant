@@ -12,6 +12,7 @@ import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 import {
   isRuntimeLoopbackUrl,
+  buildLoopbackCallbackBridgeUrl,
   findTerminalLoopbackAuthLinks,
   parseTerminalUrl,
   resolveTerminalLinkUrl,
@@ -240,14 +241,9 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     try { terminalRef.current?.term?.focus(); } catch (_) {}
   }, []);
 
-  const openOauthRelayPrompt = useCallback(() => {
+  const markOauthRelayPromptOpened = useCallback(() => {
     const prompt = oauthRelayPrompt;
     if (!prompt?.bridgeUrl) return;
-    const popup = window.open(prompt.bridgeUrl, '_blank', 'noopener,noreferrer');
-    if (!popup) {
-      toast.warning('Browser blocked the sign-in helper popup');
-      return;
-    }
     setOauthRelayPrompt((current) => (
       current?.id === prompt.id ? { ...current, opened: true } : current
     ));
@@ -395,10 +391,24 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           const parsedLink = parseTerminalUrl(uri);
           const isHttpLink = parsedLink?.protocol === 'http:' || parsedLink?.protocol === 'https:';
           if (isHttpLink && terminalLinkHasNestedLoopbackCallback(uri)) {
-            const popup = window.open('about:blank', '_blank');
-            if (!popup) {
-              toast.warning('Browser blocked the sign-in helper popup');
+            const bridgeUrl = buildLoopbackCallbackBridgeUrl(
+              uri,
+              linkContext.runtimeScope,
+              linkContext.bridgeBaseUrl,
+              linkContext,
+            );
+            if (bridgeUrl) {
+              oauthRelaySeenLinksRef.current.add(bridgeUrl);
+              setOauthRelayPrompt({
+                id: bridgeUrl,
+                bridgeUrl,
+                originalUrl: uri,
+                opened: false,
+                detectedAt: Date.now(),
+              });
+              return;
             }
+            const popup = window.open('about:blank', '_blank');
             openManualLoopbackFallback(uri, linkContext, popup)
               .then(() => {
                 toast.success('Opened terminal sign-in helper');
@@ -1085,7 +1095,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       <TerminalOAuthPrompt
         prompt={oauthRelayPrompt}
-        onOpen={openOauthRelayPrompt}
+        onOpen={markOauthRelayPromptOpened}
         onDismiss={dismissOauthRelayPrompt}
       />
 
@@ -1285,18 +1295,20 @@ function TerminalOAuthPrompt({ prompt, onOpen, onDismiss }) {
               >
                 Later
               </button>
-              <motion.button
-                type="button"
+              <motion.a
+                href={prompt.bridgeUrl}
+                target="_blank"
+                rel="noopener noreferrer"
                 whileTap={{ scale: 0.97 }}
                 onClick={onOpen}
-                className="h-8 rounded-md px-3 text-[11px] font-semibold transition-opacity hover:opacity-90"
+                className="inline-flex h-8 items-center rounded-md px-3 text-[11px] font-semibold transition-opacity hover:opacity-90"
                 style={{
                   background: 'var(--text-primary, #f4f5f8)',
                   color: 'var(--bg-app, #0a0b10)',
                 }}
               >
                 Open sign-in
-              </motion.button>
+              </motion.a>
             </div>
           </div>
         </motion.div>
