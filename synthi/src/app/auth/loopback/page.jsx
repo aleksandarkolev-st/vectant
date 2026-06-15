@@ -22,8 +22,8 @@ const stepList = {
   hidden: {},
   visible: { transition: { staggerChildren: 0.08, delayChildren: 0.08 } },
 };
-const uiFont = "'Inter', 'Geist', 'SF Pro Display', 'Segoe UI', sans-serif";
-const monoFont = "'IBM Plex Mono', 'JetBrains Mono', 'SF Mono', monospace";
+const uiFont = "var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif)";
+const monoFont = "var(--font-geist-mono, 'SF Mono', 'JetBrains Mono', monospace)";
 
 function MiniIcon({ name, className = '' }) {
   const common = {
@@ -128,12 +128,17 @@ function VectantMark() {
 function StepNumber({ value, complete = false }) {
   return (
     <span
-      className={`flex h-7 w-7 shrink-0 items-center justify-center border font-mono text-[11px] font-semibold ${
-        complete
-          ? 'border-[#9be8c4] bg-[#101f1b] text-[#9be8c4]'
-          : 'border-[#2b2d3e] bg-[#0a0b11] text-[#f4f5f8]'
-      }`}
-      style={{ fontFamily: monoFont }}
+      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-[12px] font-semibold"
+      style={{
+        fontFamily: monoFont,
+        borderColor: complete
+          ? 'color-mix(in srgb, var(--accent-success, #4ade80) 34%, var(--border-medium, #2b2d3e))'
+          : 'var(--border-medium, #2b2d3e)',
+        background: complete
+          ? 'color-mix(in srgb, var(--accent-success, #4ade80) 12%, var(--bg-app, #06060a))'
+          : 'color-mix(in srgb, var(--bg-panel, #0d0e15) 90%, var(--bg-app, #06060a))',
+        color: complete ? 'var(--accent-success, #4ade80)' : 'var(--text-primary, #f4f5f8)',
+      }}
     >
       {complete ? <MiniIcon name="check" className="h-3.5 w-3.5" /> : value}
     </span>
@@ -763,93 +768,177 @@ function LoopbackAuthPage() {
     try { window.close(); } catch {}
   };
 
+  const relayDisplay = relayStatus === 'loading'
+    ? 'Preparing'
+    : relayStatus === 'ready'
+      ? 'Ready'
+      : relayStatus === 'error'
+        ? 'Needs attention'
+        : 'Starting';
+  const callbackDisplay = isComplete ? 'Delivered' : hasValidCallback ? 'Ready' : 'Waiting';
+  const extensionDisplay = extensionStatus.armed
+    ? 'Auto-capture enabled'
+    : extensionStatus.installed
+      ? 'Extension detected'
+      : 'Manual mode';
+
   return (
     <motion.main
       initial="hidden"
       animate="visible"
-      className="relative min-h-screen overflow-hidden bg-[#06060a] px-5 py-12 text-[#f4f5f8] md:py-20"
-      style={{ fontFamily: uiFont }}
+      className="relative min-h-screen overflow-hidden px-4 py-8 md:px-6 md:py-12"
+      style={{
+        fontFamily: uiFont,
+        background: 'var(--bg-app, #06060a)',
+        color: 'var(--text-primary, #f4f5f8)',
+      }}
     >
       <div
         aria-hidden="true"
-        className="pointer-events-none fixed inset-x-0 top-0 h-48 opacity-[0.018]"
+        className="pointer-events-none fixed inset-x-0 top-0 h-px"
+        style={{ background: 'var(--brand-gradient-horizontal)' }}
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-x-0 top-0 h-64 opacity-40"
         style={{
-          backgroundImage:
-            'repeating-linear-gradient(0deg, transparent, transparent 3px, #f4f5f8 3px, #f4f5f8 4px)',
+          background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated, #1a1c2a) 62%, transparent), transparent)',
         }}
       />
       <motion.section
         variants={fadeUp}
-        className="relative mx-auto grid w-full max-w-[940px] border border-[#2b2d3e] bg-[#0d0e15]"
+        className="relative mx-auto w-full max-w-[940px] overflow-hidden rounded-lg border"
+        style={{
+          background: 'color-mix(in srgb, var(--bg-panel, #0d0e15) 96%, var(--bg-app, #06060a))',
+          borderColor: 'var(--border-medium, #2b2d3e)',
+          boxShadow: 'var(--depth-shadow-3, 0 18px 70px -36px rgba(0,0,0,0.85))',
+        }}
       >
-        <div className="grid border-b border-[#2b2d3e] md:grid-cols-[1fr_260px]">
-          <div className="p-6 md:p-8">
+        <div
+          aria-hidden="true"
+          className="h-px w-full"
+          style={{ background: 'var(--brand-gradient-horizontal)' }}
+        />
+
+        <header
+          className="grid gap-6 border-b p-5 md:grid-cols-[1fr_280px] md:p-7"
+          style={{ borderColor: 'var(--border-subtle, #1a1c2a)' }}
+        >
+          <div className="min-w-0">
             <div className="flex items-center gap-3">
               <VectantMark />
               <div>
                 <div
-                  className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#5dd6e4]"
-                  style={{ fontFamily: monoFont }}
+                  className="text-[12px] font-semibold tracking-[0.04em]"
+                  style={{ color: 'var(--text-primary, #f4f5f8)' }}
                 >
                   Vectant ADE
                 </div>
-                <div className="mt-1 text-[12px] text-[#5a6178]">Terminal OAuth relay</div>
+                <div className="mt-1 text-[12px]" style={{ color: 'var(--text-muted, #5a6178)' }}>
+                  Workspace auth relay
+                </div>
               </div>
             </div>
-            <h1 className="mt-6 text-[26px] font-semibold leading-tight tracking-normal text-[#f4f5f8] md:text-[34px]">
-              Terminal sign-in
+            <h1 className="mt-6 text-[24px] font-semibold leading-tight tracking-normal md:text-[30px]">
+              Complete terminal sign-in
             </h1>
-            <p className="mt-4 max-w-[620px] text-[14px] leading-6 text-[#a8adc0]">
-              Keep this tab open. Sign in with your browser, then copy the redirected localhost URL and send it back to the workspace runtime.
+            <p className="mt-3 max-w-[620px] text-[14px] leading-6" style={{ color: 'var(--text-secondary, #9ba2b8)' }}>
+              Keep this tab open. Sign in in your browser, then send the redirected localhost URL back to this workspace.
             </p>
           </div>
+
           <div
-            className="hidden border-l border-[#2b2d3e] bg-[#0a0b11] p-4 text-[11px] uppercase leading-5 tracking-[0.08em] text-[#9ba2b8] md:block"
-            style={{ fontFamily: monoFont }}
+            className="rounded-lg border p-3"
+            style={{
+              borderColor: 'var(--border-subtle, #1a1c2a)',
+              background: 'color-mix(in srgb, var(--bg-app, #06060a) 62%, var(--bg-panel, #0d0e15))',
+            }}
           >
-            <div className="mb-3 text-[#5a6178]">Relay status</div>
-            <dl className="grid gap-2">
-              <div className="grid grid-cols-[86px_1fr] gap-2">
-                <dt className="text-[#5a6178]">Listening</dt>
-                <dd className="truncate text-[#f4f5f8]">{expectedHost}:{expectedPort}</dd>
-              </div>
-              <div className="grid grid-cols-[86px_1fr] gap-2">
-                <dt className="text-[#5a6178]">Callback</dt>
-                <dd className={callbackState === 'delivered' || callbackState === 'ready' ? 'text-[#9be8c4]' : 'text-[#9ba2b8]'}>
-                  {callbackState}
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <span className="text-[12px] font-medium" style={{ color: 'var(--text-secondary, #9ba2b8)' }}>
+                Relay status
+              </span>
+              <span
+                className="inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] font-medium"
+                style={{
+                  borderColor: relayStatus === 'error'
+                    ? 'color-mix(in srgb, var(--accent-danger, #ff5757) 35%, var(--border-medium, #2b2d3e))'
+                    : 'var(--border-subtle, #1a1c2a)',
+                  color: relayStatus === 'error' ? 'var(--accent-danger, #ff5757)' : 'var(--text-secondary, #9ba2b8)',
+                  background: 'color-mix(in srgb, var(--bg-elevated, #1a1c2a) 42%, transparent)',
+                }}
+              >
+                <span
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{
+                    background: relayStatus === 'ready'
+                      ? 'var(--accent-success, #4ade80)'
+                      : relayStatus === 'error'
+                        ? 'var(--accent-danger, #ff5757)'
+                        : 'var(--accent-primary, #6c6885)',
+                  }}
+                />
+                {relayDisplay}
+              </span>
+            </div>
+            <dl className="grid gap-2 text-[12px]">
+              <div className="grid grid-cols-[76px_1fr] gap-2">
+                <dt style={{ color: 'var(--text-muted, #5a6178)' }}>Listening</dt>
+                <dd className="truncate font-medium" style={{ color: 'var(--text-primary, #f4f5f8)', fontFamily: monoFont }}>
+                  {expectedHost}:{expectedPort}
                 </dd>
               </div>
-              <div className="grid grid-cols-[86px_1fr] gap-2">
-                <dt className="text-[#5a6178]">Session</dt>
-                <dd className={sessionState === 'not linked' ? 'text-[#9ba2b8]' : 'text-[#9be8c4]'}>
+              <div className="grid grid-cols-[76px_1fr] gap-2">
+                <dt style={{ color: 'var(--text-muted, #5a6178)' }}>Callback</dt>
+                <dd
+                  className="font-medium"
+                  style={{
+                    color: callbackState === 'delivered' || callbackState === 'ready'
+                      ? 'var(--accent-success, #4ade80)'
+                      : 'var(--text-secondary, #9ba2b8)',
+                  }}
+                >
+                  {callbackDisplay}
+                </dd>
+              </div>
+              <div className="grid grid-cols-[76px_1fr] gap-2">
+                <dt style={{ color: 'var(--text-muted, #5a6178)' }}>Session</dt>
+                <dd
+                  className="font-medium"
+                  style={{
+                    color: sessionState === 'not linked'
+                      ? 'var(--text-secondary, #9ba2b8)'
+                      : 'var(--accent-success, #4ade80)',
+                  }}
+                >
                   {sessionState}
                 </dd>
               </div>
-              <div className="grid grid-cols-[86px_1fr] gap-2">
-                <dt className="text-[#5a6178]">Tokens</dt>
-                <dd className="text-[#9ba2b8]">not logged</dd>
+              <div className="grid grid-cols-[76px_1fr] gap-2">
+                <dt style={{ color: 'var(--text-muted, #5a6178)' }}>Privacy</dt>
+                <dd className="font-medium" style={{ color: 'var(--text-secondary, #9ba2b8)' }}>tokens not logged</dd>
               </div>
             </dl>
           </div>
-        </div>
+        </header>
 
         <motion.div variants={stepList} className="grid">
           <motion.article
             variants={fadeUp}
-            className={`border-b border-[#2b2d3e] bg-[#0a0b11] p-4 transition-opacity md:p-5 ${
-              isComplete ? 'opacity-55' : ''
-            }`}
+            className="border-b p-4 md:p-5"
+            style={{
+              borderColor: 'var(--border-subtle, #1a1c2a)',
+              background: isComplete
+                ? 'color-mix(in srgb, var(--bg-app, #06060a) 52%, var(--bg-panel, #0d0e15))'
+                : 'color-mix(in srgb, var(--bg-panel, #0d0e15) 88%, var(--bg-app, #06060a))',
+              opacity: isComplete ? 0.64 : 1,
+            }}
           >
             <div className="grid gap-4 md:grid-cols-[28px_1fr_auto] md:items-center">
               <StepNumber value="1" complete={opened || isComplete} />
               <div className="min-w-0">
-                <h2
-                  className="text-[12px] font-semibold uppercase tracking-[0.1em] text-[#f4f5f8]"
-                  style={{ fontFamily: monoFont }}
-                >
-                  Open sign-in
-                </h2>
-                <p className="mt-1 text-[13px] leading-5 text-[#9ba2b8]">
+                <h2 className="text-[14px] font-semibold">Open sign-in</h2>
+                <p className="mt-1 text-[13px] leading-5" style={{ color: 'var(--text-secondary, #9ba2b8)' }}>
                   Copy the redirected localhost URL after browser authorization.
                 </p>
               </div>
@@ -860,26 +949,36 @@ function LoopbackAuthPage() {
                   whileTap={{ scale: 0.98 }}
                   onClick={openAuth}
                   disabled={relayStatus === 'loading' || isComplete}
-                  className={`inline-flex h-9 items-center gap-2 border px-3 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
-                    opened || hasValidCallback || isComplete
-                      ? 'border-[#2b2d3e] bg-[#101119] text-[#9ba2b8] hover:bg-[#131420]'
-                      : 'border-[#3a3d55] bg-[#131420] text-[#f4f5f8] hover:border-[#5dd6e4] hover:text-[#5dd6e4]'
-                  }`}
-                  style={{ fontFamily: monoFont }}
+                  className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-[12px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45"
+                  style={{
+                    borderColor: opened || hasValidCallback || isComplete
+                      ? 'var(--border-subtle, #1a1c2a)'
+                      : 'var(--border-focus, #3a3d55)',
+                    background: opened || hasValidCallback || isComplete
+                      ? 'color-mix(in srgb, var(--bg-elevated, #1a1c2a) 44%, transparent)'
+                      : 'var(--text-primary, #f4f5f8)',
+                    color: opened || hasValidCallback || isComplete
+                      ? 'var(--text-secondary, #9ba2b8)'
+                      : 'var(--bg-app, #06060a)',
+                  }}
                 >
                   {relayStatus === 'loading' ? <Spinner /> : <MiniIcon name="external" className="h-4 w-4" />}
-                  Open
+                  Open sign-in
                 </motion.button>
                 <motion.button
                   type="button"
                   whileTap={{ scale: 0.98 }}
                   onClick={openWorkspaceBrowser}
                   disabled={browserStatus === 'loading' || isComplete}
-                  className="inline-flex h-9 items-center gap-2 border border-[#2b2d3e] bg-[#101119] px-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#9ba2b8] transition-colors hover:border-[#3a3d55] hover:text-[#f4f5f8] disabled:cursor-not-allowed disabled:opacity-45"
-                  style={{ fontFamily: monoFont }}
+	                  className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-[12px] font-medium transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+                  style={{
+                    borderColor: 'var(--border-medium, #2b2d3e)',
+                    background: 'color-mix(in srgb, var(--bg-elevated, #1a1c2a) 36%, transparent)',
+                    color: 'var(--text-secondary, #9ba2b8)',
+                  }}
                 >
                   {browserStatus === 'loading' ? <Spinner /> : <MiniIcon name="browser" className="h-4 w-4" />}
-                  Remote browser
+                  Workspace browser
                 </motion.button>
               </div>
 
@@ -895,8 +994,12 @@ function LoopbackAuthPage() {
                     setMessageTone('error');
                     setMessage('');
                   }}
-                  className="md:col-start-2 mt-1 inline-flex h-8 w-fit items-center gap-2 border border-[#ff5757] bg-[#261215] px-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#ff8a8a]"
-                  style={{ fontFamily: monoFont }}
+                  className="mt-1 inline-flex h-8 w-fit items-center gap-2 rounded-md border px-2 text-[12px] font-medium md:col-start-2"
+                  style={{
+                    borderColor: 'color-mix(in srgb, var(--accent-danger, #ff5757) 44%, var(--border-medium, #2b2d3e))',
+                    background: 'color-mix(in srgb, var(--accent-danger, #ff5757) 10%, var(--bg-app, #06060a))',
+                    color: 'var(--accent-danger, #ff5757)',
+                  }}
                 >
                   <MiniIcon name="retry" className="h-3.5 w-3.5" />
                   Retry relay session
@@ -907,21 +1010,20 @@ function LoopbackAuthPage() {
 
           <motion.article
             variants={fadeUp}
-            className={`border-b border-[#2b2d3e] bg-[#0d0e15] p-4 md:p-6 ${
-              isComplete ? 'bg-[#0a0b11]' : ''
-            }`}
+            className="border-b p-4 md:p-6"
+            style={{
+              borderColor: 'var(--border-subtle, #1a1c2a)',
+              background: isComplete
+                ? 'color-mix(in srgb, var(--bg-app, #06060a) 58%, var(--bg-panel, #0d0e15))'
+                : 'var(--bg-panel, #0d0e15)',
+            }}
           >
             <div className="grid gap-4 md:grid-cols-[28px_1fr]">
               <StepNumber value="2" complete={isComplete} />
               <div className="min-w-0 flex-1">
                 <div className="flex flex-col gap-1">
-                  <h2
-                    className="text-[13px] font-semibold uppercase tracking-[0.12em] text-[#f4f5f8]"
-                    style={{ fontFamily: monoFont }}
-                  >
-                    Provide callback
-                  </h2>
-                  <p className="text-[13px] leading-5 text-[#9ba2b8]">
+                  <h2 className="text-[15px] font-semibold">Provide callback</h2>
+                  <p className="text-[13px] leading-5" style={{ color: 'var(--text-secondary, #9ba2b8)' }}>
                     Paste the full localhost callback URL from the browser address bar.
                   </p>
                 </div>
@@ -932,82 +1034,113 @@ function LoopbackAuthPage() {
                       key="complete"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -8 }}
-                      transition={{ duration: 0.35, ease: MOTION_EASE }}
-                      className="mt-5 border border-[#9be8c4] bg-[#10211c] p-3 text-[13px] leading-5 text-[#b8f0db]"
-                    >
-                      Callback delivered. Your workspace terminal has been notified.
-                    </motion.div>
+	                      exit={{ opacity: 0, y: -8 }}
+	                      transition={{ duration: 0.35, ease: MOTION_EASE }}
+	                      className="mt-5 rounded-md border p-3 text-[13px] leading-5"
+	                      style={{
+	                        borderColor: 'color-mix(in srgb, var(--accent-success, #4ade80) 38%, var(--border-medium, #2b2d3e))',
+	                        background: 'color-mix(in srgb, var(--accent-success, #4ade80) 10%, var(--bg-app, #06060a))',
+	                        color: 'var(--accent-success, #4ade80)',
+	                      }}
+	                    >
+	                      Callback delivered. Your workspace terminal has been notified.
+	                    </motion.div>
                   ) : (
                     <motion.div
                       key="form"
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -8 }}
-                      transition={{ duration: 0.35, ease: MOTION_EASE }}
-                      className="mt-5"
-                    >
-                      <div className="border border-[#3a3d55] bg-[#0a0b11]">
-                        <div className="flex items-center justify-between gap-3 border-b border-[#2b2d3e] px-3 py-2">
-                          <label
-                            className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#9ba2b8]"
-                            style={{ fontFamily: monoFont }}
-                          >
-                            <samp>INPUT://LOCALHOST_CALLBACK_URL</samp>
-                          </label>
-                          <motion.button
-                            type="button"
-                            whileTap={{ scale: 0.98 }}
-                            onClick={pasteFromClipboard}
-                            className="inline-flex h-7 items-center gap-1.5 border border-[#2b2d3e] bg-[#101119] px-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#f4f5f8] transition-colors hover:border-[#5dd6e4] hover:text-[#5dd6e4]"
-                            style={{ fontFamily: monoFont }}
-                          >
-                            <MiniIcon name="clipboard" className="h-3.5 w-3.5" />
-                            Paste
-                          </motion.button>
-                        </div>
-                        <textarea
-                          ref={callbackInputRef}
-                          value={callbackUrl}
-                          onChange={(event) => setCallbackUrl(event.target.value)}
-                          onPaste={handleCallbackPaste}
-                          onKeyDown={handleCallbackKeyDown}
-                          spellCheck={false}
-                          disabled={isComplete}
-                          className="min-h-[88px] w-full resize-y border-0 bg-[#06060a] p-3 text-[13px] leading-5 text-[#f4f5f8] outline-none placeholder:text-[#5a6178]"
-                          style={{ fontFamily: monoFont }}
-                          placeholder={callbackPlaceholder}
-                        />
-                      </div>
+	                      exit={{ opacity: 0, y: -8 }}
+	                      transition={{ duration: 0.35, ease: MOTION_EASE }}
+	                      className="mt-5"
+	                    >
+	                      <div
+	                        className="overflow-hidden rounded-lg border"
+	                        style={{
+	                          borderColor: callbackUrl.trim() && !callbackValidation.ok
+	                            ? 'color-mix(in srgb, var(--accent-danger, #ff5757) 44%, var(--border-medium, #2b2d3e))'
+	                            : callbackValidation.ok
+	                              ? 'color-mix(in srgb, var(--accent-success, #4ade80) 34%, var(--border-medium, #2b2d3e))'
+	                              : 'var(--border-medium, #2b2d3e)',
+	                          background: 'var(--bg-app, #06060a)',
+	                        }}
+	                      >
+	                        <div
+	                          className="flex items-center justify-between gap-3 border-b px-3 py-2"
+	                          style={{ borderColor: 'var(--border-subtle, #1a1c2a)' }}
+	                        >
+	                          <label
+	                            className="text-[12px] font-medium"
+	                            style={{ color: 'var(--text-secondary, #9ba2b8)' }}
+	                          >
+	                            Localhost callback URL
+	                          </label>
+	                          <motion.button
+	                            type="button"
+	                            whileTap={{ scale: 0.98 }}
+	                            onClick={pasteFromClipboard}
+	                            className="inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-opacity hover:opacity-90"
+	                            style={{
+	                              borderColor: 'var(--border-medium, #2b2d3e)',
+	                              background: 'color-mix(in srgb, var(--bg-elevated, #1a1c2a) 36%, transparent)',
+	                              color: 'var(--text-primary, #f4f5f8)',
+	                            }}
+	                          >
+	                            <MiniIcon name="clipboard" className="h-3.5 w-3.5" />
+	                            Paste
+	                          </motion.button>
+	                        </div>
+	                        <textarea
+	                          ref={callbackInputRef}
+	                          value={callbackUrl}
+	                          onChange={(event) => setCallbackUrl(event.target.value)}
+	                          onPaste={handleCallbackPaste}
+	                          onKeyDown={handleCallbackKeyDown}
+	                          spellCheck={false}
+	                          disabled={isComplete}
+	                          className="min-h-[96px] w-full resize-y border-0 bg-transparent p-3 text-[13px] leading-5 outline-none"
+	                          placeholder={callbackPlaceholder}
+	                          style={{
+	                            fontFamily: monoFont,
+	                            color: 'var(--text-primary, #f4f5f8)',
+	                          }}
+	                        />
+	                      </div>
 
-                      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <p
-                          className={`text-[11px] uppercase leading-5 tracking-[0.08em] ${
-                            callbackValidation.ok
-                              ? 'text-[#9be8c4]'
-                              : callbackUrl.trim()
-                                ? 'text-[#ff8a8a]'
-                                : 'text-[#9ba2b8]'
-                          }`}
-                          style={{ fontFamily: monoFont }}
-                        >
-                          {callbackHelperText}
-                        </p>
+	                      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+	                        <p
+	                          className="text-[12px] leading-5"
+	                          style={{
+	                            color: callbackValidation.ok
+	                              ? 'var(--accent-success, #4ade80)'
+	                              : callbackUrl.trim()
+	                                ? 'var(--accent-danger, #ff5757)'
+	                                : 'var(--text-secondary, #9ba2b8)',
+	                          }}
+	                        >
+	                          {callbackHelperText}
+	                        </p>
                         <motion.button
                           type="button"
                           aria-disabled={!canSubmit}
-                          whileTap={{ scale: 0.98 }}
-                          onClick={() => complete(callbackUrl, { source: 'button' })}
-                          disabled={!canSubmit}
-                          className={`inline-flex h-10 items-center justify-center gap-2 border px-4 text-[11px] font-semibold uppercase tracking-[0.08em] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
-                            hasValidCallback
-                              ? 'border-[#f4f5f8] bg-[#f4f5f8] text-[#06060a] hover:bg-white'
-                              : 'border-[#2b2d3e] bg-[#0a0b11] text-[#5a6178]'
-                          }`}
-                          style={{ fontFamily: monoFont }}
-                        >
-                          {status === 'loading' ? <Spinner /> : <MiniIcon name="check" className="h-4 w-4" />}
-                          Send to workspace
+	                          whileTap={{ scale: 0.98 }}
+	                          onClick={() => complete(callbackUrl, { source: 'button' })}
+	                          disabled={!canSubmit}
+	                          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-[12px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45"
+	                          style={{
+	                            borderColor: hasValidCallback
+	                              ? 'var(--text-primary, #f4f5f8)'
+	                              : 'var(--border-medium, #2b2d3e)',
+	                            background: hasValidCallback
+	                              ? 'var(--text-primary, #f4f5f8)'
+	                              : 'color-mix(in srgb, var(--bg-elevated, #1a1c2a) 34%, transparent)',
+	                            color: hasValidCallback
+	                              ? 'var(--bg-app, #06060a)'
+	                              : 'var(--text-muted, #5a6178)',
+	                          }}
+	                        >
+	                          {status === 'loading' ? <Spinner /> : <MiniIcon name="check" className="h-4 w-4" />}
+	                          Send to workspace
                         </motion.button>
                       </div>
                     </motion.div>
@@ -1020,19 +1153,21 @@ function LoopbackAuthPage() {
 
         <motion.div
           variants={fadeUp}
-          className="border-b border-[#2b2d3e] bg-[#0a0b11] p-4"
+          className="border-b p-4"
+          style={{
+            borderColor: 'var(--border-subtle, #1a1c2a)',
+            background: 'color-mix(in srgb, var(--bg-app, #06060a) 48%, var(--bg-panel, #0d0e15))',
+          }}
         >
           <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
             <div className="flex gap-3">
               <div>
-                <h3
-                  className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#f4f5f8]"
-                  style={{ fontFamily: monoFont }}
-                >
-                  Optional extension
-                </h3>
-                <p className="mt-1 text-[13px] leading-5 text-[#9ba2b8]">
-                  Install once to auto-capture matching localhost callbacks. Until the store listing is approved, this downloads the beta package.
+                <h3 className="text-[13px] font-semibold">Automate this next time</h3>
+                <p className="mt-1 text-[13px] leading-5" style={{ color: 'var(--text-secondary, #9ba2b8)' }}>
+                  The browser extension can capture matching localhost redirects automatically after you enable it.
+                </p>
+                <p className="mt-1 text-[12px]" style={{ color: 'var(--text-muted, #5a6178)' }}>
+                  {extensionDisplay}
                 </p>
               </div>
             </div>
@@ -1042,8 +1177,11 @@ function LoopbackAuthPage() {
                 href={EXTENSION_INSTALL_URL}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex h-9 items-center border border-[#2b2d3e] bg-[#101119] px-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#9ba2b8] transition-colors hover:border-[#3a3d55] hover:text-[#f4f5f8]"
-                style={{ fontFamily: monoFont }}
+	                className="inline-flex h-9 items-center rounded-md border px-3 text-[12px] font-medium transition-opacity hover:opacity-90"
+                style={{
+                  borderColor: 'var(--border-medium, #2b2d3e)',
+                  color: 'var(--text-secondary, #9ba2b8)',
+                }}
               >
                 Install extension
               </motion.a>
@@ -1052,8 +1190,11 @@ function LoopbackAuthPage() {
                 whileTap={{ scale: 0.98 }}
                 onClick={armExtension}
                 disabled={extensionBusy || relayStatus !== 'ready' || !extensionStatus.installed || isComplete}
-                className="inline-flex h-9 items-center gap-2 border border-[#2b2d3e] bg-[#101119] px-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#9ba2b8] transition-colors hover:border-[#3a3d55] hover:text-[#f4f5f8] disabled:cursor-not-allowed disabled:opacity-45"
-                style={{ fontFamily: monoFont }}
+	                className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-[12px] font-medium transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+                style={{
+                  borderColor: 'var(--border-medium, #2b2d3e)',
+                  color: extensionStatus.armed ? 'var(--accent-success, #4ade80)' : 'var(--text-secondary, #9ba2b8)',
+                }}
               >
                 {extensionBusy ? <Spinner /> : <MiniIcon name="plug" className="h-4 w-4" />}
                 {extensionStatus.armed ? 'Auto-capture on' : extensionStatus.installed ? 'Enable' : 'Not detected'}
@@ -1065,43 +1206,54 @@ function LoopbackAuthPage() {
         <AnimatePresence>
           {message && (
             <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.35, ease: MOTION_EASE }}
-              className={`m-4 border p-3 text-[13px] leading-5 ${
-                status === 'success' || messageTone === 'success'
-                  ? 'border-[#9be8c4] bg-[#10211c] text-[#b8f0db]'
-                  : 'border-[#ff5757] bg-[#261215] text-[#ff8a8a]'
-              }`}
-            >
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <span>{message}</span>
-                {isComplete && (
+	              initial={{ opacity: 0, y: 10 }}
+	              animate={{ opacity: 1, y: 0 }}
+	              exit={{ opacity: 0, y: -8 }}
+	              transition={{ duration: 0.35, ease: MOTION_EASE }}
+	              className="m-4 rounded-md border p-3 text-[13px] leading-5"
+	              style={{
+	                borderColor: status === 'success' || messageTone === 'success'
+	                  ? 'color-mix(in srgb, var(--accent-success, #4ade80) 38%, var(--border-medium, #2b2d3e))'
+	                  : 'color-mix(in srgb, var(--accent-danger, #ff5757) 42%, var(--border-medium, #2b2d3e))',
+	                background: status === 'success' || messageTone === 'success'
+	                  ? 'color-mix(in srgb, var(--accent-success, #4ade80) 10%, var(--bg-app, #06060a))'
+	                  : 'color-mix(in srgb, var(--accent-danger, #ff5757) 10%, var(--bg-app, #06060a))',
+	                color: status === 'success' || messageTone === 'success'
+	                  ? 'var(--accent-success, #4ade80)'
+	                  : 'var(--accent-danger, #ff5757)',
+	              }}
+	            >
+	              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+	                <span>{message}</span>
+	                {isComplete && (
                   <motion.button
-                    type="button"
-                    whileTap={{ scale: 0.98 }}
-                    onClick={returnToTerminal}
-                    className="inline-flex h-8 shrink-0 items-center justify-center border border-[#f4f5f8] bg-[#f4f5f8] px-3 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#06060a] hover:bg-white"
-                    style={{ fontFamily: monoFont }}
-                  >
-                    Return to terminal
-                  </motion.button>
+	                    type="button"
+	                    whileTap={{ scale: 0.98 }}
+	                    onClick={returnToTerminal}
+	                    className="inline-flex h-8 shrink-0 items-center justify-center rounded-md border px-3 text-[12px] font-semibold"
+	                    style={{
+	                      borderColor: 'var(--text-primary, #f4f5f8)',
+	                      background: 'var(--text-primary, #f4f5f8)',
+	                      color: 'var(--bg-app, #06060a)',
+	                    }}
+	                  >
+	                    Return to terminal
+	                  </motion.button>
                 )}
               </div>
             </motion.div>
           )}
         </AnimatePresence>
 
-        <div className="p-4">
-          <button
-            type="button"
-            onClick={() => setShowDetails((value) => !value)}
-            className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#5a6178] transition-colors hover:text-[#f4f5f8]"
-            style={{ fontFamily: monoFont }}
-          >
-            {showDetails ? 'Hide connection details' : 'Show connection details'}
-          </button>
+	        <div className="p-4">
+	          <button
+	            type="button"
+	            onClick={() => setShowDetails((value) => !value)}
+	            className="text-[12px] font-medium transition-colors hover:opacity-90"
+	            style={{ color: 'var(--text-muted, #5a6178)' }}
+	          >
+	            {showDetails ? 'Hide connection details' : 'Show connection details'}
+	          </button>
           <AnimatePresence initial={false}>
             {showDetails && (
               <motion.div
@@ -1111,12 +1263,17 @@ function LoopbackAuthPage() {
                 transition={{ duration: 0.3, ease: MOTION_EASE }}
                 className="overflow-hidden"
               >
-                <div
-                  className="mt-4 grid gap-2 border border-[#2b2d3e] bg-[#0a0b11] p-3 text-[11px] uppercase leading-5 tracking-[0.08em] text-[#9ba2b8] md:grid-cols-3"
-                  style={{ fontFamily: monoFont }}
-                >
-                  <div>workspace {workspaceSlug || 'missing'}</div>
-                  <div>runtime {runtimeScope || 'missing'}</div>
+	                <div
+	                  className="mt-4 grid gap-2 rounded-md border p-3 text-[11px] leading-5 md:grid-cols-3"
+	                  style={{
+	                    fontFamily: monoFont,
+	                    borderColor: 'var(--border-subtle, #1a1c2a)',
+	                    background: 'var(--bg-app, #06060a)',
+	                    color: 'var(--text-secondary, #9ba2b8)',
+	                  }}
+	                >
+	                  <div>workspace {workspaceSlug || 'missing'}</div>
+	                  <div>runtime {runtimeScope || 'missing'}</div>
                   <div>expects {callbackHint}</div>
                 </div>
               </motion.div>
