@@ -69,7 +69,7 @@ describe('terminal-preview-links', () => {
   });
 
   it('routes hash-based loopback callback parameters through the helper page', async () => {
-    const authUrl = 'https://auth.example.test/start#redirect_uri=http%3A%2F%2F127.0.0.1%3A8765%2Fcallback%3Fmode%3Dcli&state=abc';
+    const authUrl = 'https://auth.example.test/start#redirect_uri=http%3A%2F%2F127.0.0.1%3A8765%2Fcallback%3Fmode%3Dcli&state=state-abc123';
 
     const result = await resolveTerminalLinkUrl(authUrl, 'ws-demo-user-demo', {
       ...options,
@@ -82,7 +82,7 @@ describe('terminal-preview-links', () => {
   });
 
   it('rewrites terminal output auth links to the helper page', () => {
-    const authUrl = 'https://auth.example.test/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&state=abc';
+    const authUrl = 'https://auth.example.test/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&state=state-abc123';
     const text = `Open this link: ${authUrl}`;
     const rewritten = rewriteTerminalOutputLoopbackAuthLinks(text, {
       runtimeScope: 'ws-demo-user-demo',
@@ -101,7 +101,7 @@ describe('terminal-preview-links', () => {
   });
 
   it('finds terminal output auth links for in-IDE relay prompts', () => {
-    const authUrl = 'https://auth.example.test/oauth/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A4567%2Fcallback&state=abc';
+    const authUrl = 'https://auth.example.test/oauth/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A4567%2Fcallback&state=state-abc123';
     const links = findTerminalLoopbackAuthLinks(`Open (${authUrl}).`, {
       runtimeScope: 'ws-demo-user-demo',
       bridgeBaseUrl: 'https://beta.vectant.dev/auth/loopback',
@@ -122,7 +122,7 @@ describe('terminal-preview-links', () => {
   });
 
   it('does not include OSC-8 terminal hyperlink escape sequences in detected auth URLs', () => {
-    const authUrl = 'https://auth.example.test/oauth/authorize?client_id=cli&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid&state=abc';
+    const authUrl = 'https://auth.example.test/oauth/authorize?client_id=cli&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid&state=state-abc123';
     const osc8Output = `Open \u001b]8;;${authUrl}\u001b\\${authUrl}\u001b]8;;\u001b\\ to continue`;
     const links = findTerminalLoopbackAuthLinks(osc8Output, {
       runtimeScope: 'ws-demo-user-demo',
@@ -138,6 +138,39 @@ describe('terminal-preview-links', () => {
     const parsed = new URL(links[0].bridgeUrl);
     expect(parsed.pathname).toBe('/auth/loopback');
     expect(parsed.searchParams.get('authUrl')).toBe(authUrl);
+  });
+
+  it('detects the rendered auth URL when terminal styling splits the state parameter', () => {
+    const authUrl = 'https://auth.example.test/oauth/authorize?client_id=cli&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid&state=state-abc123';
+    const styledOutput = `Open ${authUrl.replace('state-abc123', '\u001b[36mstate-abc123\u001b[0m')} to continue`;
+    const links = findTerminalLoopbackAuthLinks(styledOutput, {
+      runtimeScope: 'ws-demo-user-demo',
+      bridgeBaseUrl: 'https://beta.vectant.dev/auth/loopback',
+      loopbackContext: {
+        workspaceSlug: 'demo',
+        terminalId: 'term-1',
+      },
+    });
+
+    expect(links).toHaveLength(1);
+    expect(links[0].originalUrl).toBe(authUrl);
+    const parsed = new URL(links[0].bridgeUrl);
+    expect(parsed.pathname).toBe('/auth/loopback');
+    expect(parsed.searchParams.get('authUrl')).toBe(authUrl);
+  });
+
+  it('does not surface a detected auth URL with an explicitly broken state value', () => {
+    const authUrl = 'https://auth.example.test/oauth/authorize?client_id=cli&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid&state=';
+    const links = findTerminalLoopbackAuthLinks(`Open ${authUrl} to continue`, {
+      runtimeScope: 'ws-demo-user-demo',
+      bridgeBaseUrl: 'https://beta.vectant.dev/auth/loopback',
+      loopbackContext: {
+        workspaceSlug: 'demo',
+        terminalId: 'term-1',
+      },
+    });
+
+    expect(links).toEqual([]);
   });
 
   it('does not surface ordinary terminal links as auth relay prompts', () => {

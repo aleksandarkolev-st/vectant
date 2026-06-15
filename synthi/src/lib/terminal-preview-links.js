@@ -6,6 +6,10 @@ const SCHEMELESS_LOOPBACK_RE = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1)
 // detected relay link matches the clean URI xterm gives us on a direct click.
 const TERMINAL_URL_RE = /\bhttps?:\/\/[^\s"'<>\x00-\x1F\x7F]+/gi;
 const TERMINAL_URL_TRAILING_PUNCTUATION_RE = /[)\].,;:!?]+$/;
+const TERMINAL_OSC_SEQUENCE_RE = /\x1B\][\s\S]*?(?:\x07|\x1B\\)/g;
+const TERMINAL_CSI_SEQUENCE_RE = /\x1B\[[0-?]*[ -/]*[@-~]/g;
+const TERMINAL_ESCAPE_SEQUENCE_RE = /\x1B[@-Z\\-_]/g;
+const TERMINAL_CONTROL_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 const LOOPBACK_TEXT_HINT_RE = /localhost|127\.0\.0\.1|0\.0\.0\.0|::1|%2f%2flocalhost|%2f%2f127\.0\.0\.1|%2f%2f0\.0\.0\.0|%2f%2f%5b%3a%3a1%5d|%2f%2f%3a%3a1/i;
 
 const LOOPBACK_AUTH_REQUEST_STORAGE_PREFIX = 'synthi.loopbackAuth.request:';
@@ -294,6 +298,27 @@ function terminalUrlCandidates(rawMatch) {
   return candidates;
 }
 
+function stripTerminalControlSequences(text) {
+  return String(text || '')
+    .replace(TERMINAL_OSC_SEQUENCE_RE, '')
+    .replace(TERMINAL_CSI_SEQUENCE_RE, '')
+    .replace(TERMINAL_ESCAPE_SEQUENCE_RE, '')
+    .replace(TERMINAL_CONTROL_RE, '')
+    .replace(/[\t\r\n]+/g, ' ');
+}
+
+function terminalLinkDetectionTexts(text) {
+  const raw = String(text || '');
+  const rendered = stripTerminalControlSequences(raw);
+  return rendered && rendered !== raw ? [rendered, raw] : [raw];
+}
+
+function hasBrokenOAuthStateParam(rawUri) {
+  const parsed = parseTerminalUrl(rawUri);
+  if (!parsed?.searchParams?.has('state')) return false;
+  return parsed.searchParams.getAll('state').some((state) => String(state || '').trim().length < 8);
+}
+
 export function findTerminalLoopbackAuthLinks(text, { runtimeScope, bridgeBaseUrl, loopbackContext, limit = 3 } = {}) {
   if (!text || !runtimeScope || !bridgeBaseUrl || !LOOPBACK_TEXT_HINT_RE.test(text)) {
     return [];
@@ -303,19 +328,24 @@ export function findTerminalLoopbackAuthLinks(text, { runtimeScope, bridgeBaseUr
   const seen = new Set();
   const maxLinks = Math.max(1, Number(limit) || 3);
 
-  String(text).replace(TERMINAL_URL_RE, (match) => {
-    if (links.length >= maxLinks) return match;
+  for (const detectionText of terminalLinkDetectionTexts(text)) {
+    if (links.length >= maxLinks) break;
 
-    for (const candidate of terminalUrlCandidates(match)) {
-      const bridgeUrl = buildLoopbackCallbackBridgeUrl(candidate, runtimeScope, bridgeBaseUrl, loopbackContext);
-      if (!bridgeUrl || seen.has(bridgeUrl)) continue;
-      seen.add(bridgeUrl);
-      links.push({ originalUrl: candidate, bridgeUrl });
-      break;
-    }
+    String(detectionText).replace(TERMINAL_URL_RE, (match) => {
+      if (links.length >= maxLinks) return match;
 
-    return match;
-  });
+      for (const candidate of terminalUrlCandidates(match)) {
+        if (hasBrokenOAuthStateParam(candidate)) continue;
+        const bridgeUrl = buildLoopbackCallbackBridgeUrl(candidate, runtimeScope, bridgeBaseUrl, loopbackContext);
+        if (!bridgeUrl || seen.has(bridgeUrl)) continue;
+        seen.add(bridgeUrl);
+        links.push({ originalUrl: candidate, bridgeUrl });
+        break;
+      }
+
+      return match;
+    });
+  }
 
   return links;
 }
