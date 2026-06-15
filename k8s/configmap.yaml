@@ -78,11 +78,15 @@ data:
   SYNTHI_ISOLATION_MODEL: "single_worker"
   # Worker container image (used by the dynamic spawner in collab-server).
   WORKER_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-worker:build-tag-required"
-  # Per-workspace Sysbox runtime image (rootless dockerd). Read by spawnRuntimePod()
-  # ONLY when RUNTIME_BACKEND=sysbox-pod — inert in prod until that flag is set.
-  # Digest-pinned (manually pushed + vuln-gated for Slice-1 scratch validation).
-  # TODO Slice-1 CI: build via cloudbuild (Kaniko + trivy CRITICAL gate) and switch to
-  # the :build-tag-required substitution pattern like WORKER_IMAGE above.
+  # Per-workspace Sysbox runtime image. Read by spawnRuntimePod() ONLY when
+  # RUNTIME_BACKEND=sysbox-pod — inert in prod until that flag is set.
+  # WARNING: the pinned digest below is the ROOTLESS build, which CRASH-LOOPS under
+  # Sysbox (rootlesskit can't nest a userns — validated live 2026-06-15). Before
+  # enabling RUNTIME_BACKEND=sysbox-pod this MUST be replaced with the ROOTFUL build
+  # of backend/runtime-image/Dockerfile (--build-arg RUNTIME_BASE=docker:dind@sha256:…,
+  # RUNTIME_USER=root, RUNTIME_HOME=/root, DOCKER_SOCK=/var/run/docker.sock).
+  # TODO Slice-1 CI: Kaniko build (rootful) + trivy CRITICAL gate in cloudbuild.yaml,
+  # then switch to the :build-tag-required substitution pattern like WORKER_IMAGE.
   RUNTIME_POD_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/vectant-runtime:slice1@sha256:101bd456852a53efd52302a7fa1e2cd697279710f5d029db15872fe6d0d2018e"
   # Schedule dynamically spawned workspace pods onto the autoscaled workspace pool.
   WORKSPACE_NODE_SELECTOR_KEY: "cloud.google.com/gke-nodepool"
