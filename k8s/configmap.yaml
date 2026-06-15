@@ -78,16 +78,15 @@ data:
   SYNTHI_ISOLATION_MODEL: "single_worker"
   # Worker container image (used by the dynamic spawner in collab-server).
   WORKER_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-worker:build-tag-required"
-  # Per-workspace Sysbox runtime image. Read by spawnRuntimePod() ONLY when
-  # RUNTIME_BACKEND=sysbox-pod — inert in prod until that flag is set.
-  # WARNING: the pinned digest below is the ROOTLESS build, which CRASH-LOOPS under
-  # Sysbox (rootlesskit can't nest a userns — validated live 2026-06-15). Before
-  # enabling RUNTIME_BACKEND=sysbox-pod this MUST be replaced with the ROOTFUL build
-  # of backend/runtime-image/Dockerfile (--build-arg RUNTIME_BASE=docker:dind@sha256:…,
-  # RUNTIME_USER=root, RUNTIME_HOME=/root, DOCKER_SOCK=/var/run/docker.sock).
-  # TODO Slice-1 CI: Kaniko build (rootful) + trivy CRITICAL gate in cloudbuild.yaml,
-  # then switch to the :build-tag-required substitution pattern like WORKER_IMAGE.
-  RUNTIME_POD_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/vectant-runtime:slice1@sha256:101bd456852a53efd52302a7fa1e2cd697279710f5d029db15872fe6d0d2018e"
+  # Per-workspace Sysbox runtime image (ROOTFUL dind — Sysbox supplies the userns
+  # isolation, so a normal rootful daemon runs unprivileged). Read by spawnRuntimePod()
+  # ONLY when RUNTIME_BACKEND=sysbox-pod — inert otherwise. Built by cloudbuild's
+  # `build-runtime-image` step (rootful --build-args); the `build-tag-required`
+  # placeholder is sed-replaced with the build tag at deploy, like WORKER_IMAGE.
+  # NOTE: the rootful build hasn't been produced/validated yet — the live Slice-2
+  # proof used stock docker:27-dind; the first CI run builds the real toolchain image.
+  # TODO: add a trivy CRITICAL gate to CI before enabling the backend in prod.
+  RUNTIME_POD_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/vectant-runtime:build-tag-required"
   # Schedule dynamically spawned workspace pods onto the autoscaled workspace pool.
   WORKSPACE_NODE_SELECTOR_KEY: "cloud.google.com/gke-nodepool"
   WORKSPACE_NODE_SELECTOR_VALUE: "workspace-pool"
