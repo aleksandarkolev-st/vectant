@@ -634,3 +634,42 @@ Root cause of the 2-day park was a misdiagnosis: the Slice-0 smoke pod omitted `
 - [x] **Zero local-dev regression confirmed:** default build (no args) → `uid=1000(rootless)`, `HOME=/home/rootless`, `DOCKER_HOST=unix:///run/user/1000/docker.sock`, full toolchain. `vectant-runtime:local` restored (was wiped by the Docker data-disk reset).
 - [ ] Add a **trivy CRITICAL-vuln gate** to CI — NO trivy step exists in cloudbuild.yaml today (the Slice-0 note was stale); the CRITICAL gate is manual-only. The rootful image is NOT yet scanned (only the prior rootless one was, 2 days ago) but shares the same base family (docker:dind 29.5.3) + toolchain + `.trivyignore` waiver, so it should pass the same. Gate `build-runtime-image` (ideally all images) before enabling the backend in prod.
 - NOTE: CI `build-runtime-image` builds the canonical rootful image on main-merge; the local build above just validated the Dockerfile (not pushed — CI owns the prod image via `build-tag-required`).
+
+---
+
+# Task: Sysbox deferred bits + live validation (2026-06-15, feat/docker-sysbox-engine) — IN PROGRESS
+
+User asked to finish ALL deferred bits across the 9 slices + full live validation incl. GPU, THEN check in before pivoting to the **programs UX** phase. Plan approved (Everything incl. GPU).
+
+## Phase A — code-doable deferred bits: DONE (dark, TDD, committed). Suites: backend 84 (79+5 skip), frontend 355.
+- [x] A1 trivy CRITICAL gate in cloudbuild.yaml (`vulnerability-scan-runtime`, gates deploy). Commit `1013f2c5`.
+- [x] A2 per-pod egress bandwidth cap — `RUNTIME_EGRESS_BANDWIDTH` → `kubernetes.io/egress-bandwidth` annotation (runtimePodSpec.js). Commit `a0775cbe`.
+- [x] A3 `purgeRuntimeData(sessionId)` + `runtimeDockerDataDir` (permanent-delete docker-data cleanup primitive; cross-service wiring to Next.js `DELETE /api/workspace` is a documented follow-up). Commit `ac717828`.
+- [x] A4 `runtimeLifecycleSnapshot(sessionId)` folded into GET /api/session/:id/lifecycle as a dark `runtime` field. Commit `161ca93a`.
+- [x] A5 frontend: collabClient `runtime-ports` → portsSlice `setRuntimePorts` → PortsPanel `/runtime/<scope>/port/<n>/`; `getProgramSessionAppUrl(runtimeScope)`. Commit `42409139`.
+- [skip] Slice-5 "tiered idle timeout by plan" — no plan-tier concept exists; premature, deferred-pending-product.
+
+## Phase B–D — live validation: PARTIAL (cluster TORN DOWN at session pause; billing stopped)
+LIVE-VALIDATED this session:
+- ✅ Slice 1 + A1: scoped Cloud Build built the ROOTFUL `vectant-runtime:scratch` AND the trivy CRITICAL gate passed (build SUCCESS) → image-in-CI + vuln-gate proven live.
+- ✅ Substrate: scratch cluster `synthi-sysbox-scratch` (Dataplane V2) + sysbox-pool; `kubectl apply -k k8s/sysbox/` → `sysbox-runtime=running`.
+- ✅ S2 + A2 + S5-mount: real `buildRuntimeDeployment` pod Ready on sysbox-pool — `runtimeClassName=sysbox-runc`, `hostUsers=false`, not privileged, `egress-bandwidth=50M`, `/workspace` subPath `repos/smoke-validate/242593757`, `/var/lib/docker` subPath `docker-data/rt-…`. PVC bound (standard RWO).
+
+REMAINING (next session):
+- [ ] S3 exec: `docker run hello-world`, `docker ps`, `kind version`, `kubectl version`, `helm version` inside the runtime container.
+- [ ] S4 ports: start a server in-pod; read /proc/net/tcp (what runtimeRunOnce parses) + `kubectl port-forward` curl → reachable.
+- [ ] S5 hibernate: scale deploy 0→1, `/workspace` persists; pull alpine, scale 0→1, `docker images` still has it (warm); measure resume latency (Spike 2).
+- [ ] S6 egress: apply `k8s/network-policies.yaml`; exec wget — metadata 169.254.169.254 BLOCKED, public OK, cluster-internal BLOCKED.
+- [ ] C Slice 7: `gcloud artifacts repositories create … --mode=remote-repository` (Docker Hub upstream) + `RUNTIME_REGISTRY_MIRROR`; cold/warm pull delta. (Verify AR-remote-repo behaves as a transparent `--registry-mirror`.)
+- [ ] D Slice 8 GPU: T4 quota AVAILABLE (NVIDIA_T4_GPUS=1, no request needed). GPU+sysbox node pool + nvidia plugin; pod `metadata.gpu=true` → `nvidia-smi`; does `docker run --gpus` NEST under sysbox? else pod-level GPU fallback. Metering/time-box hook. Tear GPU pool down immediately.
+- [ ] Phase E: hardcoded-values audit; final teardown verify; suites; docs; recap; THEN check in before programs phase.
+
+## RESUME (fast — runtime image already in AR):
+1. `gcloud container clusters create synthi-sysbox-scratch --project vectant-proj --zone europe-west10-a --release-channel None --enable-shielded-nodes --enable-dataplane-v2 --machine-type e2-medium --num-nodes 1 --no-enable-autoupgrade --no-enable-autorepair --cluster-version 1.35.3-gke.2190000` then node-pool `sysbox-pool` (UBUNTU_CONTAINERD e2-standard-4, label sysbox-install=yes, taint workload=sysbox:NoSchedule). (Or run create-scratch-cluster.ps1 — now has --enable-dataplane-v2.)
+2. VERIFY `kubectl config current-context` == `…synthi-sysbox-scratch` (NEVER prod) before any apply.
+3. `kubectl apply -k k8s/sysbox/`; wait node label `sysbox-runtime=running`.
+4. `kubectl apply -f %TEMP%\scratch-ns-pvc.yaml`; `node %TEMP%\gen-runtime.js | kubectl apply -f -`.
+5. Run S3–S6, then C, D, E.
+- Temp helpers (regenerate if gone): `%TEMP%\cb-runtime-scratch.yaml` (scoped image build), `scratch-ns-pvc.yaml`, `gen-runtime.js`.
+- AR images persist: `vectant-runtime:scratch`, `sysbox-deploy-k8s@sha256:c7859de4…` (both verified resolvable).
+- Commits A1–A5 NOT yet pushed to origin (awaiting user OK to push).

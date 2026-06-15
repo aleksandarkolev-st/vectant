@@ -46,6 +46,9 @@ if ($LASTEXITCODE -eq 0) {
     '--zone',$Zone,
     '--release-channel','None',     # static version => we control upgrades
     '--enable-shielded-nodes',      # Shielded Nodes ON, but Secure Boot stays OFF (default)
+    '--enable-dataplane-v2',        # eBPF dataplane => ENFORCES NetworkPolicy (Slice 6 egress
+                                    # hardening) + the egress-bandwidth annotation (Slice 6 cap).
+                                    # Must be set at create; legacy dataplane does NOT enforce NP.
     '--machine-type',$DefaultMachine,
     '--num-nodes','1',
     '--no-enable-autoupgrade',
