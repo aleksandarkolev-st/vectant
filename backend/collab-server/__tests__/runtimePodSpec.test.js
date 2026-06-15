@@ -201,3 +201,23 @@ test('runtime pod persists /var/lib/docker only when RUNTIME_PERSIST_DOCKER_DATA
     else process.env.RUNTIME_PERSIST_DOCKER_DATA = prev;
   }
 });
+
+// S7-T1 — Pull-through cache: when RUNTIME_REGISTRY_MIRROR is set, the runtime
+// container gets a dockerd `--registry-mirror` arg (the dind entrypoint forwards
+// container args to dockerd); off by default → no args.
+test('runtime pod uses a registry mirror only when RUNTIME_REGISTRY_MIRROR is set', () => {
+  const prev = process.env.RUNTIME_REGISTRY_MIRROR;
+  const args = { sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } };
+  try {
+    delete process.env.RUNTIME_REGISTRY_MIRROR;
+    let runtime = buildRuntimeDeployment(args).spec.template.spec.containers.find((c) => c.name === 'runtime');
+    assert.ok(!runtime.args, 'no dockerd args when mirror unset');
+
+    process.env.RUNTIME_REGISTRY_MIRROR = 'https://europe-west10-docker.pkg.dev';
+    runtime = buildRuntimeDeployment(args).spec.template.spec.containers.find((c) => c.name === 'runtime');
+    assert.ok(Array.isArray(runtime.args) && runtime.args.includes('--registry-mirror=https://europe-west10-docker.pkg.dev'), 'passes --registry-mirror to dockerd');
+  } finally {
+    if (prev === undefined) delete process.env.RUNTIME_REGISTRY_MIRROR;
+    else process.env.RUNTIME_REGISTRY_MIRROR = prev;
+  }
+});

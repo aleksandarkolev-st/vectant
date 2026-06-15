@@ -583,6 +583,11 @@ Core hibernate ALREADY works: worker culler (`cullIdleWorkspaces`) + runtime cul
 - [x] Fixed a Slice-4 configmap bug found via `kubectl kustomize`: `SYNTHI_PREVIEW_TARGET_TEMPLATE` was DUPLICATED (existing worker `{runtimeId}` value + my runtime `{runtimeId}-rt` add) → invalid YAML. Removed the dup; documented that enabling sysbox switches the template to the `-rt` (runtime Service) variant. `kubectl kustomize k8s/` → exit 0.
 - [ ] DEFERRED (Spike 3 / infra): per-pod bandwidth cap (`kubernetes.io/egress-bandwidth`), abuse detection (Cilium/Falco flow-logs), dedicated egress IPs, auto-hibernate on abuse + false-positive soak.
 
+## Slice 7 — Image pull-through cache (2026-06-15, registry-mirror hook; cache-persist via Slice 5)
+- [x] **Build cache on PVC** — DONE via Slice 5 (`/var/lib/docker` on the PVC subPath includes the build cache; survives idle-cull → respawn when `RUNTIME_PERSIST_DOCKER_DATA` on).
+- [x] **Registry-mirror hook (S7-T1):** env-gated `RUNTIME_REGISTRY_MIRROR` → the runtime container gets dockerd `--registry-mirror=<url>` (dind forwards container args to dockerd). Off by default. Point at an AR remote repository to cut Docker Hub egress + rate limits.
+- [ ] DEFERRED (infra): create the AR **remote repository** (`gcloud artifacts repositories create … --mode=remote-repository` w/ Docker Hub upstream) + set `RUNTIME_REGISTRY_MIRROR`. Live-validate a 2nd workspace hits the cache (pull-time + egress delta) — needs cluster. CAVEAT: confirm AR remote-repo behaves as a transparent dockerd `--registry-mirror` before enabling.
+
 ---
 
 # Task: Sysbox #1006 unblock spike (2026-06-14, feat/docker-sysbox-engine)

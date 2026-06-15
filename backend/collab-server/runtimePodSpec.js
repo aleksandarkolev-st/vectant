@@ -148,6 +148,11 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
     });
   }
 
+  // Pull-through cache (Slice 7): point the daemon at a registry mirror (e.g. an AR
+  // remote repository) to cut Docker Hub egress + rate limits. Env-gated, off by
+  // default; the dind entrypoint passes container args through to dockerd.
+  const registryMirror = String(process.env.RUNTIME_REGISTRY_MIRROR || '').trim();
+
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -166,6 +171,7 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
             {
               name: 'runtime',
               image: RUNTIME_POD_IMAGE,
+              ...(registryMirror ? { args: [`--registry-mirror=${registryMirror}`] } : {}),
               env: [
                 { name: 'DOCKER_HOST', value: RUNTIME_DOCKER_HOST },
                 { name: 'SESSION_ID', value: sessionId },
