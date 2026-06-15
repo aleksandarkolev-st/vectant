@@ -279,5 +279,6 @@ module.exports = {
   isSysboxRuntimeEnabled,
   isRuntimeDockerDataPersisted,
   RUNTIME_MANAGED_BY,
+  RUNTIME_DOCKER_DATA_SUBDIR,
   PREVIEW_SIDECAR_PORT,
 };

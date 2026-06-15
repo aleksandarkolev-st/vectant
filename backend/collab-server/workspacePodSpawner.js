@@ -32,10 +32,12 @@
  *   9. On SIGTERM, the spawner logs active sessions and optionally cleans up.
  */
 
+const fs = require('fs');
+const path = require('path');
 const k8s = require('@kubernetes/client-node');
 const { runtimeResourceId, metadataHash, dnsLabelValue } = require('./runtimeIdentity');
 const { ensureRuntimeFilesystem, releaseRuntimeFilesystem } = require('./runtimeFilesystem');
-const { buildRuntimeDeployment, buildRuntimeService, runtimeDeploymentName, isSysboxRuntimeEnabled, RUNTIME_MANAGED_BY } = require('./runtimePodSpec');
+const { buildRuntimeDeployment, buildRuntimeService, runtimeDeploymentName, isSysboxRuntimeEnabled, RUNTIME_MANAGED_BY, RUNTIME_DOCKER_DATA_SUBDIR } = require('./runtimePodSpec');
 const lifecycle = require('./sessionLifecycle');
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -1469,6 +1471,42 @@ async function runtimeTeardown(sessionId, reason = 'teardown') {
   }
 }
 
+// ── Permanent-delete cleanup (Slice 5) ───────────────────────────────────────
+// runtimeTeardown() deletes the pod but KEEPS the persisted docker-data subPath by
+// design (warm resume after idle-cull). When a workspace is permanently DELETED,
+// that image/build cache becomes an orphan on the PVC — purge it. collab-server
+// mounts the SAME collab-data-pvc at WORKSPACE_DATA_MOUNT, so the docker-data dir is
+// a plain local path here (sibling of repos/); no k8s Job is needed to remove it.
+//
+// CROSS-SERVICE FOLLOW-UP: the only permanent-delete path today is the Next.js
+// `DELETE /api/workspace` route, which removes GCS + the DB row but does NOT call
+// collab-server, so this docker-data dir (and repos/<slug>/<user>) is currently
+// orphaned on the PVC. Wiring that route to a small collab purge endpoint that
+// invokes purgeRuntimeData(sessionId) per session closes the gap (tracked in
+// tasks/todo.md). Exported now so that flow can call it.
+
+/** Absolute path of a session's persisted docker-data dir on the mounted PVC. */
+function runtimeDockerDataDir(sessionId) {
+  return path.join(WORKSPACE_DATA_MOUNT, RUNTIME_DOCKER_DATA_SUBDIR, runtimeResourceId(sessionId));
+}
+
+/**
+ * Permanently remove a session's persisted docker image/build cache. Safe to call
+ * unconditionally: the rm is force+recursive, so it's a no-op when the dir never
+ * existed (docker-data persistence off). No-ops in local dev (no PVC mounted).
+ */
+async function purgeRuntimeData(sessionId) {
+  if (process.env.SPAWNER_MODE === 'local') return { skipped: true, reason: 'local_mode' };
+  const dir = runtimeDockerDataDir(sessionId);
+  try {
+    await fs.promises.rm(dir, { recursive: true, force: true });
+    return { purged: true, dir };
+  } catch (err) {
+    console.error(`[RuntimeSpawner] purgeRuntimeData() failed for ${dir}:`, err.message);
+    return { purged: false, dir, error: err.message };
+  }
+}
+
 /** Cull idle runtime pods (own timeout, own managed-by selector). Self-gated. */
 async function cullIdleRuntimePods() {
   if (!isSysboxRuntimeEnabled()) return;
@@ -1514,6 +1552,8 @@ module.exports = {
   // Sysbox runtime pod (Slice 2, dark behind RUNTIME_BACKEND=sysbox-pod)
   spawnRuntimePod,
   runtimeTeardown,
+  purgeRuntimeData,
+  runtimeDockerDataDir,
   touchRuntime,
   cullIdleRuntimePods,
   getActiveRuntimeCount,

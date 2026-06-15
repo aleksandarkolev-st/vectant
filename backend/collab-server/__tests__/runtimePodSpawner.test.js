@@ -101,6 +101,31 @@ test('workspacePodSpawner exports listActiveRuntimeSessions + getReadyRuntimePod
 // port/<N> — needs a live Sysbox pod. (parseListeningPorts/baseline already tested.)
 test('runtime pod opened ports are detected via k8s-exec and broadcast', { skip: 'integration — blocked on nestybox/sysbox#1006 substrate' }, () => {});
 
+// S5-T2 — Permanent-delete cleanup: purgeRuntimeData targets THIS session's
+// docker-data subPath (idle-cull keeps it; permanent delete removes it). The path is
+// deterministic from the runtime resource id; the rm is force+recursive so it's a
+// safe no-op when the dir never existed. Local mode (no PVC) → skipped (no fs touch).
+test('purgeRuntimeData targets the session docker-data dir; local-skips and safe no-ops', async () => {
+  const { runtimeResourceId } = require('../runtimeIdentity');
+  const sid = 'ws-purge:user-1';
+  const dir = spawner.runtimeDockerDataDir(sid);
+  assert.ok(dir.includes('docker-data'), 'targets the docker-data subdir');
+  assert.ok(dir.includes(runtimeResourceId(sid)), 'keyed by the runtime resource id');
+
+  // this file forces SPAWNER_MODE=local → skipped, never touches the fs
+  assert.deepEqual(await spawner.purgeRuntimeData(sid), { skipped: true, reason: 'local_mode' });
+
+  // non-local → force+recursive rm of a nonexistent dir resolves cleanly (purged)
+  const prev = process.env.SPAWNER_MODE;
+  try {
+    delete process.env.SPAWNER_MODE;
+    const res = await spawner.purgeRuntimeData(sid);
+    assert.equal(res.purged, true);
+  } finally {
+    process.env.SPAWNER_MODE = prev;
+  }
+});
+
 // S2-T16 — DEFERRED (written + skipped): create + dockerd-ready watch needs a
 // working Sysbox substrate (sysbox-runc on the node) to actually run a pod.
 test('runtime pod reaches dockerd-ready on a real Sysbox cluster', { skip: 'integration — blocked on nestybox/sysbox#1006 substrate' }, () => {});
