@@ -5,6 +5,9 @@ const TERMINAL_URL_RE = /\bhttps?:\/\/[^\s"'<>]+/gi;
 const TERMINAL_URL_TRAILING_PUNCTUATION_RE = /[)\].,;:!?]+$/;
 const LOOPBACK_TEXT_HINT_RE = /localhost|127\.0\.0\.1|0\.0\.0\.0|::1|%2f%2flocalhost|%2f%2f127\.0\.0\.1|%2f%2f0\.0\.0\.0|%2f%2f%5b%3a%3a1%5d|%2f%2f%3a%3a1/i;
 
+const LOOPBACK_AUTH_REQUEST_STORAGE_PREFIX = 'synthi.loopbackAuth.request:';
+const LOOPBACK_AUTH_REQUEST_TTL_MS = 10 * 60 * 1000;
+
 export function parseTerminalUrl(rawUri) {
   if (!rawUri || typeof rawUri !== 'string') return null;
   const uri = rawUri.trim();
@@ -153,6 +156,84 @@ export async function resolveTerminalLinkUrl(rawUri, runtimeScope, options = {})
   return rewrittenSearch.changed || hashChanged ? parsed.toString() : rawUri;
 }
 
+function getLoopbackAuthRequestStorage() {
+  if (typeof globalThis === 'undefined') return null;
+  try {
+    return globalThis.localStorage || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function hashLoopbackAuthRequest(rawUri, runtimeScope, context = {}) {
+  const basis = [
+    runtimeScope || '',
+    context?.workspaceSlug || '',
+    context?.terminalId || '',
+    String(rawUri || ''),
+  ].join('\n');
+  let hash = 2166136261;
+  for (let i = 0; i < basis.length; i += 1) {
+    hash ^= basis.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `lr_${(hash >>> 0).toString(36)}`;
+}
+
+function cleanupExpiredLoopbackAuthRequests(storage, now = Date.now()) {
+  if (!storage) return;
+  try {
+    const keys = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key?.startsWith(LOOPBACK_AUTH_REQUEST_STORAGE_PREFIX)) keys.push(key);
+    }
+    for (const key of keys) {
+      try {
+        const entry = JSON.parse(storage.getItem(key) || '{}');
+        if (!entry?.createdAt || now - Number(entry.createdAt) > LOOPBACK_AUTH_REQUEST_TTL_MS) {
+          storage.removeItem(key);
+        }
+      } catch (_) {
+        storage.removeItem(key);
+      }
+    }
+  } catch (_) {}
+}
+
+function persistLoopbackAuthRequest(relayKey, payload) {
+  const storage = getLoopbackAuthRequestStorage();
+  if (!storage || !relayKey || !payload?.authUrl) return false;
+  try {
+    cleanupExpiredLoopbackAuthRequests(storage);
+    storage.setItem(`${LOOPBACK_AUTH_REQUEST_STORAGE_PREFIX}${relayKey}`, JSON.stringify({
+      ...payload,
+      createdAt: Date.now(),
+    }));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+export function readPersistedLoopbackAuthRequest(relayKey) {
+  const storage = getLoopbackAuthRequestStorage();
+  if (!storage || !relayKey) return null;
+  const storageKey = `${LOOPBACK_AUTH_REQUEST_STORAGE_PREFIX}${relayKey}`;
+  try {
+    const entry = JSON.parse(storage.getItem(storageKey) || 'null');
+    if (!entry?.authUrl || !entry?.createdAt) return null;
+    if (Date.now() - Number(entry.createdAt) > LOOPBACK_AUTH_REQUEST_TTL_MS) {
+      storage.removeItem(storageKey);
+      return null;
+    }
+    return entry;
+  } catch (_) {
+    try { storage.removeItem(storageKey); } catch {}
+    return null;
+  }
+}
+
 export function buildLoopbackCallbackBridgeUrl(rawUri, runtimeScope, bridgeBaseUrl, context = {}) {
   if (!runtimeScope || !bridgeBaseUrl || !terminalLinkHasNestedLoopbackCallback(rawUri)) {
     return null;
@@ -161,11 +242,27 @@ export function buildLoopbackCallbackBridgeUrl(rawUri, runtimeScope, bridgeBaseU
   try {
     const bridge = new URL(bridgeBaseUrl);
     bridge.searchParams.set('runtimeScope', runtimeScope);
-    bridge.searchParams.set('authUrl', rawUri);
+
+    const contextPayload = {};
     for (const key of ['workspaceSlug', 'terminalId', 'runtimeKind', 'filesystemUserId', 'actorUserId', 'collabSessionId']) {
       const value = context?.[key];
-      if (value) bridge.searchParams.set(key, String(value));
+      if (!value) continue;
+      contextPayload[key] = String(value);
+      bridge.searchParams.set(key, String(value));
     }
+
+    const relayKey = hashLoopbackAuthRequest(rawUri, runtimeScope, contextPayload);
+    const persisted = persistLoopbackAuthRequest(relayKey, {
+      authUrl: rawUri,
+      runtimeScope,
+      context: contextPayload,
+    });
+    if (persisted) {
+      bridge.searchParams.set('relayKey', relayKey);
+    } else {
+      bridge.searchParams.set('authUrl', rawUri);
+    }
+
     return bridge.toString();
   } catch (_) {
     return null;

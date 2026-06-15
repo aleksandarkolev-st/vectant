@@ -169,6 +169,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [stoppingRuntime, setStoppingRuntime] = useState(false);
   const [oauthRelayPrompt, setOauthRelayPrompt] = useState(null);
+  const oauthRelayPromptRef = useRef(null);
+  const oauthRelayLastCompleteRef = useRef('');
   // Live overrides — re-renders when user tweaks colors
   const [colorOverrides, setColorOverrides] = useState(() => getTerminalOverrides());
 
@@ -193,23 +195,44 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     }
   }, [terminalTheme, colorOverrides]);
 
+  useEffect(() => {
+    oauthRelayPromptRef.current = oauthRelayPrompt;
+  }, [oauthRelayPrompt]);
+
   // OAuth relay helpers live in a separate tab. When a callback is delivered
   // successfully, force a terminal repaint/focus so waiting TUIs are visibly
   // refreshed for the user.
   useEffect(() => {
+    const promptMatchesRelayComplete = (prompt, payload) => {
+      if (!prompt) return false;
+      if (!payload?.runtimeScope) return true;
+      try {
+        const promptUrl = new URL(prompt.bridgeUrl);
+        const promptRuntimeScope = promptUrl.searchParams.get('runtimeScope');
+        return !promptRuntimeScope || promptRuntimeScope === payload.runtimeScope;
+      } catch (_) {
+        return true;
+      }
+    };
+
     const handleRelayComplete = (payload) => {
       if (!payload || payload.type !== 'synthi.oauthRelay.complete') return;
       if (payload.workspaceSlug && payload.workspaceSlug !== workspaceSlug) return;
-      if (payload.terminalId && payload.terminalId !== terminalId) return;
+      const activePrompt = oauthRelayPromptRef.current;
+      if (!promptMatchesRelayComplete(activePrompt, payload)) return;
+
+      const completeKey = [payload.runtimeScope || '', payload.terminalId || '', payload.at || '', payload.status || ''].join(':');
+      if (completeKey && oauthRelayLastCompleteRef.current === completeKey) return;
+      oauthRelayLastCompleteRef.current = completeKey;
 
       const instance = terminalRef.current;
       try { instance?.fitAddon?.fit(); } catch (_) {}
       try { instance?.term?.refresh(0, instance.term.rows - 1); } catch (_) {}
       try { instance?.term?.focus(); } catch (_) {}
       setOauthRelayPrompt(null);
+      oauthRelayPromptRef.current = null;
       toast.success('Terminal OAuth callback delivered');
     };
-
     const onWindowMessage = (event) => {
       if (event.origin !== window.location.origin) return;
       handleRelayComplete(event.data);
@@ -403,9 +426,10 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
                 id: bridgeUrl,
                 bridgeUrl,
                 originalUrl: uri,
-                opened: false,
+                opened: true,
                 detectedAt: Date.now(),
               });
+              openLocalBrowserUrl(bridgeUrl);
               return;
             }
             const popup = window.open('about:blank', '_blank');

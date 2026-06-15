@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { AnimatePresence, motion } from 'framer-motion';
+import { readPersistedLoopbackAuthRequest } from '@/lib/terminal-preview-links';
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
 const CALLBACK_PARAM_RE = /(redirect|callback|return|continue|next|url|uri)/i;
@@ -412,14 +413,17 @@ function notifyWorkspaceRelayComplete({ workspaceSlug, runtimeScope, terminalId,
 
 function LoopbackAuthPage() {
   const searchParams = useSearchParams();
-  const runtimeScope = searchParams.get('runtimeScope') || '';
-  const authUrl = searchParams.get('authUrl') || '';
-  const workspaceSlug = searchParams.get('workspaceSlug') || '';
-  const terminalId = searchParams.get('terminalId') || '';
-  const runtimeKind = searchParams.get('runtimeKind') || 'private';
-  const filesystemUserId = searchParams.get('filesystemUserId') || '';
-  const actorUserId = searchParams.get('actorUserId') || '';
-  const collabSessionId = searchParams.get('collabSessionId') || '';
+  const relayKey = searchParams.get('relayKey') || '';
+  const persistedRequest = useMemo(() => readPersistedLoopbackAuthRequest(relayKey), [relayKey]);
+  const persistedContext = persistedRequest?.context || {};
+  const runtimeScope = searchParams.get('runtimeScope') || persistedRequest?.runtimeScope || '';
+  const authUrl = searchParams.get('authUrl') || persistedRequest?.authUrl || '';
+  const workspaceSlug = searchParams.get('workspaceSlug') || persistedContext.workspaceSlug || '';
+  const terminalId = searchParams.get('terminalId') || persistedContext.terminalId || '';
+  const runtimeKind = searchParams.get('runtimeKind') || persistedContext.runtimeKind || 'private';
+  const filesystemUserId = searchParams.get('filesystemUserId') || persistedContext.filesystemUserId || '';
+  const actorUserId = searchParams.get('actorUserId') || persistedContext.actorUserId || '';
+  const collabSessionId = searchParams.get('collabSessionId') || persistedContext.collabSessionId || '';
   const loopbackRedirect = useMemo(() => findLoopbackRedirect(authUrl), [authUrl]);
   const expectedCallback = useMemo(() => expectedCallbackFromUrl(loopbackRedirect), [loopbackRedirect]);
   const expectedState = useMemo(() => getUrlParam(authUrl, 'state'), [authUrl]);
@@ -498,9 +502,11 @@ function LoopbackAuthPage() {
   useEffect(() => {
     if (!extensionStatus.installed || !relaySession?.sessionId) return;
     const timer = window.setInterval(async () => {
+      if (completedRef.current) return;
       const statusResult = await refreshExtensionStatus();
       const last = statusResult?.lastSubmission;
       if (last?.sessionId === relaySession.sessionId && last.ok) {
+        completedRef.current = true;
         setStatus('success');
         setMessageTone('success');
         notifyWorkspaceRelayComplete({ workspaceSlug, runtimeScope, terminalId, status: 'success' });
