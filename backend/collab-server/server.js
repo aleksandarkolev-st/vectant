@@ -1354,6 +1354,13 @@ const server = http.createServer(async (req, res) => {
       const snapshot = spawner.lifecycleSnapshot
         ? await spawner.lifecycleSnapshot(sessionId)
         : { session_id: sessionId, state: 'unknown', tracked: false };
+      // Slice 5: ride the Sysbox runtime pod's coarse state alongside the worker's.
+      // Self-gated → returns {skipped} when sysbox is dark, so the response is
+      // byte-identical unless RUNTIME_BACKEND=sysbox-pod is on.
+      if (spawner.runtimeLifecycleSnapshot && snapshot && typeof snapshot === 'object') {
+        const rt = await spawner.runtimeLifecycleSnapshot(sessionId);
+        if (rt && !rt.skipped) snapshot.runtime = rt;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(snapshot));
     } catch (e) {

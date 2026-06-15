@@ -126,6 +126,25 @@ test('purgeRuntimeData targets the session docker-data dir; local-skips and safe
   }
 });
 
+// S5-T3 — runtime lifecycle snapshot self-gates: {skipped} when the flag is off
+// (so /api/session/:id/lifecycle is byte-identical when sysbox is dark) and when in
+// local mode (no k8s). The observable starting/ready/absent states read the live
+// Deployment status — integration, deferred.
+test('runtimeLifecycleSnapshot self-gates: skipped when flag off / local mode', async () => {
+  assert.equal(typeof spawner.runtimeLifecycleSnapshot, 'function');
+  const prev = process.env.RUNTIME_BACKEND;
+  try {
+    delete process.env.RUNTIME_BACKEND;
+    assert.deepEqual(await spawner.runtimeLifecycleSnapshot('ws-a:u1'), { skipped: true, reason: 'runtime_backend_disabled' });
+    // flag on, but this file forces SPAWNER_MODE=local → still skipped (never touches k8s)
+    process.env.RUNTIME_BACKEND = 'sysbox-pod';
+    assert.deepEqual(await spawner.runtimeLifecycleSnapshot('ws-a:u1'), { skipped: true, reason: 'local_mode' });
+  } finally {
+    if (prev === undefined) delete process.env.RUNTIME_BACKEND;
+    else process.env.RUNTIME_BACKEND = prev;
+  }
+});
+
 // S2-T16 — DEFERRED (written + skipped): create + dockerd-ready watch needs a
 // working Sysbox substrate (sysbox-runc on the node) to actually run a pod.
 test('runtime pod reaches dockerd-ready on a real Sysbox cluster', { skip: 'integration — blocked on nestybox/sysbox#1006 substrate' }, () => {});

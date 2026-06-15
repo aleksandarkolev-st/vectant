@@ -1507,6 +1507,45 @@ async function purgeRuntimeData(sessionId) {
   }
 }
 
+/**
+ * Observable lifecycle of the Sysbox RUNTIME pod for a session (Slice 5). Coarse,
+ * derived from the Deployment status in one API call: absent | starting | ready |
+ * stopped. Self-gated — {skipped} when the flag is off or in local dev — so the
+ * /api/session/:id/lifecycle response stays byte-identical when sysbox is dark.
+ * (The frontend may surface a fresh `starting` after a prior idle-cull as
+ * "resuming"; that is not observable from k8s alone, since cull deletes the
+ * Deployment — the distinction is the caller's, not the cluster's.)
+ */
+async function runtimeLifecycleSnapshot(sessionId) {
+  if (!isSysboxRuntimeEnabled()) return { skipped: true, reason: 'runtime_backend_disabled' };
+  if (process.env.SPAWNER_MODE === 'local') return { skipped: true, reason: 'local_mode' };
+  const name = runtimeDeploymentName(sessionId);
+  try {
+    const { body } = await appsApi.readNamespacedDeployment(name, NAMESPACE);
+    const status = body.status || {};
+    const replicas = Number(status.replicas || 0);
+    const readyReplicas = Number(status.readyReplicas || 0);
+    const runtime_ready = readyReplicas >= 1;
+    let state;
+    if (runtime_ready) state = 'ready';
+    else if (replicas >= 1) state = 'starting';
+    else state = 'stopped';
+    return {
+      state,
+      runtime_deployment: true,
+      runtime_ready,
+      replicas,
+      ready_replicas: readyReplicas,
+      deployment_name: name,
+    };
+  } catch (err) {
+    if (err.response && err.response.statusCode === 404) {
+      return { state: 'absent', runtime_deployment: false, runtime_ready: false, deployment_name: name };
+    }
+    throw err;
+  }
+}
+
 /** Cull idle runtime pods (own timeout, own managed-by selector). Self-gated. */
 async function cullIdleRuntimePods() {
   if (!isSysboxRuntimeEnabled()) return;
@@ -1554,6 +1593,7 @@ module.exports = {
   runtimeTeardown,
   purgeRuntimeData,
   runtimeDockerDataDir,
+  runtimeLifecycleSnapshot,
   touchRuntime,
   cullIdleRuntimePods,
   getActiveRuntimeCount,
