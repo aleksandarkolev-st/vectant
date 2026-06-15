@@ -91,8 +91,11 @@ function buildPersistentRuntimeEnv(workspaceDir) {
     YARN_CACHE_FOLDER: joinRuntimePath(paths.cache, 'yarn'),
     BUN_INSTALL: paths.bunHome,
 
-    CARGO_HOME: paths.cargoHome,
-    RUSTUP_HOME: paths.rustupHome,
+    // Keep the image-provided CARGO_HOME/RUSTUP_HOME intact so rustc,
+    // cargo, rustup, and rust-analyzer resolve the bundled toolchain.
+    // User-installed cargo binaries still persist through CARGO_INSTALL_ROOT
+    // and the persistent cargo bin that is prepended to PATH.
+    CARGO_INSTALL_ROOT: paths.cargoHome,
 
     PIP_CACHE_DIR: joinRuntimePath(paths.cache, 'pip'),
     POETRY_CONFIG_DIR: joinRuntimePath(paths.config, 'pypoetry'),
@@ -126,8 +129,7 @@ function persistentRuntimeDirectoryEnvNames() {
     'COREPACK_HOME',
     'YARN_CACHE_FOLDER',
     'BUN_INSTALL',
-    'CARGO_HOME',
-    'RUSTUP_HOME',
+    'CARGO_INSTALL_ROOT',
     'PIP_CACHE_DIR',
     'POETRY_CONFIG_DIR',
     'POETRY_CACHE_DIR',

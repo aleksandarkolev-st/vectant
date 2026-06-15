@@ -16,6 +16,9 @@ test('builds hidden persistent runtime home under the workspace directory', () =
   assert.equal(env.XDG_CONFIG_HOME, '/data/repos/demo/user-a/.synthi/runtime/config');
   assert.equal(env.XDG_CACHE_HOME, '/data/repos/demo/user-a/.synthi/runtime/cache');
   assert.equal(env.NPM_CONFIG_PREFIX, '/data/repos/demo/user-a/.synthi/runtime/data/npm-global');
+  assert.equal(env.CARGO_INSTALL_ROOT, '/data/repos/demo/user-a/.synthi/runtime/data/cargo');
+  assert.equal(env.CARGO_HOME, undefined);
+  assert.equal(env.RUSTUP_HOME, undefined);
   assert.match(env.SYNTHI_PERSISTENT_PATH_PREFIX, /npm-global\/bin/);
   assert.match(env.SYNTHI_PERSISTENT_PATH_PREFIX, /cargo\/bin/);
 });
