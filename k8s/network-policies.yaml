@@ -154,3 +154,80 @@ spec:
           protocol: TCP
   policyTypes:
     - Ingress
+
+---
+# ── Sysbox runtime pods (Slice 4): allow collab-server → preview sidecar ─────
+# Mirrors allow-to-workspace-pods. Lets the preview proxy reach ports opened inside
+# the runtime pod (rt-<hash>-rt Service → :18080 sidecar). default-deny-ingress is
+# in effect, so this explicit allow is required. Inert until runtime pods exist
+# (RUNTIME_BACKEND=sysbox-pod).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-runtime-pods
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: runtime
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: collab-server
+      ports:
+        - port: 18080
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# ── Sysbox runtime pods (Slice 6): egress hardening ─────────────────────────
+# Untrusted USER code runs in these pods. Allow DNS + the PUBLIC internet (image
+# registries, user-app outbound API calls) but DENY the cluster-internal network
+# (lateral movement to other workspaces / internal services), RFC1918, and the GKE
+# metadata server 169.254.169.254 (node-credential theft). NetworkPolicy egress
+# rules are additive (OR), so the kube-dns rule allows DNS even though kube-dns
+# lives in 10/8. Selects app=runtime → inert until runtime pods exist. REQUIRES a
+# NetworkPolicy-enforcing dataplane (GKE Dataplane V2 / Calico).
+# DEFERRED (Spike 3 / infra): per-pod bandwidth cap (kubernetes.io/egress-bandwidth),
+# abuse detection (Cilium/Falco flow-logs), dedicated egress IPs, auto-hibernate.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runtime-egress-hardening
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: runtime
+  policyTypes:
+    - Egress
+  egress:
+    # DNS to kube-dns only (resolve registries + external hosts).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Public internet only: everything EXCEPT cluster-internal / RFC1918 / link-local
+    # (the GKE metadata server 169.254.169.254 is inside 169.254.0.0/16).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16

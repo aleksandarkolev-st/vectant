@@ -87,13 +87,12 @@ data:
   # proof used stock docker:27-dind; the first CI run builds the real toolchain image.
   # TODO: add a trivy CRITICAL gate to CI before enabling the backend in prod.
   RUNTIME_POD_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/vectant-runtime:build-tag-required"
-  # Slice 4 — preview proxy target for ports opened INSIDE the Sysbox runtime pod.
-  # The proxy renders this for /runtime/<scope>/port/<N> requests: {runtimeId} -> the
-  # runtime resource id (rt-<hash>), and the runtime Service is rt-<hash>-rt, so the
-  # target is the runtime pod's preview sidecar. Inert unless a preview carries a
-  # runtimeScope (i.e. RUNTIME_BACKEND=sysbox-pod is on). {sidecarPort}/{sidecarPrefix}
-  # come from SYNTHI_PREVIEW_SIDECAR_PORT (18080) / _PREFIX (/__synthi_preview).
-  SYNTHI_PREVIEW_TARGET_TEMPLATE: "http://{runtimeId}-rt.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"
+  # Slice 4 preview routing: SYNTHI_PREVIEW_TARGET_TEMPLATE is already set ABOVE and
+  # targets the WORKER pod's preview sidecar ({runtimeId} -> rt-<hash>). When
+  # RUNTIME_BACKEND=sysbox-pod is enabled, change that template to target the RUNTIME
+  # pod's Service (rt-<hash>-rt) instead:
+  #   "http://{runtimeId}-rt.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"
+  # (One template per deploy; worker-vs-runtime preview coexistence is a follow-up.)
   # Schedule dynamically spawned workspace pods onto the autoscaled workspace pool.
   WORKSPACE_NODE_SELECTOR_KEY: "cloud.google.com/gke-nodepool"
   WORKSPACE_NODE_SELECTOR_VALUE: "workspace-pool"

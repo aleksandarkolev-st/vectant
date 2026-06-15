@@ -577,6 +577,12 @@ Core hibernate ALREADY works: worker culler (`cullIdleWorkspaces`) + runtime cul
 - [x] **Docker image/build-cache survival (S5-T1):** opt-in `RUNTIME_PERSIST_DOCKER_DATA` (default OFF = ephemeral, current behavior) mounts a per-runtime PVC subPath `docker-data/<runtimeId>` at `/var/lib/docker` so `docker` images/cache survive idle-cull → respawn (resume = WARM docker). Same `collab-data-pvc` volume, distinct subPath (sibling to `repos/`, no git pollution). `isRuntimeDockerDataPersisted()` read at call time. Suite 79 (74 pass + 5 skip).
 - [ ] DEFERRED: tiered idle timeout by plan (currently single `RUNTIME_IDLE_TIMEOUT_MS`); honest `starting`/`resuming` UI states (frontend + a runtime `lifecycleSnapshot`); permanent-delete cleanup of the `docker-data/<id>` subPath (idle-cull keeps it by design); **Spike 2** resume-latency SLO + docker-data-on-PVC overlay2 validation — live cluster / #1006.
 
+## Slice 6 — Egress controls + abuse monitoring (2026-06-15, NetworkPolicy done; abuse deferred)
+- [x] **Egress hardening** (`k8s/network-policies.yaml` → `runtime-egress-hardening`, podSelector app=runtime, Egress): allow DNS (kube-dns) + PUBLIC internet (registries, user-app API calls); DENY cluster-internal lateral movement (10/8 incl. pod/service CIDR), RFC1918, and the GKE metadata server (169.254.0.0/16 — node-credential theft). Additive egress rules so DNS works despite the 10/8 except. Inert until runtime pods exist; REQUIRES a NP-enforcing dataplane (Dataplane V2 / Calico).
+- [x] **Ingress allow** (`allow-to-runtime-pods`): collab-server → runtime preview sidecar :18080 (`default-deny-ingress` is in effect; mirrors `allow-to-workspace-pods`).
+- [x] Fixed a Slice-4 configmap bug found via `kubectl kustomize`: `SYNTHI_PREVIEW_TARGET_TEMPLATE` was DUPLICATED (existing worker `{runtimeId}` value + my runtime `{runtimeId}-rt` add) → invalid YAML. Removed the dup; documented that enabling sysbox switches the template to the `-rt` (runtime Service) variant. `kubectl kustomize k8s/` → exit 0.
+- [ ] DEFERRED (Spike 3 / infra): per-pod bandwidth cap (`kubernetes.io/egress-bandwidth`), abuse detection (Cilium/Falco flow-logs), dedicated egress IPs, auto-hibernate on abuse + false-positive soak.
+
 ---
 
 # Task: Sysbox #1006 unblock spike (2026-06-14, feat/docker-sysbox-engine)
