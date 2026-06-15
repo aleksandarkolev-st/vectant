@@ -33,4 +33,18 @@ describe('getProgramSessionAppUrl', () => {
       `${BASE}/wsport/a%20b/8080/`,
     );
   });
+
+  // Slice 4: ports opened inside the Sysbox per-workspace runtime pod route through
+  // the runtime-scoped proxy (/runtime/<scope>/port/<n>/), matching proxyService.
+  it('uses the runtime-scoped /runtime/<scope>/port/<n>/ path when runtimeScope is set', () => {
+    expect(getProgramSessionAppUrl(5173, { runtimeScope: 'ws-abc:user-1' })).toBe(
+      `${BASE}/runtime/ws-abc%3Auser-1/port/5173/`,
+    );
+  });
+
+  it('runtimeScope takes precedence over a container slug', () => {
+    expect(
+      getProgramSessionAppUrl(3000, { slug: 'my-repo', runtimeType: 'container', runtimeScope: 'ws-x:u2' }),
+    ).toBe(`${BASE}/runtime/ws-x%3Au2/port/3000/`);
+  });
 });

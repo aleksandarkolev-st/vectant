@@ -6,12 +6,23 @@ import { useAppSelector } from '@/redux/hooks';
 import { getProgramSessionAppUrl } from '@/services/programSessionClient';
 
 export default function PortsPanel() {
-  const ports = useAppSelector((s) => s.ports?.containerPorts) || [];
+  const containerPorts = useAppSelector((s) => s.ports?.containerPorts) || [];
+  const runtimePorts = useAppSelector((s) => s.ports?.runtimePorts) || [];
+  const runtimeScope = useAppSelector((s) => s.ports?.runtimeScope) || null;
   const slug = useAppSelector((s) => s.workspace?.slug) || '';
 
+  // Prefer the Sysbox per-workspace runtime pod's ports when present
+  // (RUNTIME_BACKEND=sysbox-pod) — they route through /runtime/<scope>/port/<n>/.
+  // Otherwise fall back to the local/worker hybrid container ports (/wsport|/port).
+  const usingRuntime = runtimePorts.length > 0 && !!runtimeScope;
+  const ports = usingRuntime ? runtimePorts : containerPorts;
+
   const urlFor = useCallback(
-    (port) => getProgramSessionAppUrl(port, { slug, runtimeType: 'container' }),
-    [slug],
+    (port) =>
+      usingRuntime
+        ? getProgramSessionAppUrl(port, { runtimeScope })
+        : getProgramSessionAppUrl(port, { slug, runtimeType: 'container' }),
+    [usingRuntime, runtimeScope, slug],
   );
 
   const open = useCallback((port) => {

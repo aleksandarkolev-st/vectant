@@ -1194,6 +1194,17 @@ class CollabClient {
           if (msg.type === 'container-ports' && msg.slug === slug) {
             if (typeof handlers.onContainerPorts === 'function') handlers.onContainerPorts(Array.isArray(msg.ports) ? msg.ports : []);
           }
+          if (msg.type === 'runtime-ports' && msg.slug === slug) {
+            // Ports opened inside the Sysbox per-workspace runtime pod (Slice 4).
+            // Only emitted when RUNTIME_BACKEND=sysbox-pod; carries the runtimeScope
+            // so the panel can build /runtime/<scope>/port/<n>/ preview URLs.
+            if (typeof handlers.onRuntimePorts === 'function') {
+              handlers.onRuntimePorts({
+                runtimeScope: msg.runtimeScope || null,
+                ports: Array.isArray(msg.ports) ? msg.ports : [],
+              });
+            }
+          }
           if (msg.type === 'auto-session-created') {
             const { default: collabSessionService } = await import('@/services/collabSessionService');
             collabSessionService._handleAutoSessionCreated(msg);

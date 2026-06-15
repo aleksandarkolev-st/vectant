@@ -10,7 +10,7 @@ import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
 import { resolveCollabHttpUrl } from '@/lib/collab-url';
-import { setContainerPorts } from '@/redux/portsSlice';
+import { setContainerPorts, setRuntimePorts } from '@/redux/portsSlice';
 import { consumeJumpstartPayload } from '@/lib/ai-jumpstart-session';
 import { USER_ID_KEY, USER_NAME_KEY, USER_AVATAR_KEY } from '@/services/userIdentity';
 import {
@@ -1337,6 +1337,12 @@ export default function EditorPage({ params }) {
                 // Live set of ports opened inside the workspace runtime container
                 // (terminal-launched servers) — feed the Ports panel.
                 dispatch(setContainerPorts(ports));
+            },
+            onRuntimePorts: ({ runtimeScope, ports }) => {
+                // Live set of ports opened inside the Sysbox per-workspace runtime
+                // pod (only when RUNTIME_BACKEND=sysbox-pod) — feed the Ports panel,
+                // which routes them through /runtime/<scope>/port/<n>/.
+                dispatch(setRuntimePorts({ runtimeScope, ports }));
             },
             onCollabInvite: (msg) => {
                 // Forward collab-invite to collabSessionService so UI can
