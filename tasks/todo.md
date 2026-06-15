@@ -588,6 +588,10 @@ Core hibernate ALREADY works: worker culler (`cullIdleWorkspaces`) + runtime cul
 - [x] **Registry-mirror hook (S7-T1):** env-gated `RUNTIME_REGISTRY_MIRROR` → the runtime container gets dockerd `--registry-mirror=<url>` (dind forwards container args to dockerd). Off by default. Point at an AR remote repository to cut Docker Hub egress + rate limits.
 - [ ] DEFERRED (infra): create the AR **remote repository** (`gcloud artifacts repositories create … --mode=remote-repository` w/ Docker Hub upstream) + set `RUNTIME_REGISTRY_MIRROR`. Live-validate a 2nd workspace hits the cache (pull-time + egress delta) — needs cluster. CAVEAT: confirm AR remote-repo behaves as a transparent dockerd `--registry-mirror` before enabling.
 
+## Slice 8 — GPU on-demand (2026-06-15, spec hook; GATED on Spike 1)
+- [x] **On-demand GPU hook (S8-T1):** per-spawn `metadata.gpu` → the runtime pod requests `nvidia.com/gpu: 1` + tolerates the `nvidia.com/gpu:NoSchedule` node taint (keeps the sysbox toleration), and routes to a GPU pool when `RUNTIME_GPU_NODE_SELECTOR_VALUE` is set. Off by default (never warm — requested per spawn); idle GPU pods are culled by the existing runtime culler (released on idle). `RUNTIME_GPU_RESOURCE` overridable.
+- [ ] DEFERRED (GATED on Spike 1 / infra): **Spike 1** — does `docker run --gpus` nest under Sysbox on a GKE GPU node? If not, the pod-level GPU (above) is the fallback. Needs a GPU+Sysbox node pool + nvidia device plugin (infra), a billing/metering hook, and a hard time-box so a user can't hold a GPU 24/7. Live-validate a CUDA container + idle release.
+
 ---
 
 # Task: Sysbox #1006 unblock spike (2026-06-14, feat/docker-sysbox-engine)

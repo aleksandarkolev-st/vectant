@@ -221,3 +221,20 @@ test('runtime pod uses a registry mirror only when RUNTIME_REGISTRY_MIRROR is se
     else process.env.RUNTIME_REGISTRY_MIRROR = prev;
   }
 });
+
+// S8-T1 — GPU on-demand: per-spawn metadata.gpu adds a GPU device limit + the GPU
+// node-taint toleration (off by default — never warm, requested per spawn). The
+// sysbox toleration is preserved (GPU pod still runs under sysbox-runc).
+test('runtime pod requests a GPU + tolerates the GPU taint only when metadata.gpu is set', () => {
+  const base = { sessionId: 'ws-abc:user-1', userId: 'user-1', metadata: { workspaceSlug: 'my-repo', filesystemUserId: '242593757' } };
+  let spec = buildRuntimeDeployment(base).spec.template.spec;
+  let runtime = spec.containers.find((c) => c.name === 'runtime');
+  assert.ok(!runtime.resources, 'no GPU resources by default');
+  assert.ok(!(spec.tolerations || []).some((t) => t.key === 'nvidia.com/gpu'), 'no GPU toleration by default');
+
+  spec = buildRuntimeDeployment({ ...base, metadata: { ...base.metadata, gpu: true } }).spec.template.spec;
+  runtime = spec.containers.find((c) => c.name === 'runtime');
+  assert.equal(runtime.resources.limits['nvidia.com/gpu'], '1', 'requests 1 GPU');
+  assert.ok((spec.tolerations || []).some((t) => t.key === 'nvidia.com/gpu' && t.effect === 'NoSchedule'), 'tolerates the GPU node taint');
+  assert.ok((spec.tolerations || []).some((t) => t.key === 'workload' && t.value === 'sysbox'), 'keeps the sysbox toleration');
+});

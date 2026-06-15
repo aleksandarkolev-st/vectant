@@ -59,6 +59,18 @@ function isRuntimeDockerDataPersisted() {
   return ['1', 'true', 'yes'].includes(String(process.env.RUNTIME_PERSIST_DOCKER_DATA || '').trim().toLowerCase());
 }
 
+// GPU on-demand (Slice 8, GATED on Spike 1). GPU is requested PER-SPAWN via
+// metadata.gpu (never warm) so an idle GPU pod is culled like any other runtime
+// pod. When set, the pod requests a GPU device + tolerates the GPU node taint, and
+// (if a GPU node pool is configured) schedules onto it. Spike 1 = whether
+// `docker --gpus` nests under Sysbox; if not, this gives the POD the GPU (CUDA at
+// pod level). The GPU+Sysbox node pool + nvidia device plugin + metering are infra.
+const RUNTIME_GPU_RESOURCE = (process.env.RUNTIME_GPU_RESOURCE || 'nvidia.com/gpu').trim();
+const RUNTIME_GPU_NODE_SELECTOR_VALUE = (process.env.RUNTIME_GPU_NODE_SELECTOR_VALUE || '').trim();
+function runtimeWantsGpu(metadata = {}) {
+  return metadata.gpu === true || ['1', 'true', 'yes'].includes(String(metadata.gpu || '').trim().toLowerCase());
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function safePathSegment(value) {
   return String(value || '').replace(/[^a-zA-Z0-9_@.\-]/g, '_');
@@ -153,6 +165,16 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
   // default; the dind entrypoint passes container args through to dockerd.
   const registryMirror = String(process.env.RUNTIME_REGISTRY_MIRROR || '').trim();
 
+  // GPU on-demand (Slice 8): per-spawn metadata.gpu adds a GPU device request + the
+  // GPU node-taint toleration, and routes to the GPU node pool when configured.
+  const gpu = runtimeWantsGpu(metadata);
+  const podTolerations = gpu
+    ? [...scheduling.tolerations, { key: RUNTIME_GPU_RESOURCE, operator: 'Exists', effect: 'NoSchedule' }]
+    : scheduling.tolerations;
+  const podNodeSelector = (gpu && RUNTIME_GPU_NODE_SELECTOR_VALUE && scheduling.nodeSelector)
+    ? { ...scheduling.nodeSelector, [RUNTIME_NODE_SELECTOR_KEY]: RUNTIME_GPU_NODE_SELECTOR_VALUE }
+    : scheduling.nodeSelector;
+
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -163,8 +185,8 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
       template: {
         metadata: { labels },
         spec: {
-          ...(scheduling.nodeSelector ? { nodeSelector: scheduling.nodeSelector } : {}),
-          ...(scheduling.tolerations.length ? { tolerations: scheduling.tolerations } : {}),
+          ...(podNodeSelector ? { nodeSelector: podNodeSelector } : {}),
+          ...(podTolerations.length ? { tolerations: podTolerations } : {}),
           hostUsers: false,
           runtimeClassName: 'sysbox-runc',
           containers: [
@@ -172,6 +194,7 @@ function buildRuntimeDeployment({ sessionId, userId, metadata = {} } = {}) {
               name: 'runtime',
               image: RUNTIME_POD_IMAGE,
               ...(registryMirror ? { args: [`--registry-mirror=${registryMirror}`] } : {}),
+              ...(gpu ? { resources: { limits: { [RUNTIME_GPU_RESOURCE]: '1' } } } : {}),
               env: [
                 { name: 'DOCKER_HOST', value: RUNTIME_DOCKER_HOST },
                 { name: 'SESSION_ID', value: sessionId },
