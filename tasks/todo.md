@@ -649,27 +649,32 @@ User asked to finish ALL deferred bits across the 9 slices + full live validatio
 - [x] A5 frontend: collabClient `runtime-ports` → portsSlice `setRuntimePorts` → PortsPanel `/runtime/<scope>/port/<n>/`; `getProgramSessionAppUrl(runtimeScope)`. Commit `42409139`.
 - [skip] Slice-5 "tiered idle timeout by plan" — no plan-tier concept exists; premature, deferred-pending-product.
 
-## Phase B–D — live validation: PARTIAL (cluster TORN DOWN at session pause; billing stopped)
-LIVE-VALIDATED this session:
-- ✅ Slice 1 + A1: scoped Cloud Build built the ROOTFUL `vectant-runtime:scratch` AND the trivy CRITICAL gate passed (build SUCCESS) → image-in-CI + vuln-gate proven live.
-- ✅ Substrate: scratch cluster `synthi-sysbox-scratch` (Dataplane V2) + sysbox-pool; `kubectl apply -k k8s/sysbox/` → `sysbox-runtime=running`.
-- ✅ S2 + A2 + S5-mount: real `buildRuntimeDeployment` pod Ready on sysbox-pool — `runtimeClassName=sysbox-runc`, `hostUsers=false`, not privileged, `egress-bandwidth=50M`, `/workspace` subPath `repos/smoke-validate/242593757`, `/var/lib/docker` subPath `docker-data/rt-…`. PVC bound (standard RWO).
+## Phase B–C — live validation: DONE ✅ (commits A1–A5 + S6 fix PUSHED to origin)
+- ✅ Slice 1 + A1: scoped Cloud Build built ROOTFUL `vectant-runtime:scratch` AND the trivy CRITICAL gate passed (SUCCESS) → image-in-CI + vuln-gate live.
+- ✅ Substrate: scratch cluster (Dataplane V2) + sysbox-pool → `sysbox-runtime=running`.
+- ✅ S2 + A2 + S5-mount: real `buildRuntimeDeployment` pod Ready — `sysbox-runc`, `hostUsers=false`, non-privileged, `egress-bandwidth=50M`, `/workspace` + `/var/lib/docker` subPaths. PVC bound.
+- ✅ S3 terminal exec: `docker run hello-world` OK; `uid_map 0 3047817216 65536` (root-in-userns); docker/kind/kubectl/helm all run in-pod.
+- ✅ S4 ports: REAL `parseListeningPorts` on the pod's REAL `/proc/net/tcp` → `[2376,8000]`; :8000 reachable via port-forward (**HTTP 200**).
+- ✅ S5 hibernate: scale 0→1 — `/workspace` marker + `alpine:3.20` image BOTH survived; **resume latency 20s** (Spike 2 SLO); overlay2-on-PVC works.
+- ✅ S6 egress (Dataplane V2): metadata 169.254 BLOCKED, kube-api ClusterIP BLOCKED, other-pod IP BLOCKED, public (IP+DNS) ALLOWED. **FOUND+FIXED a real bug**: the kube-dns `podSelector` DNS rule blocked DNS entirely (GKE NodeLocal DNSCache is hostNetwork → node identity) → changed to allow UDP/TCP :53 to all. Committed + re-validated.
+- ✅ Slice 7 (Phase C): AR remote repo `docker-hub-cache` created; runtime pod pulled `library/busybox:1.36` THROUGH it. CAVEAT resolved: `--registry-mirror` needs DAEMON-level AR creds (cred-helper in the runtime image) — prod follow-up.
+- ✅ Slice 8 hook (spec, live-confirmed): `metadata.gpu=true` → `nvidia.com/gpu:1` + GPU toleration + GPU-pool nodeSelector.
+- europe-west10 scratch cluster TORN DOWN after C (billing stopped).
 
-REMAINING (next session):
-- [ ] S3 exec: `docker run hello-world`, `docker ps`, `kind version`, `kubectl version`, `helm version` inside the runtime container.
-- [ ] S4 ports: start a server in-pod; read /proc/net/tcp (what runtimeRunOnce parses) + `kubectl port-forward` curl → reachable.
-- [ ] S5 hibernate: scale deploy 0→1, `/workspace` persists; pull alpine, scale 0→1, `docker images` still has it (warm); measure resume latency (Spike 2).
-- [ ] S6 egress: apply `k8s/network-policies.yaml`; exec wget — metadata 169.254.169.254 BLOCKED, public OK, cluster-internal BLOCKED.
-- [ ] C Slice 7: `gcloud artifacts repositories create … --mode=remote-repository` (Docker Hub upstream) + `RUNTIME_REGISTRY_MIRROR`; cold/warm pull delta. (Verify AR-remote-repo behaves as a transparent `--registry-mirror`.)
-- [ ] D Slice 8 GPU: T4 quota AVAILABLE (NVIDIA_T4_GPUS=1, no request needed). GPU+sysbox node pool + nvidia plugin; pod `metadata.gpu=true` → `nvidia-smi`; does `docker run --gpus` NEST under sysbox? else pod-level GPU fallback. Metering/time-box hook. Tear GPU pool down immediately.
-- [ ] Phase E: hardcoded-values audit; final teardown verify; suites; docs; recap; THEN check in before programs phase.
+## Phase D — Slice 8 live GPU Spike 1: DEFERRED (GPU capacity unavailable, user-approved)
+- ✅ S8 hook spec-validated live: `metadata.gpu=true` → `nvidia.com/gpu:1` + GPU toleration + GPU-pool nodeSelector.
+- ⛔ Live CUDA spike blocked by GPU AVAILABILITY, not the sysbox design:
+  - europe-west10 has NO GPU hardware in any zone (regional quota is phantom — only RTX-PRO-6000 in one zone).
+  - europe-west1-b T4 → **GCE_STOCKOUT** ("zone does not have enough resources", no VM after 35 min). Cluster torn down.
+- Slice-8 forward list (do when capacity exists):
+  1. Pick a zone that actually HAS the GPU (`gcloud compute accelerator-types list --filter=name=<type>`, not just quota) + deep capacity (us-central1).
+  2. **Nested `docker run --gpus` needs nvidia-container-toolkit baked into the runtime image** (not present today) — likely THE real blocker, capacity aside.
+  3. Verify pod-level GPU injection under `runtimeClassName=sysbox-runc` (sysbox replaces the nvidia container runtime → device-plugin mounts must still apply).
+  4. Prod GPU pool needs autoscaling `min=0` for the scale-to-zero cost model.
 
-## RESUME (fast — runtime image already in AR):
-1. `gcloud container clusters create synthi-sysbox-scratch --project vectant-proj --zone europe-west10-a --release-channel None --enable-shielded-nodes --enable-dataplane-v2 --machine-type e2-medium --num-nodes 1 --no-enable-autoupgrade --no-enable-autorepair --cluster-version 1.35.3-gke.2190000` then node-pool `sysbox-pool` (UBUNTU_CONTAINERD e2-standard-4, label sysbox-install=yes, taint workload=sysbox:NoSchedule). (Or run create-scratch-cluster.ps1 — now has --enable-dataplane-v2.)
-2. VERIFY `kubectl config current-context` == `…synthi-sysbox-scratch` (NEVER prod) before any apply.
-3. `kubectl apply -k k8s/sysbox/`; wait node label `sysbox-runtime=running`.
-4. `kubectl apply -f %TEMP%\scratch-ns-pvc.yaml`; `node %TEMP%\gen-runtime.js | kubectl apply -f -`.
-5. Run S3–S6, then C, D, E.
-- Temp helpers (regenerate if gone): `%TEMP%\cb-runtime-scratch.yaml` (scoped image build), `scratch-ns-pvc.yaml`, `gen-runtime.js`.
-- AR images persist: `vectant-runtime:scratch`, `sysbox-deploy-k8s@sha256:c7859de4…` (both verified resolvable).
-- Commits A1–A5 NOT yet pushed to origin (awaiting user OK to push).
+## Phase E — wrap: DONE ✅
+- ✅ Hardcoded-values audit: all new values are env-driven (`RUNTIME_EGRESS_BANDWIDTH`, `RUNTIME_GPU_*`, …) or universal standards (RFC1918/link-local CIDRs, k8s annotation keys, digest-pinned trivy image, port 53, `/var/lib/docker`). Service CIDR deliberately NOT hardcoded (Dataplane V2 polices by backend identity). No env-specific values/secrets in committed code.
+- ✅ Teardown: both scratch clusters deleted (europe-west10 + europe-west1); `docker-hub-cache` AR repo deleted; `clusters list` → prod only (billing stopped). AR `vectant-runtime:scratch` + `sysbox-deploy-k8s` kept for fast re-spin.
+- ✅ Suites: backend `node --test` 79 pass + 5 skip / 0 fail; frontend ports vitest 13 pass.
+- ✅ Docs: lessons #33–35 (phantom GPU quota/stockout; NodeLocal-DNSCache egress break+fix; Dataplane-V2 backend-identity egress).
+- NEXT: pivot to the **programs UX** phase (real program UIs — Docker etc. — rendering inside the workspace).
