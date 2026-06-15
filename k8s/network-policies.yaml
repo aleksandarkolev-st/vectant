@@ -208,15 +208,15 @@ spec:
   policyTypes:
     - Egress
   egress:
-    # DNS to kube-dns only (resolve registries + external hosts).
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
+    # DNS — allow UDP/TCP :53 to ALL destinations. A kube-dns podSelector is NOT
+    # sufficient on GKE: NodeLocal DNSCache (node-local-dns) answers via a
+    # hostNetwork pod and intercepts the kube-dns ClusterIP on the node, so the
+    # responder's identity is the NODE (in 10/8) — which the cluster-internal deny
+    # below would block, breaking DNS entirely (validated live on Dataplane V2:
+    # the podSelector rule left runtime pods unable to resolve any name). Port 53
+    # is DNS-only (no other internal service listens on it) and public egress is
+    # already permitted below, so this does not widen the lateral-movement surface.
+    - ports:
         - protocol: UDP
           port: 53
         - protocol: TCP
