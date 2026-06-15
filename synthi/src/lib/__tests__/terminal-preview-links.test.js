@@ -121,6 +121,25 @@ describe('terminal-preview-links', () => {
     expect(parsed.searchParams.get('terminalId')).toBe('term-1');
   });
 
+  it('does not include OSC-8 terminal hyperlink escape sequences in detected auth URLs', () => {
+    const authUrl = 'https://auth.example.test/oauth/authorize?client_id=cli&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid&state=abc';
+    const osc8Output = `Open \u001b]8;;${authUrl}\u001b\\${authUrl}\u001b]8;;\u001b\\ to continue`;
+    const links = findTerminalLoopbackAuthLinks(osc8Output, {
+      runtimeScope: 'ws-demo-user-demo',
+      bridgeBaseUrl: 'https://beta.vectant.dev/auth/loopback',
+      loopbackContext: {
+        workspaceSlug: 'demo',
+        terminalId: 'term-1',
+      },
+    });
+
+    expect(links).toHaveLength(1);
+    expect(links[0].originalUrl).toBe(authUrl);
+    const parsed = new URL(links[0].bridgeUrl);
+    expect(parsed.pathname).toBe('/auth/loopback');
+    expect(parsed.searchParams.get('authUrl')).toBe(authUrl);
+  });
+
   it('does not surface ordinary terminal links as auth relay prompts', () => {
     const links = findTerminalLoopbackAuthLinks('Docs: https://example.test/docs and preview: http://localhost:3000', {
       runtimeScope: 'ws-demo-user-demo',

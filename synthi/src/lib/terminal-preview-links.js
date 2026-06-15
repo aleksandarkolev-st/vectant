@@ -1,7 +1,10 @@
 const LOCAL_PREVIEW_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
 const LOOPBACK_CALLBACK_PARAM_RE = /(redirect|callback|return|continue|next|url|uri)/i;
 const SCHEMELESS_LOOPBACK_RE = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1):\d+(?:[/?#]|$)/i;
-const TERMINAL_URL_RE = /\bhttps?:\/\/[^\s"'<>]+/gi;
+// Terminal output can include OSC-8 hyperlink wrappers and ANSI/control bytes
+// around a visible URL. Treat ASCII controls as hard URL boundaries so the
+// detected relay link matches the clean URI xterm gives us on a direct click.
+const TERMINAL_URL_RE = /\bhttps?:\/\/[^\s"'<>\x00-\x1F\x7F]+/gi;
 const TERMINAL_URL_TRAILING_PUNCTUATION_RE = /[)\].,;:!?]+$/;
 const LOOPBACK_TEXT_HINT_RE = /localhost|127\.0\.0\.1|0\.0\.0\.0|::1|%2f%2flocalhost|%2f%2f127\.0\.0\.1|%2f%2f0\.0\.0\.0|%2f%2f%5b%3a%3a1%5d|%2f%2f%3a%3a1/i;
 
