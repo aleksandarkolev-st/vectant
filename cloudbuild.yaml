@@ -221,6 +221,29 @@ steps:
       - --cache=true
       - --cache-ttl=168h
 
+  # ── 10. Vulnerability gate — runtime image (untrusted user-code surface) ────
+  # The per-workspace runtime runs UNTRUSTED user code, so it MUST pass a CRITICAL
+  # CVE gate before a deploy can safely enable RUNTIME_BACKEND=sysbox-pod. Mirrors
+  # the validated local gate (lessons #28): trivy, CRITICAL-only, honoring the
+  # committed waiver file backend/runtime-image/.trivyignore (the base-bundled grpc
+  # CVE-2026-33186 — local in-pod containerd socket, not network-exposed). trivy
+  # authenticates to Artifact Registry via the ambient Cloud Build service account
+  # (artifactregistry.reader). Exit 1 on any non-waived CRITICAL fails the build,
+  # blocking deploy. First-party images aren't the untrusted surface; add more scan
+  # targets here for a full-fleet gate. (Fallback if AR keychain auth is ever
+  # fiddly: `gcloud artifacts docker images scan` via the pinned gcloud builder.)
+  - id: vulnerability-scan-runtime
+    waitFor: ['build-runtime-image']
+    name: aquasec/trivy:0.71.0@sha256:016eae51fdcf989332a5404af7e8f625cd5d95d7c0907a221d080a996f556500
+    args:
+      - image
+      - --severity=CRITICAL
+      - --exit-code=1
+      - --ignorefile=backend/runtime-image/.trivyignore
+      - --no-progress
+      - --timeout=10m
+      - ${_REGISTRY}/vectant-runtime:${_IMAGE_TAG}
+
   # ═══════════════════════════════════════════════════════════════════════════
   # DEPLOY — Rolling update on GKE
   # ═══════════════════════════════════════════════════════════════════════════
@@ -244,6 +267,7 @@ steps:
       - build-prisma-migrate
       - build-browser-workflow-bridge
       - build-runtime-image
+      - vulnerability-scan-runtime
 
   - id: deploy-to-gke
     name: gcr.io/cloud-builders/kubectl:latest@sha256:0001d965b1fd2d41ef80cb94cc7dfb39d65adbb8ab3855370524b424d897c078
