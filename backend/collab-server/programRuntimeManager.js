@@ -18,9 +18,9 @@ const BLOCKED_ENV_KEYS = new Set([
   'PRISMA_DATABASE_URL',
   // DOCKER_HOST stays fully key-blocked: a program must never be able to point
   // Docker at an arbitrary endpoint (host socket OR a TCP daemon API). Container
-  // programs get the correct in-container rootless socket by INHERITING the
-  // runtime-container image's own DOCKER_HOST env (docker:dind-rootless sets it),
-  // so it never needs to pass through this per-program scrub.
+  // programs get the correct in-pod socket by INHERITING the runtime container's
+  // own pod-level DOCKER_HOST env (the rootful dockerd's /var/run/docker.sock —
+  // NOT rootless; lesson #31), so it never passes through this per-program scrub.
   'DOCKER_HOST',
   'DOCKER_SOCKET',
   'DOCKER_CERT_PATH',

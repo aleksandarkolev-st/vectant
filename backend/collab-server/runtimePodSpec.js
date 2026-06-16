@@ -6,8 +6,8 @@
  * Kept separate from workspacePodSpawner.js (which loads the k8s client at
  * require-time) so the spec shape can be unit-tested without a cluster.
  * Mirrors the worker Deployment shape from ensurePod(), but for the RUNTIME
- * pod: rootless dockerd under Sysbox — runtimeClassName sysbox-runc, NO
- * privileged, NO host docker.sock. Sysbox provides the isolation.
+ * pod: rootful dockerd under Sysbox (NOT rootless — lesson #31) — runtimeClassName
+ * sysbox-runc, NO privileged, NO host docker.sock. Sysbox provides the isolation.
  */
 
 const { runtimeResourceId, metadataHash } = require('./runtimeIdentity');
