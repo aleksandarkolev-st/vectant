@@ -948,6 +948,40 @@ async function browserAttachCurrentWorkspaceTool(args: unknown): Promise<ToolRes
   });
 }
 
+async function ensureHostedBrowserRuntimeAttachedForPreview(input: {
+  workspace_id?: string;
+  workspace_url?: string;
+  runtime_id?: string;
+}): Promise<ToolResponse | null> {
+  const runtime = browserBroker.runtimeAttachment();
+  if (runtime?.kind === "hosted") return null;
+
+  const result = await attachHostedBrowserRuntime(
+    {
+      workspace_id: input.workspace_id,
+      workspace_url: input.workspace_url,
+      runtime_id: input.runtime_id,
+      open_workspace: false,
+    },
+    browserPlaywrightAdapter,
+    browserBroker
+  );
+
+  if (!result.ok) {
+    return errorResponse(result.error, {
+      runtime: result.runtime,
+      readiness: resolveHostedBrowserRuntime({
+        workspace_id: input.workspace_id,
+        workspace_url: input.workspace_url,
+        runtime_id: input.runtime_id,
+      }),
+      required_action: "attach_hosted_browser_runtime",
+    });
+  }
+
+  return null;
+}
+
 async function browserAttachTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const cdpUrl = stringOpt(a["cdp_url"]) ?? process.env["SYNTHI_BROWSER_CDP_URL"];
@@ -989,12 +1023,22 @@ async function browserListTabsTool(): Promise<ToolResponse> {
 async function browserObservePreviewTool(args: unknown, options: { userGesture?: boolean } = {}): Promise<ToolResponse> {
   const a = obj(args);
   const input = {
+    workspace_id: stringOpt(a["workspace_id"]),
     workspace_url: stringOpt(a["workspace_url"]),
+    runtime_id: stringOpt(a["runtime_id"]),
     preferred_url: stringOpt(a["preferred_url"]),
     preview_url: stringOpt(a["preview_url"]),
     allowed_preview_origins: stringArrayOpt(a["allowed_preview_origins"]),
     allowed_preview_host_suffixes: stringArrayOpt(a["allowed_preview_host_suffixes"]),
   };
+
+  const attachError = await ensureHostedBrowserRuntimeAttachedForPreview({
+    workspace_id: input.workspace_id,
+    workspace_url: input.workspace_url,
+    runtime_id: input.runtime_id,
+  });
+  if (attachError) return attachError;
+
   const previewUrl = httpUrlOpt(
     input.preferred_url ??
     input.preview_url ??
