@@ -61,6 +61,67 @@ const TERMINAL_MOTION_EASE = [0.16, 1, 0.3, 1];
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
+const terminalSessionIdCache = new Map();
+
+function safeTerminalSessionPart(value, fallback = 'term') {
+  const normalized = String(value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+  return normalized || fallback;
+}
+
+function randomTerminalSessionSuffix() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  }
+  return Math.random().toString(36).slice(2, 14);
+}
+
+function getStableTerminalSessionId({
+  workspaceSlug,
+  terminalId,
+  paneSide,
+  shellType,
+  runtimeScope,
+  userId,
+}) {
+  const scopeKey = [
+    workspaceSlug || 'workspace',
+    runtimeScope || userId || 'runtime',
+    terminalId || 'default',
+    paneSide || 'main',
+    shellType || 'default',
+  ].join(':');
+
+  if (terminalSessionIdCache.has(scopeKey)) {
+    return terminalSessionIdCache.get(scopeKey);
+  }
+
+  const storageKey = `vectant-terminal-session:${scopeKey}`;
+  try {
+    const stored = window.sessionStorage?.getItem(storageKey);
+    if (stored) {
+      terminalSessionIdCache.set(scopeKey, stored);
+      return stored;
+    }
+  } catch (_) {}
+
+  const sessionId = [
+    'term',
+    safeTerminalSessionPart(workspaceSlug, 'workspace'),
+    safeTerminalSessionPart(terminalId, 'default'),
+    safeTerminalSessionPart(paneSide, 'main'),
+    randomTerminalSessionSuffix(),
+  ].join('-').slice(0, 96);
+
+  terminalSessionIdCache.set(scopeKey, sessionId);
+  try {
+    window.sessionStorage?.setItem(storageKey, sessionId);
+  } catch (_) {}
+  return sessionId;
+}
 
 function resolveLoopbackAuthBridgeBaseUrl(origin) {
   try {
@@ -789,13 +850,19 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       // Reconnect to the same PTY session. A new PTY behind an old xterm
       // buffer makes typed text appear duplicated or inserted in odd places.
-      const sid = fixedSessionId || currentSessionIdRef.current || (sessionKey + '-' + Date.now().toString(36));
-      currentSessionIdRef.current = sid;
-      sessionIdRef.current = sid;
-
       const { cols, rows } = term;
       const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
       const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
+      const sid = fixedSessionId || currentSessionIdRef.current || getStableTerminalSessionId({
+        workspaceSlug,
+        terminalId,
+        paneSide,
+        shellType,
+        runtimeScope: runtimeIdentity.runtimeScope,
+        userId: termUserId,
+      });
+      currentSessionIdRef.current = sid;
+      sessionIdRef.current = sid;
       const params = new URLSearchParams({
         sessionId: sid,
         workspace: workspaceSlug,

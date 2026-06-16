@@ -66,6 +66,88 @@ try {
 /** @type {Map<string, { pty: IPty, ws: WebSocket, cwd: string, shell: string }>} */
 const activeSessions = new Map();
 
+const DETACHED_TERMINAL_TTL_MS = Math.max(
+  5_000,
+  Number(process.env.SYNTHI_TERMINAL_DETACH_TTL_MS || 30_000),
+);
+const TERMINAL_REPLAY_BUFFER_CHARS = Math.max(
+  10_000,
+  Number(process.env.SYNTHI_TERMINAL_REPLAY_BUFFER_CHARS || 100_000),
+);
+
+function createTerminalOutputBuffer(ptyProcess, maxChars = TERMINAL_REPLAY_BUFFER_CHARS) {
+  const outputBuffer = [];
+  let bufferLen = 0;
+  let bufferingActive = true;
+  const onData = (data) => {
+    if (!bufferingActive) return;
+    outputBuffer.push(data);
+    bufferLen += data.length;
+    while (bufferLen > maxChars && outputBuffer.length > 1) {
+      const dropped = outputBuffer.shift();
+      bufferLen -= dropped.length;
+    }
+  };
+  const bufferDisposable = ptyProcess.onData(onData);
+  return {
+    outputBuffer,
+    stopBuffering: () => {
+      bufferingActive = false;
+      try { bufferDisposable.dispose?.(); } catch (_) {}
+    },
+  };
+}
+
+function clearSessionTimers(session) {
+  if (!session) return;
+  if (session.detachTimer) clearTimeout(session.detachTimer);
+  if (session.orphanTimer) clearTimeout(session.orphanTimer);
+}
+
+function disposeTerminalSession(sessionId, reason = 'disposed') {
+  const session = activeSessions.get(sessionId);
+  if (!session) return;
+  clearSessionTimers(session);
+  try { session.stopBuffering?.(); } catch (_) {}
+  try { session.dataDisposable?.dispose?.(); } catch (_) {}
+  try { session.unwatchFs?.(); } catch (_) {}
+  try { session.pty?.kill?.(); } catch (_) {}
+  try { session.releasePort?.(); } catch (_) {}
+  activeSessions.delete(sessionId);
+  console.log(`[Terminal] Session ${sessionId} disposed (${reason})`);
+}
+
+function detachTerminalSession(sessionId, reason = 'ws_closed') {
+  const session = activeSessions.get(sessionId);
+  if (!session || !session.pty) return;
+  clearSessionTimers(session);
+  try { session.dataDisposable?.dispose?.(); } catch (_) {}
+  try { session.unwatchFs?.(); } catch (_) {}
+  try { session.stopBuffering?.(); } catch (_) {}
+
+  const { outputBuffer, stopBuffering } = createTerminalOutputBuffer(session.pty);
+  const detachTimer = setTimeout(() => {
+    const current = activeSessions.get(sessionId);
+    if (!current || !current.detached) return;
+    console.warn(`[Terminal] Detached session ${sessionId} expired after ${DETACHED_TERMINAL_TTL_MS}ms`);
+    disposeTerminalSession(sessionId, 'detach_timeout');
+  }, DETACHED_TERMINAL_TTL_MS);
+  if (detachTimer.unref) detachTimer.unref();
+
+  activeSessions.set(sessionId, {
+    ...session,
+    ws: null,
+    unwatchFs: () => {},
+    dataDisposable: null,
+    detached: true,
+    headless: false,
+    outputBuffer,
+    stopBuffering,
+    detachTimer,
+  });
+  console.log(`[Terminal] Session ${sessionId} detached (${reason})`);
+}
+
 /** @type {Map<string, { port: number, refCount: number, lastActive: number }>} */
 const runtimePortLeases = new Map();
 
@@ -1422,19 +1504,19 @@ function createTerminalWSS() {
     const initialRows = parseInt(parsedUrl.searchParams.get('rows'), 10) || 24;
     const requestedShellType = parsedUrl.searchParams.get('shell') || null;
 
-    // ── Check for existing headless session (AI-created terminal) ───────
+    // ── Check for existing resumable session ────────────────────────────
     const existingSession = requestedSessionId && activeSessions.get(requestedSessionId);
-    if (existingSession && existingSession.headless && existingSession.pty) {
+    if (existingSession && existingSession.pty && (existingSession.headless || existingSession.detached)) {
       const sessionId = requestedSessionId;
       const { pty: ptyProcess, shell, cwd, outputBuffer, stopBuffering } = existingSession;
 
-      console.log(`[Terminal] Reattaching WS to headless session ${sessionId} | cwd=${cwd} | buffered=${outputBuffer.length} chunks`);
+      console.log(`[Terminal] Reattaching WS to ${existingSession.headless ? 'headless' : 'detached'} session ${sessionId} | cwd=${cwd} | buffered=${outputBuffer?.length || 0} chunks`);
 
-      // Clear the orphan reaper — we have a WS now.
+      // Clear any delayed cleanup timer — we have a WS now.
       if (existingSession.orphanTimer) clearTimeout(existingSession.orphanTimer);
+      if (existingSession.detachTimer) clearTimeout(existingSession.detachTimer);
 
-      // Stop the headless buffer from growing AND dispose its PTY listener
-      // (stopBuffering does both — see createHeadlessSession).
+      // Stop the replay buffer from growing AND dispose its PTY listener.
       if (stopBuffering) stopBuffering();
 
       // Start filesystem watcher now that we have a WebSocket
@@ -1459,7 +1541,9 @@ function createTerminalWSS() {
         filesystemUserId: existingSession.filesystemUserId || requestedFilesystemUserId,
         releasePort: existingSession.releasePort || (() => {}),
         unwatchFs,
+        dataDisposable: null,
         headless: false,
+        detached: false,
       });
 
       // Send ready acknowledgement
@@ -1487,7 +1571,14 @@ function createTerminalWSS() {
           ws.send(Buffer.from(data, 'utf-8'), { binary: true });
         }
       };
-      ptyProcess.onData(onPtyData);
+      const dataDisposable = ptyProcess.onData(onPtyData);
+      const currentSession = activeSessions.get(sessionId);
+      if (currentSession) {
+        activeSessions.set(sessionId, {
+          ...currentSession,
+          dataDisposable,
+        });
+      }
 
       // ── PTY exit handler ──────────────────────────────────────────────
       ptyProcess.onExit(({ exitCode, signal }) => {
@@ -1496,8 +1587,7 @@ function createTerminalWSS() {
           ws.send(JSON.stringify({ type: 'exit', code: exitCode, signal }));
           ws.close(1000, 'PTY exited');
         }
-        try { existingSession.releasePort?.(); } catch (_) {}
-        activeSessions.delete(sessionId);
+        disposeTerminalSession(sessionId, 'pty_exit');
       });
 
       // ── WebSocket → PTY (input) ──────────────────────────────────────
@@ -1527,18 +1617,12 @@ function createTerminalWSS() {
 
       ws.on('close', (code) => {
         console.log(`[Terminal] WS closed for reattached session ${sessionId} (code=${code})`);
-        try { unwatchFs(); } catch (_) {}
-        try { ptyProcess.kill(); } catch (_) {}
-        try { existingSession.releasePort?.(); } catch (_) {}
-        activeSessions.delete(sessionId);
+        detachTerminalSession(sessionId, `ws_close:${code}`);
       });
 
       ws.on('error', (err) => {
         console.error(`[Terminal] WS error for reattached session ${sessionId}:`, err.message);
-        try { unwatchFs(); } catch (_) {}
-        try { ptyProcess.kill(); } catch (_) {}
-        try { existingSession.releasePort?.(); } catch (_) {}
-        activeSessions.delete(sessionId);
+        detachTerminalSession(sessionId, 'ws_error');
       });
 
       return; // Done — skip normal session creation below
@@ -1606,8 +1690,7 @@ function createTerminalWSS() {
       });
     }
 
-    // Register session
-    activeSessions.set(sessionId, {
+    const sessionRecord = {
       pty: ptyProcess,
       ws,
       cwd,
@@ -1618,7 +1701,10 @@ function createTerminalWSS() {
       filesystemUserId: requestedFilesystemUserId,
       releasePort: runtimeLaunch.releasePort,
       unwatchFs,
-    });
+      dataDisposable: null,
+      headless: false,
+      detached: false,
+    };
 
     // ── Send ready acknowledgement ──────────────────────────────────────
     ws.send(JSON.stringify({
@@ -1639,7 +1725,8 @@ function createTerminalWSS() {
         ws.send(Buffer.from(data, 'utf-8'), { binary: true });
       }
     };
-    ptyProcess.onData(onPtyData);
+    sessionRecord.dataDisposable = ptyProcess.onData(onPtyData);
+    activeSessions.set(sessionId, sessionRecord);
 
     // ── PTY exit ────────────────────────────────────────────────────────
     ptyProcess.onExit(({ exitCode, signal }) => {
@@ -1648,8 +1735,7 @@ function createTerminalWSS() {
         ws.send(JSON.stringify({ type: 'exit', code: exitCode, signal }));
         ws.close(1000, 'PTY exited');
       }
-      try { runtimeLaunch.releasePort(); } catch (_) {}
-      activeSessions.delete(sessionId);
+      disposeTerminalSession(sessionId, 'pty_exit');
     });
 
     // ── WebSocket → PTY (input) ─────────────────────────────────────────
@@ -1701,21 +1787,15 @@ function createTerminalWSS() {
       }
     });
 
-    // ── WebSocket close → kill PTY + stop watcher ────────────────────────
+    // ── WebSocket close → detach PTY briefly for UI remount/reconnect ─────
     ws.on('close', (code, reason) => {
       console.log(`[Terminal] WS closed for session ${sessionId} (code=${code})`);
-      try { unwatchFs(); } catch (_) {}
-      try { ptyProcess.kill(); } catch (_) { /* already dead */ }
-      try { runtimeLaunch.releasePort(); } catch (_) {}
-      activeSessions.delete(sessionId);
+      detachTerminalSession(sessionId, `ws_close:${code}`);
     });
 
     ws.on('error', (err) => {
       console.error(`[Terminal] WS error for session ${sessionId}:`, err.message);
-      try { unwatchFs(); } catch (_) {}
-      try { ptyProcess.kill(); } catch (_) { /* ignore */ }
-      try { runtimeLaunch.releasePort(); } catch (_) {}
-      activeSessions.delete(sessionId);
+      detachTerminalSession(sessionId, 'ws_error');
     });
   });
 
