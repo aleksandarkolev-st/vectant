@@ -14,6 +14,9 @@ export function mergeProgramSession(session, runtimeSession = null) {
     ...session,
     activePorts: Array.isArray(runtimeSession?.activePorts) ? [...runtimeSession.activePorts] : [],
     webPort: runtimeSession?.webPort ?? null,
+    // Slice 1 (real programs): the live runtime session carries its sysbox scope;
+    // surface it so ProgramSessionPanel builds /runtime/<scope>/port/N preview URLs.
+    runtimeScope: runtimeSession?.runtimeScope ?? null,
     lastHealthState: runtimeSession?.healthState ?? session.lastHealthState ?? null,
   };
 
