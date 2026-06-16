@@ -259,15 +259,25 @@ function normalizeExternalBrowserUrl(value: unknown): string | null {
   }
 }
 
-async function ensureHostedRuntimeForExternalOpen(): Promise<
+async function ensureHostedRuntimeAttached(input: {
+  workspace_id?: string;
+  workspace_url?: string;
+  runtime_id?: string;
+} = {}): Promise<
   { ok: true } | { ok: false; status: number; error: string; detail?: unknown }
 > {
-  if (browserPlaywrightAdapter.isAttached() && browserBroker.runtimeAttachment()) {
+  const runtime = browserBroker.runtimeAttachment();
+  if (browserPlaywrightAdapter.isAttached() && runtime?.kind === "hosted") {
     return { ok: true };
   }
 
   const attached = await attachHostedBrowserRuntime(
-    { open_workspace: false },
+    {
+      workspace_id: input.workspace_id,
+      workspace_url: input.workspace_url,
+      runtime_id: input.runtime_id,
+      open_workspace: false,
+    },
     browserPlaywrightAdapter,
     browserBroker
   );
@@ -308,6 +318,19 @@ async function enrichToolArgs(toolName: string, args: unknown): Promise<Record<s
     !stringOpt(base["preferred_url"]) &&
     !stringOpt(base["preview_url"])
   ) {
+    const runtime = await ensureHostedRuntimeAttached({
+      workspace_id: stringOpt(base["workspace_id"]) ?? workspaceSlugFromArgs(base),
+      workspace_url: stringOpt(base["workspace_url"]) ?? defaultWorkspaceUrl(base),
+      runtime_id: stringOpt(base["runtime_id"]),
+    });
+    if (!runtime.ok) {
+      throw new BridgeToolInputError(runtime.error, {
+        tool: toolName,
+        runtime: runtime.detail,
+        required_action: "attach_hosted_browser_runtime",
+      }, runtime.status);
+    }
+
     const preview = await discoverWorkspacePreviewUrl(base);
     if (preview.ok && preview.url) {
       return { ...base, preferred_url: preview.url, preview_url: preview.url };
@@ -884,7 +907,7 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
         return;
       }
 
-      const runtime = await ensureHostedRuntimeForExternalOpen();
+      const runtime = await ensureHostedRuntimeAttached();
       if (!runtime.ok) {
         writeJson(res, runtime.status, { ok: false, error: runtime.error, detail: runtime.detail });
         return;
