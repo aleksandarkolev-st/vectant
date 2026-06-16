@@ -57,6 +57,20 @@ function runtimeTerminalTarget(sysboxEnabled = isSysboxRuntimeEnabled()) {
     : { useSysboxRuntime: false, container: CONTAINER_NAME };
 }
 
+/**
+ * Pure launch-target decision for a managed program (Slice 1 — real programs).
+ * `container` programs route to the Sysbox runtime pod when the backend is on
+ * (precedence over the dev-hybrid container), else the hybrid runtime container,
+ * else `unavailable` (fail loud — never the docker-less headless PTY, where
+ * DOCKER_HOST is scrubbed). Non-container programs always use the headless PTY.
+ */
+function programRuntimeTarget({ runtimeType, sysboxEnabled, hasHybrid } = {}) {
+  if (runtimeType !== 'container') return { target: 'headless' };
+  if (sysboxEnabled) return { target: 'sysbox-pod' };
+  if (hasHybrid) return { target: 'hybrid' };
+  return { target: 'unavailable' };
+}
+
 function kubeConfig() {
   const kc = new k8s.KubeConfig();
   if (process.env.KUBERNETES_SERVICE_HOST) kc.loadFromCluster();
@@ -228,6 +242,7 @@ async function runtimeRunOnce(runtimeScope, argv) {
 module.exports = {
   shouldUseRuntimePodTerminal,
   runtimeTerminalTarget,
+  programRuntimeTarget,
   createRuntimePodPty,
   runtimeRunOnce,
 };

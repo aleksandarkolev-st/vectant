@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { shouldUseContainerTerminal } = require('../terminalService');
-const { runtimeTerminalTarget } = require('../runtimePodTerminal');
+const { runtimeTerminalTarget, programRuntimeTarget } = require('../runtimePodTerminal');
 
 test('shouldUseContainerTerminal requires the flag, a runtime manager, and a slug', () => {
   const rt = {};
@@ -26,3 +26,20 @@ test('runtimeTerminalTarget picks the runtime container under the sysbox flag, e
 // S3-T2 — DEFERRED (written + skipped): a real terminal execs into the runtime pod
 // and `docker build/run/compose` work against the workspace's own daemon.
 test('terminal execs into the runtime pod and docker works', { skip: 'integration — blocked on nestybox/sysbox#1006 substrate' }, () => {});
+
+// Slice-1 (real programs) — pure launch-target decision for a managed program.
+// container + sysbox → the runtime pod (precedence); container + hybrid only →
+// the dev-hybrid container; container + neither → unavailable (fail loud);
+// non-container → the headless PTY.
+test('programRuntimeTarget: non-container is always headless', () => {
+  assert.equal(programRuntimeTarget({ runtimeType: 'web', sysboxEnabled: true, hasHybrid: true }).target, 'headless');
+});
+test('programRuntimeTarget: container + sysbox → sysbox-pod (precedence over hybrid)', () => {
+  assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: true, hasHybrid: true }).target, 'sysbox-pod');
+});
+test('programRuntimeTarget: container + hybrid only → hybrid', () => {
+  assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: false, hasHybrid: true }).target, 'hybrid');
+});
+test('programRuntimeTarget: container + neither → unavailable', () => {
+  assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: false, hasHybrid: false }).target, 'unavailable');
+});
