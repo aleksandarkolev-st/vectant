@@ -136,6 +136,27 @@ class RuntimePodPty {
   }
 }
 
+/**
+ * Build the `bash -lc` script run inside the runtime pod: export the given env,
+ * cd into the workspace mount, then run `finalCommand`. Shared by the interactive
+ * terminal (createRuntimePodPty) and the program exec (createRuntimePodProgram).
+ * DOCKER_HOST is never added here — it is inherited from the runtime container's
+ * own pod-level env.
+ */
+function buildRuntimeShellScript({ env = {}, cwd, finalCommand }) {
+  const exports = Object.entries(env)
+    .filter(([key, value]) => key && value !== undefined && value !== null)
+    .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
+    .join('; ');
+  return [
+    exports,
+    `export WORKSPACE_DIR=${shellQuote(cwd)}`,
+    'mkdir -p "$WORKSPACE_DIR"',
+    'cd "$WORKSPACE_DIR"',
+    finalCommand,
+  ].filter(Boolean).join('; ');
+}
+
 async function createRuntimePodPty({
   runtimeScope,
   workspaceSlug,
@@ -171,18 +192,11 @@ async function createRuntimePodPty({
     COLUMNS: String(safeCols),
     LINES: String(safeRows),
   };
-  const exports = Object.entries(terminalEnv)
-    .filter(([key, value]) => key && value !== undefined && value !== null)
-    .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
-    .join('; ');
-  const commandScript = [
-    exports,
-    `export WORKSPACE_DIR=${shellQuote(effectiveCwd)}`,
-    'mkdir -p "$WORKSPACE_DIR"',
-    'cd "$WORKSPACE_DIR"',
-    `stty rows ${safeRows} cols ${safeCols} 2>/dev/null || true`,
-    'exec /bin/bash --login -i',
-  ].filter(Boolean).join('; ');
+  const commandScript = buildRuntimeShellScript({
+    env: terminalEnv,
+    cwd: effectiveCwd,
+    finalCommand: `stty rows ${safeRows} cols ${safeCols} 2>/dev/null || true; exec /bin/bash --login -i`,
+  });
 
   const stdout = new ResizablePassThrough({ cols: safeCols, rows: safeRows });
   const stderr = new PassThrough();
@@ -211,6 +225,50 @@ async function createRuntimePodPty({
     shell: '/bin/bash',
     podName: pod.podName,
   };
+}
+
+/**
+ * Non-interactive program exec into the ready Sysbox runtime pod's `runtime`
+ * container. Streams stdout/stderr via RuntimePodPty (onData/onExit/kill) so it
+ * plugs into the managed-session listeners. DOCKER_HOST is inherited from the
+ * container's own pod-level env — never injected here.
+ */
+async function createRuntimePodProgram({ runtimeScope, workspaceSlug, userId, command, env = {}, cols = 120, rows = 30 }) {
+  if (!runtimeScope) throw new Error('runtimeScope is required for runtime pod program');
+  const actor = userId || runtimeScope;
+  await spawner.spawnRuntimePod(runtimeScope, actor, { workspaceSlug, runtimeKind: 'program', filesystemUserId: userId });
+  const ready = await waitForReadyRuntimePod(runtimeScope);
+  if (!ready || !ready.podName) throw new Error('runtime_pod_not_ready');
+
+  const safeCols = sanitizeDimension(cols, 120, 500);
+  const safeRows = sanitizeDimension(rows, 30, 200);
+  const script = buildRuntimeShellScript({
+    env: { ...env, TERM: env.TERM || 'xterm-256color', COLUMNS: String(safeCols), LINES: String(safeRows) },
+    cwd: RUNTIME_POD_WORKSPACE_MOUNT,
+    finalCommand: command,
+  });
+  const stdout = new ResizablePassThrough({ cols: safeCols, rows: safeRows });
+  const stderr = new PassThrough();
+  const stdin = new PassThrough();
+  const exec = new k8s.Exec(kubeConfig());
+  const ws = await exec.exec(NAMESPACE, ready.podName, RUNTIME_POD_CONTAINER, ['/bin/bash', '-lc', script], stdout, stderr, stdin, true, () => {});
+  return {
+    ptyProcess: new RuntimePodPty({ ws, stdin, stdout, stderr, pid: ready.podName }),
+    runtimeScope,
+    podName: ready.podName,
+  };
+}
+
+/** Poll for the ready runtime pod (all containers ready ⇒ dockerd answered its probe). */
+async function waitForReadyRuntimePod(runtimeScope, { attempts = 40, intervalMs = 1500 } = {}) {
+  for (let i = 0; i < attempts; i += 1) {
+    const ready = typeof spawner.getReadyRuntimePodForSession === 'function'
+      ? await spawner.getReadyRuntimePodForSession(runtimeScope)
+      : null;
+    if (ready && ready.podName) return ready;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return { podName: null };
 }
 
 /**
@@ -243,6 +301,8 @@ module.exports = {
   shouldUseRuntimePodTerminal,
   runtimeTerminalTarget,
   programRuntimeTarget,
+  buildRuntimeShellScript,
   createRuntimePodPty,
+  createRuntimePodProgram,
   runtimeRunOnce,
 };

@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { shouldUseContainerTerminal } = require('../terminalService');
-const { runtimeTerminalTarget, programRuntimeTarget } = require('../runtimePodTerminal');
+const { runtimeTerminalTarget, programRuntimeTarget, buildRuntimeShellScript } = require('../runtimePodTerminal');
 
 test('shouldUseContainerTerminal requires the flag, a runtime manager, and a slug', () => {
   const rt = {};
@@ -42,4 +42,16 @@ test('programRuntimeTarget: container + hybrid only → hybrid', () => {
 });
 test('programRuntimeTarget: container + neither → unavailable', () => {
   assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: false, hasHybrid: false }).target, 'unavailable');
+});
+
+// Slice-1 — the shared runtime shell-script builder runs the program command in
+// /workspace with env exports, and never injects DOCKER_HOST (it is inherited from
+// the runtime container's own pod-level env).
+test('buildRuntimeShellScript: runs the program command in /workspace with env exports, no DOCKER_HOST injected', () => {
+  const s = buildRuntimeShellScript({ env: { FOO: 'bar' }, cwd: '/workspace', finalCommand: 'docker compose up' });
+  assert.match(s, /export FOO='bar'/);
+  assert.match(s, /export WORKSPACE_DIR='\/workspace'/);
+  assert.match(s, /cd "\$WORKSPACE_DIR"/);
+  assert.match(s, /docker compose up$/);
+  assert.equal(/DOCKER_HOST/.test(s), false);
 });
