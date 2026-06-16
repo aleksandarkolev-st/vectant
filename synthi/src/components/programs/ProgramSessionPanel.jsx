@@ -116,8 +116,8 @@ export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 
   const [appPortOverride, setAppPortOverride] = useState(null);
   const effectiveWebPort = appPortOverride ?? session?.webPort ?? null;
   const appUrl = useMemo(
-    () => getProgramSessionAppUrl(effectiveWebPort, { slug: workspaceSlug, runtimeType: session?.runtimeType }),
-    [effectiveWebPort, workspaceSlug, session?.runtimeType],
+    () => getProgramSessionAppUrl(effectiveWebPort, { slug: workspaceSlug, runtimeType: session?.runtimeType, runtimeScope: session?.runtimeScope }),
+    [effectiveWebPort, workspaceSlug, session?.runtimeType, session?.runtimeScope],
   );
   const ports = Array.isArray(session?.activePorts) ? session.activePorts : [];
   const healthState = session?.lastHealthState || 'unknown';
@@ -297,7 +297,7 @@ export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 
                     </button>
                   )}
                   <a
-                    href={getProgramSessionAppUrl(port, { slug: workspaceSlug, runtimeType }) || '#'}
+                    href={getProgramSessionAppUrl(port, { slug: workspaceSlug, runtimeType, runtimeScope: session?.runtimeScope }) || '#'}
                     target="_blank"
                     rel="noreferrer"
                     data-testid={`open-port-${port}`}
