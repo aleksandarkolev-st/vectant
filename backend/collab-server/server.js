@@ -2004,11 +2004,47 @@ const server = http.createServer(async (req, res) => {
           break;
         }
       }
+      // Slice 1 (real programs): report whether a container runtime exists so the
+      // frontend imports a devcontainer with an image as a real `container` program.
+      const containerRuntimeAvailable = isSysboxRuntimeEnabled() || process.env.ENABLE_CONTAINER_RUNTIME === '1';
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
+      res.end(JSON.stringify({ ...result, containerRuntimeAvailable }));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message || 'Manifest read failed' }));
+    }
+    return;
+  }
+
+  // GET /program-runtime/:slug/detect → { found, files:{name:raw}, containerRuntimeAvailable }
+  // Slice 1 (real programs): probe the workspace for container artifacts
+  // (docker-compose / devcontainer / Dockerfile) and report whether a container
+  // runtime is available. The frontend (repoDetect) maps the raw bytes → config.
+  const detectMatch = /^\/program-runtime\/([^/]+)\/detect$/.exec(programRuntimeUrl.pathname);
+  if (detectMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(detectMatch[1]);
+    const detectUserId = programRuntimeUrl.searchParams.get('userId') || undefined;
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const { resolveWorkspaceCwd } = require('./terminalService');
+      const cwd = await resolveWorkspaceCwd(slug, detectUserId);
+      const names = [
+        'docker-compose.yml', 'compose.yaml', 'compose.yml',
+        '.devcontainer/devcontainer.json', '.devcontainer.json', 'devcontainer.json',
+        'Dockerfile',
+      ];
+      const files = {};
+      for (const name of names) {
+        const file = path.join(cwd, name);
+        if (fs.existsSync(file)) files[name] = fs.readFileSync(file, 'utf8');
+      }
+      const containerRuntimeAvailable = isSysboxRuntimeEnabled() || process.env.ENABLE_CONTAINER_RUNTIME === '1';
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ found: Object.keys(files).length > 0, files, containerRuntimeAvailable }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'detect failed' }));
     }
     return;
   }
