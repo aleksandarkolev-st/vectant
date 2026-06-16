@@ -36,11 +36,20 @@ const PREVIEW_WORKFLOW_ERROR_CODES = new Set([
   'preview_target_not_found',
   'preview_discovery_failed',
   'preview_sidecar_discovery_failed',
+  'preview_open_failed',
+  'preview_snapshot_failed',
   'preview_target_not_allowed',
   'invalid_preview_url',
   'origin_consent_required',
   'screenshot_consent_required',
   'runtime_scope_required',
+]);
+
+const RUNTIME_WORKFLOW_ERROR_CODES = new Set([
+  'workflow_runtime_ensure_unreachable',
+  'workflow_runtime_ensure_failed',
+  'workflow_runtime_unavailable',
+  'workflow_bridge_unreachable',
 ]);
 
 function workflowToolError(tool, body) {
@@ -75,6 +84,12 @@ function previewActionDetail(code, fallback) {
   if (code === 'preview_target_not_found') {
     return 'A preview was detected, but the hosted browser did not select it yet. Reattach the browser runtime, then click Observe.';
   }
+  if (code === 'preview_open_failed') {
+    return 'The hosted browser could not open the preview. Restart the dev server or reattach the browser runtime, then click Observe.';
+  }
+  if (code === 'preview_snapshot_failed') {
+    return 'The preview opened, but the hosted browser could not capture it yet. Wait a moment, then click Observe again.';
+  }
   if (code === 'preview_target_not_allowed' || code === 'invalid_preview_url') {
     return 'Open a preview URL that belongs to this workspace runtime, then click Observe.';
   }
@@ -82,6 +97,13 @@ function previewActionDetail(code, fallback) {
     return 'Click Observe to grant screenshot access for the current preview origin.';
   }
   return fallback || 'Open or start a workspace preview, then click Observe again.';
+}
+
+function runtimeActionDetail(code, fallback) {
+  if (code === 'workflow_runtime_ensure_unreachable' || code === 'workflow_bridge_unreachable') {
+    return 'The workspace runtime is still reconnecting. Wait a moment, then try again.';
+  }
+  return fallback || 'The workspace runtime is not ready yet. Wait a moment, then try again.';
 }
 
 // ────────────────────────────────────────────────────────
@@ -301,7 +323,39 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
   }, []);
 
   const stateWithBridgeError = useCallback((error, previous = null) => {
+    const code = workflowErrorCode(error);
     const detail = error?.message || String(error || 'Workflow bridge unavailable');
+    if (RUNTIME_WORKFLOW_ERROR_CODES.has(code)) {
+      return {
+        ...(previous || {}),
+        bridge: {
+          ...(previous?.bridge || {}),
+          status: 'error',
+          url: bridgeConfig.url,
+          detail: runtimeActionDetail(code, workflowErrorDetail(error) || detail),
+        },
+        runtime: {
+          ...(previous?.runtime || {}),
+          status: 'starting',
+          detail: runtimeActionDetail(code, workflowErrorDetail(error) || detail),
+        },
+        observe: {
+          ...(previous?.observe || {}),
+          status: 'needsPreview',
+          label: 'Runtime starting',
+          detail: runtimeActionDetail(code, workflowErrorDetail(error) || detail),
+          error: code,
+        },
+        blockers: [
+          {
+            id: code || 'workflow_runtime_unavailable',
+            label: 'Workspace runtime unavailable',
+            detail: runtimeActionDetail(code, workflowErrorDetail(error) || detail),
+          },
+          ...(Array.isArray(previous?.blockers) ? previous.blockers.filter((item) => !RUNTIME_WORKFLOW_ERROR_CODES.has(item?.id)) : []),
+        ],
+      };
+    }
     return {
       ...(previous || {}),
       bridge: {

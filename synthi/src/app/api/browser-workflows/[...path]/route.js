@@ -240,18 +240,28 @@ async function ensureRuntimeBridge(context) {
   if (!collabUrl) return { ok: true };
 
   const userId = context.actorUserId || context.filesystemUserId || runtimeScope;
-  const res = await fetch(`${collabUrl}/api/spawner/ensure`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    cache: 'no-store',
-    body: JSON.stringify({
-      session_id: runtimeScope,
-      user_id: userId,
-      workspaceSlug: context.workspaceSlug || '',
-      runtimeKind: context.runtimeKind || '',
-      filesystemUserId: context.filesystemUserId || userId,
-    }),
-  });
+  let res;
+  try {
+    res = await fetch(`${collabUrl}/api/spawner/ensure`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({
+        session_id: runtimeScope,
+        user_id: userId,
+        workspaceSlug: context.workspaceSlug || '',
+        runtimeKind: context.runtimeKind || '',
+        filesystemUserId: context.filesystemUserId || userId,
+      }),
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      status: 503,
+      error: 'workflow_runtime_ensure_unreachable',
+      detail: err?.message || String(err),
+    };
+  }
 
   if (res.ok) return { ok: true };
   let detail = `HTTP ${res.status}`;
@@ -261,7 +271,7 @@ async function ensureRuntimeBridge(context) {
   } catch (_) {
     // ignore non-JSON errors
   }
-  return { ok: false, status: res.status, detail };
+  return { ok: false, status: res.status, error: 'workflow_runtime_ensure_failed', detail };
 }
 
 export async function proxyWorkflowBridge(request, routeContext) {
@@ -289,7 +299,7 @@ export async function proxyWorkflowBridge(request, routeContext) {
   const ensure = await ensureRuntimeBridge(runtimeContext);
   if (!ensure.ok) {
     return NextResponse.json(
-      { error: 'workflow_runtime_unavailable', detail: ensure.detail },
+      { error: ensure.error || 'workflow_runtime_unavailable', detail: ensure.detail },
       { status: ensure.status || 503 },
     );
   }

@@ -938,9 +938,32 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
           });
           return;
         }
-        throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        writeJson(res, 500, {
+          ok: false,
+          error: "workflow_tool_prepare_failed",
+          requested_tool: requestedTool,
+          tool,
+          detail: msg,
+          state: buildBrowserWorkflowPanelState(bridgeState),
+        });
+        return;
       }
-      const result = await dispatchWorkflowTool(tool, args);
+      let result;
+      try {
+        result = await dispatchWorkflowTool(tool, args);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        writeJson(res, 500, {
+          ok: false,
+          error: "workflow_tool_dispatch_failed",
+          requested_tool: requestedTool,
+          tool,
+          detail: msg,
+          state: buildBrowserWorkflowPanelState(bridgeState),
+        });
+        return;
+      }
       if (!result) {
         writeJson(res, 404, {
           error: "unknown_workflow_tool",

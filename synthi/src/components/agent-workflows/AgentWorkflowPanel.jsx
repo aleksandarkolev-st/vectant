@@ -95,6 +95,12 @@ const OPERATIONAL_BLOCKER_IDS = new Set([
   'preview_target_not_found',
   'preview_discovery_failed',
   'preview_sidecar_discovery_failed',
+  'preview_open_failed',
+  'preview_snapshot_failed',
+  'workflow_runtime_ensure_unreachable',
+  'workflow_runtime_ensure_failed',
+  'workflow_runtime_unavailable',
+  'workflow_bridge_unreachable',
 ]);
 
 function normalizeTone(value, fallback = 'neutral') {
