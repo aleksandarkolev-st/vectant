@@ -68,7 +68,7 @@ const activeSessions = new Map();
 
 const DETACHED_TERMINAL_TTL_MS = Math.max(
   5_000,
-  Number(process.env.SYNTHI_TERMINAL_DETACH_TTL_MS || 30_000),
+  Number(process.env.SYNTHI_TERMINAL_DETACH_TTL_MS || 5 * 60 * 1000),
 );
 const TERMINAL_REPLAY_BUFFER_CHARS = Math.max(
   10_000,
