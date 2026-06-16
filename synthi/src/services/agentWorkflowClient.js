@@ -66,7 +66,12 @@ async function readJsonOrEmpty(res) {
 function bridgeError(prefix, status, body) {
   const code = body?.error || `${prefix}_${status}`;
   const detail = body?.detail || body?.message || '';
-  return new Error(detail ? `${code}: ${detail}` : code);
+  const err = new Error(detail ? `${code}: ${detail}` : code);
+  err.code = code;
+  err.status = status;
+  err.body = body;
+  err.detail = detail;
+  return err;
 }
 
 export async function getAgentWorkflowState({ url, token, runtime, signal } = {}) {

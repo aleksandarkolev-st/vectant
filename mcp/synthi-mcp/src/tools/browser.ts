@@ -1001,13 +1001,30 @@ async function browserObservePreviewTool(args: unknown, options: { userGesture?:
     process.env["SYNTHI_WORKSPACE_PREVIEW_URL"] ??
     process.env["SYNTHI_PREVIEW_URL"]
   );
-  if (previewUrl) await browserPlaywrightAdapter.openOrNavigate(previewUrl);
+  const openedPreviewTab = previewUrl ? await browserPlaywrightAdapter.openOrNavigate(previewUrl) : null;
   let allTabs = await browserPlaywrightAdapter.listTabs();
   let target = resolveBrowserPreviewTarget(
     allTabs,
     input,
     process.env
   );
+  if (!target.ok && openedPreviewTab) {
+    const openedTarget = resolveBrowserPreviewTarget(
+      [openedPreviewTab],
+      {
+        ...input,
+        preferred_url: input.preferred_url ?? previewUrl,
+        preview_url: input.preview_url ?? previewUrl,
+      },
+      process.env
+    );
+    if (openedTarget.ok) {
+      target = openedTarget;
+      if (!allTabs.some((tab) => tab.tab_id === openedPreviewTab.tab_id)) {
+        allTabs = [...allTabs, openedPreviewTab];
+      }
+    }
+  }
   if (!target.ok && previewUrl) {
     await browserPlaywrightAdapter.open(previewUrl);
     allTabs = await browserPlaywrightAdapter.listTabs();

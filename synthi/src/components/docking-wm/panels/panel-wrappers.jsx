@@ -31,6 +31,59 @@ import {
 import { gitClient } from '@/services/gitClient';
 import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 
+const PREVIEW_WORKFLOW_ERROR_CODES = new Set([
+  'preview_not_found',
+  'preview_target_not_found',
+  'preview_discovery_failed',
+  'preview_sidecar_discovery_failed',
+  'preview_target_not_allowed',
+  'invalid_preview_url',
+  'origin_consent_required',
+  'screenshot_consent_required',
+  'runtime_scope_required',
+]);
+
+function workflowToolError(tool, body) {
+  const result = body?.result || {};
+  const code = result.error || body?.error || `${tool}_failed`;
+  const detail = result.detail || result.reason || body?.detail || body?.message || '';
+  const err = new Error(detail ? `${code}: ${detail}` : code);
+  err.code = code;
+  err.detail = detail;
+  err.body = body;
+  err.result = result;
+  err.state = body?.state;
+  return err;
+}
+
+function workflowErrorCode(error) {
+  return error?.code || error?.result?.error || error?.body?.result?.error || error?.body?.error || '';
+}
+
+function workflowErrorDetail(error) {
+  return error?.detail || error?.result?.reason || error?.result?.detail || error?.body?.detail || error?.message || '';
+}
+
+function isWorkflowToolActionError(error) {
+  return Boolean(error?.state || error?.body?.state || error?.body?.result || error?.result);
+}
+
+function previewActionDetail(code, fallback) {
+  if (code === 'preview_not_found') {
+    return 'Start a dev server in this workspace, then click Observe again.';
+  }
+  if (code === 'preview_target_not_found') {
+    return 'A preview was detected, but the hosted browser did not select it yet. Reattach the browser runtime, then click Observe.';
+  }
+  if (code === 'preview_target_not_allowed' || code === 'invalid_preview_url') {
+    return 'Open a preview URL that belongs to this workspace runtime, then click Observe.';
+  }
+  if (code === 'origin_consent_required' || code === 'screenshot_consent_required') {
+    return 'Click Observe to grant screenshot access for the current preview origin.';
+  }
+  return fallback || 'Open or start a workspace preview, then click Observe again.';
+}
+
 // ────────────────────────────────────────────────────────
 //  Lazy component imports (code-split, no SSR)
 // ────────────────────────────────────────────────────────
@@ -273,6 +326,53 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     };
   }, [bridgeConfig.url]);
 
+  const stateWithWorkflowActionError = useCallback((error, previous = null) => {
+    const code = workflowErrorCode(error);
+    const detail = workflowErrorDetail(error);
+    const sourceState = error?.state || error?.body?.state || previous || {};
+    const blockers = Array.isArray(sourceState?.blockers)
+      ? sourceState.blockers.filter((item) => item?.id !== 'workflow_action_error' && item?.id !== code)
+      : [];
+
+    if (PREVIEW_WORKFLOW_ERROR_CODES.has(code)) {
+      return {
+        ...sourceState,
+        bridge: {
+          ...(sourceState.bridge || previous?.bridge || {}),
+          status: 'ready',
+          url: bridgeConfig.url,
+          detail: null,
+        },
+        observe: {
+          ...(sourceState.observe || previous?.observe || {}),
+          status: 'needsPreview',
+          label: 'Preview needed',
+          detail: previewActionDetail(code, detail),
+          error: code,
+        },
+        blockers,
+      };
+    }
+
+    return {
+      ...sourceState,
+      bridge: {
+        ...(sourceState.bridge || previous?.bridge || {}),
+        status: 'ready',
+        url: bridgeConfig.url,
+        detail: null,
+      },
+      blockers: [
+        {
+          id: 'workflow_action_error',
+          label: 'Workflow action blocked',
+          detail: detail || code || 'The workflow action could not complete.',
+        },
+        ...blockers,
+      ],
+    };
+  }, [bridgeConfig.url]);
+
   const applyBridgeState = useCallback((nextState) => {
     if (!nextState) return;
     setWorkflowState({
@@ -314,8 +414,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     });
     if (body?.state) applyBridgeState(body.state);
     if (!body?.ok) {
-      const result = body?.result || {};
-      throw new Error(result.error || body.error || `${tool}_failed`);
+      throw workflowToolError(tool, body);
     }
     return body;
   }, [applyBridgeState, bridgeConfig.runtime, bridgeConfig.token, bridgeConfig.url]);
@@ -446,11 +545,15 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           throw new Error(`Unsupported workflow action: ${action || 'unknown'}`);
       }
     } catch (err) {
-      setWorkflowState((prev) => stateWithBridgeError(err, prev));
+      setWorkflowState((prev) => (
+        isWorkflowToolActionError(err)
+          ? stateWithWorkflowActionError(err, prev)
+          : stateWithBridgeError(err, prev)
+      ));
     } finally {
       setBusyAction(null);
     }
-  }, [bridgeConfig.runtime, callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, stateWithBridgeError, workflowState, workspaceUrl]);
+  }, [bridgeConfig.runtime, callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, stateWithBridgeError, stateWithWorkflowActionError, workflowState, workspaceUrl]);
 
   useEffect(() => {
     const controller = new AbortController();
