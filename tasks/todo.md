@@ -1293,3 +1293,21 @@ export async function GET(_req, { params }) {
 - **Spec coverage:** §5.1 launch branch → T1+T4; §5.2 exec → T2; §5.3 stamp → T3; §5.4 scoped ports → T3 (method) + T4 (wiring); §5.5 frontend → T5 (merge) + T6 (panel); §5.6 recipe → existing parser (works after T4) + capability T10; repo-detect compose/devcontainer/Dockerfile → T7/T8/T9; detect endpoint + UI → T10/T11; §11 cleanup → T12; §12 audit + live gate → T13. No uncovered section.
 - **Placeholders:** none — every code step carries real code; the only deferred item is the live demo (explicit gate, not a code step).
 - **Type/name consistency:** `programRuntimeTarget`→`{target}`, `createRuntimePodProgram`→`{ptyProcess,runtimeScope,podName}`, `recomputeRuntimeScopePorts(scope,ports)`, `pickRuntimeScopeForSlug(sessions,slug)`, `detectRepoProgram({files,containerRuntime,name})`, `fetchDetectedRepoProgram(slug,userId)`, `mergeProgramSession(...).runtimeScope` — used consistently across tasks.
+
+## Review — code complete + tested (2026-06-16)
+
+All 12 code tasks done via TDD (red→green→commit). Commits on `feat/docker-sysbox-engine`:
+`afb4de5f` T1 · `9f51fef0` T2 · `705b346e` T3 · `4ecfefc3` T4 · `b6385779` T5 · `a0ab61fc` T6 · `7a6d739b` T7 · `e21b6773` T8 · `73d4041b` T9 · `5521db89` T10 · `f6093cb9` T11 · `a1173cd8` T12.
+
+- **Backend suite:** `node --test` → 92 tests, **87 pass / 0 fail / 5 skip** (the 5 skips are pre-existing deferred integration tests). +8 new unit tests this slice.
+- **Frontend programs suite:** `vitest src/lib/programs src/components/programs [slug]/programs` → 14 files, **149 pass / 0 fail**. +21 new tests this slice.
+- **Hardcoded-values audit (clean):** every new value is a universal standard or env-derived, none env-specific/secret:
+  - `containerRuntimeAvailable` = `RUNTIME_BACKEND==='sysbox-pod' || ENABLE_CONTAINER_RUNTIME==='1'` — derived from existing env, no new literal.
+  - Docker verbs (`docker compose up`, `docker build -t … .`, `docker run --rm …`), candidate filenames (`docker-compose.yml`, `.devcontainer/devcontainer.json`, `Dockerfile`, …), and machine codes (`runtime_pod_not_ready`, `container_runtime_unavailable`, `not_detected`) are universal standards.
+  - `/workspace` mount + `runtime` container name reuse the existing centralized consts in `runtimePodTerminal.js` (not new).
+  - Synthetic `compose-project` / `0.0.0` placeholders for a detected project's packageId/version are universal defaults, not env-specific.
+  - `waitForReadyRuntimePod` 40×1500ms (~60s) dockerd-ready poll is a deliberate universal default (mirrors the readinessProbe failureThreshold:12); env-gating it is a noted future option, not a violation.
+
+### Remaining (NOT done — needs the user)
+- **T13 step 4 — live e2e gate (the DoD's hard validation):** launch a real `docker compose` program (recipe AND repo-detect) on a throwaway Sysbox scratch cluster with `RUNTIME_BACKEND=sysbox-pod` → web UI in the App tab via `/runtime/<scope>/port/N`; terminal execs into the runtime pod; logs stream. BLOCKED on: (1) `gcloud auth login` (the user must run it — non-interactive refresh is denied by org policy), (2) explicit approval to spin up a billable scratch cluster (`k8s/sysbox/create-scratch-cluster.ps1`), (3) verifying `kubectl config current-context` is the scratch cluster, not prod, before any apply. Tear down with `--quiet --async` after.
+- **T13 step 5 — wrap:** this review section (done); lessons.md (no user correction surfaced this slice → nothing to add); plain-words recap (given in chat).
