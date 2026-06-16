@@ -16,6 +16,8 @@ import {
   fetchMarketplace,
   installPublishedProgram,
   scaffoldProgram,
+  fetchDetectedProgram,
+  launchDetectedProgram,
 } from './programsClient';
 import { SCAFFOLDABLE_PACKAGE_IDS } from '@/lib/programs/scaffoldTemplates';
 import {
@@ -273,6 +275,8 @@ export default function ProgramsPanel() {
   const [publishing, setPublishing] = useState(false);
   const [consent, setConsent] = useState(null);
   const [actingSessionId, setActingSessionId] = useState(null);
+  const [detected, setDetected] = useState(null);
+  const [launchingDetected, setLaunchingDetected] = useState(false);
 
   // Members get a read-only view; owner/admin (or unknown role — the API still
   // enforces) can launch / install. 'member' is the only role denied here.
@@ -289,14 +293,16 @@ export default function ProgramsPanel() {
 
     setLoading(true);
     try {
-      const [nextSessions, nextInstalls, nextMarket] = await Promise.all([
+      const [nextSessions, nextInstalls, nextMarket, nextDetected] = await Promise.all([
         fetchProgramSessions(workspaceSlug),
         fetchInstalledPrograms(workspaceSlug).catch(() => []),
         fetchMarketplace(workspaceSlug, marketQuery).catch(() => []),
+        fetchDetectedProgram(workspaceSlug).catch(() => null),
       ]);
       setSessions(nextSessions);
       setInstalls(nextInstalls);
       setMarketplace(Array.isArray(nextMarket) ? nextMarket : []);
+      setDetected(nextDetected || null);
     } catch (error) {
       toast.error(error.message || 'Failed to load programs');
     } finally {
@@ -435,6 +441,24 @@ export default function ProgramsPanel() {
       toast.error(error.message || 'Failed to launch program');
     } finally {
       setActingSessionId(null);
+    }
+  }, [load, openProgramSession, workspaceSlug]);
+
+  const handleLaunchDetected = useCallback(async () => {
+    if (!workspaceSlug) return;
+
+    setLaunchingDetected(true);
+    try {
+      const result = await launchDetectedProgram(workspaceSlug);
+      toast.success('Detected program launched');
+      if (result?.session) {
+        openProgramSession(result.session);
+      }
+      await load();
+    } catch (error) {
+      toast.error(error.message || 'Failed to launch detected program');
+    } finally {
+      setLaunchingDetected(false);
     }
   }, [load, openProgramSession, workspaceSlug]);
 
@@ -598,6 +622,31 @@ export default function ProgramsPanel() {
                 <UploadCloud className="w-4 h-4" /> {publishing ? 'Publishing…' : 'Publish'}
               </button>
             </div>
+          </div>
+        ) : null}
+
+        {canManage && detected ? (
+          <div
+            data-testid="detected-program"
+            className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
+            style={{ borderColor: 'color-mix(in srgb, var(--accent-primary) 35%, var(--border-subtle))', background: 'var(--bg-surface)' }}
+          >
+            <div className="min-w-0">
+              <div className="text-sm font-medium">Detected in this repo</div>
+              <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                {detected.source} · runs in this workspace's container runtime
+              </div>
+            </div>
+            <button
+              type="button"
+              data-testid="launch-detected"
+              onClick={handleLaunchDetected}
+              disabled={!workspaceSlug || launchingDetected}
+              className="h-9 px-3 rounded-md inline-flex items-center gap-2 text-sm font-medium disabled:opacity-50"
+              style={{ background: 'var(--brand-gradient-horizontal)', color: '#fff' }}
+            >
+              <Play className="w-4 h-4" /> {launchingDetected ? 'Launching…' : 'Run'}
+            </button>
           </div>
         ) : null}
 
