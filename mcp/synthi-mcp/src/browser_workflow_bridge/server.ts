@@ -330,6 +330,27 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
     stringOpt(args["runtime_scope"]) ??
     stringOpt(args["runtimeScope"]) ??
     stringOpt(process.env["SYNTHI_WORKFLOW_RUNTIME_SCOPE"]);
+
+  const centralPreview = collab
+    ? await discoverCollabPreviewUrl(slug, runtimeScope, collab)
+    : null;
+  if (centralPreview?.ok && centralPreview.url) return centralPreview;
+
+  const runtimePreview = await discoverRuntimeSidecarPreviewUrl(runtimeScope, collab?.url);
+  if (runtimePreview.ok && runtimePreview.url) return runtimePreview;
+  if (!runtimePreview.ok && centralPreview?.ok === false) {
+    return {
+      ok: false,
+      error: runtimePreview.error ?? centralPreview.error ?? "preview_discovery_failed",
+      detail: {
+        workspace: slug,
+        runtimeScope,
+        central: centralPreview.detail,
+        runtime: runtimePreview.detail,
+      },
+    };
+  }
+
   if (!collab) {
     return {
       ok: false,
@@ -340,6 +361,32 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
       },
     };
   }
+
+  if (!centralPreview?.ok) {
+    return {
+      ok: false,
+      error: centralPreview?.error ?? "preview_not_found",
+      detail: {
+        workspace: slug,
+        runtimeScope,
+        central: centralPreview?.detail,
+        runtime: runtimePreview.detail,
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    error: "preview_not_found",
+    detail: { workspace: slug, runtimeScope, collab_url: collab.url, collab_url_source: collab.source },
+  };
+}
+
+async function discoverCollabPreviewUrl(
+  slug: string,
+  runtimeScope: string | undefined,
+  collab: { url: string; source: string }
+): Promise<PreviewDiscoveryResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PREVIEW_DISCOVERY_TIMEOUT_MS);
   try {
@@ -357,7 +404,7 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
       };
     }
     const payload = await response.json() as Record<string, unknown>;
-    const preview = previewUrlFromPortsPayload(payload, collab.url);
+    const preview = previewUrlFromPortsPayload(payload, collab.url, runtimeScope);
     if (preview) return { ok: true, url: preview };
     return {
       ok: false,
@@ -373,6 +420,53 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
         runtimeScope,
         collab_url: collab.url,
         collab_url_source: collab.source,
+        message: err instanceof Error ? err.message : String(err),
+      },
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function discoverRuntimeSidecarPreviewUrl(
+  runtimeScope: string | undefined,
+  collabUrl: string | undefined
+): Promise<PreviewDiscoveryResult> {
+  if (!runtimeScope) {
+    return {
+      ok: false,
+      error: "runtime_scope_required",
+      detail: { reason: "sidecar preview discovery requires runtime scope" },
+    };
+  }
+
+  const sidecarUrl = previewSidecarPortsUrl();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PREVIEW_DISCOVERY_TIMEOUT_MS);
+  try {
+    const response = await fetch(sidecarUrl, { signal: controller.signal });
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: "preview_sidecar_discovery_failed",
+        detail: { sidecar_url: sidecarUrl, status: response.status, runtimeScope },
+      };
+    }
+    const payload = await response.json() as Record<string, unknown>;
+    const preview = previewUrlFromPortsPayload(payload, collabUrl, runtimeScope);
+    if (preview) return { ok: true, url: preview };
+    return {
+      ok: false,
+      error: "preview_not_found",
+      detail: { sidecar_url: sidecarUrl, runtimeScope, source: payload["source"] },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: "preview_sidecar_discovery_failed",
+      detail: {
+        sidecar_url: sidecarUrl,
+        runtimeScope,
         message: err instanceof Error ? err.message : String(err),
       },
     };
@@ -409,7 +503,11 @@ function envUrl(name: string): { url: string; source: string } | null {
   return value ? { url: value.replace(/\/$/, ""), source: name } : null;
 }
 
-function previewUrlFromPortsPayload(payload: Record<string, unknown>, collabUrl: string): string | null {
+function previewUrlFromPortsPayload(
+  payload: Record<string, unknown>,
+  collabUrl: string | undefined,
+  runtimeScope?: string
+): string | null {
   const previews = Array.isArray(payload["previews"]) ? payload["previews"] : [];
   for (const item of previews) {
     if (!item || typeof item !== "object") continue;
@@ -422,17 +520,57 @@ function previewUrlFromPortsPayload(payload: Record<string, unknown>, collabUrl:
     .map((port) => Number(port))
     .filter((port) => Number.isInteger(port) && port > 0 && port <= 65_535)
     .sort((a, b) => a - b);
-  return ports[0] ? resolvePreviewUrl(`/port/${ports[0]}/`, collabUrl) : null;
+  if (!ports[0]) return null;
+  const publicUrl = previewPublicUrl(ports[0], runtimeScope);
+  if (publicUrl) return publicUrl;
+  const path = runtimeScope
+    ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${ports[0]}/`
+    : `/port/${ports[0]}/`;
+  return resolvePreviewUrl(path, collabUrl);
 }
 
-function resolvePreviewUrl(url: string | undefined, collabUrl: string): string | null {
+function resolvePreviewUrl(url: string | undefined, collabUrl: string | undefined): string | null {
   if (!url) return null;
+  if (!collabUrl && !/^https?:\/\//i.test(url)) return null;
   try {
-    const parsed = new URL(url, `${collabUrl}/`);
+    const parsed = new URL(url, collabUrl ? `${collabUrl}/` : undefined);
     return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
   } catch {
     return null;
   }
+}
+
+function previewSidecarPortsUrl(): string {
+  const port = parsePositiveInt(process.env["SYNTHI_PREVIEW_SIDECAR_PORT"], 18_080);
+  const prefix = normalizePathPrefix(process.env["SYNTHI_PREVIEW_SIDECAR_PREFIX"] || "/__synthi_preview") || "/__synthi_preview";
+  return `http://127.0.0.1:${port}${prefix}/ports`;
+}
+
+function previewPublicUrl(port: number, runtimeScope: string | undefined): string | null {
+  const runtimeId = stringOpt(process.env["SYNTHI_HOSTED_BROWSER_RUNTIME_ID"]);
+  const publicDomain = normalizeHostname(process.env["SYNTHI_PREVIEW_PUBLIC_DOMAIN"]);
+  if (!runtimeScope || !runtimeId || !publicDomain) return null;
+  const protocol = normalizePreviewProtocol(process.env["SYNTHI_PREVIEW_PUBLIC_PROTOCOL"]);
+  return `${protocol}://p${port}-${runtimeId}.${publicDomain}/`;
+}
+
+function normalizePathPrefix(value: unknown): string {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "/") return "";
+  return `/${raw.replace(/^\/+|\/+$/g, "")}`;
+}
+
+function normalizeHostname(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "")
+    .replace(/\.$/, "");
+}
+
+function normalizePreviewProtocol(value: unknown): "http" | "https" {
+  return String(value || "").trim().toLowerCase().replace(/:$/, "") === "http" ? "http" : "https";
 }
 
 function updateBridgeState(
