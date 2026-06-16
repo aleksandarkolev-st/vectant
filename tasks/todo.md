@@ -678,3 +678,618 @@ User asked to finish ALL deferred bits across the 9 slices + full live validatio
 - ✅ Suites: backend `node --test` 79 pass + 5 skip / 0 fail; frontend ports vitest 13 pass.
 - ✅ Docs: lessons #33–35 (phantom GPU quota/stockout; NodeLocal-DNSCache egress break+fix; Dataplane-V2 backend-identity egress).
 - NEXT: pivot to the **programs UX** phase (real program UIs — Docker etc. — rendering inside the workspace).
+
+---
+
+# Real programs in the workspace — Slice 1 Implementation Plan (2026-06-16)
+
+> **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
+
+**Goal:** Route `container`-type programs (marketplace recipe + repo auto-detect) into the validated per-workspace Sysbox runtime pod, surfacing their published web UI in the program App tab via `/runtime/<scope>/port/N`.
+
+**Architecture:** A pure launch-target decision picks sysbox-pod / hybrid / headless / unavailable. The sysbox path execs the composed command inside the runtime pod's `runtime` container (inheriting its pod-level `DOCKER_HOST`), streams output as session logs, stamps the session with its `runtimeScope`, and feeds pod-detected ports into a scoped port-attribution method so the App tab lights up. Repo-detect (compose/devcontainer/Dockerfile) maps to the same `container` config behind a server-truthful capability flag. Spec: `docs/superpowers/specs/2026-06-16-real-programs-in-workspace-design.md`.
+
+**Tech stack:** collab-server (CommonJS, `node:test`), Next.js frontend (ESM, vitest), `@kubernetes/client-node` exec.
+
+**Conventions:** TDD red→green per task; commit per task; every commit message ends with the trailer
+`Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>` (shown in Task 1, abbreviated as `(+ trailer)` after).
+Backend tests run from repo root: `node --test --test-timeout=20000 backend/collab-server/__tests__/<file>` (lesson #21 — always scope).
+Frontend: `cd synthi && npx vitest run <pattern>`. Branch: `feat/docker-sysbox-engine` (commit only; no push/PR without approval).
+
+**Resolved at plan time:** no `yaml` dep in `synthi/` → compose uses a minimal text probe + best-effort `ports:` scrape (live port monitor is authoritative). `mergeProgramSession` does NOT carry `runtimeScope` today (Task 5 fixes it). The capability flag is reported BY the collab-server (it owns `RUNTIME_BACKEND`/`ENABLE_CONTAINER_RUNTIME`).
+
+## Phase 1 — core Sysbox execution path (backend + frontend threading). Demoable via a `container` recipe after Task 6.
+
+### Task 1: Pure launch-target decision
+
+**Files:**
+- Modify: `backend/collab-server/runtimePodTerminal.js` (add `programRuntimeTarget`, export it)
+- Test: `backend/collab-server/__tests__/terminalRouting.test.js`
+
+- [ ] **Step 1: Write the failing tests** (append to `terminalRouting.test.js`)
+```js
+const { programRuntimeTarget } = require('../runtimePodTerminal');
+
+test('programRuntimeTarget: non-container is always headless', () => {
+  assert.equal(programRuntimeTarget({ runtimeType: 'web', sysboxEnabled: true, hasHybrid: true }).target, 'headless');
+});
+test('programRuntimeTarget: container + sysbox → sysbox-pod (precedence over hybrid)', () => {
+  assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: true, hasHybrid: true }).target, 'sysbox-pod');
+});
+test('programRuntimeTarget: container + hybrid only → hybrid', () => {
+  assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: false, hasHybrid: true }).target, 'hybrid');
+});
+test('programRuntimeTarget: container + neither → unavailable', () => {
+  assert.equal(programRuntimeTarget({ runtimeType: 'container', sysboxEnabled: false, hasHybrid: false }).target, 'unavailable');
+});
+```
+- [ ] **Step 2: Run, expect FAIL** — `node --test --test-timeout=20000 backend/collab-server/__tests__/terminalRouting.test.js` → "programRuntimeTarget is not a function".
+- [ ] **Step 3: Implement** (in `runtimePodTerminal.js`, near `runtimeTerminalTarget`)
+```js
+/**
+ * Pure launch-target decision for a managed program. `container` programs go to
+ * the Sysbox runtime pod when the backend is on (precedence), else the dev-hybrid
+ * runtime container, else `unavailable` (fail loud — never the docker-less PTY).
+ * Non-container programs always use the headless PTY.
+ */
+function programRuntimeTarget({ runtimeType, sysboxEnabled, hasHybrid } = {}) {
+  if (runtimeType !== 'container') return { target: 'headless' };
+  if (sysboxEnabled) return { target: 'sysbox-pod' };
+  if (hasHybrid) return { target: 'hybrid' };
+  return { target: 'unavailable' };
+}
+```
+Add `programRuntimeTarget` to `module.exports`.
+- [ ] **Step 4: Run, expect PASS** — same command.
+- [ ] **Step 5: Commit**
+```bash
+git add backend/collab-server/runtimePodTerminal.js backend/collab-server/__tests__/terminalRouting.test.js
+git commit -m "feat(programs): pure programRuntimeTarget launch decision
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+```
+
+### Task 2: Runtime-pod program exec (`createRuntimePodProgram`)
+
+**Files:**
+- Modify: `backend/collab-server/runtimePodTerminal.js` (extract `buildRuntimeShellScript`; add `createRuntimePodProgram`)
+- Test: `backend/collab-server/__tests__/terminalRouting.test.js`
+
+- [ ] **Step 1: Write the failing test** (the pure script builder is the unit; the k8s exec is integration-verified in Phase 1's live gate)
+```js
+const { buildRuntimeShellScript } = require('../runtimePodTerminal');
+
+test('buildRuntimeShellScript: runs the program command in /workspace with env exports, no DOCKER_HOST injected', () => {
+  const s = buildRuntimeShellScript({ env: { FOO: 'bar' }, cwd: '/workspace', finalCommand: 'docker compose up' });
+  assert.match(s, /export FOO='bar'/);
+  assert.match(s, /export WORKSPACE_DIR='\/workspace'/);
+  assert.match(s, /cd "\$WORKSPACE_DIR"/);
+  assert.match(s, /docker compose up$/);
+  assert.equal(/DOCKER_HOST/.test(s), false); // inherited from the container, never injected by us
+});
+```
+- [ ] **Step 2: Run, expect FAIL** — `node --test --test-timeout=20000 backend/collab-server/__tests__/terminalRouting.test.js` → "buildRuntimeShellScript is not a function".
+- [ ] **Step 3: Implement.** Extract the script construction currently inline in `createRuntimePodPty` (lines ~160-171) into a shared builder, then add the program exec.
+```js
+function buildRuntimeShellScript({ env = {}, cwd, finalCommand }) {
+  const exports = Object.entries(env)
+    .filter(([key, value]) => key && value !== undefined && value !== null)
+    .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
+    .join('; ');
+  return [
+    exports,
+    `export WORKSPACE_DIR=${shellQuote(cwd)}`,
+    'mkdir -p "$WORKSPACE_DIR"',
+    'cd "$WORKSPACE_DIR"',
+    finalCommand,
+  ].filter(Boolean).join('; ');
+}
+```
+Refactor `createRuntimePodPty` to call it with `finalCommand: 'stty rows <rows> cols <cols> 2>/dev/null || true; exec /bin/bash --login -i'` (preserve the existing `stty` line by folding it into `finalCommand`) — verify the existing terminal tests still pass. Then add:
+```js
+/**
+ * Non-interactive program exec into the ready Sysbox runtime pod's `runtime`
+ * container. Streams stdout/stderr via RuntimePodPty (onData/onExit/kill) so it
+ * plugs into the managed-session listeners. DOCKER_HOST is inherited from the
+ * container's pod-level env — never injected here.
+ */
+async function createRuntimePodProgram({ runtimeScope, workspaceSlug, userId, command, env = {}, cols = 120, rows = 30 }) {
+  if (!runtimeScope) throw new Error('runtimeScope is required for runtime pod program');
+  const actor = userId || runtimeScope;
+  await spawner.spawnRuntimePod(runtimeScope, actor, { workspaceSlug, runtimeKind: 'program', filesystemUserId: userId });
+  const ready = await waitForReadyRuntimePod(runtimeScope); // poll getReadyRuntimePodForSession
+  if (!ready?.podName) throw new Error('runtime_pod_not_ready');
+
+  const safeCols = sanitizeDimension(cols, 120, 500);
+  const safeRows = sanitizeDimension(rows, 30, 200);
+  const script = buildRuntimeShellScript({
+    env: { ...env, TERM: env.TERM || 'xterm-256color', COLUMNS: String(safeCols), LINES: String(safeRows) },
+    cwd: RUNTIME_POD_WORKSPACE_MOUNT,
+    finalCommand: command,
+  });
+  const stdout = new ResizablePassThrough({ cols: safeCols, rows: safeRows });
+  const stderr = new PassThrough();
+  const stdin = new PassThrough();
+  const exec = new k8s.Exec(kubeConfig());
+  const ws = await exec.exec(NAMESPACE, ready.podName, RUNTIME_POD_CONTAINER, ['/bin/bash', '-lc', script], stdout, stderr, stdin, true, () => {});
+  return { ptyProcess: new RuntimePodPty({ ws, stdin, stdout, stderr, pid: ready.podName }), runtimeScope, podName: ready.podName };
+}
+
+async function waitForReadyRuntimePod(runtimeScope, { attempts = 40, intervalMs = 1500 } = {}) {
+  for (let i = 0; i < attempts; i += 1) {
+    const ready = typeof spawner.getReadyRuntimePodForSession === 'function'
+      ? await spawner.getReadyRuntimePodForSession(runtimeScope) : null;
+    if (ready?.podName) return ready;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return { podName: null };
+}
+```
+Add `buildRuntimeShellScript` and `createRuntimePodProgram` to `module.exports`. (`spawner` is already required at top of file.)
+- [ ] **Step 4: Run, expect PASS** — `node --test --test-timeout=20000 backend/collab-server/__tests__/terminalRouting.test.js` (also confirms the refactor didn't break existing terminal-routing tests).
+- [ ] **Step 5: Commit** — `feat(programs): createRuntimePodProgram — non-interactive program exec into the runtime pod (+ trailer)`
+
+### Task 3: Stamp `runtimeScope` + scoped port attribution (manager)
+
+**Files:**
+- Modify: `backend/collab-server/programRuntimeManager.js`
+- Test: `backend/collab-server/__tests__/programRuntimeManager.test.js`
+
+- [ ] **Step 1: Write the failing tests**
+```js
+function makeFakePty() {
+  const h = { data: [], exit: [] };
+  return { onData: (f) => { h.data.push(f); return { dispose() {} }; },
+           onExit: (f) => { h.exit.push(f); return { dispose() {} }; }, kill() {} };
+}
+test('launchManagedSession stamps runtimeScope from the runtime handle', async () => {
+  const mgr = createProgramRuntimeManager({ activeSessions: new Map(),
+    launchRuntime: async () => ({ ptyProcess: makeFakePty(), runtimeScope: 'scope-1' }) });
+  const s = await mgr.launchManagedSession({ sessionId: 'p1', workspaceSlug: 'w', command: 'docker compose up', runtimeType: 'container' });
+  assert.equal(s.runtimeScope, 'scope-1');
+});
+test('recomputeRuntimeScopePorts only touches sessions of that scope', async () => {
+  const mgr = createProgramRuntimeManager({ activeSessions: new Map(),
+    launchRuntime: async ({ sessionId }) => ({ ptyProcess: makeFakePty(), runtimeScope: sessionId === 'p1' ? 'scope-1' : 'scope-2' }) });
+  await mgr.launchManagedSession({ sessionId: 'p1', workspaceSlug: 'w', command: 'x', runtimeType: 'container', ports: [3000] });
+  await mgr.launchManagedSession({ sessionId: 'p2', workspaceSlug: 'w', command: 'x', runtimeType: 'container', ports: [4000] });
+  mgr.recomputeRuntimeScopePorts('scope-1', [3000]);
+  assert.deepEqual(mgr.getManagedSession('p1').activePorts, [3000]);
+  assert.deepEqual(mgr.getManagedSession('p2').activePorts, [4000]); // unchanged (declared, not live in scope-1)
+});
+```
+- [ ] **Step 2: Run, expect FAIL** — `node --test --test-timeout=20000 backend/collab-server/__tests__/programRuntimeManager.test.js` → `runtimeScope` undefined / `recomputeRuntimeScopePorts is not a function`.
+- [ ] **Step 3: Implement.** In `launchManagedSession`, after `const runtime = await launchRuntime(...)`, add `runtimeScope: runtime?.runtimeScope || null,` to the `record` object literal. Then add the scoped method (mirrors `recomputeManagedPorts`, filtered):
+```js
+function recomputeRuntimeScopePorts(runtimeScope, detectedPorts) {
+  if (!runtimeScope) return [];
+  const scoped = [...managedSessions.values()].filter((r) => r.runtimeScope === runtimeScope);
+  const attribution = attributeSessionPorts({
+    sessions: scoped.map((r) => ({ sessionId: r.sessionId, state: r.state, declaredPorts: r.declaredPorts || [] })),
+    detectedPorts,
+  });
+  const updated = [];
+  for (const [sessionId, ports] of attribution) {
+    const record = managedSessions.get(sessionId);
+    if (!record) continue;
+    const nextWebPort = selectWebPort({ declaredPorts: record.declaredPorts || [] }, ports);
+    if (samePorts(record.activePorts, ports) && record.webPort === nextWebPort) continue;
+    record.activePorts = ports;
+    record.webPort = nextWebPort;
+    record.lastActivityAt = now();
+    appendManagedSessionEvent(record, 'ports_updated', { activePorts: [...ports], webPort: nextWebPort });
+    updated.push(toPublicManagedSession(record));
+  }
+  return updated;
+}
+```
+Add `recomputeRuntimeScopePorts` to the object returned by `createProgramRuntimeManager`. (`runtimeScope` is auto-exposed by `toPublicManagedSession`'s spread — confirm it is NOT in the destructured-out private list at the top of that function; it is not.)
+- [ ] **Step 4: Run, expect PASS** — same command.
+- [ ] **Step 5: Commit** — `feat(programs): stamp runtimeScope + recomputeRuntimeScopePorts (+ trailer)`
+
+### Task 4: Wire the three-way branch + scope resolution + port feed (server.js)
+
+**Files:**
+- Modify: `backend/collab-server/runtimePodTerminal.js` (add `pickRuntimeScopeForSlug`, export)
+- Modify: `backend/collab-server/server.js` (`launchRuntime` injection `:180`; runtime port monitor `onPortsChanged` `:171`; imports `:18`)
+- Test: `backend/collab-server/__tests__/terminalRouting.test.js` (for `pickRuntimeScopeForSlug`)
+
+- [ ] **Step 1: Write the failing test**
+```js
+const { pickRuntimeScopeForSlug } = require('../runtimePodTerminal');
+test('pickRuntimeScopeForSlug matches slug → runtimeScope, else null', () => {
+  const sessions = [{ slug: 'a', runtimeScope: 's-a' }, { slug: 'b', runtimeScope: 's-b' }];
+  assert.equal(pickRuntimeScopeForSlug(sessions, 'b'), 's-b');
+  assert.equal(pickRuntimeScopeForSlug(sessions, 'z'), null);
+  assert.equal(pickRuntimeScopeForSlug(null, 'b'), null);
+});
+```
+- [ ] **Step 2: Run, expect FAIL** — `node --test --test-timeout=20000 backend/collab-server/__tests__/terminalRouting.test.js`.
+- [ ] **Step 3a: Implement `pickRuntimeScopeForSlug`** (runtimePodTerminal.js, export it)
+```js
+function pickRuntimeScopeForSlug(sessions, slug) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const match = list.find((s) => s && s.slug === slug && s.runtimeScope);
+  return match ? match.runtimeScope : null;
+}
+```
+- [ ] **Step 3b: Wire server.js.** Extend the import at `:18`:
+```js
+const { runtimeRunOnce, createRuntimePodProgram, programRuntimeTarget, pickRuntimeScopeForSlug } = require('./runtimePodTerminal');
+```
+Replace the `launchRuntime` body (`:180-197`) with the three-way branch:
+```js
+launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType }) => {
+  const { target } = programRuntimeTarget({ runtimeType, sysboxEnabled: isSysboxRuntimeEnabled(), hasHybrid: Boolean(workspaceRuntime) });
+  if (target === 'sysbox-pod') {
+    const sessions = typeof spawner.listActiveRuntimeSessions === 'function' ? await spawner.listActiveRuntimeSessions() : [];
+    const runtimeScope = pickRuntimeScopeForSlug(sessions, workspaceSlug);
+    if (!runtimeScope) throw new Error('runtime_pod_not_ready');
+    return createRuntimePodProgram({ runtimeScope, workspaceSlug, userId, command, env });
+  }
+  if (target === 'hybrid') {
+    await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, userId);
+    await workspaceRuntime.waitForRuntimeReady(workspaceSlug, userId);
+    return workspaceRuntime.execInRuntime(workspaceSlug, userId, { command, env, tty: true });
+  }
+  if (target === 'unavailable') throw new Error('container_runtime_unavailable');
+  const runtime = await createHeadlessSession(sessionId, workspaceSlug, userId, 120, 30, title, { env });
+  const { commandStartedPromise } = queueHeadlessCommandStart(runtime.ptyProcess, command);
+  return { ...runtime, commandStartedPromise };
+},
+```
+Then feed scoped ports — extend the runtime port monitor `onPortsChanged` (`:171`):
+```js
+onPortsChanged: (slug, runtimeScope, ports) => {
+  broadcastRuntimePorts(slug, runtimeScope, ports);
+  try { managedProgramRuntime.recomputeRuntimeScopePorts(runtimeScope, ports); }
+  catch (err) { logger.warn({ err }, 'recomputeRuntimeScopePorts failed'); }
+},
+```
+(`managedProgramRuntime` is declared just below at `:176`; `onPortsChanged` only fires after `runtimePortMonitor.start()` at `:5015`, so the closure is safe — no TDZ at call time.)
+- [ ] **Step 4: Verify** — pure helper: `node --test --test-timeout=20000 backend/collab-server/__tests__/terminalRouting.test.js` PASS. Syntax/boot check: `node --check backend/collab-server/server.js` → no output (OK). (Full path is exercised by the live gate after Task 6.)
+- [ ] **Step 5: Commit** — `feat(programs): route container programs into the sysbox runtime pod (+ trailer)`
+
+### Task 5: `mergeProgramSession` carries `runtimeScope`
+
+**Files:**
+- Modify: `synthi/src/lib/programs/routeHelpers.js:8-25`
+- Test: `synthi/src/lib/programs/__tests__/routeHelpers.test.js`
+
+- [ ] **Step 1: Write the failing test**
+```js
+test('mergeProgramSession carries runtimeScope from the runtime session', () => {
+  const merged = mergeProgramSession({ workspaceSlug: 'w' }, { runtimeScope: 'scope-1', activePorts: [3000], webPort: 3000 });
+  expect(merged.runtimeScope).toBe('scope-1');
+});
+test('mergeProgramSession runtimeScope is null without a runtime session', () => {
+  expect(mergeProgramSession({ workspaceSlug: 'w' }, null).runtimeScope).toBeNull();
+});
+```
+- [ ] **Step 2: Run, expect FAIL** — `cd synthi && npx vitest run routeHelpers`.
+- [ ] **Step 3: Implement** — add to the `merged` object in `mergeProgramSession`:
+```js
+runtimeScope: runtimeSession?.runtimeScope ?? null,
+```
+- [ ] **Step 4: Run, expect PASS** — `cd synthi && npx vitest run routeHelpers`.
+- [ ] **Step 5: Commit** — `feat(programs): mergeProgramSession surfaces runtimeScope to the frontend (+ trailer)`
+
+### Task 6: Frontend panel threads `runtimeScope` into the App URL
+
+**Files:**
+- Modify: `synthi/src/components/programs/ProgramSessionPanel.jsx:118-121` and `:300`
+- Test: `synthi/src/components/programs/__tests__/ProgramSessionPanel.test.jsx`
+
+- [ ] **Step 1: Write the failing test** (mock `programSessionClient.fetchProgramSession` to return a sysbox container session; assert the App iframe `src` uses the runtime-scope path)
+```jsx
+// session: { state:'running', runtimeType:'container', webPort:3000, activePorts:[3000], runtimeScope:'scope-1' }
+const iframe = await screen.findByTitle(/app/i);
+expect(iframe.getAttribute('src')).toContain('/runtime/scope-1/port/3000/');
+```
+- [ ] **Step 2: Run, expect FAIL** — `cd synthi && npx vitest run ProgramSessionPanel` (src lacks the scope segment).
+- [ ] **Step 3: Implement** — add `runtimeScope: session?.runtimeScope` to the `getProgramSessionAppUrl` opts in the `appUrl` `useMemo` (and to its dependency array), and to the Ports "Open" link call at `:300`:
+```jsx
+const appUrl = useMemo(
+  () => getProgramSessionAppUrl(effectiveWebPort, { slug: workspaceSlug, runtimeType: session?.runtimeType, runtimeScope: session?.runtimeScope }),
+  [effectiveWebPort, workspaceSlug, session?.runtimeType, session?.runtimeScope],
+);
+// …and at the Ports "Open" anchor:
+href={getProgramSessionAppUrl(port, { slug: workspaceSlug, runtimeType, runtimeScope: session?.runtimeScope }) || '#'}
+```
+- [ ] **Step 4: Run, expect PASS** — `cd synthi && npx vitest run ProgramSessionPanel`.
+- [ ] **Step 5: Commit** — `feat(programs): App tab renders sysbox container web UI via /runtime/<scope>/port/N (+ trailer)`
+
+> **Checkpoint after Task 6:** the core path is complete. A `container`-type recipe launched with `RUNTIME_BACKEND=sysbox-pod` runs `docker compose up` in the runtime pod and its web UI renders in the App tab. This is the first thing to live-demo on a scratch cluster.
+
+## Phase 2 — repo auto-detection (compose + devcontainer + Dockerfile)
+
+### Task 7: compose mapper (text-based, no YAML dep)
+
+**Files:**
+- Create: `synthi/src/lib/programs/compose.js`
+- Test: `synthi/src/lib/programs/__tests__/compose.test.js`
+
+- [ ] **Step 1: Write the failing tests**
+```js
+import { importComposeFile } from '../compose';
+const RAW = `services:\n  web:\n    image: nginx\n    ports:\n      - "8080:80"\n`;
+it('maps a compose file to a container program (docker compose up + scraped ports)', () => {
+  const { config } = importComposeFile(RAW, { containerRuntime: true });
+  expect(config.runtimeType).toBe('container');
+  expect(config.launch).toBe('docker compose up');
+  expect(config.ports).toContain(8080);
+});
+it('returns null config when containerRuntime is unavailable', () => {
+  expect(importComposeFile(RAW, { containerRuntime: false }).config).toBeNull();
+});
+it('rejects a compose file that mounts the docker socket', () => {
+  const bad = `services:\n  x:\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n`;
+  expect(() => importComposeFile(bad, { containerRuntime: true })).toThrow(/host_escape|docker\.sock/i);
+});
+```
+- [ ] **Step 2: Run, expect FAIL** — `cd synthi && npx vitest run compose`.
+- [ ] **Step 3: Implement**
+```js
+import { parseProgramManifest, ProgramManifestError } from './manifest';
+
+const HOST_ESCAPE_RE = /docker\.sock|^\s*privileged:\s*true|-\s*\/(?:[^:\n]*):|\/var\/run/im;
+
+/** Best-effort host-port scrape from `ports:` list items (live monitor is authoritative). */
+function scrapeComposePorts(raw) {
+  const out = [];
+  const re = /^\s*-\s*"?(?:\d{1,3}(?:\.\d{1,3}){3}:)?(\d{1,5}):\d{1,5}"?\s*$/gm;
+  let m;
+  while ((m = re.exec(raw))) { const p = parseInt(m[1], 10); if (p >= 1 && p <= 65535 && !out.includes(p)) out.push(p); }
+  return out;
+}
+
+export function importComposeFile(raw, { containerRuntime = false } = {}) {
+  const text = String(raw || '');
+  if (!/^\s*services:/m.test(text)) {
+    throw new ProgramManifestError('invalid_manifest', 'Not a recognizable compose file', 'services');
+  }
+  if (HOST_ESCAPE_RE.test(text)) {
+    throw new ProgramManifestError('host_escape', 'compose requests host access', 'volumes');
+  }
+  if (!containerRuntime) return { config: null, source: 'docker-compose.yml' };
+  const ports = scrapeComposePorts(text);
+  const config = parseProgramManifest({
+    packageId: 'compose-project', version: '0.0.0', displayName: 'Compose project',
+    runtimeType: 'container', launch: 'docker compose up', ports,
+    permissions: ports.length ? ['program.launch', 'ports.expose', 'network.outbound'] : ['program.launch'],
+  });
+  config.source = 'docker-compose.yml';
+  return { config, source: 'docker-compose.yml' };
+}
+```
+- [ ] **Step 4: Run, expect PASS** — `cd synthi && npx vitest run compose`.
+- [ ] **Step 5: Commit** — `feat(programs): compose→container mapper (text probe, host-escape guard) (+ trailer)`
+
+### Task 8: Dockerfile mapper
+
+**Files:**
+- Create: `synthi/src/lib/programs/dockerfile.js`
+- Test: `synthi/src/lib/programs/__tests__/dockerfile.test.js`
+
+- [ ] **Step 1: Write the failing tests**
+```js
+import { importDockerfile } from '../dockerfile';
+it('maps a Dockerfile to a build+run container program with EXPOSE ports', () => {
+  const { config } = importDockerfile('FROM node:20\nEXPOSE 3000\n', { name: 'myapp', containerRuntime: true });
+  expect(config.runtimeType).toBe('container');
+  expect(config.install[0]).toMatch(/docker build -t/);
+  expect(config.launch).toMatch(/docker run/);
+  expect(config.ports).toContain(3000);
+});
+it('returns null config when containerRuntime is unavailable', () => {
+  expect(importDockerfile('FROM scratch\n', { name: 'x', containerRuntime: false }).config).toBeNull();
+});
+```
+- [ ] **Step 2: Run, expect FAIL** — `cd synthi && npx vitest run dockerfile`.
+- [ ] **Step 3: Implement**
+```js
+import { parseProgramManifest } from './manifest';
+
+function scrapeExposePorts(raw) {
+  const out = [];
+  const re = /^\s*EXPOSE\s+(.+)$/gim;
+  let m;
+  while ((m = re.exec(raw))) {
+    for (const tok of m[1].split(/\s+/)) {
+      const p = parseInt(tok, 10);
+      if (p >= 1 && p <= 65535 && !out.includes(p)) out.push(p);
+    }
+  }
+  return out;
+}
+
+function slugifyTag(name) {
+  const s = String(name || 'app').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+  return /^[a-z0-9]/.test(s) ? s : 'app';
+}
+
+export function importDockerfile(raw, { name = 'app', containerRuntime = false } = {}) {
+  const text = String(raw || '');
+  if (!/^\s*FROM\s+/im.test(text)) {
+    return { config: null, source: 'Dockerfile' };
+  }
+  if (!containerRuntime) return { config: null, source: 'Dockerfile' };
+  const ports = scrapeExposePorts(text);
+  const tag = slugifyTag(name);
+  const portFlags = ports.map((p) => `-p ${p}:${p}`).join(' ');
+  const config = parseProgramManifest({
+    packageId: slugifyTag(name), version: '0.0.0', displayName: name,
+    runtimeType: 'container',
+    install: [`docker build -t ${tag} .`],
+    launch: `docker run --rm ${portFlags ? portFlags + ' ' : ''}${tag}`.trim(),
+    ports,
+    permissions: ports.length ? ['program.launch', 'ports.expose', 'network.outbound'] : ['program.launch'],
+  });
+  config.source = 'Dockerfile';
+  return { config, source: 'Dockerfile' };
+}
+```
+- [ ] **Step 4: Run, expect PASS** — `cd synthi && npx vitest run dockerfile`.
+- [ ] **Step 5: Commit** — `feat(programs): Dockerfile→container mapper (build+run, EXPOSE ports) (+ trailer)`
+
+### Task 9: `repoDetect` orchestrator (precedence + capability gate)
+
+**Files:**
+- Create: `synthi/src/lib/programs/repoDetect.js`
+- Test: `synthi/src/lib/programs/__tests__/repoDetect.test.js`
+
+- [ ] **Step 1: Write the failing tests**
+```js
+import { detectRepoProgram } from '../repoDetect';
+const compose = `services:\n  web:\n    image: nginx\n    ports:\n      - "8080:80"\n`;
+it('prefers compose over devcontainer over Dockerfile', () => {
+  const r = detectRepoProgram({ files: { 'docker-compose.yml': compose, 'Dockerfile': 'FROM x\n' }, containerRuntime: true });
+  expect(r.source).toBe('docker-compose.yml');
+  expect(r.config.launch).toBe('docker compose up');
+});
+it('falls to Dockerfile when no compose/devcontainer', () => {
+  const r = detectRepoProgram({ files: { 'Dockerfile': 'FROM node:20\nEXPOSE 3000\n' }, containerRuntime: true });
+  expect(r.source).toBe('Dockerfile');
+});
+it('returns null when capability is off', () => {
+  expect(detectRepoProgram({ files: { 'docker-compose.yml': compose }, containerRuntime: false })).toBeNull();
+});
+it('returns null when nothing is detected', () => {
+  expect(detectRepoProgram({ files: { 'README.md': 'hi' }, containerRuntime: true })).toBeNull();
+});
+```
+- [ ] **Step 2: Run, expect FAIL** — `cd synthi && npx vitest run repoDetect`.
+- [ ] **Step 3: Implement**
+```js
+import { importComposeFile } from './compose';
+import { importDockerfile } from './dockerfile';
+import { importDevcontainer } from './devcontainer';
+
+/**
+ * Map the highest-precedence container artifact in a repo to a NormalizedProgramConfig.
+ * @param {{ files: Record<string,string>, containerRuntime?: boolean, name?: string }} args
+ * @returns {{ config: object, source: string } | null}
+ */
+export function detectRepoProgram({ files = {}, containerRuntime = false, name = 'repo' } = {}) {
+  if (!containerRuntime) return null;
+  const compose = files['docker-compose.yml'] || files['compose.yaml'] || files['compose.yml'];
+  if (compose) { const { config } = importComposeFile(compose, { containerRuntime }); if (config) return { config, source: 'docker-compose.yml' }; }
+  const dc = files['.devcontainer/devcontainer.json'] || files['.devcontainer.json'] || files['devcontainer.json'];
+  if (dc) { const { config } = importDevcontainer(dc, { containerRuntime }); if (config?.runtimeType === 'container') return { config, source: 'devcontainer.json' }; }
+  const dockerfile = files['Dockerfile'];
+  if (dockerfile) { const { config } = importDockerfile(dockerfile, { name, containerRuntime }); if (config) return { config, source: 'Dockerfile' }; }
+  return null;
+}
+```
+- [ ] **Step 4: Run, expect PASS** — `cd synthi && npx vitest run repoDetect`.
+- [ ] **Step 5: Commit** — `feat(programs): repoDetect orchestrator (compose>devcontainer>Dockerfile) (+ trailer)`
+
+### Task 10: collab-server `/detect` endpoint + capability on `/manifest`
+
+**Files:**
+- Modify: `backend/collab-server/server.js` (new `/program-runtime/:slug/detect` handler; add `containerRuntimeAvailable` to the `/manifest` response `:1974-1980`)
+- Modify: `synthi/src/lib/programs/runtimeClient.js` (`loadWorkspaceRecipe` `:87-97`: pass `{ containerRuntime: data.containerRuntimeAvailable }` into `importDevcontainer`; add `fetchDetectedRepoProgram`)
+- Test: `synthi/src/lib/programs/__tests__/runtimeClient.test.js`
+
+- [ ] **Step 1: Write the failing test** (the collab fetch is mocked; assert the client maps a detect response → config)
+```js
+// mock requestJson → { found:true, files:{ 'docker-compose.yml': 'services:\n  w:\n    ports:\n      - "8080:80"\n' }, containerRuntimeAvailable:true }
+const r = await fetchDetectedRepoProgram('slug', 'user');
+expect(r.source).toBe('docker-compose.yml');
+expect(r.config.launch).toBe('docker compose up');
+```
+- [ ] **Step 2: Run, expect FAIL** — `cd synthi && npx vitest run runtimeClient`.
+- [ ] **Step 3a: collab-server `/detect`** — add a handler modeled on the `/manifest` handler (`server.js:1955`), probing more candidates and returning their raw contents + capability:
+```js
+const detectMatch = /^\/program-runtime\/([^/]+)\/detect$/.exec(programRuntimeUrl.pathname);
+if (detectMatch && req.method === 'GET') {
+  const slug = decodeURIComponent(detectMatch[1]);
+  const userId = programRuntimeUrl.searchParams.get('userId') || undefined;
+  try {
+    const fs = require('fs'); const path = require('path');
+    const { resolveWorkspaceCwd } = require('./terminalService');
+    const cwd = await resolveWorkspaceCwd(slug, userId);
+    const names = ['docker-compose.yml', 'compose.yaml', 'compose.yml', '.devcontainer/devcontainer.json', '.devcontainer.json', 'devcontainer.json', 'Dockerfile'];
+    const files = {};
+    for (const n of names) { const f = path.join(cwd, n); if (fs.existsSync(f)) files[n] = fs.readFileSync(f, 'utf8'); }
+    const containerRuntimeAvailable = isSysboxRuntimeEnabled() || process.env.ENABLE_CONTAINER_RUNTIME === '1';
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ found: Object.keys(files).length > 0, files, containerRuntimeAvailable }));
+  } catch (err) {
+    res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: err.message || 'detect failed' }));
+  }
+  return;
+}
+```
+Also add `containerRuntimeAvailable: isSysboxRuntimeEnabled() || process.env.ENABLE_CONTAINER_RUNTIME === '1'` to the `/manifest` result object (`:1974`, `:1977`).
+- [ ] **Step 3b: runtimeClient.js** — fix the devcontainer gate and add the detect fetch:
+```js
+import { detectRepoProgram } from './repoDetect';
+// in loadWorkspaceRecipe, replace the devcontainer branch:
+if (data.source === 'devcontainer.json') {
+  const { config } = importDevcontainer(data.raw, { containerRuntime: data.containerRuntimeAvailable === true });
+  return { config, source: 'devcontainer.json' };
+}
+// new export:
+export async function fetchDetectedRepoProgram(workspaceSlug, userId) {
+  const q = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+  const data = await requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/detect${q}`);
+  if (!data || !data.found) return null;
+  return detectRepoProgram({ files: data.files || {}, containerRuntime: data.containerRuntimeAvailable === true, name: workspaceSlug });
+}
+```
+- [ ] **Step 4: Verify** — `cd synthi && npx vitest run runtimeClient` PASS; `node --check backend/collab-server/server.js`.
+- [ ] **Step 5: Commit** — `feat(programs): /detect endpoint + server-truthful containerRuntimeAvailable gate (+ trailer)`
+
+### Task 11: Next.js `/programs/detect` route + ProgramsPanel "Detected in this repo"
+
+**Files:**
+- Create: `synthi/src/app/api/workspace/[slug]/programs/detect/route.js`
+- Modify: `synthi/src/components/programs/ProgramsPanel.jsx` (+ `programsClient.js` helper)
+- Test: `synthi/src/app/api/workspace/[slug]/programs/__tests__/programRoutes.test.js` (route); `synthi/src/components/programs/__tests__/programsPanelInstall.test.jsx` (panel)
+
+- [ ] **Step 1: Write the failing route test** — mock `fetchDetectedRepoProgram` → a compose config; GET the route → 200 with `{ detected: { config, source } }`; unauthenticated → 401; forbidden scope → 403 (mirror the existing program-route tests' auth setup).
+- [ ] **Step 2: Run, expect FAIL** — `cd synthi && npx vitest run programRoutes`.
+- [ ] **Step 3a: Route** (model on `program-sessions/[sessionId]/route.js` auth):
+```js
+import { NextResponse } from 'next/server';
+import { resolveActor } from '@/lib/integrations/session';
+import { canReadScope } from '@/lib/integrations/scope';
+import { fetchDetectedRepoProgram } from '@/lib/programs/runtimeClient';
+export const runtime = 'nodejs';
+export async function GET(_req, { params }) {
+  const { slug } = await params;
+  const actor = await resolveActor();
+  if (!actor) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+  if (!(await canReadScope(actor, { scope: 'workspace', workspaceSlug: slug }))) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  const detected = await fetchDetectedRepoProgram(slug, actor.workspaceUserId || actor.id).catch(() => null);
+  return NextResponse.json({ detected });
+}
+```
+- [ ] **Step 3b: Panel** — add a `programsClient.fetchDetectedProgram(slug)` calling `GET /programs/detect`; in `ProgramsPanel.jsx`, on mount fetch it and, when `detected`, render a "Detected in this repo: <source>" row with a Launch button that calls the existing launch flow with `detected.config`. Add a panel test asserting the row renders when the client returns a detected program.
+- [ ] **Step 4: Verify** — `cd synthi && npx vitest run programRoutes programsPanelInstall`.
+- [ ] **Step 5: Commit** — `feat(programs): repo-detect surfaced in the Programs panel (+ trailer)`
+
+## Phase 3 — cleanup, audit, verification
+
+### Task 12: Stale "rootless" comment cleanup (lesson #31)
+
+**Files:** `backend/collab-server/runtimePodSpec.js:9`; `backend/collab-server/programRuntimeManager.js:23`
+
+- [ ] **Step 1:** In `runtimePodSpec.js` header (`:9`), change "rootless dockerd under Sysbox" → "rootful dockerd under Sysbox" (matches `RUNTIME_DOCKER_HOST=/var/run/docker.sock` and lesson #31).
+- [ ] **Step 2:** In `programRuntimeManager.js:23`, change the "docker:dind-rootless sets it" phrasing to reflect the rootful in-pod socket inherited from the runtime container's pod-level `DOCKER_HOST`.
+- [ ] **Step 3: Verify no behavior change** — `node --test --test-timeout=20000 backend/collab-server/__tests__/runtimePodSpec.test.js` PASS.
+- [ ] **Step 4: Commit** — `docs(runtime): correct stale rootless→rootful comments (lesson #31) (+ trailer)`
+
+### Task 13: Full-suite green, hardcoded-values audit, live demo, wrap
+
+- [ ] **Step 1: Backend suite** — `node --test --test-timeout=20000 backend/collab-server/__tests__/*.test.js` → 0 fail (note pass/skip counts).
+- [ ] **Step 2: Frontend suite** — `cd synthi && npx vitest run src/lib/programs src/components/programs` → 0 fail.
+- [ ] **Step 3: Hardcoded-values audit** (per `hardcoded-values-audit` memory) — confirm every new value is env-driven or a universal standard: `/workspace` + `runtime` container (already centralized), `containerRuntimeAvailable` derived from `RUNTIME_BACKEND`/`ENABLE_CONTAINER_RUNTIME` (no new literal), the `@vectant/*` example image digest-pinned in AR + passes trivy. No env-specific/secret values committed.
+- [ ] **Step 4: Live e2e gate (scratch cluster only).** VERIFY `kubectl config current-context` is the scratch cluster, NOT prod. With `RUNTIME_BACKEND=sysbox-pod`: launch a real compose program (a) via recipe and (b) via repo-detect → web UI renders in the App tab via `/runtime/<scope>/port/N`; Terminal execs into the runtime pod; logs stream. Capture evidence. Tear down: `--quiet --async`; confirm `clusters list` shows prod only.
+- [ ] **Step 5: Wrap** — append a Review section here; update `tasks/lessons.md` if any correction surfaced; give the plain-words recap (per `end-of-implementation-summary` memory). Commit docs.
+
+## Self-review (writing-plans)
+- **Spec coverage:** §5.1 launch branch → T1+T4; §5.2 exec → T2; §5.3 stamp → T3; §5.4 scoped ports → T3 (method) + T4 (wiring); §5.5 frontend → T5 (merge) + T6 (panel); §5.6 recipe → existing parser (works after T4) + capability T10; repo-detect compose/devcontainer/Dockerfile → T7/T8/T9; detect endpoint + UI → T10/T11; §11 cleanup → T12; §12 audit + live gate → T13. No uncovered section.
+- **Placeholders:** none — every code step carries real code; the only deferred item is the live demo (explicit gate, not a code step).
+- **Type/name consistency:** `programRuntimeTarget`→`{target}`, `createRuntimePodProgram`→`{ptyProcess,runtimeScope,podName}`, `recomputeRuntimeScopePorts(scope,ports)`, `pickRuntimeScopeForSlug(sessions,slug)`, `detectRepoProgram({files,containerRuntime,name})`, `fetchDetectedRepoProgram(slug,userId)`, `mergeProgramSession(...).runtimeScope` — used consistently across tasks.
