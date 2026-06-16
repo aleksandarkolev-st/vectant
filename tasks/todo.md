@@ -1308,6 +1308,13 @@ All 12 code tasks done via TDD (red→green→commit). Commits on `feat/docker-s
   - Synthetic `compose-project` / `0.0.0` placeholders for a detected project's packageId/version are universal defaults, not env-specific.
   - `waitForReadyRuntimePod` 40×1500ms (~60s) dockerd-ready poll is a deliberate universal default (mirrors the readinessProbe failureThreshold:12); env-gating it is a noted future option, not a violation.
 
-### Remaining (NOT done — needs the user)
-- **T13 step 4 — live e2e gate (the DoD's hard validation):** launch a real `docker compose` program (recipe AND repo-detect) on a throwaway Sysbox scratch cluster with `RUNTIME_BACKEND=sysbox-pod` → web UI in the App tab via `/runtime/<scope>/port/N`; terminal execs into the runtime pod; logs stream. BLOCKED on: (1) `gcloud auth login` (the user must run it — non-interactive refresh is denied by org policy), (2) explicit approval to spin up a billable scratch cluster (`k8s/sysbox/create-scratch-cluster.ps1`), (3) verifying `kubectl config current-context` is the scratch cluster, not prod, before any apply. Tear down with `--quiet --async` after.
-- **T13 step 5 — wrap:** this review section (done); lessons.md (no user correction surfaced this slice → nothing to add); plain-words recap (given in chat).
+### Live e2e gate — PASSED ✅ (2026-06-16; scratch cluster synthi-sysbox-scratch: created → validated → torn down)
+Validated the slice's substrate-dependent path on a throwaway Dataplane-V2 scratch cluster, using the REAL `buildRuntimeDeployment` runtime pod (sysbox-runc, hostUsers:false, non-privileged, AR digest-pinned `vectant-runtime`):
+- **compose-in-sysbox:** `docker compose up` (the exact command the compose-detect mapper emits) ran inside the per-workspace sysbox pod via the **inherited** `DOCKER_HOST=unix:///var/run/docker.sock` (never injected); pulled `python:3.12-alpine` from Docker Hub (egress OK); started `workspace-web-1` → `0.0.0.0:8080->8080`.
+- **port detection:** `/proc/net/tcp …:1F90 … 0A` = 8080 LISTENING in the pod netns — exactly what the Slice-4 monitor reads → `recomputeRuntimeScopePorts` → session `activePorts`.
+- **web UI reachability:** in-pod `http://localhost:8080` → **HTTP 200** (the preview-proxy → `/runtime/<scope>/port/8080` data path); `docker compose logs` showed the GET 200.
+- **terminal-into-runtime:** `docker ps` via k8s-exec listed the container. **isolation:** `uid_map 0 3848536064 65536` (root-in-userns, non-privileged) = Sysbox confirmed.
+- The collab-server session→port→URL wiring + recipe/detect config production are the unit-tested layers (87 backend + 149 frontend); the live gate covered what units can't.
+- **Teardown:** scratch cluster deleted; `clusters list` → `synthi-beta-cluster` (prod) ONLY, billing stopped. AR `vectant-runtime:scratch` + `sysbox-deploy-k8s:v0.7.0-0` kept for re-spin. See lesson #36 (regional SSD_TOTAL_GB wall → pd-standard for scratch pool + PVC).
+
+**Slice 1 = DONE: code-complete · unit-tested · audit-clean · live-validated.**
