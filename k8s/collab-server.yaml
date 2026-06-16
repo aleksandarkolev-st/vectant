@@ -474,3 +474,23 @@ spec:
     - port: 1234
       targetPort: 1234
       name: http-ws
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: collab-preview
+  namespace: synthi
+  labels:
+    app: collab-server
+    app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    cloud.google.com/backend-config: '{"ports":{"1234":"preview-backend-config"}}'
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: NodePort
+  selector:
+    app: collab-server
+  ports:
+    - port: 1234
+      targetPort: 1234
+      name: preview-http
