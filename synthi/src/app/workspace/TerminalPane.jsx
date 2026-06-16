@@ -63,6 +63,15 @@ const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
 const terminalSessionIdCache = new Map();
 
+function getTerminalStorage(storageName) {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window[storageName] || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function safeTerminalSessionPart(value, fallback = 'term') {
   const normalized = String(value || fallback)
     .toLowerCase()
@@ -100,10 +109,14 @@ function getStableTerminalSessionId({
   }
 
   const storageKey = `vectant-terminal-session:${scopeKey}`;
+  const localStore = getTerminalStorage('localStorage');
+  const sessionStore = getTerminalStorage('sessionStorage');
   try {
-    const stored = window.sessionStorage?.getItem(storageKey);
+    const stored = localStore?.getItem(storageKey) || sessionStore?.getItem(storageKey);
     if (stored) {
       terminalSessionIdCache.set(scopeKey, stored);
+      try { localStore?.setItem(storageKey, stored); } catch (_) {}
+      try { sessionStore?.setItem(storageKey, stored); } catch (_) {}
       return stored;
     }
   } catch (_) {}
@@ -118,7 +131,10 @@ function getStableTerminalSessionId({
 
   terminalSessionIdCache.set(scopeKey, sessionId);
   try {
-    window.sessionStorage?.setItem(storageKey, sessionId);
+    localStore?.setItem(storageKey, sessionId);
+  } catch (_) {}
+  try {
+    sessionStore?.setItem(storageKey, sessionId);
   } catch (_) {}
   return sessionId;
 }
@@ -329,22 +345,13 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const openOauthRelayPrompt = useCallback((event) => {
     event?.preventDefault?.();
     const prompt = oauthRelayPromptRef.current;
-    if (!prompt?.originalUrl) return;
+    if (!prompt?.bridgeUrl) return;
     setOauthRelayPrompt((current) => (
       current?.id === prompt.id ? { ...current, opened: true } : current
     ));
-
-    const openTerminalLink = openTerminalLinkRef.current;
-    if (typeof openTerminalLink === 'function') {
-      openTerminalLink(prompt.originalUrl);
-      return;
-    }
-
-    if (prompt.bridgeUrl) {
-      try {
-        window.open(prompt.bridgeUrl, '_blank', 'noopener,noreferrer');
-      } catch (_) {}
-    }
+    try {
+      window.open(prompt.bridgeUrl, '_blank', 'noopener,noreferrer');
+    } catch (_) {}
   }, []);
 
   // ─── Cleanup helper ───────────────────────────────────────────────────
