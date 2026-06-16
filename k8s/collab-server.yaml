@@ -145,6 +145,11 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_PREVIEW_SCAN_PORTS
+            - name: SYNTHI_PREVIEW_EXCLUDE_PORTS
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_PREVIEW_EXCLUDE_PORTS
             - name: SYNTHI_TERMINAL_PORT_POOL
               valueFrom:
                 configMapKeyRef:

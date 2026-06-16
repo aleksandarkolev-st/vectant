@@ -43,6 +43,10 @@ data:
   SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS: "30000"
   SYNTHI_PREVIEW_SIDECAR_IMAGE: "node:20-alpine"
   SYNTHI_PREVIEW_SCAN_PORTS: ""
+  # Runtime infrastructure ports that are reachable inside the pod but should
+  # not be advertised as user previews. Keep this configurable as the runtime
+  # image evolves.
+  SYNTHI_PREVIEW_EXCLUDE_PORTS: "8001"
   SYNTHI_TERMINAL_PORT_POOL: ""
   SYNTHI_TERMINAL_BACKEND: "k8s-exec"
   SYNTHI_NO_JAIL: "1"
