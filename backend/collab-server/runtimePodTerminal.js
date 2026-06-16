@@ -71,6 +71,18 @@ function programRuntimeTarget({ runtimeType, sysboxEnabled, hasHybrid } = {}) {
   return { target: 'unavailable' };
 }
 
+/**
+ * Resolve a workspace's runtime scope (= its collab session id) from its slug,
+ * among the active runtime sessions ([{slug, runtimeScope}]). The program-launch
+ * payload carries slug, not the collab session id; the runtime pod is pre-warmed
+ * at workspace mount so its Deployment is listed by the time a program launches.
+ */
+function pickRuntimeScopeForSlug(sessions, slug) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const match = list.find((s) => s && s.slug === slug && s.runtimeScope);
+  return match ? match.runtimeScope : null;
+}
+
 function kubeConfig() {
   const kc = new k8s.KubeConfig();
   if (process.env.KUBERNETES_SERVICE_HOST) kc.loadFromCluster();
@@ -301,6 +313,7 @@ module.exports = {
   shouldUseRuntimePodTerminal,
   runtimeTerminalTarget,
   programRuntimeTarget,
+  pickRuntimeScopeForSlug,
   buildRuntimeShellScript,
   createRuntimePodPty,
   createRuntimePodProgram,

@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { shouldUseContainerTerminal } = require('../terminalService');
-const { runtimeTerminalTarget, programRuntimeTarget, buildRuntimeShellScript } = require('../runtimePodTerminal');
+const { runtimeTerminalTarget, programRuntimeTarget, buildRuntimeShellScript, pickRuntimeScopeForSlug } = require('../runtimePodTerminal');
 
 test('shouldUseContainerTerminal requires the flag, a runtime manager, and a slug', () => {
   const rt = {};
@@ -54,4 +54,13 @@ test('buildRuntimeShellScript: runs the program command in /workspace with env e
   assert.match(s, /cd "\$WORKSPACE_DIR"/);
   assert.match(s, /docker compose up$/);
   assert.equal(/DOCKER_HOST/.test(s), false);
+});
+
+// Slice-1 — resolve a workspace's runtime scope from its slug among the active
+// runtime sessions (the launch payload carries slug, not the collab session id).
+test('pickRuntimeScopeForSlug matches slug → runtimeScope, else null', () => {
+  const sessions = [{ slug: 'a', runtimeScope: 's-a' }, { slug: 'b', runtimeScope: 's-b' }];
+  assert.equal(pickRuntimeScopeForSlug(sessions, 'b'), 's-b');
+  assert.equal(pickRuntimeScopeForSlug(sessions, 'z'), null);
+  assert.equal(pickRuntimeScopeForSlug(null, 'b'), null);
 });

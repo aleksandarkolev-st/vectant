@@ -15,7 +15,7 @@ const { createRuntimeManager, runtimeContainerHost } = require('./workspaceRunti
 const { handleEnsureRuntime } = require('./ensureRuntime');
 const { createContainerPortMonitor } = require('./containerPortMonitor');
 const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
-const { runtimeRunOnce } = require('./runtimePodTerminal');
+const { runtimeRunOnce, createRuntimePodProgram, programRuntimeTarget, pickRuntimeScopeForSlug } = require('./runtimePodTerminal');
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
@@ -168,7 +168,13 @@ const runtimePortMonitor = isSysboxRuntimeEnabled()
         return sessions.map((s) => ({ slug: s.slug || s.runtimeScope, userId: s.runtimeScope }));
       },
       runOnce: (_slug, runtimeScope, argv) => runtimeRunOnce(runtimeScope, argv),
-      onPortsChanged: (slug, runtimeScope, ports) => broadcastRuntimePorts(slug, runtimeScope, ports),
+      onPortsChanged: (slug, runtimeScope, ports) => {
+        broadcastRuntimePorts(slug, runtimeScope, ports);
+        // Slice 1 (real programs): also light up the App/Ports surfaces of any
+        // managed program session running in THIS runtime pod (scoped attribution).
+        try { managedProgramRuntime.recomputeRuntimeScopePorts(runtimeScope, ports); }
+        catch (err) { logger.warn({ err }, 'recomputeRuntimeScopePorts failed'); }
+      },
       logger,
     })
   : null;
@@ -178,15 +184,35 @@ const managedProgramRuntime = createProgramRuntimeManager({
   logger,
   getActivePorts: () => proxyService.getActivePorts(),
   launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType }) => {
-    // `container` programs route into the per-workspace rootless-Docker runtime
-    // container; everything else keeps the existing shared-collab PTY path.
-    if (runtimeType === 'container' && workspaceRuntime) {
+    // Slice 1 (real programs): `container` programs route into the per-workspace
+    // Sysbox runtime POD when the backend is on (its own validated, isolated
+    // dockerd — precedence), else the dev-hybrid runtime container, else fail loud.
+    // Everything else keeps the existing shared-collab headless PTY path.
+    const { target } = programRuntimeTarget({
+      runtimeType,
+      sysboxEnabled: isSysboxRuntimeEnabled(),
+      hasHybrid: Boolean(workspaceRuntime),
+    });
+    if (target === 'sysbox-pod') {
+      const sessions = typeof spawner.listActiveRuntimeSessions === 'function'
+        ? await spawner.listActiveRuntimeSessions()
+        : [];
+      const runtimeScope = pickRuntimeScopeForSlug(sessions, workspaceSlug);
+      if (!runtimeScope) throw new Error('runtime_pod_not_ready');
+      return createRuntimePodProgram({ runtimeScope, workspaceSlug, userId, command, env });
+    }
+    if (target === 'hybrid') {
       await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, userId);
       // The rootless dockerd inside the runtime container takes ~15-25s to be
       // ready; wait for it so the program's first `docker ...` command doesn't
       // race a not-yet-listening daemon.
       await workspaceRuntime.waitForRuntimeReady(workspaceSlug, userId);
       return workspaceRuntime.execInRuntime(workspaceSlug, userId, { command, env, tty: true });
+    }
+    if (target === 'unavailable') {
+      // container requested but no runtime exists — do NOT run in the docker-less
+      // headless PTY (DOCKER_HOST is scrubbed there); surface a clear error.
+      throw new Error('container_runtime_unavailable');
     }
     const runtime = await createHeadlessSession(sessionId, workspaceSlug, userId, 120, 30, title, { env });
     const { commandStartedPromise } = queueHeadlessCommandStart(runtime.ptyProcess, command);
