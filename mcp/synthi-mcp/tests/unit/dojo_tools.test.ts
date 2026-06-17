@@ -2039,7 +2039,9 @@ describe("Agent Dojo MCP tools", () => {
     expect(publish?.isError).toBeUndefined();
     const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
     const publishedSkill = dojoSkillRegistry.get(skillId) as DojoSkill;
-    const proofCapsule = issueDojoProofCapsule(publishedSkill, "run_workflow", {
+    const proofIssue = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
       context_claims: { workspace_verified: true },
       evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill),
       require_verified_evidence: true,
@@ -2047,6 +2049,10 @@ describe("Agent Dojo MCP tools", () => {
       now: "2026-06-17T02:00:00.000Z",
       expires_at: "2026-06-17T02:15:00.000Z",
     });
+    expect(proofIssue?.isError).toBeUndefined();
+    const proofCapsule = (proofIssue?.structuredContent as {
+      proof_capsule: DojoProofCarryingSkillCapsule;
+    }).proof_capsule;
     expect(proofCapsule).toEqual(expect.objectContaining({
       license_id: publishedSkill.permission_license.license_id,
       substrate_claim: "api",
@@ -2104,11 +2110,24 @@ describe("Agent Dojo MCP tools", () => {
       runtime_enforced: true,
       dry_run: true,
       skill_id: publishedSkill.skill_id,
+      run_id: expect.stringMatching(/^dojo_api_run_/),
       api_tool_invocation_validation: { ok: true, blocked_by: [] },
       proof_validation: { ok: true, blocked_by: [] },
+      license_kernel: expect.objectContaining({
+        ok: true,
+        status: "allowed",
+        proof_record: expect.objectContaining({
+          status: "issued",
+          capsule_id: proofCapsule.capsule_id,
+        }),
+      }),
+      proof_consume: null,
       api_tool_execution: null,
       api_tool_execution_evidence: [],
       blocked_by: [],
+    }));
+    expect(dojoSkillRegistry.getProofRecord(proofCapsule.capsule_id)).toEqual(expect.objectContaining({
+      status: "issued",
     }));
 
     const executed = await dispatchDojoTool("synthi_dojo_run_api_backed_tool", {
@@ -2116,6 +2135,7 @@ describe("Agent Dojo MCP tools", () => {
       tool_args: toolArgs,
       auth_scopes: ["invoice:write"],
       dry_run: false,
+      run_id: "api-backed-run-a",
       now: "2026-06-17T02:01:00.000Z",
       mock_response: {
         status: 201,
@@ -2127,6 +2147,23 @@ describe("Agent Dojo MCP tools", () => {
       ok: true,
       dry_run: false,
       transport_mode: "mock",
+      proof_consume: expect.objectContaining({
+        ok: true,
+        status: "used",
+        record: expect.objectContaining({
+          capsule_id: proofCapsule.capsule_id,
+          status: "used",
+          first_used_at: "2026-06-17T02:01:00.000Z",
+          last_validated_at: "2026-06-17T02:01:00.000Z",
+        }),
+      }),
+      license_kernel: expect.objectContaining({
+        ok: true,
+        proof_record: expect.objectContaining({
+          capsule_id: proofCapsule.capsule_id,
+          status: "used",
+        }),
+      }),
       api_tool_execution: expect.objectContaining({
         ok: true,
         status: "executed",
@@ -2156,6 +2193,40 @@ describe("Agent Dojo MCP tools", () => {
         }),
       ],
       blocked_by: [],
+    }));
+    expect(dojoSkillRegistry.getProofRecord(proofCapsule.capsule_id)).toEqual(expect.objectContaining({
+      status: "used",
+      first_used_at: "2026-06-17T02:01:00.000Z",
+      last_validated_at: "2026-06-17T02:01:00.000Z",
+    }));
+
+    const replay = await dispatchDojoTool("synthi_dojo_run_api_backed_tool", {
+      api_backed_mcp_tool: apiTool,
+      tool_args: toolArgs,
+      auth_scopes: ["invoice:write"],
+      dry_run: false,
+      run_id: "api-backed-run-replay",
+      now: "2026-06-17T02:02:00.000Z",
+      mock_response: {
+        status: 201,
+        body: { invoice: { status: "saved" } },
+      },
+    });
+    expect(replay?.isError).toBe(true);
+    expect(replay?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      dry_run: false,
+      run_id: "api-backed-run-replay",
+      proof_consume: null,
+      blocked_by: expect.arrayContaining(["proof_capsule_replay_detected"]),
+      license_kernel: expect.objectContaining({
+        ok: false,
+        proof_record: expect.objectContaining({
+          capsule_id: proofCapsule.capsule_id,
+          status: "used",
+          first_used_at: "2026-06-17T02:01:00.000Z",
+        }),
+      }),
     }));
   });
 
