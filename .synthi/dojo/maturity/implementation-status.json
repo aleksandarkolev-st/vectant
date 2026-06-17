@@ -40,6 +40,7 @@
     "synthi_dojo_get_metrics": "report_only",
     "synthi_dojo_get_source_affordance_pr_plan": "deterministic_projection",
     "synthi_dojo_prepare_source_affordance_pr": "executable",
+    "synthi_dojo_create_source_affordance_pr_branch": "executable",
     "synthi_dojo_prepare_api_backed_tool": "executable",
     "synthi_dojo_get_registry": "report_only",
     "synthi_dojo_get_skill_assurance_case": "report_only",

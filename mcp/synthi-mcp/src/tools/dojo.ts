@@ -105,6 +105,7 @@ import {
   type DojoGeneratedPrCodeOwnerRule,
 } from "../dojo/source/pr_generator.js";
 import { applyDojoGeneratedPrBranchPlan } from "../dojo/source/pr_branch_applier.js";
+import { createDojoGeneratedPrGitBranch } from "../dojo/source/pr_branch_git.js";
 import {
   inferDojoApiEndpointCandidateFromTrace,
   reviewDojoApiEndpointCandidate,
@@ -168,6 +169,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_get_metrics",
   "synthi_dojo_get_source_affordance_pr_plan",
   "synthi_dojo_prepare_source_affordance_pr",
+  "synthi_dojo_create_source_affordance_pr_branch",
   "synthi_dojo_prepare_api_backed_tool",
   "synthi_dojo_get_registry",
   "synthi_dojo_get_skill_assurance_case",
@@ -1220,6 +1222,48 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_create_source_affordance_pr_branch",
+    description: "Validate and optionally create a git branch for a generated Agent-Ready UI affordance PR; defaults to dry-run and never opens a remote PR.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
+        source_files: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+              source: { type: "string" },
+            },
+            required: ["path", "source"],
+          },
+        },
+        repository_root: { type: "string" },
+        branch_name: { type: "string" },
+        branch_prefix: { type: "string" },
+        base_ref: { type: "string" },
+        source_snapshot_id: { type: "string" },
+        dry_run: { type: "boolean" },
+        allow_dirty_worktree: { type: "boolean" },
+        code_owner_rules: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              path_prefix: { type: "string" },
+              glob: { type: "string" },
+              owners: { type: "array", items: { type: "string" } },
+              review_gate: { type: "string" },
+            },
+            required: ["owners"],
+          },
+        },
+      },
+      required: ["source_files", "repository_root"],
+    },
+  },
+  {
     name: "synthi_dojo_prepare_api_backed_tool",
     description: "Review an API endpoint candidate or network trace and, when all safety gates pass, compile a proof-gated API-backed MCP tool contract without executing the API.",
     inputSchema: {
@@ -1785,6 +1829,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
       case "synthi_dojo_prepare_source_affordance_pr":
         response = await dojoPrepareSourceAffordancePrTool(args);
         break;
+      case "synthi_dojo_create_source_affordance_pr_branch":
+        response = await dojoCreateSourceAffordancePrBranchTool(args);
+        break;
       case "synthi_dojo_prepare_api_backed_tool":
         response = await dojoPrepareApiBackedToolTool(args);
         break;
@@ -2127,33 +2174,12 @@ async function dojoPrepareSourceAffordancePrTool(args: unknown): Promise<ToolRes
       expected_shape: "source_files: Array<{ path: string; source: string }>",
     });
   }
-  const sourceAffordancePrReport = buildDojoSourceAffordancePrPlan(skill.skill);
-  const plan = sourceAffordancePrReport.typed_patch_plan;
-  const patchBundle = buildDojoGeneratedSourcePatchBundle({
-    plan,
-    files: sourceFiles,
-  });
-  const artifactRefs = sourceAffordanceArtifactRefs(plan.plan_id, patchBundle);
-  const metadata = buildDojoGeneratedPrMetadata({
-    plan,
-    skill_id: skill.skill.skill_id,
-    license_id: skill.skill.permission_license.license_id,
-    source_snapshot_id: stringOpt(a["source_snapshot_id"]),
-    branch_name: stringOpt(a["branch_name"]),
-    branch_prefix: stringOpt(a["branch_prefix"]),
-    artifact_refs: artifactRefs,
-    code_owner_rules: codeOwnerRulesOpt(a["code_owner_rules"]),
-  });
-  const branchPlan = buildDojoGeneratedPrBranchPlan({
-    metadata,
-    patch_bundle: patchBundle,
-    base_ref: stringOpt(a["base_ref"]),
-  });
+  const preparation = buildSourceAffordancePrPreparation(skill.skill, a, sourceFiles);
   const workspaceRoot = stringOpt(a["workspace_root"]);
   const dryRunApply = workspaceRoot
     ? await applyDojoGeneratedPrBranchPlan({
-      branch_plan: branchPlan,
-      patch_bundle: patchBundle,
+      branch_plan: preparation.branchPlan,
+      patch_bundle: preparation.patchBundle,
       workspace_root: workspaceRoot,
       dry_run: true,
     })
@@ -2162,24 +2188,139 @@ async function dojoPrepareSourceAffordancePrTool(args: unknown): Promise<ToolRes
     ok: true,
     skill_id: skill.skill.skill_id,
     source_file_count: sourceFiles.length,
-    source_affordance_pr_plan: sourceAffordancePrReport,
-    typed_patch_plan: plan,
-    source_patch_bundle: patchBundle,
-    generated_pr_metadata: metadata,
-    generated_pr_branch_plan: branchPlan,
+    source_affordance_pr_plan: preparation.sourceAffordancePrReport,
+    typed_patch_plan: preparation.plan,
+    source_patch_bundle: preparation.patchBundle,
+    generated_pr_metadata: preparation.metadata,
+    generated_pr_branch_plan: preparation.branchPlan,
     dry_run_apply: dryRunApply,
-    ready_for_review: patchBundle.ok && branchPlan.ready_to_apply && (dryRunApply?.ok ?? true),
-    promotion_blockers: [
-      ...metadata.promotion_blockers,
-      ...branchPlan.promotion_blockers,
-      ...patchBundle.issues
-        .filter((issue) => issue.severity === "error")
-        .map((issue) => `source_patch_bundle:${issue.issue_id}${issue.file_path ? `:${issue.file_path}` : ""}`),
-      ...(dryRunApply?.issues ?? [])
-        .filter((issue) => issue.severity === "error")
-        .map((issue) => `dry_run_apply:${issue.issue_id}${issue.path ? `:${issue.path}` : ""}`),
-    ],
+    ready_for_review: preparation.patchBundle.ok && preparation.branchPlan.ready_to_apply && (dryRunApply?.ok ?? true),
+    promotion_blockers: sourceAffordancePromotionBlockers(preparation, {
+      applyPrefix: "dry_run_apply",
+      applyIssues: dryRunApply?.issues,
+    }),
   });
+}
+
+async function dojoCreateSourceAffordancePrBranchTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_create_source_affordance_pr_branch");
+  if (!skill.ok) return skill.error;
+  const a = obj(args);
+  const sourceFiles = sourcePatchInputFilesOpt(a["source_files"]);
+  if (sourceFiles.length === 0) {
+    return errorResponse("dojo_source_affordance_source_files_required", {
+      ok: false,
+      error: "dojo_source_affordance_source_files_required",
+      blocked_by: ["source_files_missing"],
+      expected_shape: "source_files: Array<{ path: string; source: string }>",
+    });
+  }
+  const repositoryRoot = stringOpt(a["repository_root"]);
+  if (!repositoryRoot) {
+    return errorResponse("dojo_source_affordance_repository_root_required", {
+      ok: false,
+      error: "dojo_source_affordance_repository_root_required",
+      blocked_by: ["repository_root_missing"],
+      expected_shape: "repository_root: string",
+    });
+  }
+  const preparation = buildSourceAffordancePrPreparation(skill.skill, a, sourceFiles);
+  const gitBranchResult = await createDojoGeneratedPrGitBranch({
+    branch_plan: preparation.branchPlan,
+    patch_bundle: preparation.patchBundle,
+    repository_root: repositoryRoot,
+    dry_run: optionalBoolOpt(a["dry_run"]) ?? true,
+    allow_dirty_worktree: optionalBoolOpt(a["allow_dirty_worktree"]) ?? false,
+  });
+
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    source_file_count: sourceFiles.length,
+    repository_root: gitBranchResult.repository_root,
+    source_affordance_pr_plan: preparation.sourceAffordancePrReport,
+    typed_patch_plan: preparation.plan,
+    source_patch_bundle: preparation.patchBundle,
+    generated_pr_metadata: preparation.metadata,
+    generated_pr_branch_plan: preparation.branchPlan,
+    generated_pr_git_branch: gitBranchResult,
+    ready_for_review: preparation.patchBundle.ok && preparation.branchPlan.ready_to_apply && gitBranchResult.ok,
+    branch_created: gitBranchResult.ok && !gitBranchResult.dry_run,
+    promotion_blockers: sourceAffordancePromotionBlockers(preparation, {
+      gitIssues: gitBranchResult.issues,
+      applyPrefix: "generated_pr_git_branch_apply",
+      applyIssues: gitBranchResult.apply_result?.issues,
+    }),
+  });
+}
+
+type SourceAffordancePrPreparation = {
+  sourceAffordancePrReport: ReturnType<typeof buildDojoSourceAffordancePrPlan>;
+  plan: ReturnType<typeof buildDojoSourceAffordancePrPlan>["typed_patch_plan"];
+  patchBundle: ReturnType<typeof buildDojoGeneratedSourcePatchBundle>;
+  artifactRefs: DojoGeneratedPrArtifactRef[];
+  metadata: ReturnType<typeof buildDojoGeneratedPrMetadata>;
+  branchPlan: ReturnType<typeof buildDojoGeneratedPrBranchPlan>;
+};
+
+function buildSourceAffordancePrPreparation(
+  skill: DojoSkill,
+  args: Record<string, unknown>,
+  sourceFiles: DojoSourcePatchInputFile[]
+): SourceAffordancePrPreparation {
+  const sourceAffordancePrReport = buildDojoSourceAffordancePrPlan(skill);
+  const plan = sourceAffordancePrReport.typed_patch_plan;
+  const patchBundle = buildDojoGeneratedSourcePatchBundle({
+    plan,
+    files: sourceFiles,
+  });
+  const artifactRefs = sourceAffordanceArtifactRefs(plan.plan_id, patchBundle);
+  const metadata = buildDojoGeneratedPrMetadata({
+    plan,
+    skill_id: skill.skill_id,
+    license_id: skill.permission_license.license_id,
+    source_snapshot_id: stringOpt(args["source_snapshot_id"]),
+    branch_name: stringOpt(args["branch_name"]),
+    branch_prefix: stringOpt(args["branch_prefix"]),
+    artifact_refs: artifactRefs,
+    code_owner_rules: codeOwnerRulesOpt(args["code_owner_rules"]),
+  });
+  const branchPlan = buildDojoGeneratedPrBranchPlan({
+    metadata,
+    patch_bundle: patchBundle,
+    base_ref: stringOpt(args["base_ref"]),
+  });
+  return {
+    sourceAffordancePrReport,
+    plan,
+    patchBundle,
+    artifactRefs,
+    metadata,
+    branchPlan,
+  };
+}
+
+function sourceAffordancePromotionBlockers(
+  preparation: SourceAffordancePrPreparation,
+  options: {
+    applyPrefix?: string;
+    applyIssues?: Array<{ issue_id: string; severity: "error" | "warning"; path?: string }>;
+    gitIssues?: Array<{ issue_id: string; severity: "error" | "warning" }>;
+  } = {}
+): string[] {
+  return dedupeStrings([
+    ...preparation.metadata.promotion_blockers,
+    ...preparation.branchPlan.promotion_blockers,
+    ...preparation.patchBundle.issues
+      .filter((issue) => issue.severity === "error")
+      .map((issue) => `source_patch_bundle:${issue.issue_id}${issue.file_path ? `:${issue.file_path}` : ""}`),
+    ...(options.gitIssues ?? [])
+      .filter((issue) => issue.severity === "error")
+      .map((issue) => `generated_pr_git_branch:${issue.issue_id}`),
+    ...(options.applyIssues ?? [])
+      .filter((issue) => issue.severity === "error")
+      .map((issue) => `${options.applyPrefix ?? "apply"}:${issue.issue_id}${issue.path ? `:${issue.path}` : ""}`),
+  ]);
 }
 
 async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse> {
@@ -7394,6 +7535,10 @@ function sourceAffordanceArtifactRefs(
       sha256: sha256String(file.source),
     })),
   ];
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim()))];
 }
 
 type DojoApiCandidateInputResult =

@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -1057,6 +1061,7 @@ describe("Agent Dojo MCP tools", () => {
         "synthi_dojo_get_governance_report",
         "synthi_dojo_get_source_affordance_pr_plan",
         "synthi_dojo_prepare_source_affordance_pr",
+        "synthi_dojo_create_source_affordance_pr_branch",
         "synthi_dojo_prepare_api_backed_tool",
         "synthi_dojo_get_skill_assurance_case",
         "synthi_dojo_get_entrustment_level",
@@ -1494,6 +1499,79 @@ describe("Agent Dojo MCP tools", () => {
     }).source_patch_bundle.modified_files.find((file) => file.path === "src/details.open.tsx");
     expect(modified?.source).toContain("data-agent-action=");
     expect(modified?.source).toContain("assertDojoProof(");
+  });
+
+  it("creates a generated source affordance PR branch in a temporary git repository", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const repoRoot = await initializedDetailsOpenSourceRepoForDojoToolTest();
+
+    const created = await dispatchDojoTool("synthi_dojo_create_source_affordance_pr_branch", {
+      skill_id: skillId,
+      source_files: [{
+        path: "src/details.open.tsx",
+        source: detailsOpenSourceForDojoToolTest(),
+      }],
+      repository_root: repoRoot,
+      dry_run: false,
+      branch_prefix: "dojo/source-affordance",
+      code_owner_rules: [{
+        path_prefix: "src/",
+        owners: ["@synthi/source-reviewers"],
+        review_gate: "code_owner",
+      }],
+    });
+
+    expect(created?.isError).toBeUndefined();
+    expect(created?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      implementation_status: "executable",
+      runtime_enforced: false,
+      skill_id: skillId,
+      repository_root: path.resolve(repoRoot),
+      branch_created: true,
+      ready_for_review: true,
+      promotion_blockers: [],
+      generated_pr_git_branch: expect.objectContaining({
+        schema_version: "synthi.dojo.generatedPrGitBranchResult.v1",
+        dry_run: false,
+        ok: true,
+        issues: [],
+        branch_name: expect.stringMatching(/^dojo\/source-affordance\//),
+        apply_result: expect.objectContaining({
+          ok: true,
+          applied_files: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "source",
+              path: "src/details.open.tsx",
+              written: true,
+            }),
+            expect.objectContaining({
+              kind: "contract_test",
+              path: expect.stringMatching(/dojo-affordance\.test\.ts$/),
+              written: true,
+            }),
+          ]),
+        }),
+      }),
+    }));
+    const gitBranch = (created?.structuredContent as {
+      generated_pr_git_branch: {
+        branch_name: string;
+        apply_result: { applied_files: Array<{ kind: "source" | "contract_test"; path: string }> };
+      };
+    }).generated_pr_git_branch;
+    expect(currentGitBranchForDojoToolTest(repoRoot)).toBe(gitBranch.branch_name);
+    const patchedSource = await readFile(path.join(repoRoot, "src/details.open.tsx"), "utf8");
+    expect(patchedSource).toContain("data-agent-action=");
+    expect(patchedSource).toContain("assertDojoProof(");
+    const generatedTestPath = gitBranch.apply_result.applied_files.find((file) => file.kind === "contract_test")?.path;
+    expect(generatedTestPath).toBeTruthy();
+    const generatedTest = await readFile(path.join(repoRoot, generatedTestPath as string), "utf8");
+    expect(generatedTest).toContain("Dojo affordance contract");
+    expect(generatedTest).toContain("Open details");
   });
 
   it("prepares a reviewed API-backed MCP tool contract from network trace metadata", async () => {
@@ -4141,6 +4219,44 @@ function recordOpenDetailsWorkflowForDojoToolTest(): void {
       { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
     ],
   });
+}
+
+async function initializedDetailsOpenSourceRepoForDojoToolTest(): Promise<string> {
+  const repoRoot = await mkdtemp(path.join(tmpdir(), "dojo-source-affordance-tool-"));
+  await mkdir(path.join(repoRoot, "src"), { recursive: true });
+  await writeFile(path.join(repoRoot, "src/details.open.tsx"), detailsOpenSourceForDojoToolTest());
+  runGitForDojoToolTest(repoRoot, ["init"]);
+  runGitForDojoToolTest(repoRoot, ["config", "user.email", "dojo-tool-test@example.test"]);
+  runGitForDojoToolTest(repoRoot, ["config", "user.name", "Dojo Tool Test"]);
+  runGitForDojoToolTest(repoRoot, ["add", "src/details.open.tsx"]);
+  runGitForDojoToolTest(repoRoot, ["commit", "-m", "seed details affordance fixture"]);
+  return repoRoot;
+}
+
+function detailsOpenSourceForDojoToolTest(): string {
+  return [
+    "function assertDojoProof(affordanceId) {",
+    "  return affordanceId;",
+    "}",
+    "",
+    "export function DetailsOpen({ onOpen }) {",
+    "  return <button onClick={onOpen}>Open details</button>;",
+    "}",
+    "",
+  ].join("\n");
+}
+
+function runGitForDojoToolTest(repoRoot: string, args: string[]) {
+  const result = spawnSync("git", args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  return result;
+}
+
+function currentGitBranchForDojoToolTest(repoRoot: string): string {
+  return runGitForDojoToolTest(repoRoot, ["branch", "--show-current"]).stdout.trim();
 }
 
 async function publishTwoWorkspaceSkillsForDojoToolTest(): Promise<{
