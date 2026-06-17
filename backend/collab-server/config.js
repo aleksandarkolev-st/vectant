@@ -110,16 +110,6 @@ const REPO_CACHE_MAX = Number(process.env.REPO_CACHE_MAX) || 50;
  */
 const REPO_CACHE_TTL_MS = Number(process.env.REPO_CACHE_TTL_MS) || 5 * 60 * 1000; // 5 min
 
-/**
- * Whether LRU eviction should delete the working tree from disk.
- *
- * Local development can keep treating REPO_CACHE_DIR as disposable. In hosted
- * Kubernetes, REPO_CACHE_DIR and REPOS_DIR point at the durable workspace PVC,
- * so eviction must only drop the in-memory cache entry; deleting the directory
- * would wipe node_modules, tool caches, and CLI auth state.
- */
-const REPO_CACHE_DELETE_ON_EVICT = String(process.env.REPO_CACHE_DELETE_ON_EVICT || 'true').toLowerCase() !== 'false';
-
 // ── Workspace preparation ──────────────────────────────────────────────────
 const WORKSPACE_PREP_STATE_DIR = path.resolve(
     process.env.WORKSPACE_PREP_STATE_DIR || path.join(path.dirname(REPO_CACHE_DIR), '.synthi-workspace-prep')
@@ -156,7 +146,6 @@ module.exports = {
     REPO_CACHE_DIR,
     REPO_CACHE_MAX,
     REPO_CACHE_TTL_MS,
-    REPO_CACHE_DELETE_ON_EVICT,
     WORKSPACE_PREP_STATE_DIR,
     WORKSPACE_PREP_MAX_PARALLEL,
     WORKSPACE_PREP_JOB_TIMEOUT_MS,

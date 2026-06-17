@@ -40,7 +40,6 @@ const WebSocket = require('ws');
 const { watchWorkspace } = require('./fsWatcherService');
 const { shouldUseRuntimePodTerminal, createRuntimePodPty } = require('./runtimePodTerminal');
 const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
-const { buildPersistentRuntimeEnv, ensurePersistentRuntimeDirs } = require('./runtimePersistence');
 
 // node-pty is a native add-on. Fail fast with a clear message if missing.
 let pty;
@@ -65,98 +64,6 @@ try {
 
 /** @type {Map<string, { pty: IPty, ws: WebSocket, cwd: string, shell: string }>} */
 const activeSessions = new Map();
-
-const DETACHED_TERMINAL_TTL_MS = Math.max(
-  5_000,
-  Number(process.env.SYNTHI_TERMINAL_DETACH_TTL_MS || 5 * 60 * 1000),
-);
-const TERMINAL_REPLAY_BUFFER_CHARS = Math.max(
-  10_000,
-  Number(process.env.SYNTHI_TERMINAL_REPLAY_BUFFER_CHARS || 100_000),
-);
-
-function appendTerminalOutput(session, data, maxChars = TERMINAL_REPLAY_BUFFER_CHARS) {
-  if (!session || typeof data !== 'string') return;
-  if (!Array.isArray(session.outputBuffer)) session.outputBuffer = [];
-  if (!Number.isFinite(session.outputBufferLen)) {
-    session.outputBufferLen = session.outputBuffer.reduce((total, chunk) => total + String(chunk || '').length, 0);
-  }
-
-  session.outputBuffer.push(data);
-  session.outputBufferLen += data.length;
-  while (session.outputBufferLen > maxChars && session.outputBuffer.length > 1) {
-    const dropped = session.outputBuffer.shift();
-    session.outputBufferLen -= dropped.length;
-  }
-}
-
-function attachDetachedOutputBuffer(sessionId, ptyProcess) {
-  let bufferingActive = true;
-  const bufferDisposable = ptyProcess.onData((data) => {
-    if (!bufferingActive) return;
-    const session = activeSessions.get(sessionId);
-    appendTerminalOutput(session, data);
-  });
-  return () => {
-    bufferingActive = false;
-    try { bufferDisposable.dispose?.(); } catch (_) {}
-  };
-}
-
-function clearSessionTimers(session) {
-  if (!session) return;
-  if (session.detachTimer) clearTimeout(session.detachTimer);
-  if (session.orphanTimer) clearTimeout(session.orphanTimer);
-}
-
-function disposeTerminalSession(sessionId, reason = 'disposed') {
-  const session = activeSessions.get(sessionId);
-  if (!session) return;
-  clearSessionTimers(session);
-  try { session.stopBuffering?.(); } catch (_) {}
-  try { session.dataDisposable?.dispose?.(); } catch (_) {}
-  try { session.exitDisposable?.dispose?.(); } catch (_) {}
-  try { session.unwatchFs?.(); } catch (_) {}
-  try { session.pty?.kill?.(); } catch (_) {}
-  try { session.releasePort?.(); } catch (_) {}
-  activeSessions.delete(sessionId);
-  console.log(`[Terminal] Session ${sessionId} disposed (${reason})`);
-}
-
-function detachTerminalSession(sessionId, reason = 'ws_closed', expectedWs = null) {
-  const session = activeSessions.get(sessionId);
-  if (!session || !session.pty) return;
-  if (expectedWs && session.ws && session.ws !== expectedWs) {
-    return;
-  }
-  clearSessionTimers(session);
-  try { session.dataDisposable?.dispose?.(); } catch (_) {}
-  try { session.unwatchFs?.(); } catch (_) {}
-  try { session.stopBuffering?.(); } catch (_) {}
-
-  const stopBuffering = attachDetachedOutputBuffer(sessionId, session.pty);
-  const detachTimer = setTimeout(() => {
-    const current = activeSessions.get(sessionId);
-    if (!current || !current.detached) return;
-    console.warn(`[Terminal] Detached session ${sessionId} expired after ${DETACHED_TERMINAL_TTL_MS}ms`);
-    disposeTerminalSession(sessionId, 'detach_timeout');
-  }, DETACHED_TERMINAL_TTL_MS);
-  if (detachTimer.unref) detachTimer.unref();
-
-  activeSessions.set(sessionId, {
-    ...session,
-    ws: null,
-    unwatchFs: () => {},
-    dataDisposable: null,
-    detached: true,
-    headless: false,
-    outputBuffer: session.outputBuffer || [],
-    outputBufferLen: session.outputBufferLen || 0,
-    stopBuffering,
-    detachTimer,
-  });
-  console.log(`[Terminal] Session ${sessionId} detached (${reason})`);
-}
 
 /** @type {Map<string, { port: number, refCount: number, lastActive: number }>} */
 const runtimePortLeases = new Map();
@@ -288,19 +195,17 @@ function once(fn) {
   };
 }
 
-async function buildRuntimeLaunch({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId, cwd = '' }) {
+async function buildRuntimeLaunch({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId }) {
   const port = shouldUseRuntimePodTerminal(runtimeScope) ? null : await leaseRuntimePort(runtimeScope);
-  if (cwd) ensurePersistentRuntimeDirs(cwd);
   return {
-    env: buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId, port, cwd }),
+    env: buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId, port }),
     port,
     releasePort: once(() => releaseRuntimePort(runtimeScope)),
   };
 }
 
-function buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId, port = null, cwd = '' }) {
+function buildRuntimeEnv({ runtimeScope, workspaceSlug, actorUserId, filesystemUserId, port = null }) {
   const env = {};
-  if (cwd) Object.assign(env, buildPersistentRuntimeEnv(cwd));
   if (runtimeScope) {
     env.SYNTHI_RUNTIME_SCOPE = runtimeScope;
     if (port) {
@@ -1068,7 +973,7 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
   // pin a few of the worst offenders to the original home dir below so
   // they don't pollute the user's repo. Set SYNTHI_NO_HOME_OVERRIDE=1 to
   // restore the old behavior.
-  if (cwd && !process.env.SYNTHI_NO_HOME_OVERRIDE && !ptyEnv.SYNTHI_PERSISTENT_HOME) {
+  if (cwd && !process.env.SYNTHI_NO_HOME_OVERRIDE) {
     ptyEnv.HOME = cwd;
     // Keep auth + global config files outside the workspace so the user
     // doesn't accidentally commit them and doesn't have to re-auth claude
@@ -1084,11 +989,7 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
 
   // Prepend discovered SDK paths (Flutter, Dart, Android, etc.) and per-user
   // dev-CLI bin dirs (Claude Code, npm-global on Windows, ~/.local/bin) to PATH.
-  const persistentPaths = String(ptyEnv.SYNTHI_PERSISTENT_PATH_PREFIX || '')
-    .split(path.delimiter)
-    .map(p => p.trim())
-    .filter(Boolean);
-  const extraPaths = persistentPaths.concat(getSdkPaths()).concat(getDevCliPaths());
+  const extraPaths = getSdkPaths().concat(getDevCliPaths());
   if (extraPaths.length > 0) {
     const sep = os.platform() === 'win32' ? ';' : ':';
     ptyEnv.PATH = extraPaths.join(sep) + sep + (ptyEnv.PATH || '');
@@ -1388,7 +1289,6 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     workspaceSlug: slug,
     actorUserId: userId,
     filesystemUserId,
-    cwd,
   });
   let ptyProcess;
   let shell;
@@ -1461,7 +1361,6 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     unwatchFs: () => {},
     headless: true,     // Flag so WSS handler knows to reattach
     outputBuffer,       // Buffered output for replay
-    outputBufferLen: bufferLen,
     stopBuffering: () => {
       bufferingActive = false;
       try { bufferDisposable.dispose?.(); } catch (_) {}
@@ -1515,28 +1414,20 @@ function createTerminalWSS() {
     const initialRows = parseInt(parsedUrl.searchParams.get('rows'), 10) || 24;
     const requestedShellType = parsedUrl.searchParams.get('shell') || null;
 
-    // ── Check for existing resumable session ────────────────────────────
+    // ── Check for existing headless session (AI-created terminal) ───────
     const existingSession = requestedSessionId && activeSessions.get(requestedSessionId);
-    if (existingSession && existingSession.pty) {
+    if (existingSession && existingSession.headless && existingSession.pty) {
       const sessionId = requestedSessionId;
-      const { pty: ptyProcess, shell, cwd } = existingSession;
-      const outputBuffer = Array.isArray(existingSession.outputBuffer) ? existingSession.outputBuffer : [];
-      const outputBufferLen = Number.isFinite(existingSession.outputBufferLen)
-        ? existingSession.outputBufferLen
-        : outputBuffer.reduce((total, chunk) => total + String(chunk || '').length, 0);
-      const previousWs = existingSession.ws;
+      const { pty: ptyProcess, shell, cwd, outputBuffer, stopBuffering } = existingSession;
 
-      console.log(`[Terminal] Reattaching WS to ${existingSession.headless ? 'headless' : existingSession.detached ? 'detached' : 'active'} session ${sessionId} | cwd=${cwd} | buffered=${outputBuffer.length || 0} chunks`);
+      console.log(`[Terminal] Reattaching WS to headless session ${sessionId} | cwd=${cwd} | buffered=${outputBuffer.length} chunks`);
 
-      // Clear any delayed cleanup timer — we have a WS now.
+      // Clear the orphan reaper — we have a WS now.
       if (existingSession.orphanTimer) clearTimeout(existingSession.orphanTimer);
-      if (existingSession.detachTimer) clearTimeout(existingSession.detachTimer);
 
-      // Stop stale listeners before the new WebSocket owns the PTY stream.
-      try { existingSession.stopBuffering?.(); } catch (_) {}
-      try { existingSession.dataDisposable?.dispose?.(); } catch (_) {}
-      try { existingSession.unwatchFs?.(); } catch (_) {}
-      try { existingSession.exitDisposable?.dispose?.(); } catch (_) {}
+      // Stop the headless buffer from growing AND dispose its PTY listener
+      // (stopBuffering does both — see createHeadlessSession).
+      if (stopBuffering) stopBuffering();
 
       // Start filesystem watcher now that we have a WebSocket
       let unwatchFs = () => {};
@@ -1560,17 +1451,8 @@ function createTerminalWSS() {
         filesystemUserId: existingSession.filesystemUserId || requestedFilesystemUserId,
         releasePort: existingSession.releasePort || (() => {}),
         unwatchFs,
-        dataDisposable: null,
-        exitDisposable: null,
         headless: false,
-        detached: false,
-        outputBuffer,
-        outputBufferLen,
       });
-
-      if (previousWs && previousWs !== ws && previousWs.readyState === WebSocket.OPEN) {
-        try { previousWs.close(1000, 'Terminal reattached elsewhere'); } catch (_) {}
-      }
 
       // Send ready acknowledgement
       ws.send(JSON.stringify({
@@ -1593,36 +1475,22 @@ function createTerminalWSS() {
       // Attach the WS-forwarding listener for live output going forward
       // (the old headless buffering listener is stopped via stopBuffering)
       const onPtyData = (data) => {
-        appendTerminalOutput(activeSessions.get(sessionId), data);
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(Buffer.from(data, 'utf-8'), { binary: true });
         }
       };
-      const dataDisposable = ptyProcess.onData(onPtyData);
-      const currentSession = activeSessions.get(sessionId);
-      if (currentSession) {
-        activeSessions.set(sessionId, {
-          ...currentSession,
-          dataDisposable,
-        });
-      }
+      ptyProcess.onData(onPtyData);
 
       // ── PTY exit handler ──────────────────────────────────────────────
-      const exitDisposable = ptyProcess.onExit(({ exitCode, signal }) => {
+      ptyProcess.onExit(({ exitCode, signal }) => {
         console.log(`[Terminal] Session ${sessionId} exited (code=${exitCode}, signal=${signal})`);
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'exit', code: exitCode, signal }));
           ws.close(1000, 'PTY exited');
         }
-        disposeTerminalSession(sessionId, 'pty_exit');
+        try { existingSession.releasePort?.(); } catch (_) {}
+        activeSessions.delete(sessionId);
       });
-      const exitSession = activeSessions.get(sessionId);
-      if (exitSession) {
-        activeSessions.set(sessionId, {
-          ...exitSession,
-          exitDisposable,
-        });
-      }
 
       // ── WebSocket → PTY (input) ──────────────────────────────────────
       ws.on('message', (rawData, isBinary) => {
@@ -1651,12 +1519,18 @@ function createTerminalWSS() {
 
       ws.on('close', (code) => {
         console.log(`[Terminal] WS closed for reattached session ${sessionId} (code=${code})`);
-        detachTerminalSession(sessionId, `ws_close:${code}`, ws);
+        try { unwatchFs(); } catch (_) {}
+        try { ptyProcess.kill(); } catch (_) {}
+        try { existingSession.releasePort?.(); } catch (_) {}
+        activeSessions.delete(sessionId);
       });
 
       ws.on('error', (err) => {
         console.error(`[Terminal] WS error for reattached session ${sessionId}:`, err.message);
-        detachTerminalSession(sessionId, 'ws_error', ws);
+        try { unwatchFs(); } catch (_) {}
+        try { ptyProcess.kill(); } catch (_) {}
+        try { existingSession.releasePort?.(); } catch (_) {}
+        activeSessions.delete(sessionId);
       });
 
       return; // Done — skip normal session creation below
@@ -1692,7 +1566,6 @@ function createTerminalWSS() {
         workspaceSlug,
         actorUserId: requestedUserId,
         filesystemUserId: requestedFilesystemUserId,
-        cwd,
       });
       ({ ptyProcess, shell } = await createTerminalProcess({
         cwd,
@@ -1724,7 +1597,8 @@ function createTerminalWSS() {
       });
     }
 
-    const sessionRecord = {
+    // Register session
+    activeSessions.set(sessionId, {
       pty: ptyProcess,
       ws,
       cwd,
@@ -1735,13 +1609,7 @@ function createTerminalWSS() {
       filesystemUserId: requestedFilesystemUserId,
       releasePort: runtimeLaunch.releasePort,
       unwatchFs,
-      dataDisposable: null,
-      exitDisposable: null,
-      headless: false,
-      detached: false,
-      outputBuffer: [],
-      outputBufferLen: 0,
-    };
+    });
 
     // ── Send ready acknowledgement ──────────────────────────────────────
     ws.send(JSON.stringify({
@@ -1756,24 +1624,23 @@ function createTerminalWSS() {
     // node-pty fires 'data' with string chunks. We forward them as-is
     // (text WebSocket frames) for minimum latency — no JSON wrapping.
     const onPtyData = (data) => {
-      appendTerminalOutput(activeSessions.get(sessionId) || sessionRecord, data);
       if (ws.readyState === WebSocket.OPEN) {
         // Send as binary for maximum throughput and to distinguish from
         // JSON control frames the client sends as text.
         ws.send(Buffer.from(data, 'utf-8'), { binary: true });
       }
     };
-    sessionRecord.dataDisposable = ptyProcess.onData(onPtyData);
-    activeSessions.set(sessionId, sessionRecord);
+    ptyProcess.onData(onPtyData);
 
     // ── PTY exit ────────────────────────────────────────────────────────
-    sessionRecord.exitDisposable = ptyProcess.onExit(({ exitCode, signal }) => {
+    ptyProcess.onExit(({ exitCode, signal }) => {
       console.log(`[Terminal] Session ${sessionId} exited (code=${exitCode}, signal=${signal})`);
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'exit', code: exitCode, signal }));
         ws.close(1000, 'PTY exited');
       }
-      disposeTerminalSession(sessionId, 'pty_exit');
+      try { runtimeLaunch.releasePort(); } catch (_) {}
+      activeSessions.delete(sessionId);
     });
 
     // ── WebSocket → PTY (input) ─────────────────────────────────────────
@@ -1825,15 +1692,21 @@ function createTerminalWSS() {
       }
     });
 
-    // ── WebSocket close → detach PTY briefly for UI remount/reconnect ─────
+    // ── WebSocket close → kill PTY + stop watcher ────────────────────────
     ws.on('close', (code, reason) => {
       console.log(`[Terminal] WS closed for session ${sessionId} (code=${code})`);
-      detachTerminalSession(sessionId, `ws_close:${code}`, ws);
+      try { unwatchFs(); } catch (_) {}
+      try { ptyProcess.kill(); } catch (_) { /* already dead */ }
+      try { runtimeLaunch.releasePort(); } catch (_) {}
+      activeSessions.delete(sessionId);
     });
 
     ws.on('error', (err) => {
       console.error(`[Terminal] WS error for session ${sessionId}:`, err.message);
-      detachTerminalSession(sessionId, 'ws_error', ws);
+      try { unwatchFs(); } catch (_) {}
+      try { ptyProcess.kill(); } catch (_) { /* ignore */ }
+      try { runtimeLaunch.releasePort(); } catch (_) {}
+      activeSessions.delete(sessionId);
     });
   });
 

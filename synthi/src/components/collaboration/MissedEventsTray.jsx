@@ -11,18 +11,6 @@ import {
 
 const MAX_TRAY_ITEMS = 25;
 
-const TRAY_SHELL_STYLE = {
-  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 94%, #0b0c14), var(--bg-panel))',
-  borderColor: 'color-mix(in srgb, var(--border-medium) 84%, var(--accent-primary) 16%)',
-  boxShadow: '0 18px 44px rgba(0,0,0,0.42), 0 0 0 1px rgba(255,255,255,0.025)',
-};
-
-const TRAY_BUTTON_STYLE = {
-  color: 'var(--text-secondary)',
-  background: 'color-mix(in srgb, var(--bg-surface) 86%, var(--accent-primary) 5%)',
-  border: '1px solid var(--border-subtle)',
-};
-
 function fmtAgo(ts) {
   if (!ts) return '';
   const delta = Date.now() - ts;
@@ -122,73 +110,37 @@ export default function MissedEventsTray() {
         <button
           className={
             hasEvents
-              ? 'relative flex items-center gap-1 px-2 py-1 rounded-lg border transition-all'
+              ? 'relative flex items-center gap-1 px-2 py-1 rounded-lg bg-[#3b82f612] border border-[#3b82f630] hover:bg-[#3b82f620] transition-all'
               : 'relative flex items-center gap-1 px-2 py-1 rounded-lg border border-transparent hover:bg-white/5 transition-all'
           }
           title={buttonLabel}
           aria-label={buttonLabel}
-          style={hasEvents
-            ? {
-                color: 'var(--accent-tertiary)',
-                background: 'color-mix(in srgb, var(--accent-primary) 13%, transparent)',
-                borderColor: 'color-mix(in srgb, var(--accent-primary) 32%, transparent)',
-              }
-            : { color: 'var(--text-muted)' }}
+          style={hasEvents ? undefined : { color: 'var(--text-muted)' }}
         >
-          <Inbox className="w-3.5 h-3.5" />
+          <Inbox className={hasEvents ? 'w-3.5 h-3.5 text-[#3b82f6]' : 'w-3.5 h-3.5'} />
           {hasEvents && (
             <>
-              <span className="text-[11px] font-bold">{count}</span>
-              <span
-                className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full animate-pulse"
-                style={{ background: 'var(--accent-success)' }}
-              />
+              <span className="text-[11px] font-bold text-[#3b82f6]">{count}</span>
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#3b82f6] rounded-full animate-pulse" />
             </>
           )}
         </button>
       </PopoverTrigger>
       <PopoverContent
-        className="w-[340px] p-0 rounded-[10px] border overflow-hidden"
-        style={TRAY_SHELL_STYLE}
+        className="w-[320px] p-3 shadow-xl rounded-xl border"
+        style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border-medium)' }}
         align="end"
       >
-        <div className="h-px w-full" style={{ background: 'var(--brand-gradient-horizontal)' }} />
-        <div className="flex items-start justify-between gap-3 p-3.5 pb-3 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
-          <div className="min-w-0">
-            <div className="text-[12px] font-semibold flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
-              <span
-                className="w-6 h-6 rounded-md grid place-items-center border"
-                style={{
-                  borderColor: 'color-mix(in srgb, var(--accent-primary) 35%, var(--border-subtle))',
-                  background: 'color-mix(in srgb, var(--accent-primary) 10%, transparent)',
-                  color: 'var(--accent-tertiary)',
-                }}
-              >
-                <Mail className="w-3.5 h-3.5" />
-              </span>
-              Offline inbox
-              {hasEvents && (
-                <span
-                  className="text-[10px] px-1.5 py-0.5 rounded-md font-medium"
-                  style={{
-                    color: 'var(--text-muted)',
-                    background: 'var(--bg-surface)',
-                    border: '1px solid var(--border-subtle)',
-                  }}
-                >
-                  {count}
-                </span>
-              )}
-            </div>
-            <div className="text-[10px] mt-1.5" style={{ color: 'var(--text-muted)' }}>
-              Collaboration events captured while this client was away.
-            </div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs font-semibold flex items-center gap-1.5 text-[#3b82f6]">
+            <Mail className="w-3.5 h-3.5" />
+            Missed while offline
           </div>
           {hasEvents && (
             <button
               onClick={clearAll}
-              className="text-[10px] px-2 py-1 rounded-md transition-colors"
-              style={TRAY_BUTTON_STYLE}
+              className="text-[10px] px-1.5 py-0.5 rounded hover:bg-white/5 transition-colors"
+              style={{ color: 'var(--text-muted)' }}
               title="Clear all"
             >
               Clear all
@@ -198,42 +150,27 @@ export default function MissedEventsTray() {
 
         {!hasEvents && (
           <div
-            className="flex flex-col items-center justify-center py-8 mx-3.5 my-3.5 text-center rounded-lg border"
-            style={{
-              color: 'var(--text-muted)',
-              borderColor: 'var(--border-subtle)',
-              background: 'color-mix(in srgb, var(--bg-surface) 72%, transparent)',
-            }}
+            className="flex flex-col items-center justify-center py-6 text-center"
+            style={{ color: 'var(--text-muted)' }}
           >
             <Inbox className="w-6 h-6 mb-2 opacity-60" />
-            <div className="text-xs font-medium">All caught up</div>
+            <div className="text-xs font-medium">No missed events</div>
             <div className="text-[10px] mt-1 opacity-80">
-              Invites and sync changes will appear here when you reconnect.
+              Invites and updates that arrive while you&apos;re away will show up here.
             </div>
           </div>
         )}
 
-        <div className="space-y-1.5 max-h-[320px] overflow-y-auto p-3.5">
+        <div className="space-y-2 max-h-[320px] overflow-y-auto">
           {events.map((evt) => {
             const k = eventKey(evt);
             const isInvite = evt.type === 'collab-invite';
             return (
               <div
                 key={k}
-                className="flex items-start gap-2 p-2.5 border rounded-[8px]"
-                style={{
-                  background: 'var(--bg-surface)',
-                  borderColor: 'var(--border-subtle)',
-                }}
+                className="flex items-start gap-2 p-2 border rounded-lg"
+                style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
               >
-                <span
-                  className="mt-1 h-2 w-2 rounded-full shrink-0"
-                  style={{
-                    background: isInvite ? 'var(--accent-success)' : 'var(--accent-primary)',
-                    boxShadow: `0 0 0 3px color-mix(in srgb, ${isInvite ? 'var(--accent-success)' : 'var(--accent-primary)'} 18%, transparent)`,
-                  }}
-                  aria-hidden
-                />
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>
                     {titleForEvent(evt)}
@@ -248,28 +185,18 @@ export default function MissedEventsTray() {
                   {isInvite && (
                     <button
                       onClick={() => openInvite(evt)}
-                      className="p-1 rounded-md transition-colors border"
-                      style={{
-                        color: 'var(--accent-success)',
-                        background: 'color-mix(in srgb, var(--accent-success) 12%, transparent)',
-                        borderColor: 'color-mix(in srgb, var(--accent-success) 24%, transparent)',
-                      }}
+                      className="p-1 rounded bg-[#4ade8020] hover:bg-[#4ade8030] transition-colors"
                       title="Open invite"
                     >
-                      <Check className="w-3.5 h-3.5" />
+                      <Check className="w-3.5 h-3.5 text-[#4ade80]" />
                     </button>
                   )}
                   <button
                     onClick={() => dismiss(k)}
-                    className="p-1 rounded-md transition-colors border"
-                    style={{
-                      color: 'var(--text-muted)',
-                      background: 'var(--bg-panel)',
-                      borderColor: 'var(--border-subtle)',
-                    }}
+                    className="p-1 rounded bg-[#ff575720] hover:bg-[#ff575730] transition-colors"
                     title="Dismiss"
                   >
-                    <X className="w-3.5 h-3.5" />
+                    <X className="w-3.5 h-3.5 text-[#ff5757]" />
                   </button>
                 </div>
               </div>

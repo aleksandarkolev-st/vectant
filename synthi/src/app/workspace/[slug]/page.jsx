@@ -1026,30 +1026,6 @@ export default function EditorPage({ params }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // ── Restore host session after reload ───────────────────────────────
-    // The backend keeps collaboration rooms alive across page reloads, but
-    // the browser singleton resets to idle.  Reattach the host socket to an
-    // existing session without auto-creating a new sharing session.
-    useEffect(() => {
-        if (authStatus === 'loading') return;
-        if (collabSessionService?.isActive) return;
-        const authUser = authSession?.user || {};
-        const hostId = authUser.id || authUser.email || localStorage.getItem(USER_ID_KEY);
-        if (!hostId || !slug) return;
-        const hostName =
-            authUser.name ||
-            authUser.email ||
-            localStorage.getItem(USER_NAME_KEY) ||
-            hostId;
-        const hostAvatar = authUser.image || localStorage.getItem(USER_AVATAR_KEY) || '';
-        collabSessionService.restoreHostSession({
-            hostId,
-            hostName,
-            hostAvatar,
-            slug,
-        }).catch(() => {});
-    }, [authStatus, authSession?.user?.id, authSession?.user?.email, authSession?.user?.name, authSession?.user?.image, slug]);
-
     // ── AI Jumpstart: consume pending prompt from dashboard ──────────
     // If the payload carries a projectType, prepend its systemPromptHint
     // to the user prompt so the AI receives the project-context directive
@@ -1321,13 +1297,9 @@ export default function EditorPage({ params }) {
                     svc._emit('collab-invite', msg);
                 });
             },
-        }, {
-            userId: authUserId,
-            sessionId: activeSessionId,
-            userEmail: authSession?.user?.email || null,
-        });
+        }, { userId: authUserId, sessionId: activeSessionId });
         return teardown;
-    }, [slug, dispatch, authUserId, authSession?.user?.email, activeSessionId]);
+    }, [slug, dispatch, authUserId, activeSessionId]);
 
     // ── SSE connection — event-driven push from backend ──────────────────
     // Establishes a single EventSource per workspace for server-pushed
@@ -3082,6 +3054,7 @@ export default function EditorPage({ params }) {
                             errors={extensionErrors}
                             ready={extensionsReady}
                             hostStatus={extensionHostStatus}
+                            vscodeServerState={vscodeServerState}
                             onInstall={installExtension}
                             onEnable={enableExtension}
                             onDisable={disableExtension}
@@ -3310,13 +3283,7 @@ export default function EditorPage({ params }) {
             errors: extensionErrors,
             ready: extensionsReady,
             hostStatus: extensionHostStatus,
-            contributedContainers,
-            contributedViews,
-            treeDataMap: extensionTreeDataMap,
-            webviewPanels: extensionWebviewPanels,
-            webviewManager: extensionWebviewManager,
-            viewsWelcome: extensionViewsWelcome,
-            vscodeTunnelService: extensionTunnelService,
+            vscodeServerState,
             onInstall: installExtension,
             onEnable: enableExtension,
             onDisable: disableExtension,
@@ -3324,7 +3291,6 @@ export default function EditorPage({ params }) {
             onRestart: restartExtension,
             onDismissError: dismissExtensionError,
             onExecuteCommand: executeExtensionCommand,
-            onRequestTreeRefresh: requestTreeRefresh,
         },
     }), [
         editor, activeFile, mergedDiagnostics, diagnosticSummary,
@@ -3333,11 +3299,8 @@ export default function EditorPage({ params }) {
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
         aiHealing, workspaceName,
         installedExtensions, extensionErrors, extensionsReady, extensionHostStatus,
-        installExtension, enableExtension, disableExtension,
+        vscodeServerState, installExtension, enableExtension, disableExtension,
         uninstallExtension, restartExtension, dismissExtensionError, executeExtensionCommand,
-        requestTreeRefresh, contributedContainers, contributedViews, extensionTreeDataMap,
-        extensionWebviewPanels, extensionWebviewManager, extensionViewsWelcome,
-        extensionTunnelService,
     ]);
 
     if (workspaceMissing) {

@@ -35,8 +35,6 @@
 const k8s = require('@kubernetes/client-node');
 const { runtimeResourceId, metadataHash, dnsLabelValue } = require('./runtimeIdentity');
 const { ensureRuntimeFilesystem, releaseRuntimeFilesystem } = require('./runtimeFilesystem');
-const { persistentRuntimeEnvEntries, persistentRuntimeShellSetup } = require('./runtimePersistence');
-const lifecycle = require('./sessionLifecycle');
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -57,23 +55,9 @@ const WORKSPACE_REPOS_PATH = (process.env.WORKSPACE_REPOS_PATH || `${WORKSPACE_D
 const PREVIEW_SIDECAR_PORT = parseSinglePort(process.env.SYNTHI_PREVIEW_SIDECAR_PORT, 18080);
 const PREVIEW_SIDECAR_PREFIX = normalizePreviewPrefix(process.env.SYNTHI_PREVIEW_SIDECAR_PREFIX || '/__synthi_preview');
 const PREVIEW_SIDECAR_IMAGE = (process.env.SYNTHI_PREVIEW_SIDECAR_IMAGE || 'node:20-alpine').trim();
-const PREVIEW_SIDECAR_TIMEOUT_MS = parsePositiveInt(process.env.SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS, 30_000);
-const PREVIEW_PORT_PROBE_TIMEOUT_MS = parsePositiveInt(process.env.SYNTHI_PREVIEW_PORT_PROBE_TIMEOUT_MS, 1_500);
-const PREVIEW_PUBLIC_DOMAIN = (process.env.SYNTHI_PREVIEW_PUBLIC_DOMAIN || '').trim();
-const PREVIEW_PUBLIC_PROTOCOL = (process.env.SYNTHI_PREVIEW_PUBLIC_PROTOCOL || 'https').trim();
-const PREVIEW_SCAN_PORTS = (process.env.SYNTHI_PREVIEW_SCAN_PORTS || '').trim();
-const PREVIEW_EXCLUDE_PORTS = (
-  process.env.SYNTHI_PREVIEW_EXCLUDE_PORTS ||
-  process.env.SYNTHI_PREVIEW_INFRA_PORTS ||
-  ''
-).trim();
 const WORKFLOW_BRIDGE_IMAGE = (process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE || '').trim();
 const WORKFLOW_BRIDGE_PORT = parseSinglePort(process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT, 9466);
-const WORKFLOW_EXTERNAL_OPEN_BODY_LIMIT_BYTES = parsePositiveInt(process.env.SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES, 20_000);
-const WORKFLOW_EXTERNAL_OPEN_TIMEOUT_MS = parsePositiveInt(process.env.SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS, 15_000);
 const HOSTED_BROWSER_CDP_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT, 9222);
-const HOSTED_BROWSER_VIEW_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT, 6080);
-const HOSTED_BROWSER_VNC_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_VNC_PORT, 5900);
 
 // ── K8s client ─────────────────────────────────────────────────────────────
 
@@ -109,11 +93,6 @@ function deploymentName(sessionId) {
 
 function serviceName(sessionId) {
   return runtimeResourceId(sessionId);
-}
-
-function cleanupReason(options, fallback = 'teardown') {
-  if (typeof options === 'string') return options;
-  return options?.reason || fallback;
 }
 
 function runtimeLabels(sessionId, userId) {
@@ -158,11 +137,6 @@ function parseSinglePort(value, fallback) {
   const port = Number(value);
   if (Number.isInteger(port) && port > 0 && port <= 65535) return port;
   return fallback;
-}
-
-function parsePositiveInt(value, fallback) {
-  const parsed = Number.parseInt(String(value ?? '').trim(), 10);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function normalizePreviewPrefix(value) {
@@ -221,12 +195,6 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
           valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN' } },
         },
         { name: 'SYNTHI_HOSTED_BROWSER_CDP_URL', value: `http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}` },
-        { name: 'SYNTHI_PREVIEW_SIDECAR_PORT', value: String(PREVIEW_SIDECAR_PORT) },
-        { name: 'SYNTHI_PREVIEW_SIDECAR_PREFIX', value: PREVIEW_SIDECAR_PREFIX },
-        { name: 'SYNTHI_PREVIEW_PUBLIC_DOMAIN', value: PREVIEW_PUBLIC_DOMAIN },
-        { name: 'SYNTHI_PREVIEW_PUBLIC_PROTOCOL', value: PREVIEW_PUBLIC_PROTOCOL },
-        { name: 'SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES', value: String(WORKFLOW_EXTERNAL_OPEN_BODY_LIMIT_BYTES) },
-        { name: 'SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS', value: String(WORKFLOW_EXTERNAL_OPEN_TIMEOUT_MS) },
         { name: 'SYNTHI_WORKSPACE_ID', value: workspaceId },
         { name: 'SYNTHI_WORKSPACE_URL', value: workspaceUrl },
         { name: 'SYNTHI_HOSTED_BROWSER_WORKSPACE_URL', value: workspaceUrl },
@@ -285,56 +253,27 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
       args: [
         [
           'set -euo pipefail',
-          'export DISPLAY="${DISPLAY:-:99}"',
-          'BROWSER="$(node -e "const { chromium } = require(\'playwright-core\'); process.stdout.write(chromium.executablePath())")"',
-          'VIEW_SIZE="${SYNTHI_HOSTED_BROWSER_VIEW_SIZE:-1366x768x24}"',
-          'WINDOW_SIZE="${SYNTHI_HOSTED_BROWSER_WINDOW_SIZE:-1366,768}"',
-          'rm -f /tmp/.X99-lock',
-          'Xvfb "$DISPLAY" -screen 0 "$VIEW_SIZE" -ac +extension GLX +render -noreset &',
-          'XVFB_PID="$!"',
-          'sleep 0.5',
-          'x11vnc -display "$DISPLAY" -localhost -nopw -shared -forever -rfbport "$SYNTHI_HOSTED_BROWSER_VNC_PORT" -quiet &',
-          'VNC_PID="$!"',
-          'websockify --web=/usr/share/novnc "$SYNTHI_HOSTED_BROWSER_VIEW_PORT" "127.0.0.1:$SYNTHI_HOSTED_BROWSER_VNC_PORT" &',
-          'NOVNC_PID="$!"',
-          '"$BROWSER" --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-address=0.0.0.0 --remote-debugging-port="$SYNTHI_HOSTED_BROWSER_CDP_PORT" --user-data-dir=/tmp/synthi-chrome-profile --window-size="$WINDOW_SIZE" --start-maximized about:blank &',
-          'BROWSER_PID="$!"',
-          'trap \'kill "$BROWSER_PID" "$NOVNC_PID" "$VNC_PID" "$XVFB_PID" 2>/dev/null || true\' EXIT TERM INT',
-          'wait "$BROWSER_PID"',
+          'BROWSER="$(node -e "const { chromium } = require(\'playwright\'); process.stdout.write(chromium.executablePath())")"',
+          'exec "$BROWSER" --headless=new --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-address=0.0.0.0 --remote-debugging-port="$SYNTHI_HOSTED_BROWSER_CDP_PORT" --user-data-dir=/tmp/synthi-chrome-profile about:blank',
         ].join('\n'),
       ],
       env: [
         { name: 'SYNTHI_HOSTED_BROWSER_CDP_PORT', value: String(HOSTED_BROWSER_CDP_PORT) },
-        { name: 'SYNTHI_HOSTED_BROWSER_VIEW_PORT', value: String(HOSTED_BROWSER_VIEW_PORT) },
-        { name: 'SYNTHI_HOSTED_BROWSER_VNC_PORT', value: String(HOSTED_BROWSER_VNC_PORT) },
       ],
       ports: [
         { name: 'cdp', containerPort: HOSTED_BROWSER_CDP_PORT },
-        { name: 'browser-view', containerPort: HOSTED_BROWSER_VIEW_PORT },
       ],
       resources: {
         requests: { cpu: '200m', memory: '512Mi' },
         limits: { cpu: '2', memory: '2Gi' },
       },
       readinessProbe: {
-        exec: {
-          command: [
-            'node',
-            '-e',
-            `Promise.all([fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version'),fetch('http://127.0.0.1:${HOSTED_BROWSER_VIEW_PORT}/vnc.html')]).then(rs=>process.exit(rs.every(r=>r.ok)?0:1)).catch(()=>process.exit(1))`,
-          ],
-        },
+        httpGet: { path: '/json/version', port: HOSTED_BROWSER_CDP_PORT },
         initialDelaySeconds: 3,
         periodSeconds: 5,
       },
       livenessProbe: {
-        exec: {
-          command: [
-            'node',
-            '-e',
-            `Promise.all([fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version'),fetch('http://127.0.0.1:${HOSTED_BROWSER_VIEW_PORT}/vnc.html')]).then(rs=>process.exit(rs.every(r=>r.ok)?0:1)).catch(()=>process.exit(1))`,
-          ],
-        },
+        httpGet: { path: '/json/version', port: HOSTED_BROWSER_CDP_PORT },
         initialDelaySeconds: 15,
         periodSeconds: 20,
       },
@@ -351,96 +290,17 @@ function previewSidecarScript() {
     "'use strict';",
     "const http = require('http');",
     "const net = require('net');",
-    "const fs = require('fs');",
     "const { URL } = require('url');",
     "const LISTEN_PORT = Number(process.env.SYNTHI_PREVIEW_SIDECAR_PORT || '18080');",
     "const PREFIX = normalizePrefix(process.env.SYNTHI_PREVIEW_SIDECAR_PREFIX || '/__synthi_preview');",
-    `const TIMEOUT_MS = Number(process.env.SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS || '${PREVIEW_SIDECAR_TIMEOUT_MS}');`,
-    `const PORT_PROBE_TIMEOUT_MS = Math.max(250, Math.min(Number(process.env.SYNTHI_PREVIEW_PORT_PROBE_TIMEOUT_MS || '${PREVIEW_PORT_PROBE_TIMEOUT_MS}'), TIMEOUT_MS));`,
-    "const INFRA_PORTS = new Set([",
-    "  LISTEN_PORT,",
-    "  Number(process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT || 0),",
-    "  Number(process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT || 0),",
-    "  Number(process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT || 0),",
-    "  Number(process.env.SYNTHI_HOSTED_BROWSER_VNC_PORT || 0),",
-    "  ...parsePortList(process.env.SYNTHI_PREVIEW_EXCLUDE_PORTS || process.env.SYNTHI_PREVIEW_INFRA_PORTS || ''),",
-    "].filter((port) => Number.isInteger(port) && port > 0));",
+    "const TIMEOUT_MS = Number(process.env.SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS || '30000');",
     "function normalizePrefix(value) { const raw = String(value || '').trim() || '/__synthi_preview'; const withSlash = raw.startsWith('/') ? raw : '/' + raw; return withSlash.replace(/\\/+$/, '') || '/__synthi_preview'; }",
     "function sendJson(res, status, payload) { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)); }",
-    "function parsePortList(value) {",
-    "  const ports = new Set();",
-    "  for (const rawPart of String(value || '').split(',')) {",
-    "    const part = rawPart.trim();",
-    "    if (!part) continue;",
-    "    const range = /^(\\d+)\\s*-\\s*(\\d+)$/.exec(part);",
-    "    if (range) {",
-    "      const start = Number(range[1]);",
-    "      const end = Number(range[2]);",
-    "      if (!Number.isInteger(start) || !Number.isInteger(end)) continue;",
-    "      const low = Math.max(1, Math.min(start, end));",
-    "      const high = Math.min(65535, Math.max(start, end));",
-    "      for (let port = low; port <= high; port += 1) ports.add(port);",
-    "      continue;",
-    "    }",
-    "    const port = Number(part);",
-    "    if (Number.isInteger(port) && port > 0 && port <= 65535) ports.add(port);",
-    "  }",
-    "  return [...ports];",
-    "}",
-    "function discoverProcListeningPorts(file) {",
-    "  try {",
-    "    const lines = fs.readFileSync(file, 'utf8').trim().split('\\n').slice(1);",
-    "    return lines.flatMap((line) => {",
-    "      const parts = line.trim().split(/\\s+/);",
-    "      if (parts[3] !== '0A') return [];",
-    "      const local = parts[1] || '';",
-    "      const portHex = local.split(':').pop();",
-    "      const port = Number.parseInt(portHex, 16);",
-    "      return Number.isInteger(port) && port > 0 && port <= 65535 ? [port] : [];",
-    "    });",
-    "  } catch (_) {",
-    "    return [];",
-    "  }",
-    "}",
-    "function discoverListeningPorts() {",
-    "  const ports = new Set([",
-    "    ...discoverProcListeningPorts('/proc/net/tcp'),",
-    "    ...discoverProcListeningPorts('/proc/net/tcp6'),",
-    "    ...parsePortList(process.env.SYNTHI_PREVIEW_SCAN_PORTS || ''),",
-    "  ]);",
-    "  return [...ports]",
-    "    .filter((port) => !INFRA_PORTS.has(port))",
-    "    .sort((a, b) => a - b);",
-    "}",
-    "function probeHttpPort(port) {",
-    "  return new Promise((resolve) => {",
-    "    const req = http.request({",
-    "      hostname: 'localhost',",
-    "      port,",
-    "      path: '/',",
-    "      method: 'HEAD',",
-    "      timeout: PORT_PROBE_TIMEOUT_MS,",
-    "      autoSelectFamily: true,",
-    "    }, (probeRes) => {",
-    "      probeRes.resume();",
-    "      resolve(true);",
-    "    });",
-    "    req.on('timeout', () => req.destroy(new Error('preview_probe_timeout')));",
-    "    req.on('error', () => resolve(false));",
-    "    req.end();",
-    "  });",
-    "}",
-    "async function discoverActivePreviewPorts() {",
-    "  const ports = discoverListeningPorts();",
-    "  const results = await Promise.all(ports.map(async (port) => ({ port, http: await probeHttpPort(port) })));",
-    "  return results.filter((result) => result.http).map((result) => result.port);",
-    "}",
     "function parsePreviewUrl(rawUrl) {",
     "  const url = new URL(rawUrl || '/', 'http://preview.local');",
     "  if (url.pathname === '/healthz') return { health: true };",
     "  if (url.pathname !== PREFIX && !url.pathname.startsWith(PREFIX + '/')) return null;",
     "  const suffix = url.pathname.slice(PREFIX.length);",
-    "  if (suffix === '/ports') return { ports: true };",
     "  const match = /^\\/(\\d+)(\\/.*)?$/.exec(suffix);",
     "  if (!match) return null;",
     "  const port = Number(match[1]);",
@@ -450,19 +310,11 @@ function previewSidecarScript() {
     "function upstreamHeaders(headers, port) {",
     "  const next = { ...headers, host: 'localhost:' + port };",
     "  delete next['proxy-connection'];",
-    "  next['accept-encoding'] = 'identity';",
     "  return next;",
     "}",
-    "async function proxyHttp(req, res) {",
-    "  let parsed;",
-    "  try { parsed = parsePreviewUrl(req.url); }",
-    "  catch (err) { sendJson(res, 400, { error: 'invalid_preview_url', detail: err.message }); return; }",
+    "function proxyHttp(req, res) {",
+    "  const parsed = parsePreviewUrl(req.url);",
     "  if (parsed && parsed.health) { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('ok'); return; }",
-    "  if (parsed && parsed.ports) {",
-    "    const activePorts = await discoverActivePreviewPorts();",
-    "    sendJson(res, 200, { activePorts, source: 'runtime_sidecar' });",
-    "    return;",
-    "  }",
     "  if (!parsed) { sendJson(res, 404, { error: 'invalid_preview_path' }); return; }",
     "  const upstream = http.request({",
     "    hostname: 'localhost',",
@@ -595,57 +447,6 @@ async function getReadyPodForSession(sessionId) {
   return { podIP: null, podName: null };
 }
 
-async function getPodSnapshotForSession(sessionId) {
-  const labelSelector = `synthi/runtime-id=${runtimeResourceId(sessionId)}`;
-  try {
-    const { body } = await coreApi.listNamespacedPod(
-      NAMESPACE,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      labelSelector,
-    );
-    const pods = Array.isArray(body?.items) ? body.items : [];
-    if (!pods.length) {
-      return {
-        pod_running: false,
-        pod_ready: false,
-        pod_name: null,
-        pod_ip: null,
-        pod_phase: 'missing',
-        container_ready_count: 0,
-        container_count: 0,
-      };
-    }
-
-    const pod = pods.find(p => p?.status?.phase === 'Running') || pods[0];
-    const statuses = pod?.status?.containerStatuses || [];
-    const readyCount = statuses.filter(c => c.ready).length;
-    const allReady = statuses.length > 0 && readyCount === statuses.length;
-    return {
-      pod_running: pod?.status?.phase === 'Running',
-      pod_ready: allReady,
-      pod_name: pod?.metadata?.name || null,
-      pod_ip: pod?.status?.podIP || null,
-      pod_phase: pod?.status?.phase || 'unknown',
-      container_ready_count: readyCount,
-      container_count: statuses.length,
-    };
-  } catch (err) {
-    console.warn(`[Spawner] Failed to get pod snapshot for ${runtimeResourceId(sessionId)}:`, err.message);
-    return {
-      pod_running: false,
-      pod_ready: false,
-      pod_name: null,
-      pod_ip: null,
-      pod_phase: 'unknown',
-      container_ready_count: 0,
-      container_count: 0,
-    };
-  }
-}
-
 // ── Dynamic Service per workspace ─────────────────────────────────────────
 
 /**
@@ -773,7 +574,6 @@ async function ensurePod(sessionId, userId, metadata = {}) {
       headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
     });
     activeSessions.add(sessionId);
-    await ensureService(sessionId);
     try {
       const readyPod = await getReadyPodForSession(sessionId);
       if (readyPod.podName) return { name, created: false, ...readyPod };
@@ -801,7 +601,6 @@ async function ensurePod(sessionId, userId, metadata = {}) {
 
   // 3. Create the Deployment.
   const workspaceDir = workspaceDirForMetadata({ ...metadata, filesystemUserId });
-  const persistentEnv = persistentRuntimeEnvEntries(workspaceDir);
   const deployment = {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -827,6 +626,7 @@ async function ensurePod(sessionId, userId, metadata = {}) {
         spec: {
           terminationGracePeriodSeconds: 15,
           securityContext: {
+            fsGroup: 1000,
             seccompProfile: { type: 'RuntimeDefault' },
           },
           serviceAccountName: 'workspace-runtime-sa',
@@ -844,7 +644,6 @@ async function ensurePod(sessionId, userId, metadata = {}) {
               command: ['/bin/bash', '-c'],
               args: [
                 `export PATH="/usr/local/cargo/bin:/usr/local/bin:\${PATH}"
-${persistentRuntimeShellSetup()}
 exec worker`,
               ],
               env: [
@@ -894,7 +693,6 @@ exec worker`,
                 { name: 'REPOS_DIR', value: WORKSPACE_REPOS_PATH },
                 { name: 'SYNTHI_REPOS_PATH', value: WORKSPACE_REPOS_PATH },
                 { name: 'WORKSPACE_DIR', value: workspaceDir },
-                ...persistentEnv,
               ],
               resources: {
                 requests: { cpu: '2', memory: '4Gi' },
@@ -923,14 +721,6 @@ exec worker`,
               env: [
                 { name: 'SYNTHI_PREVIEW_SIDECAR_PORT', value: String(PREVIEW_SIDECAR_PORT) },
                 { name: 'SYNTHI_PREVIEW_SIDECAR_PREFIX', value: PREVIEW_SIDECAR_PREFIX },
-                { name: 'SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS', value: String(PREVIEW_SIDECAR_TIMEOUT_MS) },
-                { name: 'SYNTHI_PREVIEW_PORT_PROBE_TIMEOUT_MS', value: String(PREVIEW_PORT_PROBE_TIMEOUT_MS) },
-                { name: 'SYNTHI_PREVIEW_SCAN_PORTS', value: PREVIEW_SCAN_PORTS },
-                { name: 'SYNTHI_PREVIEW_EXCLUDE_PORTS', value: PREVIEW_EXCLUDE_PORTS },
-                { name: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT', value: String(WORKFLOW_BRIDGE_PORT) },
-                { name: 'SYNTHI_HOSTED_BROWSER_CDP_PORT', value: String(HOSTED_BROWSER_CDP_PORT) },
-                { name: 'SYNTHI_HOSTED_BROWSER_VIEW_PORT', value: String(HOSTED_BROWSER_VIEW_PORT) },
-                { name: 'SYNTHI_HOSTED_BROWSER_VNC_PORT', value: String(HOSTED_BROWSER_VNC_PORT) },
               ],
               ports: [
                 { name: 'preview-proxy', containerPort: PREVIEW_SIDECAR_PORT },
@@ -988,7 +778,7 @@ exec worker`,
   } catch (err) {
     // Timeout: tear down the failed deployment to avoid ghost pods.
     console.error(`[Spawner] Pod readiness timeout for ${name}, tearing down:`, err.message);
-    await teardown(sessionId, { reason: 'readiness_timeout' });
+    await teardown(sessionId);
     throw new Error(`Workspace pod failed to start within ${POD_READY_TIMEOUT_MS / 1000}s`);
   }
 }
@@ -1020,106 +810,18 @@ async function touch(sessionId) {
 }
 
 /**
- * Reconcile Kubernetes state into the common lifecycle endpoint.
- */
-async function lifecycleSnapshot(sessionId) {
-  if (process.env.SPAWNER_MODE === 'local') {
-    return {
-      ...lifecycle.snapshot(sessionId),
-      pod_running: false,
-      pod_ready: false,
-      spawner_tracked: activeSessions.has(sessionId),
-      k8s_deployment: false,
-    };
-  }
-
-  const name = deploymentName(sessionId);
-  const advisory = lifecycle.snapshot(sessionId);
-  let deploymentExists = false;
-
-  try {
-    await appsApi.readNamespacedDeployment(name, NAMESPACE);
-    deploymentExists = true;
-  } catch (err) {
-    if (err.response?.statusCode !== 404) {
-      throw err;
-    }
-  }
-
-  if (!deploymentExists) {
-    if (advisory.state !== 'unknown' && advisory.state !== 'terminated') {
-      lifecycle.markTerminated(sessionId, 'deployment_missing');
-    }
-    return {
-      ...lifecycle.snapshot(sessionId),
-      pod_running: false,
-      pod_ready: false,
-      spawner_tracked: activeSessions.has(sessionId),
-      k8s_deployment: false,
-      deployment_name: name,
-    };
-  }
-
-  const pod = await getPodSnapshotForSession(sessionId);
-  if (pod.pod_ready) {
-    const current = lifecycle.snapshot(sessionId).state;
-    if (current !== 'running' && current !== 'migrating') {
-      lifecycle.markReady(sessionId);
-    }
-  } else if (pod.pod_phase === 'Failed') {
-    lifecycle.markCrashed(sessionId, 'pod_failed');
-  } else {
-    lifecycle.markWarming(sessionId, {
-      stage: pod.pod_running ? 'containers_starting' : 'pod_scheduled',
-      stage_progress_pct: pod.pod_running ? 70 : 40,
-      estimated_ready_at: Date.now() + 30_000,
-    });
-  }
-
-  return {
-    ...lifecycle.snapshot(sessionId),
-    ...pod,
-    spawner_tracked: activeSessions.has(sessionId),
-    k8s_deployment: true,
-    deployment_name: name,
-  };
-}
-
-/**
- * Pre-warm a Kubernetes runtime without blocking the HTTP request.
- */
-async function warm(sessionId, userId, metadata = {}) {
-  if (!sessionId) throw new Error('sessionId is required');
-  lifecycle.markWarming(sessionId, {
-    stage: 'warm_triggered',
-    stage_progress_pct: 5,
-    estimated_ready_at: Date.now() + 60_000,
-  });
-  ensurePod(sessionId, userId, metadata).then(() => {
-    lifecycle.markReady(sessionId);
-  }).catch((err) => {
-    console.error(`[Spawner] warm ensurePod failed for ${sessionId}:`, err.message);
-    lifecycle.markCrashed(sessionId, `warm_failed: ${err.message}`);
-  });
-  return lifecycle.snapshot(sessionId);
-}
-
-/**
  * Immediately delete the workspace Deployment and Service for a session.
  * Called when the signaling server reports both peers disconnected.
  */
-async function teardown(sessionId, options = {}) {
-  const reason = cleanupReason(options);
+async function teardown(sessionId) {
   if (process.env.SPAWNER_MODE === 'local') {
     activeSessions.delete(sessionId);
     releaseRuntimeFilesystem(sessionId);
-    lifecycle.markTerminated(sessionId, reason);
     return;
   }
   const name = deploymentName(sessionId);
   activeSessions.delete(sessionId);
   releaseRuntimeFilesystem(sessionId);
-  lifecycle.markTerminated(sessionId, reason);
 
   // Delete Service first (non-fatal).
   await deleteService(sessionId);
@@ -1127,7 +829,7 @@ async function teardown(sessionId, options = {}) {
   // Delete Deployment.
   try {
     await appsApi.deleteNamespacedDeployment(name, NAMESPACE);
-    console.log(`[Spawner] Deleted workspace pod: ${name} (reason=${reason})`);
+    console.log(`[Spawner] Deleted workspace pod: ${name}`);
   } catch (err) {
     if (err.response && err.response.statusCode === 404) {
       // Already gone — not an error.
@@ -1159,10 +861,10 @@ async function cullIdleWorkspaces() {
         const sid = dep.metadata.annotations?.['synthi/runtimeScopeFull'] || '?';
         console.log(`[Culler] Deleting idle workspace ${depName} (session=${sid}, idle=${Math.round((now - lastActive) / 1000)}s)`);
 
-        if (sid && sid !== '?') {
-          await teardown(sid, { reason: 'idle_timeout' });
-          continue;
-        }
+        // Delete the associated Service.
+        await deleteService(sid);
+        activeSessions.delete(sid);
+        releaseRuntimeFilesystem(sid);
 
         try {
           await appsApi.deleteNamespacedDeployment(depName, NAMESPACE);
@@ -1217,7 +919,7 @@ async function gracefulShutdown(signal) {
   if (process.env.SPAWNER_CLEANUP_ON_SHUTDOWN === 'true') {
     console.log('[Spawner] SPAWNER_CLEANUP_ON_SHUTDOWN=true, tearing down all sessions...');
     const promises = [...activeSessions].map(sid =>
-      teardown(sid, { reason: 'shutdown_cleanup' }).catch(err =>
+      teardown(sid).catch(err =>
         console.error(`[Spawner] Cleanup error for ${sid}:`, err.message)
       )
     );
@@ -1265,7 +967,7 @@ async function handleSessionEnded(req, res) {
   }
 
   console.log(`[Spawner] Received session-ended webhook for session=${sessionId}`);
-  await teardown(sessionId, { reason: 'session_ended' });
+  await teardown(sessionId);
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ ok: true }));
@@ -1275,8 +977,6 @@ async function handleSessionEnded(req, res) {
 
 module.exports = {
   ensurePod,
-  warm,
-  lifecycleSnapshot,
   touch,
   teardown,
   cullIdleWorkspaces,

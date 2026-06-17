@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { History, RotateCcw, AlertTriangle, Loader2, Eye, ArrowLeft, RefreshCw } from 'lucide-react';
+import { History, RotateCcw, AlertTriangle, Loader2, Eye, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
 import { diffLines } from 'diff';
 import { codeToTokens } from 'shiki';
@@ -13,7 +13,6 @@ import {
 import collabSessionService from '@/services/collabSessionService';
 import { getCurrentUser } from '@/services/userIdentity';
 import { useTheme } from '@/components/ThemeProvider';
-import { resolveCollabHttpUrl } from '@/lib/collab-url';
 
 // Map file extensions to Shiki language IDs.  Kept in sync with the richer
 // table in CodeBlock.jsx; if a file has an unknown extension we fall back to
@@ -40,19 +39,12 @@ function langFromPath(filePath) {
   return EXT_TO_LANG[ext] || 'text';
 }
 
-const COLLAB_URL = resolveCollabHttpUrl();
-
-const PANEL_SHELL_STYLE = {
-  background: 'linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 94%, #0b0c14), var(--bg-panel))',
-  borderColor: 'color-mix(in srgb, var(--border-medium) 84%, var(--accent-primary) 16%)',
-  boxShadow: '0 18px 44px rgba(0,0,0,0.42), 0 0 0 1px rgba(255,255,255,0.025)',
-};
-
-const PANEL_ACTION_STYLE = {
-  color: 'var(--text-secondary)',
-  background: 'color-mix(in srgb, var(--bg-surface) 86%, var(--accent-primary) 5%)',
-  border: '1px solid var(--border-subtle)',
-};
+const COLLAB_URL = (
+  process.env.NEXT_PUBLIC_COLLAB_SERVER_URL ||
+  process.env.NEXT_PUBLIC_COLLAB_URL ||
+  process.env.NEXT_PUBLIC_YJS_URL ||
+  'http://localhost:1234'
+).replace(/^ws/, 'http').replace(/\/$/, '');
 
 function fmtTime(ts) {
   if (!ts) return '';
@@ -323,11 +315,14 @@ export default function FileVersionsPanel({ slug, filePath }) {
         </button>
       </PopoverTrigger>
       <PopoverContent
-        className={`${view === 'preview' ? 'w-[580px]' : 'w-[440px]'} p-0 rounded-[10px] border overflow-hidden`}
-        style={PANEL_SHELL_STYLE}
+        className={`${view === 'preview' ? 'w-[560px]' : 'w-[420px]'} p-0 rounded-xl border overflow-hidden`}
+        style={{
+          backgroundColor: 'var(--bg-elevated)',
+          borderColor: 'var(--border-medium)',
+          boxShadow: 'var(--shadow-dropdown)',
+        }}
         align="end"
       >
-        <div className="h-px w-full" style={{ background: 'var(--brand-gradient-horizontal)' }} />
         {view === 'list' && (
           <ListView
             filePath={filePath}
@@ -360,68 +355,42 @@ export default function FileVersionsPanel({ slug, filePath }) {
 // ── List view ─────────────────────────────────────────────────────────────
 
 function ListView({ filePath, loading, error, versions, restoringIndex, onRefresh, onPreview }) {
-  const versionCount = versions.length;
   return (
-    <div className="p-3.5">
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="min-w-0">
-          <div
-            className="text-[12px] font-semibold flex items-center gap-2"
-            style={{ color: 'var(--text-primary)' }}
-          >
-            <span
-              className="w-6 h-6 rounded-md grid place-items-center border"
-              style={{
-                borderColor: 'color-mix(in srgb, var(--accent-primary) 35%, var(--border-subtle))',
-                background: 'color-mix(in srgb, var(--accent-primary) 10%, transparent)',
-                color: 'var(--accent-tertiary)',
-              }}
-            >
-              <History className="w-3.5 h-3.5" />
-            </span>
-            File snapshots
-            {versionCount > 0 && (
-              <span
-                className="text-[10px] px-1.5 py-0.5 rounded-md font-medium"
-                style={{
-                  color: 'var(--text-muted)',
-                  background: 'var(--bg-surface)',
-                  border: '1px solid var(--border-subtle)',
-                }}
-              >
-                {versionCount}
-              </span>
-            )}
-          </div>
-          <div
-            className="text-[10px] truncate mt-1.5 font-mono"
-            style={{ color: 'var(--text-muted)' }}
-            title={filePath || 'No file open'}
-          >
-            {filePath || 'No file open'}
-          </div>
+    <div className="p-3">
+      <div className="flex items-center justify-between mb-2">
+        <div
+          className="text-xs font-semibold flex items-center gap-1.5"
+          style={{ color: 'var(--text-primary)' }}
+        >
+          <History className="w-3.5 h-3.5" />
+          Version history
         </div>
         <button
           onClick={onRefresh}
-          className="text-[10px] px-2 py-1 rounded-md transition-colors inline-flex items-center gap-1.5"
-          style={PANEL_ACTION_STYLE}
+          className="text-[10px] px-2 py-1 rounded transition-colors"
+          style={{
+            color: 'var(--text-secondary)',
+            background: 'var(--bg-surface)',
+          }}
           onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-primary)'; }}
           onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-secondary)'; }}
           title="Refresh"
         >
-          <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
+          {loading ? 'Loading…' : 'Refresh'}
         </button>
+      </div>
+
+      <div
+        className="text-[10px] truncate mb-3 font-mono"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        {filePath || 'No file open'}
       </div>
 
       {loading && versions.length === 0 && (
         <div
-          className="flex items-center justify-center py-8 rounded-lg border"
-          style={{
-            color: 'var(--text-muted)',
-            borderColor: 'var(--border-subtle)',
-            background: 'color-mix(in srgb, var(--bg-surface) 72%, transparent)',
-          }}
+          className="flex items-center justify-center py-6"
+          style={{ color: 'var(--text-muted)' }}
         >
           <Loader2 className="w-4 h-4 animate-spin mr-2" />
           <span className="text-xs">Loading versions…</span>
@@ -443,17 +412,13 @@ function ListView({ filePath, loading, error, versions, restoringIndex, onRefres
 
       {!loading && !error && versions.length === 0 && (
         <div
-          className="flex flex-col items-center justify-center py-8 text-center rounded-lg border"
-          style={{
-            color: 'var(--text-muted)',
-            borderColor: 'var(--border-subtle)',
-            background: 'color-mix(in srgb, var(--bg-surface) 72%, transparent)',
-          }}
+          className="flex flex-col items-center justify-center py-6 text-center"
+          style={{ color: 'var(--text-muted)' }}
         >
           <History className="w-6 h-6 mb-2 opacity-60" />
           <div className="text-xs font-medium">No history yet</div>
           <div className="text-[10px] mt-1 opacity-80">
-            Saved versions will appear here after edits sync.
+            Save this file a few times — snapshots show up here.
           </div>
         </div>
       )}
@@ -481,11 +446,9 @@ function VersionRow({ version: v, busy, onPreview }) {
     <button
       onClick={clickable ? onPreview : undefined}
       disabled={!clickable}
-      className="w-full text-left flex items-start gap-2 p-2.5 rounded-[8px] transition-all border group"
+      className="w-full text-left flex items-start gap-2 p-2 rounded-lg transition-all border"
       style={{
-        background: isLatest
-          ? 'color-mix(in srgb, var(--accent-primary) 7%, var(--bg-surface))'
-          : 'var(--bg-surface)',
+        background: 'var(--bg-surface)',
         borderColor: 'var(--border-subtle)',
         cursor: clickable ? 'pointer' : 'default',
         opacity: metaOnly ? 0.7 : 1,
@@ -502,14 +465,6 @@ function VersionRow({ version: v, busy, onPreview }) {
       }}
       title={metaOnly ? 'Content unavailable for this snapshot' : 'Preview & compare'}
     >
-      <span
-        className="mt-1 h-2 w-2 rounded-full shrink-0"
-        style={{
-          background: isLatest ? 'var(--accent-success)' : 'var(--text-disabled)',
-          boxShadow: isLatest ? '0 0 0 3px color-mix(in srgb, var(--accent-success) 18%, transparent)' : 'none',
-        }}
-        aria-hidden
-      />
       <div className="flex-1 min-w-0">
         <div
           className="flex items-center gap-1.5 text-xs font-medium"
@@ -518,10 +473,10 @@ function VersionRow({ version: v, busy, onPreview }) {
           <span>{fmtTime(v.ts)}</span>
           {isLatest && (
             <span
-              className="text-[9px] px-1.5 py-px rounded-md"
+              className="text-[9px] px-1.5 py-px rounded"
               style={{
-                background: 'color-mix(in srgb, var(--accent-success) 16%, transparent)',
-                color: 'var(--accent-success)',
+                background: 'color-mix(in srgb, var(--accent-primary) 20%, transparent)',
+                color: 'var(--accent-tertiary)',
               }}
             >
               current
@@ -529,7 +484,7 @@ function VersionRow({ version: v, busy, onPreview }) {
           )}
           {metaOnly && (
             <span
-              className="text-[9px] px-1.5 py-px rounded-md"
+              className="text-[9px] px-1.5 py-px rounded"
               style={{
                 background: 'color-mix(in srgb, var(--accent-warning) 20%, transparent)',
                 color: 'var(--accent-warning)',
@@ -541,7 +496,7 @@ function VersionRow({ version: v, busy, onPreview }) {
           )}
         </div>
         <div
-          className="text-[10px] flex items-center gap-1.5 mt-1"
+          className="text-[10px] flex items-center gap-1.5 mt-0.5"
           style={{ color: 'var(--text-muted)' }}
         >
           {v.hash && <span className="font-mono">{shortHash(v.hash)}</span>}
@@ -554,7 +509,7 @@ function VersionRow({ version: v, busy, onPreview }) {
       <div className="flex items-center gap-1 shrink-0 pt-0.5">
         {clickable && (
           <Eye
-            className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100 transition-opacity"
+            className="w-3.5 h-3.5"
             style={{ color: 'var(--text-muted)' }}
           />
         )}
@@ -651,8 +606,8 @@ function PreviewView({
       >
         <button
           onClick={onBack}
-          className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-md transition-colors"
-          style={PANEL_ACTION_STYLE}
+          className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition-colors"
+          style={{ color: 'var(--text-secondary)' }}
           onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-primary)'; }}
           onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-secondary)'; }}
         >
@@ -670,10 +625,7 @@ function PreviewView({
 
       <div
         className="px-3 py-2 border-b"
-        style={{
-          borderColor: 'var(--border-subtle)',
-          background: 'color-mix(in srgb, var(--bg-surface) 52%, transparent)',
-        }}
+        style={{ borderColor: 'var(--border-subtle)' }}
       >
         <div
           className="flex items-center gap-2 text-xs font-medium"
@@ -762,8 +714,11 @@ function PreviewView({
       >
         <button
           onClick={onBack}
-          className="text-xs px-3 py-1.5 rounded-md transition-colors"
-          style={PANEL_ACTION_STYLE}
+          className="text-xs px-3 py-1.5 rounded-lg transition-colors"
+          style={{
+            color: 'var(--text-secondary)',
+            background: 'var(--bg-surface)',
+          }}
         >
           Cancel
         </button>

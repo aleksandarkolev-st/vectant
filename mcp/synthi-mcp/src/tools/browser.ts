@@ -948,40 +948,6 @@ async function browserAttachCurrentWorkspaceTool(args: unknown): Promise<ToolRes
   });
 }
 
-async function ensureHostedBrowserRuntimeAttachedForPreview(input: {
-  workspace_id?: string;
-  workspace_url?: string;
-  runtime_id?: string;
-}): Promise<ToolResponse | null> {
-  const runtime = browserBroker.runtimeAttachment();
-  if (runtime?.kind === "hosted") return null;
-
-  const result = await attachHostedBrowserRuntime(
-    {
-      workspace_id: input.workspace_id,
-      workspace_url: input.workspace_url,
-      runtime_id: input.runtime_id,
-      open_workspace: false,
-    },
-    browserPlaywrightAdapter,
-    browserBroker
-  );
-
-  if (!result.ok) {
-    return errorResponse(result.error, {
-      runtime: result.runtime,
-      readiness: resolveHostedBrowserRuntime({
-        workspace_id: input.workspace_id,
-        workspace_url: input.workspace_url,
-        runtime_id: input.runtime_id,
-      }),
-      required_action: "attach_hosted_browser_runtime",
-    });
-  }
-
-  return null;
-}
-
 async function browserAttachTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const cdpUrl = stringOpt(a["cdp_url"]) ?? process.env["SYNTHI_BROWSER_CDP_URL"];
@@ -1023,80 +989,28 @@ async function browserListTabsTool(): Promise<ToolResponse> {
 async function browserObservePreviewTool(args: unknown, options: { userGesture?: boolean } = {}): Promise<ToolResponse> {
   const a = obj(args);
   const input = {
-    workspace_id: stringOpt(a["workspace_id"]),
     workspace_url: stringOpt(a["workspace_url"]),
-    runtime_id: stringOpt(a["runtime_id"]),
     preferred_url: stringOpt(a["preferred_url"]),
     preview_url: stringOpt(a["preview_url"]),
     allowed_preview_origins: stringArrayOpt(a["allowed_preview_origins"]),
     allowed_preview_host_suffixes: stringArrayOpt(a["allowed_preview_host_suffixes"]),
   };
-
-  const attachError = await ensureHostedBrowserRuntimeAttachedForPreview({
-    workspace_id: input.workspace_id,
-    workspace_url: input.workspace_url,
-    runtime_id: input.runtime_id,
-  });
-  if (attachError) return attachError;
-
   const previewUrl = httpUrlOpt(
     input.preferred_url ??
     input.preview_url ??
     process.env["SYNTHI_WORKSPACE_PREVIEW_URL"] ??
     process.env["SYNTHI_PREVIEW_URL"]
   );
-  let openedPreviewTab = null;
-  if (previewUrl) {
-    try {
-      openedPreviewTab = await browserPlaywrightAdapter.openOrNavigate(previewUrl);
-    } catch (err) {
-      return errorResponse("preview_open_failed", {
-        preview_url: previewUrl,
-        reason: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-  let allTabs;
-  try {
-    allTabs = await browserPlaywrightAdapter.listTabs();
-  } catch (err) {
-    return errorResponse("preview_open_failed", {
-      preview_url: previewUrl ?? null,
-      reason: err instanceof Error ? err.message : String(err),
-    });
-  }
+  if (previewUrl) await browserPlaywrightAdapter.openOrNavigate(previewUrl);
+  let allTabs = await browserPlaywrightAdapter.listTabs();
   let target = resolveBrowserPreviewTarget(
     allTabs,
     input,
     process.env
   );
-  if (!target.ok && openedPreviewTab) {
-    const openedTarget = resolveBrowserPreviewTarget(
-      [openedPreviewTab],
-      {
-        ...input,
-        preferred_url: input.preferred_url ?? previewUrl,
-        preview_url: input.preview_url ?? previewUrl,
-      },
-      process.env
-    );
-    if (openedTarget.ok) {
-      target = openedTarget;
-      if (!allTabs.some((tab) => tab.tab_id === openedPreviewTab.tab_id)) {
-        allTabs = [...allTabs, openedPreviewTab];
-      }
-    }
-  }
   if (!target.ok && previewUrl) {
-    try {
-      await browserPlaywrightAdapter.open(previewUrl);
-      allTabs = await browserPlaywrightAdapter.listTabs();
-    } catch (err) {
-      return errorResponse("preview_open_failed", {
-        preview_url: previewUrl,
-        reason: err instanceof Error ? err.message : String(err),
-      });
-    }
+    await browserPlaywrightAdapter.open(previewUrl);
+    allTabs = await browserPlaywrightAdapter.listTabs();
     target = resolveBrowserPreviewTarget(
       allTabs,
       {
@@ -1131,25 +1045,8 @@ async function browserObservePreviewTool(args: unknown, options: { userGesture?:
   const tabs = browserBroker.registerTabs(allTabs);
   const brokerTab = browserBroker.selectTab(target.tab.tab_id);
   if (!brokerTab) return errorResponse("tab_not_authorized", { tab_id: target.tab.tab_id });
-  try {
-    await browserPlaywrightAdapter.selectTab(target.tab.tab_id);
-  } catch (err) {
-    return errorResponse("preview_open_failed", {
-      tab_id: target.tab.tab_id,
-      preview_url: target.tab.url,
-      reason: err instanceof Error ? err.message : String(err),
-    });
-  }
-  let snapshot;
-  try {
-    snapshot = await browserPlaywrightAdapter.snapshot(target.tab.tab_id);
-  } catch (err) {
-    return errorResponse("preview_snapshot_failed", {
-      tab_id: target.tab.tab_id,
-      preview_url: target.tab.url,
-      reason: err instanceof Error ? err.message : String(err),
-    });
-  }
+  await browserPlaywrightAdapter.selectTab(target.tab.tab_id);
+  const snapshot = await browserPlaywrightAdapter.snapshot(target.tab.tab_id);
   const gated = browserBroker.snapshot(snapshot);
   if (!gated.ok) return errorResponse(gated.error);
   return jsonResponse({

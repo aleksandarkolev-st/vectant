@@ -54,11 +54,6 @@ function getActiveWorkspaceCount() {
   return activeSessions.size;
 }
 
-function cleanupReason(options, fallback = 'teardown') {
-  if (typeof options === 'string') return options;
-  return options?.reason || fallback;
-}
-
 async function findContainerByName(name) {
   try {
     const c = docker.getContainer(name);
@@ -193,8 +188,7 @@ async function touch(sessionId) {
 
 // ── Teardown ───────────────────────────────────────────────────────────────
 
-async function teardown(sessionId, options = {}) {
-  const reason = cleanupReason(options);
+async function teardown(sessionId) {
   const name = containerName(sessionId);
   const entry = activeSessions.get(sessionId);
   activeSessions.delete(sessionId);
@@ -208,13 +202,13 @@ async function teardown(sessionId, options = {}) {
       }
     }
     await c.remove({ force: true });
-    console.log(`[LocalSpawner] Torn down worker container ${name} (reason=${reason})`);
+    console.log(`[LocalSpawner] Torn down worker container ${name}`);
   } catch (err) {
     if (err.statusCode !== 404) {
       console.error(`[LocalSpawner] teardown failed for ${name}:`, err.message);
     }
   }
-  lifecycle.markTerminated(sessionId, reason);
+  lifecycle.markTerminated(sessionId, "teardown");
 }
 
 /**
@@ -274,7 +268,7 @@ async function cullIdleWorkspaces() {
   for (const [sid, entry] of activeSessions.entries()) {
     if (now - entry.lastActive > IDLE_TIMEOUT_MS) {
       console.log(`[LocalSpawner/Culler] Culling idle session ${sid} (idle=${Math.round((now - entry.lastActive) / 1000)}s)`);
-      await teardown(sid, { reason: 'idle_timeout' });
+      await teardown(sid);
     }
   }
 
@@ -292,7 +286,6 @@ async function cullIdleWorkspaces() {
       if (now - lastActive > IDLE_TIMEOUT_MS) {
         console.log(`[LocalSpawner/Culler] Removing orphan container ${c.Names?.[0] || c.Id}`);
         try { await docker.getContainer(c.Id).remove({ force: true }); } catch (_) { /* ignore */ }
-        lifecycle.markTerminated(sid, 'idle_orphan_removed');
       }
     }
   } catch (err) {
@@ -328,7 +321,7 @@ async function gracefulShutdown(signal) {
     console.log('[LocalSpawner] SPAWNER_CLEANUP_ON_SHUTDOWN=true, tearing down all sessions...');
     const ids = [...activeSessions.keys()];
     await Promise.allSettled(ids.map(sid =>
-      teardown(sid, { reason: 'shutdown_cleanup' }).catch(err =>
+      teardown(sid).catch(err =>
         console.error(`[LocalSpawner] Cleanup error for ${sid}:`, err.message)
       )
     ));
@@ -367,7 +360,7 @@ async function handleSessionEnded(req, res) {
   }
 
   console.log(`[LocalSpawner] Received session-ended webhook for session=${sessionId}`);
-  await teardown(sessionId, { reason: 'session_ended' });
+  await teardown(sessionId);
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ ok: true }));

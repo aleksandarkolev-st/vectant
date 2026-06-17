@@ -2,14 +2,6 @@ FROM mcr.microsoft.com/playwright:v1.60.0-noble
 
 WORKDIR /app
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    novnc \
-    websockify \
-    x11vnc \
-    xvfb \
-  && rm -rf /var/lib/apt/lists/*
-
 COPY package.json package-lock.json ./
 RUN npm ci
 

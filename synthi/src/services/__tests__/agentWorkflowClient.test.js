@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   callAgentWorkflowTool,
   getAgentWorkflowState,
-  openAgentWorkflowExternalUrl,
   resolveAgentWorkflowBridgeToken,
   resolveAgentWorkflowBridgeUrl,
 } from '../agentWorkflowClient';
@@ -80,48 +79,6 @@ describe('agentWorkflowClient', () => {
           tool: 'synthi_browser_compile_workflow',
           arguments: { workspace_id: 'workspace-a' },
         }),
-      }),
-    );
-  });
-
-  it('opens external urls through the runtime browser bridge', async () => {
-    fetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        ok: true,
-        opened: { tab_id: 'external-auth-tab', navigation_started: true },
-      }),
-    });
-
-    const authUrl = 'https://auth.example.test/oauth?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fcallback';
-    const body = await openAgentWorkflowExternalUrl({
-      url: 'http://bridge.test',
-      token: 'secret',
-      targetUrl: authUrl,
-      runtime: {
-        runtimeScope: 'ws-demo-user-demo',
-        workspaceSlug: 'demo',
-        runtimeKind: 'private',
-        filesystemUserId: 'user-a',
-        actorUserId: 'user-a',
-      },
-    });
-
-    expect(body.opened.tab_id).toBe('external-auth-tab');
-    expect(fetch).toHaveBeenCalledWith(
-      'http://bridge.test/browser-workflows/open-external',
-      expect.objectContaining({
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Synthi-Workflow-Token': 'secret',
-          'X-Synthi-Runtime-Scope': 'ws-demo-user-demo',
-          'X-Synthi-Workspace-Slug': 'demo',
-          'X-Synthi-Runtime-Kind': 'private',
-          'X-Synthi-Filesystem-User-Id': 'user-a',
-          'X-Synthi-Actor-User-Id': 'user-a',
-        },
-        body: JSON.stringify({ url: authUrl }),
       }),
     );
   });

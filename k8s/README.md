@@ -125,23 +125,6 @@ Search-and-replace `synthi.example.com` in:
 - `k8s/configmap.yaml` — public URLs
 - `k8s/ingress.yaml` — Ingress host + ManagedCertificate
 
-### Configure Workspace Node Pool
-
-The app manifests schedule runtime pods onto the `workspace-pool` node pool via
-`cloud.google.com/gke-nodepool=workspace-pool`. The node pool itself is GKE
-infrastructure, not a Kubernetes manifest, so configure it with `gcloud`:
-
-```bash
-scripts/configure-workspace-node-pool.sh \
-  --machine-type n2-standard-4 \
-  --min-nodes 0 \
-  --max-nodes 2
-```
-
-For closed beta, the intended default is `n2-standard-4` with autoscaling from
-0 to 2 nodes. Idle runtime pods are removed by the spawner; when no runtime pods
-remain, the workspace pool can scale down instead of burning node CPU/RAM.
-
 ### Configure DNS
 
 After reserving the static IP and deploying the Ingress, set up DNS:
@@ -165,58 +148,6 @@ Create a DNS A record pointing your domain to this IP:
 
 **HTTP to HTTPS redirect:**
 The Ingress uses a `FrontendConfig` to redirect all HTTP traffic to HTTPS with a 301 status code. No additional configuration needed.
-
-### Configure Preview Subdomains
-
-Workspace app previews are served from wildcard subdomains instead of path
-prefixes:
-
-```text
-https://p3000-rt-<runtime-id>.preview.vectant.dev/
-```
-
-This keeps user app assets, HMR WebSockets, cookies, localStorage, and service
-workers rooted at `/` on an isolated origin. The fallback path proxy under
-`/collab/runtime/.../port/...` remains only for local/debug use.
-
-The same preview-domain machinery exposes the per-runtime workspace browser
-viewer used for terminal OAuth flows:
-
-```text
-https://p6080-rt-<runtime-id>.preview.vectant.dev/vnc.html?autoconnect=1&resize=scale&reconnect=1
-```
-
-`6080` is configurable through `SYNTHI_HOSTED_BROWSER_VIEW_PORT`; it is a
-reserved runtime infrastructure port, not a user application port.
-
-The `preview.vectant.dev` sub-zone is delegated to Cloud DNS, and
-`*.preview.vectant.dev` points at the same static IP as `beta.vectant.dev`.
-Wildcard TLS is issued by cert-manager using ACME DNS-01 with Cloud DNS:
-
-```bash
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.20.2/cert-manager.yaml
-
-gcloud iam service-accounts create synthi-cert-manager-dns01 \
-  --project=vectant-proj \
-  --display-name="Synthi cert-manager Cloud DNS01"
-
-gcloud projects add-iam-policy-binding vectant-proj \
-  --member="serviceAccount:synthi-cert-manager-dns01@vectant-proj.iam.gserviceaccount.com" \
-  --role="roles/dns.admin"
-
-gcloud iam service-accounts add-iam-policy-binding \
-  synthi-cert-manager-dns01@vectant-proj.iam.gserviceaccount.com \
-  --project=vectant-proj \
-  --role="roles/iam.workloadIdentityUser" \
-  --member="serviceAccount:vectant-proj.svc.id.goog[cert-manager/cert-manager]"
-
-kubectl -n cert-manager annotate serviceaccount cert-manager \
-  iam.gke.io/gcp-service-account=synthi-cert-manager-dns01@vectant-proj.iam.gserviceaccount.com \
-  --overwrite
-```
-
-After the Workload Identity binding is in place, `k8s/preview-certificate.yaml`
-creates the `preview-wildcard-tls` secret used by `k8s/ingress.yaml`.
 
 ### Configure Registry
 
@@ -257,58 +188,7 @@ gcloud builds triggers create github \
   --project=overview-synti
 ```
 
-For the current beta production environment, use one of these paths instead of
-running `kubectl apply -k k8s/` directly:
-
-```bash
-# Local operator deploy from the current checkout.
-scripts/deploy-prod.sh
-
-# Push the current commit to main first, then deploy the same local snapshot.
-scripts/deploy-prod.sh --push
-
-# Use an explicit immutable image tag.
-scripts/deploy-prod.sh --tag prod-20260611-a1b2c3d4
-```
-
-`scripts/deploy-prod.sh` submits `cloudbuild.yaml` to Cloud Build with these
-production defaults:
-
-| Setting | Value |
-|---------|-------|
-| Project | `vectant-proj` |
-| Registry region | `europe-west10` |
-| Registry | `europe-west10-docker.pkg.dev/vectant-proj/synthi` |
-| Cluster | `synthi-beta-cluster` |
-| Cluster location | `europe-west10-a` |
-| Deploy branch | `main` |
-
-The script refuses dirty local deploys by default because Cloud Build uploads
-the local checkout snapshot. Use `--allow-dirty` only when you intentionally
-want to deploy uncommitted local files.
-
-The repo also includes `.github/workflows/deploy-prod.yml`. It submits the same
-Cloud Build pipeline on every push to `main`, and can also be run
-manually from GitHub Actions. Configure these repository secrets before using it:
-
-| Secret | Purpose |
-|--------|---------|
-| `GCP_WORKLOAD_IDENTITY_PROVIDER` | GitHub OIDC provider resource name |
-| `GCP_DEPLOY_SERVICE_ACCOUNT` | Service account email allowed to submit Cloud Builds |
-
-The GitHub deploy service account only needs to submit Cloud Builds. The Cloud
-Build service account still performs the image pushes and GKE rollout, so it
-must keep the Artifact Registry and GKE permissions listed above.
-
-Production deploys render Kustomize with the immutable image tag before applying
-manifests. This prevents the live cluster from briefly rolling Deployments to
-the placeholder `build-tag-required` image.
-
 ### Deploy
-
-Use this section for first-time cluster bootstrap or manual debugging. For
-repeat production rollouts, prefer `scripts/deploy-prod.sh` or the GitHub
-Actions workflow above.
 
 ```bash
 # Apply everything in dependency order
@@ -359,14 +239,6 @@ Static worker replicas are kept at `0`. The collab server creates a one-replica 
 
 ### Runtime Filesystem Storage
 Runtime pods and the collab server both mount `/data/repos`, so `collab-data-pvc` must use ReadWriteMany storage when pods can schedule on different node pools. The production manifest defaults to GKE Filestore CSI `enterprise-multishare-rwx`; override the StorageClass if your cluster uses another RWX Filestore or NFS class.
-
-Runtime pod cleanup deletes the Kubernetes Deployment/Pod, not the workspace
-filesystem. In production `REPO_CACHE_DELETE_ON_EVICT=false` makes collab-server
-LRU eviction memory-only, so `/data/repos/<workspace>/<filesystem-user>` remains
-on the PVC. Terminals also store generic CLI/package-manager state under
-`/data/repos/<workspace>/<filesystem-user>/.synthi/runtime`, which keeps npm
-global installs, language caches, and CLI login state across idle teardown and
-runtime recreation without placing hidden auth files directly in the user repo.
 
 ### WebSocket Health Checks
 For GKE Ingress, timeout settings alone are not enough. Each public WebSocket backend also needs a valid HTTP health target. In this deployment:

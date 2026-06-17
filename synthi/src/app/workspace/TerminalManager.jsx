@@ -12,7 +12,6 @@ const TerminalPane = dynamic(() => import('./TerminalPane.jsx'), { ssr: false })
 
 /** localStorage key for remembering the user's preferred default shell */
 const DEFAULT_SHELL_KEY = 'synthi-default-shell';
-const TERMINAL_MANAGER_STATE_PREFIX = 'synthi-terminal-manager';
 
 function getStoredDefaultShell() {
   try { return localStorage.getItem(DEFAULT_SHELL_KEY) || null; } catch (_) { return null; }
@@ -21,94 +20,15 @@ function setStoredDefaultShell(shellKey) {
   try { if (shellKey) localStorage.setItem(DEFAULT_SHELL_KEY, shellKey); else localStorage.removeItem(DEFAULT_SHELL_KEY); } catch (_) {}
 }
 
-function defaultTerminalEntry(shellType = null) {
-  return {
-    id: 'term-1',
-    label: getShellMeta(shellType)?.label || 'Terminal',
-    split: false,
-    shellType,
-  };
-}
-
-function terminalManagerStorageKey(workspaceSlug) {
-  return `${TERMINAL_MANAGER_STATE_PREFIX}:${workspaceSlug || 'workspace'}`;
-}
-
-function normalizeStoredTerminal(entry, index, defaultShellPref) {
-  if (!entry || typeof entry !== 'object') return null;
-  const shellType = typeof entry.shellType === 'string' && entry.shellType ? entry.shellType : null;
-  const meta = shellType ? getShellMeta(shellType) : null;
-  return {
-    id: typeof entry.id === 'string' && entry.id ? entry.id : `term-${index + 1}`,
-    label: typeof entry.label === 'string' && entry.label ? entry.label : meta?.label || getShellMeta(defaultShellPref)?.label || 'Terminal',
-    split: Boolean(entry.split),
-    shellType,
-    fixedSessionId: typeof entry.fixedSessionId === 'string' && entry.fixedSessionId ? entry.fixedSessionId : undefined,
-    isAi: Boolean(entry.isAi),
-  };
-}
-
-function readStoredTerminalManagerState(workspaceSlug, defaultShellPref) {
-  const fallback = { terminals: [defaultTerminalEntry(defaultShellPref)], activeId: 'term-1' };
-  try {
-    const raw = localStorage.getItem(terminalManagerStorageKey(workspaceSlug));
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw);
-    const terminals = Array.isArray(parsed?.terminals)
-      ? parsed.terminals
-          .map((entry, index) => normalizeStoredTerminal(entry, index, defaultShellPref))
-          .filter(Boolean)
-      : [];
-    if (!terminals.length) return fallback;
-    const activeId = terminals.some((terminal) => terminal.id === parsed?.activeId)
-      ? parsed.activeId
-      : terminals[0].id;
-    return { terminals, activeId };
-  } catch (_) {
-    return fallback;
-  }
-}
-
-function writeStoredTerminalManagerState(workspaceSlug, state) {
-  try {
-    localStorage.setItem(terminalManagerStorageKey(workspaceSlug), JSON.stringify({
-      activeId: state.activeId,
-      terminals: state.terminals.map((terminal) => ({
-        id: terminal.id,
-        label: terminal.label,
-        split: Boolean(terminal.split),
-        shellType: terminal.shellType || null,
-        fixedSessionId: terminal.fixedSessionId || undefined,
-        isAi: Boolean(terminal.isAi),
-      })),
-    }));
-  } catch (_) {}
-}
-
 const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, workspaceSlug = '', workspaceName = '' }) {
   const [defaultShellPref, setDefaultShellPref] = useState(() => getStoredDefaultShell());
-  const [terminals, setTerminals] = useState(() => readStoredTerminalManagerState(workspaceSlug, getStoredDefaultShell()).terminals);
-  const [activeId, setActiveId] = useState(() => readStoredTerminalManagerState(workspaceSlug, getStoredDefaultShell()).activeId);
+  const [terminals, setTerminals] = useState([{ id: 'term-1', label: getShellMeta(getStoredDefaultShell())?.label || 'Terminal', split: false, shellType: getStoredDefaultShell() }]);
+  const [activeId, setActiveId] = useState('term-1');
   const [editingTabId, setEditingTabId] = useState(null);
   const [editingName, setEditingName] = useState('');
   const dragRef = useRef(null);
   const dispatch = useDispatch();
   const fsRefreshTimer = useRef(null);
-  const defaultShellPrefRef = useRef(defaultShellPref);
-
-  useEffect(() => {
-    defaultShellPrefRef.current = defaultShellPref;
-  }, [defaultShellPref]);
-
-  useEffect(() => {
-    const restored = readStoredTerminalManagerState(workspaceSlug, defaultShellPrefRef.current);
-    setTerminals(restored.terminals);
-    setActiveId(restored.activeId);
-  }, [workspaceSlug]);
-
-  useEffect(() => {
-    writeStoredTerminalManagerState(workspaceSlug, { terminals, activeId });
-  }, [workspaceSlug, terminals, activeId]);
 
   // ── Debounced file tree refresh on filesystem changes ────────────────
   const handleFsChange = useCallback(() => {
@@ -179,10 +99,10 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
     // Ensure at least one terminal exists
     if (terminals.length === 0) {
       const effectiveShell = defaultShellPref;
-      setTerminals([defaultTerminalEntry(effectiveShell)]);
+      setTerminals([{ id: 'term-1', label: getShellMeta(effectiveShell)?.label || 'Terminal', split: false, shellType: effectiveShell }]);
       setActiveId('term-1');
     }
-  }, [visible, terminals.length, defaultShellPref]);
+  }, [visible, terminals.length]);
 
   const addTerminal = (shellType = null) => {
     const effectiveShell = shellType || defaultShellPref;
@@ -468,13 +388,13 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
                 {/* TerminalPane is memo-frozen + its WS init effect runs once.
                     Wait for a real workspaceName before mounting so the PTY
                     prompt is correct on first frame and never shows the slug. */}
-                {workspaceSlug ? (
-                  <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} workspaceName={workspaceName || workspaceSlug} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} shellType={t.shellType || null} />
+                {workspaceName ? (
+                  <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} workspaceName={workspaceName} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} shellType={t.shellType || null} />
                 ) : (
                   <div className="h-full w-full" style={{ background: 'var(--bg-app)' }} />
                 )}
-                {t.split && workspaceSlug && (
-                  <TerminalPane key={`${t.id}-split`} terminalId={t.id} paneSide="split" workspaceSlug={workspaceSlug} workspaceName={workspaceName || workspaceSlug} onFsChange={handleFsChange} shellType={t.shellType || null} />
+                {t.split && workspaceName && (
+                  <TerminalPane key={`${t.id}-split`} terminalId={t.id} paneSide="split" workspaceSlug={workspaceSlug} workspaceName={workspaceName} onFsChange={handleFsChange} shellType={t.shellType || null} />
                 )}
               </div>
             </div>

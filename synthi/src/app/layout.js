@@ -28,50 +28,9 @@ const inter = Inter({
   weight: ["400", "500", "600", "700"],
 });
 
-function resolveMetadataBase() {
-  const raw =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.SYNTHI_PUBLIC_APP_URL ||
-    process.env.NEXTAUTH_URL ||
-    "https://beta.vectant.dev";
-
-  try {
-    return new URL(raw.startsWith("http") ? raw : `https://${raw}`);
-  } catch {
-    return new URL("https://beta.vectant.dev");
-  }
-}
-
 export const metadata = {
-  metadataBase: resolveMetadataBase(),
   title: "Vectant ADE",
   description: "The intelligent cloud IDE powered by Vectant ADE",
-  icons: {
-    icon: [
-      { url: "/vectant-dark-theme.png", type: "image/png", sizes: "1043x239" },
-      { url: "/vectant/the_V.png", type: "image/png" },
-    ],
-    shortcut: "/vectant-dark-theme.png",
-    apple: "/vectant-dark-theme.png",
-  },
-  openGraph: {
-    title: "Vectant ADE",
-    description: "The intelligent cloud IDE powered by Vectant ADE",
-    images: [
-      {
-        url: "/vectant-dark-theme.png",
-        width: 1043,
-        height: 239,
-        alt: "Vectant ADE",
-      },
-    ],
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Vectant ADE",
-    description: "The intelligent cloud IDE powered by Vectant ADE",
-    images: ["/vectant-dark-theme.png"],
-  },
 };
 
 export default function RootLayout({ children }) {

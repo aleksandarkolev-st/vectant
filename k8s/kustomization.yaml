@@ -47,7 +47,6 @@ resources:
   - worker.yaml
 
   # 5. Production hardening
-  - preview-certificate.yaml
   - ingress.yaml
   - network-policies.yaml
   - pod-disruption-budgets.yaml

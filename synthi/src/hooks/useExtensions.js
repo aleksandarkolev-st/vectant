@@ -146,62 +146,6 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
   const [vscodeServerState, setVscodeServerState] = useState('disconnected');
   const [vscodeServerWorkspaceDir, setVscodeServerWorkspaceDir] = useState(null);
 
-  const reconcileExplicitServerExtensions = useCallback(async (source = 'server-reconcile') => {
-    const bridge = systemRef.current?.bridge;
-    const proxy = bridge?.vscodeServerProxy;
-    if (!bridge || !proxy?.isReady?.()) return 0;
-
-    const [detailed, explicitInstalled] = await Promise.all([
-      proxy.listExtensionsDetailed().catch((err) => {
-        console.warn(`[useExtensions] ${source}: failed to list server extensions:`, err?.message || err);
-        return [];
-      }),
-      dbGetAll().catch((err) => {
-        console.warn(`[useExtensions] ${source}: failed to read persisted extensions:`, err?.message || err);
-        return [];
-      }),
-    ]);
-
-    const explicitInstallIds = new Set(
-      explicitInstalled
-        .filter((ext) => ext?.enabled !== false && typeof ext?.id === 'string')
-        .map((ext) => ext.id)
-    );
-    if (explicitInstallIds.size === 0) return 0;
-
-    const currentExtensions = store.getState()?.extensions?.extensions || {};
-    let reconciled = 0;
-    for (const { id: extId, manifest } of (detailed || [])) {
-      if (!manifest || !explicitInstallIds.has(extId)) continue;
-
-      stripUnresolvedNLS(manifest);
-
-      if (!currentExtensions[extId]) {
-        dispatch(registerExtRedux({ id: extId, manifest }));
-      }
-      if (manifest.contributes) {
-        dispatch(parseContributions({ extensionId: extId, contributes: manifest.contributes }));
-      }
-
-      bridge.vscodeServerExtensions.add(extId);
-      const info = bridge.extensions.get(extId);
-      if (info) {
-        info.isActive = true;
-        info.remote = true;
-        info.manifest = manifest;
-        info.failed = false;
-        info.failedReason = null;
-      }
-      dispatch(setExtensionState({ id: extId, extensionState: 'active', remote: true }));
-      reconciled++;
-    }
-
-    if (reconciled > 0) {
-      console.log(`[useExtensions] ${source}: reconciled ${reconciled} explicit server extension(s)`);
-    }
-    return reconciled;
-  }, [dispatch, store]);
-
   const reportDeviceCode = useCallback((deviceCode, source = 'unknown') => {
     if (!deviceCode) return;
 
@@ -699,16 +643,6 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
     const client = getCompilerClient();
     const desiredSlug = client?.slug || workspaceId || 'default';
-    const withTimeout = (promise, timeoutMs, label) => {
-      let timer;
-      const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
-      });
-      return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-    };
-
-    const VSCODE_MANAGER_CONNECT_TIMEOUT_MS = 30000;
-    const VSCODE_SERVER_START_TIMEOUT_MS = 120000;
 
     if (vscodeServerConnectedRef.current && vscodeServerSlugRef.current === desiredSlug) {
       return;
@@ -720,7 +654,6 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     try {
       if (!client?.pc || client.pc.connectionState !== 'connected') {
         console.warn('[useExtensions] connectVSCodeServer: WebRTC not connected yet');
-        setVscodeServerState('disconnected');
         return;
       }
 
@@ -731,22 +664,14 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
         console.log('[useExtensions] connectVSCodeServer: DataChannel obtained, label:', channel.label);
 
-        await withTimeout(
-          systemRef.current.bridge.connectVSCodeServer(channel),
-          VSCODE_MANAGER_CONNECT_TIMEOUT_MS,
-          'VS Code Server manager connection'
-        );
+        await systemRef.current.bridge.connectVSCodeServer(channel);
       } else {
         console.log('[useExtensions] connectVSCodeServer: switching server workspace to slug:', desiredSlug);
       }
 
       // Start the VS Code Server for this workspace
       console.log('[useExtensions] connectVSCodeServer: starting server for slug:', desiredSlug);
-      const serverInfo = await withTimeout(
-        systemRef.current.bridge.startVSCodeServer(desiredSlug),
-        VSCODE_SERVER_START_TIMEOUT_MS,
-        'VS Code Server startup'
-      );
+      const serverInfo = await systemRef.current.bridge.startVSCodeServer(desiredSlug);
       console.log('[useExtensions] ✓ VS Code Server started:', serverInfo);
       // Track the workspace directory from the server response
       if (serverInfo?.workspaceDir) {
@@ -766,22 +691,10 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         const proxy = systemRef.current?.bridge?.vscodeServerProxy;
         if (proxy) {
           const detailed = await proxy.listExtensionsDetailed();
-          const explicitInstalled = await dbGetAll().catch(() => []);
-          const explicitInstallIds = new Set(
-            explicitInstalled
-              .filter((ext) => ext?.enabled !== false && typeof ext?.id === 'string')
-              .map((ext) => ext.id)
-          );
           const currentExtensions = store.getState()?.extensions?.extensions || {};
           let hydrated = 0;
           for (const { id: extId, manifest } of (detailed || [])) {
             if (!manifest) continue;
-            if (!explicitInstallIds.has(extId)) {
-              // Marketplace installs can pull dependency extensions onto the
-              // server. Keep those available to the remote host, but do not
-              // promote them into Synthi's user-facing Installed list.
-              continue;
-            }
 
             // Best-effort NLS cleanup for any remaining %key% placeholders
             // (server-side resolution handles most, this catches stragglers)
@@ -887,43 +800,24 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     const bridge = systemRef.current.bridge;
     let found = 0;
     for (const [id, info] of bridge.extensions) {
-      const reduxExt = store.getState()?.extensions?.extensions?.[id];
-      if (info.isActive) {
-        if (reduxExt && reduxExt.state !== 'active') {
-          dispatch(setExtensionState({ id, extensionState: 'active', remote: !!info.remote }));
-        }
-        continue;
-      }
-
+      if (info.isActive) continue;
       const isNodeOnly = info.manifest?.main && !info.manifest?.browser;
-      const isHybridNode = info.manifest?.main && !!info.manifest?._nodeCode;
       const isTooLarge = info.code?.length > 500_000 && info.manifest?.main;
-      if (!isNodeOnly && !isHybridNode && !isTooLarge) continue;
+      if (!isNodeOnly && !isTooLarge) continue;
 
-      // Already installed on server. This can happen when the server event
-      // arrives before IndexedDB restore registers the Redux row; reconcile
-      // instead of leaving the UI in pending-remote forever.
-      if (bridge.vscodeServerExtensions.has(id)) {
-        info.isActive = true;
-        info.remote = true;
-        dispatch(setExtensionState({ id, extensionState: 'active', remote: true }));
-        if (info.manifest) {
-          bridge._emitSyntheticWebviewEvents(id, info.manifest);
-        }
-        continue;
-      }
+      // Already installed on server?
+      if (bridge.vscodeServerExtensions.has(id)) continue;
 
       found++;
       console.log(`[useExtensions] _installPendingExtensions: installing ${id} on VS Code Server`);
       try {
         dispatch(setExtensionState({ id, extensionState: 'activating' }));
 
-        const result = await bridge._installOnVSCodeServerFromInfo(info);
+        // Try marketplace install first (faster, no upload needed)
+        const result = await bridge.installMarketplaceExtensionOnServer(id);
         if (result.success) {
           dispatch(setExtensionState({ id, extensionState: 'active', remote: true }));
-          info.isActive = true;
-          info.remote = true;
-          console.log(`[useExtensions] ✓ ${id} installed on VS Code Server`);
+          console.log(`[useExtensions] ✓ ${id} installed on VS Code Server via marketplace`);
           // Emit synthetic webview events from the manifest so that
           // WebviewPanelEmbed mounts immediately with a placeholder.
           // When the preload bridge sends real HTML, it updates in-place.
@@ -932,127 +826,17 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
             bridge._emitSyntheticWebviewEvents(id, extInfo.manifest);
           }
         } else {
-          const reason = result.error || 'VS Code Server install failed';
-          if (isRemoteHostNotReadyError(reason)) {
-            queueRemoteExtensionInstall(id, reason);
-          } else {
-            dispatch(setExtensionState({ id, extensionState: 'crashed', reason }));
-          }
+          dispatch(setExtensionState({ id, extensionState: 'crashed', reason: result.error }));
         }
       } catch (err) {
         console.warn(`[useExtensions] Failed to install ${id} on VS Code Server:`, err.message);
-        if (isRemoteHostNotReadyError(err)) {
-          queueRemoteExtensionInstall(id, err.message);
-        } else {
-          dispatch(setExtensionState({ id, extensionState: 'crashed', reason: err.message }));
-        }
+        dispatch(setExtensionState({ id, extensionState: 'pending-remote' }));
       }
     }
     if (found === 0) {
       console.log('[useExtensions] _installPendingExtensionsOnServer: no pending extensions found');
     }
-  }, [dispatch, store]);
-
-  const isRemoteHostNotReadyError = useCallback((errOrMessage) => {
-    const msg = String(errOrMessage?.message || errOrMessage || '').toLowerCase();
-    return msg.includes('vs code server not connected')
-      || msg.includes('vs code server manager not connected')
-      || msg.includes('vs code server datachannel not open')
-      || msg.includes('webrtc not connected')
-      || msg.includes('datachannel')
-      || msg.includes('channel closed')
-      || msg.includes('disconnected')
-      || msg.includes('transport')
-      || msg.includes('timed out');
-  }, []);
-
-  const queueRemoteExtensionInstall = useCallback((id, reason = 'Waiting for VS Code Server') => {
-    console.log(`[useExtensions] ${id}: queued for VS Code Server (${reason})`);
-    dispatch(setExtensionState({ id, extensionState: 'activating', remote: true }));
-    connectVSCodeServer().catch((err) => {
-      console.warn(`[useExtensions] ${id}: queued remote connect failed:`, err?.message || err);
-    });
-  }, [connectVSCodeServer, dispatch]);
-
-  useEffect(() => {
-    if (vscodeServerState !== 'running') return;
-    let cancelled = false;
-    let attempts = 0;
-    const MAX_ATTEMPTS = 10;
-
-    const retryPendingRemote = async () => {
-      if (cancelled) return;
-      attempts += 1;
-      try {
-        await _installPendingExtensionsOnServer();
-        await reconcileExplicitServerExtensions('pending-retry');
-      } catch (err) {
-        console.warn('[useExtensions] pending remote install retry failed:', err?.message || err);
-      }
-
-      const pending = Object.entries(store.getState()?.extensions?.extensions || {})
-        .filter(([, ext]) => ext?.state === 'pending-remote')
-        .map(([id]) => id);
-
-      if (cancelled || pending.length === 0) return;
-      if (attempts >= MAX_ATTEMPTS) {
-        for (const id of pending) {
-          dispatch(setExtensionState({
-            id,
-            extensionState: 'crashed',
-            reason: 'VS Code Server is running but did not activate this extension after retrying.',
-            remote: true,
-          }));
-        }
-        return;
-      }
-
-      setTimeout(retryPendingRemote, 3000);
-    };
-
-    const timer = setTimeout(retryPendingRemote, 250);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [vscodeServerState, _installPendingExtensionsOnServer, reconcileExplicitServerExtensions, dispatch, store]);
-
-  // Keep remote installs moving while the VS Code Server reconnects.
-  useEffect(() => {
-    const hasRemoteWork = extensions.some((ext) =>
-      ext?.remote && (ext.state === 'pending-remote' || ext.state === 'activating')
-    );
-    if (!hasRemoteWork) return;
-
-    let cancelled = false;
-    let timer = null;
-    let attempts = 0;
-    const MAX_ATTEMPTS = 24;
-
-    const reconcileRemoteWork = async () => {
-      if (cancelled) return;
-      attempts += 1;
-      try {
-        await reconcileExplicitServerExtensions('remote-state-retry');
-        await _installPendingExtensionsOnServer();
-      } catch (err) {
-        console.warn('[useExtensions] remote state retry failed:', err?.message || err);
-      }
-
-      const stillPending = Object.values(store.getState()?.extensions?.extensions || {}).some((ext) =>
-        ext?.remote && (ext.state === 'pending-remote' || ext.state === 'activating')
-      );
-      if (!cancelled && stillPending && attempts < MAX_ATTEMPTS) {
-        timer = setTimeout(reconcileRemoteWork, 3000);
-      }
-    };
-
-    timer = setTimeout(reconcileRemoteWork, 750);
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [extensions, _installPendingExtensionsOnServer, reconcileExplicitServerExtensions, store]);
+  }, [dispatch]);
 
   // ─── Workspace switch handling for VS Code Server ─────────────
   // This hook can stay mounted while slug changes. Ensure the remote
@@ -1093,14 +877,11 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       for (const ext of saved) {
         if (!ext.enabled) continue;
         try {
-          const { valid, manifest: parsedManifest, errors: parseErrors } = parseManifest(ext.manifest);
+          const { valid, manifest, errors: parseErrors } = parseManifest(ext.manifest);
           if (!valid) {
             console.warn(`[useExtensions] Skipping invalid persisted extension ${ext.id}:`, parseErrors);
             continue;
           }
-          const manifest = typeof structuredClone === 'function'
-            ? structuredClone(parsedManifest)
-            : JSON.parse(JSON.stringify(parsedManifest));
 
           // Best-effort NLS cleanup for cached manifests that were saved
           // before NLS resolution was implemented. Strips %key% wrappers and
@@ -1110,17 +891,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
           const hadNlsPlaceholders = JSON.stringify(manifest).includes('"%');
           stripUnresolvedNLS(manifest);
           if (hadNlsPlaceholders) {
-            try {
-              await dbSave({
-                id: ext.id,
-                manifest,
-                code: ext.code,
-                nodeCode: ext.nodeCode || null,
-                installSource: ext.installSource,
-                vsixBase64: ext.vsixBase64,
-                enabled: true,
-              });
-            } catch (_) {}
+            try { await dbSave({ id: ext.id, manifest, code: ext.code, nodeCode: ext.nodeCode || null, enabled: true }); } catch (_) {}
           }
 
           // Register into Redux
@@ -1142,36 +913,28 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
           // Also skip extensions whose browser bundle is too large for the web
           // worker — they'll hang during eval. Route to VS Code Server instead.
           const isNodeOnly = manifest.main && !manifest.browser;
-          const isHybridNode = manifest.main && !!ext.nodeCode;
           const isTooLargeForWorker = ext.code && ext.code.length > 500_000 && (ext.nodeCode || manifest.main);
 
-          if (isNodeOnly || isHybridNode || isTooLargeForWorker) {
+          if (isNodeOnly || isTooLargeForWorker) {
             if (isTooLargeForWorker && !isNodeOnly) {
               console.log(`[useExtensions] ${ext.id}: browser bundle too large (${ext.code.length} chars), routing to VS Code Server`);
-            } else if (isHybridNode && !isNodeOnly) {
-              console.log(`[useExtensions] ${ext.id}: hybrid Node bundle, routing to VS Code Server`);
             }
-            // Stash nodeCode on a fresh object so parsed/frozen manifests are
-            // never mutated during IndexedDB restore.
-            const remoteManifest = ext.nodeCode
-              ? { ...manifest, _nodeCode: ext.nodeCode }
-              : manifest;
+            // Stash nodeCode so MainThreadBridge can send it to the remote host
+            if (ext.nodeCode) manifest._nodeCode = ext.nodeCode;
 
             // Register in MainThreadBridge (stores info, but won't load into worker)
             systemRef.current.bridge.extensions.set(ext.id, {
               id: ext.id,
-              name: remoteManifest.name,
-              displayName: remoteManifest.displayName || remoteManifest.name,
-              version: remoteManifest.version,
+              name: manifest.name,
+              displayName: manifest.displayName || manifest.name,
+              version: manifest.version,
               isActive: false,
               failed: false,
               failedReason: null,
-              activationEvents: remoteManifest.activationEvents || [],
+              activationEvents: manifest.activationEvents || [],
               violationCount: 0,
-              manifest: remoteManifest,
+              manifest,
               code: ext.code,
-              installSource: ext.installSource || (ext.vsixBase64 ? 'vsix' : 'marketplace'),
-              vsixBase64: ext.vsixBase64 || null,
               remote: false,
             });
             dispatch(setExtensionState({ id: ext.id, extensionState: 'pending-remote', remote: true }));
@@ -1236,8 +999,6 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         console.log('[useExtensions] VS Code Server ready, triggering post-restore rehydration');
         try {
           await systemRef.current.bridge._rehydrateNodeOnlyExtensions();
-          await reconcileExplicitServerExtensions('post-restore');
-          await _installPendingExtensionsOnServer();
         } catch (err) {
           console.warn('[useExtensions] Post-restore rehydration failed:', err.message);
         }
@@ -1245,28 +1006,11 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         // Server may still be starting — retry after a short delay
         setTimeout(() => tryPostRestoreRehydration(attempt + 1), 2000);
       } else {
-        console.warn('[useExtensions] Post-restore: VS Code Server never became ready, marking pending remote extensions as failed');
-        const pending = Object.entries(store.getState()?.extensions?.extensions || {})
-          .filter(([, ext]) => ext?.state === 'pending-remote')
-          .map(([id]) => id);
-        for (const id of pending) {
-          dispatch(setExtensionState({
-            id,
-            extensionState: 'crashed',
-            reason: 'VS Code Server did not become ready. Check the compiler/WebRTC connection and retry enabling the extension.',
-            remote: true,
-          }));
-        }
+        console.warn('[useExtensions] Post-restore: VS Code Server never became ready, extensions remain pending');
       }
     };
     tryPostRestoreRehydration();
-  }, [
-    dispatch,
-    _installPendingExtensionsOnServer,
-    isRemoteHostNotReadyError,
-    queueRemoteExtensionInstall,
-    reconcileExplicitServerExtensions,
-  ]);
+  }, [dispatch]);
 
   // ─── Auto-init on mount ──────────────────────────────────────
   useEffect(() => {
@@ -1458,7 +1202,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
    * Install an extension from code + manifest.
    * Persists to IndexedDB and activates immediately.
    */
-  const install = useCallback(async (extensionId, manifest, code, options = {}) => {
+  const install = useCallback(async (extensionId, manifest, code) => {
     const system = systemRef.current;
     if (!system) throw new Error('Extension host not ready');
 
@@ -1474,11 +1218,9 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
 
     // Extract nodeCode for the remote extension host (stashed on manifest by ExtensionSidebar)
     const nodeCode = parsed._nodeCode || null;
-    const installSource = options.source || parsed._installSource || 'manual';
-    const vsixBase64 = options.vsixBase64 || parsed._vsixBase64 || null;
 
     // Persist to IndexedDB (include nodeCode for remote host)
-    await dbSave({ id, manifest: parsed, code, nodeCode, installSource, vsixBase64, enabled: true });
+    await dbSave({ id, manifest: parsed, code, nodeCode, enabled: true });
 
     // Register in Redux
     dispatch(registerExtRedux({ id, manifest: parsed }));
@@ -1500,13 +1242,10 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
     // Also skip extensions whose browser bundle is too large for the web
     // worker (>500KB) — they hang during eval.
     const isNodeOnly = parsed.main && !parsed.browser;
-    const isHybridNode = parsed.main && !!nodeCode;
     const isTooLargeForWorker = code && code.length > 500_000 && (nodeCode || parsed.main);
-    if (isNodeOnly || isHybridNode || isTooLargeForWorker) {
+    if (isNodeOnly || isTooLargeForWorker) {
       if (isTooLargeForWorker && !isNodeOnly) {
         console.log(`[useExtensions] ${id}: browser bundle too large (${code.length} chars), routing to VS Code Server`);
-      } else if (isHybridNode && !isNodeOnly) {
-        console.log(`[useExtensions] ${id}: hybrid Node bundle, routing to VS Code Server`);
       }
       // Store in bridge so _rehydrateNodeOnlyExtensions can find it
       system.bridge.extensions.set(id, {
@@ -1521,8 +1260,6 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         violationCount: 0,
         manifest: parsed,
         code,
-        installSource,
-        vsixBase64,
         remote: false,
       });
 
@@ -1532,13 +1269,8 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       if (hostTarget === 'vscode-server') {
         dispatch(setExtensionState({ id, extensionState: 'activating', remote: true }));
         try {
-          const info = system.bridge.extensions.get(id);
-          const result = await system.bridge._installOnVSCodeServerFromInfo(info);
+          const result = await system.bridge.installMarketplaceExtensionOnServer(id);
           if (result.success) {
-            if (info) {
-              info.isActive = true;
-              info.remote = true;
-            }
             dispatch(setExtensionState({ id, extensionState: 'active', remote: true }));
             console.log(`[useExtensions] ✓ ${id} installed on VS Code Server`);
             // Emit synthetic webview events from the manifest so that
@@ -1547,31 +1279,19 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
             system.bridge._emitSyntheticWebviewEvents(id, parsed);
             return { success: true, vscodeServer: true };
           }
-          const reason = result.error || 'VS Code Server install failed';
-          if (isRemoteHostNotReadyError(reason)) {
-            queueRemoteExtensionInstall(id, reason);
-            return { success: true, pendingRemote: true, vscodeServer: true };
-          }
-          dispatch(setExtensionState({ id, extensionState: 'crashed', reason }));
-          return { success: false, error: reason, vscodeServer: true };
         } catch (serverErr) {
-          console.warn(`[useExtensions] VS Code Server install failed for ${id}:`, serverErr.message);
-          if (isRemoteHostNotReadyError(serverErr)) {
-            queueRemoteExtensionInstall(id, serverErr.message);
-            return { success: true, pendingRemote: true, vscodeServer: true };
-          }
-          dispatch(setExtensionState({ id, extensionState: 'crashed', reason: serverErr.message }));
-          return { success: false, error: serverErr.message, vscodeServer: true };
+          console.warn(`[useExtensions] VS Code Server install failed for ${id}, falling back:`, serverErr.message);
         }
       }
 
       // ── Fallback: pending for VS Code Server ──
-      queueRemoteExtensionInstall(id, 'remote host not ready');
+      dispatch(setExtensionState({ id, extensionState: 'pending-remote', remote: true }));
+      console.log(`[useExtensions] ${id}: Node-only, waiting for VS Code Server`);
 
       // If VS Code Server is already available, install now
       if (system.bridge.vscodeServerProxy?.isReady?.()) {
         try {
-          await _installPendingExtensionsOnServer();
+          await system.bridge._rehydrateNodeOnlyExtensions();
         } catch (_) {}
       }
       return { success: true, pendingRemote: true };
@@ -1592,7 +1312,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         msg.includes('sctp') || msg.includes('transport');
       if (isTransport) {
         console.warn(`[useExtensions] registerExtension transport error for ${id}:`, loadErr.message);
-        queueRemoteExtensionInstall(id, loadErr.message);
+        dispatch(setExtensionState({ id, extensionState: 'pending-remote' }));
         return { success: true, pendingRemote: true };
       }
       console.warn(`[useExtensions] registerExtension failed for ${id}:`, loadErr.message);
@@ -1627,12 +1347,7 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
       }));
       throw err;
     }
-  }, [
-    dispatch,
-    _installPendingExtensionsOnServer,
-    isRemoteHostNotReadyError,
-    queueRemoteExtensionInstall,
-  ]);
+  }, [dispatch]);
 
   /**
    * Activate a registered (but not yet active) extension.
@@ -1700,18 +1415,14 @@ export function useExtensions({ editor = null, workspaceId = 'default' } = {}) {
         const isTransport = msg.includes('datachannel') || msg.includes('channel closed') ||
           msg.includes('disconnected') || msg.includes('failure to send') ||
           msg.includes('sctp') || msg.includes('transport');
-        if (isTransport) {
-          queueRemoteExtensionInstall(extensionId, err.message);
-        } else {
-          dispatch(setExtensionState({
-            id: extensionId,
-            extensionState: 'crashed',
-            reason: err.message,
-          }));
-        }
+        dispatch(setExtensionState({
+          id: extensionId,
+          extensionState: isTransport ? 'pending-remote' : 'crashed',
+          reason: isTransport ? undefined : err.message,
+        }));
       }
     }
-  }, [dispatch, queueRemoteExtensionInstall]);
+  }, [dispatch]);
 
   /**
    * Disable an extension (keeps it installed but deactivated).

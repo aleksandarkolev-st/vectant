@@ -109,61 +109,6 @@ describe("browser workflow bridge", () => {
     }));
   });
 
-  it("opens external urls in the hosted browser without requiring origin consent", async () => {
-    const isAttached = vi.spyOn(browserPlaywrightAdapter, "isAttached").mockReturnValue(true);
-    const openExternal = vi.spyOn(browserPlaywrightAdapter, "openExternal").mockResolvedValue({
-      tab_id: "external-auth-tab",
-      navigation_started: true,
-    });
-    const authUrl = "https://auth.example.test/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&state=secret-state";
-    browserBroker.setRuntimeAttachment({
-      kind: "hosted",
-      workspace_id: "workspace-a",
-      runtime_id: "runtime-a",
-      workspace_url: "https://workspace.example.test/workspace/demo",
-      adapter: "hosted-playwright-cdp",
-    });
-
-    bridge = startBrowserWorkflowBridge({ port: 0 });
-    await bridge.ready;
-
-    const res = await fetch(`${baseUrl(bridge)}/browser-workflows/open-external`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: authUrl }),
-    });
-
-    expect(res.status).toBe(200);
-    const body = await res.json() as {
-      ok: boolean;
-      opened: { tab_id: string; navigation_started: boolean };
-    };
-    expect(body).toEqual({
-      ok: true,
-      opened: {
-        tab_id: "external-auth-tab",
-        navigation_started: true,
-      },
-    });
-    expect(JSON.stringify(body)).not.toContain("secret-state");
-    expect(isAttached).toHaveBeenCalled();
-    expect(openExternal).toHaveBeenCalledWith(authUrl, expect.objectContaining({ timeoutMs: expect.any(Number) }));
-  });
-
-  it("rejects non-http external open urls", async () => {
-    bridge = startBrowserWorkflowBridge({ port: 0 });
-    await bridge.ready;
-
-    const res = await fetch(`${baseUrl(bridge)}/browser-workflows/open-external`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: "file:///etc/passwd" }),
-    });
-
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ ok: false, error: "invalid_url" });
-  });
-
   it("allows workflow lease tools through the local workflow bridge", async () => {
     bridge = startBrowserWorkflowBridge({ port: 0 });
     await bridge.ready;

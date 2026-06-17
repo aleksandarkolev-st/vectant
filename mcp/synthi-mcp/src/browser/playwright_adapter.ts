@@ -42,11 +42,6 @@ export interface BrowserActionResult {
   detail?: Record<string, unknown>;
 }
 
-export interface BrowserExternalOpenResult {
-  tab_id: string;
-  navigation_started: true;
-}
-
 export interface BrowserWaitInput {
   tab_id: string;
   condition: "selector" | "url" | "load" | "networkidle" | "timeout";
@@ -196,20 +191,6 @@ export class BrowserPlaywrightAdapter {
     }
     await page.bringToFront();
     return this.describePage(page);
-  }
-
-  async openExternal(url: string, options: { timeoutMs: number }): Promise<BrowserExternalOpenResult> {
-    const browser = this.requireBrowser();
-    const context = browser.contexts()[0] ?? await browser.newContext();
-    const page = await context.newPage();
-    const tab_id = this.idForPage(page);
-    this.pages.set(tab_id, { page, tab_id });
-    void page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: options.timeoutMs,
-    }).catch(() => undefined);
-    await page.bringToFront().catch(() => undefined);
-    return { tab_id, navigation_started: true };
   }
 
   async openCold(url: string, storageState?: AuthBrowserStorageState): Promise<BrowserTab> {
@@ -769,15 +750,6 @@ export class BrowserPlaywrightAdapter {
     const page = this.pages.get(tab_id)?.page;
     if (!page || page.isClosed()) return { ok: false, error: "tab_not_found" };
     await this.installTeachCapture(page, tab_id);
-    if (this.workflowOverlayEnabled) {
-      const visible = await this.installWorkflowOverlay(page, tab_id);
-      if (visible) {
-        this.workflowOverlayInstalled.add(page);
-      } else {
-        this.workflowOverlayInstalled.delete(page);
-        return { ok: false, error: "workflow_overlay_install_failed" };
-      }
-    }
     return { ok: true };
   }
 

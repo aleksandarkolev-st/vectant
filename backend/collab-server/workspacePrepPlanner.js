@@ -25,9 +25,6 @@ const SKIP_DIRS = new Set([
   '.vscode',
   '.dart_tool',
   '.synthi',
-  '.synthi-backups',
-  '.code_intel',
-  '.code_intel_backups',
 ]);
 
 const EMPTY_FINGERPRINT = crypto
@@ -171,7 +168,9 @@ async function buildNodeTask(directory, manifestTexts) {
     ? (hasPnpmLock ? 'corepack pnpm install --frozen-lockfile' : 'corepack pnpm install')
     : packageManager === 'yarn'
       ? 'corepack yarn install'
-      : 'npm install';
+      : hasPackageLock
+        ? 'npm ci'
+        : 'npm install';
 
   return {
     id: `node:${directory.relPath || '.'}`,

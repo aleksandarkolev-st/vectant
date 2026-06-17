@@ -216,16 +216,7 @@ class SessionManager extends EventEmitter {
       const existingId = this.hostIndex.get(hostId);
       const existing = this.sessions.get(existingId);
       if (existing && existing.status === 'active') {
-        if (existing.slug === slug) {
-          existing.hostName = hostName || existing.hostName || hostId;
-          existing.hostAvatar = hostAvatar || existing.hostAvatar || '';
-          existing.worktreePath = worktreePath || existing.worktreePath || '';
-          existing.defaultPerms = { ...existing.defaultPerms, ...defaultPerms };
-          existing.hostConfirmed = true;
-          this._persistSession(existing);
-          return existing;
-        }
-        throw new Error(`Host ${hostId} already has an active session in workspace ${existing.slug}: ${existingId}`);
+        throw new Error(`Host ${hostId} already has an active session: ${existingId}`);
       }
       // Clean up stale reference
       this._destroySession(existingId);
@@ -648,23 +639,6 @@ class SessionManager extends EventEmitter {
     const sessionId = this.hostIndex.get(hostId);
     if (!sessionId) return null;
     return this.getSession(sessionId);
-  }
-
-  /**
-   * Get the active session for a host with host-only invite fields.
-   * Only use from host-authenticated/requester-scoped routes.
-   */
-  getHostSessionForReconnect(hostId, slug = null) {
-    const sessionId = this.hostIndex.get(hostId);
-    if (!sessionId) return null;
-    const session = this.sessions.get(sessionId);
-    if (!session || session.status !== 'active') return null;
-    if (slug && session.slug !== slug) return null;
-    return {
-      ...this._serializeSession(session),
-      inviteToken: session.inviteToken,
-      tokenExpiresAt: session.tokenExpiresAt,
-    };
   }
 
   /**

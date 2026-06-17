@@ -1,7 +1,6 @@
 import collabSessionService from '@/services/collabSessionService';
-import { resolveCollabHttpUrl } from '@/lib/collab-url';
 
-const COLLAB_SERVER_URL = resolveCollabHttpUrl();
+const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
 
 /**
  * Normalize a file path to forward slashes and strip leading slash.

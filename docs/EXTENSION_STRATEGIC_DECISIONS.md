@@ -4,15 +4,13 @@
 
 This document codifies the hard boundaries of Synthi's extension system. These are not "todo" items - they are explicit decisions to **not** support certain capabilities.
 
-These restrictions apply to the browser-based extension worker unless a section explicitly says otherwise. Node-only extensions that route to the VS Code Server run in a real VS Code Extension Host and follow the server-hosted rules documented in `VSCODE_SERVER_INTEGRATION.md`.
-
 ---
 
 ## ❌ NEVER SUPPORTED
 
 ### 1. Native Node.js Modules
 
-**Decision:** Browser-worker extensions cannot use native Node.js modules or C++ addons. Server-hosted extensions may use the Node capabilities provided by the real VS Code Extension Host, subject to workspace/container policy.
+**Decision:** Extensions cannot use native Node.js modules or C++ addons.
 
 **Rationale:**
 - Native modules cannot run in browser/Web Worker environment
@@ -71,18 +69,17 @@ These restrictions apply to the browser-based extension worker unless a section 
 
 ### 4. Extension Host Processes
 
-**Decision:** Browser-compatible extensions use the single hardened Worker model. Node-only extensions may run in the managed VS Code Server Extension Host.
+**Decision:** No separate extension host processes (single Worker model).
 
 **Rationale:**
 - Browser cannot spawn additional processes
-- SharedArrayBuffer requirements complicate pure-browser process isolation
-- Web extensions stay simpler and safer in one hardened Worker
-- Node-only marketplace/private VSIX extensions need the real VS Code Extension Host instead of a hand-written `vscode` shim
+- SharedArrayBuffer requirements complicate deployment
+- Single Worker model is simpler and sufficient
+- Process isolation is overkill for sandboxed environment
 
 **Tradeoff accepted:**
-- Browser-worker extensions share one Worker, so one bad web extension can affect others
-- Server-hosted extensions are isolated by the managed VS Code Server/container boundary
-- Mitigations remain: quarantine system, automatic restart, crash isolation, and server reconnect/retry state
+- All extensions share one Worker = one bad extension can affect others
+- Mitigated by: quarantine system, automatic restart, crash isolation
 
 ---
 

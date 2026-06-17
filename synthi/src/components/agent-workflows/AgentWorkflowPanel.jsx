@@ -89,20 +89,6 @@ const STEP_ICONS = {
   verified: CheckCircle2,
 };
 
-const OPERATIONAL_BLOCKER_IDS = new Set([
-  'workflow_bridge_error',
-  'preview_not_found',
-  'preview_target_not_found',
-  'preview_discovery_failed',
-  'preview_sidecar_discovery_failed',
-  'preview_open_failed',
-  'preview_snapshot_failed',
-  'workflow_runtime_ensure_unreachable',
-  'workflow_runtime_ensure_failed',
-  'workflow_runtime_unavailable',
-  'workflow_bridge_unreachable',
-]);
-
 function normalizeTone(value, fallback = 'neutral') {
   if (value === 'ok' || value === 'warn' || value === 'danger' || value === 'neutral') {
     return value;
@@ -127,10 +113,6 @@ function isRuntimeAttached(runtime) {
 
 function hasObservedPage(model) {
   return ['ready', 'observing', 'teaching', 'recording'].includes(model.observe?.status) || model.observe?.lastScreenshotAt;
-}
-
-function observeNeedsPreview(model) {
-  return model.observe?.status === 'needsPreview';
 }
 
 function hasRecordedTrace(model) {
@@ -213,7 +195,6 @@ function shouldShowIsolationProfile(model) {
 function buildReadinessRows(model) {
   const runtimeReady = isRuntimeAttached(model.runtime);
   const observed = hasObservedPage(model);
-  const needsPreview = observeNeedsPreview(model);
   const traceReady = hasRecordedTrace(model);
   const compiled = hasCompiledContract(model);
   const scriptReady = hasGeneratedScript(model);
@@ -227,7 +208,7 @@ function buildReadinessRows(model) {
     },
     {
       label: 'Observe',
-      value: observed ? 'Screenshot allowed' : needsPreview ? 'Preview needed' : 'Consent pending',
+      value: observed ? 'Screenshot allowed' : 'Consent pending',
       tone: observed ? 'ok' : 'warn',
     },
     {
@@ -251,7 +232,6 @@ function buildReadinessRows(model) {
 function buildStages(model) {
   const runtimeReady = isRuntimeAttached(model.runtime);
   const observed = hasObservedPage(model);
-  const needsPreview = observeNeedsPreview(model);
   const traceReady = hasRecordedTrace(model);
   const compiled = hasCompiledContract(model);
   const scriptReady = hasGeneratedScript(model);
@@ -274,12 +254,10 @@ function buildStages(model) {
     {
       id: 'observe',
       label: 'Observe',
-      title: needsPreview ? 'Preview target' : 'Screenshot consent',
+      title: 'Screenshot consent',
       detail: observed
         ? model.observe?.detail || 'The current workspace view can be inspected.'
-        : needsPreview
-          ? model.observe?.detail || 'Start or open a workspace preview, then inspect it from the hosted runtime.'
-          : model.observe?.detail || 'Attach first, then request a screenshot from the hosted runtime.',
+        : model.observe?.detail || 'Attach first, then request a screenshot from the hosted runtime.',
       tone: observed ? 'ok' : runtimeReady ? 'warn' : 'neutral',
       action: WORKFLOW_ACTIONS.OBSERVE,
       actionLabel: 'Observe',
@@ -738,8 +716,7 @@ function EmptyTrace() {
 }
 
 function ReviewQueue({ items, blockers }) {
-  const replayBlockers = blockers.filter((item) => !OPERATIONAL_BLOCKER_IDS.has(item?.id));
-  const rows = items.length > 0 ? items : replayBlockers;
+  const rows = items.length > 0 ? items : blockers;
   if (!rows.length) return null;
 
   return (

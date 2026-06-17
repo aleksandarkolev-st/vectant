@@ -183,13 +183,8 @@ const cache = new LRUCache({
         return;
       }
     }
-    if (config.REPO_CACHE_DELETE_ON_EVICT) {
-      console.log(`[RepoCache] Evicting ${key} from cache, removing ${entry.repoPath}`);
-      rmDir(entry.repoPath).catch(() => {});
-      return;
-    }
-
-    console.log(`[RepoCache] Evicting ${key} from memory only, preserving ${entry.repoPath}`);
+    console.log(`[RepoCache] Evicting ${key} from cache, removing ${entry.repoPath}`);
+    rmDir(entry.repoPath).catch(() => {});
   },
 
   // Don't purge entries that are pinned or in-use

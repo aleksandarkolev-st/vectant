@@ -40,6 +40,7 @@ spec:
       securityContext:
         runAsUser: 0
         runAsGroup: 0
+        fsGroup: 1001
       nodeSelector:
         cloud.google.com/gke-nodepool: default-pool
       serviceAccountName: collab-server-sa
@@ -53,8 +54,6 @@ spec:
             # ── Networking ──────────────────────────────────────────────────
             - name: COLLAB_PORT
               value: "1235"
-            - name: NODE_OPTIONS
-              value: "--max-old-space-size=2048"
             - name: SYNTHI_PUBLIC_APP_URL
               valueFrom:
                 configMapKeyRef:
@@ -70,21 +69,6 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_PREVIEW_TARGET_TEMPLATE
-            - name: SYNTHI_PREVIEW_PUBLIC_PREFIX
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_PREVIEW_PUBLIC_PREFIX
-            - name: SYNTHI_PREVIEW_PUBLIC_DOMAIN
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_PREVIEW_PUBLIC_DOMAIN
-            - name: SYNTHI_PREVIEW_PUBLIC_PROTOCOL
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_PREVIEW_PUBLIC_PROTOCOL
             - name: SYNTHI_PREVIEW_SIDECAR_PORT
               valueFrom:
                 configMapKeyRef:
@@ -95,16 +79,6 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_PREVIEW_SIDECAR_PREFIX
-            - name: SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS
-            - name: SYNTHI_PREVIEW_PORT_PROBE_TIMEOUT_MS
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_PREVIEW_PORT_PROBE_TIMEOUT_MS
             - name: SYNTHI_PREVIEW_SIDECAR_IMAGE
               valueFrom:
                 configMapKeyRef:
@@ -125,36 +99,11 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_HOSTED_BROWSER_CDP_PORT
-            - name: SYNTHI_HOSTED_BROWSER_VIEW_PORT
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_HOSTED_BROWSER_VIEW_PORT
-            - name: SYNTHI_HOSTED_BROWSER_VNC_PORT
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_HOSTED_BROWSER_VNC_PORT
-            - name: SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES
-            - name: SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS
             - name: SYNTHI_PREVIEW_SCAN_PORTS
               valueFrom:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_PREVIEW_SCAN_PORTS
-            - name: SYNTHI_PREVIEW_EXCLUDE_PORTS
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_PREVIEW_EXCLUDE_PORTS
             - name: SYNTHI_TERMINAL_PORT_POOL
               valueFrom:
                 configMapKeyRef:
@@ -180,26 +129,6 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_PREVIEW_BIND_HOST
-            - name: SYNTHI_RUNTIME_CALLBACK_BODY_LIMIT_BYTES
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_RUNTIME_CALLBACK_BODY_LIMIT_BYTES
-            - name: SYNTHI_RUNTIME_CALLBACK_RESPONSE_LIMIT_BYTES
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_RUNTIME_CALLBACK_RESPONSE_LIMIT_BYTES
-            - name: SYNTHI_RUNTIME_CALLBACK_BODY_PREVIEW_CHARS
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_RUNTIME_CALLBACK_BODY_PREVIEW_CHARS
-            - name: SYNTHI_RUNTIME_CALLBACK_TIMEOUT_MS
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_RUNTIME_CALLBACK_TIMEOUT_MS
             - name: WORKSPACE_DATA_PVC
               valueFrom:
                 configMapKeyRef:
@@ -215,16 +144,6 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: WORKSPACE_REPOS_PATH
-            - name: WORKSPACE_PREP_PVC_NAME
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: WORKSPACE_DATA_PVC
-            - name: WORKSPACE_PREP_MOUNT_PATH
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: WORKSPACE_DATA_MOUNT
             - name: CORS_ORIGIN
               valueFrom:
                 configMapKeyRef:
@@ -267,8 +186,6 @@ spec:
               value: /data/repos
             - name: REPO_CACHE_DIR
               value: /data/repos
-            - name: REPO_CACHE_DELETE_ON_EVICT
-              value: "false"
             # ── GCS ─────────────────────────────────────────────────────────
             - name: GCP_PROJECT_ID
               valueFrom:
@@ -351,11 +268,11 @@ spec:
                   name: synthi-config
                   key: WORKSPACE_NODE_TAINT_EFFECT
             - name: IDLE_TIMEOUT_MS
-              value: "300000"   # 5 min
+              value: "600000"   # 10 min
             - name: MAX_WORKSPACE_PODS
               value: "10"
             - name: POD_READY_TIMEOUT_MS
-              value: "300000"   # 5 min
+              value: "120000"   # 2 min
             - name: SPAWNER_CLEANUP_ON_SHUTDOWN
               value: "false"
             - name: REDIS_URL
@@ -365,11 +282,11 @@ spec:
               mountPath: /data
           resources:
             requests:
-              cpu: 500m
-              memory: 1Gi
+              cpu: 200m
+              memory: 256Mi
             limits:
-              cpu: "2"
-              memory: 3Gi
+              cpu: "1"
+              memory: 1Gi
           readinessProbe:
             httpGet:
               path: /debug/status
@@ -479,23 +396,3 @@ spec:
     - port: 1234
       targetPort: 1234
       name: http-ws
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: collab-preview
-  namespace: synthi
-  labels:
-    app: collab-server
-    app.kubernetes.io/part-of: synthi-ide
-  annotations:
-    cloud.google.com/backend-config: '{"ports":{"1234":"preview-backend-config"}}'
-    cloud.google.com/neg: '{"ingress": true}'
-spec:
-  type: NodePort
-  selector:
-    app: collab-server
-  ports:
-    - port: 1234
-      targetPort: 1234
-      name: preview-http

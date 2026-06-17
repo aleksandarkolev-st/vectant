@@ -76,6 +76,30 @@ interface PreviewDiscoveryResult {
 
 const MAX_HISTORY = 8;
 const PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
+const PREVIEW_DISCOVERY_PROBE_TIMEOUT_MS = 1000;
+const PREVIEW_DISCOVERY_MAX_CONCURRENCY = 4;
+const DEFAULT_PREVIEW_DISCOVERY_PORTS = [
+  3000,
+  3001,
+  4173,
+  4200,
+  5000,
+  5173,
+  8000,
+  8080,
+];
+
+const PREVIEW_DISCOVERY_PORTS = parsePortList(
+  process.env["SYNTHI_PREVIEW_DISCOVERY_PORTS"] ||
+  process.env["SYNTHI_PREVIEW_SCAN_PORTS"] ||
+  process.env["SYNTHI_WORKFLOW_PREVIEW_PORTS"] ||
+  ""
+);
+
+const FALLBACK_PREVIEW_DISCOVERY_PORTS = PREVIEW_DISCOVERY_PORTS.length > 0
+  ? PREVIEW_DISCOVERY_PORTS
+  : DEFAULT_PREVIEW_DISCOVERY_PORTS;
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -336,6 +360,7 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PREVIEW_DISCOVERY_TIMEOUT_MS);
+  const timeoutMessage = `discovery timed out after ${PREVIEW_DISCOVERY_TIMEOUT_MS}ms`;
   try {
     const portsUrl = new URL("ports", `${collab.url}/`);
     portsUrl.searchParams.set("workspace", slug);
@@ -353,12 +378,36 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
     const payload = await response.json() as Record<string, unknown>;
     const preview = previewUrlFromPortsPayload(payload, collab.url);
     if (preview) return { ok: true, url: preview };
+
+    if (runtimeScope) {
+      const runtimeFallback = await discoverRuntimeScopePreviewViaProxy(
+        collab.url,
+        runtimeScope,
+        extractPortCandidatesFromPayload(payload),
+        PREVIEW_DISCOVERY_TIMEOUT_MS,
+      );
+      if (runtimeFallback) return { ok: true, url: runtimeFallback };
+    }
+
     return {
       ok: false,
       error: "preview_not_found",
       detail: { workspace: slug, runtimeScope, collab_url: collab.url, collab_url_source: collab.source },
     };
   } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return {
+        ok: false,
+        error: "preview_discovery_timeout",
+        detail: {
+          workspace: slug,
+          runtimeScope,
+          collab_url: collab.url,
+          collab_url_source: collab.source,
+          message: timeoutMessage,
+        },
+      };
+    }
     return {
       ok: false,
       error: "preview_discovery_failed",
@@ -370,6 +419,100 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
         message: err instanceof Error ? err.message : String(err),
       },
     };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractPortCandidatesFromPayload(payload: Record<string, unknown>): number[] {
+  const ports = Array.isArray(payload["activePorts"]) ? payload["activePorts"] : [];
+  const previews = Array.isArray(payload["previews"]) ? payload["previews"] : [];
+  const fromPayload = [
+    ...ports,
+    ...previews
+      .map((item) => Number(item && typeof item === "object" ? (item as Record<string, unknown>)["port"] : undefined))
+      .filter((value) => Number.isInteger(value) && value > 0 && value <= 65_535),
+  ]
+    .map((port) => Number(port))
+    .filter((port) => Number.isInteger(port) && port > 0 && port <= 65_535)
+    .sort((a, b) => a - b);
+
+  return [...new Set(fromPayload.concat(FALLBACK_PREVIEW_DISCOVERY_PORTS))];
+}
+
+async function discoverRuntimeScopePreviewViaProxy(
+  collabUrl: string,
+  runtimeScope: string,
+  candidates: ReadonlyArray<number>,
+  timeoutMs: number
+): Promise<string | null> {
+  if (!runtimeScope) return null;
+
+  const deadline = Date.now() + timeoutMs;
+  const nowRemaining = () => deadline - Date.now();
+
+  const orderedCandidates = dedupeNumbers(candidates).filter((port) => port > 0 && port <= 65_535);
+  if (orderedCandidates.length === 0) return null;
+
+  let nextIndex = 0;
+  let remaining = orderedCandidates.length;
+
+  while (remaining > 0) {
+    const remainingMs = nowRemaining();
+    if (remainingMs <= 0) return null;
+
+    const batchTimeout = Math.max(
+      1,
+      Math.min(PREVIEW_DISCOVERY_PROBE_TIMEOUT_MS, remainingMs)
+    );
+
+    const batch = orderedCandidates
+      .slice(nextIndex, nextIndex + PREVIEW_DISCOVERY_MAX_CONCURRENCY)
+      .map((port) => probePortPreview(collabUrl, runtimeScope, port, batchTimeout));
+    if (batch.length === 0) break;
+
+    const results = await Promise.all(batch);
+    for (const result of results) {
+      if (result) return result;
+    }
+
+    nextIndex += PREVIEW_DISCOVERY_MAX_CONCURRENCY;
+    if (remainingMs <= 0) return null;
+    remaining = orderedCandidates.length - nextIndex;
+  }
+
+  return null;
+}
+
+async function probePortPreview(
+  collabUrl: string,
+  runtimeScope: string,
+  port: number,
+  timeoutMs: number
+): Promise<string | null> {
+  const candidateUrl = resolvePreviewUrl(`/runtime/${encodeURIComponent(runtimeScope)}/port/${port}/`, collabUrl);
+  if (!candidateUrl) return null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    let response = await fetch(candidateUrl, {
+      method: "HEAD",
+      redirect: "manual",
+      signal: controller.signal,
+    });
+
+    if (response.status === 405 || response.status === 501) {
+      response = await fetch(candidateUrl, {
+        method: "GET",
+        redirect: "manual",
+        signal: controller.signal,
+      });
+    }
+
+    return response.status >= 200 && response.status < 400 ? candidateUrl : null;
+  } catch {
+    return null;
   } finally {
     clearTimeout(timer);
   }
@@ -932,4 +1075,46 @@ function objectArgs(value: unknown): Record<string, unknown> {
 
 function stringOpt(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function dedupeNumbers(values: ReadonlyArray<number | string>): number[] {
+  const normalized = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value > 0 && value <= 65_535);
+  return [...new Set(normalized)].sort((a, b) => a - b);
+}
+
+function parsePortList(value: string | undefined): number[] {
+  if (!value) return [];
+
+  const output = new Set<number>();
+
+  for (const item of value.split(",")) {
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+
+    const rangeMatch = /^(\d+)\s*-\s*(\d+)$/.exec(trimmed);
+    if (rangeMatch) {
+      const start = Number(rangeMatch[1]);
+      const end = Number(rangeMatch[2]);
+      if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+
+      const min = Math.min(start, end);
+      const max = Math.max(start, end);
+      const lower = Math.max(1, Math.min(min, 65_535));
+      const upper = Math.max(1, Math.min(max, 65_535));
+
+      for (let port = lower; port <= upper; port += 1) {
+        output.add(port);
+      }
+      continue;
+    }
+
+    const parsed = Number(trimmed);
+    if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535) {
+      output.add(parsed);
+    }
+  }
+
+  return [...output].sort((a, b) => a - b);
 }

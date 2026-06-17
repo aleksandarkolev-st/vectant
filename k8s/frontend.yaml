@@ -102,16 +102,6 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: COLLAB_SERVER_URL
-            - name: SYNTHI_OAUTH_RELAY_TTL_MS
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_OAUTH_RELAY_TTL_MS
-            - name: NEXT_PUBLIC_VECTANT_OAUTH_RELAY_EXTENSION_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: NEXT_PUBLIC_VECTANT_OAUTH_RELAY_EXTENSION_URL
             - name: CODE_INTEL_URL
               valueFrom:
                 configMapKeyRef:
@@ -163,26 +153,6 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT
-            - name: SYNTHI_HOSTED_BROWSER_VIEW_PORT
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_HOSTED_BROWSER_VIEW_PORT
-            - name: SYNTHI_PREVIEW_PUBLIC_DOMAIN
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_PREVIEW_PUBLIC_DOMAIN
-            - name: SYNTHI_PREVIEW_PUBLIC_PROTOCOL
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_PREVIEW_PUBLIC_PROTOCOL
-            - name: SYNTHI_PREVIEW_PUBLIC_PREFIX
-              valueFrom:
-                configMapKeyRef:
-                  name: synthi-config
-                  key: SYNTHI_PREVIEW_PUBLIC_PREFIX
             - name: SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN
               valueFrom:
                 secretKeyRef:
