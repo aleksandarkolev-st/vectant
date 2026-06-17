@@ -35,6 +35,7 @@ import { resolveDojoEvidenceClaims } from "../dojo/evidence/verifier.js";
 import type { DojoEvidenceClaimResult } from "../dojo/evidence/claims.js";
 import { buildDojoEvidenceLedgerRecord } from "../dojo/evidence/ledger_record.js";
 import type { DojoEvidenceLedgerRecord, DojoEvidenceRecordInput } from "../dojo/evidence/types.js";
+import type { DojoApiBackedMcpTool } from "../dojo/api/api_tool_compiler.js";
 import {
   buildDojoRedactedEvidenceExportManifest,
   type DojoRedactedEvidenceExportManifest,
@@ -762,6 +763,7 @@ export interface DojoSkill {
   checkride_runs: string[];
   case_law_refs: string[];
   published_tools: string[];
+  api_backed_mcp_tools?: DojoApiBackedMcpTool[];
   execution_substrates: DojoExecutionSubstrate[];
   preferred_substrate: DojoExecutionSubstrate;
   published_tool_name?: string;
@@ -2980,6 +2982,7 @@ function redactedSkillArtifact(skill: DojoSkill): Record<string, unknown> {
     data_sensitivity: skill.data_sensitivity,
     source_links: skill.source_links,
     published_tools: skill.published_tools,
+    api_backed_mcp_tools: skill.api_backed_mcp_tools ?? [],
     published_tool_name: skill.published_tool_name ?? null,
     executable_entrustment: skill.executable_entrustment ?? null,
     generated_at: skill.generated_at,

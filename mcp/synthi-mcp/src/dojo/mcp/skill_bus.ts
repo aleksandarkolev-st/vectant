@@ -24,6 +24,14 @@ export interface DojoCompetencySummary {
   proof_required: boolean;
   preferred_substrate: DojoSkill["preferred_substrate"];
   execution_substrates: DojoSkill["execution_substrates"];
+  api_backed_mcp_tools: Array<{
+    tool_name: string;
+    tool_version: string;
+    action: string;
+    path: string;
+    method: string;
+    schema_digest: string;
+  }>;
   mcp_skill_manifest: DojoMcpSkillManifestV1;
 }
 
@@ -215,7 +223,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     const toolName = input.tool_name.trim();
     if (!toolName) return blockedResolution("not_found", ["dojo_mcp_tool_name_required"]);
     const skills = await this.listSkills();
-    const matches = skills.filter((item) => item.published_tool_name === toolName || item.private_tool_manifest?.tool_name === toolName);
+    const matches = skills.filter((item) => skillPublishesToolName(item, toolName));
     if (matches.length > 1) {
       return blockedResolution("blocked", ["dojo_mcp_tool_ambiguous"], {
         tool_name: toolName,
@@ -249,11 +257,11 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       });
     }
 
-    const manifest = buildDojoMcpSkillManifest(skill, { env: this.env });
+    const manifest = buildDojoMcpSkillManifest(skill, { env: this.env, tool_name: toolName });
     const manifestValidation = validateDojoMcpSkillManifest(manifest, {
       env: this.env,
       expected_skill_id: skill.skill_id,
-      expected_tool_name: skill.published_tool_name ?? skill.private_tool_manifest?.tool_name ?? null,
+      expected_tool_name: toolName,
     });
     if (!manifestValidation.ok) {
       return blockedResolution("blocked", manifestValidation.blocked_by, {
@@ -685,14 +693,29 @@ function competencySummary(skill: DojoSkill, env: NodeJS.ProcessEnv): DojoCompet
     proof_required: dojoMcpManifestRequiresProof(manifest),
     preferred_substrate: skill.preferred_substrate,
     execution_substrates: [...skill.execution_substrates],
+    api_backed_mcp_tools: (skill.api_backed_mcp_tools ?? []).map((tool) => ({
+      tool_name: tool.tool_name,
+      tool_version: tool.tool_version,
+      action: tool.action,
+      path: tool.path,
+      method: tool.method,
+      schema_digest: tool.schema_digest,
+    })),
     mcp_skill_manifest: manifest,
   };
 }
 
 function isLicensedPublishedSkill(skill: DojoSkill): boolean {
-  return Boolean(skill.published_tool_name || skill.private_tool_manifest?.tool_name)
+  return Boolean(skill.published_tool_name || skill.private_tool_manifest?.tool_name || (skill.published_tools ?? []).length > 0)
     && skill.entrustment_level !== "EX"
     && skill.permission_license.autonomy_level !== "blocked";
+}
+
+function skillPublishesToolName(skill: DojoSkill, toolName: string): boolean {
+  return skill.published_tool_name === toolName
+    || skill.private_tool_manifest?.tool_name === toolName
+    || (skill.published_tools ?? []).includes(toolName)
+    || (skill.api_backed_mcp_tools ?? []).some((tool) => tool.tool_name === toolName);
 }
 
 function blockedResolution(

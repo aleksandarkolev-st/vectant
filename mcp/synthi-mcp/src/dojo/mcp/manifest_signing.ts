@@ -6,6 +6,7 @@ import {
 } from "node:crypto";
 import type { DojoExecutionSubstrate, DojoSkill } from "../../browser/dojo.js";
 import type { PrivateWorkflowToolManifestV7 } from "../../browser/private_tool_manifest.js";
+import type { DojoApiBackedMcpTool } from "../api/api_tool_compiler.js";
 
 export type DojoMcpSkillManifestSigningAlgorithm = "hmac-sha256" | "ed25519";
 
@@ -23,8 +24,10 @@ export interface DojoMcpSkillManifestV1 {
   tool: {
     name: string | null;
     version: string;
+    kind: "private_workflow" | "api_backed" | "skill";
     schema_digest: string | null;
     backing_private_tool_manifest_digest: string | null;
+    api_backed_mcp_tool_digest: string | null;
     direct_call_policy: "blocked_outside_dojo_dispatcher";
   };
   license: {
@@ -65,6 +68,7 @@ export interface DojoMcpSkillManifestValidation {
 export interface DojoMcpSkillManifestOptions {
   env?: NodeJS.ProcessEnv;
   now?: string;
+  tool_name?: string;
 }
 
 export const DOJO_MCP_MANIFEST_ISSUER_ENV = "SYNTHI_DOJO_MCP_MANIFEST_ISSUER";
@@ -84,12 +88,20 @@ export function buildDojoMcpSkillManifest(
   const issuedAt = options.now ?? skill.generated_at;
   const signatureAlgorithm = dojoMcpManifestSigningAlgorithm(env);
   const proofRequired = dojoSkillRequiresMcpProof(skill);
+  const selectedApiTool = selectApiBackedToolForManifest(skill, options.tool_name);
+  const selectedToolName = selectedApiTool?.tool_name
+    ?? options.tool_name
+    ?? skill.published_tool_name
+    ?? skill.private_tool_manifest?.tool_name
+    ?? null;
   const privateManifestDigest = skill.private_tool_manifest
     ? digestObject(skill.private_tool_manifest)
     : null;
-  const schemaDigest = skill.private_tool_manifest
+  const privateSchemaDigest = skill.private_tool_manifest
     ? digestObject(privateToolSchemaPayload(skill.private_tool_manifest))
     : null;
+  const apiToolDigest = selectedApiTool ? digestObject(selectedApiTool) : null;
+  const schemaDigest = selectedApiTool?.schema_digest ?? privateSchemaDigest;
   const unsigned = {
     kind: "dojoMcpSkillManifest" as const,
     schema_version: "synthi.dojo.mcpSkillManifest.v1" as const,
@@ -98,8 +110,9 @@ export function buildDojoMcpSkillManifest(
       skill.skill_version,
       skill.permission_license.license_id,
       skill.permission_license.license_version,
-      skill.published_tool_name ?? "",
+      selectedToolName ?? "",
       privateManifestDigest ?? "",
+      apiToolDigest ?? "",
     ].join(":"))}`,
     skill: {
       skill_id: skill.skill_id,
@@ -109,10 +122,12 @@ export function buildDojoMcpSkillManifest(
       workspace_id: skill.workspace_id,
     },
     tool: {
-      name: skill.published_tool_name ?? skill.private_tool_manifest?.tool_name ?? null,
-      version: skill.skill_version,
+      name: selectedToolName,
+      version: selectedApiTool?.tool_version ?? skill.skill_version,
+      kind: selectedApiTool ? "api_backed" as const : skill.private_tool_manifest ? "private_workflow" as const : "skill" as const,
       schema_digest: schemaDigest,
-      backing_private_tool_manifest_digest: privateManifestDigest,
+      backing_private_tool_manifest_digest: selectedApiTool ? null : privateManifestDigest,
+      api_backed_mcp_tool_digest: apiToolDigest,
       direct_call_policy: "blocked_outside_dojo_dispatcher" as const,
     },
     license: {
@@ -182,6 +197,9 @@ export function validateDojoMcpSkillManifest(
   }
   if (Object.prototype.hasOwnProperty.call(options, "expected_tool_name") && manifest.tool.name !== options.expected_tool_name) {
     blockedBy.push("dojo_mcp_manifest_tool_mismatch");
+  }
+  if (manifest.tool.kind !== "private_workflow" && manifest.tool.kind !== "api_backed" && manifest.tool.kind !== "skill") {
+    blockedBy.push("dojo_mcp_manifest_tool_kind_invalid");
   }
 
   const expectedDigest = digestObject(unsignedManifest(manifest));
@@ -354,6 +372,15 @@ function privateToolSchemaPayload(manifest: PrivateWorkflowToolManifestV7): Reco
     mutation: manifest.mutation,
     auth: manifest.auth,
   };
+}
+
+function selectApiBackedToolForManifest(
+  skill: DojoSkill,
+  toolName?: string
+): DojoApiBackedMcpTool | null {
+  const tools = skill.api_backed_mcp_tools ?? [];
+  if (toolName) return tools.find((tool) => tool.tool_name === toolName) ?? null;
+  return null;
 }
 
 function dojoSkillRequiresMcpProof(skill: DojoSkill): boolean {

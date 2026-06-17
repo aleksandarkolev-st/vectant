@@ -1406,6 +1406,8 @@ export const DOJO_TOOLS = [
         tool_version: { type: "string" },
         sample_invocation_args: { type: "object" },
         auth_scopes: { type: "array", items: { type: "string" } },
+        publish_to_skill: { type: "boolean" },
+        now: { type: "string" },
       },
       required: [],
     },
@@ -2756,25 +2758,88 @@ async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse
     .filter((issue) => issue.severity === "error")
     .map((issue) => `api_tool_compile:${issue.issue_id}`);
   const invocationBlockers = invocationValidation?.blocked_by.map((reason) => `api_tool_invocation:${reason}`) ?? [];
+  const licenseBlockers = compileResult.tool
+    ? apiBackedToolCurrentLicenseBlockedBy(compileResult.tool, skill.skill).map((reason) => `api_tool_license:${reason}`)
+    : [];
+  const promotionBlockers = [
+    ...new Set([
+      ...reviewBlockers,
+      ...compileBlockers,
+      ...invocationBlockers,
+      ...licenseBlockers,
+    ]),
+  ];
+  const publishToSkill = boolOpt(a["publish_to_skill"]);
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
+  let apiToolPublication:
+    | {
+      requested: boolean;
+      ok: boolean;
+      status: "not_requested" | "published" | "blocked";
+      blocked_by: string[];
+      published_tool_name?: string;
+      published_tool_version?: string;
+      skill?: DojoSkill;
+      persistence?: Record<string, unknown>;
+      mcp_skill_manifest?: ReturnType<typeof buildDojoMcpSkillManifest>;
+    }
+    | undefined;
+  if (!publishToSkill) {
+    apiToolPublication = {
+      requested: false,
+      ok: true,
+      status: "not_requested",
+      blocked_by: [],
+    };
+  } else if (!compileResult.tool || promotionBlockers.length > 0) {
+    apiToolPublication = {
+      requested: true,
+      ok: false,
+      status: "blocked",
+      blocked_by: promotionBlockers.length > 0 ? promotionBlockers : ["api_backed_mcp_tool_not_compiled"],
+    };
+  } else {
+    const updated = skillWithPublishedApiBackedTool(skill.skill, compileResult.tool, now);
+    const persistence = await persistPublishedSkillToDurableControlPlaneIfRequired({
+      tenant: skill.tenant,
+      skill: updated,
+      actor: {
+        actor_id: skill.tenant.actor_id,
+        actor_type: skill.tenant.actor_type,
+      },
+      now,
+    });
+    if (!persistence.ok) return persistence.error;
+    const saved = skill.control_plane_source === "compatibility_registry"
+      ? dojoSkillRegistry.publish(updated)
+      : updated;
+    apiToolPublication = {
+      requested: true,
+      ok: true,
+      status: "published",
+      blocked_by: [],
+      published_tool_name: compileResult.tool.tool_name,
+      published_tool_version: compileResult.tool.tool_version,
+      skill: saved,
+      persistence: persistence.persistence,
+      mcp_skill_manifest: buildDojoMcpSkillManifest(saved, { tool_name: compileResult.tool.tool_name }),
+    };
+  }
   return jsonResponse({
     ok: true,
-    skill_id: skill.skill.skill_id,
-    license_id: skill.skill.permission_license.license_id,
-    license_version: skill.skill.permission_license.license_version,
+    skill_id: apiToolPublication?.skill?.skill_id ?? skill.skill.skill_id,
+    license_id: (apiToolPublication?.skill ?? skill.skill).permission_license.license_id,
+    license_version: (apiToolPublication?.skill ?? skill.skill).permission_license.license_version,
     candidate_source: candidate.source,
     api_endpoint_candidate: candidate.candidate,
     candidate_review: candidateReview,
     api_tool_compile: compileResult,
     api_backed_mcp_tool: compileResult.tool ?? null,
     sample_invocation_validation: invocationValidation,
-    ready_for_promotion: compileResult.ok && (invocationValidation?.ok ?? true),
-    promotion_blockers: [
-      ...new Set([
-        ...reviewBlockers,
-        ...compileBlockers,
-        ...invocationBlockers,
-      ]),
-    ],
+    ready_for_promotion: compileResult.ok && (invocationValidation?.ok ?? true) && licenseBlockers.length === 0,
+    promotion_blockers: promotionBlockers,
+    api_tool_publication: apiToolPublication,
+    mcp_skill_manifest: apiToolPublication?.mcp_skill_manifest ?? null,
   });
 }
 
@@ -7241,6 +7306,15 @@ function skillListItem(skill: DojoSkill): Record<string, unknown> {
     preferred_substrate: skill.preferred_substrate,
     execution_substrates: skill.execution_substrates,
     published_tool_name: skill.published_tool_name ?? null,
+    published_tools: skill.published_tools,
+    api_backed_mcp_tools: (skill.api_backed_mcp_tools ?? []).map((tool) => ({
+      tool_name: tool.tool_name,
+      tool_version: tool.tool_version,
+      action: tool.action,
+      method: tool.method,
+      path: tool.path,
+      schema_digest: tool.schema_digest,
+    })),
     mcp_skill_manifest: buildDojoMcpSkillManifest(skill),
     checkride: {
       checkride_id: skill.checkride.checkride_id,
@@ -8554,6 +8628,10 @@ function dedupeStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.trim()))];
 }
 
+function dedupeSubstrates(values: DojoExecutionSubstrate[]): DojoExecutionSubstrate[] {
+  return [...new Set(values)];
+}
+
 function apiBackedMcpToolOpt(value: unknown): DojoApiBackedMcpTool | undefined {
   const record = objectOpt(value);
   if (!record) return undefined;
@@ -8647,6 +8725,50 @@ function apiBackedToolCurrentLicenseBlockedBy(tool: DojoApiBackedMcpTool, skill:
     blockedBy.push("api_tool_substrate_not_allowed");
   }
   return blockedBy;
+}
+
+function skillWithPublishedApiBackedTool(
+  skill: DojoSkill,
+  tool: DojoApiBackedMcpTool,
+  now: string
+): DojoSkill {
+  const updated = cloneJson(skill);
+  const existingTools = updated.api_backed_mcp_tools ?? [];
+  const nextTools = [
+    ...existingTools.filter((candidate) =>
+      candidate.tool_name !== tool.tool_name || candidate.tool_version !== tool.tool_version
+    ),
+    cloneJson(tool),
+  ].sort((a, b) => a.tool_name.localeCompare(b.tool_name) || a.tool_version.localeCompare(b.tool_version));
+  updated.api_backed_mcp_tools = nextTools;
+  updated.published_tools = dedupeStrings([
+    ...updated.published_tools,
+    tool.tool_name,
+  ]);
+  updated.execution_substrates = dedupeSubstrates([
+    ...updated.execution_substrates,
+    "api",
+  ]);
+  if (tool.enforcement.postcondition_assertion_required && tool.enforcement.evidence_write_required) {
+    updated.preferred_substrate = "api";
+  }
+  updated.skill_passport = {
+    ...updated.skill_passport,
+    published_tools: dedupeStrings([
+      ...updated.skill_passport.published_tools,
+      tool.tool_name,
+    ]),
+  };
+  updated.assurance_case = {
+    ...updated.assurance_case,
+    evidence_refs: dedupeStrings([
+      ...updated.assurance_case.evidence_refs,
+      `api_tool:${tool.tool_name}:${tool.tool_version}`,
+      `api_candidate:${tool.candidate_id}`,
+    ]),
+  };
+  updated.generated_at = now;
+  return updated;
 }
 
 function apiToolProofValidationForSkill(
