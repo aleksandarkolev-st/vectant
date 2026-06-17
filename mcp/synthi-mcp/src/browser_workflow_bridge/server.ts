@@ -847,6 +847,64 @@ export function buildBrowserWorkflowPanelState(
   };
 }
 
+function fallbackBrowserWorkflowPanelState(bridgeState: Partial<BrowserWorkflowBridgeState>, detail: string): Record<string, unknown> {
+  return {
+    workspaceLabel: stringOpt(process.env["SYNTHI_WORKSPACE_ID"]) || "Current workspace",
+    bridge: {
+      status: "error",
+      lastTool: bridgeState.lastTool ?? null,
+      lastToolAt: bridgeState.lastToolAt ?? null,
+      detail,
+    },
+    runtime: {
+      status: "notConfigured",
+      label: "Panel state unavailable",
+      detail,
+      readiness: resolveHostedBrowserRuntime(),
+    },
+    observe: {
+      status: "needsRuntime",
+      label: "Attach workflow runtime",
+      detail,
+      lastScreenshotAt: bridgeState.lastObserveAt ?? null,
+      selectedTabId: null,
+    },
+    teach: {
+      state: "idle",
+      label: "Ready",
+      detail,
+      tabId: null,
+    },
+    workflow: {
+      stepCount: 0,
+      contractStatus: "notCompiled",
+      scriptStatus: "notGenerated",
+      unresolvedCount: 0,
+    },
+    blockers: [
+      {
+        id: "panel_state_generation_failed",
+        label: "Panel state generation failed",
+        detail,
+      },
+    ],
+  };
+}
+
+function safeBuildBrowserWorkflowPanelState(
+  bridgeState: Partial<BrowserWorkflowBridgeState>,
+  detail: string = "Temporary panel state issue."
+): Record<string, unknown> {
+  try {
+    return buildBrowserWorkflowPanelState(bridgeState);
+  } catch (err) {
+    return fallbackBrowserWorkflowPanelState(
+      bridgeState,
+      detail || (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
 export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): {
   server: http.Server;
   ready: Promise<void>;
@@ -882,7 +940,13 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
       }
 
       if (url === "/browser-workflows/state" && method === "GET") {
-        writeJson(res, 200, { ok: true, state: buildBrowserWorkflowPanelState(bridgeState) });
+        writeJson(res, 200, {
+          ok: true,
+          state: safeBuildBrowserWorkflowPanelState(
+            bridgeState,
+            "Unable to build the workflow state from the current runtime."
+          ),
+        });
         return;
       }
 
@@ -919,13 +983,27 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
         const pageUrl = typeof body.url === "string" ? body.url : "";
         const selected = browserBroker.selectedTab();
         const tabId = action === "observe" ? "" : selected?.tab_id ?? "";
-        const result = await browserWorkflowOverlayAction({
-          action,
-          ...(pageUrl ? { url: pageUrl } : {}),
-          tab_id: tabId,
-          page_url: pageUrl,
-        });
-        writeJson(res, result.ok ? 200 : 400, result);
+        try {
+          const result = await browserWorkflowOverlayAction({
+            action,
+            ...(pageUrl ? { url: pageUrl } : {}),
+            tab_id: tabId,
+            page_url: pageUrl,
+          });
+          writeJson(res, result.ok ? 200 : 400, result);
+        } catch (err) {
+          writeJson(res, 500, {
+            ok: false,
+            status: "error",
+            label: "Overlay failed",
+            error: "overlay_action_failed",
+            detail: err instanceof Error ? err.message : String(err),
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "Overlay action failed while processing the current page."
+            ),
+          });
+        }
         return;
       }
 
@@ -955,9 +1033,19 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
           const opened = await browserPlaywrightAdapter.openExternal(openUrl, { timeoutMs: EXTERNAL_OPEN_TIMEOUT_MS });
           writeJson(res, 200, {
             ok: true,
-            opened: {
+            workspaceBrowser: {
+              url: openUrl,
               tab_id: opened.tab_id,
               navigation_started: opened.navigation_started,
+              tabId: opened.tab_id,
+              navigationStarted: opened.navigation_started,
+            },
+            opened: {
+              url: openUrl,
+              tab_id: opened.tab_id,
+              navigation_started: opened.navigation_started,
+              tabId: opened.tab_id,
+              navigationStarted: opened.navigation_started,
             },
           });
         } catch (err) {
@@ -976,7 +1064,10 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
           writeJson(res, 400, {
             error: "invalid_body",
             detail: msg,
-            state: buildBrowserWorkflowPanelState(bridgeState),
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "The request body could not be parsed as JSON."
+            ),
           });
           return;
         }
@@ -985,7 +1076,10 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
           writeJson(res, 400, {
             error: "invalid_args",
             field: "tool",
-            state: buildBrowserWorkflowPanelState(bridgeState),
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "A workflow tool name is required to invoke this endpoint."
+            ),
           });
           return;
         }
@@ -1004,35 +1098,67 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
               requested_tool: requestedTool,
               tool,
               ...err.detail,
-              state: buildBrowserWorkflowPanelState(bridgeState),
+              state: safeBuildBrowserWorkflowPanelState(
+                bridgeState,
+                err.message || "Workflow tool arguments are missing required values for this action."
+              ),
             });
             return;
           }
-          throw err;
-        }
-
-        const result = await dispatchWorkflowTool(tool, args);
-        if (!result) {
-          writeJson(res, 404, {
-            error: "unknown_workflow_tool",
-            tool,
+          writeJson(res, 500, {
+            ok: false,
+            error: "tool_preprocess_failed",
             requested_tool: requestedTool,
-            state: buildBrowserWorkflowPanelState(bridgeState),
+            tool,
+            detail: err instanceof Error ? err.message : String(err),
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "Failed to prepare the workflow tool arguments."
+            ),
           });
           return;
         }
 
-        const payload = structuredPayload(result);
-        const ok = result.isError !== true && payload["ok"] !== false;
-        updateBridgeState(bridgeState, tool, ok, payload);
-        writeJson(res, 200, {
-          ok,
-          requested_tool: requestedTool,
-          tool,
-          is_error: result.isError === true,
-          result: payload,
-          state: buildBrowserWorkflowPanelState(bridgeState),
-        });
+        try {
+          const result = await dispatchWorkflowTool(tool, args);
+          if (!result) {
+            writeJson(res, 404, {
+              error: "unknown_workflow_tool",
+              tool,
+              requested_tool: requestedTool,
+              state: safeBuildBrowserWorkflowPanelState(
+                bridgeState,
+                "This workflow tool is not currently supported by this runtime."
+              ),
+            });
+            return;
+          }
+
+          const payload = structuredPayload(result);
+          const ok = result.isError !== true && payload["ok"] !== false;
+          updateBridgeState(bridgeState, tool, ok, payload);
+          writeJson(res, 200, {
+            ok,
+            requested_tool: requestedTool,
+            tool,
+            is_error: result.isError === true,
+            result: payload,
+            state: safeBuildBrowserWorkflowPanelState(bridgeState),
+          });
+          return;
+        } catch (err) {
+          writeJson(res, 500, {
+            ok: false,
+            error: "tool_execution_failed",
+            requested_tool: requestedTool,
+            tool,
+            detail: err instanceof Error ? err.message : String(err),
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "Workflow tool execution failed while processing this action."
+            ),
+          });
+        }
         return;
       }
 
