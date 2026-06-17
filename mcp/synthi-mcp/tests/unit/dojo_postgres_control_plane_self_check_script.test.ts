@@ -124,6 +124,7 @@ function postgresVitestReportFixture() {
       "Dojo tool Postgres control-plane wiring persists Vivarium scenario runs through Postgres after local reset",
       "Dojo tool Postgres control-plane wiring persists Wind Tunnel scenario runs through Postgres after local reset",
       "Dojo tool Postgres control-plane wiring uses Postgres skill, proof, and proof-key records for production validation, consumption, and replay after local process loss",
+      "Dojo tool Postgres control-plane wiring requires ledger-backed proof capsule revocation evidence when production evidence ledger is enforced",
     ],
     [
       "PostgresDojoGhostShadowEvidenceStore persists Ghost Mode shadow evidence by tenant scope and filters operational fields",
