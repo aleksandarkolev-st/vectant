@@ -187,6 +187,42 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       blocked_by: ["evidence_record_missing:evidence:unbacked-publication"],
     }));
 
+    const mismatchedSkillId = `${candidateSkill.skill_id}_other_${createHash("sha256").update(`${tenantId}:${workspaceId}:other-publication-skill`, "utf8").digest("hex").slice(0, 8)}`;
+    await seedSkillForPublicationEvidenceScopeMismatch(pool, {
+      tenant_id: tenantId,
+      organization_id: "org-a",
+      workspace_id: workspaceId,
+      skill: {
+        ...candidateSkill,
+        skill_id: mismatchedSkillId,
+        workflow_id: `${candidateSkill.workflow_id}_other_${createHash("sha256").update(`${tenantId}:${workspaceId}:other-publication-workflow`, "utf8").digest("hex").slice(0, 8)}`,
+      },
+    });
+    const mismatchedEvidence = await appendPublicationEvidenceRecordForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      skill_id: mismatchedSkillId,
+      record_id: `publication_${createHash("sha256").update(`${tenantId}:${workspaceId}:${mismatchedSkillId}:publish`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T00:04:20.000Z",
+      created_by: "postgres-publication-ledger-publisher",
+      source_ref: "publication:wrong-skill-review",
+    });
+    const mismatchedPublish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "wrong_skill_publication_review",
+      evidence_refs: [mismatchedEvidence.record_id],
+      now: "2026-06-11T00:04:40.000Z",
+      ...tenant,
+      request_id: "req-postgres-publication-ledger-mismatch",
+      correlation_id: "corr-postgres-publication-ledger-mismatch",
+    });
+    expect(mismatchedPublish?.isError).toBe(true);
+    expect(mismatchedPublish?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_skill_publication_evidence_ledger_scope_mismatch",
+      mismatched_evidence_record_ids: [mismatchedEvidence.record_id],
+      blocked_by: [`skill_publication_evidence_skill_mismatch:${mismatchedEvidence.record_id}`],
+    }));
+
     const publicationEvidence = await appendPublicationEvidenceRecordForToolTest(pool, {
       tenant_id: tenantId,
       workspace_id: workspaceId,
@@ -2862,6 +2898,44 @@ async function appendPublicationEvidenceForCurrentWorkflowForToolTest(
     skill_id: skill.skill_id,
   });
   return { skill, record };
+}
+
+async function seedSkillForPublicationEvidenceScopeMismatch(
+  pool: Pool,
+  input: {
+    tenant_id: string;
+    organization_id: string;
+    workspace_id: string;
+    skill: DojoSkill;
+  }
+): Promise<void> {
+  await ensureDojoTenantWorkspace({
+    queryable: pool,
+    tenant: {
+      tenant_id: input.tenant_id,
+      organization_id: input.organization_id,
+      workspace_id: input.workspace_id,
+      actor_id: "dojo-publication-evidence-scope-test",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      request_id: `req-${input.skill.skill_id}`,
+      correlation_id: `corr-${input.skill.skill_id}`,
+    },
+    app_origin: input.skill.app_origin,
+  });
+  const skillStore = new PostgresDojoSkillStore({
+    tenant_id: input.tenant_id,
+    workspace_id: input.workspace_id,
+    queryable: pool,
+  });
+  await skillStore.saveSkill(input.skill, {
+    status: "draft",
+    created_by: {
+      actor_id: "dojo-publication-evidence-scope-test",
+      actor_type: "human",
+    },
+    now: "2026-06-11T00:04:10.000Z",
+  });
 }
 
 async function appendGovernanceEvidenceRecordForToolTest(
