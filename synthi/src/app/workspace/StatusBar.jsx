@@ -1097,40 +1097,6 @@ function StatusBarInner({
           </div>
         ))}
 
-        {/* VS Code Server status */}
-        {vscodeServerState !== 'disconnected' && (
-          <div
-            className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-colors"
-            style={vscodeServerState === 'running'
-              ? { background: 'color-mix(in srgb, var(--accent-success) 4%, transparent)' }
-              : vscodeServerState === 'error'
-              ? { background: 'color-mix(in srgb, var(--accent-danger) 4%, transparent)' }
-              : {}}
-            title={`VS Code Server: ${vscodeServerState}`}
-          >
-            <div
-              className={`w-1.5 h-1.5 rounded-full ${vscodeServerState === 'connecting' ? 'animate-pulse' : ''}`}
-              style={{
-                background: vscodeServerState === 'running' ? 'var(--accent-success)'
-                  : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
-                  : vscodeServerState === 'error' ? 'var(--accent-danger)'
-                  : 'var(--text-muted)'
-              }}
-            />
-            <span
-              className="status-island-label hidden 2xl:inline font-medium"
-              style={{
-                color: vscodeServerState === 'running' ? 'var(--accent-success)'
-                  : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
-                  : vscodeServerState === 'error' ? 'var(--accent-danger)'
-                  : 'var(--text-muted)'
-              }}
-            >
-              {vscodeServerState === 'running' ? 'Server' : vscodeServerState === 'connecting' ? 'Server…' : 'Server ✖'}
-            </span>
-          </div>
-        )}
-
         {/* Cursor position */}
         <StatusBarCursorInfo />
 

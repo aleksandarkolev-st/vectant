@@ -10,7 +10,7 @@ import { getCurrentUser } from '@/services/userIdentity';
 import getInitials from '@/utils/getInitials';
 import {
   Users, FileEdit, Globe, Loader2, UserPlus, Shield,
-  Send, Check, X, Bell, Ban, MoreHorizontal, Radio, Hash
+  Send, Check, X, Bell, Ban, MoreHorizontal, Radio, Hash, Mail
 } from 'lucide-react';
 
 import T from './collabTheme';
@@ -32,6 +32,14 @@ export default function WorkspaceUsersPanel({ slug }) {
   const [joiningSessionId, setJoiningSessionId] = useState(null);
   const [joiningUserId, setJoiningUserId] = useState(null);
   const [invitingUserId, setInvitingUserId] = useState(null);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [invitingEmail, setInvitingEmail] = useState(false);
+  const [canManageMembers, setCanManageMembers] = useState(false);
+  const [membershipRole, setMembershipRole] = useState(null);
+  const [membershipStatus, setMembershipStatus] = useState('loading');
+  const [membershipCapabilityError, setMembershipCapabilityError] = useState(null);
+  const [membershipError, setMembershipError] = useState(null);
+  const [membershipNotice, setMembershipNotice] = useState(null);
   // Seed from service in case an invite arrived while the modal was closed
   const [pendingInvite, setPendingInvite] = useState(() => collabSessionService.pendingInvite);
 
@@ -48,6 +56,43 @@ export default function WorkspaceUsersPanel({ slug }) {
     });
     return unsub;
   }, []);
+
+  // ── Workspace membership capabilities ────────────────────────────────
+
+  useEffect(() => {
+    let cancelled = false;
+    setCanManageMembers(false);
+    setMembershipRole(null);
+    setMembershipStatus('loading');
+    setMembershipCapabilityError(null);
+    setMembershipError(null);
+    setMembershipNotice(null);
+    if (!slug) return () => { cancelled = true; };
+
+    fetch(`/api/workspace/${encodeURIComponent(slug)}/members`, { method: 'GET', cache: 'no-store' })
+      .then(async (res) => {
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(body?.error || `Workspace access check failed (${res.status})`);
+        }
+        return body;
+      })
+      .then((body) => {
+        if (cancelled) return;
+        const currentRole = body?.currentMember?.role || 'member';
+        setMembershipRole(currentRole);
+        setCanManageMembers(['owner', 'admin'].includes(currentRole));
+        setMembershipStatus('ready');
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.warn('[Collab] membership capabilities:', err?.message);
+        setMembershipCapabilityError(err?.message || 'Workspace access check failed');
+        setMembershipStatus('error');
+      });
+
+    return () => { cancelled = true; };
+  }, [slug]);
 
   // ── Request to join an existing session ────────────────────────────────
 
@@ -73,14 +118,64 @@ export default function WorkspaceUsersPanel({ slug }) {
 
   // ── Invite a solo user (direct collab) ────────────────────────────────
 
-  const handleInviteUser = useCallback(async (userId) => {
-    if (isGuest || isKnocking) return;
-    setInvitingUserId(userId);
+  const addWorkspaceMember = useCallback(async (email) => {
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
+      throw new Error('Enter a valid email address.');
+    }
+
+    const membershipRes = await fetch(`/api/workspace/${encodeURIComponent(slug)}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: normalizedEmail }),
+    });
+    if (!membershipRes.ok) {
+      const body = await membershipRes.json().catch(() => ({}));
+      throw new Error(body?.error || 'Failed to add workspace member');
+    }
+    return membershipRes.json().catch(() => ({}));
+  }, [slug]);
+
+  const handleInviteEmail = useCallback(async (event) => {
+    event.preventDefault();
+    if (!canManageMembers || invitingEmail) return;
+    const invitedEmail = inviteEmail.trim().toLowerCase();
+    setInvitingEmail(true);
+    setMembershipError(null);
+    setMembershipNotice(null);
     try {
+      await addWorkspaceMember(invitedEmail);
+      setInviteEmail('');
+      setMembershipNotice(`${invitedEmail} can now access this workspace.`);
+    } catch (err) {
+      console.warn('[Collab] inviteEmail:', err?.message);
+      setMembershipError(err?.message || 'Failed to invite member');
+    } finally {
+      setInvitingEmail(false);
+    }
+  }, [addWorkspaceMember, canManageMembers, inviteEmail, invitingEmail]);
+
+  const handleInviteUser = useCallback(async (user) => {
+    if (isGuest || isKnocking || !canManageMembers) return;
+    const userId = user?.id;
+    const email = user?.email;
+    if (!userId) return;
+    setInvitingUserId(userId);
+    setMembershipError(null);
+    setMembershipNotice(null);
+    try {
+      if (!email) {
+        throw new Error('This user cannot be invited yet because their email is unavailable.');
+      }
+      await addWorkspaceMember(email);
       await inviteUser(userId, slug);
-    } catch (err) { console.warn('[Collab] inviteUser:', err?.message); }
+      setMembershipNotice(`${email} can now access this workspace.`);
+    } catch (err) {
+      console.warn('[Collab] inviteUser:', err?.message);
+      setMembershipError(err?.message || 'Failed to invite user');
+    }
     setInvitingUserId(null);
-  }, [isGuest, isKnocking, inviteUser, slug]);
+  }, [addWorkspaceMember, canManageMembers, isGuest, isKnocking, inviteUser, slug]);
 
   // ── Accept incoming invite ────────────────────────────────────────────
 
@@ -186,6 +281,81 @@ export default function WorkspaceUsersPanel({ slug }) {
         </div>
       )}
 
+      {/* ── Workspace access / email invite ──────────────────────────── */}
+      <div className="rounded-lg border p-2"
+        style={{ backgroundColor: 'rgba(74,186,154,0.04)', borderColor: 'rgba(74,186,154,0.18)' }}>
+        <div className="flex items-center justify-between gap-2">
+          <SectionLabel icon={Mail} color={T.teal} label="Workspace access" />
+          {membershipRole && (
+            <span className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
+              style={{ backgroundColor: 'rgba(74,186,154,0.10)', color: T.teal }}>
+              {membershipRole}
+            </span>
+          )}
+        </div>
+
+        {membershipStatus === 'loading' && (
+          <div className="mt-2 flex items-center gap-2 text-[11px]" style={{ color: T.textMuted }}>
+            <Loader2 className="w-3 h-3 animate-spin" style={{ color: T.teal }} />
+            Checking workspace access...
+          </div>
+        )}
+
+        {membershipStatus === 'error' && (
+          <div className="mt-2 rounded border px-2 py-1.5 text-[11px]"
+            style={{ backgroundColor: 'rgba(255,87,87,0.06)', borderColor: 'rgba(255,87,87,0.18)', color: T.red }}>
+            {membershipCapabilityError || 'Workspace access check failed'}
+          </div>
+        )}
+
+        {membershipStatus === 'ready' && canManageMembers && (
+          <form onSubmit={handleInviteEmail}>
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                value={inviteEmail}
+                onChange={(event) => setInviteEmail(event.target.value)}
+                type="email"
+                inputMode="email"
+                placeholder="teammate@company.com"
+                className="min-w-0 flex-1 rounded-md border bg-transparent px-2.5 py-1.5 text-xs outline-none"
+                style={{ borderColor: T.border, color: T.text }}
+              />
+              <button
+                type="submit"
+                disabled={invitingEmail || !inviteEmail.trim()}
+                className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-all"
+                style={{
+                  backgroundColor: 'rgba(74,186,154,0.12)',
+                  border: '1px solid rgba(74,186,154,0.30)',
+                  color: T.teal,
+                  opacity: invitingEmail || !inviteEmail.trim() ? 0.55 : 1,
+                }}
+              >
+                {invitingEmail
+                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                  : <UserPlus className="w-3 h-3" />
+                }
+                Invite
+              </button>
+            </div>
+          </form>
+        )}
+
+        {membershipStatus === 'ready' && !canManageMembers && (
+          <div className="mt-2 rounded border px-2 py-1.5 text-[11px]"
+            style={{ backgroundColor: 'rgba(251,191,36,0.06)', borderColor: 'rgba(251,191,36,0.18)', color: T.amber }}>
+            Only workspace owners and admins can invite members.
+          </div>
+        )}
+
+        {membershipNotice && (
+          <div className="mt-2 rounded border px-2 py-1.5 text-[11px]"
+            style={{ backgroundColor: 'rgba(74,186,154,0.06)', borderColor: 'rgba(74,186,154,0.18)', color: T.teal }}>
+            {membershipNotice}
+          </div>
+        )}
+      </div>
+
       {/* ── Active Sessions ─────────────────────────────────────────── */}
       {sessions.length > 0 && (
         <div>
@@ -220,6 +390,7 @@ export default function WorkspaceUsersPanel({ slug }) {
                 isKnocking={isKnocking}
                 joiningUserId={joiningUserId}
                 invitingUserId={invitingUserId}
+                canManageMembers={canManageMembers}
                 onJoinUser={handleJoinUser}
                 onInviteUser={handleInviteUser}
                 onBlockUser={handleBlockUser}
@@ -243,10 +414,10 @@ export default function WorkspaceUsersPanel({ slug }) {
       )}
 
       {/* ── Error ────────────────────────────────────────────────────── */}
-      {error && (
+      {(error || membershipError) && (
         <div className="px-2 py-1.5 rounded text-[11px] border"
           style={{ backgroundColor: 'rgba(255,87,87,0.06)', borderColor: 'rgba(255,87,87,0.2)', color: T.red }}>
-          {error}
+          {error || membershipError}
         </div>
       )}
     </div>
@@ -355,9 +526,9 @@ function SessionCard({ session, myUserId, isIdle, isKnocking, joiningSessionId, 
  * UserRow — A single user entry with avatar, name, current file, and
  * hover-visible Join / Invite / Block action buttons.
  *
- * @param {{ user: object, isIdle: boolean, isHost: boolean, isKnocking: boolean, joiningUserId: string|null, invitingUserId: string|null, onJoinUser: (id: string, name: string) => void, onInviteUser: (id: string) => void, onBlockUser: (id: string, name: string) => void }} props
+ * @param {{ user: object, isIdle: boolean, isHost: boolean, isKnocking: boolean, joiningUserId: string|null, invitingUserId: string|null, canManageMembers: boolean, onJoinUser: (id: string, name: string) => void, onInviteUser: (user: object) => void, onBlockUser: (id: string, name: string) => void }} props
  */
-function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUserId, onJoinUser, onInviteUser, onBlockUser }) {
+function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUserId, canManageMembers, onJoinUser, onInviteUser, onBlockUser }) {
   const isJoining = joiningUserId === user.id;
   const isInviting = invitingUserId === user.id;
   const canAct = (isIdle || isHost) && !isKnocking;
@@ -403,23 +574,27 @@ function UserRow({ user, isIdle, isHost, isKnocking, joiningUserId, invitingUser
             </button>
           )}
           {/* Invite — invite to YOUR workspace */}
-          <button
-            onClick={() => onInviteUser(user.id)}
-            disabled={isInviting}
-            className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-all"
-            style={{
-              backgroundColor: 'rgba(124,184,248,0.10)',
-              border: '1px solid rgba(124,184,248,0.25)',
-              color: T.blue,
-              opacity: isInviting ? 0.5 : 1,
-            }}
-            title="Invite to your workspace"              aria-label={`Invite ${user.name} to your workspace`}          >
-            {isInviting
-              ? <Loader2 className="w-2.5 h-2.5 animate-spin" />
-              : <Send className="w-2.5 h-2.5" />
-            }
-            Invite
-          </button>
+          {canManageMembers && (
+            <button
+              onClick={() => onInviteUser(user)}
+              disabled={isInviting}
+              className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-all"
+              style={{
+                backgroundColor: 'rgba(124,184,248,0.10)',
+                border: '1px solid rgba(124,184,248,0.25)',
+                color: T.blue,
+                opacity: isInviting ? 0.5 : 1,
+              }}
+              title="Invite to your workspace"
+              aria-label={`Invite ${user.name} to your workspace`}
+            >
+              {isInviting
+                ? <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                : <Send className="w-2.5 h-2.5" />
+              }
+              Invite
+            </button>
+          )}
           {/* More menu (block) */}
           <div className="relative">
             <button

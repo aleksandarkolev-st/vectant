@@ -15,6 +15,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import bridge from './crdtWorkerBridge';
+import { resolveCollabWsUrl } from '@/lib/collab-url';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MonacoTextBinding — Bridges the CRDT worker with the Monaco editor model.
@@ -42,8 +43,8 @@ class MonacoTextBinding {
     this._applyingRemote = false;
 
     // ── Remote delta handler (worker → Monaco) ───────────────────────────
-    this._unsubDelta = br.onRemoteDelta(key, (delta, fullText) => {
-      this._handleRemoteDelta(delta, fullText);
+    this._unsubDelta = br.onRemoteDelta(key, (delta, fullText, deltaBatch) => {
+      this._handleRemoteDelta(delta, fullText, deltaBatch);
     });
 
     // ── Awareness decorations ────────────────────────────────────────────
@@ -152,92 +153,86 @@ class MonacoTextBinding {
 
   // ── Remote delta application ──────────────────────────────────────────────
 
-  _handleRemoteDelta(delta, fullText) {
+  _buildEditsFromDelta(delta) {
+    const modelLength = this.model.getValue().length;
+    const edits = [];
+    let oldIndex = 0;
+
+    for (const op of delta) {
+      if (op.retain != null) {
+        if (!Number.isFinite(op.retain) || op.retain < 0) return { valid: false, edits };
+        oldIndex += op.retain;
+        if (oldIndex > modelLength) return { valid: false, edits };
+      } else if (op.insert != null) {
+        if (oldIndex < 0 || oldIndex > modelLength) return { valid: false, edits };
+        const pos = this.model.getPositionAt(oldIndex);
+        edits.push({
+          range: new this.monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column),
+          text: typeof op.insert === 'string' ? op.insert : '',
+        });
+      } else if (op.delete != null) {
+        if (!Number.isFinite(op.delete) || op.delete < 0) return { valid: false, edits };
+        if (oldIndex < 0 || oldIndex + op.delete > modelLength) return { valid: false, edits };
+        const pos = this.model.getPositionAt(oldIndex);
+        const endPos = this.model.getPositionAt(oldIndex + op.delete);
+        edits.push({
+          range: new this.monaco.Range(pos.lineNumber, pos.column, endPos.lineNumber, endPos.column),
+          text: '',
+        });
+        oldIndex += op.delete;
+      }
+    }
+
+    return { valid: true, edits };
+  }
+
+  _applyFullText(fullText) {
+    this.model.applyEdits([{ range: this.model.getFullModelRange(), text: fullText }]);
+  }
+
+  _handleRemoteDelta(delta, fullText, deltaBatch = null) {
     try {
       if (this._destroyed) return;
       if (this.editor.getModel() !== this.model) return;
 
-      const normalize = (s) => (s ? s.replace(/\r\n/g, '\n').replace(/\s+$/, '') : '');
+      const normalize = (s) => (s ? s.replace(/\r\n/g, '\n') : '');
       const current = this.model.getValue();
       if (normalize(current) === normalize(fullText)) return;
 
-      // An empty delta with a changed fullText is a signal from the worker
-      // that it batched multiple ops and can't describe them incrementally.
-      // Fall back to a full-text replace immediately.
-      if (!delta || delta.length === 0) {
-        this._applyingRemote = true;
-        try {
-          this.model.applyEdits([{ range: this.model.getFullModelRange(), text: fullText }]);
-        } catch (e) {
-          console.warn('[Collab] batched full-replace failed', e?.message || e);
-        } finally {
-          this._applyingRemote = false;
-        }
-        return;
-      }
-
-      // Model length is the upper bound for any offset in the incoming delta.
-      // Malformed / malicious deltas from the CRDT layer could reference
-      // offsets past the end of the model; clamping prevents Monaco Range
-      // errors and accidental truncation.  On any inconsistency we fall
-      // back to a full-text replace below.
-      const modelLength = current.length;
-      let deltaValid = true;
-
-      // Build incremental Monaco edits from the Yjs delta
-      const edits = [];
-      let oldIndex = 0;
-
-      for (const op of delta) {
-        if (op.retain != null) {
-          if (!Number.isFinite(op.retain) || op.retain < 0) { deltaValid = false; break; }
-          oldIndex += op.retain;
-          if (oldIndex > modelLength) { deltaValid = false; break; }
-        } else if (op.insert != null) {
-          if (oldIndex < 0 || oldIndex > modelLength) { deltaValid = false; break; }
-          const pos = this.model.getPositionAt(oldIndex);
-          edits.push({
-            range: new this.monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column),
-            text: typeof op.insert === 'string' ? op.insert : '',
-          });
-        } else if (op.delete != null) {
-          if (!Number.isFinite(op.delete) || op.delete < 0) { deltaValid = false; break; }
-          if (oldIndex < 0 || oldIndex + op.delete > modelLength) { deltaValid = false; break; }
-          const pos = this.model.getPositionAt(oldIndex);
-          const endPos = this.model.getPositionAt(oldIndex + op.delete);
-          edits.push({
-            range: new this.monaco.Range(pos.lineNumber, pos.column, endPos.lineNumber, endPos.column),
-            text: '',
-          });
-          oldIndex += op.delete;
-        }
-      }
+      const deltas = Array.isArray(deltaBatch) && deltaBatch.length > 0
+        ? deltaBatch.filter((d) => Array.isArray(d) && d.length > 0)
+        : (Array.isArray(delta) && delta.length > 0 ? [delta] : []);
 
       this._applyingRemote = true;
       try {
-        if (!deltaValid) {
-          // Delta doesn't describe this model's state — full replace is the
-          // only safe recovery.
-          console.warn('[Collab] remote delta offsets out of bounds, falling back to full replace');
-          this.model.applyEdits([{ range: this.model.getFullModelRange(), text: fullText }]);
+        if (deltas.length === 0) {
+          this._applyFullText(fullText);
           return;
         }
 
-        if (edits.length === 0) return;
-
-        this.model.applyEdits(edits);
+        for (const nextDelta of deltas) {
+          const { valid, edits } = this._buildEditsFromDelta(nextDelta);
+          if (!valid) {
+            // Delta doesn't describe this model's state — full replace is the
+            // only safe recovery.
+            console.warn('[Collab] remote delta offsets out of bounds, falling back to full replace');
+            this._applyFullText(fullText);
+            return;
+          }
+          if (edits.length > 0) this.model.applyEdits(edits);
+        }
 
         // Post-apply safeguard: verify model matches the worker's full text.
         const afterApply = normalize(this.model.getValue());
         const expected = normalize(fullText);
         if (afterApply !== expected) {
           console.warn('[Collab] post-apply mismatch detected, correcting via full replace');
-          this.model.applyEdits([{ range: this.model.getFullModelRange(), text: fullText }]);
+          this._applyFullText(fullText);
         }
       } catch (e) {
         console.warn('[Collab] incremental remote apply failed, full replace', e?.message);
         try {
-          this.model.applyEdits([{ range: this.model.getFullModelRange(), text: fullText }]);
+          this._applyFullText(fullText);
         } catch (e2) {
           console.warn('[Collab] full-replace fallback also failed', e2?.message);
         }
@@ -496,15 +491,8 @@ class CollabClient {
     // Derive WebSocket URL for the collab server (notifications, sessions, REST).
     if (serverUrl) {
       this.serverUrl = serverUrl;
-    } else if (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_COLLAB_SERVER_URL) {
-      this.serverUrl = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL
-        .replace(/^http:/, 'ws:')
-        .replace(/^https:/, 'wss:');
     } else if (typeof window !== 'undefined') {
-      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const host = window.location.hostname;
-      const port = process.env.NEXT_PUBLIC_COLLAB_PORT || '1234';
-      this.serverUrl = `${proto}://${host}:${port}`;
+      this.serverUrl = resolveCollabWsUrl();
     } else {
       this.serverUrl = 'ws://localhost:1234';
     }
@@ -1123,12 +1111,13 @@ class CollabClient {
     const normalizedScope =
       typeof scope === 'string'
         ? { userId: scope, sessionId: null }
-        : { userId: scope?.userId || null, sessionId: scope?.sessionId || null };
+        : { userId: scope?.userId || null, sessionId: scope?.sessionId || null, userEmail: scope?.userEmail || null };
 
     const base = this.serverUrl.replace(/\/$/, '');
     let url = `${base}/notifications?slug=${encodeURIComponent(slug)}`;
     if (normalizedScope.userId) url += `&userId=${encodeURIComponent(normalizedScope.userId)}`;
     if (normalizedScope.sessionId) url += `&sessionId=${encodeURIComponent(normalizedScope.sessionId)}`;
+    if (normalizedScope.userEmail) url += `&email=${encodeURIComponent(normalizedScope.userEmail)}`;
 
     let ws;
     let reconnectTimer = null;

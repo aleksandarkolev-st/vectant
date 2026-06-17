@@ -27,14 +27,27 @@ data:
   SYNTHI_BROWSER_WORKFLOW_BRIDGE_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{bridgePort}"
   SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT: "9466"
   SYNTHI_HOSTED_BROWSER_CDP_PORT: "9222"
+  SYNTHI_HOSTED_BROWSER_VIEW_PORT: "6080"
+  SYNTHI_HOSTED_BROWSER_VNC_PORT: "5900"
   SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-browser-workflow-bridge:build-tag-required"
+  SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES: "20000"
+  SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS: "15000"
   # Optional runtime-scoped preview proxy target. Production previews route to
   # a pod-local preview sidecar so user apps may bind localhost-only ports.
   SYNTHI_PREVIEW_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"
+  SYNTHI_PREVIEW_PUBLIC_PREFIX: "/collab"
+  SYNTHI_PREVIEW_PUBLIC_DOMAIN: "preview.vectant.dev"
+  SYNTHI_PREVIEW_PUBLIC_PROTOCOL: "https"
   SYNTHI_PREVIEW_SIDECAR_PORT: "18080"
   SYNTHI_PREVIEW_SIDECAR_PREFIX: "/__synthi_preview"
+  SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS: "30000"
+  SYNTHI_PREVIEW_PORT_PROBE_TIMEOUT_MS: "1500"
   SYNTHI_PREVIEW_SIDECAR_IMAGE: "node:20-alpine"
   SYNTHI_PREVIEW_SCAN_PORTS: ""
+  # Runtime infrastructure ports that are reachable inside the pod but should
+  # not be advertised as user previews. Keep this configurable as the runtime
+  # image evolves.
+  SYNTHI_PREVIEW_EXCLUDE_PORTS: "8001,18000"
   SYNTHI_TERMINAL_PORT_POOL: ""
   SYNTHI_TERMINAL_BACKEND: "k8s-exec"
   SYNTHI_NO_JAIL: "1"
@@ -63,6 +76,15 @@ data:
   NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.vectant.dev"
   NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.vectant.dev"
   NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER: "true"
+  NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH: "/auth/loopback"
+  NEXT_PUBLIC_VECTANT_OAUTH_RELAY_EXTENSION_URL: "/vectant/extensions/vectant-oauth-relay.zip"
+
+  # ── Terminal loopback auth callback bridge ────────────────────────────────
+  SYNTHI_RUNTIME_CALLBACK_BODY_LIMIT_BYTES: "65536"
+  SYNTHI_RUNTIME_CALLBACK_RESPONSE_LIMIT_BYTES: "131072"
+  SYNTHI_RUNTIME_CALLBACK_BODY_PREVIEW_CHARS: "2000"
+  SYNTHI_RUNTIME_CALLBACK_TIMEOUT_MS: "15000"
+  SYNTHI_OAUTH_RELAY_TTL_MS: "300000"
 
   # ── Feature flags ──────────────────────────────────────────────────────────
   GCS_SYNC_ON_FLUSH: "true"

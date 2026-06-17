@@ -124,7 +124,7 @@ class CRDTWorkerBridge {
         this._contentCache.set(msg.key, { content: msg.fullText, length: msg.length });
         if (handlers) {
           for (const cb of handlers.onDelta) {
-            try { cb(msg.delta, msg.fullText); } catch (_) {}
+            try { cb(msg.delta, msg.fullText, msg.deltas); } catch (_) {}
           }
         }
         break;

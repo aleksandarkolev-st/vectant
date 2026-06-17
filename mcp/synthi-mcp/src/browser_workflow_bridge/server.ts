@@ -16,12 +16,14 @@
  * Endpoints:
  *   GET  /healthz                     -> "ok"
  *   GET  /browser-workflows/state     -> panel-safe state, no screenshots
+ *   POST /browser-workflows/open-external -> open http(s) URL in hosted browser, no page inspection
  *   POST /browser-workflows/tool      -> { tool, arguments }
  */
 
 import http from "node:http";
 import { browserBroker, type BrowserRecordingIssue } from "../browser/broker.js";
-import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
+import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
+import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
 import {
   mutationSafetyPlanFor,
   replayIsolationProfileManifestFor,
@@ -67,6 +69,10 @@ interface BrowserWorkflowOverlayBody {
   url?: unknown;
 }
 
+interface BrowserWorkflowExternalOpenBody {
+  url?: unknown;
+}
+
 interface PreviewDiscoveryResult {
   ok: boolean;
   url?: string;
@@ -76,6 +82,8 @@ interface PreviewDiscoveryResult {
 
 const MAX_HISTORY = 8;
 const PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
+const EXTERNAL_OPEN_BODY_LIMIT_BYTES = parsePositiveInt(process.env["SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES"], 20_000);
+const EXTERNAL_OPEN_TIMEOUT_MS = parsePositiveInt(process.env["SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS"], 15_000);
 const PREVIEW_DISCOVERY_PROBE_TIMEOUT_MS = 1000;
 const PREVIEW_DISCOVERY_MAX_CONCURRENCY = 4;
 const DEFAULT_PREVIEW_DISCOVERY_PORTS = [
@@ -165,6 +173,11 @@ class BridgeToolInputError extends Error {
     this.detail = detail;
     this.status = status;
   }
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 async function readJsonBody<T>(req: http.IncomingMessage, maxBytes: number = 1_000_000): Promise<T> {
@@ -267,6 +280,37 @@ function isLoopbackOrigin(value: string): boolean {
 function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, "");
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function normalizeExternalBrowserUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureHostedRuntimeForExternalOpen(): Promise<
+  { ok: true } | { ok: false; status: number; error: string; detail?: unknown }
+> {
+  if (browserPlaywrightAdapter.isAttached() && browserBroker.runtimeAttachment()) {
+    return { ok: true };
+  }
+
+  const attached = await attachHostedBrowserRuntime(
+    { open_workspace: false },
+    browserPlaywrightAdapter,
+    browserBroker
+  );
+  if (attached.ok) return { ok: true };
+  return {
+    ok: false,
+    status: 503,
+    error: attached.error,
+    detail: attached.runtime,
+  };
 }
 
 function requestUrlFromArgs(args: unknown): string | undefined {
@@ -882,6 +926,44 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
           page_url: pageUrl,
         });
         writeJson(res, result.ok ? 200 : 400, result);
+        return;
+      }
+
+      if (url === "/browser-workflows/open-external" && method === "POST") {
+        let body: BrowserWorkflowExternalOpenBody;
+        try {
+          body = await readJsonBody(req, EXTERNAL_OPEN_BODY_LIMIT_BYTES);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          writeJson(res, 400, { ok: false, error: "invalid_body", detail: msg });
+          return;
+        }
+
+        const openUrl = normalizeExternalBrowserUrl(body.url);
+        if (!openUrl) {
+          writeJson(res, 400, { ok: false, error: "invalid_url" });
+          return;
+        }
+
+        const runtime = await ensureHostedRuntimeForExternalOpen();
+        if (!runtime.ok) {
+          writeJson(res, runtime.status, { ok: false, error: runtime.error, detail: runtime.detail });
+          return;
+        }
+
+        try {
+          const opened = await browserPlaywrightAdapter.openExternal(openUrl, { timeoutMs: EXTERNAL_OPEN_TIMEOUT_MS });
+          writeJson(res, 200, {
+            ok: true,
+            opened: {
+              tab_id: opened.tab_id,
+              navigation_started: opened.navigation_started,
+            },
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          writeJson(res, 502, { ok: false, error: "browser_open_failed", detail: msg });
+        }
         return;
       }
 
