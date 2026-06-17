@@ -126,7 +126,12 @@ import {
 } from "../dojo/api/endpoint_inference.js";
 import {
   compileDojoApiBackedMcpTool,
+  executeDojoApiBackedToolInvocation,
   validateDojoApiBackedToolInvocation,
+  type DojoApiBackedMcpTool,
+  type DojoApiToolExecutionEvidence,
+  type DojoApiToolHttpRequest,
+  type DojoApiToolHttpResponse,
 } from "../dojo/api/api_tool_compiler.js";
 import type {
   DojoApiEndpointCandidate,
@@ -190,6 +195,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_prepare_source_affordance_pr",
   "synthi_dojo_create_source_affordance_pr_branch",
   "synthi_dojo_prepare_api_backed_tool",
+  "synthi_dojo_run_api_backed_tool",
   "synthi_dojo_get_registry",
   "synthi_dojo_get_skill_assurance_case",
   "synthi_dojo_get_entrustment_level",
@@ -1405,6 +1411,34 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_run_api_backed_tool",
+    description: "Dry-run or execute a compiled proof-gated API-backed MCP tool with license/proof validation, idempotency, postcondition checks, and evidence output.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
+        api_backed_mcp_tool: { type: "object" },
+        tool_args: { type: "object" },
+        auth_scopes: { type: "array", items: { type: "string" } },
+        dry_run: { type: "boolean" },
+        now: { type: "string" },
+        mock_response: {
+          type: "object",
+          properties: {
+            status: { type: "number" },
+            headers: { type: "object" },
+            body: {},
+          },
+          required: ["status"],
+        },
+        allow_network_transport: { type: "boolean" },
+        api_base_url: { type: "string" },
+        request_headers: { type: "object", additionalProperties: { type: "string" } },
+      },
+      required: ["api_backed_mcp_tool", "tool_args"],
+    },
+  },
+  {
     name: "synthi_dojo_get_registry",
     description: "Return the organization-level Dojo skill registry, case-law registry, antibody registry, and aggregate metrics.",
     inputSchema: {
@@ -1939,6 +1973,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         break;
       case "synthi_dojo_prepare_api_backed_tool":
         response = await dojoPrepareApiBackedToolTool(args);
+        break;
+      case "synthi_dojo_run_api_backed_tool":
+        response = await dojoRunApiBackedToolTool(args);
         break;
       case "synthi_dojo_get_registry":
         response = await dojoGetRegistryTool(args);
@@ -2738,6 +2775,108 @@ async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse
         ...invocationBlockers,
       ]),
     ],
+  });
+}
+
+async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const apiTool = apiBackedMcpToolOpt(a["api_backed_mcp_tool"]);
+  const toolArgs = objectOpt(a["tool_args"]);
+  if (!apiTool || !toolArgs) {
+    return errorResponse("dojo_api_backed_tool_inputs_invalid", {
+      ok: false,
+      error: "dojo_api_backed_tool_inputs_invalid",
+      blocked_by: [
+        ...(!apiTool ? ["api_backed_mcp_tool_invalid"] : []),
+        ...(!toolArgs ? ["api_backed_tool_args_invalid"] : []),
+      ],
+      expected_shape: "api_backed_mcp_tool plus tool_args containing proof_capsule, request, query?, idempotency_key?",
+    });
+  }
+
+  const skill = await requiredAuthorizedSkillForProductionRead(
+    { ...a, skill_id: apiTool.skill_id },
+    "synthi_dojo_run_api_backed_tool"
+  );
+  if (!skill.ok) return skill.error;
+  const currentLicense = skill.skill.permission_license;
+  const toolMismatch = apiBackedToolCurrentLicenseBlockedBy(apiTool, skill.skill);
+  if (toolMismatch.length > 0) {
+    return errorResponse("dojo_api_backed_tool_license_mismatch", {
+      ok: false,
+      error: "dojo_api_backed_tool_license_mismatch",
+      skill_id: skill.skill.skill_id,
+      tool_name: apiTool.tool_name,
+      blocked_by: toolMismatch,
+    });
+  }
+
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
+  const dryRun = a["dry_run"] !== false;
+  const licenseContext = {
+    skill_id: skill.skill.skill_id,
+    license_id: currentLicense.license_id,
+    license_version: currentLicense.license_version,
+    action: apiTool.action,
+    auth_scopes: stringArrayOpt(a["auth_scopes"]),
+  };
+  const invocationValidation = validateDojoApiBackedToolInvocation({
+    tool: apiTool,
+    args: toolArgs,
+    license_context: licenseContext,
+  });
+  const proofValidation = apiToolProofValidationForSkill(skill.skill, apiTool, toolArgs["proof_capsule"], now);
+  if (dryRun) {
+    const blockedBy = dedupeStrings([...invocationValidation.blocked_by, ...proofValidation.blocked_by]);
+    return jsonResponse({
+      ok: invocationValidation.ok && proofValidation.ok,
+      skill_id: skill.skill.skill_id,
+      control_plane_source: skill.control_plane_source,
+      dry_run: true,
+      api_backed_mcp_tool: apiTool,
+      api_tool_invocation_validation: invocationValidation,
+      proof_validation: proofValidation,
+      api_tool_execution: null,
+      api_tool_execution_evidence: [],
+      blocked_by: blockedBy,
+    });
+  }
+
+  const transport = apiToolTransportForArgs(a, skill.skill);
+  if (!transport.ok) {
+    return errorResponse("dojo_api_backed_tool_transport_required", {
+      ok: false,
+      error: "dojo_api_backed_tool_transport_required",
+      skill_id: skill.skill.skill_id,
+      tool_name: apiTool.tool_name,
+      blocked_by: transport.blocked_by,
+    });
+  }
+  const evidenceRecords: DojoApiToolExecutionEvidence[] = [];
+  const execution = await executeDojoApiBackedToolInvocation({
+    tool: apiTool,
+    args: toolArgs,
+    license_context: licenseContext,
+    validate_proof: ({ proof_capsule }) => apiToolProofValidationForSkill(skill.skill, apiTool, proof_capsule, now),
+    transport: transport.transport,
+    write_evidence: (evidence) => {
+      const record = cloneJson(evidence);
+      evidenceRecords.push(record);
+      return `evidence:api_tool_${hashId(JSON.stringify(record))}`;
+    },
+  });
+  return jsonResponse({
+    ok: execution.ok,
+    skill_id: skill.skill.skill_id,
+    control_plane_source: skill.control_plane_source,
+    dry_run: false,
+    transport_mode: transport.mode,
+    api_backed_mcp_tool: apiTool,
+    api_tool_invocation_validation: invocationValidation,
+    proof_validation: execution.proof_validation ?? proofValidation,
+    api_tool_execution: execution,
+    api_tool_execution_evidence: evidenceRecords,
+    blocked_by: execution.blocked_by,
   });
 }
 
@@ -8258,6 +8397,222 @@ function sourceAffordanceArtifactRefs(
 
 function dedupeStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.trim()))];
+}
+
+function apiBackedMcpToolOpt(value: unknown): DojoApiBackedMcpTool | undefined {
+  const record = objectOpt(value);
+  if (!record) return undefined;
+  if (record["schema_version"] !== "synthi.dojo.apiBackedMcpTool.v1") return undefined;
+  const toolName = stringOpt(record["tool_name"]);
+  const toolVersion = stringOpt(record["tool_version"]);
+  const candidateId = stringOpt(record["candidate_id"]);
+  const method = apiMethodOpt(record["method"]);
+  const apiPath = stringOpt(record["path"]);
+  const skillId = stringOpt(record["skill_id"]);
+  const licenseId = stringOpt(record["license_id"]);
+  const licenseVersion = stringOpt(record["license_version"]);
+  const action = stringOpt(record["action"]);
+  const proofClaimMapping = stringRecordOpt(record["proof_claim_mapping"]);
+  const inputSchema = objectOpt(record["input_schema"]);
+  const schemaDigest = stringOpt(record["schema_digest"]);
+  const enforcement = objectOpt(record["enforcement"]);
+  if (
+    !toolName
+    || !toolVersion
+    || !candidateId
+    || !method
+    || !apiPath
+    || !skillId
+    || !licenseId
+    || !licenseVersion
+    || !action
+    || !inputSchema
+    || !schemaDigest
+    || record["proof_required"] !== true
+    || !enforcement
+    || enforcement["proof_capsule_required"] !== true
+    || enforcement["license_kernel_required"] !== true
+    || enforcement["evidence_write_required"] !== true
+  ) {
+    return undefined;
+  }
+  const authScope = record["auth_scope"] === null ? null : stringOpt(record["auth_scope"]) ?? null;
+  const querySchema = record["query_schema"] === null ? null : objectOpt(record["query_schema"]) ?? null;
+  const idempotency = record["idempotency_key_location"] === null
+    ? null
+    : idempotencyKeyLocationOpt(record["idempotency_key_location"]) ?? null;
+  const rollback = record["rollback_strategy"] === null
+    ? null
+    : rollbackStrategyOpt(record["rollback_strategy"]) ?? null;
+  const postcondition = record["postcondition"] === null ? null : stringOpt(record["postcondition"]) ?? null;
+  return {
+    schema_version: "synthi.dojo.apiBackedMcpTool.v1",
+    tool_name: toolName,
+    tool_version: toolVersion,
+    candidate_id: candidateId,
+    method,
+    path: apiPath,
+    skill_id: skillId,
+    license_id: licenseId,
+    license_version: licenseVersion,
+    action,
+    auth_scope: authScope,
+    proof_required: true,
+    proof_claim_mapping: proofClaimMapping,
+    query_schema: querySchema,
+    idempotency_key_location: idempotency,
+    rollback_strategy: rollback,
+    postcondition,
+    input_schema: cloneJson(inputSchema),
+    schema_digest: schemaDigest,
+    enforcement: {
+      proof_capsule_required: true,
+      license_kernel_required: true,
+      evidence_write_required: true,
+      postcondition_assertion_required: enforcement["postcondition_assertion_required"] === true,
+      idempotency_required: enforcement["idempotency_required"] === true,
+    },
+  };
+}
+
+function apiBackedToolCurrentLicenseBlockedBy(tool: DojoApiBackedMcpTool, skill: DojoSkill): string[] {
+  const blockedBy: string[] = [];
+  if (tool.skill_id !== skill.skill_id) blockedBy.push("api_tool_skill_mismatch");
+  if (tool.license_id !== skill.permission_license.license_id) blockedBy.push("api_tool_license_mismatch");
+  if (tool.license_version !== skill.permission_license.license_version) blockedBy.push("api_tool_license_version_mismatch");
+  const licensedAction = [
+    ...skill.permission_license.allowed_actions,
+    ...skill.permission_license.gated_actions,
+  ].some((action) => action.action === tool.action);
+  if (!licensedAction) blockedBy.push("api_tool_action_not_licensed");
+  const substrateRequirement = skill.permission_license.substrate_requirements.find((requirement) =>
+    requirement.action === tool.action
+  );
+  if (substrateRequirement && !substrateRequirement.allowed_substrates.includes("api")) {
+    blockedBy.push("api_tool_substrate_not_allowed");
+  }
+  return blockedBy;
+}
+
+function apiToolProofValidationForSkill(
+  skill: DojoSkill,
+  tool: DojoApiBackedMcpTool,
+  proofCapsuleValue: unknown,
+  now: string
+): { ok: boolean; blocked_by: string[] } {
+  const capsule = proofCapsuleOpt(proofCapsuleValue);
+  if (!capsule) return { ok: false, blocked_by: ["api_tool_proof_capsule_required"] };
+  const validation = validateDojoProofCapsule(skill, capsule, tool.action, { now });
+  const licenseId = (capsule as DojoProofCarryingSkillCapsule & { license_id?: string }).license_id;
+  const blockedBy = dedupeStrings([
+    ...validation.blocked_by,
+    ...(licenseId === tool.license_id ? [] : ["api_tool_proof_license_mismatch"]),
+    ...(capsule.substrate_claim === "api" ? [] : ["api_tool_proof_substrate_mismatch"]),
+  ]);
+  return {
+    ok: validation.ok && blockedBy.length === 0,
+    blocked_by: blockedBy,
+  };
+}
+
+type ApiToolTransportResolution =
+  | {
+    ok: true;
+    mode: "mock" | "network";
+    transport: (request: DojoApiToolHttpRequest) => Promise<DojoApiToolHttpResponse> | DojoApiToolHttpResponse;
+  }
+  | { ok: false; blocked_by: string[] };
+
+function apiToolTransportForArgs(args: Record<string, unknown>, skill: DojoSkill): ApiToolTransportResolution {
+  const mockResponse = apiToolMockResponseOpt(args["mock_response"]);
+  if (mockResponse) {
+    return {
+      ok: true,
+      mode: "mock",
+      transport: () => cloneJson(mockResponse),
+    };
+  }
+  if (!boolOpt(args["allow_network_transport"])) {
+    return { ok: false, blocked_by: ["api_tool_mock_response_or_network_transport_required"] };
+  }
+  const baseUrlRaw = stringOpt(args["api_base_url"]);
+  if (!baseUrlRaw) return { ok: false, blocked_by: ["api_tool_base_url_required"] };
+  let baseUrl: URL;
+  let skillOrigin: URL;
+  try {
+    baseUrl = new URL(baseUrlRaw);
+    skillOrigin = new URL(skill.app_origin);
+  } catch {
+    return { ok: false, blocked_by: ["api_tool_base_url_invalid"] };
+  }
+  if (baseUrl.origin !== skillOrigin.origin) {
+    return { ok: false, blocked_by: ["api_tool_base_url_origin_mismatch"] };
+  }
+  const requestHeaders = stringRecordOpt(args["request_headers"]);
+  return {
+    ok: true,
+    mode: "network",
+    transport: (request) => executeNetworkApiToolTransport(request, baseUrl, requestHeaders),
+  };
+}
+
+function apiToolMockResponseOpt(value: unknown): DojoApiToolHttpResponse | undefined {
+  const record = objectOpt(value);
+  if (!record) return undefined;
+  const status = numberOpt(record["status"]);
+  if (status === undefined) return undefined;
+  const headers = stringRecordOpt(record["headers"]);
+  return {
+    status,
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    ...(record["body"] !== undefined ? { body: cloneJson(record["body"]) } : {}),
+  };
+}
+
+async function executeNetworkApiToolTransport(
+  request: DojoApiToolHttpRequest,
+  baseUrl: URL,
+  requestHeaders: Record<string, string>
+): Promise<DojoApiToolHttpResponse> {
+  const url = new URL(request.path, baseUrl);
+  for (const [key, value] of Object.entries(request.query)) {
+    url.searchParams.set(key, value);
+  }
+  const headers = {
+    ...requestHeaders,
+    ...request.headers,
+  };
+  const hasBody = request.body !== undefined && request.body !== null && request.method !== "GET";
+  if (hasBody && !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
+    headers["Content-Type"] = "application/json";
+  }
+  const response = await fetch(url, {
+    method: request.method,
+    headers,
+    ...(hasBody ? { body: JSON.stringify(request.body) } : {}),
+  });
+  const responseHeaders: Record<string, string> = {};
+  response.headers.forEach((value, key) => {
+    responseHeaders[key] = value;
+  });
+  const text = await response.text();
+  return {
+    status: response.status,
+    headers: responseHeaders,
+    body: parseApiToolResponseBody(text, responseHeaders["content-type"]),
+  };
+}
+
+function parseApiToolResponseBody(text: string, contentType?: string): unknown {
+  if (!text) return undefined;
+  if (contentType?.toLowerCase().includes("application/json")) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+  return text;
 }
 
 type DojoApiCandidateInputResult =

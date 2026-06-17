@@ -2033,6 +2033,132 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("runs a compiled API-backed MCP tool with proof validation, postcondition, and evidence", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const publishedSkill = dojoSkillRegistry.get(skillId) as DojoSkill;
+    const proofCapsule = issueDojoProofCapsule(publishedSkill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill),
+      require_verified_evidence: true,
+      substrate_claim: "api",
+      now: "2026-06-17T02:00:00.000Z",
+      expires_at: "2026-06-17T02:15:00.000Z",
+    });
+    expect(proofCapsule).toEqual(expect.objectContaining({
+      license_id: publishedSkill.permission_license.license_id,
+      substrate_claim: "api",
+    }));
+
+    const prepared = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+      skill_id: publishedSkill.skill_id,
+      network_trace: {
+        method: "POST",
+        url: "https://app.example.test/api/invoices?workspace=workspace-a",
+        request_body: { client_id: "client-a", amount: 42 },
+        response_body: { invoice: { status: "saved" } },
+        source_ref: "trace:save-invoice-api",
+      },
+      candidate_overrides: {
+        auth_scope: "invoice:write",
+        idempotency_key_location: "header",
+        rollback_strategy: "compensating_call",
+        postcondition: "invoice.status == 'saved'",
+        proof_claim_mapping: {
+          checkride_passed: "dojo.checkride",
+          workspace_verified: "tenant.workspace_id",
+        },
+        review_status: "approved",
+      },
+      requested_action: "run_workflow",
+      tool_name: "synthi_api_save_invoice",
+      sample_invocation_args: {
+        proof_capsule: proofCapsule,
+        request: { client_id: "client-a", amount: 42 },
+        query: { workspace: "workspace-a" },
+        idempotency_key: "idem-api-run-a",
+      },
+      auth_scopes: ["invoice:write"],
+    });
+    expect(prepared?.isError).toBeUndefined();
+    const apiTool = (prepared?.structuredContent as { api_backed_mcp_tool: unknown }).api_backed_mcp_tool;
+    const toolArgs = {
+      proof_capsule: proofCapsule,
+      request: { client_id: "client-a", amount: 42 },
+      query: { workspace: "workspace-a" },
+      idempotency_key: "idem-api-run-a",
+    };
+
+    const dryRun = await dispatchDojoTool("synthi_dojo_run_api_backed_tool", {
+      api_backed_mcp_tool: apiTool,
+      tool_args: toolArgs,
+      auth_scopes: ["invoice:write"],
+      now: "2026-06-17T02:01:00.000Z",
+    });
+    expect(dryRun?.isError).toBeUndefined();
+    expect(dryRun?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      implementation_status: "executable",
+      runtime_enforced: true,
+      dry_run: true,
+      skill_id: publishedSkill.skill_id,
+      api_tool_invocation_validation: { ok: true, blocked_by: [] },
+      proof_validation: { ok: true, blocked_by: [] },
+      api_tool_execution: null,
+      api_tool_execution_evidence: [],
+      blocked_by: [],
+    }));
+
+    const executed = await dispatchDojoTool("synthi_dojo_run_api_backed_tool", {
+      api_backed_mcp_tool: apiTool,
+      tool_args: toolArgs,
+      auth_scopes: ["invoice:write"],
+      dry_run: false,
+      now: "2026-06-17T02:01:00.000Z",
+      mock_response: {
+        status: 201,
+        body: { invoice: { status: "saved" } },
+      },
+    });
+    expect(executed?.isError).toBeUndefined();
+    expect(executed?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: false,
+      transport_mode: "mock",
+      api_tool_execution: expect.objectContaining({
+        ok: true,
+        status: "executed",
+        blocked_by: [],
+        request: expect.objectContaining({
+          method: "POST",
+          path: "/api/invoices",
+          headers: { "Idempotency-Key": "idem-api-run-a" },
+          query: { workspace: "workspace-a" },
+          body: { client_id: "client-a", amount: 42 },
+        }),
+        response: { status: 201, body: { invoice: { status: "saved" } } },
+        postcondition: expect.objectContaining({
+          ok: true,
+          predicate: "invoice.status == 'saved'",
+          actual: "saved",
+        }),
+        evidence_record_id: expect.stringMatching(/^evidence:api_tool_/),
+      }),
+      api_tool_execution_evidence: [
+        expect.objectContaining({
+          schema_version: "synthi.dojo.apiToolExecutionEvidence.v1",
+          tool_name: "synthi_api_save_invoice",
+          proof_capsule_id: proofCapsule.capsule_id,
+          postcondition_ok: true,
+          blocked_by: [],
+        }),
+      ],
+      blocked_by: [],
+    }));
+  });
+
   it("keeps API-backed tool preparation blocked until endpoint review gates pass", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());

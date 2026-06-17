@@ -599,7 +599,9 @@ function requireProofEvidenceBacked(
   const evidenceRecordIds = proofCapsule["evidence_record_ids"];
   const evidenceRecordIdSet = new Set(
     Array.isArray(evidenceRecordIds)
-      ? evidenceRecordIds.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      ? evidenceRecordIds
+        .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        .flatMap(evidenceRecordReferenceKeys)
       : []
   );
   if (!Array.isArray(evidenceRecordIds) || evidenceRecordIds.every((item) => typeof item !== "string" || item.trim().length === 0)) {
@@ -624,11 +626,19 @@ function requireProofEvidenceBacked(
       blockedBy.push(`api_tool_proof_evidence_claim_refs_required:${claim}`);
       continue;
     }
-    const unboundRefs = evidenceClaim.evidence_refs.filter((ref) => !evidenceRecordIdSet.has(ref));
+    const unboundRefs = evidenceClaim.evidence_refs.filter((ref) =>
+      evidenceRecordReferenceKeys(ref).every((key) => !evidenceRecordIdSet.has(key))
+    );
     if (unboundRefs.length > 0) {
       blockedBy.push(`api_tool_proof_evidence_claim_ref_unbound:${claim}`);
     }
   }
+}
+
+function evidenceRecordReferenceKeys(value: string): string[] {
+  const trimmed = value.trim();
+  const withoutPrefix = trimmed.startsWith("evidence:") ? trimmed.slice("evidence:".length) : trimmed;
+  return [...new Set([trimmed, withoutPrefix, `evidence:${withoutPrefix}`])];
 }
 
 function parseProofEvidenceClaims(value: unknown): Array<{ claim: string; satisfied: boolean; evidence_refs: string[] }> {

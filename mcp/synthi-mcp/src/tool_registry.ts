@@ -79,6 +79,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_dojo_prepare_source_affordance_pr",
   "synthi_dojo_create_source_affordance_pr_branch",
   "synthi_dojo_prepare_api_backed_tool",
+  "synthi_dojo_run_api_backed_tool",
   "synthi_dojo_get_registry",
   "synthi_dojo_get_skill_assurance_case",
   "synthi_dojo_get_entrustment_level",

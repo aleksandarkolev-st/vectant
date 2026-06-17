@@ -309,6 +309,7 @@ export interface DojoProofCarryingSkillCapsule {
   skill_id: string;
   skill_version: string;
   requested_action: string;
+  license_id: string;
   license_version: string;
   entrustment_level: DojoEntrustmentLevel;
   issuer: string;
@@ -1394,6 +1395,7 @@ export function issueDojoProofCapsule(
     skill_id: skill.skill_id,
     skill_version: skill.skill_version,
     requested_action: requestedAction,
+    license_id: skill.permission_license.license_id,
     license_version: skill.permission_license.license_version,
     entrustment_level: skill.entrustment_level,
     issuer: dojoProofIssuer(),
@@ -1437,6 +1439,7 @@ export function validateDojoProofCapsule(
   if (capsule.schema_version !== "synthi.dojo.proofCapsule.v1") blockedBy.push("proof_capsule_schema_version_mismatch");
   if (capsule.skill_id !== skill.skill_id) blockedBy.push("proof_capsule_skill_mismatch");
   if (capsule.skill_version !== skill.skill_version) blockedBy.push("proof_capsule_skill_version_mismatch");
+  if (capsule.license_id !== license.license_id) blockedBy.push("proof_capsule_license_mismatch");
   if (capsule.license_version !== license.license_version) blockedBy.push("proof_capsule_license_version_mismatch");
   if (capsule.requested_action !== requestedAction) blockedBy.push("proof_capsule_action_mismatch");
   if (capsule.issuer !== expectedIssuer) blockedBy.push("proof_capsule_issuer_mismatch");
@@ -2127,6 +2130,7 @@ function proofCapsuleSchemaFor(license: DojoPermissionLicense): Record<string, u
       "skill_id",
       "skill_version",
       "requested_action",
+      "license_id",
       "license_version",
       "entrustment_level",
       "context_claims",
@@ -2141,6 +2145,7 @@ function proofCapsuleSchemaFor(license: DojoPermissionLicense): Record<string, u
     properties: {
       schema_version: { const: "synthi.dojo.proofCapsule.v1" },
       skill_id: { const: license.skill_id },
+      license_id: { const: license.license_id },
       license_version: { const: license.license_version },
       requested_action: { type: "string" },
       context_claims: {
