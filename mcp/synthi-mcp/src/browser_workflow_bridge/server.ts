@@ -1167,6 +1167,10 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
       writeJson(res, 500, {
         error: "bridge_internal_error",
         detail: err instanceof Error ? err.message : String(err),
+        state: safeBuildBrowserWorkflowPanelState(
+          bridgeState,
+          "An unexpected browser workflow bridge error occurred."
+        ),
       });
     }
 
