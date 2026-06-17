@@ -345,6 +345,16 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           label: 'Runtime starting',
           detail: runtimeActionDetail(code, workflowErrorDetail(error) || detail),
           error: code,
+          selectedTabId: null,
+          lastScreenshotAt: null,
+          consent: null,
+        },
+        teach: {
+          ...(previous?.teach || {}),
+          state: 'idle',
+          label: 'Ready after observe',
+          detail: 'Observe a live preview before teaching a workflow.',
+          tabId: null,
         },
         blockers: [
           {
@@ -368,6 +378,23 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
         ...(previous?.runtime || {}),
         status: previous?.runtime?.status || 'notConfigured',
         detail: previous?.runtime?.detail || 'Start the browser workflow bridge to enable panel actions.',
+      },
+      observe: {
+        ...(previous?.observe || {}),
+        status: 'needsRuntime',
+        label: 'Runtime needed',
+        detail,
+        error: code || 'workflow_bridge_error',
+        selectedTabId: null,
+        lastScreenshotAt: null,
+        consent: null,
+      },
+      teach: {
+        ...(previous?.teach || {}),
+        state: 'idle',
+        label: 'Ready after observe',
+        detail: 'Reconnect the workflow bridge, then observe a preview before teaching.',
+        tabId: null,
       },
       blockers: [
         {
@@ -403,6 +430,16 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           label: 'Preview needed',
           detail: previewActionDetail(code, detail),
           error: code,
+          selectedTabId: null,
+          lastScreenshotAt: null,
+          consent: null,
+        },
+        teach: {
+          ...(sourceState.teach || previous?.teach || {}),
+          state: 'idle',
+          label: 'Ready after observe',
+          detail: 'Observe a live preview before teaching a workflow.',
+          tabId: null,
         },
         blockers,
       };
