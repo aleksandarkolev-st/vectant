@@ -77,7 +77,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_explain_block: reportWithRuntimeEvidence("Returns an explanatory refusal summary from current license, proof, guardrail, and case-law data."),
   synthi_dojo_explain_failure: report("Returns a failure explanation from generated scenario/checkride findings."),
   synthi_dojo_debug_counterfactual: deterministic("Returns a generated counterfactual debug report; it is not an executable replay."),
-  synthi_dojo_run_time_machine_debugger: deterministic("Runs the current deterministic time-machine report builder."),
+  synthi_dojo_run_time_machine_debugger: syntheticRuntime("Runs causal Time Machine debugging with a materialized Vivarium branch, graph runtime execution, and oracle-backed runtime evidence."),
   synthi_dojo_run_ghost_mode: ghostRuntime("Records non-mutating Ghost Mode shadow evidence with human-vs-agent action comparison and entrustment impact."),
   synthi_dojo_request_permission_upgrade: controlPlaneWrite(
     "Records a permission-upgrade request in the configured Dojo store and exposes it through the governance approval queue.",

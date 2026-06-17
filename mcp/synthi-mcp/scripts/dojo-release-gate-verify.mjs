@@ -3215,6 +3215,7 @@ export function validateDojoTimeMachineDebuggerEvidenceForRelease(evidence) {
     ["attack_guardrail_correlation_required", "time_machine_attack_guardrail_requirement_missing"],
     ["remediation_cost_policy_required", "time_machine_remediation_cost_requirement_missing"],
     ["baseline_explanation_required", "time_machine_baseline_requirement_missing"],
+    ["materialized_runtime_branch_required", "time_machine_runtime_branch_requirement_missing"],
     ["counterfactual_license_impact_required", "time_machine_license_impact_requirement_missing"],
     ["replay_plan_required", "time_machine_replay_plan_requirement_missing"],
     ["honest_projection_status_required", "time_machine_honest_status_requirement_missing"],
@@ -5141,6 +5142,7 @@ async function runSelfCheck({ outDir }) {
       missing_capabilities: ["time_machine_replay_plan"],
       time_machine_contract: {
         ...timeMachineArtifacts.evidence.time_machine_contract,
+        materialized_runtime_branch_required: false,
         replay_plan_required: false,
         honest_projection_status_required: false,
         self_check_executes_tests_required: false,
@@ -5153,6 +5155,7 @@ async function runSelfCheck({ outDir }) {
   });
   assert(rejectedTimeMachine.errors.includes("time_machine_coverage_incomplete"));
   assert(rejectedTimeMachine.errors.includes("time_machine_missing_capabilities:time_machine_replay_plan"));
+  assert(rejectedTimeMachine.errors.includes("time_machine_runtime_branch_requirement_missing"));
   assert(rejectedTimeMachine.errors.includes("time_machine_replay_plan_requirement_missing"));
   assert(rejectedTimeMachine.errors.includes("time_machine_honest_status_requirement_missing"));
   assert(rejectedTimeMachine.errors.includes("time_machine_self_check_execution_requirement_missing"));
@@ -7757,6 +7760,7 @@ async function writeTimeMachineDebuggerEvidenceForSelfCheck({
       attack_guardrail_correlation_required: true,
       remediation_cost_policy_required: true,
       baseline_explanation_required: true,
+      materialized_runtime_branch_required: true,
       counterfactual_license_impact_required: true,
       replay_plan_required: true,
       honest_projection_status_required: true,

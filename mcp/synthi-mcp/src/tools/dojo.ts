@@ -27,6 +27,7 @@ import {
   buildDojoUniverseDossier,
   buildDojoUniverseMetrics,
   runDojoTimeMachineDebugger,
+  type DojoTimeMachineDebugReport,
 } from "../browser/dojo_universe.js";
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
 import {
@@ -1699,7 +1700,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = dojoDebugCounterfactualTool(args);
         break;
       case "synthi_dojo_run_time_machine_debugger":
-        response = dojoRunTimeMachineDebuggerTool(args);
+        response = await dojoRunTimeMachineDebuggerTool(args);
         break;
       case "synthi_dojo_run_ghost_mode":
         response = await dojoRunGhostModeTool(args);
@@ -2162,19 +2163,127 @@ function dojoDebugCounterfactualTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoRunTimeMachineDebuggerTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoRunTimeMachineDebuggerTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_run_time_machine_debugger");
   if (!skill.ok) return skill.error;
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_time_machine_debugger", { postgres_wired: true });
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const a = obj(args);
+  const timeMachine = runDojoTimeMachineDebugger(skill.skill, {
+    scenario_id: stringOpt(a["scenario_id"]),
+    mutation_kind: stringOpt(a["mutation_kind"]),
+    question: stringOpt(a["question"]),
+  });
+  const runtimeBranch = await runDojoTimeMachineRuntimeBranch({
+    skill: skill.skill,
+    tenant: skill.tenant,
+    time_machine_debugger: timeMachine,
+    now: stringOpt(a["now"]),
+  });
+  if (!runtimeBranch.ok) {
+    return jsonResponse({
+      ok: true,
+      control_plane_source: skill.control_plane_source,
+      skill_id: skill.skill.skill_id,
+      time_machine_debugger: {
+        ...timeMachine,
+        runtime_branch: runtimeBranch.runtime_branch,
+      },
+      runtime_branch_execution: null,
+      persisted_skill: skillListItem(skill.skill),
+      control_plane_persistence: null,
+      license_health: await licenseHealthFor(skill.skill, skill.tenant),
+    });
+  }
+  const updated = skillWithDojoRuns(skill.skill, [runtimeBranch.scenario_run.run], undefined, {
+    now: runtimeBranch.scenario_run.run.finished_at,
+  });
+  const durablePersistence = await persistVivariumRunsToDurableControlPlaneIfRequired({
+    tenant: skill.tenant,
+    skill: skill.skill,
+    updated_skill: updated,
+    runs: [runtimeBranch.scenario_run],
+    operation: "synthi_dojo_run_time_machine_debugger",
+    now: runtimeBranch.scenario_run.run.finished_at,
+  });
+  if (!durablePersistence.ok) return durablePersistence.error;
+  const persisted = skill.control_plane_source === "compatibility_registry"
+    ? dojoSkillRegistry.publish(updated)
+    : updated;
   return jsonResponse({
     ok: true,
-    skill_id: skill.skill.skill_id,
-    time_machine_debugger: runDojoTimeMachineDebugger(skill.skill, {
-      scenario_id: stringOpt(a["scenario_id"]),
-      mutation_kind: stringOpt(a["mutation_kind"]),
-      question: stringOpt(a["question"]),
-    }),
+    control_plane_source: durablePersistence.persistence ? "postgres" : skill.control_plane_source,
+    skill_id: persisted.skill_id,
+    time_machine_debugger: {
+      ...timeMachine,
+      runtime_branch: runtimeBranch.runtime_branch,
+    },
+    runtime_branch_execution: runtimeBranch.scenario_run,
+    persisted_skill: skillListItem(persisted),
+    control_plane_persistence: durablePersistence.persistence ?? null,
+    license_health: await licenseHealthFor(persisted, skill.tenant),
   });
+}
+
+async function runDojoTimeMachineRuntimeBranch(input: {
+  skill: DojoSkill;
+  tenant: DojoTenantContext;
+  time_machine_debugger: DojoTimeMachineDebugReport;
+  now?: string;
+}): Promise<
+  | {
+      ok: true;
+      scenario_run: Awaited<ReturnType<typeof runDojoVivariumScenario>>;
+      runtime_branch: Record<string, unknown>;
+    }
+  | {
+      ok: false;
+      runtime_branch: Record<string, unknown>;
+    }
+> {
+  const scenarioId = input.time_machine_debugger.baseline.scenario_id;
+  const mutationKind = input.time_machine_debugger.baseline.mutation_kind;
+  const matchingScenario = scenarioId
+    ? input.skill.scenarios.find((scenario) => scenario.scenario_id === scenarioId)
+    : mutationKind
+      ? input.skill.scenarios.find((scenario) => scenario.mutation_kind === mutationKind)
+      : null;
+  if (!matchingScenario) {
+    return {
+      ok: false,
+      runtime_branch: {
+        schema_version: "synthi.dojo.timeMachineRuntimeBranch.v1",
+        ok: false,
+        status: "blocked",
+        scenario_id: scenarioId ?? null,
+        mutation_kind: mutationKind ?? null,
+        blocked_by: ["time_machine_runtime_scenario_not_found"],
+        evidence_refs: [],
+      },
+    };
+  }
+  const scenarioRun = await runDojoVivariumScenario(input.skill, {
+    scenario_id: matchingScenario.scenario_id,
+    now: input.now,
+    tenant_context: input.tenant,
+  });
+  return {
+    ok: true,
+    scenario_run: scenarioRun,
+    runtime_branch: {
+      schema_version: "synthi.dojo.timeMachineRuntimeBranch.v1",
+      ok: scenarioRun.ok,
+      status: scenarioRun.result.status,
+      scenario_id: scenarioRun.scenario.scenario_id,
+      mutation_kind: scenarioRun.scenario.mutation_kind,
+      materialized_id: objectOpt(scenarioRun.materialized_fixture.tissues["fixture"])?.["materialized_id"] ?? null,
+      run_id: scenarioRun.run.run_id,
+      oracle_finding: scenarioRun.result.finding,
+      guardrails_triggered: scenarioRun.guardrails,
+      evidence_refs: scenarioRun.evidence_refs,
+      runtime_basis: "materialized_vivarium_graph_oracle",
+    },
+  };
 }
 
 async function dojoRunGhostModeTool(args: unknown): Promise<ToolResponse> {

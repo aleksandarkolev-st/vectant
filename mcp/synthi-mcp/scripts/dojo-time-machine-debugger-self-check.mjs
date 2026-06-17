@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /*
  * Build a digest-backed evidence manifest for Agent Dojo Time Machine debugging:
- * deterministic counterfactual twin selection, debug branch correlation,
- * baseline/counterfactual explanation, license impact, replay plans, and honest
- * projection status until the executable runtime exists.
+ * counterfactual twin selection, debug branch correlation, baseline and
+ * counterfactual explanation, materialized Vivarium runtime branch evidence,
+ * license impact, replay plans, and honest status metadata.
  */
 
 import assert from "node:assert/strict";
@@ -36,6 +36,7 @@ export const DOJO_TIME_MACHINE_DEBUGGER_CAPABILITIES = [
   "time_machine_debug_branch_attack_guardrail_correlation",
   "time_machine_debug_remediation_cost_policy",
   "time_machine_baseline_explanation",
+  "time_machine_materialized_runtime_branch",
   "time_machine_counterfactual_license_impact",
   "time_machine_replay_plan",
 ];
@@ -183,6 +184,7 @@ export function buildDojoTimeMachineDebuggerEvidenceManifest({
       attack_guardrail_correlation_required: true,
       remediation_cost_policy_required: true,
       baseline_explanation_required: true,
+      materialized_runtime_branch_required: true,
       counterfactual_license_impact_required: true,
       replay_plan_required: true,
       honest_projection_status_required: true,
@@ -295,6 +297,7 @@ const CAPABILITY_MATCHERS = {
   time_machine_debug_branch_attack_guardrail_correlation: includes("attacks", "guardrails"),
   time_machine_debug_remediation_cost_policy: includes("remediation", "cost policy"),
   time_machine_baseline_explanation: includes("baseline"),
+  time_machine_materialized_runtime_branch: includes("materialized runtime evidence"),
   time_machine_counterfactual_license_impact: includes("counterfactual license impact"),
   time_machine_replay_plan: includes("replay plan"),
 };

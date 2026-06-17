@@ -108,7 +108,7 @@ describe("Dojo Time Machine debugger", () => {
     }));
   });
 
-  it("explains deterministic Time Machine baseline, counterfactual license impact, replay plan, and guardrails", async () => {
+  it("runs Time Machine branches with baseline explanation, materialized runtime evidence, counterfactual license impact, replay plan, and guardrails", async () => {
     const published = await publishInvoiceWorkflowSkill();
 
     const timeMachine = await dispatchDojoTool("synthi_dojo_run_time_machine_debugger", {
@@ -119,8 +119,8 @@ describe("Dojo Time Machine debugger", () => {
 
     expect(timeMachine?.isError).toBeUndefined();
     expect(timeMachine?.structuredContent).toEqual(expect.objectContaining({
-      implementation_status: "deterministic_projection",
-      runtime_enforced: false,
+      implementation_status: "executable",
+      runtime_enforced: true,
       skill_id: published.skill.skill_id,
       time_machine_debugger: expect.objectContaining({
         schema_version: "synthi.dojo.timeMachineDebugger.v1",
@@ -164,6 +164,39 @@ describe("Dojo Time Machine debugger", () => {
             expected_evidence: expect.arrayContaining([expect.stringMatching(/^checkride_/)]),
           }),
         ],
+        runtime_branch: expect.objectContaining({
+          schema_version: "synthi.dojo.timeMachineRuntimeBranch.v1",
+          status: expect.stringMatching(/^(passed|failed|blocked)$/),
+          scenario_id: expect.stringMatching(/scenario_\d+_duplicate_entity$/),
+          mutation_kind: "duplicate_entity",
+          run_id: expect.stringMatching(/^scenario_run_/),
+          evidence_refs: expect.arrayContaining([
+            `workflow:${published.skill.workflow_id}`,
+            expect.stringMatching(/^scenario:.+scenario_\d+_duplicate_entity$/),
+          ]),
+          runtime_basis: "materialized_vivarium_graph_oracle",
+        }),
+      }),
+      runtime_branch_execution: expect.objectContaining({
+        schema_version: "synthi.dojo.vivariumScenarioRun.v1",
+        scenario: expect.objectContaining({
+          scenario_id: expect.stringMatching(/scenario_\d+_duplicate_entity$/),
+          mutation_kind: "duplicate_entity",
+        }),
+        materialized_fixture: expect.objectContaining({
+          synthetic_data_only: true,
+        }),
+        result: expect.objectContaining({
+          scenario_id: expect.stringMatching(/scenario_\d+_duplicate_entity$/),
+          status: expect.stringMatching(/^(passed|failed|blocked)$/),
+        }),
+        run: expect.objectContaining({
+          run_id: expect.stringMatching(/^scenario_run_/),
+          mode: expect.stringMatching(/^(vivarium|evil_twin)$/),
+        }),
+      }),
+      persisted_skill: expect.objectContaining({
+        skill_id: published.skill.skill_id,
       }),
     }));
   });
