@@ -1697,7 +1697,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoExplainFailureTool(args);
         break;
       case "synthi_dojo_debug_counterfactual":
-        response = dojoDebugCounterfactualTool(args);
+        response = await dojoDebugCounterfactualTool(args);
         break;
       case "synthi_dojo_run_time_machine_debugger":
         response = await dojoRunTimeMachineDebuggerTool(args);
@@ -2192,26 +2192,79 @@ async function dojoExplainFailureTool(args: unknown): Promise<ToolResponse> {
   });
 }
 
-function dojoDebugCounterfactualTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoDebugCounterfactualTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_debug_counterfactual");
   if (!skill.ok) return skill.error;
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_debug_counterfactual", { postgres_wired: true });
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const filters = scenarioFilters(args);
+  const a = obj(args);
   const variants = filterByScenario(skill.skill.counterfactual_twin.variants, filters);
   const scenarioIds = new Set(variants.map((variant) => variant.scenario_id));
   const scenarios = skill.skill.scenarios.filter((scenario) => scenarioIds.has(scenario.scenario_id));
-  const results = skill.skill.checkride.results.filter((result) => scenarioIds.has(result.scenario_id));
+  const runtimeBranches = [];
+  for (const scenario of scenarios) {
+    runtimeBranches.push(await runDojoVivariumScenario(skill.skill, {
+      scenario_id: scenario.scenario_id,
+      now: stringOpt(a["now"]),
+      tenant_context: skill.tenant,
+    }));
+  }
+  const completedAt = runtimeBranches
+    .map((run) => run.run.finished_at)
+    .sort()
+    .at(-1) ?? stringOpt(a["now"]) ?? new Date().toISOString();
+  const updated = runtimeBranches.length > 0
+    ? skillWithDojoRuns(skill.skill, runtimeBranches.map((branch) => branch.run), undefined, { now: completedAt })
+    : skill.skill;
+  const durablePersistence = runtimeBranches.length > 0
+    ? await persistVivariumRunsToDurableControlPlaneIfRequired({
+      tenant: skill.tenant,
+      skill: skill.skill,
+      updated_skill: updated,
+      runs: runtimeBranches,
+      operation: "synthi_dojo_debug_counterfactual",
+      now: completedAt,
+    })
+    : { ok: true as const };
+  if (!durablePersistence.ok) return durablePersistence.error;
+  const persisted = runtimeBranches.length > 0 && skill.control_plane_source === "compatibility_registry"
+    ? dojoSkillRegistry.publish(updated)
+    : updated;
+  const results = runtimeBranches.length > 0
+    ? runtimeBranches.map((branch) => branch.result)
+    : skill.skill.checkride.results.filter((result) => scenarioIds.has(result.scenario_id));
   const attacks = skill.skill.evil_twin.attacks.filter((attack) => scenarioIds.has(attack.scenario_id));
   const guardrailRefs = new Set(attacks.flatMap((attack) => attack.guardrail_refs));
   return jsonResponse({
     ok: true,
-    skill_id: skill.skill.skill_id,
+    control_plane_source: durablePersistence.persistence ? "postgres" : skill.control_plane_source,
+    skill_id: persisted.skill_id,
     variants,
     scenarios,
     results,
+    runtime_debug_branches: runtimeBranches.map((branch) => ({
+      schema_version: "synthi.dojo.counterfactualRuntimeDebugBranch.v1",
+      runtime_basis: "materialized_vivarium_graph_oracle",
+      scenario_id: branch.scenario.scenario_id,
+      mutation_kind: branch.scenario.mutation_kind,
+      run_id: branch.run.run_id,
+      status: branch.result.status,
+      finding: branch.result.finding,
+      guardrails_triggered: branch.guardrails,
+      evidence_refs: branch.evidence_refs,
+      materialized_fixture: {
+        simulator_tier: branch.materialized_fixture.simulator_tier,
+        synthetic_data_only: branch.materialized_fixture.synthetic_data_only,
+      },
+    })),
     attacks,
-    guardrails: skill.skill.guardrails.filter((guardrail) => guardrailRefs.has(guardrail.guardrail_id)),
-    promoted_scenarios: skill.skill.counterfactual_twin.promoted_scenarios.filter((scenarioId) => scenarioIds.has(scenarioId)),
-    cost_policy: skill.skill.cost_control_policy,
+    guardrails: persisted.guardrails.filter((guardrail) => guardrailRefs.has(guardrail.guardrail_id)),
+    promoted_scenarios: persisted.counterfactual_twin.promoted_scenarios.filter((scenarioId) => scenarioIds.has(scenarioId)),
+    cost_policy: persisted.cost_control_policy,
+    persisted_skill: skillListItem(persisted),
+    control_plane_persistence: durablePersistence.persistence ?? null,
+    license_health: await licenseHealthFor(persisted, skill.tenant),
   });
 }
 

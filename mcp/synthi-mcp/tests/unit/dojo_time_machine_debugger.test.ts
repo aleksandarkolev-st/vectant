@@ -63,8 +63,8 @@ describe("Dojo Time Machine debugger", () => {
 
     expect(debug?.isError).toBeUndefined();
     expect(debug?.structuredContent).toEqual(expect.objectContaining({
-      implementation_status: "deterministic_projection",
-      runtime_enforced: false,
+      implementation_status: "executable",
+      runtime_enforced: true,
       skill_id: published.skill.skill_id,
       variants: expect.arrayContaining([
         expect.objectContaining({
@@ -86,6 +86,23 @@ describe("Dojo Time Machine debugger", () => {
           finding: expect.any(String),
         }),
       ]),
+      runtime_debug_branches: expect.arrayContaining([
+        expect.objectContaining({
+          schema_version: "synthi.dojo.counterfactualRuntimeDebugBranch.v1",
+          runtime_basis: "materialized_vivarium_graph_oracle",
+          scenario_id: expect.stringMatching(/scenario_\d+_duplicate_entity$/),
+          mutation_kind: "duplicate_entity",
+          run_id: expect.stringMatching(/^scenario_run_/),
+          status: expect.stringMatching(/^(passed|failed|blocked)$/),
+          evidence_refs: expect.arrayContaining([
+            `workflow:${published.skill.workflow_id}`,
+            expect.stringMatching(/^scenario:.+scenario_\d+_duplicate_entity$/),
+          ]),
+          materialized_fixture: expect.objectContaining({
+            synthetic_data_only: true,
+          }),
+        }),
+      ]),
       attacks: expect.arrayContaining([
         expect.objectContaining({
           scenario_id: expect.stringMatching(/scenario_\d+_duplicate_entity$/),
@@ -104,6 +121,9 @@ describe("Dojo Time Machine debugger", () => {
       promoted_scenarios: expect.arrayContaining([expect.stringMatching(/scenario_\d+_duplicate_entity$/)]),
       cost_policy: expect.objectContaining({
         stop_conditions: expect.any(Array),
+      }),
+      persisted_skill: expect.objectContaining({
+        skill_id: published.skill.skill_id,
       }),
     }));
   });

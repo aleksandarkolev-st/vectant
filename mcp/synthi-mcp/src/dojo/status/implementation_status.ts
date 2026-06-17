@@ -76,7 +76,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_get_case_law: governanceReport("Returns generated or recorded case law with lifecycle state for review and binding guardrail use."),
   synthi_dojo_explain_block: reportWithRuntimeEvidence("Returns an explanatory refusal summary from current license, proof, guardrail, and case-law data."),
   synthi_dojo_explain_failure: syntheticRuntime("Runs the selected Vivarium scenario and explains the failure from observed graph/oracle evidence."),
-  synthi_dojo_debug_counterfactual: deterministic("Returns a generated counterfactual debug report; it is not an executable replay."),
+  synthi_dojo_debug_counterfactual: syntheticRuntime("Runs selected counterfactual debug branches through materialized Vivarium fixtures and graph/oracle evidence."),
   synthi_dojo_run_time_machine_debugger: syntheticRuntime("Runs causal Time Machine debugging with a materialized Vivarium branch, graph runtime execution, and oracle-backed runtime evidence."),
   synthi_dojo_run_ghost_mode: ghostRuntime("Records non-mutating Ghost Mode shadow evidence with human-vs-agent action comparison and entrustment impact."),
   synthi_dojo_request_permission_upgrade: controlPlaneWrite(
