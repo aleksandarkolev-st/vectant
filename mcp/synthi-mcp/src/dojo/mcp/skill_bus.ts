@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DojoProofCarryingSkillCapsule, DojoSkill } from "../../browser/dojo.js";
+import type { DojoApiBackedMcpTool } from "../api/api_tool_compiler.js";
 import type { DojoProofCapsuleService } from "../proof/capsule_service.js";
 import type { DojoAuditStore, DojoProofConsumeResult } from "../store/interfaces.js";
 import type { DojoTenantContext } from "./execution_policy_gate.js";
@@ -43,10 +44,25 @@ export interface DojoToolResolution {
   workflow_id?: string;
   tool_name?: string;
   tool_version?: string;
+  resolved_tool?: DojoResolvedMcpTool;
+  api_backed_mcp_tool?: DojoApiBackedMcpTool;
   skill?: DojoSkill;
   mcp_skill_manifest?: DojoMcpSkillManifestV1;
   manifest_validation?: DojoMcpSkillManifestValidation;
 }
+
+export type DojoResolvedMcpTool =
+  | {
+      kind: "api_backed";
+      tool_name: string;
+      tool_version: string;
+      api_backed_mcp_tool: DojoApiBackedMcpTool;
+    }
+  | {
+      kind: "private_workflow" | "skill";
+      tool_name: string;
+      tool_version: string;
+    };
 
 export interface DojoToolDispatchResult {
   ok: boolean;
@@ -143,6 +159,8 @@ export interface InProcessDojoMcpSkillBusOptions {
   executeTool?: (input: {
     tenant: DojoTenantContext;
     skill: DojoSkill;
+    resolved_tool: DojoResolvedMcpTool;
+    api_backed_mcp_tool?: DojoApiBackedMcpTool;
     tool_name: string;
     args: Record<string, unknown>;
     proof_capsule: DojoProofCarryingSkillCapsule;
@@ -232,6 +250,15 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     }
     const skill = matches[0];
     if (!skill) return blockedResolution("not_found", ["dojo_mcp_tool_not_found"], { tool_name: toolName });
+    const resolvedTool = resolvePublishedTool(skill, toolName);
+    if (!resolvedTool) {
+      return blockedResolution("not_found", ["dojo_mcp_tool_not_found"], {
+        skill_id: skill.skill_id,
+        workflow_id: skill.workflow_id,
+        tool_name: toolName,
+        tool_version: input.tool_version,
+      });
+    }
     if (!this.isVisibleSkill(skill, input.tenant)) {
       return blockedResolution("blocked", ["dojo_mcp_tool_not_authorized"], {
         skill_id: skill.skill_id,
@@ -248,7 +275,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
         tool_version: input.tool_version,
       });
     }
-    if (input.tool_version && input.tool_version !== skill.skill_version) {
+    if (input.tool_version && input.tool_version !== resolvedTool.tool_version) {
       return blockedResolution("blocked", ["dojo_mcp_tool_version_mismatch"], {
         skill_id: skill.skill_id,
         workflow_id: skill.workflow_id,
@@ -281,8 +308,10 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       blocked_by: [],
       skill_id: skill.skill_id,
       workflow_id: skill.workflow_id,
-      tool_name: toolName,
-      tool_version: skill.skill_version,
+      tool_name: resolvedTool.tool_name,
+      tool_version: resolvedTool.tool_version,
+      resolved_tool: resolvedTool,
+      ...(resolvedTool.kind === "api_backed" ? { api_backed_mcp_tool: resolvedTool.api_backed_mcp_tool } : {}),
       skill,
       mcp_skill_manifest: manifest,
       manifest_validation: manifestValidation,
@@ -400,6 +429,8 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     const result = await this.executeSkillTool({
       tenant: input.tenant,
       skill: resolution.skill,
+      resolved_tool: resolution.resolved_tool ?? fallbackResolvedTool(resolution.skill, resolution.tool_name ?? input.tool_name),
+      api_backed_mcp_tool: resolution.api_backed_mcp_tool,
       tool_name: resolution.tool_name ?? input.tool_name,
       args: input.args,
       proof_capsule: input.proof_capsule,
@@ -553,6 +584,8 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
   private async executeSkillTool(input: {
     tenant: DojoTenantContext;
     skill: DojoSkill;
+    resolved_tool: DojoResolvedMcpTool;
+    api_backed_mcp_tool?: DojoApiBackedMcpTool;
     tool_name: string;
     args: Record<string, unknown>;
     proof_capsule: DojoProofCarryingSkillCapsule;
@@ -716,6 +749,41 @@ function skillPublishesToolName(skill: DojoSkill, toolName: string): boolean {
     || skill.private_tool_manifest?.tool_name === toolName
     || (skill.published_tools ?? []).includes(toolName)
     || (skill.api_backed_mcp_tools ?? []).some((tool) => tool.tool_name === toolName);
+}
+
+function resolvePublishedTool(skill: DojoSkill, toolName: string): DojoResolvedMcpTool | undefined {
+  const apiTool = (skill.api_backed_mcp_tools ?? []).find((tool) => tool.tool_name === toolName);
+  if (apiTool) {
+    return {
+      kind: "api_backed",
+      tool_name: apiTool.tool_name,
+      tool_version: apiTool.tool_version,
+      api_backed_mcp_tool: apiTool,
+    };
+  }
+  if (skill.private_tool_manifest?.tool_name === toolName) {
+    return {
+      kind: "private_workflow",
+      tool_name: skill.private_tool_manifest.tool_name,
+      tool_version: skill.skill_version,
+    };
+  }
+  if (skill.published_tool_name === toolName || (skill.published_tools ?? []).includes(toolName)) {
+    return {
+      kind: "skill",
+      tool_name: toolName,
+      tool_version: skill.skill_version,
+    };
+  }
+  return undefined;
+}
+
+function fallbackResolvedTool(skill: DojoSkill, toolName: string): DojoResolvedMcpTool {
+  return resolvePublishedTool(skill, toolName) ?? {
+    kind: "skill",
+    tool_name: toolName,
+    tool_version: skill.skill_version,
+  };
 }
 
 function blockedResolution(

@@ -4,6 +4,7 @@ import { generatePrivateWorkflowToolManifest } from "../../src/browser/private_t
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import { validateDojoMcpSkillManifest } from "../../src/dojo/mcp/manifest_signing.js";
+import type { DojoApiBackedMcpTool } from "../../src/dojo/api/api_tool_compiler.js";
 import { createDojoProofCapsuleService } from "../../src/dojo/proof/capsule_service.js";
 import {
   blockDojoMcpSkillBusExecution,
@@ -81,41 +82,8 @@ describe("Dojo MCP skill bus", () => {
 
   it("resolves published API-backed tool manifests by API tool name", async () => {
     const baseSkill = skillFixture("workspace-a", "Save invoice");
-    const apiTool = {
-      schema_version: "synthi.dojo.apiBackedMcpTool.v1" as const,
-      tool_name: "synthi_api_save_invoice",
-      tool_version: "1.0.0",
-      candidate_id: "api_candidate_save_invoice",
-      method: "POST" as const,
-      path: "/api/invoices",
-      skill_id: baseSkill.skill_id,
-      license_id: baseSkill.permission_license.license_id,
-      license_version: baseSkill.permission_license.license_version,
-      action: "run_workflow",
-      auth_scope: "invoice:write",
-      proof_required: true as const,
-      proof_claim_mapping: { workspace_verified: "tenant.workspace_id" },
-      query_schema: null,
-      idempotency_key_location: "header" as const,
-      rollback_strategy: "compensating_call" as const,
-      postcondition: "invoice.status == 'saved'",
-      input_schema: { type: "object", additionalProperties: false },
-      schema_digest: "sha256:api-tool-schema",
-      enforcement: {
-        proof_capsule_required: true as const,
-        license_kernel_required: true as const,
-        evidence_write_required: true as const,
-        postcondition_assertion_required: true,
-        idempotency_required: true,
-      },
-    };
-    const skill: DojoSkill = {
-      ...baseSkill,
-      published_tools: [...new Set([...baseSkill.published_tools, apiTool.tool_name])],
-      api_backed_mcp_tools: [apiTool],
-      execution_substrates: [...new Set([...baseSkill.execution_substrates, "api" as const])],
-      preferred_substrate: "api",
-    };
+    const apiTool = apiBackedToolFixture(baseSkill, { tool_version: "2.3.4" });
+    const skill = withPublishedApiBackedTool(baseSkill, apiTool);
     const bus = createInProcessDojoMcpSkillBus({ listSkills: () => [skill], env: manifestEnv() });
 
     const competencies = await bus.listCompetencies({ tenant: tenant("workspace-a") });
@@ -163,6 +131,88 @@ describe("Dojo MCP skill bus", () => {
       blocked_by: [],
       tool_name: apiTool.tool_name,
     }));
+  });
+
+  it("dispatches published API-backed tools with canonical resolved tool context", async () => {
+    const baseSkill = skillFixture("workspace-a", "Submit invoice");
+    const apiTool = apiBackedToolFixture(baseSkill, { tool_name: "synthi_api_submit_invoice", tool_version: "2.0.1" });
+    const skill = withPublishedApiBackedTool(baseSkill, apiTool);
+    const proof = issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill),
+      substrate_claim: "api",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const executions: Array<{
+      tool_name: string;
+      resolved_kind: string;
+      resolved_version: string;
+      api_tool_name?: string;
+      api_tool_digest?: string;
+    }> = [];
+    const bus = createInProcessDojoMcpSkillBus({
+      listSkills: () => [skill],
+      env: manifestEnv(),
+      proofConsumptionMode: "external_executor",
+      validateProof: (): DojoSkillBusProofValidation => ({ ok: true, status: "allowed", blocked_by: [] }),
+      executeTool: ({ tool_name, resolved_tool, api_backed_mcp_tool }) => {
+        executions.push({
+          tool_name,
+          resolved_kind: resolved_tool.kind,
+          resolved_version: resolved_tool.tool_version,
+          api_tool_name: api_backed_mcp_tool?.tool_name,
+          api_tool_digest: api_backed_mcp_tool?.schema_digest,
+        });
+        return {
+          ok: true,
+          tool_name,
+          resolved_tool_kind: resolved_tool.kind,
+          api_backed_tool_name: api_backed_mcp_tool?.tool_name,
+        };
+      },
+    });
+
+    await expect(bus.dispatch({
+      tenant: tenant("workspace-a"),
+      tool_name: apiTool.tool_name,
+      tool_version: apiTool.tool_version,
+      requested_action: "run_workflow",
+      args: { request: { invoice_id: "invoice-123" }, idempotency_key: "idem-123" },
+      proof_capsule: proof,
+      dry_run: false,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: false,
+      tool_name: apiTool.tool_name,
+      resolution: expect.objectContaining({
+        tool_name: apiTool.tool_name,
+        tool_version: apiTool.tool_version,
+        resolved_tool: expect.objectContaining({
+          kind: "api_backed",
+          tool_name: apiTool.tool_name,
+          tool_version: apiTool.tool_version,
+        }),
+        api_backed_mcp_tool: expect.objectContaining({
+          tool_name: apiTool.tool_name,
+          schema_digest: apiTool.schema_digest,
+        }),
+      }),
+      result: expect.objectContaining({
+        ok: true,
+        tool_name: apiTool.tool_name,
+        resolved_tool_kind: "api_backed",
+        api_backed_tool_name: apiTool.tool_name,
+      }),
+    }));
+    expect(executions).toEqual([
+      {
+        tool_name: apiTool.tool_name,
+        resolved_kind: "api_backed",
+        resolved_version: apiTool.tool_version,
+        api_tool_name: apiTool.tool_name,
+        api_tool_digest: apiTool.schema_digest,
+      },
+    ]);
   });
 
   it("blocks ambiguous tool names instead of resolving by list order", async () => {
@@ -946,6 +996,59 @@ function reidentifiedSkill(skill: DojoSkill, suffix: string): DojoSkill {
         },
       }
       : {}),
+  };
+}
+
+function apiBackedToolFixture(skill: DojoSkill, overrides: Partial<DojoApiBackedMcpTool> = {}): DojoApiBackedMcpTool {
+  const base: DojoApiBackedMcpTool = {
+    schema_version: "synthi.dojo.apiBackedMcpTool.v1",
+    tool_name: "synthi_api_save_invoice",
+    tool_version: "1.0.0",
+    candidate_id: "api_candidate_save_invoice",
+    method: "POST",
+    path: "/api/invoices",
+    skill_id: skill.skill_id,
+    license_id: skill.permission_license.license_id,
+    license_version: skill.permission_license.license_version,
+    action: "run_workflow",
+    auth_scope: "invoice:write",
+    proof_required: true,
+    proof_claim_mapping: { workspace_verified: "tenant.workspace_id" },
+    query_schema: null,
+    idempotency_key_location: "header",
+    rollback_strategy: "compensating_call",
+    postcondition: "invoice.status == 'saved'",
+    input_schema: { type: "object", additionalProperties: false },
+    schema_digest: "sha256:api-tool-schema",
+    enforcement: {
+      proof_capsule_required: true,
+      license_kernel_required: true,
+      evidence_write_required: true,
+      postcondition_assertion_required: true,
+      idempotency_required: true,
+    },
+  };
+  return {
+    ...base,
+    ...overrides,
+    enforcement: {
+      ...base.enforcement,
+      ...(overrides.enforcement ?? {}),
+    },
+    proof_claim_mapping: {
+      ...base.proof_claim_mapping,
+      ...(overrides.proof_claim_mapping ?? {}),
+    },
+  };
+}
+
+function withPublishedApiBackedTool(skill: DojoSkill, apiTool: DojoApiBackedMcpTool): DojoSkill {
+  return {
+    ...skill,
+    published_tools: [...new Set([...skill.published_tools, apiTool.tool_name])],
+    api_backed_mcp_tools: [apiTool],
+    execution_substrates: [...new Set([...skill.execution_substrates, "api" as const])],
+    preferred_substrate: "api",
   };
 }
 
