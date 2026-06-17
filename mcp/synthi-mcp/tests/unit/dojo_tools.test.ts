@@ -1698,6 +1698,160 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("applies source drift expiry triggers to matching licenses after a dry-run", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const publishedSkill = dojoSkillRegistry.get(skillId) as DojoSkill;
+    const originalExpiry = publishedSkill.license_expires_at;
+    const expiredAt = new Date(Date.now() - 60_000).toISOString();
+    const signingKey = "source-signing-secret-expiry";
+    const tenantArgs = productionTenantContextArgs({
+      actor_id: "source-drift-expirer",
+      actor_type: "service",
+      roles: ["source-registry", "dojo:operator"],
+      request_id: "req-source-drift-expire",
+      correlation_id: "corr-source-drift-expire",
+    });
+
+    const previous = await dispatchDojoTool("synthi_dojo_capture_source_snapshot", {
+      ...tenantArgs,
+      app_origin: publishedSkill.app_origin,
+      app_version: "2026.06.16",
+      commit_sha: "commit-source-drift-expire-prev",
+      source_root: "src",
+      signer_key_id: "source-expiry-key",
+      signing_key: signingKey,
+      created_at: "2026-06-16T00:00:00.000Z",
+      source_tokens: [
+        {
+          token_id: "details-open-action",
+          route: "/settings",
+          component: "DetailsPanel",
+          action: "openDetails",
+          source_locator: "src/routes/settings/DetailsPanel.jsx:20",
+          source_sha256: createHash("sha256").update("openDetails:v1").digest("hex"),
+          risk: "mutation",
+        },
+      ],
+    });
+    const next = await dispatchDojoTool("synthi_dojo_capture_source_snapshot", {
+      ...tenantArgs,
+      app_origin: publishedSkill.app_origin,
+      app_version: "2026.06.17",
+      commit_sha: "commit-source-drift-expire-next",
+      source_root: "src",
+      signer_key_id: "source-expiry-key",
+      signing_key: signingKey,
+      created_at: "2026-06-17T00:00:00.000Z",
+      source_tokens: [
+        {
+          token_id: "details-open-action",
+          route: "/settings",
+          component: "DetailsPanel",
+          action: "openDetails",
+          source_locator: "src/routes/settings/DetailsPanel.jsx:20",
+          source_sha256: createHash("sha256").update("openDetails:v2").digest("hex"),
+          risk: "mutation",
+        },
+      ],
+    });
+    expect(previous?.isError).toBeUndefined();
+    expect(next?.isError).toBeUndefined();
+
+    const drift = await dispatchDojoTool("synthi_dojo_detect_source_drift", {
+      ...tenantArgs,
+      previous_snapshot: (previous?.structuredContent as { source_snapshot: unknown }).source_snapshot,
+      next_snapshot: (next?.structuredContent as { source_snapshot: unknown }).source_snapshot,
+      source_snapshot_signing_keys_by_id: { "source-expiry-key": signingKey },
+      node_bindings: [
+        {
+          node_id: "action-open-details",
+          source_token_ids: ["details-open-action"],
+          license_id: publishedSkill.permission_license.license_id,
+        },
+      ],
+    });
+    expect(drift?.isError).toBeUndefined();
+    const sourceDriftReport = (drift?.structuredContent as { source_drift_report: unknown }).source_drift_report;
+
+    const dryRun = await dispatchDojoTool("synthi_dojo_apply_source_drift_expiry", {
+      ...tenantArgs,
+      source_drift_report: sourceDriftReport,
+      now: expiredAt,
+    });
+    expect(dryRun?.isError).toBeUndefined();
+    expect(dryRun?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      implementation_status: "executable",
+      runtime_enforced: false,
+      control_plane_source: "compatibility_registry",
+      dry_run: true,
+      expired_license_count: 0,
+      would_expire_license_count: 1,
+      source_drift_expiry_application: expect.objectContaining({
+        schema_version: "synthi.dojo.sourceDriftExpiryApplication.v1",
+        expired_license_count: 1,
+        failed_expiration_count: 0,
+        expired_licenses: [
+          expect.objectContaining({
+            license_id: publishedSkill.permission_license.license_id,
+            node_ids: ["action-open-details"],
+            source_token_ids: ["details-open-action"],
+            record: expect.objectContaining({ status: "expired" }),
+          }),
+        ],
+      }),
+      blocked_by: [],
+    }));
+    expect(dojoSkillRegistry.get(skillId)?.license_expires_at).toBe(originalExpiry);
+
+    const applied = await dispatchDojoTool("synthi_dojo_apply_source_drift_expiry", {
+      ...tenantArgs,
+      source_drift_report: sourceDriftReport,
+      dry_run: false,
+      now: expiredAt,
+    });
+    expect(applied?.isError).toBeUndefined();
+    expect(applied?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "compatibility_registry",
+      dry_run: false,
+      expired_license_count: 1,
+      would_expire_license_count: 0,
+      skill_updates: [expect.objectContaining({ skill_id: skillId, status: "expired" })],
+      source_drift_expiry_application: expect.objectContaining({
+        expired_license_count: 1,
+        skipped_trigger_count: 0,
+        failed_expiration_count: 0,
+      }),
+      blocked_by: [],
+    }));
+    const expiredSkill = dojoSkillRegistry.get(skillId) as DojoSkill;
+    expect(expiredSkill.license_expires_at).toBe(expiredAt);
+    expect(expiredSkill.skill_card.status).toBe("Expired pending source-drift recertification");
+    expect(expiredSkill.retrain_triggers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "app",
+        condition: expect.stringContaining("source_drift:"),
+      }),
+    ]));
+
+    const health = await dispatchDojoTool("synthi_dojo_get_license_health", {
+      ...tenantArgs,
+      skill_id: skillId,
+    });
+    expect(health?.isError).toBeUndefined();
+    expect(health?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      license_health: expect.objectContaining({
+        status: "blocked",
+        license_expires_at: expiredAt,
+      }),
+    }));
+  });
+
   it("creates a generated source affordance PR branch in a temporary git repository", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());

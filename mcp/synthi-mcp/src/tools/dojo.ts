@@ -113,8 +113,11 @@ import {
   type DojoSourceTokenSnapshot,
 } from "../dojo/source/source_snapshot.js";
 import {
+  applyDojoSourceDriftExpiry,
   detectDojoSourceDrift,
   type DojoGraphNodeSourceBinding,
+  type DojoSourceDriftExpiryApplication,
+  type DojoSourceDriftReport,
 } from "../dojo/source/source_drift.js";
 import {
   inferDojoApiEndpointCandidateFromTrace,
@@ -136,9 +139,12 @@ import type {
   DojoAuditEventRecord,
   DojoAuditStore,
   DojoGhostShadowEvidenceRecord,
+  DojoLicenseStore,
+  DojoPermissionLicenseRecord,
   DojoPermissionUpgradeRequestRecord,
   DojoProofCapsuleRecord,
   DojoProofConsumeResult,
+  DojoStoredLicenseStatus,
 } from "../dojo/store/interfaces.js";
 import { PostgresDojoSkillStore } from "../dojo/store/postgres_skill_store.js";
 import { buildDojoMcpSkillManifest } from "../dojo/mcp/manifest_signing.js";
@@ -179,6 +185,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_get_metrics",
   "synthi_dojo_capture_source_snapshot",
   "synthi_dojo_detect_source_drift",
+  "synthi_dojo_apply_source_drift_expiry",
   "synthi_dojo_get_source_affordance_pr_plan",
   "synthi_dojo_prepare_source_affordance_pr",
   "synthi_dojo_create_source_affordance_pr_branch",
@@ -1252,6 +1259,20 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_apply_source_drift_expiry",
+    description: "Dry-run or apply license expiry triggers from a verified Dojo source-drift report. Defaults to dry-run; production writes require the durable control plane.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
+        source_drift_report: { type: "object" },
+        dry_run: { type: "boolean" },
+        now: { type: "string" },
+      },
+      required: ["source_drift_report"],
+    },
+  },
+  {
     name: "synthi_dojo_get_source_affordance_pr_plan",
     description: "Return a reviewable generated PR plan for adding stable Agent-Ready UI affordances and proof hooks to source files.",
     inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
@@ -1904,6 +1925,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
       case "synthi_dojo_detect_source_drift":
         response = dojoDetectSourceDriftTool(args);
         break;
+      case "synthi_dojo_apply_source_drift_expiry":
+        response = await dojoApplySourceDriftExpiryTool(args);
+        break;
       case "synthi_dojo_get_source_affordance_pr_plan":
         response = dojoGetSourceAffordancePrPlanTool(args);
         break;
@@ -2371,6 +2395,109 @@ function dojoDetectSourceDriftTool(args: unknown): ToolResponse {
       blocked_by: [message],
     });
   }
+}
+
+async function dojoApplySourceDriftExpiryTool(args: unknown): Promise<ToolResponse> {
+  const tenantContext = dojoTenantContextResultFromArgs(args);
+  if (!tenantContext.ok) return tenantContext.error;
+  const tenant = tenantContext.tenant;
+  const a = obj(args);
+  const report = sourceDriftReportOpt(a["source_drift_report"]);
+  if (!report) {
+    return errorResponse("dojo_source_drift_report_invalid", {
+      ok: false,
+      error: "dojo_source_drift_report_invalid",
+      blocked_by: ["source_drift_report_missing_or_invalid"],
+      expected_schema_version: "synthi.dojo.sourceDriftReport.v1",
+    });
+  }
+  const dryRun = a["dry_run"] !== false;
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
+  const actor: DojoAuditActor = {
+    actor_id: tenant.actor_id,
+    actor_type: tenant.actor_type,
+  };
+  const enforcement = resolveDojoEnforcementConfig();
+
+  if (enforcement.production_enforcement && enforcement.require_durable_store) {
+    const resolution = await createDojoControlPlaneStoresFromEnv({
+      tenant,
+      app_origin: report.app_origin,
+    });
+    if (!resolution.ok) return controlPlaneResolutionError("synthi_dojo_apply_source_drift_expiry", resolution);
+    try {
+      const store = sourceDriftScopedLicenseStore({
+        tenant,
+        report,
+        dry_run: dryRun,
+        license_store: resolution.license_store,
+        resolve_skill: (skillId) => resolution.skill_store.getSkill(skillId),
+      });
+      const application = await applyDojoSourceDriftExpiry({
+        report,
+        license_store: store,
+        expired_by: actor,
+        now,
+      });
+      const skillUpdates = dryRun
+        ? []
+        : await persistSourceDriftExpiredSkills({
+          tenant,
+          report,
+          application,
+          resolve_skill: (skillId) => resolution.skill_store.getSkill(skillId),
+          save_skill: (skill) => resolution.skill_store.saveSkill(skill, {
+            status: "expired",
+            created_by: actor,
+            now,
+          }),
+          now,
+        });
+      return jsonResponse({
+        ok: application.ok,
+        tenant_id: tenant.tenant_id,
+        workspace_id: tenant.workspace_id,
+        control_plane_source: "postgres",
+        dry_run: dryRun,
+        source_drift_expiry_application: application,
+        expired_license_count: dryRun ? 0 : application.expired_license_count,
+        would_expire_license_count: dryRun ? application.expired_license_count : 0,
+        skill_updates: skillUpdates,
+        blocked_by: application.blocked_by,
+      });
+    } finally {
+      await resolution.close?.();
+    }
+  }
+
+  const store = sourceDriftScopedLicenseStore({
+    tenant,
+    report,
+    dry_run: dryRun,
+    license_store: compatibilitySourceDriftLicenseStore(tenant, report, now),
+    resolve_skill: (skillId) => Promise.resolve(dojoSkillRegistry.get(skillId)),
+  });
+  const application = await applyDojoSourceDriftExpiry({
+    report,
+    license_store: store,
+    expired_by: actor,
+    now,
+  });
+  const expiredSkillIds = dryRun
+    ? []
+    : application.expired_licenses.map((license) => license.record.skill_id).sort();
+  return jsonResponse({
+    ok: application.ok,
+    tenant_id: tenant.tenant_id,
+    workspace_id: tenant.workspace_id,
+    control_plane_source: "compatibility_registry",
+    dry_run: dryRun,
+    source_drift_expiry_application: application,
+    expired_license_count: dryRun ? 0 : application.expired_license_count,
+    would_expire_license_count: dryRun ? application.expired_license_count : 0,
+    skill_updates: expiredSkillIds.map((skillId) => ({ skill_id: skillId, status: "expired" })),
+    blocked_by: application.blocked_by,
+  });
 }
 
 function dojoGetSourceAffordancePrPlanTool(args: unknown): ToolResponse {
@@ -7823,6 +7950,258 @@ function sourceSnapshotTenantScopeBlockedBy(
   if (previousSnapshot.tenant_id !== nextSnapshot.tenant_id) blockedBy.push("source_drift_snapshot_pair_tenant_mismatch");
   if (previousSnapshot.workspace_id !== nextSnapshot.workspace_id) blockedBy.push("source_drift_snapshot_pair_workspace_mismatch");
   return blockedBy;
+}
+
+type SourceDriftLicenseStore = Pick<DojoLicenseStore, "getLicense" | "expireLicense">;
+
+function sourceDriftReportOpt(value: unknown): DojoSourceDriftReport | undefined {
+  const record = objectOpt(value);
+  if (!record) return undefined;
+  if (record["schema_version"] !== "synthi.dojo.sourceDriftReport.v1") return undefined;
+  const requiredStrings = [
+    "previous_snapshot_id",
+    "next_snapshot_id",
+    "app_origin",
+    "previous_app_version",
+    "next_app_version",
+  ];
+  if (requiredStrings.some((field) => !stringOpt(record[field]))) return undefined;
+  const requiredArrays = [
+    "drifted_token_ids",
+    "added_token_ids",
+    "review_required_token_ids",
+    "affected_nodes",
+    "license_expiry_triggers",
+  ];
+  if (requiredArrays.some((field) => !Array.isArray(record[field]))) return undefined;
+  return record as unknown as DojoSourceDriftReport;
+}
+
+function sourceDriftScopedLicenseStore(input: {
+  tenant: DojoTenantContext;
+  report: DojoSourceDriftReport;
+  dry_run: boolean;
+  license_store: SourceDriftLicenseStore;
+  resolve_skill: (skillId: string) => Promise<DojoSkill | null> | DojoSkill | null;
+}): SourceDriftLicenseStore {
+  const getScopedLicense = async (licenseId: string): Promise<DojoPermissionLicenseRecord | null> => {
+    const record = await input.license_store.getLicense(licenseId);
+    if (!record) return null;
+    if (record.workspace_id !== input.tenant.workspace_id && !isTenantElevatedDojoOperator(input.tenant)) return null;
+    const skill = await input.resolve_skill(record.skill_id);
+    if (!skill) return null;
+    if (!isTenantAuthorizedForDojoSkill(input.tenant, skill)) return null;
+    if (skill.app_origin !== input.report.app_origin) return null;
+    if (skill.permission_license.license_id !== record.license_id) return null;
+    return record;
+  };
+
+  return {
+    getLicense: getScopedLicense,
+    async expireLicense(licenseId, reason, now = new Date().toISOString(), expiredBy, options) {
+      const existing = await getScopedLicense(licenseId);
+      if (!existing) return null;
+      if (input.dry_run) {
+        return expiredLicenseRecordForSourceDrift(existing, reason, now, options?.expires_at);
+      }
+      return input.license_store.expireLicense(licenseId, reason, now, expiredBy, options);
+    },
+  };
+}
+
+function compatibilitySourceDriftLicenseStore(
+  tenant: DojoTenantContext,
+  report: DojoSourceDriftReport,
+  now: string
+): SourceDriftLicenseStore {
+  const skillForLicense = (licenseId: string): DojoSkill | null => {
+    return dojoSkillRegistry.list().find((skill) =>
+      skill.permission_license.license_id === licenseId
+      && skill.app_origin === report.app_origin
+      && isTenantAuthorizedForDojoSkill(tenant, skill)
+    ) ?? null;
+  };
+
+  return {
+    getLicense(licenseId) {
+      const skill = skillForLicense(licenseId);
+      if (!skill) return null;
+      return compatibilityLicenseRecordForSkill(
+        tenant,
+        skill,
+        compatibilityLicenseStatusForSkill(skill, now),
+        now
+      );
+    },
+    expireLicense(licenseId, reason, expiredAt = new Date().toISOString(), expiredBy, options) {
+      const skill = skillForLicense(licenseId);
+      if (!skill) return null;
+      const status = compatibilityLicenseStatusForSkill(skill, expiredAt);
+      if (status !== "active") return null;
+      const effectiveExpiresAt = options?.expires_at ?? expiredAt;
+      const updated = expireCompatibilitySkillForSourceDrift(skill, {
+        reason,
+        expired_at: effectiveExpiresAt,
+        expired_by: expiredBy,
+      });
+      const saved = dojoSkillRegistry.publish(updated);
+      return compatibilityLicenseRecordForSkill(tenant, saved, "expired", expiredAt, effectiveExpiresAt, reason);
+    },
+  };
+}
+
+function compatibilityLicenseStatusForSkill(skill: DojoSkill, now: string): DojoStoredLicenseStatus {
+  const expiry = Date.parse(skill.license_expires_at);
+  const reference = Date.parse(now);
+  if (Number.isFinite(expiry) && Number.isFinite(reference) && expiry <= reference) return "expired";
+  if (skill.entrustment_level === "EX" && skill.permission_license.autonomy_level === "blocked") return "revoked";
+  return "active";
+}
+
+function compatibilityLicenseRecordForSkill(
+  tenant: DojoTenantContext,
+  skill: DojoSkill,
+  status: DojoStoredLicenseStatus,
+  updatedAt: string,
+  expiresAt: string = skill.license_expires_at,
+  reason?: string
+): DojoPermissionLicenseRecord {
+  return {
+    tenant_id: tenant.tenant_id,
+    workspace_id: skill.workspace_id,
+    license_id: skill.permission_license.license_id,
+    skill_id: skill.skill_id,
+    license_version: skill.permission_license.license_version,
+    status,
+    entrustment_level: skill.permission_license.entrustment_level,
+    readiness_level: skill.skill_readiness_level,
+    license_json: cloneJson(skill.permission_license),
+    expires_at: expiresAt,
+    ...(reason ? { revoked_reason: reason } : {}),
+    created_at: skill.permission_license.issued_at || skill.generated_at,
+    updated_at: updatedAt,
+  };
+}
+
+function expiredLicenseRecordForSourceDrift(
+  record: DojoPermissionLicenseRecord,
+  reason: string,
+  updatedAt: string,
+  expiresAt: string = updatedAt
+): DojoPermissionLicenseRecord {
+  return {
+    ...cloneJson(record),
+    status: "expired",
+    expires_at: expiresAt,
+    revoked_reason: reason,
+    updated_at: updatedAt,
+  };
+}
+
+function expireCompatibilitySkillForSourceDrift(
+  skill: DojoSkill,
+  input: {
+    reason: string;
+    expired_at: string;
+    expired_by?: DojoAuditActor;
+  }
+): DojoSkill {
+  const updated = cloneJson(skill);
+  const condition = `source_drift:${input.reason}`;
+  const evidenceRef = `source_drift:${hashId(input.reason)}`;
+  updated.license_expires_at = input.expired_at;
+  updated.skill_card = {
+    ...updated.skill_card,
+    status: "Expired pending source-drift recertification",
+    proof_badge: "Source drift detected; recertification required",
+  };
+  updated.skill_passport = {
+    ...updated.skill_passport,
+    proof_required: true,
+    license_expires_at: input.expired_at,
+  };
+  updated.training_report = {
+    ...updated.training_report,
+    readiness_decision: `License expired due to source drift. Recertification required before production execution. ${input.reason}`,
+    limitations: dedupeStrings([...updated.training_report.limitations, condition]),
+    evidence_refs: dedupeStrings([...updated.training_report.evidence_refs, evidenceRef]),
+  };
+  updated.retrain_triggers = [
+    ...updated.retrain_triggers.filter((trigger) => trigger.condition !== condition),
+    {
+      trigger_id: `retrain_${hashId(`${updated.skill_id}:${updated.permission_license.license_id}:${condition}`)}`,
+      source: "app",
+      condition,
+    },
+  ];
+  updated.last_trained_at = input.expired_at;
+  if (input.expired_by) {
+    updated.assurance_case = {
+      ...updated.assurance_case,
+      limits: dedupeStrings([
+        ...updated.assurance_case.limits,
+        `source drift expiry applied by ${input.expired_by.actor_type}:${input.expired_by.actor_id}`,
+      ]),
+    };
+  }
+  return updated;
+}
+
+async function persistSourceDriftExpiredSkills(input: {
+  tenant: DojoTenantContext;
+  report: DojoSourceDriftReport;
+  application: DojoSourceDriftExpiryApplication;
+  resolve_skill: (skillId: string) => Promise<DojoSkill | null> | DojoSkill | null;
+  save_skill: (skill: DojoSkill) => Promise<{ skill_id: string; status: string; updated_at: string }>;
+  now: string;
+}): Promise<Array<{ skill_id: string; license_id: string; status: string; updated_at?: string; skipped_by?: string[] }>> {
+  const updates: Array<{ skill_id: string; license_id: string; status: string; updated_at?: string; skipped_by?: string[] }> = [];
+  for (const expired of input.application.expired_licenses) {
+    const skill = await input.resolve_skill(expired.record.skill_id);
+    if (!skill) {
+      updates.push({
+        skill_id: expired.record.skill_id,
+        license_id: expired.license_id,
+        status: "skipped",
+        skipped_by: ["source_drift_skill_record_missing"],
+      });
+      continue;
+    }
+    if (!isTenantAuthorizedForDojoSkill(input.tenant, skill) || skill.app_origin !== input.report.app_origin) {
+      updates.push({
+        skill_id: skill.skill_id,
+        license_id: expired.license_id,
+        status: "skipped",
+        skipped_by: ["source_drift_skill_scope_mismatch"],
+      });
+      continue;
+    }
+    const updatedSkill = expireCompatibilitySkillForSourceDrift(skill, {
+      reason: sourceDriftExpiredLicenseReason(input.report, expired),
+      expired_at: input.now,
+      expired_by: input.application.applied_by,
+    });
+    const saved = await input.save_skill(updatedSkill);
+    updates.push({
+      skill_id: saved.skill_id,
+      license_id: expired.license_id,
+      status: saved.status,
+      updated_at: saved.updated_at,
+    });
+  }
+  return updates;
+}
+
+function sourceDriftExpiredLicenseReason(
+  report: DojoSourceDriftReport,
+  expired: DojoSourceDriftExpiryApplication["expired_licenses"][number]
+): string {
+  return [
+    `source_drift:${report.previous_snapshot_id}->${report.next_snapshot_id}`,
+    `licenses=${expired.license_id}`,
+    `tokens=${expired.source_token_ids.join(",")}`,
+    `nodes=${expired.node_ids.join(",")}`,
+  ].join(" ");
 }
 
 function codeOwnerRulesOpt(value: unknown): DojoGeneratedPrCodeOwnerRule[] {
