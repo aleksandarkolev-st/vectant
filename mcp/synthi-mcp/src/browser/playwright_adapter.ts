@@ -769,6 +769,15 @@ export class BrowserPlaywrightAdapter {
     const page = this.pages.get(tab_id)?.page;
     if (!page || page.isClosed()) return { ok: false, error: "tab_not_found" };
     await this.installTeachCapture(page, tab_id);
+    if (this.workflowOverlayEnabled) {
+      const visible = await this.installWorkflowOverlay(page, tab_id);
+      if (visible) {
+        this.workflowOverlayInstalled.add(page);
+      } else {
+        this.workflowOverlayInstalled.delete(page);
+        return { ok: false, error: "workflow_overlay_install_failed" };
+      }
+    }
     return { ok: true };
   }
 
