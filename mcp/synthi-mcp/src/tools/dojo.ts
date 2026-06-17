@@ -97,6 +97,14 @@ import {
   validateDojoScenarioDefinition,
   type DojoScenarioExpectedOutcome,
 } from "../dojo/vivarium/scenario_dsl.js";
+import { buildDojoGeneratedSourcePatchBundle, type DojoSourcePatchInputFile } from "../dojo/source/patch_bundle.js";
+import {
+  buildDojoGeneratedPrBranchPlan,
+  buildDojoGeneratedPrMetadata,
+  type DojoGeneratedPrArtifactRef,
+  type DojoGeneratedPrCodeOwnerRule,
+} from "../dojo/source/pr_generator.js";
+import { applyDojoGeneratedPrBranchPlan } from "../dojo/source/pr_branch_applier.js";
 import type {
   DojoAuditActor,
   DojoAuditEventRecord,
@@ -144,6 +152,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_get_governance_report",
   "synthi_dojo_get_metrics",
   "synthi_dojo_get_source_affordance_pr_plan",
+  "synthi_dojo_prepare_source_affordance_pr",
   "synthi_dojo_get_registry",
   "synthi_dojo_get_skill_assurance_case",
   "synthi_dojo_get_entrustment_level",
@@ -1155,6 +1164,46 @@ export const DOJO_TOOLS = [
     inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
   },
   {
+    name: "synthi_dojo_prepare_source_affordance_pr",
+    description: "Build a generated source patch bundle, PR metadata, branch plan, and optional dry-run apply result for Agent-Ready UI affordance patches.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
+        source_files: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+              source: { type: "string" },
+            },
+            required: ["path", "source"],
+          },
+        },
+        branch_name: { type: "string" },
+        branch_prefix: { type: "string" },
+        base_ref: { type: "string" },
+        source_snapshot_id: { type: "string" },
+        workspace_root: { type: "string" },
+        code_owner_rules: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              path_prefix: { type: "string" },
+              glob: { type: "string" },
+              owners: { type: "array", items: { type: "string" } },
+              review_gate: { type: "string" },
+            },
+            required: ["owners"],
+          },
+        },
+      },
+      required: ["source_files"],
+    },
+  },
+  {
     name: "synthi_dojo_get_registry",
     description: "Return the organization-level Dojo skill registry, case-law registry, antibody registry, and aggregate metrics.",
     inputSchema: {
@@ -1672,6 +1721,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
       case "synthi_dojo_get_source_affordance_pr_plan":
         response = dojoGetSourceAffordancePrPlanTool(args);
         break;
+      case "synthi_dojo_prepare_source_affordance_pr":
+        response = await dojoPrepareSourceAffordancePrTool(args);
+        break;
       case "synthi_dojo_get_registry":
         response = await dojoGetRegistryTool(args);
         break;
@@ -1995,6 +2047,74 @@ function dojoGetSourceAffordancePrPlanTool(args: unknown): ToolResponse {
     ok: true,
     skill_id: skill.skill.skill_id,
     source_affordance_pr_plan: buildDojoSourceAffordancePrPlan(skill.skill),
+  });
+}
+
+async function dojoPrepareSourceAffordancePrTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_prepare_source_affordance_pr");
+  if (!skill.ok) return skill.error;
+  const a = obj(args);
+  const sourceFiles = sourcePatchInputFilesOpt(a["source_files"]);
+  if (sourceFiles.length === 0) {
+    return errorResponse("dojo_source_affordance_source_files_required", {
+      ok: false,
+      error: "dojo_source_affordance_source_files_required",
+      blocked_by: ["source_files_missing"],
+      expected_shape: "source_files: Array<{ path: string; source: string }>",
+    });
+  }
+  const sourceAffordancePrReport = buildDojoSourceAffordancePrPlan(skill.skill);
+  const plan = sourceAffordancePrReport.typed_patch_plan;
+  const patchBundle = buildDojoGeneratedSourcePatchBundle({
+    plan,
+    files: sourceFiles,
+  });
+  const artifactRefs = sourceAffordanceArtifactRefs(plan.plan_id, patchBundle);
+  const metadata = buildDojoGeneratedPrMetadata({
+    plan,
+    skill_id: skill.skill.skill_id,
+    license_id: skill.skill.permission_license.license_id,
+    source_snapshot_id: stringOpt(a["source_snapshot_id"]),
+    branch_name: stringOpt(a["branch_name"]),
+    branch_prefix: stringOpt(a["branch_prefix"]),
+    artifact_refs: artifactRefs,
+    code_owner_rules: codeOwnerRulesOpt(a["code_owner_rules"]),
+  });
+  const branchPlan = buildDojoGeneratedPrBranchPlan({
+    metadata,
+    patch_bundle: patchBundle,
+    base_ref: stringOpt(a["base_ref"]),
+  });
+  const workspaceRoot = stringOpt(a["workspace_root"]);
+  const dryRunApply = workspaceRoot
+    ? await applyDojoGeneratedPrBranchPlan({
+      branch_plan: branchPlan,
+      patch_bundle: patchBundle,
+      workspace_root: workspaceRoot,
+      dry_run: true,
+    })
+    : null;
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    source_file_count: sourceFiles.length,
+    source_affordance_pr_plan: sourceAffordancePrReport,
+    typed_patch_plan: plan,
+    source_patch_bundle: patchBundle,
+    generated_pr_metadata: metadata,
+    generated_pr_branch_plan: branchPlan,
+    dry_run_apply: dryRunApply,
+    ready_for_review: patchBundle.ok && branchPlan.ready_to_apply && (dryRunApply?.ok ?? true),
+    promotion_blockers: [
+      ...metadata.promotion_blockers,
+      ...branchPlan.promotion_blockers,
+      ...patchBundle.issues
+        .filter((issue) => issue.severity === "error")
+        .map((issue) => `source_patch_bundle:${issue.issue_id}${issue.file_path ? `:${issue.file_path}` : ""}`),
+      ...(dryRunApply?.issues ?? [])
+        .filter((issue) => issue.severity === "error")
+        .map((issue) => `dry_run_apply:${issue.issue_id}${issue.path ? `:${issue.path}` : ""}`),
+    ],
   });
 }
 
@@ -7072,6 +7192,75 @@ function cloneJson<T>(value: T): T {
 
 function hashId(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex").slice(0, 12);
+}
+
+function sha256String(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function sourcePatchInputFilesOpt(value: unknown): DojoSourcePatchInputFile[] {
+  if (!Array.isArray(value)) return [];
+  const files: DojoSourcePatchInputFile[] = [];
+  for (const item of value) {
+    const record = objectOpt(item);
+    const filePath = stringOpt(record?.["path"]);
+    const source = typeof record?.["source"] === "string" ? record["source"] as string : undefined;
+    if (!filePath || source === undefined) continue;
+    files.push({ path: filePath, source });
+  }
+  return files;
+}
+
+function codeOwnerRulesOpt(value: unknown): DojoGeneratedPrCodeOwnerRule[] {
+  if (!Array.isArray(value)) return [];
+  const rules: DojoGeneratedPrCodeOwnerRule[] = [];
+  for (const item of value) {
+    const record = objectOpt(item);
+    if (!record) continue;
+    const owners = Array.isArray(record["owners"])
+      ? record["owners"].map((owner) => stringOpt(owner)).filter((owner): owner is string => Boolean(owner))
+      : [];
+    if (owners.length === 0) continue;
+    rules.push({
+      ...(stringOpt(record["path_prefix"]) ? { path_prefix: stringOpt(record["path_prefix"]) } : {}),
+      ...(stringOpt(record["glob"]) ? { glob: stringOpt(record["glob"]) } : {}),
+      owners,
+      ...(stringOpt(record["review_gate"]) ? { review_gate: stringOpt(record["review_gate"]) } : {}),
+    });
+  }
+  return rules;
+}
+
+function sourceAffordanceArtifactRefs(
+  planId: string,
+  patchBundle: ReturnType<typeof buildDojoGeneratedSourcePatchBundle>
+): DojoGeneratedPrArtifactRef[] {
+  const normalizedPlanId = planId.toLowerCase().replace(/[^a-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || "source-affordance";
+  return [
+    {
+      kind: "patch_plan",
+      path: `.synthi/dojo/source/${normalizedPlanId}.affordance-pr-plan.json`,
+      sha256: sha256String(JSON.stringify({
+        plan_id: planId,
+        app_origin: patchBundle.app_origin,
+        app_version: patchBundle.app_version,
+        modified_files: patchBundle.modified_files.map((file) => ({
+          path: file.path,
+          after_sha256: file.after_sha256,
+          applied_operations: file.applied_operations,
+        })),
+        generated_tests: patchBundle.generated_tests.map((file) => ({
+          path: file.path,
+          sha256: sha256String(file.source),
+        })),
+      })),
+    },
+    ...patchBundle.generated_tests.map((file) => ({
+      kind: "contract_test" as const,
+      path: file.path,
+      sha256: sha256String(file.source),
+    })),
+  ];
 }
 
 function bumpVersion(version: string): string {

@@ -1056,6 +1056,7 @@ describe("Agent Dojo MCP tools", () => {
         "synthi_dojo_get_lifecycle",
         "synthi_dojo_get_governance_report",
         "synthi_dojo_get_source_affordance_pr_plan",
+        "synthi_dojo_prepare_source_affordance_pr",
         "synthi_dojo_get_skill_assurance_case",
         "synthi_dojo_get_entrustment_level",
         "synthi_dojo_get_license",
@@ -1397,6 +1398,101 @@ describe("Agent Dojo MCP tools", () => {
         }),
       }),
     }));
+  });
+
+  it("prepares a generated source affordance PR bundle and dry-run branch plan from supplied source files", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+
+    const prepared = await dispatchDojoTool("synthi_dojo_prepare_source_affordance_pr", {
+      skill_id: skillId,
+      source_files: [{
+        path: "src/details.open.tsx",
+        source: [
+          "function assertDojoProof(affordanceId) {",
+          "  return affordanceId;",
+          "}",
+          "export function DetailsOpen({ onOpen }) {",
+          "  return <button onClick={onOpen}>Open details</button>;",
+          "}",
+        ].join("\n"),
+      }],
+      branch_prefix: "dojo/source-affordance",
+      code_owner_rules: [{
+        path_prefix: "src/",
+        owners: ["@synthi/source-reviewers"],
+        review_gate: "code_owner",
+      }],
+    });
+
+    expect(prepared?.isError).toBeUndefined();
+    expect(prepared?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      implementation_status: "executable",
+      runtime_enforced: false,
+      skill_id: skillId,
+      source_file_count: 1,
+      typed_patch_plan: expect.objectContaining({
+        schema_version: "synthi.dojo.affordancePrPlan.v1",
+        operations: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "stable_locator",
+            file_path: "src/details.open.tsx",
+          }),
+        ]),
+      }),
+      source_patch_bundle: expect.objectContaining({
+        schema_version: "synthi.dojo.generatedSourcePatchBundle.v1",
+        ok: true,
+        modified_files: expect.arrayContaining([
+          expect.objectContaining({
+            path: "src/details.open.tsx",
+            changed: true,
+            applied_operations: expect.arrayContaining([expect.stringMatching(/^patch_stable_locator_/)]),
+          }),
+        ]),
+        generated_tests: expect.arrayContaining([
+          expect.objectContaining({
+            path: expect.stringMatching(/dojo-affordance\.test\.ts$/),
+          }),
+        ]),
+      }),
+      generated_pr_metadata: expect.objectContaining({
+        schema_version: "synthi.dojo.generatedSourcePrMetadata.v1",
+        branch_name: expect.stringMatching(/^dojo\/source-affordance\//),
+        review_requirements: expect.arrayContaining([
+          expect.objectContaining({
+            gate: "code_owner",
+            owners: expect.arrayContaining(["@synthi/source-reviewers"]),
+          }),
+        ]),
+      }),
+      generated_pr_branch_plan: expect.objectContaining({
+        schema_version: "synthi.dojo.generatedSourcePrBranchPlan.v1",
+        ready_to_apply: true,
+        promotion_blockers: [],
+        file_writes: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "source",
+            path: "src/details.open.tsx",
+          }),
+          expect.objectContaining({
+            kind: "contract_test",
+            path: expect.stringMatching(/dojo-affordance\.test\.ts$/),
+          }),
+        ]),
+      }),
+      dry_run_apply: null,
+      ready_for_review: true,
+      promotion_blockers: [],
+    }));
+    const modified = (prepared?.structuredContent as {
+      source_patch_bundle: { modified_files: Array<{ path: string; source: string }> };
+    }).source_patch_bundle.modified_files.find((file) => file.path === "src/details.open.tsx");
+    expect(modified?.source).toContain("data-agent-action=");
+    expect(modified?.source).toContain("assertDojoProof(");
   });
 
   it("publishes a licensed skill before exposing the backing private workflow tool and validates proof-gated dry runs", async () => {

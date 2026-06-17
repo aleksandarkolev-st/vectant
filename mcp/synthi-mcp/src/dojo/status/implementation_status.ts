@@ -68,6 +68,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_get_governance_report: governanceReport("Returns governance, approval, license-health, recertification, audit-export, and compliance view data."),
   synthi_dojo_get_metrics: report("Returns generated registry and skill metrics from current in-process state."),
   synthi_dojo_get_source_affordance_pr_plan: sourceProjection("Returns a typed generated source-affordance PR plan; the codemod harness can patch controlled React fixtures and prove generated tests."),
+  synthi_dojo_prepare_source_affordance_pr: sourceGeneration("Builds a generated source patch bundle, PR metadata, branch plan, and dry-run apply proof from supplied source files."),
   synthi_dojo_get_registry: governanceReport("Returns organization registry report data with governance-service view models."),
   synthi_dojo_get_skill_assurance_case: reportWithRuntimeEvidence("Returns an assurance case artifact with executable checkride provenance when the skill was published or recertified through the runtime path."),
   synthi_dojo_get_entrustment_level: reportWithRuntimeEvidence("Returns stored entrustment and readiness with executable checkride provenance when the skill was published or recertified through the runtime path."),
@@ -231,6 +232,23 @@ function sourceProjection(summary: string): DojoImplementationMetadata {
     maturity_blockers: [
       "reviewed_source_pr_workflow_not_connected_to_hosted_repo",
       "broad_arbitrary_app_codemods_not_complete",
+    ],
+  };
+}
+
+function sourceGeneration(summary: string): DojoImplementationMetadata {
+  return {
+    implementation_status: "executable",
+    runtime_enforced: false,
+    runtime_scope: "registry_operation",
+    production_runtime: false,
+    evidence_backing: "repo_local_artifact",
+    simulation_backing: "none",
+    summary,
+    maturity_blockers: [
+      "reviewed_source_pr_workflow_not_connected_to_hosted_repo",
+      "broad_arbitrary_app_codemods_not_complete",
+      "code_owner_approval_required_before_source_api_promotion",
     ],
   };
 }
