@@ -1060,6 +1060,7 @@ describe("Agent Dojo MCP tools", () => {
         "synthi_dojo_get_lifecycle",
         "synthi_dojo_get_governance_report",
         "synthi_dojo_capture_source_snapshot",
+        "synthi_dojo_detect_source_drift",
         "synthi_dojo_get_source_affordance_pr_plan",
         "synthi_dojo_prepare_source_affordance_pr",
         "synthi_dojo_create_source_affordance_pr_branch",
@@ -1567,6 +1568,134 @@ describe("Agent Dojo MCP tools", () => {
     }));
     const body = JSON.stringify(captured?.structuredContent);
     expect(body).not.toContain(signingKey);
+  });
+
+  it("detects source drift from signed source snapshots and graph node bindings", async () => {
+    const signingKey = "source-signing-secret-a";
+    const previous = await dispatchDojoTool("synthi_dojo_capture_source_snapshot", {
+      ...productionTenantContextArgs({
+        actor_id: "source-drift-service",
+        actor_type: "service",
+        roles: ["source-registry"],
+        request_id: "req-source-drift-prev",
+        correlation_id: "corr-source-drift",
+      }),
+      app_origin: "https://app.example.test",
+      app_version: "2026.06.16",
+      commit_sha: "commit-source-drift-prev",
+      source_root: "src",
+      signer_key_id: "source-key-a",
+      signing_key: signingKey,
+      created_at: "2026-06-16T00:00:00.000Z",
+      source_tokens: [
+        {
+          token_id: "submit-invoice",
+          route: "/invoices/new",
+          component: "InvoiceForm",
+          action: "submitInvoice",
+          source_locator: "src/routes/invoices/InvoiceForm.jsx:88",
+          source_sha256: createHash("sha256").update("submitInvoice:v1").digest("hex"),
+          risk: "mutation",
+        },
+      ],
+    });
+    const next = await dispatchDojoTool("synthi_dojo_capture_source_snapshot", {
+      ...productionTenantContextArgs({
+        actor_id: "source-drift-service",
+        actor_type: "service",
+        roles: ["source-registry"],
+        request_id: "req-source-drift-next",
+        correlation_id: "corr-source-drift",
+      }),
+      app_origin: "https://app.example.test",
+      app_version: "2026.06.17",
+      commit_sha: "commit-source-drift-next",
+      source_root: "src",
+      signer_key_id: "source-key-a",
+      signing_key: signingKey,
+      created_at: "2026-06-17T00:00:00.000Z",
+      source_tokens: [
+        {
+          token_id: "submit-invoice",
+          route: "/invoices/new",
+          component: "InvoiceForm",
+          action: "submitInvoice",
+          source_locator: "src/routes/invoices/InvoiceForm.jsx:88",
+          source_sha256: createHash("sha256").update("submitInvoice:v2").digest("hex"),
+          risk: "mutation",
+        },
+        {
+          token_id: "delete-invoice",
+          route: "/invoices/new",
+          component: "InvoiceForm",
+          action: "deleteInvoice",
+          source_locator: "src/routes/invoices/InvoiceForm.jsx:144",
+          risk: "dangerous",
+        },
+      ],
+    });
+    expect(previous?.isError).toBeUndefined();
+    expect(next?.isError).toBeUndefined();
+    const previousSnapshot = (previous?.structuredContent as { source_snapshot: unknown }).source_snapshot;
+    const nextSnapshot = (next?.structuredContent as { source_snapshot: unknown }).source_snapshot;
+
+    const drift = await dispatchDojoTool("synthi_dojo_detect_source_drift", {
+      ...productionTenantContextArgs({
+        actor_id: "source-drift-service",
+        actor_type: "service",
+        roles: ["source-registry"],
+        request_id: "req-source-drift-detect",
+        correlation_id: "corr-source-drift",
+      }),
+      previous_snapshot: previousSnapshot,
+      next_snapshot: nextSnapshot,
+      source_snapshot_signing_keys_by_id: { "source-key-a": signingKey },
+      node_bindings: [
+        {
+          node_id: "action-submit-invoice",
+          source_token_ids: ["submit-invoice"],
+          license_id: "license-submit-invoice",
+        },
+      ],
+    });
+
+    expect(drift?.isError).toBeUndefined();
+    expect(drift?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      implementation_status: "executable",
+      runtime_enforced: false,
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      drifted_token_count: 2,
+      affected_node_count: 1,
+      license_expiry_trigger_count: 1,
+      review_required_token_count: 1,
+      source_drift_report: expect.objectContaining({
+        schema_version: "synthi.dojo.sourceDriftReport.v1",
+        app_origin: "https://app.example.test",
+        previous_app_version: "2026.06.16",
+        next_app_version: "2026.06.17",
+        drifted_token_ids: ["delete-invoice", "submit-invoice"],
+        added_token_ids: ["delete-invoice"],
+        review_required_token_ids: ["delete-invoice"],
+        affected_nodes: [
+          expect.objectContaining({
+            node_id: "action-submit-invoice",
+            source_token_id: "submit-invoice",
+            drift_kind: "changed",
+            license_id: "license-submit-invoice",
+          }),
+        ],
+        license_expiry_triggers: [
+          expect.objectContaining({
+            node_id: "action-submit-invoice",
+            source_token_id: "submit-invoice",
+            license_id: "license-submit-invoice",
+          }),
+        ],
+      }),
+      blocked_by: [],
+    }));
   });
 
   it("creates a generated source affordance PR branch in a temporary git repository", async () => {

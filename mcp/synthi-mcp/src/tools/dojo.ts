@@ -109,8 +109,13 @@ import { createDojoGeneratedPrGitBranch } from "../dojo/source/pr_branch_git.js"
 import {
   buildDojoSourceSnapshot,
   verifyDojoSourceSnapshot,
+  type DojoSourceSnapshot,
   type DojoSourceTokenSnapshot,
 } from "../dojo/source/source_snapshot.js";
+import {
+  detectDojoSourceDrift,
+  type DojoGraphNodeSourceBinding,
+} from "../dojo/source/source_drift.js";
 import {
   inferDojoApiEndpointCandidateFromTrace,
   reviewDojoApiEndpointCandidate,
@@ -173,6 +178,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_get_governance_report",
   "synthi_dojo_get_metrics",
   "synthi_dojo_capture_source_snapshot",
+  "synthi_dojo_detect_source_drift",
   "synthi_dojo_get_source_affordance_pr_plan",
   "synthi_dojo_prepare_source_affordance_pr",
   "synthi_dojo_create_source_affordance_pr_branch",
@@ -1217,6 +1223,35 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_detect_source_drift",
+    description: "Verify two signed Dojo source snapshots, detect source-token drift, and report affected graph nodes and license expiry triggers without applying them.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
+        previous_snapshot: { type: "object" },
+        next_snapshot: { type: "object" },
+        source_snapshot_signing_keys_by_id: {
+          type: "object",
+          additionalProperties: { type: "string" },
+        },
+        node_bindings: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              node_id: { type: "string" },
+              source_token_ids: { type: "array", items: { type: "string" } },
+              license_id: { type: "string" },
+            },
+            required: ["node_id", "source_token_ids"],
+          },
+        },
+      },
+      required: ["previous_snapshot", "next_snapshot", "source_snapshot_signing_keys_by_id", "node_bindings"],
+    },
+  },
+  {
     name: "synthi_dojo_get_source_affordance_pr_plan",
     description: "Return a reviewable generated PR plan for adding stable Agent-Ready UI affordances and proof hooks to source files.",
     inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
@@ -1866,6 +1901,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
       case "synthi_dojo_capture_source_snapshot":
         response = dojoCaptureSourceSnapshotTool(args);
         break;
+      case "synthi_dojo_detect_source_drift":
+        response = dojoDetectSourceDriftTool(args);
+        break;
       case "synthi_dojo_get_source_affordance_pr_plan":
         response = dojoGetSourceAffordancePrPlanTool(args);
         break;
@@ -2266,6 +2304,69 @@ function dojoCaptureSourceSnapshotTool(args: unknown): ToolResponse {
     return errorResponse("dojo_source_snapshot_capture_failed", {
       ok: false,
       error: "dojo_source_snapshot_capture_failed",
+      message,
+      blocked_by: [message],
+    });
+  }
+}
+
+function dojoDetectSourceDriftTool(args: unknown): ToolResponse {
+  const tenantContext = dojoTenantContextResultFromArgs(args);
+  if (!tenantContext.ok) return tenantContext.error;
+  const a = obj(args);
+  const previousSnapshot = objectOpt(a["previous_snapshot"]) as DojoSourceSnapshot | undefined;
+  const nextSnapshot = objectOpt(a["next_snapshot"]) as DojoSourceSnapshot | undefined;
+  const signingKeysById = stringRecordOpt(a["source_snapshot_signing_keys_by_id"]);
+  const nodeBindings = sourceDriftNodeBindingsResult(a["node_bindings"]);
+  const blockedBy: string[] = [
+    ...(!previousSnapshot ? ["source_drift_previous_snapshot_missing"] : []),
+    ...(!nextSnapshot ? ["source_drift_next_snapshot_missing"] : []),
+    ...(Object.keys(signingKeysById).length === 0 ? ["source_drift_signing_keys_missing"] : []),
+    ...(!nodeBindings.ok ? nodeBindings.blocked_by : []),
+  ];
+  if (blockedBy.length > 0 || !previousSnapshot || !nextSnapshot || !nodeBindings.ok) {
+    return errorResponse("dojo_source_drift_inputs_invalid", {
+      ok: false,
+      error: "dojo_source_drift_inputs_invalid",
+      blocked_by: blockedBy,
+      node_binding_errors: nodeBindings.ok ? [] : nodeBindings.errors,
+    });
+  }
+  const scopeBlockedBy = sourceSnapshotTenantScopeBlockedBy(tenantContext.tenant, previousSnapshot, nextSnapshot);
+  if (scopeBlockedBy.length > 0) {
+    return errorResponse("dojo_source_drift_snapshot_scope_mismatch", {
+      ok: false,
+      error: "dojo_source_drift_snapshot_scope_mismatch",
+      blocked_by: scopeBlockedBy,
+      tenant_id: tenantContext.tenant.tenant_id,
+      workspace_id: tenantContext.tenant.workspace_id,
+      previous_snapshot_id: previousSnapshot.snapshot_id,
+      next_snapshot_id: nextSnapshot.snapshot_id,
+    });
+  }
+  try {
+    const driftReport = detectDojoSourceDrift({
+      previous_snapshot: previousSnapshot,
+      next_snapshot: nextSnapshot,
+      node_bindings: nodeBindings.bindings,
+      source_snapshot_signing_keys_by_id: signingKeysById,
+    });
+    return jsonResponse({
+      ok: true,
+      tenant_id: tenantContext.tenant.tenant_id,
+      workspace_id: tenantContext.tenant.workspace_id,
+      source_drift_report: driftReport,
+      drifted_token_count: driftReport.drifted_token_ids.length,
+      affected_node_count: driftReport.affected_nodes.length,
+      license_expiry_trigger_count: driftReport.license_expiry_triggers.length,
+      review_required_token_count: driftReport.review_required_token_ids.length,
+      blocked_by: [],
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return errorResponse("dojo_source_drift_detection_failed", {
+      ok: false,
+      error: "dojo_source_drift_detection_failed",
       message,
       blocked_by: [message],
     });
@@ -7663,6 +7764,65 @@ function sourceTokenSnapshotsResult(value: unknown): SourceTokenSnapshotsResult 
 
 function sourceTokenRiskOpt(value: unknown): DojoSourceTokenSnapshot["risk"] | undefined {
   return value === "safe" || value === "mutation" || value === "dangerous" ? value : undefined;
+}
+
+type SourceDriftNodeBindingsResult =
+  | { ok: true; bindings: DojoGraphNodeSourceBinding[] }
+  | { ok: false; blocked_by: string[]; errors: Array<{ index?: number; field?: string; message: string }> };
+
+function sourceDriftNodeBindingsResult(value: unknown): SourceDriftNodeBindingsResult {
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      blocked_by: ["source_drift_node_bindings_missing"],
+      errors: [{ field: "node_bindings", message: "node_bindings must be an array." }],
+    };
+  }
+  const bindings: DojoGraphNodeSourceBinding[] = [];
+  const errors: Array<{ index?: number; field?: string; message: string }> = [];
+  value.forEach((item, index) => {
+    const record = objectOpt(item);
+    if (!record) {
+      errors.push({ index, message: "node binding must be an object." });
+      return;
+    }
+    const nodeId = stringOpt(record["node_id"]);
+    const sourceTokenIds = stringArrayOpt(record["source_token_ids"]);
+    const licenseId = stringOpt(record["license_id"]);
+    if (!nodeId) errors.push({ index, field: "node_id", message: "node_id is required." });
+    if (sourceTokenIds.length === 0) {
+      errors.push({ index, field: "source_token_ids", message: "source_token_ids must include at least one token ID." });
+    }
+    if (!nodeId || sourceTokenIds.length === 0) return;
+    bindings.push({
+      node_id: nodeId,
+      source_token_ids: sourceTokenIds,
+      ...(licenseId ? { license_id: licenseId } : {}),
+    });
+  });
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      blocked_by: [...new Set(errors.map((error) => error.field ? `source_drift_node_binding_${error.field}_invalid` : "source_drift_node_binding_invalid"))],
+      errors,
+    };
+  }
+  return { ok: true, bindings };
+}
+
+function sourceSnapshotTenantScopeBlockedBy(
+  tenant: DojoTenantContext,
+  previousSnapshot: DojoSourceSnapshot,
+  nextSnapshot: DojoSourceSnapshot
+): string[] {
+  const blockedBy: string[] = [];
+  if (previousSnapshot.tenant_id !== tenant.tenant_id) blockedBy.push("source_drift_previous_snapshot_tenant_mismatch");
+  if (nextSnapshot.tenant_id !== tenant.tenant_id) blockedBy.push("source_drift_next_snapshot_tenant_mismatch");
+  if (previousSnapshot.workspace_id !== tenant.workspace_id) blockedBy.push("source_drift_previous_snapshot_workspace_mismatch");
+  if (nextSnapshot.workspace_id !== tenant.workspace_id) blockedBy.push("source_drift_next_snapshot_workspace_mismatch");
+  if (previousSnapshot.tenant_id !== nextSnapshot.tenant_id) blockedBy.push("source_drift_snapshot_pair_tenant_mismatch");
+  if (previousSnapshot.workspace_id !== nextSnapshot.workspace_id) blockedBy.push("source_drift_snapshot_pair_workspace_mismatch");
+  return blockedBy;
 }
 
 function codeOwnerRulesOpt(value: unknown): DojoGeneratedPrCodeOwnerRule[] {

@@ -73,6 +73,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_dojo_get_governance_report",
   "synthi_dojo_get_metrics",
   "synthi_dojo_capture_source_snapshot",
+  "synthi_dojo_detect_source_drift",
   "synthi_dojo_get_source_affordance_pr_plan",
   "synthi_dojo_prepare_source_affordance_pr",
   "synthi_dojo_create_source_affordance_pr_branch",
