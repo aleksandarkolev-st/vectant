@@ -232,6 +232,42 @@ function responseHeaders(upstream) {
   return headers;
 }
 
+function runtimeToolContextArgs(runtimeContext) {
+  const args = {};
+  if (runtimeContext.workspaceSlug) args.workspace_id = runtimeContext.workspaceSlug;
+  if (runtimeContext.runtimeScope) {
+    args.runtime_scope = runtimeContext.runtimeScope;
+    args.runtime_id = runtimeResourceId(runtimeContext.runtimeScope);
+  }
+  if (runtimeContext.runtimeKind) args.runtime_kind = runtimeContext.runtimeKind;
+  if (runtimeContext.collabSessionId) args.collab_session_id = runtimeContext.collabSessionId;
+  return args;
+}
+
+async function requestBodyForUpstream(request, path, runtimeContext) {
+  if (request.method === 'GET' || request.method === 'HEAD') return undefined;
+  const raw = await request.arrayBuffer();
+  if (path !== 'tool') return raw;
+
+  try {
+    const text = new TextDecoder().decode(raw);
+    const body = text ? JSON.parse(text) : {};
+    const currentArgs =
+      body?.arguments && typeof body.arguments === 'object' && !Array.isArray(body.arguments)
+        ? body.arguments
+        : {};
+    return JSON.stringify({
+      ...body,
+      arguments: {
+        ...runtimeToolContextArgs(runtimeContext),
+        ...currentArgs,
+      },
+    });
+  } catch (_) {
+    return raw;
+  }
+}
+
 async function ensureRuntimeBridge(context) {
   const runtimeScope = context.runtimeScope;
   if (!runtimeScope) return { ok: true };
@@ -296,19 +332,21 @@ export async function proxyWorkflowBridge(request, routeContext) {
     );
   }
 
-  const ensure = await ensureRuntimeBridge(runtimeContext);
-  if (!ensure.ok) {
-    return NextResponse.json(
-      { error: ensure.error || 'workflow_runtime_unavailable', detail: ensure.detail },
-      { status: ensure.status || 503 },
-    );
-  }
-
   const params = await routeContext.params;
   const path = Array.isArray(params?.path) ? params.path.join('/') : '';
   const incomingUrl = new URL(request.url);
   const upstreamUrl = new URL(`/browser-workflows/${path}`, baseUrl);
   upstreamUrl.search = incomingUrl.search;
+
+  if (path !== 'state') {
+    const ensure = await ensureRuntimeBridge(runtimeContext);
+    if (!ensure.ok) {
+      return NextResponse.json(
+        { error: ensure.error || 'workflow_runtime_unavailable', detail: ensure.detail },
+        { status: ensure.status || 503 },
+      );
+    }
+  }
 
   const headers = new Headers();
   const contentType = request.headers.get('content-type');
@@ -329,8 +367,9 @@ export async function proxyWorkflowBridge(request, routeContext) {
     headers,
     cache: 'no-store',
   };
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    init.body = await request.arrayBuffer();
+  const upstreamBody = await requestBodyForUpstream(request, path, runtimeContext);
+  if (upstreamBody !== undefined) {
+    init.body = upstreamBody;
   }
 
   try {
