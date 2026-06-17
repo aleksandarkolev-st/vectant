@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { Pool } from "pg";
 import { browserBroker } from "../../src/browser/broker.js";
 import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
-import { dojoSkillRegistry } from "../../src/browser/dojo.js";
+import { buildDojoSkill, dojoSkillRegistry } from "../../src/browser/dojo.js";
 import { InMemoryPrivateWorkflowToolStore, privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
 import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
 import { PostgresDojoEvidenceLedgerStore } from "../../src/dojo/evidence/ledger_store.js";
@@ -54,10 +54,56 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
     process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL = postgresUrl;
 
     recordOpenDetailsWorkflow();
+    const workflowArtifact = browserBroker.workflowArtifact();
+    expect(workflowArtifact.ok).toBe(true);
+    if (!workflowArtifact.ok) throw new Error(workflowArtifact.error);
+    const candidateSkill = buildDojoSkill(workflowArtifact.artifact.workflow.contract, {
+      workspace_id: workspaceId,
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    await seedSkillRow(pool, {
+      tenant_id: tenantId,
+      organization_id: organizationId,
+      workspace_id: workspaceId,
+      skill_id: candidateSkill.skill_id,
+      workflow_id: candidateSkill.workflow_id,
+      skill_name: candidateSkill.name,
+      skill_json: candidateSkill,
+    });
+    const publicationLedgerStore = new PostgresDojoEvidenceLedgerStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    const publicationPayload = JSON.stringify({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      skill_id: candidateSkill.skill_id,
+      source_ref: "publication:proof-ledger-tool-test",
+      created_at: "2026-06-11T00:00:30.000Z",
+    });
+    const publicationArtifactSha = sha256(publicationPayload);
+    const publicationEvidence = await publicationLedgerStore.append({
+      record_id: `publication_${sha256(`${tenantId}:${workspaceId}:${candidateSkill.skill_id}:publication`).slice(0, 24)}`,
+      skill_id: candidateSkill.skill_id,
+      run_id: `publication_${candidateSkill.skill_id}`,
+      kind: "audit",
+      artifact_uri: `sha256://${publicationArtifactSha}`,
+      artifact_sha256: publicationArtifactSha,
+      redaction_manifest_sha256: sha256(JSON.stringify({
+        artifact_sha256: publicationArtifactSha,
+        redaction_policy: "metadata_only",
+      })),
+      claim_ids: ["skill_publication_reviewed", "publication_evidence_refs_recorded"],
+      created_at: "2026-06-11T00:00:30.000Z",
+      created_by: "integration-publisher",
+      retention_class: "standard",
+      source_refs: ["publication:proof-ledger-tool-test"],
+    });
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
       workspace_id: workspaceId,
       reason: "postgres_evidence_ledger_tool_test",
-      evidence_refs: ["evidence:publish-integration"],
+      evidence_refs: [publicationEvidence.record_id],
       ...tenantContext({
         actor_id: "integration-publisher",
         actor_type: "human",

@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { createHash } from "node:crypto";
 import { browserBroker } from "../../src/browser/broker.js";
 import {
+  buildDojoSkill,
   dojoSkillRegistry,
   type DojoSkill,
 } from "../../src/browser/dojo.js";
@@ -16,6 +17,7 @@ import { PostgresDojoProofStore } from "../../src/dojo/store/postgres_proof_stor
 import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_record.js";
 import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
 import { PostgresDojoAuditStore } from "../../src/dojo/store/audit_store.js";
+import { ensureDojoTenantWorkspace } from "../../src/dojo/store/control_plane_resolver.js";
 import { PostgresDojoGhostShadowEvidenceStore } from "../../src/dojo/store/postgres_ghost_shadow_evidence_store.js";
 import { PostgresDojoGovernanceStore } from "../../src/dojo/store/postgres_governance_store.js";
 import { PostgresDojoGraphRunStore } from "../../src/dojo/store/postgres_graph_run_store.js";
@@ -141,6 +143,105 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         }),
       ],
     }));
+  });
+
+  it("requires ledger-backed publication evidence when production evidence ledger is enforced", async () => {
+    const tenantId = `tenant_publication_ledger_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_publication_ledger_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE = "postgres";
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const workflowArtifact = browserBroker.workflowArtifact();
+    expect(workflowArtifact.ok).toBe(true);
+    if (!workflowArtifact.ok) throw new Error(workflowArtifact.error);
+    const candidateSkill = buildDojoSkill(workflowArtifact.artifact.workflow.contract, {
+      workspace_id: workspaceId,
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-publication-ledger",
+      correlation_id: "corr-postgres-publication-ledger",
+      actor_id: "postgres-publication-ledger-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const unbackedPublish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "unbacked_publication_review",
+      evidence_refs: ["evidence:unbacked-publication"],
+      now: "2026-06-11T00:04:00.000Z",
+      ...tenant,
+    });
+    expect(unbackedPublish?.isError).toBe(true);
+    expect(unbackedPublish?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_skill_publication_evidence_ledger_resolution_failed",
+      missing_evidence_record_ids: ["evidence:unbacked-publication"],
+      blocked_by: ["evidence_record_missing:evidence:unbacked-publication"],
+    }));
+
+    const publicationEvidence = await appendPublicationEvidenceRecordForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      skill_id: candidateSkill.skill_id,
+      record_id: `publication_${createHash("sha256").update(`${tenantId}:${workspaceId}:${candidateSkill.skill_id}:publish`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T00:04:30.000Z",
+      created_by: "postgres-publication-ledger-publisher",
+      source_ref: "publication:operator-review",
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_publication_ledger",
+      evidence_refs: [publicationEvidence.record_id],
+      now: "2026-06-11T00:05:00.000Z",
+      ...tenant,
+      request_id: "req-postgres-publication-ledger-backed",
+      correlation_id: "corr-postgres-publication-ledger-backed",
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+      publication: {
+        evidence_ledger_validation: {
+          ok: boolean;
+          store_kind: string;
+          evidence_record_ids: string[];
+          record_count: number;
+        };
+      };
+    };
+    expect(published.skill.skill_id).toBe(candidateSkill.skill_id);
+    expect(published.publication.evidence_ledger_validation).toEqual(expect.objectContaining({
+      store_kind: "postgres",
+      record_count: 1,
+      evidence_record_ids: [publicationEvidence.record_id],
+    }));
+    const [publicationEvidenceRecordId] = published.publication.evidence_ledger_validation.evidence_record_ids;
+    expect(publicationEvidenceRecordId).toBe(publicationEvidence.record_id);
+
+    const ledgerStore = new PostgresDojoEvidenceLedgerStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    const records = await ledgerStore.listRecords();
+    expect(records).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        record_id: publicationEvidenceRecordId,
+        skill_id: candidateSkill.skill_id,
+        workspace_id: workspaceId,
+        kind: "audit",
+        claim_ids: expect.arrayContaining(["skill_publication_reviewed", "publication_evidence_refs_recorded"]),
+        source_refs: ["publication:operator-review"],
+      }),
+    ]));
   });
 
   it("reads aggregate production views from Postgres after local registry loss", async () => {
@@ -514,10 +615,18 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       actor_type: "human",
       roles: ["dojo:operator"],
     });
+    const publicationEvidence = await appendPublicationEvidenceForCurrentWorkflowForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      record_id: `publication_${createHash("sha256").update(`${tenantId}:${workspaceId}:license-revocation-publish`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T01:19:00.000Z",
+      created_by: "postgres-revoke-ledger-publisher",
+      source_ref: "publication:license-revocation-setup",
+    });
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
       workspace_id: workspaceId,
       reason: "integration_postgres_revoke_ledger_publish",
-      evidence_refs: ["evidence:integration-postgres-revoke-ledger-publish"],
+      evidence_refs: [publicationEvidence.record.record_id],
       ...tenant,
     });
     expect(publish?.isError).toBeUndefined();
@@ -646,10 +755,18 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       actor_type: "human",
       roles: ["dojo:operator"],
     });
+    const publicationEvidence = await appendPublicationEvidenceForCurrentWorkflowForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      record_id: `publication_${createHash("sha256").update(`${tenantId}:${workspaceId}:proof-revocation-publish`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T01:28:00.000Z",
+      created_by: "postgres-proof-revoke-ledger-publisher",
+      source_ref: "publication:proof-revocation-setup",
+    });
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
       workspace_id: workspaceId,
       reason: "integration_postgres_proof_revoke_ledger_publish",
-      evidence_refs: ["evidence:integration-postgres-proof-revoke-ledger-publish"],
+      evidence_refs: [publicationEvidence.record.record_id],
       ...tenant,
     });
     expect(publish?.isError).toBeUndefined();
@@ -954,10 +1071,18 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       actor_type: "human",
       roles: ["dojo:operator"],
     });
+    const publicationEvidence = await appendPublicationEvidenceForCurrentWorkflowForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      record_id: `publication_${createHash("sha256").update(`${tenantId}:${workspaceId}:recertification-publish`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T01:38:00.000Z",
+      created_by: "postgres-recert-ledger-publisher",
+      source_ref: "publication:recertification-setup",
+    });
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
       workspace_id: workspaceId,
       reason: "integration_postgres_recert_ledger_publish",
-      evidence_refs: ["evidence:integration-postgres-recert-ledger-publish"],
+      evidence_refs: [publicationEvidence.record.record_id],
       ...tenant,
     });
     expect(publish?.isError).toBeUndefined();
@@ -1293,10 +1418,18 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       actor_type: "human",
       roles: ["dojo:operator"],
     });
+    const publicationEvidence = await appendPublicationEvidenceForCurrentWorkflowForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      record_id: `publication_${createHash("sha256").update(`${tenantId}:${workspaceId}:permission-upgrade-publish`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T02:18:00.000Z",
+      created_by: "postgres-upgrade-ledger-publisher",
+      source_ref: "publication:permission-upgrade-setup",
+    });
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
       workspace_id: workspaceId,
       reason: "integration_postgres_upgrade_ledger_publish",
-      evidence_refs: ["evidence:integration-postgres-upgrade-ledger-publish"],
+      evidence_refs: [publicationEvidence.record.record_id],
       ...tenant,
     });
     expect(publish?.isError).toBeUndefined();
@@ -1624,10 +1757,18 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       actor_type: "human",
       roles: ["dojo:operator"],
     });
+    const publicationEvidence = await appendPublicationEvidenceForCurrentWorkflowForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      record_id: `publication_${createHash("sha256").update(`${tenantId}:${workspaceId}:case-law-publish`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T01:58:00.000Z",
+      created_by: "postgres-case-ledger-publisher",
+      source_ref: "publication:case-law-setup",
+    });
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
       workspace_id: workspaceId,
       reason: "integration_postgres_case_ledger_publish",
-      evidence_refs: ["evidence:integration-postgres-case-ledger-publish"],
+      evidence_refs: [publicationEvidence.record.record_id],
       ...tenant,
     });
     expect(publish?.isError).toBeUndefined();
@@ -2649,6 +2790,78 @@ async function appendCaseLawEvidenceRecordForToolTest(
     run_id_prefix: "case_law",
     claim_ids: ["case_law_reviewed"],
   });
+}
+
+async function appendPublicationEvidenceRecordForToolTest(
+  pool: Pool,
+  input: {
+    tenant_id: string;
+    workspace_id: string;
+    skill_id: string;
+    record_id: string;
+    created_at: string;
+    created_by: string;
+    source_ref: string;
+  }
+) {
+  return appendGovernanceEvidenceRecordForToolTest(pool, {
+    ...input,
+    kind: "audit",
+    run_id_prefix: "publication",
+    claim_ids: ["skill_publication_reviewed", "publication_evidence_refs_recorded"],
+  });
+}
+
+async function appendPublicationEvidenceForCurrentWorkflowForToolTest(
+  pool: Pool,
+  input: {
+    tenant_id: string;
+    workspace_id: string;
+    record_id: string;
+    created_at: string;
+    created_by: string;
+    source_ref: string;
+  }
+) {
+  const workflowArtifact = browserBroker.workflowArtifact();
+  expect(workflowArtifact.ok).toBe(true);
+  if (!workflowArtifact.ok) throw new Error(workflowArtifact.error);
+  const skill = buildDojoSkill(workflowArtifact.artifact.workflow.contract, {
+    workspace_id: input.workspace_id,
+    now: input.created_at,
+  });
+  await ensureDojoTenantWorkspace({
+    queryable: pool,
+    tenant: {
+      tenant_id: input.tenant_id,
+      organization_id: "org-a",
+      workspace_id: input.workspace_id,
+      actor_id: input.created_by,
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      request_id: `req-${input.record_id}`,
+      correlation_id: `corr-${input.record_id}`,
+    },
+    app_origin: skill.app_origin,
+  });
+  const skillStore = new PostgresDojoSkillStore({
+    tenant_id: input.tenant_id,
+    workspace_id: input.workspace_id,
+    queryable: pool,
+  });
+  await skillStore.saveSkill(skill, {
+    status: "draft",
+    created_by: {
+      actor_id: input.created_by,
+      actor_type: "human",
+    },
+    now: input.created_at,
+  });
+  const record = await appendPublicationEvidenceRecordForToolTest(pool, {
+    ...input,
+    skill_id: skill.skill_id,
+  });
+  return { skill, record };
 }
 
 async function appendGovernanceEvidenceRecordForToolTest(

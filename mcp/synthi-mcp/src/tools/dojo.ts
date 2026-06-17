@@ -3432,6 +3432,14 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
     publicationCheckride.publication_checkride,
     "publish"
   );
+  const publicationEvidenceLedger = await validatePublicationEvidenceRefsAgainstLedgerIfRequired({
+    operation: "synthi_dojo_publish_skill",
+    tenant: workflow.tenant,
+    skill: executableSkill,
+    evidence_refs: evidenceRefs,
+    checked_at: now,
+  });
+  if (!publicationEvidenceLedger.ok) return publicationEvidenceLedger.error;
   const controlPlanePersistence = await persistPublishedSkillToDurableControlPlaneIfRequired({
     tenant: workflow.tenant,
     skill: executableSkill,
@@ -3482,6 +3490,7 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
       entrustment_decision: publicationCheckride.publication_checkride.entrustment_decision,
       readiness_decision: publicationCheckride.publication_checkride.readiness_decision,
       evidence_policy: publicationCheckride.publication_checkride.evidence_policy,
+      evidence_ledger_validation: publicationEvidenceLedger.evidence_ledger_resolution ?? null,
       audit_event: auditEvent,
       control_plane_persistence: controlPlanePersistence.persistence ?? {
         ok: true,
@@ -5684,6 +5693,26 @@ async function validateProofCapsuleRevocationEvidenceRefsAgainstLedgerIfRequired
     scope_error: "dojo_proof_capsule_revocation_evidence_ledger_scope_mismatch",
     missing_blocked_by: "proof_capsule_revocation_evidence_refs_missing",
     scope_mismatch_block_prefix: "proof_capsule_revocation_evidence_skill_mismatch",
+  });
+}
+
+async function validatePublicationEvidenceRefsAgainstLedgerIfRequired(input: {
+  operation: string;
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  evidence_refs: string[];
+  checked_at: string;
+}): Promise<
+  | { ok: true; evidence_ledger_resolution?: Record<string, unknown> }
+  | { ok: false; error: ToolResponse }
+> {
+  return validateGovernanceEvidenceRefsAgainstLedgerIfRequired({
+    ...input,
+    missing_error: "dojo_skill_publication_evidence_required",
+    resolution_error: "dojo_skill_publication_evidence_ledger_resolution_failed",
+    scope_error: "dojo_skill_publication_evidence_ledger_scope_mismatch",
+    missing_blocked_by: "skill_publication_evidence_refs_missing",
+    scope_mismatch_block_prefix: "skill_publication_evidence_skill_mismatch",
   });
 }
 
