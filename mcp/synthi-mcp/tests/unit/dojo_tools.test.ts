@@ -1059,6 +1059,7 @@ describe("Agent Dojo MCP tools", () => {
         "synthi_dojo_get_universe_dossier",
         "synthi_dojo_get_lifecycle",
         "synthi_dojo_get_governance_report",
+        "synthi_dojo_capture_source_snapshot",
         "synthi_dojo_get_source_affordance_pr_plan",
         "synthi_dojo_prepare_source_affordance_pr",
         "synthi_dojo_create_source_affordance_pr_branch",
@@ -1499,6 +1500,73 @@ describe("Agent Dojo MCP tools", () => {
     }).source_patch_bundle.modified_files.find((file) => file.path === "src/details.open.tsx");
     expect(modified?.source).toContain("data-agent-action=");
     expect(modified?.source).toContain("assertDojoProof(");
+  });
+
+  it("captures a signed release-scoped source snapshot without echoing the signing secret", async () => {
+    const signingKey = "source-signing-secret-a";
+    const captured = await dispatchDojoTool("synthi_dojo_capture_source_snapshot", {
+      ...productionTenantContextArgs({
+        actor_id: "source-snapshot-service",
+        actor_type: "service",
+        roles: ["source-registry"],
+        request_id: "req-source-snapshot",
+        correlation_id: "corr-source-snapshot",
+      }),
+      app_origin: "https://app.example.test",
+      app_version: "2026.06.17",
+      commit_sha: "commit-source-snapshot-a",
+      source_root: "src",
+      signer_key_id: "source-key-a",
+      signing_key: signingKey,
+      created_at: "2026-06-17T00:00:00.000Z",
+      source_tokens: [
+        {
+          token_id: "submit-invoice",
+          route: "/invoices/new",
+          component: "InvoiceForm",
+          action: "submitInvoice",
+          source_locator: "src/routes/invoices/InvoiceForm.jsx:88",
+          source_sha256: createHash("sha256").update("submitInvoice:v1").digest("hex"),
+          risk: "mutation",
+        },
+        {
+          token_id: "invoice-total",
+          route: "/invoices/new",
+          component: "InvoiceTotal",
+          source_locator: "src/routes/invoices/InvoiceTotal.jsx:12",
+          risk: "safe",
+        },
+      ],
+    });
+
+    expect(captured?.isError).toBeUndefined();
+    expect(captured?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      implementation_status: "executable",
+      runtime_enforced: false,
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      app_origin: "https://app.example.test",
+      app_version: "2026.06.17",
+      source_token_count: 2,
+      verification: expect.objectContaining({
+        ok: true,
+        blocked_by: [],
+      }),
+      source_snapshot: expect.objectContaining({
+        schema_version: "synthi.dojo.sourceSnapshot.v1",
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        commit_sha: "commit-source-snapshot-a",
+        signer_key_id: "source-key-a",
+        signature_algorithm: "hmac-sha256",
+        snapshot_signature: expect.stringMatching(/^hmac-sha256:/),
+        source_token_ids: ["invoice-total", "submit-invoice"],
+      }),
+      blocked_by: [],
+    }));
+    const body = JSON.stringify(captured?.structuredContent);
+    expect(body).not.toContain(signingKey);
   });
 
   it("creates a generated source affordance PR branch in a temporary git repository", async () => {

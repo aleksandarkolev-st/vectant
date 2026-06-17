@@ -107,6 +107,11 @@ import {
 import { applyDojoGeneratedPrBranchPlan } from "../dojo/source/pr_branch_applier.js";
 import { createDojoGeneratedPrGitBranch } from "../dojo/source/pr_branch_git.js";
 import {
+  buildDojoSourceSnapshot,
+  verifyDojoSourceSnapshot,
+  type DojoSourceTokenSnapshot,
+} from "../dojo/source/source_snapshot.js";
+import {
   inferDojoApiEndpointCandidateFromTrace,
   reviewDojoApiEndpointCandidate,
   type DojoNetworkTraceEndpointInput,
@@ -167,6 +172,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_get_lifecycle",
   "synthi_dojo_get_governance_report",
   "synthi_dojo_get_metrics",
+  "synthi_dojo_capture_source_snapshot",
   "synthi_dojo_get_source_affordance_pr_plan",
   "synthi_dojo_prepare_source_affordance_pr",
   "synthi_dojo_create_source_affordance_pr_branch",
@@ -1177,6 +1183,40 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_capture_source_snapshot",
+    description: "Create and verify a signed, release-scoped Dojo source snapshot from caller-supplied source tokens.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
+        app_origin: { type: "string" },
+        app_version: { type: "string" },
+        commit_sha: { type: "string" },
+        source_root: { type: "string" },
+        signer_key_id: { type: "string" },
+        signing_key: { type: "string" },
+        created_at: { type: "string" },
+        source_tokens: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              token_id: { type: "string" },
+              route: { type: "string" },
+              component: { type: "string" },
+              action: { type: "string" },
+              source_locator: { type: "string" },
+              source_sha256: { type: "string" },
+              risk: { type: "string", enum: ["safe", "mutation", "dangerous"] },
+            },
+            required: ["token_id", "route", "component", "source_locator"],
+          },
+        },
+      },
+      required: ["app_origin", "app_version", "commit_sha", "source_root", "signer_key_id", "signing_key", "source_tokens"],
+    },
+  },
+  {
     name: "synthi_dojo_get_source_affordance_pr_plan",
     description: "Return a reviewable generated PR plan for adding stable Agent-Ready UI affordances and proof hooks to source files.",
     inputSchema: { type: "object", properties: { ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES }, required: [] },
@@ -1823,6 +1863,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
       case "synthi_dojo_get_metrics":
         response = await dojoGetMetricsTool(args);
         break;
+      case "synthi_dojo_capture_source_snapshot":
+        response = dojoCaptureSourceSnapshotTool(args);
+        break;
       case "synthi_dojo_get_source_affordance_pr_plan":
         response = dojoGetSourceAffordancePrPlanTool(args);
         break;
@@ -2149,6 +2192,84 @@ async function dojoGetMetricsTool(args: unknown): Promise<ToolResponse> {
     control_plane_source: visibleSkills.control_plane_source,
     metrics: buildDojoUniverseMetrics(visibleSkills.skills),
   });
+}
+
+function dojoCaptureSourceSnapshotTool(args: unknown): ToolResponse {
+  const tenantContext = dojoTenantContextResultFromArgs(args);
+  if (!tenantContext.ok) return tenantContext.error;
+  const a = obj(args);
+  const appOrigin = stringOpt(a["app_origin"]);
+  const appVersion = stringOpt(a["app_version"]);
+  const commitSha = stringOpt(a["commit_sha"]);
+  const sourceRoot = stringOpt(a["source_root"]);
+  const signerKeyId = stringOpt(a["signer_key_id"]);
+  const signingKey = stringOpt(a["signing_key"]);
+  const missing = [
+    ["app_origin", appOrigin],
+    ["app_version", appVersion],
+    ["commit_sha", commitSha],
+    ["source_root", sourceRoot],
+    ["signer_key_id", signerKeyId],
+    ["signing_key", signingKey],
+  ]
+    .filter(([, value]) => !value)
+    .map(([field]) => field);
+  if (missing.length > 0) {
+    return errorResponse("dojo_source_snapshot_required_fields_missing", {
+      ok: false,
+      error: "dojo_source_snapshot_required_fields_missing",
+      missing_fields: missing,
+      blocked_by: missing.map((field) => `source_snapshot_${field}_missing`),
+    });
+  }
+  const sourceTokens = sourceTokenSnapshotsResult(a["source_tokens"]);
+  if (!sourceTokens.ok) {
+    return errorResponse("dojo_source_snapshot_tokens_invalid", {
+      ok: false,
+      error: "dojo_source_snapshot_tokens_invalid",
+      blocked_by: sourceTokens.blocked_by,
+      token_errors: sourceTokens.errors,
+      expected_shape: "source_tokens: Array<{ token_id, route, component, source_locator, action?, source_sha256?, risk? }>",
+    });
+  }
+  const createdAt = stringOpt(a["created_at"]) ?? new Date().toISOString();
+  try {
+    const snapshot = buildDojoSourceSnapshot({
+      tenant_id: tenantContext.tenant.tenant_id,
+      workspace_id: tenantContext.tenant.workspace_id,
+      app_origin: appOrigin as string,
+      app_version: appVersion as string,
+      commit_sha: commitSha as string,
+      source_root: sourceRoot as string,
+      source_tokens: sourceTokens.tokens,
+      signer_key_id: signerKeyId as string,
+      signing_key: signingKey as string,
+      created_at: createdAt,
+    });
+    const verification = verifyDojoSourceSnapshot(snapshot, {
+      signing_keys_by_id: { [signerKeyId as string]: signingKey as string },
+    });
+    return jsonResponse({
+      ok: verification.ok,
+      tenant_id: tenantContext.tenant.tenant_id,
+      workspace_id: tenantContext.tenant.workspace_id,
+      app_origin: snapshot.app_origin,
+      app_version: snapshot.app_version,
+      commit_sha: snapshot.commit_sha,
+      source_snapshot: snapshot,
+      verification,
+      source_token_count: snapshot.source_tokens.length,
+      blocked_by: verification.blocked_by,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return errorResponse("dojo_source_snapshot_capture_failed", {
+      ok: false,
+      error: "dojo_source_snapshot_capture_failed",
+      message,
+      blocked_by: [message],
+    });
+  }
 }
 
 function dojoGetSourceAffordancePrPlanTool(args: unknown): ToolResponse {
@@ -7483,6 +7604,65 @@ function sourcePatchInputFilesOpt(value: unknown): DojoSourcePatchInputFile[] {
     files.push({ path: filePath, source });
   }
   return files;
+}
+
+type SourceTokenSnapshotsResult =
+  | { ok: true; tokens: DojoSourceTokenSnapshot[] }
+  | { ok: false; blocked_by: string[]; errors: Array<{ index?: number; field?: string; message: string }> };
+
+function sourceTokenSnapshotsResult(value: unknown): SourceTokenSnapshotsResult {
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      blocked_by: ["source_tokens_missing"],
+      errors: [{ field: "source_tokens", message: "source_tokens must be an array." }],
+    };
+  }
+  const tokens: DojoSourceTokenSnapshot[] = [];
+  const errors: Array<{ index?: number; field?: string; message: string }> = [];
+  value.forEach((item, index) => {
+    const record = objectOpt(item);
+    if (!record) {
+      errors.push({ index, message: "source token must be an object." });
+      return;
+    }
+    const tokenId = stringOpt(record["token_id"]);
+    const route = stringOpt(record["route"]);
+    const component = stringOpt(record["component"]);
+    const sourceLocator = stringOpt(record["source_locator"]);
+    const action = stringOpt(record["action"]);
+    const sourceSha256 = stringOpt(record["source_sha256"]);
+    const risk = sourceTokenRiskOpt(record["risk"]);
+    if (!tokenId) errors.push({ index, field: "token_id", message: "token_id is required." });
+    if (!route) errors.push({ index, field: "route", message: "route is required." });
+    if (!component) errors.push({ index, field: "component", message: "component is required." });
+    if (!sourceLocator) errors.push({ index, field: "source_locator", message: "source_locator is required." });
+    if (record["risk"] !== undefined && !risk) {
+      errors.push({ index, field: "risk", message: "risk must be safe, mutation, or dangerous." });
+    }
+    if (!tokenId || !route || !component || !sourceLocator || (record["risk"] !== undefined && !risk)) return;
+    tokens.push({
+      token_id: tokenId,
+      route,
+      component,
+      ...(action ? { action } : {}),
+      source_locator: sourceLocator,
+      ...(sourceSha256 ? { source_sha256: sourceSha256 } : {}),
+      ...(risk ? { risk } : {}),
+    });
+  });
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      blocked_by: [...new Set(errors.map((error) => error.field ? `source_token_${error.field}_invalid` : "source_token_invalid"))],
+      errors,
+    };
+  }
+  return { ok: true, tokens };
+}
+
+function sourceTokenRiskOpt(value: unknown): DojoSourceTokenSnapshot["risk"] | undefined {
+  return value === "safe" || value === "mutation" || value === "dangerous" ? value : undefined;
 }
 
 function codeOwnerRulesOpt(value: unknown): DojoGeneratedPrCodeOwnerRule[] {

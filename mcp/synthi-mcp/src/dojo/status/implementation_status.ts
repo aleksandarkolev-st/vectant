@@ -67,6 +67,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_get_lifecycle: report("Returns lifecycle state projected from the current skill and proof records."),
   synthi_dojo_get_governance_report: governanceReport("Returns governance, approval, license-health, recertification, audit-export, and compliance view data."),
   synthi_dojo_get_metrics: report("Returns generated registry and skill metrics from current in-process state."),
+  synthi_dojo_capture_source_snapshot: sourceGeneration("Creates and verifies a signed release-scoped source snapshot from caller-supplied source tokens; persistence and drift application remain explicit follow-up operations."),
   synthi_dojo_get_source_affordance_pr_plan: sourceProjection("Returns a typed generated source-affordance PR plan; the codemod harness can patch controlled React fixtures and prove generated tests."),
   synthi_dojo_prepare_source_affordance_pr: sourceGeneration("Builds a generated source patch bundle, PR metadata, branch plan, and dry-run apply proof from supplied source files."),
   synthi_dojo_create_source_affordance_pr_branch: sourceGeneration("Validates and optionally creates a local git branch for a generated source-affordance PR; dry-run is the default and remote PR creation remains external."),
