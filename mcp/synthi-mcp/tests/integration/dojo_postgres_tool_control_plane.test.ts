@@ -625,6 +625,164 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     }));
   });
 
+  it("requires ledger-backed proof capsule revocation evidence when production evidence ledger is enforced", async () => {
+    const tenantId = `tenant_proof_revoke_ledger_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_proof_revoke_ledger_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE = "postgres";
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-proof-revoke-ledger-publish",
+      correlation_id: "corr-postgres-proof-revoke-ledger-publish",
+      actor_id: "postgres-proof-revoke-ledger-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_proof_revoke_ledger_publish",
+      evidence_refs: ["evidence:integration-postgres-proof-revoke-ledger-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+    };
+    const skill = dojoSkillRegistry.get(published.skill.skill_id);
+    expect(skill).toBeTruthy();
+
+    const proofClaimIds = [...new Set([
+      ...skill!.permission_license.proof_requirements.required_evidence_claims,
+      ...skill!.permission_license.proof_requirements.required_context_claims,
+    ])];
+    const proofEvidence = await appendGovernanceEvidenceRecordForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      skill_id: published.skill.skill_id,
+      record_id: `proof_issue_${createHash("sha256").update(`${tenantId}:${workspaceId}:${published.skill.skill_id}:proof-issue`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T01:29:00.000Z",
+      created_by: "postgres-proof-revoke-ledger-agent",
+      source_ref: "proof:issue",
+      kind: "checkride",
+      run_id_prefix: "proof_issue",
+      claim_ids: proofClaimIds,
+    });
+    const issue = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: published.skill.skill_id,
+      requested_action: "run_prefix_validation",
+      context_claims: { workspace_verified: true },
+      evidence_record_ids: [proofEvidence.record_id],
+      ledger_checkpoint_hash: proofEvidence.ledger_head_hash,
+      ...tenant,
+      actor_id: "postgres-proof-revoke-ledger-agent",
+      actor_type: "agent",
+      roles: ["agent"],
+      request_id: "req-postgres-proof-revoke-ledger-issue",
+      correlation_id: "corr-postgres-proof-revoke-ledger-issue",
+      now: "2026-06-11T01:30:00.000Z",
+      expires_at: "2026-06-11T01:45:00.000Z",
+    });
+    expect(issue?.isError).toBeUndefined();
+    const issued = issue?.structuredContent as {
+      proof_capsule: { capsule_id: string };
+      proof_record: { status: string };
+    };
+    expect(issued.proof_record).toEqual(expect.objectContaining({ status: "issued" }));
+
+    const proofStore = new PostgresDojoProofStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(proofStore.getProofRecord(issued.proof_capsule.capsule_id)).resolves.toEqual(expect.objectContaining({
+      capsule_id: issued.proof_capsule.capsule_id,
+      status: "issued",
+      skill_id: published.skill.skill_id,
+    }));
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+    expect(dojoSkillRegistry.getProofRecord(issued.proof_capsule.capsule_id)).toBeNull();
+
+    const unbackedRevoke = await dispatchDojoTool("synthi_dojo_revoke_proof_capsule", {
+      ...tenant,
+      capsule_id: issued.proof_capsule.capsule_id,
+      reason: "unbacked_proof_policy_change",
+      actor_id: "postgres-proof-revoke-ledger-reviewer",
+      actor_type: "human",
+      evidence_refs: ["evidence:unbacked-proof-revocation"],
+      request_id: "req-postgres-proof-revoke-ledger-unbacked",
+      correlation_id: "corr-postgres-proof-revoke-ledger-unbacked",
+      now: "2026-06-11T01:31:00.000Z",
+    });
+    expect(unbackedRevoke?.isError).toBe(true);
+    expect(unbackedRevoke?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_revocation_evidence_ledger_resolution_failed",
+      missing_evidence_record_ids: ["evidence:unbacked-proof-revocation"],
+      blocked_by: ["evidence_record_missing:evidence:unbacked-proof-revocation"],
+    }));
+    await expect(proofStore.getProofRecord(issued.proof_capsule.capsule_id)).resolves.toEqual(expect.objectContaining({
+      status: "issued",
+    }));
+
+    const revocationEvidence = await appendGovernanceEvidenceRecordForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      skill_id: published.skill.skill_id,
+      record_id: `proof_revocation_${createHash("sha256").update(`${tenantId}:${workspaceId}:${published.skill.skill_id}:proof-revocation`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T01:32:00.000Z",
+      created_by: "postgres-proof-revoke-ledger-reviewer",
+      source_ref: "proof:revocation",
+      kind: "proof",
+      run_id_prefix: "proof_revocation",
+      claim_ids: ["proof_revocation_reviewed"],
+    });
+
+    const revoke = await dispatchDojoTool("synthi_dojo_revoke_proof_capsule", {
+      ...tenant,
+      capsule_id: issued.proof_capsule.capsule_id,
+      reason: "ledger_backed_proof_policy_change",
+      actor_id: "postgres-proof-revoke-ledger-reviewer",
+      actor_type: "human",
+      evidence_refs: [revocationEvidence.record_id],
+      request_id: "req-postgres-proof-revoke-ledger",
+      correlation_id: "corr-postgres-proof-revoke-ledger",
+      now: "2026-06-11T01:35:00.000Z",
+    });
+    expect(revoke?.isError).toBeUndefined();
+    expect(revoke?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      evidence_ledger_validation: expect.objectContaining({
+        store_kind: "postgres",
+        evidence_record_ids: [revocationEvidence.record_id],
+        record_count: 1,
+      }),
+      proof_record: expect.objectContaining({
+        capsule_id: issued.proof_capsule.capsule_id,
+        status: "revoked",
+        revoked_at: "2026-06-11T01:35:00.000Z",
+        revoked_reason: "ledger_backed_proof_policy_change",
+        revocation_evidence_refs: [revocationEvidence.record_id],
+      }),
+    }));
+    await expect(proofStore.getProofRecord(issued.proof_capsule.capsule_id)).resolves.toEqual(expect.objectContaining({
+      status: "revoked",
+      revoked_at: "2026-06-11T01:35:00.000Z",
+      revoked_reason: "ledger_backed_proof_policy_change",
+      revocation_evidence_refs: [revocationEvidence.record_id],
+    }));
+  });
+
   it("recertifies a production skill through Postgres after local reset", async () => {
     const tenantId = `tenant_recert_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_recert_${Math.random().toString(16).slice(2)}`;
@@ -2367,7 +2525,7 @@ async function appendGovernanceEvidenceRecordForToolTest(
     created_at: string;
     created_by: string;
     source_ref: string;
-    kind: "case_law" | "license" | "proof" | "audit";
+    kind: "case_law" | "checkride" | "license" | "proof" | "audit";
     run_id_prefix: string;
     claim_ids: string[];
   }

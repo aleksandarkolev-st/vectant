@@ -4289,6 +4289,7 @@ async function dojoRevokeProofCapsuleTool(args: unknown): Promise<ToolResponse> 
   const a = obj(args);
   const capsuleId = stringOpt(a["capsule_id"]);
   if (!capsuleId) return errorResponse("dojo_proof_capsule_id_required");
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const reason = stringOpt(a["reason"]);
   if (!reason) return errorResponse("dojo_proof_capsule_revocation_reason_required");
   const actorId = stringOpt(a["actor_id"]);
@@ -4330,22 +4331,31 @@ async function dojoRevokeProofCapsuleTool(args: unknown): Promise<ToolResponse> 
     });
     const authorization = authorizeTenantForDojoSkill(args, skill);
     if (!authorization.ok) return authorization.error;
+    const evidenceLedgerValidation = await validateProofCapsuleRevocationEvidenceRefsAgainstLedgerIfRequired({
+      operation: "synthi_dojo_revoke_proof_capsule",
+      tenant: authorization.tenant,
+      skill,
+      evidence_refs: evidenceRefs,
+      checked_at: now,
+    });
+    if (!evidenceLedgerValidation.ok) return evidenceLedgerValidation.error;
     const revokedBy = {
       actor_id: actorId,
       actor_type: actorType,
     };
     const record = durableProofRegistry?.ok && durableProofRegistry.context.required
-      ? await durableProofRegistry.context.proof_store.revokeProofCapsule(capsuleId, reason, stringOpt(a["now"]), revokedBy, evidenceRefs)
-      : dojoSkillRegistry.revokeProofCapsule(capsuleId, reason, stringOpt(a["now"]), revokedBy, evidenceRefs);
+      ? await durableProofRegistry.context.proof_store.revokeProofCapsule(capsuleId, reason, now, revokedBy, evidenceRefs)
+      : dojoSkillRegistry.revokeProofCapsule(capsuleId, reason, now, revokedBy, evidenceRefs);
     if (!record) return errorResponse("dojo_proof_capsule_not_found", { capsule_id: capsuleId });
     if (durableProofRegistry?.ok && durableProofRegistry.context.required) {
-      dojoSkillRegistry.revokeProofCapsule(capsuleId, reason, stringOpt(a["now"]), revokedBy, evidenceRefs);
+      dojoSkillRegistry.revokeProofCapsule(capsuleId, reason, now, revokedBy, evidenceRefs);
     }
     return jsonResponse({
       ok: true,
       control_plane_source: durableProofRegistry?.ok && durableProofRegistry.context.required
         ? durableProofRegistry.context.source
         : "compatibility_registry",
+      evidence_ledger_validation: evidenceLedgerValidation.evidence_ledger_resolution ?? null,
       proof_record: record,
     });
   } finally {
@@ -5625,6 +5635,26 @@ async function validateLicenseRevocationEvidenceRefsAgainstLedgerIfRequired(inpu
     scope_error: "dojo_license_revocation_evidence_ledger_scope_mismatch",
     missing_blocked_by: "license_revocation_evidence_refs_missing",
     scope_mismatch_block_prefix: "license_revocation_evidence_skill_mismatch",
+  });
+}
+
+async function validateProofCapsuleRevocationEvidenceRefsAgainstLedgerIfRequired(input: {
+  operation: string;
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  evidence_refs: string[];
+  checked_at: string;
+}): Promise<
+  | { ok: true; evidence_ledger_resolution?: Record<string, unknown> }
+  | { ok: false; error: ToolResponse }
+> {
+  return validateGovernanceEvidenceRefsAgainstLedgerIfRequired({
+    ...input,
+    missing_error: "dojo_proof_capsule_revocation_evidence_required",
+    resolution_error: "dojo_proof_capsule_revocation_evidence_ledger_resolution_failed",
+    scope_error: "dojo_proof_capsule_revocation_evidence_ledger_scope_mismatch",
+    missing_blocked_by: "proof_capsule_revocation_evidence_refs_missing",
+    scope_mismatch_block_prefix: "proof_capsule_revocation_evidence_skill_mismatch",
   });
 }
 
