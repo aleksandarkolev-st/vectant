@@ -105,6 +105,21 @@ import {
   type DojoGeneratedPrCodeOwnerRule,
 } from "../dojo/source/pr_generator.js";
 import { applyDojoGeneratedPrBranchPlan } from "../dojo/source/pr_branch_applier.js";
+import {
+  inferDojoApiEndpointCandidateFromTrace,
+  reviewDojoApiEndpointCandidate,
+  type DojoNetworkTraceEndpointInput,
+} from "../dojo/api/endpoint_inference.js";
+import {
+  compileDojoApiBackedMcpTool,
+  validateDojoApiBackedToolInvocation,
+} from "../dojo/api/api_tool_compiler.js";
+import type {
+  DojoApiEndpointCandidate,
+  DojoApiMethod,
+  DojoApiMutationClass,
+  DojoApiReviewStatus,
+} from "../dojo/api/types.js";
 import type {
   DojoAuditActor,
   DojoAuditEventRecord,
@@ -153,6 +168,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_get_metrics",
   "synthi_dojo_get_source_affordance_pr_plan",
   "synthi_dojo_prepare_source_affordance_pr",
+  "synthi_dojo_prepare_api_backed_tool",
   "synthi_dojo_get_registry",
   "synthi_dojo_get_skill_assurance_case",
   "synthi_dojo_get_entrustment_level",
@@ -1204,6 +1220,51 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_prepare_api_backed_tool",
+    description: "Review an API endpoint candidate or network trace and, when all safety gates pass, compile a proof-gated API-backed MCP tool contract without executing the API.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
+        api_candidate: { type: "object" },
+        network_trace: {
+          type: "object",
+          properties: {
+            method: { type: "string" },
+            url: { type: "string" },
+            request_body: {},
+            response_body: {},
+            status: { type: "number" },
+            source_ref: { type: "string" },
+          },
+          required: ["method", "url"],
+        },
+        candidate_overrides: {
+          type: "object",
+          properties: {
+            auth_scope: { type: "string" },
+            mutation_class: { type: "string", enum: ["read", "create", "update", "delete", "side_effect"] },
+            idempotency_key_location: { type: "string", enum: ["header", "body", "query"] },
+            rollback_strategy: { type: "string", enum: ["none", "compensating_call", "delete_draft", "human_review"] },
+            postcondition: { type: "string" },
+            proof_claim_mapping: { type: "object" },
+            review_status: { type: "string", enum: ["candidate", "approved", "rejected"] },
+            request_schema: { type: "object" },
+            response_schema: { type: "object" },
+            query_schema: { type: "object" },
+            inferred_from: { type: "array", items: { type: "string" } },
+          },
+        },
+        requested_action: { type: "string" },
+        tool_name: { type: "string" },
+        tool_version: { type: "string" },
+        sample_invocation_args: { type: "object" },
+        auth_scopes: { type: "array", items: { type: "string" } },
+      },
+      required: [],
+    },
+  },
+  {
     name: "synthi_dojo_get_registry",
     description: "Return the organization-level Dojo skill registry, case-law registry, antibody registry, and aggregate metrics.",
     inputSchema: {
@@ -1724,6 +1785,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
       case "synthi_dojo_prepare_source_affordance_pr":
         response = await dojoPrepareSourceAffordancePrTool(args);
         break;
+      case "synthi_dojo_prepare_api_backed_tool":
+        response = await dojoPrepareApiBackedToolTool(args);
+        break;
       case "synthi_dojo_get_registry":
         response = await dojoGetRegistryTool(args);
         break;
@@ -2114,6 +2178,75 @@ async function dojoPrepareSourceAffordancePrTool(args: unknown): Promise<ToolRes
       ...(dryRunApply?.issues ?? [])
         .filter((issue) => issue.severity === "error")
         .map((issue) => `dry_run_apply:${issue.issue_id}${issue.path ? `:${issue.path}` : ""}`),
+    ],
+  });
+}
+
+async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_prepare_api_backed_tool");
+  if (!skill.ok) return skill.error;
+  const a = obj(args);
+  const candidate = apiEndpointCandidateFromArgs(a);
+  if (!candidate.ok) {
+    return errorResponse(candidate.error, {
+      ok: false,
+      error: candidate.error,
+      blocked_by: candidate.blocked_by,
+      expected_shape: "api_candidate or network_trace plus optional candidate_overrides",
+    });
+  }
+  const requestedAction = stringOpt(a["requested_action"]);
+  const toolName = stringOpt(a["tool_name"]);
+  const toolVersion = stringOpt(a["tool_version"]);
+  const candidateReview = reviewDojoApiEndpointCandidate(candidate.candidate);
+  const compileResult = compileDojoApiBackedMcpTool({
+    candidate: candidate.candidate,
+    skill_id: skill.skill.skill_id,
+    license_id: skill.skill.permission_license.license_id,
+    license_version: skill.skill.permission_license.license_version,
+    ...(requestedAction ? { action: requestedAction } : {}),
+    ...(toolName ? { tool_name: toolName } : {}),
+    ...(toolVersion ? { tool_version: toolVersion } : {}),
+  });
+  const sampleInvocationArgs = objectOpt(a["sample_invocation_args"]);
+  const invocationValidation = compileResult.tool && sampleInvocationArgs
+    ? validateDojoApiBackedToolInvocation({
+      tool: compileResult.tool,
+      args: sampleInvocationArgs,
+      license_context: {
+        skill_id: skill.skill.skill_id,
+        license_id: skill.skill.permission_license.license_id,
+        license_version: skill.skill.permission_license.license_version,
+        action: compileResult.tool.action,
+        auth_scopes: stringArrayOpt(a["auth_scopes"]),
+      },
+    })
+    : null;
+  const reviewBlockers = candidateReview.issues
+    .filter((issue) => issue.severity === "error")
+    .map((issue) => `api_candidate_review:${issue.issue_id}`);
+  const compileBlockers = compileResult.issues
+    .filter((issue) => issue.severity === "error")
+    .map((issue) => `api_tool_compile:${issue.issue_id}`);
+  const invocationBlockers = invocationValidation?.blocked_by.map((reason) => `api_tool_invocation:${reason}`) ?? [];
+  return jsonResponse({
+    ok: true,
+    skill_id: skill.skill.skill_id,
+    license_id: skill.skill.permission_license.license_id,
+    license_version: skill.skill.permission_license.license_version,
+    candidate_source: candidate.source,
+    api_endpoint_candidate: candidate.candidate,
+    candidate_review: candidateReview,
+    api_tool_compile: compileResult,
+    api_backed_mcp_tool: compileResult.tool ?? null,
+    sample_invocation_validation: invocationValidation,
+    ready_for_promotion: compileResult.ok && (invocationValidation?.ok ?? true),
+    promotion_blockers: [
+      ...new Set([
+        ...reviewBlockers,
+        ...compileBlockers,
+        ...invocationBlockers,
+      ]),
     ],
   });
 }
@@ -7261,6 +7394,170 @@ function sourceAffordanceArtifactRefs(
       sha256: sha256String(file.source),
     })),
   ];
+}
+
+type DojoApiCandidateInputResult =
+  | { ok: true; candidate: DojoApiEndpointCandidate; source: "provided_candidate" | "network_trace" }
+  | { ok: false; error: string; blocked_by: string[] };
+
+function apiEndpointCandidateFromArgs(args: Record<string, unknown>): DojoApiCandidateInputResult {
+  const providedCandidateRaw = args["api_candidate"];
+  if (providedCandidateRaw !== undefined) {
+    const providedCandidate = apiEndpointCandidateOpt(providedCandidateRaw);
+    if (!providedCandidate) {
+      return { ok: false, error: "dojo_api_candidate_invalid", blocked_by: ["api_candidate_invalid"] };
+    }
+    return {
+      ok: true,
+      candidate: applyApiCandidateOverrides(providedCandidate, objectOpt(args["candidate_overrides"])),
+      source: "provided_candidate",
+    };
+  }
+
+  const trace = networkTraceEndpointInputOpt(args["network_trace"]);
+  if (!trace) {
+    return {
+      ok: false,
+      error: "dojo_api_candidate_or_network_trace_required",
+      blocked_by: ["api_candidate_missing", "network_trace_missing"],
+    };
+  }
+  try {
+    return {
+      ok: true,
+      candidate: applyApiCandidateOverrides(inferDojoApiEndpointCandidateFromTrace(trace), objectOpt(args["candidate_overrides"])),
+      source: "network_trace",
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error && err.message ? err.message : "dojo_api_candidate_inference_failed",
+      blocked_by: ["network_trace_invalid"],
+    };
+  }
+}
+
+function apiEndpointCandidateOpt(value: unknown): DojoApiEndpointCandidate | undefined {
+  const record = objectOpt(value);
+  if (!record) return undefined;
+  if (record["schema_version"] !== "synthi.dojo.apiEndpointCandidate.v1") return undefined;
+  const candidateId = stringOpt(record["candidate_id"]);
+  const method = apiMethodOpt(record["method"]);
+  const path = stringOpt(record["path"]);
+  const requestSchema = objectOpt(record["request_schema"]);
+  const responseSchema = objectOpt(record["response_schema"]);
+  const mutationClass = apiMutationClassOpt(record["mutation_class"]);
+  const reviewStatus = apiReviewStatusOpt(record["review_status"]);
+  if (!candidateId || !method || !path || !requestSchema || !responseSchema || !mutationClass || !reviewStatus) return undefined;
+  const candidate: DojoApiEndpointCandidate = {
+    schema_version: "synthi.dojo.apiEndpointCandidate.v1",
+    candidate_id: candidateId,
+    method,
+    path,
+    request_schema: cloneJson(requestSchema),
+    response_schema: cloneJson(responseSchema),
+    mutation_class: mutationClass,
+    proof_claim_mapping: stringRecordOpt(record["proof_claim_mapping"]),
+    review_status: reviewStatus,
+    inferred_from: stringArrayOpt(record["inferred_from"]),
+  };
+  const querySchema = objectOpt(record["query_schema"]);
+  const authScope = stringOpt(record["auth_scope"]);
+  const idempotencyKeyLocation = idempotencyKeyLocationOpt(record["idempotency_key_location"]);
+  const rollbackStrategy = rollbackStrategyOpt(record["rollback_strategy"]);
+  const postcondition = stringOpt(record["postcondition"]);
+  if (querySchema) candidate.query_schema = cloneJson(querySchema);
+  if (authScope) candidate.auth_scope = authScope;
+  if (idempotencyKeyLocation) candidate.idempotency_key_location = idempotencyKeyLocation;
+  if (rollbackStrategy) candidate.rollback_strategy = rollbackStrategy;
+  if (postcondition) candidate.postcondition = postcondition;
+  return candidate;
+}
+
+function applyApiCandidateOverrides(
+  candidate: DojoApiEndpointCandidate,
+  overrides: Record<string, unknown> | undefined
+): DojoApiEndpointCandidate {
+  if (!overrides) return candidate;
+  const updated = cloneJson(candidate);
+  const authScope = stringOpt(overrides["auth_scope"]);
+  const mutationClass = apiMutationClassOpt(overrides["mutation_class"]);
+  const idempotencyKeyLocation = idempotencyKeyLocationOpt(overrides["idempotency_key_location"]);
+  const rollbackStrategy = rollbackStrategyOpt(overrides["rollback_strategy"]);
+  const postcondition = stringOpt(overrides["postcondition"]);
+  const reviewStatus = apiReviewStatusOpt(overrides["review_status"]);
+  const requestSchema = objectOpt(overrides["request_schema"]);
+  const responseSchema = objectOpt(overrides["response_schema"]);
+  const querySchema = objectOpt(overrides["query_schema"]);
+  const proofClaimMapping = stringRecordOpt(overrides["proof_claim_mapping"]);
+  const inferredFrom = stringArrayOpt(overrides["inferred_from"]);
+  if (authScope) updated.auth_scope = authScope;
+  if (mutationClass) updated.mutation_class = mutationClass;
+  if (idempotencyKeyLocation) updated.idempotency_key_location = idempotencyKeyLocation;
+  if (rollbackStrategy) updated.rollback_strategy = rollbackStrategy;
+  if (postcondition) updated.postcondition = postcondition;
+  if (reviewStatus) updated.review_status = reviewStatus;
+  if (requestSchema) updated.request_schema = cloneJson(requestSchema);
+  if (responseSchema) updated.response_schema = cloneJson(responseSchema);
+  if (querySchema) updated.query_schema = cloneJson(querySchema);
+  if (Object.keys(proofClaimMapping).length > 0) updated.proof_claim_mapping = proofClaimMapping;
+  if (inferredFrom.length > 0) updated.inferred_from = inferredFrom;
+  return updated;
+}
+
+function networkTraceEndpointInputOpt(value: unknown): DojoNetworkTraceEndpointInput | undefined {
+  const record = objectOpt(value);
+  if (!record) return undefined;
+  const method = stringOpt(record["method"]);
+  const url = stringOpt(record["url"]);
+  if (!method || !url) return undefined;
+  return {
+    method,
+    url,
+    ...(Object.prototype.hasOwnProperty.call(record, "request_body") ? { request_body: record["request_body"] } : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, "response_body") ? { response_body: record["response_body"] } : {}),
+    ...(numberOpt(record["status"]) !== undefined ? { status: numberOpt(record["status"]) } : {}),
+    ...(stringOpt(record["source_ref"]) ? { source_ref: stringOpt(record["source_ref"]) } : {}),
+  };
+}
+
+function apiMethodOpt(value: unknown): DojoApiMethod | undefined {
+  return value === "GET" || value === "POST" || value === "PUT" || value === "PATCH" || value === "DELETE"
+    ? value
+    : undefined;
+}
+
+function apiMutationClassOpt(value: unknown): DojoApiMutationClass | undefined {
+  return value === "read" || value === "create" || value === "update" || value === "delete" || value === "side_effect"
+    ? value
+    : undefined;
+}
+
+function apiReviewStatusOpt(value: unknown): DojoApiReviewStatus | undefined {
+  return value === "candidate" || value === "approved" || value === "rejected" ? value : undefined;
+}
+
+function idempotencyKeyLocationOpt(value: unknown): DojoApiEndpointCandidate["idempotency_key_location"] | undefined {
+  return value === "header" || value === "body" || value === "query" ? value : undefined;
+}
+
+function rollbackStrategyOpt(value: unknown): DojoApiEndpointCandidate["rollback_strategy"] | undefined {
+  return value === "none" || value === "compensating_call" || value === "delete_draft" || value === "human_review"
+    ? value
+    : undefined;
+}
+
+function stringRecordOpt(value: unknown): Record<string, string> {
+  const record = objectOpt(value);
+  if (!record) return {};
+  const entries: Array<[string, string]> = [];
+  for (const [key, nested] of Object.entries(record)) {
+    if (typeof nested === "string" && nested.trim().length > 0) {
+      entries.push([key, nested.trim()]);
+    }
+  }
+  entries.sort((left, right) => left[0].localeCompare(right[0]));
+  return Object.fromEntries(entries);
 }
 
 function bumpVersion(version: string): string {

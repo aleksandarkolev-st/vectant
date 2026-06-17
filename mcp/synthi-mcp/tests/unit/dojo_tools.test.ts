@@ -1057,6 +1057,7 @@ describe("Agent Dojo MCP tools", () => {
         "synthi_dojo_get_governance_report",
         "synthi_dojo_get_source_affordance_pr_plan",
         "synthi_dojo_prepare_source_affordance_pr",
+        "synthi_dojo_prepare_api_backed_tool",
         "synthi_dojo_get_skill_assurance_case",
         "synthi_dojo_get_entrustment_level",
         "synthi_dojo_get_license",
@@ -1493,6 +1494,167 @@ describe("Agent Dojo MCP tools", () => {
     }).source_patch_bundle.modified_files.find((file) => file.path === "src/details.open.tsx");
     expect(modified?.source).toContain("data-agent-action=");
     expect(modified?.source).toContain("assertDojoProof(");
+  });
+
+  it("prepares a reviewed API-backed MCP tool contract from network trace metadata", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const publishedSkill = dojoSkillRegistry.get(skillId) as DojoSkill;
+    const license = publishedSkill.permission_license;
+
+    const proofCapsule = {
+      capsule_id: "capsule-api-tool-a",
+      nonce: "nonce-api-tool-a",
+      skill_id: publishedSkill.skill_id,
+      license_id: license.license_id,
+      license_version: license.license_version,
+      requested_action: "run_workflow",
+      evidence_record_ids: ["evidence-workspace", "evidence-checkride"],
+      ledger_checkpoint_hash: "sha256:checkpoint-api-tool-a",
+      evidence_claims: [
+        { claim: "workspace_verified", satisfied: true, evidence_refs: ["evidence-workspace"] },
+        { claim: "checkride_passed", satisfied: true, evidence_refs: ["evidence-checkride"] },
+      ],
+    };
+
+    const prepared = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+      skill_id: publishedSkill.skill_id,
+      network_trace: {
+        method: "POST",
+        url: "https://app.example.test/api/invoices?workspace=workspace-a",
+        request_body: { client_id: "client-a", amount: 42 },
+        response_body: { invoice: { status: "saved" } },
+        source_ref: "trace:save-invoice-api",
+      },
+      candidate_overrides: {
+        auth_scope: "invoice:write",
+        idempotency_key_location: "header",
+        rollback_strategy: "compensating_call",
+        postcondition: "invoice.status == 'saved'",
+        proof_claim_mapping: {
+          workspace_verified: "tenant.workspace_id",
+          checkride_passed: "dojo.checkride",
+        },
+        review_status: "approved",
+      },
+      requested_action: "run_workflow",
+      tool_name: "synthi_api_save_invoice",
+      auth_scopes: ["invoice:write"],
+      sample_invocation_args: {
+        proof_capsule: proofCapsule,
+        request: { client_id: "client-a", amount: 42 },
+        query: { workspace: "workspace-a" },
+        idempotency_key: "idem-api-tool-a",
+      },
+    });
+
+    expect(prepared?.isError).toBeUndefined();
+    expect(prepared?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      implementation_status: "executable",
+      runtime_enforced: false,
+      skill_id: publishedSkill.skill_id,
+      license_id: license.license_id,
+      license_version: license.license_version,
+      candidate_source: "network_trace",
+      api_endpoint_candidate: expect.objectContaining({
+        schema_version: "synthi.dojo.apiEndpointCandidate.v1",
+        method: "POST",
+        path: "/api/invoices",
+        review_status: "approved",
+        auth_scope: "invoice:write",
+        idempotency_key_location: "header",
+        rollback_strategy: "compensating_call",
+        postcondition: "invoice.status == 'saved'",
+        proof_claim_mapping: {
+          checkride_passed: "dojo.checkride",
+          workspace_verified: "tenant.workspace_id",
+        },
+      }),
+      candidate_review: { ok_to_promote: true, issues: [] },
+      api_tool_compile: expect.objectContaining({
+        ok: true,
+        issues: [],
+        tool: expect.objectContaining({
+          schema_version: "synthi.dojo.apiBackedMcpTool.v1",
+          tool_name: "synthi_api_save_invoice",
+          path: "/api/invoices",
+          proof_required: true,
+          schema_digest: expect.stringMatching(/^sha256:/),
+          input_schema: expect.objectContaining({
+            additionalProperties: false,
+            required: expect.arrayContaining(["proof_capsule", "request", "query", "idempotency_key"]),
+          }),
+        }),
+      }),
+      api_backed_mcp_tool: expect.objectContaining({
+        enforcement: expect.objectContaining({
+          proof_capsule_required: true,
+          license_kernel_required: true,
+          evidence_write_required: true,
+          postcondition_assertion_required: true,
+          idempotency_required: true,
+        }),
+      }),
+      sample_invocation_validation: { ok: true, blocked_by: [] },
+      ready_for_promotion: true,
+      promotion_blockers: [],
+    }));
+  });
+
+  it("keeps API-backed tool preparation blocked until endpoint review gates pass", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+
+    const prepared = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+      skill_id: skillId,
+      network_trace: {
+        method: "POST",
+        url: "https://app.example.test/api/invoices",
+        request_body: { amount: 42 },
+        response_body: { status: "saved" },
+      },
+    });
+
+    expect(prepared?.isError).toBeUndefined();
+    expect(prepared?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill_id: skillId,
+      candidate_source: "network_trace",
+      api_endpoint_candidate: expect.objectContaining({
+        review_status: "candidate",
+        method: "POST",
+        path: "/api/invoices",
+      }),
+      candidate_review: expect.objectContaining({
+        ok_to_promote: false,
+        issues: expect.arrayContaining([
+          expect.objectContaining({ issue_id: "api_candidate_review_approval_required" }),
+          expect.objectContaining({ issue_id: "api_candidate_auth_scope_required" }),
+          expect.objectContaining({ issue_id: "api_candidate_idempotency_required" }),
+          expect.objectContaining({ issue_id: "api_candidate_rollback_required" }),
+          expect.objectContaining({ issue_id: "api_candidate_postcondition_required" }),
+          expect.objectContaining({ issue_id: "api_candidate_proof_claim_mapping_required" }),
+        ]),
+      }),
+      api_tool_compile: expect.objectContaining({
+        ok: false,
+        issues: expect.arrayContaining([
+          expect.objectContaining({ issue_id: "api_candidate_review_approval_required" }),
+        ]),
+      }),
+      api_backed_mcp_tool: null,
+      sample_invocation_validation: null,
+      ready_for_promotion: false,
+      promotion_blockers: expect.arrayContaining([
+        "api_candidate_review:api_candidate_review_approval_required",
+        "api_tool_compile:api_candidate_review_approval_required",
+      ]),
+    }));
   });
 
   it("publishes a licensed skill before exposing the backing private workflow tool and validates proof-gated dry runs", async () => {
