@@ -2655,6 +2655,7 @@ describe("Dojo release gate artifact verifier", () => {
       missing_capabilities: ["time_machine_replay_plan"],
       time_machine_contract: {
         ...timeMachineDebuggerEvidenceFixture().time_machine_contract,
+        materialized_runtime_branch_required: false,
         replay_plan_required: false,
         honest_projection_status_required: false,
         self_check_executes_tests_required: false,
@@ -2671,6 +2672,7 @@ describe("Dojo release gate artifact verifier", () => {
       "time_machine_not_ok",
       "time_machine_coverage_incomplete",
       "time_machine_missing_capabilities:time_machine_replay_plan",
+      "time_machine_runtime_branch_requirement_missing",
       "time_machine_replay_plan_requirement_missing",
       "time_machine_honest_status_requirement_missing",
       "time_machine_self_check_execution_requirement_missing",
@@ -5961,6 +5963,7 @@ function timeMachineDebuggerEvidenceFixture(overrides = {}) {
       attack_guardrail_correlation_required: true,
       remediation_cost_policy_required: true,
       baseline_explanation_required: true,
+      materialized_runtime_branch_required: true,
       counterfactual_license_impact_required: true,
       replay_plan_required: true,
       honest_projection_status_required: true,
