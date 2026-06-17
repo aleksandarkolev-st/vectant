@@ -128,6 +128,61 @@ describe("Dojo raw browser workflow replay gate", () => {
     expect(action).toHaveBeenCalledTimes(1);
   });
 
+  it("blocks raw hosted-runtime browser actions in production before adapter dispatch", async () => {
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    const url = "https://app.example.test/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    browserBroker.selectTab("app");
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      actor_id: "agent-a",
+      runtime_id: "runtime-a",
+      session_id: "session-a",
+      workspace_url: url,
+      adapter: "unit-hosted-runtime",
+      expires_at: Date.now() + 60_000,
+      origin_allowlist: ["https://app.example.test"],
+      egress_policy: { local_network_allowed: false },
+      redaction_policy: { screenshots: true },
+    });
+    const action = vi.spyOn(browserPlaywrightAdapter, "action").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "app",
+      url,
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "dojo-raw-hosted-action-gate");
+
+    const response = await dispatchBrowserTool("synthi_browser_action", {
+      lease_id: lease.lease_id,
+      tab_id: "app",
+      action: "click",
+      selector: "button",
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(response?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      error: "dojo_hosted_runtime_direct_action_blocked",
+      tool_name: "synthi_browser_action",
+      action: "click",
+      required_tool: "synthi_dojo_run_with_proof_capsule",
+      required_context: "validated_dojo_hosted_runtime_session",
+      proof_not_consumed: true,
+      blocked_by: ["dojo_hosted_runtime_direct_action_blocked", "dojo_proof_capsule_required"],
+      runtime: expect.objectContaining({
+        kind: "hosted",
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        session_id: "session-a",
+      }),
+    }));
+    expect(action).not.toHaveBeenCalled();
+  });
+
   it("allows only internal Dojo proof context to replay a published workflow", async () => {
     const workflowId = teachWorkflow();
     const privateTool = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});

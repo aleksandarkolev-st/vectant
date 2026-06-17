@@ -2842,6 +2842,8 @@ async function browserActionTool(args: unknown): Promise<ToolResponse> {
   const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
   const action = requiredString(a, "action");
   if (!isBrowserActionKind(action)) return errorResponse("unsupported_browser_action", { action });
+  const dojoHostedRuntimeGate = rawHostedRuntimeActionGateForProduction("synthi_browser_action", tab, action);
+  if (dojoHostedRuntimeGate) return dojoHostedRuntimeGate;
   const value = stringOpt(a["value"]);
   const targetUrl = action === "navigate" && value ? value : tab.url;
   const validation = browserBroker.validateAction({
@@ -2857,6 +2859,42 @@ async function browserActionTool(args: unknown): Promise<ToolResponse> {
   browserBroker.handleOriginChange(tab.tab_id, result.url);
   eventLog.push({ kind: "browser", action: "agent_action", payload: { tab_id: tab.tab_id, action, selector: stringOpt(a["selector"]) ?? null, url: result.url } });
   return jsonResponse({ ok: true, result, teach: browserBroker.teachState() });
+}
+
+function rawHostedRuntimeActionGateForProduction(
+  toolName: string,
+  tab: { tab_id: string; url: string },
+  action: string
+): ToolResponse | null {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement) return null;
+  const runtime = browserBroker.runtimeAttachment();
+  if (runtime?.kind !== "hosted") return null;
+  return errorResponse("dojo_hosted_runtime_direct_action_blocked", {
+    ok: false,
+    tool_name: toolName,
+    action,
+    tab_id: tab.tab_id,
+    url: tab.url,
+    enforcement_mode: enforcement.enforcement_mode,
+    required_tool: "synthi_dojo_run_with_proof_capsule",
+    required_context: "validated_dojo_hosted_runtime_session",
+    proof_not_consumed: true,
+    blocked_by: ["dojo_hosted_runtime_direct_action_blocked", "dojo_proof_capsule_required"],
+    runtime: {
+      kind: runtime.kind,
+      tenant_id: runtime.tenant_id ?? null,
+      workspace_id: runtime.workspace_id ?? null,
+      actor_id: runtime.actor_id ?? null,
+      runtime_id: runtime.runtime_id ?? null,
+      session_id: runtime.session_id ?? null,
+      workspace_url: runtime.workspace_url,
+      adapter: runtime.adapter,
+      expires_at: runtime.expires_at ?? null,
+      revoked_at: runtime.revoked_at ?? null,
+      origin_allowlist: runtime.origin_allowlist ?? [],
+    },
+  });
 }
 
 function actionForReplay(event: { kind: string; action?: BrowserActionKind }): BrowserActionKind | null {
