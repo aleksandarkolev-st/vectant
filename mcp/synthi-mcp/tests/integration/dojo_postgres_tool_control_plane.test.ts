@@ -933,6 +933,142 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
   });
 
+  it("requires ledger-backed recertification evidence when production evidence ledger is enforced", async () => {
+    const tenantId = `tenant_recert_ledger_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace_recert_ledger_${Math.random().toString(16).slice(2)}`;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE = "postgres";
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL = postgresUrl;
+
+    recordOpenDetailsWorkflowForToolTest(workspaceId);
+    const tenant = productionTenantContextArgs({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      request_id: "req-postgres-recert-ledger-publish",
+      correlation_id: "corr-postgres-recert-ledger-publish",
+      actor_id: "postgres-recert-ledger-publisher",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+    });
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
+      workspace_id: workspaceId,
+      reason: "integration_postgres_recert_ledger_publish",
+      evidence_refs: ["evidence:integration-postgres-recert-ledger-publish"],
+      ...tenant,
+    });
+    expect(publish?.isError).toBeUndefined();
+    const published = publish?.structuredContent as {
+      skill: { skill_id: string; workflow_id: string };
+      license: { license_id: string; license_version: string };
+      publication: {
+        evidence_policy: {
+          require_evidence_ledger: boolean;
+          evidence_backed: boolean;
+          evidence_ledger_store_kind: string;
+        };
+      };
+    };
+    expect(published.publication.evidence_policy).toEqual(expect.objectContaining({
+      require_evidence_ledger: true,
+      evidence_backed: true,
+      evidence_ledger_store_kind: "postgres",
+    }));
+
+    dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
+    dojoSkillRegistry.resetForTests();
+    expect(dojoSkillRegistry.get(published.skill.skill_id)).toBeNull();
+
+    const unbackedRecertification = await dispatchDojoTool("synthi_dojo_recertify_skill", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      reason: "unbacked_recertification_review",
+      evidence_refs: ["evidence:unbacked-recertification"],
+      actor_id: "postgres-recert-ledger-reviewer",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      request_id: "req-postgres-recert-ledger-unbacked",
+      correlation_id: "corr-postgres-recert-ledger-unbacked",
+      now: "2026-06-11T01:40:00.000Z",
+    });
+    expect(unbackedRecertification?.isError).toBe(true);
+    expect(unbackedRecertification?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_recertification_evidence_ledger_resolution_failed",
+      missing_evidence_record_ids: ["evidence:unbacked-recertification"],
+      blocked_by: ["evidence_record_missing:evidence:unbacked-recertification"],
+    }));
+
+    const licenseStore = new PostgresDojoLicenseStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(licenseStore.getLicense(published.license.license_id)).resolves.toEqual(expect.objectContaining({
+      status: "active",
+      license_version: published.license.license_version,
+    }));
+
+    const recertificationEvidence = await appendGovernanceEvidenceRecordForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      skill_id: published.skill.skill_id,
+      record_id: `recertification_${createHash("sha256").update(`${tenantId}:${workspaceId}:${published.skill.skill_id}:recertification`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T01:41:00.000Z",
+      created_by: "postgres-recert-ledger-reviewer",
+      source_ref: "recertification:review",
+      kind: "checkride",
+      run_id_prefix: "recertification",
+      claim_ids: ["recertification_reviewed"],
+    });
+
+    const recertified = await dispatchDojoTool("synthi_dojo_recertify_skill", {
+      ...tenant,
+      skill_id: published.skill.skill_id,
+      reason: "ledger_backed_recertification_review",
+      evidence_refs: [recertificationEvidence.record_id],
+      actor_id: "postgres-recert-ledger-reviewer",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      request_id: "req-postgres-recert-ledger",
+      correlation_id: "corr-postgres-recert-ledger",
+      now: "2026-06-11T01:45:00.000Z",
+    });
+    expect(recertified?.isError).toBeUndefined();
+    expect(recertified?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      recertification: expect.objectContaining({
+        status: "applied",
+        reason: "ledger_backed_recertification_review",
+        evidence_refs: [recertificationEvidence.record_id],
+        previous_license_version: published.license.license_version,
+        evidence_ledger_validation: expect.objectContaining({
+          store_kind: "postgres",
+          evidence_record_ids: [recertificationEvidence.record_id],
+          record_count: 1,
+        }),
+        control_plane_persistence: expect.objectContaining({
+          ok: true,
+          store_kind: "postgres",
+          skill_id: published.skill.skill_id,
+          workflow_id: published.skill.workflow_id,
+          audit_event_id: expect.any(String),
+        }),
+      }),
+    }));
+    const recertContent = recertified?.structuredContent as {
+      license: { license_id: string; license_version: string };
+    };
+    expect(recertContent.license.license_version).not.toBe(published.license.license_version);
+    await expect(licenseStore.getLicense(recertContent.license.license_id)).resolves.toEqual(expect.objectContaining({
+      status: "active",
+      license_version: recertContent.license.license_version,
+    }));
+  });
+
   it("persists permission upgrade request and review through Postgres after local reset and rejects unauthorized reviewers", async () => {
     const tenantId = `tenant_upgrade_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_upgrade_${Math.random().toString(16).slice(2)}`;

@@ -3555,6 +3555,14 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
   if (previousLicenseVersion) {
     recertified = skillWithLicenseVersion(recertified, bumpVersion(previousLicenseVersion));
   }
+  const evidenceLedgerValidation = await validateRecertificationEvidenceRefsAgainstLedgerIfRequired({
+    operation: "synthi_dojo_recertify_skill",
+    tenant,
+    skill: recertified,
+    evidence_refs: evidenceRefs,
+    checked_at: now,
+  });
+  if (!evidenceLedgerValidation.ok) return evidenceLedgerValidation.error;
   const auditEvent = {
     event_type: "checkride_run_completed" as const,
     actor: {
@@ -3653,6 +3661,7 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
       entrustment_decision: recertificationCheckride.publication_checkride.entrustment_decision,
       readiness_decision: recertificationCheckride.publication_checkride.readiness_decision,
       evidence_policy: recertificationCheckride.publication_checkride.evidence_policy,
+      evidence_ledger_validation: evidenceLedgerValidation.evidence_ledger_resolution ?? null,
       audit_event: auditEvent,
       control_plane_persistence: controlPlanePersistence,
       ...(durableAuditEvent ? { durable_audit_event: durableAuditEvent } : {}),
@@ -5635,6 +5644,26 @@ async function validateLicenseRevocationEvidenceRefsAgainstLedgerIfRequired(inpu
     scope_error: "dojo_license_revocation_evidence_ledger_scope_mismatch",
     missing_blocked_by: "license_revocation_evidence_refs_missing",
     scope_mismatch_block_prefix: "license_revocation_evidence_skill_mismatch",
+  });
+}
+
+async function validateRecertificationEvidenceRefsAgainstLedgerIfRequired(input: {
+  operation: string;
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  evidence_refs: string[];
+  checked_at: string;
+}): Promise<
+  | { ok: true; evidence_ledger_resolution?: Record<string, unknown> }
+  | { ok: false; error: ToolResponse }
+> {
+  return validateGovernanceEvidenceRefsAgainstLedgerIfRequired({
+    ...input,
+    missing_error: "dojo_recertification_evidence_required",
+    resolution_error: "dojo_recertification_evidence_ledger_resolution_failed",
+    scope_error: "dojo_recertification_evidence_ledger_scope_mismatch",
+    missing_blocked_by: "recertification_evidence_refs_missing",
+    scope_mismatch_block_prefix: "recertification_evidence_skill_mismatch",
   });
 }
 
