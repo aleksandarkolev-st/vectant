@@ -1198,6 +1198,13 @@ async function browserSelectTabTool(args: unknown): Promise<ToolResponse> {
 async function browserOpenTool(args: unknown): Promise<ToolResponse> {
   const url = requiredString(obj(args), "url");
   if (!consentGranted(url)) return errorResponse("origin_consent_required", { url });
+  const dojoHostedRuntimeGate = rawHostedRuntimeMutationGateForProduction({
+    tool_name: "synthi_browser_open",
+    url,
+    mutation_kind: "open_tab",
+    error_code: "dojo_hosted_runtime_direct_tab_mutation_blocked",
+  });
+  if (dojoHostedRuntimeGate) return dojoHostedRuntimeGate;
   const tab = await browserPlaywrightAdapter.open(url);
   const tabs = browserBroker.registerTabs(await browserPlaywrightAdapter.listTabs());
   browserBroker.selectTab(tab.tab_id);
@@ -1208,6 +1215,14 @@ async function browserCloseTabTool(args: unknown): Promise<ToolResponse> {
   const tabId = requiredString(obj(args), "tab_id");
   const brokerTab = browserBroker.selectTab(tabId);
   if (!brokerTab) return errorResponse("tab_not_authorized", { tab_id: tabId });
+  const dojoHostedRuntimeGate = rawHostedRuntimeMutationGateForProduction({
+    tool_name: "synthi_browser_close_tab",
+    tab_id: tabId,
+    url: brokerTab.url,
+    mutation_kind: "close_tab",
+    error_code: "dojo_hosted_runtime_direct_tab_mutation_blocked",
+  });
+  if (dojoHostedRuntimeGate) return dojoHostedRuntimeGate;
   const closed = await browserPlaywrightAdapter.closeTab(tabId);
   const forgotten = browserBroker.forgetTab(tabId);
   return jsonResponse({ ok: true, closed, forgotten: forgotten.forgotten });
@@ -2842,7 +2857,14 @@ async function browserActionTool(args: unknown): Promise<ToolResponse> {
   const tab = requireAuthorizedTab(stringOpt(a["tab_id"]));
   const action = requiredString(a, "action");
   if (!isBrowserActionKind(action)) return errorResponse("unsupported_browser_action", { action });
-  const dojoHostedRuntimeGate = rawHostedRuntimeActionGateForProduction("synthi_browser_action", tab, action);
+  const dojoHostedRuntimeGate = rawHostedRuntimeMutationGateForProduction({
+    tool_name: "synthi_browser_action",
+    action,
+    tab_id: tab.tab_id,
+    url: tab.url,
+    mutation_kind: "browser_action",
+    error_code: "dojo_hosted_runtime_direct_action_blocked",
+  });
   if (dojoHostedRuntimeGate) return dojoHostedRuntimeGate;
   const value = stringOpt(a["value"]);
   const targetUrl = action === "navigate" && value ? value : tab.url;
@@ -2861,26 +2883,30 @@ async function browserActionTool(args: unknown): Promise<ToolResponse> {
   return jsonResponse({ ok: true, result, teach: browserBroker.teachState() });
 }
 
-function rawHostedRuntimeActionGateForProduction(
-  toolName: string,
-  tab: { tab_id: string; url: string },
-  action: string
-): ToolResponse | null {
+function rawHostedRuntimeMutationGateForProduction(input: {
+  tool_name: string;
+  mutation_kind: "browser_action" | "open_tab" | "close_tab";
+  error_code: "dojo_hosted_runtime_direct_action_blocked" | "dojo_hosted_runtime_direct_tab_mutation_blocked";
+  action?: string;
+  tab_id?: string;
+  url?: string;
+}): ToolResponse | null {
   const enforcement = resolveDojoEnforcementConfig();
   if (!enforcement.production_enforcement) return null;
   const runtime = browserBroker.runtimeAttachment();
   if (runtime?.kind !== "hosted") return null;
-  return errorResponse("dojo_hosted_runtime_direct_action_blocked", {
+  return errorResponse(input.error_code, {
     ok: false,
-    tool_name: toolName,
-    action,
-    tab_id: tab.tab_id,
-    url: tab.url,
+    tool_name: input.tool_name,
+    mutation_kind: input.mutation_kind,
+    ...(input.action ? { action: input.action } : {}),
+    ...(input.tab_id ? { tab_id: input.tab_id } : {}),
+    ...(input.url ? { url: input.url } : {}),
     enforcement_mode: enforcement.enforcement_mode,
     required_tool: "synthi_dojo_run_with_proof_capsule",
     required_context: "validated_dojo_hosted_runtime_session",
     proof_not_consumed: true,
-    blocked_by: ["dojo_hosted_runtime_direct_action_blocked", "dojo_proof_capsule_required"],
+    blocked_by: [input.error_code, "dojo_proof_capsule_required"],
     runtime: {
       kind: runtime.kind,
       tenant_id: runtime.tenant_id ?? null,

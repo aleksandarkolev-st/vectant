@@ -183,6 +183,74 @@ describe("Dojo raw browser workflow replay gate", () => {
     expect(action).not.toHaveBeenCalled();
   });
 
+  it("blocks raw hosted-runtime tab mutations in production before adapter dispatch", async () => {
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    const url = "https://app.example.test/settings";
+    const nextUrl = "https://app.example.test/reports";
+    browserBroker.requestConsent(url);
+    browserBroker.requestConsent(nextUrl);
+    browserBroker.registerTabs([{ tab_id: "app", url, active: true }]);
+    browserBroker.selectTab("app");
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      actor_id: "agent-a",
+      runtime_id: "runtime-a",
+      session_id: "session-a",
+      workspace_url: url,
+      adapter: "unit-hosted-runtime",
+      expires_at: Date.now() + 60_000,
+      origin_allowlist: ["https://app.example.test"],
+      egress_policy: { local_network_allowed: false },
+      redaction_policy: { screenshots: true },
+    });
+    const open = vi.spyOn(browserPlaywrightAdapter, "open").mockResolvedValue({
+      tab_id: "reports",
+      url: nextUrl,
+      active: true,
+    });
+    const closeTab = vi.spyOn(browserPlaywrightAdapter, "closeTab").mockResolvedValue({
+      tab_id: "app",
+      url,
+      closed: true,
+    });
+
+    const opened = await dispatchBrowserTool("synthi_browser_open", { url: nextUrl });
+    const closed = await dispatchBrowserTool("synthi_browser_close_tab", { tab_id: "app" });
+
+    for (const response of [opened, closed]) {
+      expect(response?.isError).toBe(true);
+      expect(response?.structuredContent).toEqual(expect.objectContaining({
+        ok: false,
+        error: "dojo_hosted_runtime_direct_tab_mutation_blocked",
+        required_tool: "synthi_dojo_run_with_proof_capsule",
+        required_context: "validated_dojo_hosted_runtime_session",
+        proof_not_consumed: true,
+        blocked_by: ["dojo_hosted_runtime_direct_tab_mutation_blocked", "dojo_proof_capsule_required"],
+        runtime: expect.objectContaining({
+          kind: "hosted",
+          tenant_id: "tenant-a",
+          workspace_id: "workspace-a",
+          session_id: "session-a",
+        }),
+      }));
+    }
+    expect(opened?.structuredContent).toEqual(expect.objectContaining({
+      tool_name: "synthi_browser_open",
+      mutation_kind: "open_tab",
+      url: nextUrl,
+    }));
+    expect(closed?.structuredContent).toEqual(expect.objectContaining({
+      tool_name: "synthi_browser_close_tab",
+      mutation_kind: "close_tab",
+      tab_id: "app",
+      url,
+    }));
+    expect(open).not.toHaveBeenCalled();
+    expect(closeTab).not.toHaveBeenCalled();
+  });
+
   it("allows only internal Dojo proof context to replay a published workflow", async () => {
     const workflowId = teachWorkflow();
     const privateTool = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});
