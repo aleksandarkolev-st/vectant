@@ -1694,7 +1694,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = dojoExplainBlockTool(args);
         break;
       case "synthi_dojo_explain_failure":
-        response = dojoExplainFailureTool(args);
+        response = await dojoExplainFailureTool(args);
         break;
       case "synthi_dojo_debug_counterfactual":
         response = dojoDebugCounterfactualTool(args);
@@ -2108,35 +2108,87 @@ function dojoExplainBlockTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoExplainFailureTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoExplainFailureTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_explain_failure");
   if (!skill.ok) return skill.error;
+  const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_explain_failure", { postgres_wired: true });
+  if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const filters = scenarioFilters(args);
+  const a = obj(args);
   const guardrailId = stringOpt(obj(args)["guardrail_id"]);
-  const caseId = stringOpt(obj(args)["case_id"]);
+  const caseId = stringOpt(a["case_id"]);
   const scenario = firstScenario(skill.skill, filters);
-  const result = scenario
+  let runtimeFailureExecution: Awaited<ReturnType<typeof runDojoVivariumScenario>> | null = null;
+  let runtimeFailureEvidence: Record<string, unknown> | null = null;
+  let persistedSkill = skill.skill;
+  let controlPlanePersistence: Record<string, unknown> | null = null;
+  let result = scenario
     ? skill.skill.checkride.results.find((item) => item.scenario_id === scenario.scenario_id) ?? null
     : null;
+  if (scenario) {
+    runtimeFailureExecution = await runDojoVivariumScenario(skill.skill, {
+      scenario_id: scenario.scenario_id,
+      now: stringOpt(a["now"]),
+      tenant_context: skill.tenant,
+    });
+    result = runtimeFailureExecution.result;
+    const updated = skillWithDojoRuns(skill.skill, [runtimeFailureExecution.run], undefined, {
+      now: runtimeFailureExecution.run.finished_at,
+    });
+    const durablePersistence = await persistVivariumRunsToDurableControlPlaneIfRequired({
+      tenant: skill.tenant,
+      skill: skill.skill,
+      updated_skill: updated,
+      runs: [runtimeFailureExecution],
+      operation: "synthi_dojo_explain_failure",
+      now: runtimeFailureExecution.run.finished_at,
+    });
+    if (!durablePersistence.ok) return durablePersistence.error;
+    controlPlanePersistence = durablePersistence.persistence ?? null;
+    persistedSkill = skill.control_plane_source === "compatibility_registry"
+      ? dojoSkillRegistry.publish(updated)
+      : updated;
+    runtimeFailureEvidence = {
+      schema_version: "synthi.dojo.failureExplanationRuntimeEvidence.v1",
+      runtime_basis: "materialized_vivarium_graph_oracle",
+      scenario_id: runtimeFailureExecution.scenario.scenario_id,
+      mutation_kind: runtimeFailureExecution.scenario.mutation_kind,
+      run_id: runtimeFailureExecution.run.run_id,
+      status: runtimeFailureExecution.result.status,
+      finding: runtimeFailureExecution.result.finding,
+      guardrails_triggered: runtimeFailureExecution.guardrails,
+      evidence_refs: runtimeFailureExecution.evidence_refs,
+      materialized_fixture: {
+        simulator_tier: runtimeFailureExecution.materialized_fixture.simulator_tier,
+        synthetic_data_only: runtimeFailureExecution.materialized_fixture.synthetic_data_only,
+      },
+    };
+  }
   const matchedCase = caseId
-    ? skill.skill.case_law.find((item) => item.case_id === caseId) ?? null
+    ? persistedSkill.case_law.find((item) => item.case_id === caseId) ?? null
     : result
-    ? skill.skill.case_law.find((item) => result.evidence_refs.some((ref) => item.evidence_refs.includes(ref))) ?? null
+    ? persistedSkill.case_law.find((item) => result.evidence_refs.some((ref) => item.evidence_refs.includes(ref))) ?? null
     : null;
-  const matchedGuardrails = skill.skill.guardrails.filter((guardrail) => {
+  const matchedGuardrails = persistedSkill.guardrails.filter((guardrail) => {
     if (guardrailId) return guardrail.guardrail_id === guardrailId;
     if (matchedCase?.case_id) return guardrail.source_case_id === matchedCase.case_id;
     return result?.status !== "passed" && guardrail.blocks_actions.includes("run_workflow");
   });
   return jsonResponse({
     ok: true,
-    skill_id: skill.skill.skill_id,
+    control_plane_source: controlPlanePersistence ? "postgres" : skill.control_plane_source,
+    skill_id: persistedSkill.skill_id,
     scenario,
     result,
+    runtime_failure_evidence: runtimeFailureEvidence,
+    runtime_failure_execution: runtimeFailureExecution,
     case_law: matchedCase,
     guardrails: matchedGuardrails,
-    explanation: failureExplanation(skill.skill, scenario, result, matchedCase, matchedGuardrails),
-    next_steps: permissionUpgradeSteps(skill.skill, "run_workflow"),
+    explanation: failureExplanation(persistedSkill, scenario, result, matchedCase, matchedGuardrails),
+    next_steps: permissionUpgradeSteps(persistedSkill, "run_workflow"),
+    persisted_skill: skillListItem(persistedSkill),
+    control_plane_persistence: controlPlanePersistence,
+    license_health: await licenseHealthFor(persistedSkill, skill.tenant),
   });
 }
 

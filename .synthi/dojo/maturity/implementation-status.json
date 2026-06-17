@@ -46,7 +46,7 @@
     "synthi_dojo_get_guardrails": "deterministic_projection",
     "synthi_dojo_get_case_law": "report_only",
     "synthi_dojo_explain_block": "report_only",
-    "synthi_dojo_explain_failure": "report_only",
+    "synthi_dojo_explain_failure": "executable",
     "synthi_dojo_debug_counterfactual": "deterministic_projection",
     "synthi_dojo_run_time_machine_debugger": "executable",
     "synthi_dojo_run_ghost_mode": "executable",

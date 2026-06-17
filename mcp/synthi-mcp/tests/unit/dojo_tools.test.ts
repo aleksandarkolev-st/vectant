@@ -2919,8 +2919,41 @@ describe("Agent Dojo MCP tools", () => {
     });
     expect(failure?.structuredContent).toEqual(expect.objectContaining({
       ok: true,
+      implementation_status: "executable",
+      runtime_enforced: true,
       explanation: expect.stringContaining("Duplicate display entity"),
       guardrails: expect.any(Array),
+      runtime_failure_evidence: expect.objectContaining({
+        schema_version: "synthi.dojo.failureExplanationRuntimeEvidence.v1",
+        runtime_basis: "materialized_vivarium_graph_oracle",
+        scenario_id: expect.stringMatching(/scenario_\d+_duplicate_entity$/),
+        mutation_kind: "duplicate_entity",
+        run_id: expect.stringMatching(/^scenario_run_/),
+        status: expect.stringMatching(/^(passed|failed|blocked)$/),
+        evidence_refs: expect.arrayContaining([
+          `workflow:${published.skill.workflow_id}`,
+          expect.stringMatching(/^scenario:.+scenario_\d+_duplicate_entity$/),
+        ]),
+        materialized_fixture: expect.objectContaining({
+          synthetic_data_only: true,
+        }),
+      }),
+      runtime_failure_execution: expect.objectContaining({
+        schema_version: "synthi.dojo.vivariumScenarioRun.v1",
+        scenario: expect.objectContaining({
+          scenario_id: expect.stringMatching(/scenario_\d+_duplicate_entity$/),
+          mutation_kind: "duplicate_entity",
+        }),
+        result: expect.objectContaining({
+          status: expect.stringMatching(/^(passed|failed|blocked)$/),
+        }),
+        run: expect.objectContaining({
+          run_id: expect.stringMatching(/^scenario_run_/),
+        }),
+      }),
+      persisted_skill: expect.objectContaining({
+        skill_id: published.skill.skill_id,
+      }),
     }));
 
     const revoke = await dispatchDojoTool("synthi_dojo_revoke_license", {
