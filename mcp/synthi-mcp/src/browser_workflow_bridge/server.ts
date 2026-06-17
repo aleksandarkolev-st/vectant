@@ -951,9 +951,10 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
         args = await enrichToolArgs(tool, body.arguments);
       } catch (err) {
         if (err instanceof BridgeToolInputError) {
-          writeJson(res, err.status, {
+          writeJson(res, 200, {
             ok: false,
             error: err.code,
+            status: err.status,
             requested_tool: requestedTool,
             tool,
             ...err.detail,
