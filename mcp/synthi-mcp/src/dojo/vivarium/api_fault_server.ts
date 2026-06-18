@@ -8,6 +8,8 @@ export type DojoApiFaultBehavior =
   | "timeout"
   | "partial_write"
   | "fake_success"
+  | "duplicate_entity"
+  | "stale_entity"
   | "downstream_failure";
 
 export interface DojoApiFaultServerState {
@@ -21,6 +23,8 @@ export interface DojoApiFaultServerState {
     partial: boolean;
     validation_error: boolean;
     fake_success: boolean;
+    duplicate_entity: boolean;
+    stale_entity: boolean;
     downstream_failed: boolean;
     records: Record<string, unknown>[];
   };
@@ -44,6 +48,8 @@ export async function startDojoApiFaultServer(input: {
       partial: false,
       validation_error: false,
       fake_success: false,
+      duplicate_entity: false,
+      stale_entity: false,
       downstream_failed: false,
       records: [],
     },
@@ -115,6 +121,26 @@ async function handleRequest(
       state.durable_state.fake_success = true;
       sendJson(response, 200, { ok: true, visual_success: true, durable_success: false });
       return;
+    case "duplicate_entity":
+      state.durable_state.duplicate_entity = true;
+      state.durable_state.records.push(...duplicateRecordsFor(body, requestIndex));
+      sendJson(response, 409, {
+        ok: false,
+        error: "synthetic_duplicate_entity",
+        durable_success: false,
+        candidate_count: 2,
+      });
+      return;
+    case "stale_entity":
+      state.durable_state.stale_entity = true;
+      state.durable_state.records.push(staleRecordFor(body, requestIndex));
+      sendJson(response, 409, {
+        ok: false,
+        error: "synthetic_stale_entity",
+        durable_success: false,
+        stale: true,
+      });
+      return;
     case "downstream_failure":
       state.durable_state.downstream_failed = true;
       sendJson(response, 503, { ok: false, error: "synthetic_downstream_failure", durable_success: false });
@@ -122,7 +148,12 @@ async function handleRequest(
   }
 }
 
-function recordFor(body: unknown, state: "committed" | "partial", requestIndex: number): Record<string, unknown> {
+function recordFor(
+  body: unknown,
+  state: "committed" | "partial" | "duplicate" | "stale",
+  requestIndex: number,
+  extra: Record<string, unknown> = {}
+): Record<string, unknown> {
   const digest = createHash("sha256")
     .update(stableJson({ body, requestIndex, state }), "utf8")
     .digest("hex")
@@ -131,7 +162,72 @@ function recordFor(body: unknown, state: "committed" | "partial", requestIndex: 
     synthetic_record_id: `record_${digest}_${state}`,
     write_state: state,
     body,
+    ...extra,
   };
+}
+
+function duplicateRecordsFor(body: unknown, requestIndex: number): Record<string, unknown>[] {
+  const displayName = entityDisplayNameFor(body, requestIndex);
+  return [0, 1].map((candidateIndex) => recordFor(
+    {
+      ...recordBodyObject(body),
+      display_name: displayName,
+      duplicate_candidate_index: candidateIndex + 1,
+    },
+    "duplicate",
+    requestIndex + candidateIndex,
+    {
+      display_name: displayName,
+      duplicate_group_id: `duplicate_${createHash("sha256")
+        .update(stableJson({ body, requestIndex, displayName }), "utf8")
+        .digest("hex")
+        .slice(0, 12)}`,
+      duplicate_candidate_index: candidateIndex + 1,
+    }
+  ));
+}
+
+function staleRecordFor(body: unknown, requestIndex: number): Record<string, unknown> {
+  const bodyObject = recordBodyObject(body);
+  const observedVersion = numericField(bodyObject, ["version", "observed_version", "etag_version"], 1);
+  const currentVersion = Math.max(observedVersion + 1, numericField(bodyObject, ["current_version"], observedVersion + 1));
+  return recordFor(
+    {
+      ...bodyObject,
+      observed_version: observedVersion,
+      current_version: currentVersion,
+    },
+    "stale",
+    requestIndex,
+    {
+      stale: true,
+      observed_version: observedVersion,
+      current_version: currentVersion,
+    }
+  );
+}
+
+function entityDisplayNameFor(body: unknown, requestIndex: number): string {
+  const bodyObject = recordBodyObject(body);
+  for (const key of ["display_name", "name", "label", "entity_name"]) {
+    const value = bodyObject[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return `synthetic_entity_${requestIndex}`;
+}
+
+function numericField(body: Record<string, unknown>, keys: string[], fallback: number): number {
+  for (const key of keys) {
+    const value = body[key];
+    if (Number.isFinite(Number(value))) return Number(value);
+  }
+  return fallback;
+}
+
+function recordBodyObject(body: unknown): Record<string, unknown> {
+  return body && typeof body === "object" && !Array.isArray(body)
+    ? { ...(body as Record<string, unknown>) }
+    : { value: body };
 }
 
 function stableJson(value: unknown): string {

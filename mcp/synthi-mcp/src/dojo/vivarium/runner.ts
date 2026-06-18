@@ -616,6 +616,8 @@ function cloneDurableApiState(state: DojoApiFaultServerState["durable_state"]): 
     partial: state.partial,
     validation_error: state.validation_error,
     fake_success: state.fake_success,
+    duplicate_entity: state.duplicate_entity,
+    stale_entity: state.stale_entity,
     downstream_failed: state.downstream_failed,
     records: state.records.map((record) => ({ ...record })),
   };

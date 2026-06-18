@@ -84,6 +84,83 @@ describe("Dojo API fault server", () => {
       }
     }
   });
+
+  it("exposes duplicate and stale entity API faults with synthetic conflict state", async () => {
+    const duplicateServer = await startDojoApiFaultServer({ behavior: "duplicate_entity" });
+    try {
+      const response = await fetch(`${duplicateServer.url}/synthetic/action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ display_name: "Synthetic client", amount: 42 }),
+      });
+      const body = await response.json() as Record<string, unknown>;
+      const state = await fetchState(duplicateServer.url);
+
+      expect(response.status).toBe(409);
+      expect(body).toEqual(expect.objectContaining({
+        ok: false,
+        error: "synthetic_duplicate_entity",
+        candidate_count: 2,
+        durable_success: false,
+      }));
+      expect(state).toEqual(expect.objectContaining({
+        committed: false,
+        duplicate_entity: true,
+        records: [
+          expect.objectContaining({
+            synthetic_record_id: expect.stringMatching(/^record_[a-f0-9]{12}_duplicate$/),
+            write_state: "duplicate",
+            display_name: "Synthetic client",
+            duplicate_candidate_index: 1,
+          }),
+          expect.objectContaining({
+            synthetic_record_id: expect.stringMatching(/^record_[a-f0-9]{12}_duplicate$/),
+            write_state: "duplicate",
+            display_name: "Synthetic client",
+            duplicate_candidate_index: 2,
+          }),
+        ],
+      }));
+      const records = state.records as Array<Record<string, unknown>>;
+      expect(records[0]?.duplicate_group_id).toBe(records[1]?.duplicate_group_id);
+    } finally {
+      await duplicateServer.close();
+    }
+
+    const staleServer = await startDojoApiFaultServer({ behavior: "stale_entity" });
+    try {
+      const response = await fetch(`${staleServer.url}/synthetic/action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ entity_id: "synthetic-entity", observed_version: 7 }),
+      });
+      const body = await response.json() as Record<string, unknown>;
+      const state = await fetchState(staleServer.url);
+
+      expect(response.status).toBe(409);
+      expect(body).toEqual(expect.objectContaining({
+        ok: false,
+        error: "synthetic_stale_entity",
+        stale: true,
+        durable_success: false,
+      }));
+      expect(state).toEqual(expect.objectContaining({
+        committed: false,
+        stale_entity: true,
+        records: [
+          expect.objectContaining({
+            synthetic_record_id: expect.stringMatching(/^record_[a-f0-9]{12}_stale$/),
+            write_state: "stale",
+            stale: true,
+            observed_version: 7,
+            current_version: 8,
+          }),
+        ],
+      }));
+    } finally {
+      await staleServer.close();
+    }
+  });
 });
 
 async function fetchState(url: string): Promise<Record<string, unknown>> {
