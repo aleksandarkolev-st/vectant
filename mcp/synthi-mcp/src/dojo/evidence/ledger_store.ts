@@ -234,6 +234,15 @@ export class PostgresDojoEvidenceLedgerStore {
           blocked_by: ["evidence_record_hash_mismatch"],
         };
       }
+      if (record.ledger_head_hash !== record.record_hash) {
+        return {
+          ok: false,
+          checked_at: checkedAt,
+          ledger_head_hash: record.ledger_head_hash,
+          failed_record_id: record.record_id,
+          blocked_by: ["evidence_record_head_hash_mismatch"],
+        };
+      }
       if (this.requireSignedRecords || record.signature) {
         const signatureVerification = verifyDojoEvidenceLedgerRecordSignature(record, this.signatureVerifiers);
         if (!signatureVerification.ok) {
