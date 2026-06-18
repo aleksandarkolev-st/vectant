@@ -385,8 +385,8 @@ describe("browser workflow bridge", () => {
     expect(draft.dojo).toEqual(expect.objectContaining({
       status: "draft",
       skillId: "dojo_save_settings",
-      scenarioCount: 20,
-      skillCard: expect.objectContaining({ practiced: "20 synthetic cases" }),
+      scenarioCount: 21,
+      skillCard: expect.objectContaining({ practiced: "21 synthetic cases" }),
     }));
     expect(draft.dojo.license.blockedActions).toContain("run_workflow");
 

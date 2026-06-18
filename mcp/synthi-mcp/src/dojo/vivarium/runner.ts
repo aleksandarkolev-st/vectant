@@ -416,6 +416,8 @@ function fixtureInputs(fixture: DojoMaterializedFixture): Record<string, unknown
     policy_unavailable_approver: fixture.policy_state.unavailable_approver,
     policy_blocked_action_count: fixture.policy_state.blocked_actions.length,
     policy_threshold_count: fixture.policy_state.thresholds.length,
+    invalid_value_count: fixture.invalid_values.length,
+    invalid_value_fields: fixture.invalid_values.map((invalidValue) => invalidValue.field),
     duplicate_display_name_count: duplicateDisplayNameCount(fixture),
     partial_write: fixture.api_state.partial_write,
     fake_success: fixture.api_state.fake_success,
@@ -450,6 +452,7 @@ function observedEvidenceForRun(
   ) {
     observed.add("policy_tissue_state");
   }
+  if (materialized.fixture.invalid_values.length > 0) observed.add("invalid_value_state");
   if (materialized.fixture.api_state.partial_write) observed.add("partial_write_state");
   if (materialized.fixture.document_state.prompt_injection_present && materialized.fixture.document_state.instruction_quarantined) {
     observed.add("document_instruction_quarantine");

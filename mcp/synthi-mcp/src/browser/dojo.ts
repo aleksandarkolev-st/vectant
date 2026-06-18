@@ -1023,6 +1023,15 @@ export function generateDojoVivariumScenarios(seed: DojoSkillSeed): DojoScenario
       generated_from: "dojo_template",
     },
     {
+      title: "Invalid synthetic input value",
+      layer: "risk",
+      simulator_tier: 1,
+      mutation_kind: "invalid_value",
+      expected_behavior: "Reject invalid synthetic values before submitting and explain the validation boundary.",
+      risk_tags: ["input_validation", "invalid_value"],
+      generated_from: "dojo_template",
+    },
+    {
       title: "Duplicate display entity",
       layer: "risk",
       simulator_tier: 2,
@@ -1844,6 +1853,13 @@ function evaluateScenario(
     return scenarioResult(scenario, passed ? "passed" : "failed", hasMutation, passed
       ? "Required inputs are explicit in the skill seed."
       : "One or more inferred inputs are not explicitly required.", evidenceRefs, "Require explicit input validation before licensed execution.");
+  }
+
+  if (scenario.mutation_kind === "invalid_value") {
+    const passed = seed.input_schema.length === 0 || contract.failureClasses.includes("appValidationError");
+    return scenarioResult(scenario, passed ? "passed" : "failed", hasMutation, passed
+      ? "Invalid value handling is represented in the workflow contract or no user inputs are required."
+      : "The skill has inputs but no explicit invalid value handling.", evidenceRefs, "Reject invalid values before licensed submission.");
   }
 
   if (scenario.mutation_kind === "duplicate_entity" || scenario.mutation_kind === "stale_entity" || scenario.mutation_kind === "reordered_rows") {

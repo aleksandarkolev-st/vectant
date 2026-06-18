@@ -83,8 +83,9 @@ describe("Agent Dojo core", () => {
     expect(seed.schema_version).toBe("synthi.dojo.skillSeed.v1");
     expect(seed.workspace_id).toBe("workspace-a");
     expect(seed.input_schema).toContainEqual(expect.objectContaining({ name: "client_name", required: true }));
-    expect(scenarios).toHaveLength(20);
+    expect(scenarios).toHaveLength(21);
     expect(scenarios.map((scenario) => scenario.mutation_kind)).toEqual(expect.arrayContaining([
+      "invalid_value",
       "duplicate_entity",
       "fake_success",
       "auth_expiry",
@@ -100,7 +101,7 @@ describe("Agent Dojo core", () => {
     expect(skill.guardrails.length).toBeGreaterThan(0);
     expect(skill.permission_license.entrustment_level).toBe("E2");
     expect(skill.permission_license.blocked_actions.map((action) => action.action)).toContain("run_workflow");
-    expect(skill.skill_card.practiced).toBe("20 synthetic cases");
+    expect(skill.skill_card.practiced).toBe("21 synthetic cases");
     expect(skill.skill_cortex.nodes.map((node) => node.kind)).toEqual(expect.arrayContaining([
       "Trigger",
       "Input",
@@ -111,7 +112,7 @@ describe("Agent Dojo core", () => {
     ]));
     expect(skill.skill_cortex.nodes[0]?.memory).toEqual(expect.objectContaining({
       confidence: expect.any(Number),
-      rehearsal_count: 20,
+      rehearsal_count: 21,
       expiry_triggers: expect.arrayContaining(["app_release", "policy_change"]),
     }));
     expect(skill.workspace_organoid.tissues).toEqual(expect.objectContaining({
@@ -3889,7 +3890,7 @@ describe("Agent Dojo MCP tools", () => {
       runtime_enforced: false,
       simulation_backing: "scenario_catalog",
     }));
-    expect((scenarios?.structuredContent as { organoid: { scenarios: unknown[] } }).organoid.scenarios).toHaveLength(20);
+    expect((scenarios?.structuredContent as { organoid: { scenarios: unknown[] } }).organoid.scenarios).toHaveLength(21);
 
     const checkrideRun = await dispatchDojoTool("synthi_dojo_run_checkride", {
       workspace_id: "workspace-a",
@@ -3907,7 +3908,7 @@ describe("Agent Dojo MCP tools", () => {
       checkride: expect.objectContaining({ schema_version: "synthi.dojo.checkrideReport.v1" }),
       executable_checkride: expect.objectContaining({
         schema_version: "synthi.dojo.executableCheckrideReport.v1",
-        scenario_count: 20,
+        scenario_count: 21,
         failed_scenarios: 0,
         critical_failures: 0,
         production_recommendation: "constrained",

@@ -56,6 +56,29 @@ describe("Dojo scenario DSL", () => {
     expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
   });
 
+  it("classifies invalid value scenarios as data validation tissue", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "invalid_value",
+      risk_tags: ["input_validation", "invalid_value"],
+      layer: "risk",
+    }), {
+      input_overrides: { amount: -1 },
+    });
+
+    expect(definition.mutation_scopes).toEqual(["ui", "data"]);
+    expect(definition.fixture_requirements.map((fixture) => fixture.kind)).toEqual([
+      "fake_database_state",
+      "synthetic_dom_snapshot",
+      "fake_validation_errors",
+    ]);
+    expect(definition.oracle).toEqual(expect.objectContaining({
+      kind: "expected_block",
+      expected_outcome: "block",
+      observed_evidence_required: expect.arrayContaining(["invalid_value_state"]),
+    }));
+    expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
+  });
+
   it("classifies ambiguous document-name scenarios as synthetic document tissue", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "ambiguous_document_name",

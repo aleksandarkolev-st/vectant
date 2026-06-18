@@ -68,6 +68,47 @@ describe("Dojo synthetic fixture materializer", () => {
     expect(threshold.policy_state.approval_required).toBe(true);
   });
 
+  it("materializes invalid data values without production data", () => {
+    const invalid = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "invalid_value",
+      risk_tags: ["input_validation", "invalid_value"],
+    }), {
+      input_overrides: { amount: -1 },
+    }), { seed: "invalid-value-seed" });
+    const generatedInvalid = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "invalid_value",
+      risk_tags: ["input_validation", "invalid_value"],
+    })), { seed: "invalid-generated-seed" });
+    const secondGeneratedInvalid = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "invalid_value",
+      risk_tags: ["input_validation", "invalid_value"],
+    })), { seed: "invalid-generated-seed" });
+
+    expect(invalid.synthetic_data_only).toBe(true);
+    expect(invalid.invalid_values).toEqual([
+      {
+        field: "amount",
+        value: -1,
+        expected_type: "number",
+        reason: "scenario_input_override_invalid",
+      },
+    ]);
+    expect(invalid.records[0]?.fields).toEqual(expect.objectContaining({ amount: -1 }));
+    expect(invalid.ui_state.validation_messages).toEqual([
+      expect.objectContaining({ field: "amount", message: "Synthetic validation requires amount" }),
+    ]);
+    expect(generatedInvalid.invalid_values).toEqual([
+      expect.objectContaining({ field: "amount", value: -1, expected_type: "number", reason: "below_minimum" }),
+      expect.objectContaining({
+        field: "currency",
+        value: expect.stringMatching(/^SYNTHETIC_INVALID_CURRENCY_[a-f0-9]{6}$/),
+        expected_type: "currency",
+        reason: "unsupported_currency",
+      }),
+    ]);
+    expect(generatedInvalid.materialization_hash).toBe(secondGeneratedInvalid.materialization_hash);
+  });
+
   it("materializes prompt injection document fixtures as quarantined synthetic tissue", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "prompt_injection",

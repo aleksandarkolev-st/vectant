@@ -278,6 +278,46 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("emits invalid value evidence when invalid data blocks execution", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "invalid_value",
+      layer: "risk",
+      risk_tags: ["input_validation", "invalid_value"],
+    }), {
+      input_overrides: { amount: -1 },
+    });
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "invalid-value-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: invalidValueGateGraphFixture(),
+      run_id: "scenario-run-invalid-value",
+    });
+
+    expect(materialized.fixture.invalid_values).toEqual([
+      expect.objectContaining({ field: "amount", value: -1, reason: "scenario_input_override_invalid" }),
+    ]);
+    expect(result).toEqual(expect.objectContaining({
+      status: "blocked",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining(["invalid_value_state"]),
+      graph_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["precondition_failed:invalid_value_count == 0"],
+      }),
+      oracle_result: expect.objectContaining({
+        status: "blocked",
+        expected_outcome: "block",
+        observed_evidence: expect.arrayContaining(["invalid_value_state"]),
+      }),
+    }));
+  });
+
   it("passes prompt injection scenarios only when document instructions are quarantined", async () => {
     const runner = new DojoVivariumRunner();
     const definition = toDojoScenarioDefinition(scenarioFixture({
@@ -726,6 +766,18 @@ function workspaceGateGraphFixture(): DojoSkillGraph {
       ? {
           ...node,
           preconditions: ["workspace_changed == false"],
+        }
+      : node),
+  };
+}
+
+function invalidValueGateGraphFixture(): DojoSkillGraph {
+  return {
+    ...graphFixture(),
+    nodes: graphFixture().nodes.map((node) => node.node_id === "action"
+      ? {
+          ...node,
+          preconditions: ["invalid_value_count == 0"],
         }
       : node),
   };

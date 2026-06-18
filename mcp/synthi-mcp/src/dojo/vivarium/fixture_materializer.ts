@@ -11,6 +11,13 @@ export interface DojoSyntheticEntityRecord {
   fields: Record<string, unknown>;
 }
 
+export interface DojoSyntheticInvalidValue {
+  field: string;
+  value: unknown;
+  expected_type: "string" | "number" | "currency" | "identifier";
+  reason: string;
+}
+
 export interface DojoSyntheticDocumentRecord {
   document_id: string;
   file_name: string;
@@ -87,6 +94,7 @@ export interface DojoMaterializedFixture {
   source_definition_hash: string;
   records: DojoSyntheticEntityRecord[];
   missing_fields: string[];
+  invalid_values: DojoSyntheticInvalidValue[];
   threshold_breaches: Array<{ field: string; value: number; threshold: number }>;
   policy_state: {
     thresholds: DojoSyntheticPolicyThreshold[];
@@ -167,7 +175,8 @@ function fixtureFor(
   seed: string,
   sourceDefinitionHash: string
 ): Omit<DojoMaterializedFixture, "materialization_hash"> & { materialization_hash: "" } {
-  const records = recordsFor(definition, seed);
+  const invalidValues = invalidValuesFor(definition, seed);
+  const records = recordsFor(definition, seed, invalidValues);
   const missingFields = missingFieldsFor(definition);
   const thresholdBreaches = thresholdBreachesFor(definition);
   const documentState = documentStateFor(definition, seed);
@@ -185,6 +194,7 @@ function fixtureFor(
     source_definition_hash: sourceDefinitionHash,
     records,
     missing_fields: missingFields,
+    invalid_values: invalidValues,
     threshold_breaches: thresholdBreaches,
     policy_state: policyState,
     ui_state: uiState,
@@ -204,8 +214,13 @@ function fixtureFor(
   };
 }
 
-function recordsFor(definition: DojoScenarioDefinition, seed: string): DojoSyntheticEntityRecord[] {
+function recordsFor(
+  definition: DojoScenarioDefinition,
+  seed: string,
+  invalidValues: DojoSyntheticInvalidValue[]
+): DojoSyntheticEntityRecord[] {
   const baseName = syntheticNameFor(seed);
+  const invalidFields = Object.fromEntries(invalidValues.map((invalidValue) => [invalidValue.field, invalidValue.value]));
   if (definition.mutation_kind === "duplicate_entity") {
     return [
       entityRecord(`${seed}:entity:1`, baseName, { disambiguator: "A" }),
@@ -218,7 +233,7 @@ function recordsFor(definition: DojoScenarioDefinition, seed: string): DojoSynth
       { ...entityRecord(`${seed}:entity:stale`, baseName, { intended: false }), stale: true, version: 1 },
     ];
   }
-  return [entityRecord(`${seed}:entity:1`, baseName, { intended: true })];
+  return [entityRecord(`${seed}:entity:1`, baseName, { intended: true, ...invalidFields })];
 }
 
 function entityRecord(seed: string, displayName: string, fields: Record<string, unknown>): DojoSyntheticEntityRecord {
@@ -235,6 +250,40 @@ function missingFieldsFor(definition: DojoScenarioDefinition): string[] {
   if (definition.mutation_kind === "input_omission") return Object.keys(definition.input_overrides).slice(0, 1);
   if (definition.mutation_kind === "hidden_required_field") return ["synthetic_required_field"];
   return [];
+}
+
+function invalidValuesFor(definition: DojoScenarioDefinition, seed: string): DojoSyntheticInvalidValue[] {
+  if (definition.mutation_kind !== "invalid_value") return [];
+  const overrideEntries = Object.entries(definition.input_overrides);
+  if (overrideEntries.length > 0) {
+    return overrideEntries.map(([field, value]) => ({
+      field,
+      value,
+      expected_type: expectedTypeForInvalidField(field),
+      reason: "scenario_input_override_invalid",
+    }));
+  }
+  return [
+    {
+      field: "amount",
+      value: -1,
+      expected_type: "number",
+      reason: "below_minimum",
+    },
+    {
+      field: "currency",
+      value: `SYNTHETIC_INVALID_CURRENCY_${shortHash(`${seed}:currency`).slice(0, 6)}`,
+      expected_type: "currency",
+      reason: "unsupported_currency",
+    },
+  ];
+}
+
+function expectedTypeForInvalidField(field: string): DojoSyntheticInvalidValue["expected_type"] {
+  if (/amount|count|total|quantity|price/i.test(field)) return "number";
+  if (/currency/i.test(field)) return "currency";
+  if (/id|identifier/i.test(field)) return "identifier";
+  return "string";
 }
 
 function thresholdBreachesFor(definition: DojoScenarioDefinition): Array<{ field: string; value: number; threshold: number }> {
@@ -503,7 +552,10 @@ function validationMessagesFor(
   missingFields: string[]
 ): DojoSyntheticUiValidationMessage[] {
   const fields = missingFields.length > 0 ? missingFields : definition.mutation_kind === "validation_error" ? ["synthetic_required_field"] : [];
-  return fields.map((field) => ({
+  const validationFields = definition.mutation_kind === "invalid_value"
+    ? [...new Set([...fields, ...invalidValuesFor(definition, definition.reset_profile.seed).map((invalidValue) => invalidValue.field)])]
+    : fields;
+  return validationFields.map((field) => ({
     field,
     message: `Synthetic validation requires ${field}`,
     visible: true,

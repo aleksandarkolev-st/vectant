@@ -68,6 +68,12 @@ function predicateForKnownGuardrailText(text: string): string | null {
   ) {
     return "client_id_verified == true";
   }
+  if (
+    (text.includes("invalid") || text.includes("validation"))
+      && (text.includes("value") || text.includes("input") || text.includes("field"))
+  ) {
+    return "invalid_value_count == 0";
+  }
   if (text.includes("source") && (text.includes("anchor") || text.includes("affordance") || text.includes("backed") || text.includes("contract"))) {
     return "source_anchor_current == true";
   }

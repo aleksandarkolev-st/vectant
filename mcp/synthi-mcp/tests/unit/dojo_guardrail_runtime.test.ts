@@ -43,6 +43,9 @@ describe("Dojo guardrail runtime", () => {
     const mutationIsolation = normalizeDojoGuardrailPredicate({
       rule: "Mutation replay must use confirmation or isolated CI before production execution.",
     });
+    const invalidValue = normalizeDojoGuardrailPredicate({
+      rule: "Reject invalid values before licensed submission.",
+    });
     const generated = normalizeDojoGuardrailPredicate({
       rule: "Business-specific policy flag is satisfied.",
       guardrail_id: "guard_custom_policy",
@@ -60,6 +63,10 @@ describe("Dojo guardrail runtime", () => {
       predicate: "mutation_isolation_available == true",
       source: "normalized",
       generated_context_key: "mutation_isolation_available",
+    }));
+    expect(invalidValue).toEqual(expect.objectContaining({
+      predicate: "invalid_value_count == 0",
+      source: "normalized",
     }));
     expect(generated).toEqual(expect.objectContaining({
       source: "generated_key",
