@@ -782,6 +782,7 @@ describe("Agent Dojo MCP tools", () => {
     }));
 
     const visibleCompliance = await dispatchDojoTool("synthi_dojo_export_compliance_pack", productionTenantContextArgs({
+      roles: ["dojo:compliance:export"],
       request_id: "req-production-visible-compliance",
     }));
     expect(visibleCompliance?.isError).toBeUndefined();
@@ -1055,6 +1056,58 @@ describe("Agent Dojo MCP tools", () => {
             roles: ["dojo:license:recertify"],
           }),
         }),
+      }),
+    }));
+  });
+
+  it("enforces RBAC for production compliance export through the MCP tool", async () => {
+    const { visibleSkillId } = await publishTwoWorkspaceSkillsForDojoToolTest();
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const blockedExport = await dispatchDojoTool("synthi_dojo_export_compliance_pack", {
+      skill_id: visibleSkillId,
+      ...productionTenantContextArgs({
+        actor_id: "workspace-a-viewer",
+        actor_type: "human",
+        roles: ["dojo:governance:view"],
+        request_id: "req-compliance-export-rbac-blocked",
+        correlation_id: "corr-compliance-export-rbac-blocked",
+      }),
+    });
+    expect(blockedExport?.isError).toBe(true);
+    expect(blockedExport?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_compliance_export_role_required",
+      ok: false,
+      skill_ids: [visibleSkillId],
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:compliance:export|dojo:auditor"]),
+      rbac_authorization: expect.objectContaining({
+        action: "compliance_export",
+        actor_id: "workspace-a-viewer",
+        required_roles: ["dojo:compliance:export", "dojo:auditor"],
+      }),
+    }));
+
+    const allowedExport = await dispatchDojoTool("synthi_dojo_export_compliance_pack", {
+      skill_id: visibleSkillId,
+      ...productionTenantContextArgs({
+        actor_id: "workspace-a-auditor",
+        actor_type: "human",
+        roles: ["dojo:compliance:export"],
+        request_id: "req-compliance-export-rbac-approved",
+        correlation_id: "corr-compliance-export-rbac-approved",
+      }),
+    });
+    expect(allowedExport?.isError).toBeUndefined();
+    expect(allowedExport?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      pack: expect.objectContaining({
+        skill_ids: [visibleSkillId],
+        workspace_ids: ["workspace-a"],
+      }),
+      rbac_authorization: expect.objectContaining({
+        action: "compliance_export",
+        actor_id: "workspace-a-auditor",
+        matched_roles: ["dojo:compliance:export"],
       }),
     }));
   });

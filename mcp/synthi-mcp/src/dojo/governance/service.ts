@@ -33,6 +33,7 @@ export type DojoGovernanceRbacAction =
   | "case_law_review"
   | "license_revocation"
   | "license_recertification"
+  | "compliance_export"
   | "governance_view";
 
 export interface DojoGovernanceRbacPolicy {
@@ -64,6 +65,7 @@ export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPo
     case_law_review: ["dojo:case-law:review"],
     license_revocation: ["dojo:license:revoke"],
     license_recertification: ["dojo:license:recertify"],
+    compliance_export: ["dojo:compliance:export", "dojo:auditor"],
     governance_view: ["dojo:governance:view", "dojo:auditor"],
   },
 };
@@ -1200,6 +1202,10 @@ function normalizeGovernanceRbacPolicy(
       license_recertification: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.license_recertification,
         ...(policy.action_roles?.license_recertification ?? []),
+      ]),
+      compliance_export: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.compliance_export,
+        ...(policy.action_roles?.compliance_export ?? []),
       ]),
       governance_view: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.governance_view,

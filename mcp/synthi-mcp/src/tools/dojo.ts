@@ -5891,6 +5891,24 @@ async function dojoExportCompliancePackTool(args: unknown): Promise<ToolResponse
   }
   if (skills.length === 0) return errorResponse("dojo_skill_required");
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
+  const enforcement = resolveDojoEnforcementConfig();
+  const complianceExportRbacAuthorization = enforcement.production_enforcement
+    ? authorizeDojoGovernanceAction({
+      tenant_context: tenant,
+      action: "compliance_export",
+    })
+    : undefined;
+  if (complianceExportRbacAuthorization && !complianceExportRbacAuthorization.ok) {
+    return errorResponse("dojo_compliance_export_role_required", {
+      ok: false,
+      skill_ids: skills.map((skill) => skill.skill_id),
+      workspace_ids: [...new Set(skills.map((skill) => skill.workspace_id))],
+      actor_id: tenant.actor_id,
+      actor_type: tenant.actor_type,
+      blocked_by: complianceExportRbacAuthorization.blocked_by,
+      rbac_authorization: complianceExportRbacAuthorization,
+    });
+  }
   const proofVerificationExport = await proofPublicVerificationExportForTenant({
     tenant,
     skill_ids: skills.map((skill) => skill.skill_id),
@@ -5934,6 +5952,7 @@ async function dojoExportCompliancePackTool(args: unknown): Promise<ToolResponse
     generated_at: now,
     pack: manifest,
     governance_service: governanceService,
+    ...(complianceExportRbacAuthorization ? { rbac_authorization: complianceExportRbacAuthorization } : {}),
     artifact_count: selectedArtifacts.length + 1,
     artifacts: [manifestArtifact, ...selectedArtifacts],
   });
