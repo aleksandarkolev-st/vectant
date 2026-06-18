@@ -407,6 +407,26 @@ describe("Dojo synthetic fixture materializer", () => {
         visible: true,
       }),
     ]));
+
+    const misleadingToast = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "misleading_toast",
+      risk_tags: ["ui_tissue", "false_success_signal"],
+    })), { seed: "ui-toast-seed" });
+    const secondMisleadingToast = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "misleading_toast",
+      risk_tags: ["ui_tissue", "false_success_signal"],
+    })), { seed: "ui-toast-seed" });
+    expect(misleadingToast.ui_state.misleading_toast).toBe(true);
+    expect(misleadingToast.ui_state.toast_messages).toEqual([
+      expect.objectContaining({
+        toast_id: expect.stringMatching(/^synthetic_toast_[a-f0-9]{12}$/),
+        visible: true,
+        misleading: true,
+        claimed_success: true,
+        durable_success: false,
+      }),
+    ]);
+    expect(secondMisleadingToast).toEqual(misleadingToast);
   });
 
   it("is deterministic for the same scenario and seed", () => {

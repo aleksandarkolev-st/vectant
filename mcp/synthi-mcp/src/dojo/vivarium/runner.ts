@@ -436,6 +436,8 @@ function fixtureInputs(fixture: DojoMaterializedFixture): Record<string, unknown
     ui_validation_below_fold: fixture.ui_state.validation_messages.some((message) => message.location === "below_fold"),
     ui_table_reordered: fixture.ui_state.layout_mutations.includes("table_rows_reordered"),
     ui_modal_present: fixture.ui_state.modal_present,
+    ui_misleading_toast: fixture.ui_state.misleading_toast,
+    ui_toast_count: fixture.ui_state.toast_messages.length,
     ui_destructive_adjacency: fixture.ui_state.destructive_adjacency,
     prompt_injection_present: fixture.document_state.prompt_injection_present,
     document_instruction_quarantined: fixture.document_state.instruction_quarantined,
@@ -518,6 +520,8 @@ function uiTissueEvidenceForFixture(fixture: DojoMaterializedFixture): string[] 
     || movedControlCount > 0
     || hasValidationBelowFold
     || fixture.ui_state.modal_present
+    || fixture.ui_state.misleading_toast
+    || fixture.ui_state.toast_messages.length > 0
     || fixture.ui_state.destructive_adjacency
     || fixture.ui_state.viewport !== "desktop"
     || fixture.ui_state.reduced_motion
@@ -533,6 +537,9 @@ function uiTissueEvidenceForFixture(fixture: DojoMaterializedFixture): string[] 
   if (fixture.ui_state.menu_hidden_controls.length > 0) evidence.add("ui_hidden_menu_state");
   if (hasValidationBelowFold || fixture.ui_state.hidden_fields.length > 0) evidence.add("ui_validation_surface_state");
   if (fixture.ui_state.layout_mutations.includes("table_rows_reordered")) evidence.add("ui_table_reorder_state");
+  if (fixture.ui_state.misleading_toast || fixture.ui_state.toast_messages.some((toast) => toast.misleading)) {
+    evidence.add("ui_misleading_toast_state");
+  }
   if (fixture.ui_state.destructive_adjacency) evidence.add("ui_destructive_adjacency_state");
   if (fixture.ui_state.modal_present) evidence.add("ui_modal_interruption_state");
   return [...evidence].sort();

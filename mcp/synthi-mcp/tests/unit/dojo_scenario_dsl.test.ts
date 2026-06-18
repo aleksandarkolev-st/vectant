@@ -112,6 +112,7 @@ describe("Dojo scenario DSL", () => {
       ["button_moved", ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state"]],
       ["button_hidden_menu", ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state", "ui_hidden_menu_state"]],
       ["validation_below_fold", ["ui_tissue_state", "ui_layout_mutation_state", "ui_validation_surface_state"]],
+      ["misleading_toast", ["ui_tissue_state", "ui_misleading_toast_state"]],
       ["reordered_rows", ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state", "ui_table_reorder_state"]],
       ["destructive_adjacency", ["ui_tissue_state", "ui_layout_mutation_state", "ui_destructive_adjacency_state"]],
       ["modal_appears", ["ui_tissue_state", "ui_layout_mutation_state", "ui_modal_interruption_state"]],
@@ -128,6 +129,24 @@ describe("Dojo scenario DSL", () => {
       expect(definition.oracle.observed_evidence_required).toEqual(expect.arrayContaining([...requiredEvidence]));
       expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
     }
+  });
+
+  it("classifies misleading toast UI tissue with specific evidence requirements", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "misleading_toast",
+      risk_tags: ["ui_tissue", "false_success_signal"],
+    }));
+
+    expect(definition.mutation_scopes).toEqual(["ui"]);
+    expect(definition.fixture_requirements.map((fixture) => fixture.kind)).toEqual(["synthetic_dom_snapshot"]);
+    expect(definition.oracle.observed_evidence_required).toEqual(expect.arrayContaining([
+      "graph_run_result",
+      "graph_node_evidence",
+      "oracle_result",
+      "ui_tissue_state",
+      "ui_misleading_toast_state",
+    ]));
+    expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
   });
 
   it("classifies policy tissue scenarios with thresholds and unavailable approvals", () => {

@@ -695,6 +695,21 @@ describe("Dojo Vivarium runner", () => {
           expect(materialized.fixture.ui_state.modal_present).toBe(true);
         },
       },
+      {
+        mutation_kind: "misleading_toast",
+        seed: "ui-runner-misleading-toast-seed",
+        expected_evidence: ["ui_tissue_state", "ui_misleading_toast_state"],
+        assertFixture: (materialized: ReturnType<DojoVivariumRunner["materialize"]>) => {
+          expect(materialized.fixture.ui_state.misleading_toast).toBe(true);
+          expect(materialized.fixture.ui_state.toast_messages).toEqual([
+            expect.objectContaining({
+              misleading: true,
+              claimed_success: true,
+              durable_success: false,
+            }),
+          ]);
+        },
+      },
     ] as const;
 
     const runner = new DojoVivariumRunner();
@@ -727,6 +742,43 @@ describe("Dojo Vivarium runner", () => {
         }),
       }));
     }
+  });
+
+  it("emits misleading toast UI evidence from materialized false-success toast state", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "misleading_toast",
+      layer: "risk",
+      risk_tags: ["ui_tissue", "false_success_signal"],
+    }));
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "ui-runner-misleading-toast-specific-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-misleading-toast",
+    });
+
+    expect(materialized.fixture.ui_state.toast_messages).toEqual([
+      expect.objectContaining({
+        misleading: true,
+        claimed_success: true,
+        durable_success: false,
+      }),
+    ]);
+    expect(result).toEqual(expect.objectContaining({
+      status: "passed",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining(["ui_tissue_state", "ui_misleading_toast_state"]),
+      oracle_result: expect.objectContaining({
+        observed_evidence: expect.arrayContaining(["ui_tissue_state", "ui_misleading_toast_state"]),
+        blocked_by: [],
+      }),
+    }));
   });
 
   it("generates deterministic run IDs and timestamps when a run clock is supplied", async () => {

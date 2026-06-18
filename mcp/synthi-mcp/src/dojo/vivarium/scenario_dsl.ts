@@ -215,6 +215,7 @@ function fixtureKindsFor(mutationKind: string): DojoScenarioFixtureKind[] {
     case "button_moved":
     case "button_hidden_menu":
     case "validation_below_fold":
+    case "misleading_toast":
     case "modal_appears":
       return ["synthetic_dom_snapshot"];
     case "destructive_adjacency":
@@ -360,6 +361,8 @@ function uiTissueEvidenceFor(mutationKind: string): string[] {
       return ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state", "ui_table_reorder_state"];
     case "destructive_adjacency":
       return ["ui_tissue_state", "ui_layout_mutation_state", "ui_destructive_adjacency_state"];
+    case "misleading_toast":
+      return ["ui_tissue_state", "ui_misleading_toast_state"];
     case "modal_appears":
       return ["ui_tissue_state", "ui_layout_mutation_state", "ui_modal_interruption_state"];
     default:

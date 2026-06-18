@@ -56,6 +56,15 @@ export interface DojoSyntheticUiValidationMessage {
   location: "inline" | "below_fold" | "modal";
 }
 
+export interface DojoSyntheticUiToast {
+  toast_id: string;
+  message: string;
+  visible: boolean;
+  misleading: boolean;
+  claimed_success: boolean;
+  durable_success: boolean;
+}
+
 export interface DojoSyntheticPolicyThreshold {
   policy_id: string;
   field: string;
@@ -114,6 +123,8 @@ export interface DojoMaterializedFixture {
     table_order: string[];
     viewport: "desktop" | "mobile";
     modal_present: boolean;
+    toast_messages: DojoSyntheticUiToast[];
+    misleading_toast: boolean;
     reduced_motion: boolean;
     hydration_delay_ms: number;
     feature_flags: string[];
@@ -420,6 +431,8 @@ function uiStateFor(
     table_order: tableOrderFor(definition, records),
     viewport: mutationKind === "viewport_mobile" ? "mobile" : "desktop",
     modal_present: mutationKind === "modal_appears",
+    toast_messages: toastMessagesFor(definition, seed),
+    misleading_toast: mutationKind === "misleading_toast",
     reduced_motion: mutationKind === "reduced_motion",
     hydration_delay_ms: mutationKind === "hydration_delay" ? Math.min(definition.budget.max_estimated_ms, 500) : 0,
     feature_flags: mutationKind === "feature_flag" ? [`synthetic_flag_${shortHash(`${seed}:feature`).slice(0, 8)}`] : [],
@@ -568,6 +581,20 @@ function validationMessagesFor(
         ? "below_fold"
         : "inline",
   }));
+}
+
+function toastMessagesFor(definition: DojoScenarioDefinition, seed: string): DojoSyntheticUiToast[] {
+  if (definition.mutation_kind !== "misleading_toast") return [];
+  return [
+    {
+      toast_id: `synthetic_toast_${shortHash(`${seed}:toast:misleading`)}`,
+      message: "Synthetic action completed",
+      visible: true,
+      misleading: true,
+      claimed_success: true,
+      durable_success: false,
+    },
+  ];
 }
 
 function tableOrderFor(definition: DojoScenarioDefinition, records: DojoSyntheticEntityRecord[]): string[] {
