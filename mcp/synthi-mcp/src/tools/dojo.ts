@@ -3566,6 +3566,18 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
     });
     if (!validationOptions.ok) return validationOptions.error;
     const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, toolArgs);
+    const proofEvidenceValidation = await validateProofCapsuleEvidenceAgainstLedgerIfRequired({
+      operation: "synthi_dojo_run_api_backed_tool",
+      tenant,
+      skill: skill.skill,
+      capsule: proofCapsule,
+      requested_action: apiTool.action,
+      checked_at: now,
+      evidence_max_age_ms: numberOpt(a["evidence_max_age_ms"]),
+    });
+    if (!proofEvidenceValidation.ok) return proofEvidenceValidation.error;
+    const evidenceLedgerValidation = proofEvidenceValidation.evidence_ledger_resolution ?? null;
+    const evidenceClaimResults = proofEvidenceValidation.evidence_claim_results;
     const invocationValidation = validateDojoApiBackedToolInvocation({
       tool: apiTool,
       args: toolArgs,
@@ -3582,6 +3594,7 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
       tool_args: licenseToolArgs,
       dry_run: dryRun,
       now,
+      evidence_claim_results: evidenceClaimResults,
       require_verified_approval_evidence: resolveDojoEnforcementConfig().production_enforcement,
       proof_validation_options: validationOptions.options,
     });
@@ -3623,6 +3636,8 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         mcp_skill_bus_preflight: apiBackedToolSkillBusPreflightSummary(skillBusPreflight),
         api_backed_mcp_tool: apiTool,
         api_tool_invocation_validation: invocationValidation,
+        evidence_ledger_validation: evidenceLedgerValidation,
+        evidence_claim_results: evidenceClaimResults,
         proof_validation: proofValidation,
         license_kernel: licenseDecision,
         proof_consume: null,
@@ -3653,6 +3668,8 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         mcp_skill_bus_preflight: apiBackedToolSkillBusPreflightSummary(skillBusPreflight),
         api_backed_mcp_tool: apiTool,
         api_tool_invocation_validation: invocationValidation,
+        evidence_ledger_validation: evidenceLedgerValidation,
+        evidence_claim_results: evidenceClaimResults,
         proof_validation: proofValidation,
         license_kernel: licenseDecision,
         proof_consume: null,
@@ -3669,6 +3686,8 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         skill_id: skill.skill.skill_id,
         tool_name: apiTool.tool_name,
         run_id: runId,
+        evidence_ledger_validation: evidenceLedgerValidation,
+        evidence_claim_results: evidenceClaimResults,
         proof_consume: null,
         blocked_by: transport.blocked_by,
       });
@@ -3776,6 +3795,8 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         mcp_skill_bus_dispatch: apiBackedToolSkillBusPreflightSummary(skillBusDispatch),
         api_backed_mcp_tool: apiTool,
         api_tool_invocation_validation: invocationValidation,
+        evidence_ledger_validation: evidenceLedgerValidation,
+        evidence_claim_results: evidenceClaimResults,
         proof_validation: {
           ok: false,
           blocked_by: blockedBy,
@@ -3816,6 +3837,8 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(skillBusResolution),
         mcp_skill_bus_preflight: apiBackedToolSkillBusPreflightSummary(skillBusPreflight),
         mcp_skill_bus_dispatch: apiBackedToolSkillBusPreflightSummary(skillBusDispatch),
+        evidence_ledger_validation: evidenceLedgerValidation,
+        evidence_claim_results: evidenceClaimResults,
         blocked_by: ["api_tool_execution_result_missing"],
         error_codes: ["api_tool_execution_result_missing"],
       });
@@ -3835,6 +3858,8 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         mcp_skill_bus_preflight: apiBackedToolSkillBusPreflightSummary(skillBusPreflight),
         mcp_skill_bus_dispatch: apiBackedToolSkillBusPreflightSummary(skillBusDispatch),
         api_tool_invocation_validation: invocationValidation,
+        evidence_ledger_validation: evidenceLedgerValidation,
+        evidence_claim_results: evidenceClaimResults,
         proof_validation: {
           ok: false,
           blocked_by: blockedBy,
@@ -3876,6 +3901,8 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
       mcp_skill_bus_dispatch: apiBackedToolSkillBusPreflightSummary(skillBusDispatch),
       api_backed_mcp_tool: apiTool,
       api_tool_invocation_validation: invocationValidation,
+      evidence_ledger_validation: evidenceLedgerValidation,
+      evidence_claim_results: evidenceClaimResults,
       proof_validation: execution.proof_validation ?? proofValidation,
       license_kernel: {
         ...licenseDecision,

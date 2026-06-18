@@ -183,6 +183,7 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       context_claims: { workspace_verified: true },
       evidence_record_ids: [evidenceRecord.record_id],
       ledger_checkpoint_hash: evidenceRecord.ledger_head_hash,
+      substrate_claim: "api",
       now: checkedAt,
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -248,6 +249,100 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       ]),
     }));
 
+    const apiToolPublication = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+      skill_id: skillId,
+      network_trace: {
+        method: "POST",
+        url: "https://app.example.test/api/invoices?workspace=workspace-a",
+        request_body: { client_id: "client-a", amount: 42 },
+        response_body: { invoice: { status: "saved" } },
+        source_ref: "trace:postgres-proof-ledger-api-tool",
+      },
+      candidate_overrides: {
+        auth_scope: "invoice:write",
+        idempotency_key_location: "header",
+        rollback_strategy: "compensating_call",
+        postcondition: "invoice.status == 'saved'",
+        proof_claim_mapping: {
+          workspace_verified: "tenant.workspace_id",
+          checkride_passed: "dojo.checkride",
+        },
+        review_status: "approved",
+      },
+      requested_action: "run_workflow",
+      tool_name: "synthi_api_save_invoice",
+      auth_scopes: ["invoice:write"],
+      publish_to_skill: true,
+      reviewer_actor_id: "integration-api-tool-reviewer",
+      reviewer_actor_type: "human",
+      review_reason: "Reviewed API-backed tool before ledger revalidation coverage.",
+      review_evidence_refs: ["api-review:postgres-proof-ledger-tool"],
+      reviewed_at: "2026-06-11T00:06:10.000Z",
+      now: "2026-06-11T00:06:15.000Z",
+      sample_invocation_args: {
+        proof_capsule: issuedContent.proof_capsule,
+        request: { client_id: "client-a", amount: 42 },
+        query: { workspace: workspaceId },
+        idempotency_key: "idem-postgres-proof-ledger-api-sample",
+      },
+      ...tenantContext({
+        actor_id: "integration-api-tool-publisher",
+        actor_type: "human",
+        roles: ["agent", "dojo:api-tool:prepare", "dojo:api-tool:publish"],
+        request_id: "req-postgres-proof-api-tool-publish",
+        correlation_id: "corr-postgres-proof-api-tool-publish",
+      }),
+    });
+    expect(apiToolPublication?.isError).toBeUndefined();
+    expect(apiToolPublication?.structuredContent).toEqual(expect.objectContaining({
+      ready_for_promotion: true,
+      api_tool_publication: expect.objectContaining({
+        ok: true,
+        status: "published",
+        published_tool_name: "synthi_api_save_invoice",
+      }),
+    }));
+
+    const apiToolArgs = {
+      proof_capsule: issuedContent.proof_capsule,
+      request: { client_id: "client-a", amount: 42 },
+      query: { workspace: workspaceId },
+      idempotency_key: "idem-postgres-proof-ledger-api-run",
+    };
+    const successfulApiToolDryRun = await dispatchDojoTool("synthi_dojo_run_api_backed_tool", {
+      tool_name: "synthi_api_save_invoice",
+      tool_version: "1.0.0",
+      tool_args: apiToolArgs,
+      auth_scopes: ["invoice:write"],
+      dry_run: true,
+      now: "2026-06-11T00:06:20.000Z",
+      ...tenantContext({
+        actor_id: "integration-api-tool-runner",
+        roles: ["agent"],
+        request_id: "req-postgres-proof-api-tool-before-forge",
+        correlation_id: "corr-postgres-proof-api-tool-before-forge",
+      }),
+    });
+    expect(successfulApiToolDryRun?.isError).toBeUndefined();
+    expect(successfulApiToolDryRun?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: true,
+      skill_id: skillId,
+      tool_name: "synthi_api_save_invoice",
+      evidence_ledger_validation: expect.objectContaining({
+        evidence_record_ids: [evidenceRecord.record_id],
+        ledger_checkpoint_hash: evidenceRecord.ledger_head_hash,
+        evidence_claim_results: expect.arrayContaining([
+          expect.objectContaining({ ok: true, status: "verified" }),
+        ]),
+      }),
+      evidence_claim_results: expect.arrayContaining([
+        expect.objectContaining({ ok: true, status: "verified" }),
+      ]),
+      proof_consume: null,
+      blocked_by: [],
+    }));
+
     const forgedCheckpointId = `forged_${sha256(`${tenantId}:${workspaceId}:${skillId}:checkpoint`).slice(0, 24)}`;
     await pool.query(
       `INSERT INTO dojo_ledger_checkpoints (tenant_id, workspace_id, checkpoint_id, ledger_head_hash, record_count, created_at)
@@ -311,6 +406,32 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       error_codes: ["proof_evidence_claim_unverified"],
     }));
 
+    const rejectedApiToolRun = await dispatchDojoTool("synthi_dojo_run_api_backed_tool", {
+      tool_name: "synthi_api_save_invoice",
+      tool_version: "1.0.0",
+      tool_args: apiToolArgs,
+      auth_scopes: ["invoice:write"],
+      dry_run: false,
+      run_id: `api_run_after_forged_checkpoint_${sha256(`${tenantId}:${workspaceId}:${skillId}`).slice(0, 12)}`,
+      now: "2026-06-11T00:07:45.000Z",
+      ...tenantContext({
+        actor_id: "integration-api-tool-runner",
+        roles: ["agent"],
+        request_id: "req-postgres-proof-api-tool-after-forge",
+        correlation_id: "corr-postgres-proof-api-tool-after-forge",
+      }),
+    });
+    expect(rejectedApiToolRun?.isError).toBe(true);
+    expect(rejectedApiToolRun?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_evidence_ledger_resolution_failed",
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule_id: issuedContent.proof_capsule.capsule_id,
+      proof_not_consumed: true,
+      blocked_by: expect.arrayContaining(["evidence_checkpoint_record_count_mismatch"]),
+      error_codes: ["proof_evidence_claim_unverified"],
+    }));
+
     const proofRecordAfterRejectedRun = await pool.query<{ status: string; first_used_at: Date | null }>(
       `SELECT status, first_used_at
       FROM dojo_proof_records
@@ -322,7 +443,7 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       status: "issued",
       first_used_at: null,
     }));
-  });
+  }, 30_000);
 
   function tenantContext(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
