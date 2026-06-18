@@ -415,6 +415,42 @@ describe("Dojo Vivarium runner", () => {
     expect(result.graph_result.node_results.some((node) => node.node_id === "untargeted_action")).toBe(false);
   });
 
+  it("keeps postcondition assertion descendants when slicing targeted scenarios", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = {
+      ...toDojoScenarioDefinition(scenarioFixture({
+        mutation_kind: "baseline",
+        layer: "skill",
+        risk_tags: ["baseline"],
+      })),
+      target_graph_node_ids: ["target_action"],
+    };
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "targeted-assertion-graph-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: branchingGraphWithAssertionFixture(),
+      run_id: "scenario-run-targeted-assertion-graph",
+      now: "2026-06-11T00:00:01.000Z",
+    });
+
+    expect(result.graph_result.node_results.map((node) => node.node_id)).toEqual([
+      "trigger",
+      "target_action",
+      "target_assertion",
+    ]);
+    expect(result.graph_result.evidence_refs).toEqual([
+      "dojo-graph://scenario-run-targeted-assertion-graph/trigger",
+      "dojo-graph://scenario-run-targeted-assertion-graph/target_action",
+      "dojo-graph://scenario-run-targeted-assertion-graph/target_assertion",
+    ]);
+    expect(result.graph_result.node_results.some((node) => node.node_id === "untargeted_action")).toBe(false);
+  });
+
   it("blocks scenarios that reference missing target graph nodes", async () => {
     const runner = new DojoVivariumRunner();
     const definition = {
@@ -525,6 +561,41 @@ function branchingGraphFixture(): DojoSkillGraph {
         edge_id: "edge_trigger_target",
         from_node_id: "trigger",
         to_node_id: "target_action",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_trigger_untargeted",
+        from_node_id: "trigger",
+        to_node_id: "untargeted_action",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function branchingGraphWithAssertionFixture(): DojoSkillGraph {
+  return {
+    ...graphFixture(),
+    nodes: [
+      safeNode("trigger", "Trigger", "Skill invocation"),
+      safeNode("target_action", "Action", "Targeted synthetic action"),
+      safeNode("target_assertion", "Assertion", "Verify targeted postcondition"),
+      safeNode("untargeted_action", "Action", "Untargeted synthetic action"),
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_target",
+        from_node_id: "trigger",
+        to_node_id: "target_action",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_target_assertion",
+        from_node_id: "target_action",
+        to_node_id: "target_assertion",
         confidence: 1,
         observed_variants: [],
       },

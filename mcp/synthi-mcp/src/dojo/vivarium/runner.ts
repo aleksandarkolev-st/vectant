@@ -16,6 +16,8 @@ import {
   type DojoApiFaultServerState,
 } from "./api_fault_server.js";
 
+const TARGET_POSTCONDITION_DESCENDANT_KINDS = new Set<string>(["Assertion", "Artifact", "Rollback"]);
+
 export interface DojoMaterializedScenario {
   schema_version: "synthi.dojo.materializedScenario.v1";
   materialized_id: string;
@@ -345,6 +347,9 @@ function graphForScenarioTargets(
       if (!requiredNodeIds.has(edge.from_node_id)) queue.push(edge.from_node_id);
     }
   }
+  for (const nodeId of postconditionDescendantNodeIds(graph, targetIds, nodesById)) {
+    requiredNodeIds.add(nodeId);
+  }
 
   return {
     ok: true,
@@ -354,6 +359,38 @@ function graphForScenarioTargets(
       edges: graph.edges.filter((edge) => requiredNodeIds.has(edge.from_node_id) && requiredNodeIds.has(edge.to_node_id)),
     },
   };
+}
+
+function postconditionDescendantNodeIds(
+  graph: DojoSkillGraph,
+  targetIds: string[],
+  nodesById: Map<string, DojoSkillGraph["nodes"][number]>
+): Set<string> {
+  const outgoingEdgesBySource = new Map<string, DojoSkillGraph["edges"]>();
+  for (const edge of graph.edges) {
+    const outgoing = outgoingEdgesBySource.get(edge.from_node_id) ?? [];
+    outgoing.push(edge);
+    outgoingEdgesBySource.set(edge.from_node_id, outgoing);
+  }
+
+  const included = new Set<string>();
+  const queue = [...targetIds];
+  const visited = new Set<string>(targetIds);
+  while (queue.length > 0) {
+    const nodeId = queue.shift();
+    if (!nodeId) continue;
+    for (const edge of outgoingEdgesBySource.get(nodeId) ?? []) {
+      if (visited.has(edge.to_node_id)) continue;
+      visited.add(edge.to_node_id);
+      const child = nodesById.get(edge.to_node_id);
+      if (!child || !TARGET_POSTCONDITION_DESCENDANT_KINDS.has(child.kind)) {
+        continue;
+      }
+      included.add(child.node_id);
+      queue.push(child.node_id);
+    }
+  }
+  return included;
 }
 
 function cloneTenantContext(tenant: DojoTenantContext): DojoTenantContext {
