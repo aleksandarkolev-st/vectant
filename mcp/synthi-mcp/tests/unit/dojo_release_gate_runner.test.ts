@@ -49,6 +49,7 @@ describe("Dojo release gate runner", () => {
     expect(selectDojoReleaseGateIds(releaseManifest, { scope: "enterprise" })).toEqual(DOJO_ENTERPRISE_RELEASE_GATE_IDS);
     expect(selectDojoReleaseGateIds(releaseManifest, { scope: "nightly" })).toEqual(expect.arrayContaining([
       "dojo_chaos_performance_self_check",
+      "dojo_soak_performance_self_check",
       "soak_performance",
     ]));
     expect(selectDojoReleaseGateIds(releaseManifest, { scope: "nightly" })).not.toContain("workflow_e2e_hosted");
@@ -66,6 +67,7 @@ describe("Dojo release gate runner", () => {
     expect(plan.selected_gate_ids).not.toContain("workflow_e2e_hosted");
     expect(plan.selected_gate_ids).not.toContain("dojo_mcp_host_conformance");
     expect(plan.selected_gate_ids).not.toContain("security_abuse_suite");
+    expect(plan.selected_gate_ids).not.toContain("dojo_soak_performance_self_check");
     expect(plan.selected_gate_ids).not.toContain("soak_performance");
   });
 
@@ -82,6 +84,7 @@ describe("Dojo release gate runner", () => {
     expect(plan.selected_gate_ids).toEqual(expect.arrayContaining([
       ...releaseManifest.release_gate_ids,
       "dojo_chaos_performance_self_check",
+      "dojo_soak_performance_self_check",
       "soak_performance",
     ]));
     const tiers = new Set(plan.gates.map((gate) => gate.tier));

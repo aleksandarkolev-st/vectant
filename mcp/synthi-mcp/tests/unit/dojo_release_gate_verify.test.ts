@@ -43,6 +43,11 @@ import {
   DOJO_CHAOS_SCENARIOS,
 } from "../../scripts/dojo-chaos-performance-self-check.mjs";
 import {
+  DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES,
+  DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS,
+  DOJO_SOAK_PERFORMANCE_TEST_FILES,
+} from "../../scripts/dojo-soak-performance-self-check.mjs";
+import {
   DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
   DOJO_COMPLIANCE_EXPORT_TEST_FILES,
 } from "../../scripts/dojo-compliance-export-self-check.mjs";
@@ -159,12 +164,14 @@ import {
   validateDojoPostgresControlPlaneEvidenceForMilestone,
   validateDojoWorkflowPipelineE2EForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
+  validateDojoSoakPerformanceEvidenceForEnterprise,
   validateDojoComplianceExportEvidenceForRelease,
   validateDojoAffordanceCodemodEvidenceForRelease,
   validateDojoPrivacyRedactionEvidenceForRelease,
   validateDojoSecurityAbuseEvidenceForRelease,
   validateDojoSoakPerformanceSummary,
   verifyDojoChaosPerformanceEvidenceArtifact,
+  verifyDojoSoakPerformanceEvidenceArtifact,
   verifyDojoComplianceExportEvidenceArtifact,
   verifyDojoAffordanceCodemodEvidenceArtifact,
   verifyDojoAgentReadyUiContractEvidenceArtifact,
@@ -640,6 +647,7 @@ describe("Dojo release gate artifact verifier", () => {
     expect(fullCoverage.missing_verifiable_release_gate_ids).toEqual([]);
     expect(fullCoverage.failed_verifiable_release_gate_ids).toEqual([]);
     expect(fullCoverage.verified_release_gate_ids).toEqual(fullCoverage.verifiable_release_gate_ids);
+    expect(fullCoverage.verifiable_release_gate_ids).not.toContain("dojo_soak_performance_self_check");
     expect(fullCoverage.verifiable_release_gate_ids).not.toContain("soak_performance");
 
     const enterpriseCoverage = getVerifiableReleaseGateCoverage({
@@ -650,6 +658,7 @@ describe("Dojo release gate artifact verifier", () => {
     expect(enterpriseCoverage.missing_verifiable_release_gate_ids).toEqual([]);
     expect(enterpriseCoverage.verifiable_release_gate_ids).toEqual(expect.arrayContaining([
       "dojo_chaos_performance_self_check",
+      "dojo_soak_performance_self_check",
       "soak_performance",
     ]));
 
@@ -660,6 +669,7 @@ describe("Dojo release gate artifact verifier", () => {
     });
     expect(missingEnterpriseCoverage.missing_verifiable_release_gate_ids).toEqual(expect.arrayContaining([
       "dojo_chaos_performance_self_check",
+      "dojo_soak_performance_self_check",
       "soak_performance",
     ]));
 
@@ -2197,6 +2207,7 @@ describe("Dojo release gate artifact verifier", () => {
     const releaseGateRunnerReportPath = path.join(dir, "missing-enterprise-release-runner.json");
     const releaseGateRunnerEvidencePath = path.join(dir, "missing-enterprise-release-runner.evidence.json");
     const chaosEvidencePath = path.join(dir, "missing-chaos-performance.evidence.json");
+    const dojoSoakEvidencePath = path.join(dir, "missing-dojo-soak-performance.evidence.json");
     const soakSummaryPath = path.join(dir, "missing-soak-summary.json");
     const soakEventsPath = path.join(dir, "missing-soak-events.ndjson");
     const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
@@ -2211,6 +2222,7 @@ describe("Dojo release gate artifact verifier", () => {
         "release-gate-run-report": releaseGateRunnerReportPath,
         "release-gate-run-evidence": releaseGateRunnerEvidencePath,
         "chaos-performance-evidence": chaosEvidencePath,
+        "dojo-soak-performance-evidence": dojoSoakEvidencePath,
         "soak-summary": soakSummaryPath,
         "soak-events": soakEventsPath,
       },
@@ -2228,6 +2240,7 @@ describe("Dojo release gate artifact verifier", () => {
       `dojo_managed_key_signing_self_check:evidence_missing:${manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path}`,
       `dojo_graph_runtime_self_check:evidence_missing:${manifest.gates.find((gate) => gate.id === "dojo_graph_runtime_self_check").default_evidence_path}`,
       `dojo_chaos_performance_self_check:evidence_missing:${chaosEvidencePath}`,
+      `dojo_soak_performance_self_check:evidence_missing:${dojoSoakEvidencePath}`,
       `soak_performance:artifact_missing:${soakSummaryPath}`,
     ]));
     expect(verified.attempted_release_gate_ids).toEqual(expect.arrayContaining([
@@ -2238,6 +2251,7 @@ describe("Dojo release gate artifact verifier", () => {
       "dojo_managed_key_signing_self_check",
       "dojo_graph_runtime_self_check",
       "dojo_chaos_performance_self_check",
+      "dojo_soak_performance_self_check",
       "soak_performance",
     ]));
     expect(verified.failed_verifiable_release_gate_ids).toEqual(expect.arrayContaining([
@@ -2248,6 +2262,7 @@ describe("Dojo release gate artifact verifier", () => {
       "dojo_managed_key_signing_self_check",
       "dojo_graph_runtime_self_check",
       "dojo_chaos_performance_self_check",
+      "dojo_soak_performance_self_check",
       "soak_performance",
     ]));
     expect(verified.release_gate_verifier).toEqual([
@@ -2267,6 +2282,13 @@ describe("Dojo release gate artifact verifier", () => {
     expect(verified.chaos_performance).toEqual([
       expect.objectContaining({
         id: "dojo_chaos_performance_self_check",
+        ok: false,
+        enterprise_release: true,
+      }),
+    ]);
+    expect(verified.dojo_soak_performance).toEqual([
+      expect.objectContaining({
+        id: "dojo_soak_performance_self_check",
         ok: false,
         enterprise_release: true,
       }),
@@ -4550,6 +4572,124 @@ describe("Dojo release gate artifact verifier", () => {
     expect(tamperedJsonResult.errors).toEqual(expect.arrayContaining([
       expect.stringMatching(/^json_report_sha256_mismatch:/),
       expect.stringMatching(/^json_report_bytes_mismatch:/),
+    ]));
+  });
+
+  it("verifies Dojo-native soak performance evidence coverage, metrics, and event digests", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-native-soak-verify-"));
+    const evidencePath = await writeDojoSoakEvidenceFixture({ dir });
+
+    expect(validateDojoSoakPerformanceEvidenceForEnterprise(await readJson(evidencePath))).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoSoakPerformanceEvidenceArtifact({
+      evidencePath,
+      enterpriseRelease: true,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      enterprise_release: true,
+    }));
+
+    const missingOperationPath = await writeDojoSoakEvidenceFixture({
+      dir,
+      basename: "missing-operation-dojo-soak",
+      evidence: dojoSoakEvidenceFixture({
+        ok: false,
+        operation_coverage_complete: false,
+        missing_operation_classes: ["proof_validation"],
+        operation_coverage: DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES.map((operation) => ({
+          operation,
+          covered: operation !== "proof_validation",
+          sample_count: operation === "proof_validation" ? 0 : 2,
+          failed_sample_count: 0,
+        })),
+      }),
+    });
+    const missingOperation = await verifyDojoSoakPerformanceEvidenceArtifact({ evidencePath: missingOperationPath });
+    expect(missingOperation.errors).toEqual(expect.arrayContaining([
+      "dojo_soak_performance_not_ok",
+      "dojo_soak_performance_operation_coverage_incomplete",
+      "dojo_soak_performance_missing_operations:proof_validation",
+      "dojo_soak_performance_required_operations_missing:proof_validation",
+    ]));
+
+    const missingMetricPath = await writeDojoSoakEvidenceFixture({
+      dir,
+      basename: "missing-metric-dojo-soak",
+      evidence: dojoSoakEvidenceFixture({
+        release_metric_coverage_complete: false,
+        missing_release_metrics: ["proof_validation_p95_ms"],
+        release_metric_coverage: DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS
+          .filter((metric) => metric !== "proof_validation_p95_ms")
+          .map((metric) => ({
+            metric,
+            covered: true,
+            value: metric === "proof_replay_false_allow_count"
+              || metric === "browser_session_leak_count"
+              || metric === "false_block_rate"
+              ? 0
+              : 24,
+            sample_count: 2,
+          })),
+        performance_metrics: {
+          ...dojoSoakEvidenceFixture().performance_metrics,
+          dojo_metrics: {
+            ...dojoSoakEvidenceFixture().performance_metrics.dojo_metrics,
+            proof_validation_p95_ms: undefined,
+          },
+        },
+      }),
+    });
+    const missingMetric = await verifyDojoSoakPerformanceEvidenceArtifact({ evidencePath: missingMetricPath });
+    expect(missingMetric.errors).toEqual(expect.arrayContaining([
+      "dojo_soak_performance_metric_coverage_incomplete",
+      "dojo_soak_performance_missing_metrics:proof_validation_p95_ms",
+      "dojo_soak_performance_required_metrics_missing:proof_validation_p95_ms",
+      "dojo_soak_performance_metric_invalid:proof_validation_p95_ms",
+    ]));
+
+    const unsafeCountsPath = await writeDojoSoakEvidenceFixture({
+      dir,
+      basename: "unsafe-counts-dojo-soak",
+      evidence: dojoSoakEvidenceFixture({
+        proof_replay_false_allow_count: 1,
+        false_block_rate: 0.5,
+        performance_metrics: {
+          ...dojoSoakEvidenceFixture().performance_metrics,
+          dojo_metrics: {
+            ...dojoSoakEvidenceFixture().performance_metrics.dojo_metrics,
+            proof_replay_false_allow_count: 1,
+            false_block_rate: 0.5,
+            browser_session_leak_count: 1,
+          },
+        },
+      }),
+    });
+    const unsafeCounts = await verifyDojoSoakPerformanceEvidenceArtifact({ evidencePath: unsafeCountsPath });
+    expect(unsafeCounts.errors).toEqual(expect.arrayContaining([
+      "dojo_soak_performance_proof_replay_false_allow_count_nonzero:1",
+      "dojo_soak_performance_false_block_rate_nonzero:0.5",
+      "dojo_soak_performance_browser_session_leak_count_nonzero:1",
+    ]));
+
+    const tamperedEvents = path.join(dir, "tampered-dojo-soak-events.ndjson");
+    await writeFile(tamperedEvents, `${JSON.stringify({ ok: false })}\n`, "utf8");
+    const expectedEvents = `${dojoSoakEventsFixture().map((event) => JSON.stringify(event)).join("\n")}\n`;
+    const tamperedEventsPath = await writeDojoSoakEvidenceFixture({
+      dir,
+      basename: "tampered-events-dojo-soak",
+      evidence: dojoSoakEvidenceFixture({
+        events_path: tamperedEvents,
+        events_sha256: sha256(expectedEvents),
+        events_bytes: Buffer.byteLength(expectedEvents),
+      }),
+    });
+    const tamperedEventsResult = await verifyDojoSoakPerformanceEvidenceArtifact({ evidencePath: tamperedEventsPath });
+    expect(tamperedEventsResult.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^dojo_soak_events_sha256_mismatch:/),
+      expect.stringMatching(/^dojo_soak_events_bytes_mismatch:/),
     ]));
   });
 
@@ -8450,6 +8590,190 @@ function chaosRunnerReportFixtureText() {
       { ok: true, name: "vivarium_oracle#1", scenario: "vivarium_oracle" },
     ],
   }, null, 2);
+}
+
+async function writeDojoSoakEvidenceFixture({
+  dir,
+  basename = "dojo-soak-performance",
+  evidence,
+}) {
+  const stdout = "dojo soak suite passed\n";
+  const stderr = "";
+  const jsonReport = dojoSoakJsonReportFixtureText();
+  const events = dojoSoakEventsFixture();
+  const eventsText = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+  const stdoutPath = path.join(dir, `${basename}.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(dir, `${basename}.vitest.json`);
+  const eventsPath = path.join(dir, `${basename}.events.ndjson`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  await writeFile(eventsPath, eventsText, "utf8");
+  const body = evidence ?? dojoSoakEvidenceFixture({
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    json_report_path: jsonReportPath,
+    events_path: eventsPath,
+  });
+  const withArtifactDefaults = {
+    ...body,
+    stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
+    stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
+    json_report_path: body.json_report_path && body.json_report_path !== "vitest.json" ? body.json_report_path : jsonReportPath,
+    events_path: body.events_path && body.events_path !== "events.ndjson" ? body.events_path : eventsPath,
+    json_report_sha256: body.json_report_sha256 && body.json_report_sha256 !== "json-report-sha256" ? body.json_report_sha256 : sha256(jsonReport),
+    json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
+      ? body.json_report_bytes
+      : Buffer.byteLength(jsonReport),
+    events_sha256: body.events_sha256 && body.events_sha256 !== "events-sha256" ? body.events_sha256 : sha256(eventsText),
+    events_bytes: Number.isFinite(Number(body.events_bytes)) && Number(body.events_bytes) >= 0
+      ? body.events_bytes
+      : Buffer.byteLength(eventsText),
+  };
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(withArtifactDefaults, null, 2), "utf8");
+  return evidencePath;
+}
+
+function dojoSoakEvidenceFixture(overrides = {}) {
+  const stdout = "dojo soak suite passed\n";
+  const stderr = "";
+  const metricValues = Object.fromEntries(DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS.map((metric) => [
+    metric,
+    metric === "proof_replay_false_allow_count"
+      || metric === "browser_session_leak_count"
+      || metric === "false_block_rate"
+      ? 0
+      : 24,
+  ]));
+  return {
+    schema_version: "synthi.dojo.soakPerformanceEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    exit_code: 0,
+    duration_ms: 100,
+    duration_seconds: 0.1,
+    configured_iterations: 2,
+    iteration_count: 2,
+    event_count: DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES.length * 2,
+    errors: 0,
+    operation_classes: [...DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES],
+    operation_coverage: DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES.map((operation) => ({
+      operation,
+      covered: true,
+      sample_count: 2,
+      failed_sample_count: 0,
+    })),
+    operation_coverage_complete: true,
+    missing_operation_classes: [],
+    release_metric_coverage: DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS.map((metric) => ({
+      metric,
+      covered: true,
+      value: metricValues[metric],
+      sample_count: 2,
+      evidence_operation: null,
+    })),
+    release_metric_coverage_complete: true,
+    missing_release_metrics: [],
+    proof_replay_false_allow_count: 0,
+    false_block_rate: 0,
+    runtime_resources: {
+      source: "dojo_soak_runtime_session_accounting",
+      runtime_session_exercised: false,
+      browser_session_leak_count: 0,
+      frame_sink_leak_count: 0,
+    },
+    memory: {
+      source: "dojo_soak_event_process_memory_usage",
+      sample_count: DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES.length * 2,
+      rss_start_bytes: 100_000_000,
+      rss_end_bytes: 100_001_000,
+      rss_max_bytes: 100_001_000,
+      rss_growth_bytes: 1000,
+    },
+    performance_metrics: {
+      dojo_metrics: metricValues,
+      operation_latency_p95_ms: {
+        proof_validation: 12,
+        proof_replay_rejection: 13,
+        graph_node_execution: 24,
+        vivarium_scenario_runtime: 35,
+        wind_tunnel_budget: 7,
+        checkride_runtime: 44,
+        evidence_append: 9,
+      },
+      self_check_duration_ms: 100,
+      test_case_duration_p95_ms: 10,
+      test_file_duration_p95_ms: 10,
+    },
+    test_files: [...DOJO_SOAK_PERFORMANCE_TEST_FILES],
+    test_file_count: DOJO_SOAK_PERFORMANCE_TEST_FILES.length,
+    reported_test_file_count: DOJO_SOAK_PERFORMANCE_TEST_FILES.length,
+    test_summary: {
+      total_tests: 1,
+      passed_tests: 1,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    budget_evaluation: {
+      ok: true,
+      failed_checks: [],
+      checks: {
+        no_spawn_error: true,
+        exit_code_zero: true,
+        no_failed_tests: true,
+        iterations_completed: true,
+        operation_coverage_complete: true,
+        no_failed_operation_events: true,
+        release_metrics_complete: true,
+        proof_replay_false_allow_count_zero: true,
+        false_block_rate_zero: true,
+        browser_session_leak_count_zero: true,
+      },
+    },
+    stdout_path: "stdout.log",
+    stderr_path: "stderr.log",
+    json_report_path: "vitest.json",
+    json_report_sha256: "json-report-sha256",
+    json_report_bytes: undefined,
+    events_path: "events.ndjson",
+    events_sha256: "events-sha256",
+    events_bytes: undefined,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+}
+
+function dojoSoakJsonReportFixtureText() {
+  return JSON.stringify({
+    success: true,
+    numTotalTests: 1,
+    numPassedTests: 1,
+    numFailedTests: 0,
+    numPendingTests: 0,
+    testResults: [],
+  }, null, 2);
+}
+
+function dojoSoakEventsFixture() {
+  return [1, 2].flatMap((iteration) => DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES.map((operation, index) => ({
+    schema_version: "synthi.dojo.soakPerformanceEvent.v1",
+    iteration,
+    operation,
+    ok: true,
+    duration_ms: 5 + index,
+    started_at: "2026-06-11T00:00:00.000Z",
+    completed_at: "2026-06-11T00:00:00.010Z",
+    memory_rss_bytes: 100_000_000 + iteration * 500 + index,
+    details: {
+      false_block_count: 0,
+      proof_replay_false_allow_count: operation === "proof_replay_rejection" ? 0 : undefined,
+    },
+  })));
 }
 
 async function writeSoakFixture({

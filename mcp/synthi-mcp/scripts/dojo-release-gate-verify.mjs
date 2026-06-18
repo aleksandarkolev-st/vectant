@@ -52,6 +52,11 @@ import {
   DOJO_CHAOS_SCENARIOS,
 } from "./dojo-chaos-performance-self-check.mjs";
 import {
+  DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES,
+  DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS,
+  DOJO_SOAK_PERFORMANCE_TEST_FILES,
+} from "./dojo-soak-performance-self-check.mjs";
+import {
   DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
   DOJO_COMPLIANCE_EXPORT_TEST_FILES,
 } from "./dojo-compliance-export-self-check.mjs";
@@ -174,6 +179,7 @@ const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-ab
 const DEFAULT_COMPLIANCE_EXPORT_DIR = path.join(REPO_ROOT, "tmp", "dojo-compliance-export");
 const DEFAULT_PRIVACY_REDACTION_DIR = path.join(REPO_ROOT, "tmp", "dojo-privacy-redaction");
 const DEFAULT_CHAOS_PERFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-chaos-performance");
+const DEFAULT_DOJO_SOAK_PERFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-soak-performance");
 const DEFAULT_SOAK_DIR = path.join(MCP_ROOT, ".soak");
 
 const args = parseArgs(process.argv.slice(2));
@@ -868,6 +874,22 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     })));
   }
 
+  const dojoSoakPerformanceResults = [];
+  if (enterpriseRelease || truthy(args["include-dojo-soak-performance"]) || args["dojo-soak-performance-evidence"]) {
+    const dojoSoakGate = findGate(manifest, "dojo_soak_performance_self_check") || {};
+    const evidencePath = resolveRepoPath(args["dojo-soak-performance-evidence"]
+      || dojoSoakGate.default_evidence_path
+      || path.join(DEFAULT_DOJO_SOAK_PERFORMANCE_DIR, "dojo-soak-performance.evidence.json"));
+    dojoSoakPerformanceResults.push(await verifyArtifactSection({
+      id: "dojo_soak_performance_self_check",
+      evidencePath,
+      enterpriseRelease,
+    }, () => verifyDojoSoakPerformanceEvidenceArtifact({
+      evidencePath,
+      enterpriseRelease,
+    })));
+  }
+
   const soakPerformanceResults = [];
   if (enterpriseRelease || args["soak-summary"]) {
     const summaryPath = resolveRepoPath(args["soak-summary"] || path.join(DEFAULT_SOAK_DIR, "soak-summary.json"));
@@ -882,10 +904,10 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       eventsPath,
       enterpriseRelease,
       minDurationSeconds: parseOptionalNumber(args["min-soak-duration-s"]),
-    })));
+      })));
   }
 
-  const sections = [manifestResult, ...releaseGateRunnerResults, ...releaseGateVerifierResults, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...releaseGateRunnerResults, ...releaseGateVerifierResults, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...dojoSoakPerformanceResults, ...soakPerformanceResults];
   const releaseGateCoverage = getVerifiableReleaseGateCoverage({
     manifest,
     sections,
@@ -937,6 +959,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     compliance_export: complianceExportResults.map(summarizeSection),
     privacy_redaction: privacyRedactionResults.map(summarizeSection),
     chaos_performance: chaosPerformanceResults.map(summarizeSection),
+    dojo_soak_performance: dojoSoakPerformanceResults.map(summarizeSection),
     soak_performance: soakPerformanceResults.map(summarizeSection),
   };
 }
@@ -964,6 +987,7 @@ export function buildDojoReleaseGateVerificationEvidenceManifest({ report, repor
     release_gate_runner_section_count: Array.isArray(report?.release_gate_runner) ? report.release_gate_runner.length : 0,
     release_gate_verifier_section_count: Array.isArray(report?.release_gate_verifier) ? report.release_gate_verifier.length : 0,
     chaos_performance_section_count: Array.isArray(report?.chaos_performance) ? report.chaos_performance.length : 0,
+    dojo_soak_performance_section_count: Array.isArray(report?.dojo_soak_performance) ? report.dojo_soak_performance.length : 0,
     soak_performance_section_count: Array.isArray(report?.soak_performance) ? report.soak_performance.length : 0,
   };
 }
@@ -4573,6 +4597,114 @@ export function validateDojoChaosPerformanceEvidenceForEnterprise(evidence) {
   };
 }
 
+export async function verifyDojoSoakPerformanceEvidenceArtifact({
+  evidencePath,
+  enterpriseRelease = false,
+}) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoSoakPerformanceEvidenceForEnterprise(evidence).errors;
+  errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  errors.push(...await validateDigestReferencedFile({
+    label: "dojo_soak_events",
+    filePath: evidence?.events_path,
+    expectedSha256: evidence?.events_sha256,
+    expectedBytes: evidence?.events_bytes,
+    evidencePath,
+  }));
+  return {
+    id: "dojo_soak_performance_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    enterprise_release: Boolean(enterpriseRelease),
+    report_schema_version: evidence?.schema_version ?? null,
+    result_count: Number(evidence?.event_count || 0),
+  };
+}
+
+export function validateDojoSoakPerformanceEvidenceForEnterprise(evidence) {
+  const errors = [];
+  if (evidence?.schema_version !== "synthi.dojo.soakPerformanceEvidence.v1") {
+    errors.push(`dojo_soak_performance_schema_mismatch:${evidence?.schema_version || "missing"}`);
+  }
+  if (evidence?.ok !== true) errors.push("dojo_soak_performance_not_ok");
+  if (Number(evidence?.exit_code) !== 0) errors.push(`dojo_soak_performance_exit_code:${evidence?.exit_code ?? "missing"}`);
+  if (Number(evidence?.iteration_count || 0) <= 0) errors.push("dojo_soak_performance_iterations_missing");
+  if (Number(evidence?.iteration_count || 0) !== Number(evidence?.configured_iterations || 0)) {
+    errors.push(`dojo_soak_performance_iteration_count_mismatch:${evidence?.iteration_count ?? "missing"}:${evidence?.configured_iterations ?? "missing"}`);
+  }
+  if (Number(evidence?.errors || 0) !== 0) errors.push(`dojo_soak_performance_errors_nonzero:${evidence?.errors ?? "missing"}`);
+  if (evidence?.operation_coverage_complete !== true) errors.push("dojo_soak_performance_operation_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_operation_classes) && evidence.missing_operation_classes.length > 0) {
+    errors.push(`dojo_soak_performance_missing_operations:${evidence.missing_operation_classes.join(",")}`);
+  }
+  const operationCoverage = Array.isArray(evidence?.operation_coverage) ? evidence.operation_coverage : [];
+  const coveredOperations = operationCoverage
+    .filter((item) => item?.covered === true)
+    .map((item) => String(item.operation || ""));
+  const missingRequiredOperations = DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES
+    .filter((operation) => !coveredOperations.includes(operation));
+  if (missingRequiredOperations.length > 0) {
+    errors.push(`dojo_soak_performance_required_operations_missing:${missingRequiredOperations.join(",")}`);
+  }
+  for (const item of operationCoverage) {
+    if (Number(item?.failed_sample_count || 0) !== 0) {
+      errors.push(`dojo_soak_performance_operation_failed_samples:${item.operation}:${item.failed_sample_count}`);
+    }
+    if (Number(item?.sample_count || 0) <= 0 && DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES.includes(String(item?.operation))) {
+      errors.push(`dojo_soak_performance_operation_samples_missing:${item.operation}`);
+    }
+  }
+  errors.push(...validateRequiredEvidenceTestFiles({
+    evidence,
+    requiredTestFiles: DOJO_SOAK_PERFORMANCE_TEST_FILES,
+    prefix: "dojo_soak_performance",
+  }));
+  if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
+    errors.push(`dojo_soak_performance_failed_tests:${evidence.test_summary.failed_tests}`);
+  }
+  if (Number(evidence?.test_summary?.pending_tests || 0) !== 0) {
+    errors.push(`dojo_soak_performance_pending_tests:${evidence.test_summary.pending_tests}`);
+  }
+  if (Number(evidence?.test_summary?.total_tests || 0) <= 0) errors.push("dojo_soak_performance_no_reported_tests");
+  if (evidence?.budget_evaluation?.ok !== true) errors.push("dojo_soak_performance_budget_not_ok");
+  const failedChecks = Array.isArray(evidence?.budget_evaluation?.failed_checks)
+    ? evidence.budget_evaluation.failed_checks
+    : [];
+  if (failedChecks.length > 0) errors.push(`dojo_soak_performance_budget_failed_checks:${failedChecks.join(",")}`);
+  const metricCoverage = Array.isArray(evidence?.release_metric_coverage) ? evidence.release_metric_coverage : [];
+  const metricNames = metricCoverage
+    .map((item) => String(item?.metric || ""))
+    .filter(Boolean);
+  if (evidence?.release_metric_coverage_complete !== true) errors.push("dojo_soak_performance_metric_coverage_incomplete");
+  if (Array.isArray(evidence?.missing_release_metrics) && evidence.missing_release_metrics.length > 0) {
+    errors.push(`dojo_soak_performance_missing_metrics:${evidence.missing_release_metrics.join(",")}`);
+  }
+  const missingRequiredMetrics = DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS
+    .filter((metric) => !metricNames.includes(metric));
+  if (missingRequiredMetrics.length > 0) {
+    errors.push(`dojo_soak_performance_required_metrics_missing:${missingRequiredMetrics.join(",")}`);
+  }
+  const dojoMetrics = evidence?.performance_metrics?.dojo_metrics ?? {};
+  for (const metric of DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS) {
+    const value = Number(dojoMetrics[metric]);
+    if (!Number.isFinite(value) || value < 0) errors.push(`dojo_soak_performance_metric_invalid:${metric}`);
+  }
+  if (Number(dojoMetrics.proof_replay_false_allow_count) !== 0) {
+    errors.push(`dojo_soak_performance_proof_replay_false_allow_count_nonzero:${dojoMetrics.proof_replay_false_allow_count ?? "missing"}`);
+  }
+  if (Number(dojoMetrics.false_block_rate) !== 0) {
+    errors.push(`dojo_soak_performance_false_block_rate_nonzero:${dojoMetrics.false_block_rate ?? "missing"}`);
+  }
+  if (Number(dojoMetrics.browser_session_leak_count) !== 0) {
+    errors.push(`dojo_soak_performance_browser_session_leak_count_nonzero:${dojoMetrics.browser_session_leak_count ?? "missing"}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
 export async function verifyDojoSoakPerformanceArtifacts({
   summaryPath,
   eventsPath,
@@ -6114,6 +6246,47 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
   assert(rejectedChaos.errors.includes("chaos_performance_scenario_coverage_incomplete"));
   assert(rejectedChaos.errors.includes("chaos_performance_missing_scenarios:api_timeout"));
 
+  const dojoSoakDir = path.join(outDir, "dojo-soak-performance");
+  await mkdir(dojoSoakDir, { recursive: true });
+  const dojoSoakArtifacts = await writeDojoSoakEvidenceForSelfCheck({ outDir: dojoSoakDir });
+  const dojoSoakResult = await verifyDojoSoakPerformanceEvidenceArtifact({
+    evidencePath: dojoSoakArtifacts.evidence_path,
+    enterpriseRelease: true,
+  });
+  assert.equal(dojoSoakResult.ok, true, dojoSoakResult.errors.join(";"));
+  const rejectedDojoSoakArtifacts = await writeDojoSoakEvidenceForSelfCheck({
+    outDir: dojoSoakDir,
+    basename: "dojo-soak-performance-rejected",
+    overrides: {
+      ok: false,
+      operation_coverage_complete: false,
+      missing_operation_classes: ["proof_validation"],
+      proof_replay_false_allow_count: 1,
+      false_block_rate: 0.25,
+      budget_evaluation: {
+        ok: false,
+        failed_checks: ["operation_coverage_complete", "proof_replay_false_allow_count_zero"],
+      },
+      performance_metrics: {
+        dojo_metrics: {
+          ...Object.fromEntries(DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS.map((metric) => [metric, 12])),
+          proof_replay_false_allow_count: 1,
+          false_block_rate: 0.25,
+          browser_session_leak_count: 0,
+        },
+        operation_latency_p95_ms: {},
+        self_check_duration_ms: 100,
+      },
+    },
+  });
+  const rejectedDojoSoak = await verifyDojoSoakPerformanceEvidenceArtifact({
+    evidencePath: rejectedDojoSoakArtifacts.evidence_path,
+    enterpriseRelease: true,
+  });
+  assert(rejectedDojoSoak.errors.includes("dojo_soak_performance_operation_coverage_incomplete"));
+  assert(rejectedDojoSoak.errors.includes("dojo_soak_performance_missing_operations:proof_validation"));
+  assert(rejectedDojoSoak.errors.includes("dojo_soak_performance_proof_replay_false_allow_count_nonzero:1"));
+
   const soakDir = path.join(outDir, "soak");
   await mkdir(soakDir, { recursive: true });
   const soakArtifacts = await writeSoakArtifactsForSelfCheck({ outDir: soakDir });
@@ -6177,6 +6350,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
       summarizeSection(complianceResult),
       summarizeSection(privacyResult),
       summarizeSection(chaosResult),
+      summarizeSection(dojoSoakResult),
       summarizeSection(soakResult),
     ],
     rejected_controls: [
@@ -6209,6 +6383,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
       summarizeSection(rejectedCompliance),
       summarizeSection(rejectedPrivacy),
       summarizeSection(rejectedChaos),
+      summarizeSection(rejectedDojoSoak),
       summarizeSection(rejectedSoak),
     ],
   };
@@ -9695,6 +9870,163 @@ async function writeChaosEvidenceForSelfCheck({
     evidence_path: evidencePath,
     evidence,
   };
+}
+
+async function writeDojoSoakEvidenceForSelfCheck({
+  outDir,
+  basename = "dojo-soak-performance",
+  overrides = {},
+}) {
+  const stdout = "dojo soak performance preflight passed\n";
+  const stderr = "";
+  const jsonReport = JSON.stringify({ success: true, numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, testResults: [] }, null, 2);
+  const events = defaultDojoSoakEvents();
+  const eventsText = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+  const stdoutPath = path.join(outDir, `${basename}.stdout.log`);
+  const stderrPath = path.join(outDir, `${basename}.stderr.log`);
+  const jsonReportPath = path.join(outDir, `${basename}.vitest.json`);
+  const eventsPath = path.join(outDir, `${basename}.events.ndjson`);
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  await writeFile(jsonReportPath, jsonReport, "utf8");
+  await writeFile(eventsPath, eventsText, "utf8");
+  const operationCoverage = DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES.map((operation) => ({
+    operation,
+    covered: true,
+    sample_count: 2,
+    failed_sample_count: 0,
+  }));
+  const metricValues = {
+    proof_validation_p95_ms: 12,
+    proof_replay_rejection_p95_ms: 13,
+    proof_replay_false_allow_count: 0,
+    graph_node_execution_p95_ms: 24,
+    vivarium_scenario_runtime_p95_ms: 35,
+    wind_tunnel_budget_adherence_p95_ms: 7,
+    checkride_runtime_p95_ms: 44,
+    evidence_append_p95_ms: 9,
+    memory_growth_bytes: 1000,
+    browser_session_leak_count: 0,
+    false_block_rate: 0,
+  };
+  const evidence = {
+    schema_version: "synthi.dojo.soakPerformanceEvidence.v1",
+    generated_at: new Date().toISOString(),
+    ok: true,
+    exit_code: 0,
+    duration_ms: 100,
+    duration_seconds: 0.1,
+    configured_iterations: 2,
+    iteration_count: 2,
+    event_count: events.length,
+    errors: 0,
+    operation_classes: [...DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES],
+    operation_coverage: operationCoverage,
+    operation_coverage_complete: true,
+    missing_operation_classes: [],
+    release_metric_coverage: DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS.map((metric) => ({
+      metric,
+      covered: true,
+      value: metricValues[metric],
+      sample_count: 2,
+      evidence_operation: null,
+    })),
+    release_metric_coverage_complete: true,
+    missing_release_metrics: [],
+    proof_replay_false_allow_count: 0,
+    false_block_rate: 0,
+    runtime_resources: {
+      source: "dojo_soak_runtime_session_accounting",
+      runtime_session_exercised: false,
+      browser_session_leak_count: 0,
+      frame_sink_leak_count: 0,
+    },
+    memory: {
+      source: "dojo_soak_event_process_memory_usage",
+      sample_count: events.length,
+      rss_start_bytes: 100_000_000,
+      rss_end_bytes: 100_001_000,
+      rss_max_bytes: 100_001_000,
+      rss_growth_bytes: 1000,
+    },
+    performance_metrics: {
+      dojo_metrics: metricValues,
+      operation_latency_p95_ms: {
+        proof_validation: 12,
+        proof_replay_rejection: 13,
+        graph_node_execution: 24,
+        vivarium_scenario_runtime: 35,
+        wind_tunnel_budget: 7,
+        checkride_runtime: 44,
+        evidence_append: 9,
+      },
+      self_check_duration_ms: 100,
+      test_case_duration_p95_ms: 10,
+      test_file_duration_p95_ms: 10,
+    },
+    test_files: [...DOJO_SOAK_PERFORMANCE_TEST_FILES],
+    test_file_count: DOJO_SOAK_PERFORMANCE_TEST_FILES.length,
+    reported_test_file_count: DOJO_SOAK_PERFORMANCE_TEST_FILES.length,
+    test_summary: {
+      total_tests: 1,
+      passed_tests: 1,
+      failed_tests: 0,
+      pending_tests: 0,
+    },
+    budget_evaluation: {
+      ok: true,
+      failed_checks: [],
+      checks: {
+        no_spawn_error: true,
+        exit_code_zero: true,
+        no_failed_tests: true,
+        iterations_completed: true,
+        operation_coverage_complete: true,
+        no_failed_operation_events: true,
+        release_metrics_complete: true,
+        proof_replay_false_allow_count_zero: true,
+        false_block_rate_zero: true,
+        browser_session_leak_count_zero: true,
+      },
+    },
+    events_path: eventsPath,
+    events_sha256: sha256(eventsText),
+    events_bytes: Buffer.byteLength(eventsText),
+    json_report_path: jsonReportPath,
+    json_report_sha256: sha256(jsonReport),
+    json_report_bytes: Buffer.byteLength(jsonReport),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    ...overrides,
+  };
+  const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidence_path: evidencePath,
+    evidence,
+  };
+}
+
+function defaultDojoSoakEvents() {
+  const operations = DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES;
+  return [1, 2].flatMap((iteration) => operations.map((operation, index) => ({
+    schema_version: "synthi.dojo.soakPerformanceEvent.v1",
+    iteration,
+    operation,
+    ok: true,
+    duration_ms: 5 + index,
+    started_at: "2026-06-11T00:00:00.000Z",
+    completed_at: "2026-06-11T00:00:00.010Z",
+    memory_rss_bytes: 100_000_000 + iteration * 500 + index,
+    details: {
+      proof_replay_false_allow_count: operation === "proof_replay_rejection" ? 0 : undefined,
+      false_block_count: 0,
+    },
+  })));
 }
 
 async function writeSoakArtifactsForSelfCheck({

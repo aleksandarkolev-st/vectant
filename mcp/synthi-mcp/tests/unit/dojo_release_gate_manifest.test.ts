@@ -42,6 +42,11 @@ import {
   DOJO_CHAOS_SCENARIOS,
 } from "../../scripts/dojo-chaos-performance-self-check.mjs";
 import {
+  DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES,
+  DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS,
+  DOJO_SOAK_PERFORMANCE_TEST_FILES,
+} from "../../scripts/dojo-soak-performance-self-check.mjs";
+import {
   DOJO_COMPLIANCE_EXPORT_CAPABILITIES,
   DOJO_COMPLIANCE_EXPORT_TEST_FILES,
 } from "../../scripts/dojo-compliance-export-self-check.mjs";
@@ -159,6 +164,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
     "proof:dojo:privacy-redaction:self-check": "node scripts/dojo-privacy-redaction-self-check.mjs",
     "proof:dojo:chaos-performance:self-check": "node scripts/dojo-chaos-performance-self-check.mjs",
+    "proof:dojo:soak-performance:self-check": "node scripts/dojo-soak-performance-self-check.mjs",
     "proof:dojo:public-proof-verification:self-check": "node scripts/dojo-public-proof-verification-self-check.mjs",
     "live:browser:workflow-pipeline": "node scripts/workflow-pipeline-e2e.mjs",
     "live:browser:private-tool-stdio": "node scripts/private-tool-stdio-acceptance.mjs",
@@ -215,6 +221,7 @@ describe("Dojo release gate manifest", () => {
     expect(manifest.enterprise_release_gate_ids).toEqual(expect.arrayContaining([
       ...DOJO_RELEASE_GATE_IDS,
       "dojo_chaos_performance_self_check",
+      "dojo_soak_performance_self_check",
       "soak_performance",
     ]));
     expect(manifest.policy.every_pr_requires).toEqual(["T0", "T1"]);
@@ -1105,6 +1112,29 @@ describe("Dojo release gate manifest", () => {
         }),
       }),
       expect.objectContaining({
+        id: "dojo_soak_performance_self_check",
+        tier: "T8",
+        package_script: "proof:dojo:soak-performance:self-check",
+        script_exists: true,
+        evidence_schema_version: "synthi.dojo.soakPerformanceEvidence.v1",
+        default_evidence_path: "tmp/dojo-soak-performance/dojo-soak-performance.evidence.json",
+        enterprise_artifact_requirements: expect.objectContaining({
+          require_all_operation_classes_covered: true,
+          required_operation_classes: DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES,
+          required_test_files: DOJO_SOAK_PERFORMANCE_TEST_FILES,
+          require_no_failed_tests: true,
+          require_no_failed_operation_events: true,
+          require_dojo_soak_metrics: true,
+          required_dojo_soak_metrics: DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS,
+          require_zero_proof_replay_false_allow_count: true,
+          require_zero_false_block_rate: true,
+          require_zero_browser_session_leak_count: true,
+          require_event_digest_match: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "soak_performance",
         tier: "T8",
         package_script: "soak",
@@ -1137,10 +1167,10 @@ describe("Dojo release gate manifest", () => {
 
     const brokenEnterpriseRelease = JSON.parse(JSON.stringify(manifest));
     brokenEnterpriseRelease.enterprise_release_gate_ids = brokenEnterpriseRelease.enterprise_release_gate_ids
-      .filter((id) => !["workflow_e2e_hosted", "dojo_chaos_performance_self_check", "soak_performance"].includes(id));
+      .filter((id) => !["workflow_e2e_hosted", "dojo_chaos_performance_self_check", "dojo_soak_performance_self_check", "soak_performance"].includes(id));
     expect(validateDojoReleaseGateManifest(brokenEnterpriseRelease, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "enterprise_release_missing_release_gate_ids:workflow_e2e_hosted",
-      "enterprise_release_missing_required_gate_ids:dojo_chaos_performance_self_check,soak_performance",
+      "enterprise_release_missing_required_gate_ids:dojo_chaos_performance_self_check,dojo_soak_performance_self_check,soak_performance",
       "enterprise_release_missing_T8",
     ]));
 
@@ -1815,6 +1845,27 @@ describe("Dojo release gate manifest", () => {
       "chaos_performance_missing_required_dojo_release_metrics:proof_validation_p95_ms",
     ]));
 
+    const brokenDojoSoak = JSON.parse(JSON.stringify(manifest));
+    const dojoSoakGate = brokenDojoSoak.gates.find((gate) => gate.id === "dojo_soak_performance_self_check");
+    const missingDojoSoakTestFile = DOJO_SOAK_PERFORMANCE_TEST_FILES[0];
+    dojoSoakGate.enterprise_artifact_requirements.required_operation_classes = DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES
+      .filter((operation) => operation !== "proof_validation");
+    dojoSoakGate.enterprise_artifact_requirements.required_test_files = DOJO_SOAK_PERFORMANCE_TEST_FILES
+      .filter((file) => file !== missingDojoSoakTestFile);
+    dojoSoakGate.enterprise_artifact_requirements.required_dojo_soak_metrics = DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS
+      .filter((metric) => metric !== "proof_validation_p95_ms");
+    dojoSoakGate.enterprise_artifact_requirements.require_no_failed_operation_events = false;
+    dojoSoakGate.enterprise_artifact_requirements.require_dojo_soak_metrics = false;
+    dojoSoakGate.enterprise_artifact_requirements.require_event_digest_match = false;
+    expect(validateDojoReleaseGateManifest(brokenDojoSoak, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "dojo_soak_performance_missing_required_operation_classes:proof_validation",
+      `dojo_soak_performance_missing_required_test_files:${missingDojoSoakTestFile}`,
+      "dojo_soak_performance_missing_no_failed_operation_events_requirement",
+      "dojo_soak_performance_missing_dojo_soak_metrics_requirement",
+      "dojo_soak_performance_missing_required_dojo_soak_metrics:proof_validation_p95_ms",
+      "dojo_soak_performance_missing_event_digest_requirement",
+    ]));
+
     const brokenSoak = JSON.parse(JSON.stringify(manifest));
     const soakGate = brokenSoak.gates.find((gate) => gate.id === "soak_performance");
     soakGate.enterprise_artifact_requirements.require_zero_errors = false;
@@ -1834,6 +1885,7 @@ describe("Dojo release gate manifest", () => {
 
     expect(new Set(manifest.minimal_pr_gate_ids.map((id) => gatesById.get(id)?.tier))).toEqual(new Set(["T0", "T1"]));
     expect(manifest.minimal_pr_gate_ids).not.toContain("dojo_mcp_host_conformance");
+    expect(manifest.minimal_pr_gate_ids).not.toContain("dojo_soak_performance_self_check");
     expect(manifest.minimal_pr_gate_ids).not.toContain("soak_performance");
     expect(manifest.release_gate_ids).toEqual(expect.arrayContaining([
       "dojo_implementation_status_self_check",
@@ -1858,10 +1910,12 @@ describe("Dojo release gate manifest", () => {
       "compliance_export_suite",
       "privacy_redaction_suite",
     ]));
+    expect(manifest.release_gate_ids).not.toContain("dojo_soak_performance_self_check");
     expect(manifest.release_gate_ids).not.toContain("soak_performance");
     expect(manifest.enterprise_release_gate_ids).toEqual(expect.arrayContaining([
       ...manifest.release_gate_ids,
       "dojo_chaos_performance_self_check",
+      "dojo_soak_performance_self_check",
       "soak_performance",
     ]));
   });

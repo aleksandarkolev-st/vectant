@@ -38,6 +38,11 @@ import {
   DOJO_CHAOS_SCENARIOS,
 } from "./dojo-chaos-performance-self-check.mjs";
 import {
+  DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES,
+  DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS,
+  DOJO_SOAK_PERFORMANCE_TEST_FILES,
+} from "./dojo-soak-performance-self-check.mjs";
+import {
   DOJO_DOCKER_HEALTHY_SERVICES,
   DOJO_DOCKER_REQUIRED_ENDPOINTS,
   DOJO_DOCKER_REQUIRED_SERVICES,
@@ -1417,6 +1422,33 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       required_dojo_release_metrics: [...DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS],
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
+    },
+  },
+  {
+    id: "dojo_soak_performance_self_check",
+    tier: "T8",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:soak-performance:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:soak-performance:self-check",
+    required_for: ["nightly", "enterprise_release"],
+    evidence_kind: "metrics",
+    evidence_schema_version: "synthi.dojo.soakPerformanceEvidence.v1",
+    default_evidence_path: "tmp/dojo-soak-performance/dojo-soak-performance.evidence.json",
+    enterprise_artifact_requirements: {
+      require_all_operation_classes_covered: true,
+      required_operation_classes: [...DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES],
+      required_test_files: [...DOJO_SOAK_PERFORMANCE_TEST_FILES],
+      require_no_failed_tests: true,
+      require_no_failed_operation_events: true,
+      require_performance_metrics: true,
+      require_dojo_soak_metrics: true,
+      required_dojo_soak_metrics: [...DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS],
+      require_zero_proof_replay_false_allow_count: true,
+      require_zero_false_block_rate: true,
+      require_zero_browser_session_leak_count: true,
+      require_event_digest_match: true,
+      require_json_report_digest_match: true,
+      require_stdout_stderr_digest_match: true,
     },
   },
   {
@@ -3220,6 +3252,61 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       errors.push("chaos_performance_missing_json_report_digest_requirement");
     }
   }
+  const dojoSoakPerformanceGate = gates.find((gate) => gate.id === "dojo_soak_performance_self_check");
+  if (dojoSoakPerformanceGate) {
+    if (dojoSoakPerformanceGate.evidence_schema_version !== "synthi.dojo.soakPerformanceEvidence.v1") {
+      errors.push("dojo_soak_performance_missing_evidence_schema");
+    }
+    if (!dojoSoakPerformanceGate.default_evidence_path) errors.push("dojo_soak_performance_missing_default_evidence_path");
+    if (!dojoSoakPerformanceGate.enterprise_artifact_requirements?.require_all_operation_classes_covered) {
+      errors.push("dojo_soak_performance_missing_operation_requirement");
+    }
+    const missingOperationClasses = missingRequiredEntries(
+      DOJO_SOAK_PERFORMANCE_OPERATION_CLASSES,
+      dojoSoakPerformanceGate.enterprise_artifact_requirements?.required_operation_classes,
+    );
+    if (missingOperationClasses.length > 0) {
+      errors.push(`dojo_soak_performance_missing_required_operation_classes:${missingOperationClasses.join(",")}`);
+    }
+    const missingSoakTestFiles = missingRequiredEntries(
+      DOJO_SOAK_PERFORMANCE_TEST_FILES,
+      dojoSoakPerformanceGate.enterprise_artifact_requirements?.required_test_files,
+    );
+    if (missingSoakTestFiles.length > 0) {
+      errors.push(`dojo_soak_performance_missing_required_test_files:${missingSoakTestFiles.join(",")}`);
+    }
+    if (!dojoSoakPerformanceGate.enterprise_artifact_requirements?.require_no_failed_tests) {
+      errors.push("dojo_soak_performance_missing_no_failed_tests_requirement");
+    }
+    if (!dojoSoakPerformanceGate.enterprise_artifact_requirements?.require_no_failed_operation_events) {
+      errors.push("dojo_soak_performance_missing_no_failed_operation_events_requirement");
+    }
+    if (!dojoSoakPerformanceGate.enterprise_artifact_requirements?.require_dojo_soak_metrics) {
+      errors.push("dojo_soak_performance_missing_dojo_soak_metrics_requirement");
+    }
+    const missingSoakMetrics = missingRequiredEntries(
+      DOJO_SOAK_PERFORMANCE_REQUIRED_METRICS,
+      dojoSoakPerformanceGate.enterprise_artifact_requirements?.required_dojo_soak_metrics,
+    );
+    if (missingSoakMetrics.length > 0) {
+      errors.push(`dojo_soak_performance_missing_required_dojo_soak_metrics:${missingSoakMetrics.join(",")}`);
+    }
+    if (!dojoSoakPerformanceGate.enterprise_artifact_requirements?.require_zero_proof_replay_false_allow_count) {
+      errors.push("dojo_soak_performance_missing_replay_false_allow_requirement");
+    }
+    if (!dojoSoakPerformanceGate.enterprise_artifact_requirements?.require_zero_false_block_rate) {
+      errors.push("dojo_soak_performance_missing_false_block_requirement");
+    }
+    if (!dojoSoakPerformanceGate.enterprise_artifact_requirements?.require_zero_browser_session_leak_count) {
+      errors.push("dojo_soak_performance_missing_leak_counter_requirement");
+    }
+    if (!dojoSoakPerformanceGate.enterprise_artifact_requirements?.require_event_digest_match) {
+      errors.push("dojo_soak_performance_missing_event_digest_requirement");
+    }
+    if (!dojoSoakPerformanceGate.enterprise_artifact_requirements?.require_json_report_digest_match) {
+      errors.push("dojo_soak_performance_missing_json_report_digest_requirement");
+    }
+  }
   const soakPerformanceGate = gates.find((gate) => gate.id === "soak_performance");
   if (soakPerformanceGate) {
     if (!soakPerformanceGate.default_summary_path) errors.push("soak_performance_missing_default_summary_path");
@@ -3449,8 +3536,10 @@ export async function runSelfCheck({ outDir }) {
     assert(manifest.enterprise_release_gate_ids.includes(gateId), `enterprise_release_missing_release_gate:${gateId}`);
   }
   assert(manifest.enterprise_release_gate_ids.includes("dojo_chaos_performance_self_check"));
+  assert(manifest.enterprise_release_gate_ids.includes("dojo_soak_performance_self_check"));
   assert(manifest.enterprise_release_gate_ids.includes("soak_performance"));
   assert(manifest.gates.some((gate) => gate.id === "dojo_chaos_performance_self_check" && gate.tier === "T8"));
+  assert(manifest.gates.some((gate) => gate.id === "dojo_soak_performance_self_check" && gate.tier === "T8"));
   assert(manifest.gates.some((gate) => gate.tier === "T8"));
   return writeDojoReleaseGateArtifacts({ outDir, manifest });
 }
