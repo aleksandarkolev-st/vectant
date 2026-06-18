@@ -121,6 +121,9 @@ const __dirname = path.dirname(__filename);
 const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 
+export const DOJO_RELEASE_OBSERVATION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export const DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
+
 export const DOJO_RELEASE_GATE_TIERS = [
   {
     id: "T0",
@@ -942,6 +945,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_public_verifier_material: true,
       require_release_managed_key_observation: true,
       require_release_observation_artifact_digest_match: true,
+      release_observation_max_age_ms: DOJO_RELEASE_OBSERVATION_MAX_AGE_MS,
+      release_observation_future_tolerance_ms: DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
       release_observation_schema_version: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
       required_release_observation_checks: [...DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS],
       require_stdout_stderr_digest_match: true,
@@ -1319,6 +1324,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_malformed_record_rejection: true,
       require_release_runtime_observation: true,
       require_release_observation_artifact_digest_match: true,
+      release_observation_max_age_ms: DOJO_RELEASE_OBSERVATION_MAX_AGE_MS,
+      release_observation_future_tolerance_ms: DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
       required_release_observation_gate_ids: [...DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS],
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
@@ -2409,6 +2416,12 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!managedKeySigningGate.release_artifact_requirements?.require_release_observation_artifact_digest_match) {
       errors.push("managed_key_signing_missing_release_observation_artifact_digest_requirement");
     }
+    if (!positiveFiniteNumber(managedKeySigningGate.release_artifact_requirements?.release_observation_max_age_ms)) {
+      errors.push("managed_key_signing_missing_release_observation_freshness_requirement");
+    }
+    if (!nonNegativeFiniteNumber(managedKeySigningGate.release_artifact_requirements?.release_observation_future_tolerance_ms)) {
+      errors.push("managed_key_signing_missing_release_observation_future_tolerance_requirement");
+    }
     if (managedKeySigningGate.release_artifact_requirements?.release_observation_schema_version !== DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION) {
       errors.push("managed_key_signing_missing_release_observation_schema");
     }
@@ -3018,6 +3031,12 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     ]) {
       if (!hostedRuntimeGatewayGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
     }
+    if (!positiveFiniteNumber(hostedRuntimeGatewayGate.release_artifact_requirements?.release_observation_max_age_ms)) {
+      errors.push("hosted_runtime_gateway_missing_release_observation_freshness_requirement");
+    }
+    if (!nonNegativeFiniteNumber(hostedRuntimeGatewayGate.release_artifact_requirements?.release_observation_future_tolerance_ms)) {
+      errors.push("hosted_runtime_gateway_missing_release_observation_future_tolerance_requirement");
+    }
     if (hostedRuntimeGatewayGate.release_artifact_requirements?.durable_postgres_session_gate_id !== "dojo_postgres_control_plane_self_check") {
       errors.push("hosted_runtime_gateway_missing_durable_postgres_gate_id");
     }
@@ -3235,6 +3254,16 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
 function missingRequiredEntries(requiredEntries, declaredEntries) {
   const declared = new Set(Array.isArray(declaredEntries) ? declaredEntries.map(String) : []);
   return requiredEntries.filter((entry) => !declared.has(entry));
+}
+
+function positiveFiniteNumber(value) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue > 0;
+}
+
+function nonNegativeFiniteNumber(value) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue >= 0;
 }
 
 export function validateDojoVisualProofReport(report, {

@@ -13,6 +13,8 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
+  DOJO_RELEASE_OBSERVATION_MAX_AGE_MS,
   DOJO_FULL_VISUAL_ROUTE_IDS,
   DOJO_FULL_VISUAL_VIEWPORTS,
   runSelfCheck as runReleaseGateManifestSelfCheck,
@@ -3058,6 +3060,10 @@ export function validateDojoManagedKeySigningReleaseObservation(observation) {
   if (observation.schema_version !== DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION) {
     errors.push(`managed_key_signing_release_observation_schema_mismatch:${observation.schema_version || "missing"}`);
   }
+  errors.push(...validateReleaseObservationFreshness({
+    observedAt: observation.observed_at,
+    prefix: "managed_key_signing_release_observation",
+  }));
   if (observation.observed !== true) errors.push("managed_key_signing_release_observation_not_observed");
   if (observation.release_ready !== true) errors.push("managed_key_signing_release_observation_not_ready");
   if (observation.scope !== "release") {
@@ -4204,6 +4210,10 @@ export function validateDojoHostedRuntimeGatewayReleaseObservation(observation) 
   if (observation.schema_version !== DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_SCHEMA_VERSION) {
     errors.push(`hosted_runtime_gateway_release_observation_schema_mismatch:${observation.schema_version || "missing"}`);
   }
+  errors.push(...validateReleaseObservationFreshness({
+    observedAt: observation.observed_at,
+    prefix: "hosted_runtime_gateway_release_observation",
+  }));
   if (observation.observed !== true) errors.push("hosted_runtime_gateway_release_observation_not_observed");
   if (observation.release_ready !== true) errors.push("hosted_runtime_gateway_release_observation_not_ready");
   if (observation.scope !== "release") {
@@ -4905,6 +4915,32 @@ async function validateReleaseObservationArtifactRefs({
     if (ref.artifact_sha256.toLowerCase() !== actualSha256) {
       errors.push(`${prefix}_artifact_sha256_mismatch:${index}:${ref.artifact_sha256}:${actualSha256}`);
     }
+  }
+  return errors;
+}
+
+function validateReleaseObservationFreshness({
+  observedAt,
+  prefix,
+  nowMs = Date.now(),
+  maxAgeMs = DOJO_RELEASE_OBSERVATION_MAX_AGE_MS,
+  futureToleranceMs = DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
+}) {
+  const errors = [];
+  if (typeof observedAt !== "string" || observedAt.length === 0) {
+    errors.push(`${prefix}_observed_at_missing`);
+    return errors;
+  }
+  const observedMs = Date.parse(observedAt);
+  if (!Number.isFinite(observedMs)) {
+    errors.push(`${prefix}_observed_at_invalid:${observedAt}`);
+    return errors;
+  }
+  if (observedMs > nowMs + futureToleranceMs) {
+    errors.push(`${prefix}_observed_at_future:${observedAt}:${futureToleranceMs}`);
+  }
+  if (observedMs < nowMs - maxAgeMs) {
+    errors.push(`${prefix}_observed_at_stale:${observedAt}:${maxAgeMs}`);
   }
   return errors;
 }
@@ -9343,7 +9379,7 @@ function buildHostedRuntimeGatewayReleaseObservationForSelfCheck(overrides = {})
     schema_version: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_SCHEMA_VERSION,
     source: "release_gate_verifier_self_check",
     scope: "release",
-    observed_at: "2026-06-11T00:00:00.000Z",
+    observed_at: new Date().toISOString(),
     observed: true,
     release_ready: true,
     checks: Object.fromEntries(DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_CHECKS.map((check) => [check, true])),
@@ -9362,7 +9398,7 @@ function buildManagedKeySigningReleaseObservationForSelfCheck(overrides = {}) {
     schema_version: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
     source: "release_gate_verifier_self_check",
     scope: "release",
-    observed_at: "2026-06-11T00:00:00.000Z",
+    observed_at: new Date().toISOString(),
     observed: true,
     release_ready: true,
     provider: "managed-key-service",

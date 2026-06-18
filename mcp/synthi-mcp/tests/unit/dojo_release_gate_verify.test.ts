@@ -13,6 +13,8 @@ import {
   DOJO_FULL_VISUAL_VIEWPORTS,
   DOJO_GHOST_MODE_VISUAL_ROUTE_IDS,
   DOJO_GHOST_MODE_VISUAL_VIEWPORTS,
+  DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
+  DOJO_RELEASE_OBSERVATION_MAX_AGE_MS,
   validateDojoReleaseGateManifest,
 } from "../../scripts/dojo-release-gate-manifest.mjs";
 import {
@@ -3001,6 +3003,38 @@ describe("Dojo release gate artifact verifier", () => {
       expect.stringMatching(/^managed_key_signing_release_observation_artifact_sha256_mismatch:0:/),
     ]));
 
+    const staleManagedKeyObservationPath = await writeManagedKeySigningEvidenceFixture({
+      dir,
+      basename: "stale-release-managed-key-signing",
+      evidence: managedKeySigningEvidenceFixture({
+        release_managed_key_observation: managedKeySigningReleaseObservationFixture({
+          observed_at: new Date(Date.now() - (DOJO_RELEASE_OBSERVATION_MAX_AGE_MS * 2)).toISOString(),
+        }),
+      }),
+    });
+    expect((await verifyDojoManagedKeySigningEvidenceArtifact({
+      evidencePath: staleManagedKeyObservationPath,
+      releaseCandidate: true,
+    })).errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^managed_key_signing_release_observation_observed_at_stale:/),
+    ]));
+
+    const futureManagedKeyObservationPath = await writeManagedKeySigningEvidenceFixture({
+      dir,
+      basename: "future-release-managed-key-signing",
+      evidence: managedKeySigningEvidenceFixture({
+        release_managed_key_observation: managedKeySigningReleaseObservationFixture({
+          observed_at: new Date(Date.now() + (DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS * 2) + 1000).toISOString(),
+        }),
+      }),
+    });
+    expect((await verifyDojoManagedKeySigningEvidenceArtifact({
+      evidencePath: futureManagedKeyObservationPath,
+      releaseCandidate: true,
+    })).errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^managed_key_signing_release_observation_observed_at_future:/),
+    ]));
+
     const driftedPath = await writeManagedKeySigningEvidenceFixture({
       dir,
       basename: "drifted-managed-key-signing",
@@ -4035,6 +4069,38 @@ describe("Dojo release gate artifact verifier", () => {
     });
     expect(mismatchedHostedRuntimeArtifact.errors).toEqual(expect.arrayContaining([
       expect.stringMatching(/^hosted_runtime_gateway_release_observation_artifact_sha256_mismatch:0:/),
+    ]));
+
+    const staleHostedRuntimeObservationPath = await writeHostedRuntimeGatewayEvidenceFixture({
+      dir,
+      basename: "stale-release-hosted-runtime-gateway",
+      evidence: hostedRuntimeGatewayEvidenceFixture({
+        release_runtime_observation: hostedRuntimeGatewayReleaseObservationFixture({
+          observed_at: new Date(Date.now() - (DOJO_RELEASE_OBSERVATION_MAX_AGE_MS * 2)).toISOString(),
+        }),
+      }),
+    });
+    expect((await verifyDojoHostedRuntimeGatewayEvidenceArtifact({
+      evidencePath: staleHostedRuntimeObservationPath,
+      releaseCandidate: true,
+    })).errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^hosted_runtime_gateway_release_observation_observed_at_stale:/),
+    ]));
+
+    const futureHostedRuntimeObservationPath = await writeHostedRuntimeGatewayEvidenceFixture({
+      dir,
+      basename: "future-release-hosted-runtime-gateway",
+      evidence: hostedRuntimeGatewayEvidenceFixture({
+        release_runtime_observation: hostedRuntimeGatewayReleaseObservationFixture({
+          observed_at: new Date(Date.now() + (DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS * 2) + 1000).toISOString(),
+        }),
+      }),
+    });
+    expect((await verifyDojoHostedRuntimeGatewayEvidenceArtifact({
+      evidencePath: futureHostedRuntimeObservationPath,
+      releaseCandidate: true,
+    })).errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^hosted_runtime_gateway_release_observation_observed_at_future:/),
     ]));
 
     const driftedPath = await writeHostedRuntimeGatewayEvidenceFixture({
@@ -6602,7 +6668,7 @@ function managedKeySigningReleaseObservationFixture(overrides = {}) {
     schema_version: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
     source: "managed_key_signing_release_conformance",
     scope: "release",
-    observed_at: "2026-06-11T00:00:00.000Z",
+    observed_at: new Date().toISOString(),
     observed: true,
     release_ready: true,
     provider: "managed-key-service",
@@ -7914,7 +7980,7 @@ function hostedRuntimeGatewayReleaseObservationFixture(overrides = {}) {
     schema_version: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_SCHEMA_VERSION,
     source: "release_gate_observation",
     scope: "release",
-    observed_at: "2026-06-11T00:00:00.000Z",
+    observed_at: new Date().toISOString(),
     observed: true,
     release_ready: true,
     checks: Object.fromEntries(DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_CHECKS.map((check) => [check, true])),
