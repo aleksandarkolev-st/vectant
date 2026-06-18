@@ -346,6 +346,48 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
   ];
 }
 
+function runtimeSharedVolumes() {
+  return [
+    { name: 'dshm', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } },
+    { name: 'tmp', emptyDir: { sizeLimit: '2Gi' } },
+    ...(WORKSPACE_DATA_PVC ? [{ name: 'workspace-data', persistentVolumeClaim: { claimName: WORKSPACE_DATA_PVC } }] : []),
+  ];
+}
+
+function stableTemplateAnnotations(annotations = {}) {
+  const stable = { ...annotations };
+  delete stable['synthi/lastActive'];
+  return stable;
+}
+
+function runtimeDeploymentReconcilePatch(sessionId, userId, metadata = {}, labels = {}, annotations = {}) {
+  const filesystemUserId = metadata.filesystemUserId || metadata.filesystem_user_id || userId;
+  const workflowContainers = workflowBridgeContainers(sessionId, { ...metadata, filesystemUserId });
+  const patch = {
+    metadata: {
+      labels,
+      annotations,
+    },
+  };
+
+  if (workflowContainers.length > 0) {
+    patch.spec = {
+      template: {
+        metadata: {
+          labels,
+          annotations: stableTemplateAnnotations(annotations),
+        },
+        spec: {
+          containers: workflowContainers,
+          volumes: runtimeSharedVolumes(),
+        },
+      },
+    };
+  }
+
+  return patch;
+}
+
 function previewSidecarScript() {
   return [
     "'use strict';",
@@ -655,6 +697,17 @@ async function getPodSnapshotForSession(sessionId) {
 async function ensureService(sessionId) {
   const name = serviceName(sessionId);
   const labels = runtimeLabels(sessionId, null);
+  const annotations = {
+    'synthi/runtimeScopeFull': sessionId,
+  };
+  const selector = {
+    app: 'workspace',
+    'synthi/runtime-id': runtimeResourceId(sessionId),
+  };
+  const ports = [
+    { name: 'preview-proxy', port: PREVIEW_SIDECAR_PORT, targetPort: PREVIEW_SIDECAR_PORT },
+    ...(WORKFLOW_BRIDGE_IMAGE ? [{ name: 'workflow', port: WORKFLOW_BRIDGE_PORT, targetPort: WORKFLOW_BRIDGE_PORT }] : []),
+  ];
   const service = {
     apiVersion: 'v1',
     kind: 'Service',
@@ -662,21 +715,13 @@ async function ensureService(sessionId) {
       name,
       namespace: NAMESPACE,
       labels,
-      annotations: {
-        'synthi/runtimeScopeFull': sessionId,
-      },
+      annotations,
     },
     spec: {
       type: 'ClusterIP',
       clusterIP: 'None',
-      selector: {
-        app: 'workspace',
-        'synthi/runtime-id': runtimeResourceId(sessionId),
-      },
-      ports: [
-        { name: 'preview-proxy', port: PREVIEW_SIDECAR_PORT, targetPort: PREVIEW_SIDECAR_PORT },
-        ...(WORKFLOW_BRIDGE_IMAGE ? [{ name: 'workflow', port: WORKFLOW_BRIDGE_PORT, targetPort: WORKFLOW_BRIDGE_PORT }] : []),
-      ],
+      selector,
+      ports,
     },
   };
 
@@ -685,7 +730,27 @@ async function ensureService(sessionId) {
     console.log(`[Spawner] Created Service: ${name}`);
   } catch (err) {
     if (err.response?.statusCode === 409) {
-      // Already exists — fine
+      try {
+        await coreApi.patchNamespacedService(
+          name,
+          NAMESPACE,
+          {
+            metadata: { labels, annotations },
+            spec: { selector, ports },
+          },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
+          },
+        );
+        console.log(`[Spawner] Reconciled Service: ${name}`);
+      } catch (patchErr) {
+        console.error(`[Spawner] Service reconciliation failed for ${name}:`, patchErr.message);
+      }
     } else {
       console.error(`[Spawner] Service creation failed for ${name}:`, err.message);
     }
@@ -766,10 +831,13 @@ async function ensurePod(sessionId, userId, metadata = {}) {
   try {
     const { body: existing } = await appsApi.readNamespacedDeployment(name, NAMESPACE);
     await hydrateAndPinRuntimeFs();
-    // Bump activity timestamp.
-    existing.metadata.annotations = existing.metadata.annotations || {};
-    existing.metadata.annotations['synthi/lastActive'] = String(Date.now());
-    await appsApi.patchNamespacedDeployment(name, NAMESPACE, existing, undefined, undefined, undefined, undefined, undefined, {
+    await appsApi.patchNamespacedDeployment(name, NAMESPACE, runtimeDeploymentReconcilePatch(
+      sessionId,
+      userId,
+      { ...metadata, filesystemUserId },
+      labels,
+      annotations,
+    ), undefined, undefined, undefined, undefined, undefined, {
       headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
     });
     activeSessions.add(sessionId);
@@ -953,9 +1021,7 @@ exec worker`,
             ...workflowBridgeContainers(sessionId, { ...metadata, filesystemUserId }),
           ],
           volumes: [
-            { name: 'dshm', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } },
-            { name: 'tmp', emptyDir: { sizeLimit: '2Gi' } },
-            ...(WORKSPACE_DATA_PVC ? [{ name: 'workspace-data', persistentVolumeClaim: { claimName: WORKSPACE_DATA_PVC } }] : []),
+            ...runtimeSharedVolumes(),
           ],
         },
       },
