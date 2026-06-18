@@ -317,7 +317,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       ...tenant,
       actor_id: "postgres-aggregate-reader",
       actor_type: "agent",
-      roles: ["agent"],
+      roles: ["agent", "dojo:governance:view"],
       request_id: "req-postgres-aggregate-read",
       correlation_id: "corr-postgres-aggregate-read",
     };
@@ -397,6 +397,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
 
     const compliance = await dispatchDojoTool("synthi_dojo_export_compliance_pack", {
       ...readerTenant,
+      roles: ["agent", "dojo:compliance:export"],
       request_id: "req-postgres-aggregate-compliance",
       correlation_id: "corr-postgres-aggregate-compliance",
       now: "2026-06-11T02:00:00.000Z",
@@ -837,7 +838,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       ...tenant,
       actor_id: "postgres-proof-revoke-ledger-agent",
       actor_type: "agent",
-      roles: ["agent"],
+      roles: ["agent", "dojo:proof:issue"],
       request_id: "req-postgres-proof-revoke-ledger-issue",
       correlation_id: "corr-postgres-proof-revoke-ledger-issue",
       now: "2026-06-11T01:30:00.000Z",
@@ -2440,7 +2441,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       ...tenant,
       actor_id: "postgres-proof-agent",
       actor_type: "agent",
-      roles: ["agent"],
+      roles: ["agent", "dojo:proof:issue"],
       request_id: "req-postgres-proof-issue",
       correlation_id: "corr-postgres-proof-issue",
       now: "2026-06-11T00:00:00.000Z",
@@ -2732,7 +2733,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       ...tenant,
       actor_id: "postgres-proof-agent",
       actor_type: "agent",
-      roles: ["agent"],
+      roles: ["agent", "dojo:runtime:create"],
       request_id: "req-postgres-proof-session",
       correlation_id: "corr-postgres-proof-session",
       now: "2026-06-11T00:01:30.000Z",

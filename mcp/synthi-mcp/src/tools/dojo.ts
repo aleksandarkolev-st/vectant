@@ -2325,10 +2325,37 @@ async function dojoGetMetricsTool(args: unknown): Promise<ToolResponse> {
   if (hasExplicitSkillSelection) {
     const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_metrics");
     if (!skill.ok) return skill.error;
-    return jsonResponse({ ok: true, control_plane_source: skill.control_plane_source, metrics: buildDojoUniverseMetrics([skill.skill]) });
+    const metricsViewRbac = requireDojoProductionGovernanceRbac({
+      tenant: skill.tenant,
+      action: "metrics_view",
+      error: "dojo_metrics_view_role_required",
+      details: {
+        operation: "synthi_dojo_get_metrics",
+        skill_id: skill.skill.skill_id,
+        workspace_id: skill.skill.workspace_id,
+      },
+    });
+    if (!metricsViewRbac.ok) return metricsViewRbac.error;
+    return jsonResponse({
+      ok: true,
+      control_plane_source: skill.control_plane_source,
+      metrics: buildDojoUniverseMetrics([skill.skill]),
+      ...(metricsViewRbac.rbac_authorization ? { rbac_authorization: metricsViewRbac.rbac_authorization } : {}),
+    });
   }
   const tenantContext = dojoTenantContextResultFromArgs(args);
   if (!tenantContext.ok) return tenantContext.error;
+  const metricsViewRbac = requireDojoProductionGovernanceRbac({
+    tenant: tenantContext.tenant,
+    action: "metrics_view",
+    error: "dojo_metrics_view_role_required",
+    details: {
+      operation: "synthi_dojo_get_metrics",
+      tenant_id: tenantContext.tenant.tenant_id,
+      workspace_id: tenantContext.tenant.workspace_id,
+    },
+  });
+  if (!metricsViewRbac.ok) return metricsViewRbac.error;
   const visibleSkills = await visibleDojoSkillsForTenantFromControlPlaneIfRequired(
     tenantContext.tenant,
     "synthi_dojo_get_metrics"
@@ -2338,6 +2365,7 @@ async function dojoGetMetricsTool(args: unknown): Promise<ToolResponse> {
     ok: true,
     control_plane_source: visibleSkills.control_plane_source,
     metrics: buildDojoUniverseMetrics(visibleSkills.skills),
+    ...(metricsViewRbac.rbac_authorization ? { rbac_authorization: metricsViewRbac.rbac_authorization } : {}),
   });
 }
 
@@ -2946,7 +2974,7 @@ function validateApiBackedToolPublicationReview(input: {
   let rbacAuthorization: ReturnType<typeof authorizeDojoGovernanceAction> | undefined;
   if (resolveDojoEnforcementConfig().production_enforcement) {
     rbacAuthorization = authorizeDojoGovernanceAction({
-      action: "permission_upgrade_review",
+      action: "api_tool_publish",
       tenant_context: input.tenant,
     });
     if (!rbacAuthorization.ok) {
@@ -2982,6 +3010,17 @@ function isValidIsoTimestamp(value: string): boolean {
 async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse> {
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_prepare_api_backed_tool");
   if (!skill.ok) return skill.error;
+  const apiToolPrepareRbac = requireDojoProductionGovernanceRbac({
+    tenant: skill.tenant,
+    action: "api_tool_prepare",
+    error: "dojo_api_tool_prepare_role_required",
+    details: {
+      operation: "synthi_dojo_prepare_api_backed_tool",
+      skill_id: skill.skill.skill_id,
+      workspace_id: skill.skill.workspace_id,
+    },
+  });
+  if (!apiToolPrepareRbac.ok) return apiToolPrepareRbac.error;
   const a = obj(args);
   const candidate = apiEndpointCandidateFromArgs(a);
   if (!candidate.ok) {
@@ -3121,6 +3160,7 @@ async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse
     promotion_blockers: promotionBlockers,
     api_tool_publication: apiToolPublication,
     mcp_skill_manifest: apiToolPublication?.mcp_skill_manifest ?? null,
+    ...(apiToolPrepareRbac.rbac_authorization ? { rbac_authorization: apiToolPrepareRbac.rbac_authorization } : {}),
   });
 }
 
@@ -3769,6 +3809,17 @@ async function dojoGetRegistryTool(args: unknown): Promise<ToolResponse> {
   const tenantContext = dojoTenantContextResultFromArgs(args);
   if (!tenantContext.ok) return tenantContext.error;
   const now = new Date().toISOString();
+  const registryViewRbac = requireDojoProductionGovernanceRbac({
+    tenant: tenantContext.tenant,
+    action: "registry_view",
+    error: "dojo_registry_view_role_required",
+    details: {
+      operation: "synthi_dojo_get_registry",
+      tenant_id: tenantContext.tenant.tenant_id,
+      workspace_id: tenantContext.tenant.workspace_id,
+    },
+  });
+  if (!registryViewRbac.ok) return registryViewRbac.error;
   const visibleSkills = await visibleDojoSkillsForTenantFromControlPlaneIfRequired(
     tenantContext.tenant,
     "synthi_dojo_get_registry"
@@ -3779,6 +3830,7 @@ async function dojoGetRegistryTool(args: unknown): Promise<ToolResponse> {
     control_plane_source: visibleSkills.control_plane_source,
     registry: buildDojoOrganizationRegistry(visibleSkills.skills, { now }),
     governance_service: await governanceServiceViewForTenant(tenantContext.tenant, now, visibleSkills.skills),
+    ...(registryViewRbac.rbac_authorization ? { rbac_authorization: registryViewRbac.rbac_authorization } : {}),
   });
 }
 
@@ -6100,12 +6152,24 @@ async function dojoRecordCaseLawTool(args: unknown): Promise<ToolResponse> {
 function dojoExportArtifactsTool(args: unknown): ToolResponse {
   const skill = requiredAuthorizedSkill(args);
   if (!skill.ok) return skill.error;
+  const artifactExportRbac = requireDojoProductionGovernanceRbac({
+    tenant: skill.tenant,
+    action: "artifact_export",
+    error: "dojo_artifact_export_role_required",
+    details: {
+      operation: "synthi_dojo_export_artifacts",
+      skill_id: skill.skill.skill_id,
+      workspace_id: skill.skill.workspace_id,
+    },
+  });
+  if (!artifactExportRbac.ok) return artifactExportRbac.error;
   const artifacts = exportDojoRepoArtifacts(skill.skill);
   return jsonResponse({
     ok: true,
     skill_id: skill.skill.skill_id,
     artifact_count: artifacts.length,
     artifacts,
+    ...(artifactExportRbac.rbac_authorization ? { rbac_authorization: artifactExportRbac.rbac_authorization } : {}),
   });
 }
 

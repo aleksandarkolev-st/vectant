@@ -164,6 +164,33 @@ describe("Dojo governance service", () => {
     }));
 
     expect(authorizeDojoGovernanceAction({
+      action: "registry_view",
+      tenant_context: tenantContextFixture({ roles: ["dojo:registry:view"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:registry:view"],
+      blocked_by: [],
+    }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "metrics_view",
+      tenant_context: tenantContextFixture({ roles: ["dojo:metrics:view"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:metrics:view"],
+      blocked_by: [],
+    }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "artifact_export",
+      tenant_context: tenantContextFixture({ roles: ["dojo:auditor"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:auditor"],
+      blocked_by: [],
+    }));
+
+    expect(authorizeDojoGovernanceAction({
       action: "source_drift_expiry",
       tenant_context: tenantContextFixture({ roles: ["dojo:source:apply"] }),
     })).toEqual(expect.objectContaining({
@@ -205,6 +232,24 @@ describe("Dojo governance service", () => {
     })).toEqual(expect.objectContaining({
       ok: true,
       matched_roles: ["dojo:source:apply"],
+      blocked_by: [],
+    }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "api_tool_prepare",
+      tenant_context: tenantContextFixture({ roles: ["dojo:source:review"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:source:review"],
+      blocked_by: [],
+    }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "api_tool_publish",
+      tenant_context: tenantContextFixture({ roles: ["dojo:api-tool:publish"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:api-tool:publish"],
       blocked_by: [],
     }));
 

@@ -608,28 +608,67 @@ describe("Agent Dojo MCP tools", () => {
       blocked_by: expect.arrayContaining(["tenant_context_workspace_id_missing"]),
     }));
 
-    const metrics = await dispatchDojoTool("synthi_dojo_get_metrics", productionTenantContextArgs({
+    const blockedMetricsRole = await dispatchDojoTool("synthi_dojo_get_metrics", productionTenantContextArgs({
+      roles: ["agent"],
+      request_id: "req-production-aggregate-metrics-rbac-blocked",
+    }));
+    expect(blockedMetricsRole?.isError).toBe(true);
+    expect(blockedMetricsRole?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_metrics_view_role_required",
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:metrics:view|dojo:governance:view|dojo:auditor"]),
+      rbac_authorization: expect.objectContaining({
+        action: "metrics_view",
+        matched_roles: [],
+        required_roles: ["dojo:metrics:view", "dojo:governance:view", "dojo:auditor"],
+      }),
+    }));
+
+    const metrics = await dispatchDojoTool("synthi_dojo_get_metrics", productionMetricsViewerContextArgs({
       request_id: "req-production-aggregate-metrics",
     }));
     expect(metrics?.isError).toBeUndefined();
     expect(metrics?.structuredContent).toEqual(expect.objectContaining({
+      rbac_authorization: expect.objectContaining({
+        action: "metrics_view",
+        matched_roles: ["dojo:metrics:view"],
+      }),
       metrics: expect.objectContaining({
         skill_count: 1,
         business: expect.objectContaining({ reviewable_artifact_sets: 1 }),
       }),
     }));
 
-    const registry = await dispatchDojoTool("synthi_dojo_get_registry", productionTenantContextArgs({
+    const blockedRegistryRole = await dispatchDojoTool("synthi_dojo_get_registry", productionTenantContextArgs({
+      roles: ["agent"],
+      request_id: "req-production-registry-rbac-blocked",
+    }));
+    expect(blockedRegistryRole?.isError).toBe(true);
+    expect(blockedRegistryRole?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_registry_view_role_required",
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:registry:view|dojo:governance:view|dojo:auditor"]),
+      rbac_authorization: expect.objectContaining({
+        action: "registry_view",
+        matched_roles: [],
+        required_roles: ["dojo:registry:view", "dojo:governance:view", "dojo:auditor"],
+      }),
+    }));
+
+    const registry = await dispatchDojoTool("synthi_dojo_get_registry", productionRegistryViewerContextArgs({
       request_id: "req-production-registry",
     }));
     expect(registry?.isError).toBeUndefined();
     const registryContent = registry?.structuredContent as {
+      rbac_authorization: { action: string; matched_roles: string[] };
       registry: { skill_count: number; competencies: Array<{ skill_id: string; workspace_id: string }> };
       governance_service: {
         skill_registry: Array<{ skill_id: string; workspace_id: string }>;
         approval_queue: Array<{ request_id?: string; skill_id: string }>;
       };
     };
+    expect(registryContent.rbac_authorization).toEqual(expect.objectContaining({
+      action: "registry_view",
+      matched_roles: ["dojo:registry:view"],
+    }));
     expect(registryContent.registry.skill_count).toBe(1);
     expect(registryContent.registry.competencies).toEqual([
       expect.objectContaining({ skill_id: visibleSkillId, workspace_id: "workspace-a" }),
@@ -646,7 +685,7 @@ describe("Agent Dojo MCP tools", () => {
 
     const selectedHiddenMetrics = await dispatchDojoTool("synthi_dojo_get_metrics", {
       skill_id: hiddenSkill.skill_id,
-      ...productionTenantContextArgs({ request_id: "req-production-hidden-metrics" }),
+      ...productionMetricsViewerContextArgs({ request_id: "req-production-hidden-metrics" }),
     });
     expect(selectedHiddenMetrics?.isError).toBe(true);
     expect(selectedHiddenMetrics?.structuredContent).toEqual(expect.objectContaining({
@@ -917,12 +956,36 @@ describe("Agent Dojo MCP tools", () => {
 
     const visibleArtifacts = await dispatchDojoTool("synthi_dojo_export_artifacts", {
       skill_id: visibleSkillId,
-      ...productionTenantContextArgs({ request_id: "req-production-visible-artifacts" }),
+      ...productionTenantContextArgs({
+        roles: ["agent"],
+        request_id: "req-production-visible-artifacts-rbac-blocked",
+      }),
     });
-    expect(visibleArtifacts?.isError).toBeUndefined();
+    expect(visibleArtifacts?.isError).toBe(true);
     expect(visibleArtifacts?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_artifact_export_role_required",
+      skill_id: visibleSkillId,
+      workspace_id: "workspace-a",
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:artifact:export|dojo:auditor"]),
+      rbac_authorization: expect.objectContaining({
+        action: "artifact_export",
+        matched_roles: [],
+        required_roles: ["dojo:artifact:export", "dojo:auditor"],
+      }),
+    }));
+
+    const allowedArtifacts = await dispatchDojoTool("synthi_dojo_export_artifacts", {
+      skill_id: visibleSkillId,
+      ...productionArtifactExporterContextArgs({ request_id: "req-production-visible-artifacts" }),
+    });
+    expect(allowedArtifacts?.isError).toBeUndefined();
+    expect(allowedArtifacts?.structuredContent).toEqual(expect.objectContaining({
       skill_id: visibleSkillId,
       artifact_count: expect.any(Number),
+      rbac_authorization: expect.objectContaining({
+        action: "artifact_export",
+        matched_roles: ["dojo:artifact:export"],
+      }),
     }));
 
     const blockedPracticeRun = await dispatchDojoTool("synthi_dojo_run_vivarium_scenario", {
@@ -2903,6 +2966,162 @@ describe("Agent Dojo MCP tools", () => {
           schema_digest: expect.stringMatching(/^sha256:/),
         }),
       ],
+    }));
+  });
+
+  it("requires RBAC for production API-backed tool preparation and publication", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+
+    const apiToolPreparationArgs = {
+      skill_id: skillId,
+      network_trace: {
+        method: "POST",
+        url: "https://app.example.test/api/invoices?workspace=workspace-a",
+        request_body: { client_id: "client-a", amount: 42 },
+        response_body: { invoice: { status: "saved" } },
+        source_ref: "trace:production-rbac-api-tool",
+      },
+      candidate_overrides: {
+        auth_scope: "invoice:write",
+        idempotency_key_location: "header",
+        rollback_strategy: "compensating_call",
+        postcondition: "invoice.status == 'saved'",
+        proof_claim_mapping: {
+          workspace_verified: "tenant.workspace_id",
+          checkride_passed: "dojo.checkride",
+        },
+        review_status: "approved",
+      },
+      requested_action: "run_workflow",
+      tool_name: "synthi_api_save_invoice",
+      auth_scopes: ["invoice:write"],
+      now: "2026-06-17T04:00:00.000Z",
+    };
+
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const blockedPrepare = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+      ...apiToolPreparationArgs,
+      ...productionTenantContextArgs({
+        roles: ["agent"],
+        request_id: "req-api-tool-prepare-rbac-blocked",
+        correlation_id: "corr-api-tool-prepare-rbac-blocked",
+      }),
+    });
+    expect(blockedPrepare?.isError).toBe(true);
+    expect(blockedPrepare?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      error: "dojo_api_tool_prepare_role_required",
+      skill_id: skillId,
+      workspace_id: "workspace-a",
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:api-tool:prepare|dojo:source:review|source-registry"]),
+      rbac_authorization: expect.objectContaining({
+        action: "api_tool_prepare",
+        matched_roles: [],
+        required_roles: ["dojo:api-tool:prepare", "dojo:source:review", "source-registry"],
+      }),
+    }));
+
+    const prepared = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+      ...apiToolPreparationArgs,
+      ...productionApiToolPreparerContextArgs({
+        request_id: "req-api-tool-prepare-rbac-approved",
+        correlation_id: "corr-api-tool-prepare-rbac-approved",
+      }),
+    });
+    expect(prepared?.isError).toBeUndefined();
+    expect(prepared?.structuredContent).toEqual(expect.objectContaining({
+      ready_for_promotion: true,
+      rbac_authorization: expect.objectContaining({
+        action: "api_tool_prepare",
+        matched_roles: ["dojo:api-tool:prepare"],
+      }),
+      api_tool_publication: expect.objectContaining({
+        requested: false,
+        status: "not_requested",
+      }),
+    }));
+
+    const blockedPublish = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+      ...apiToolPreparationArgs,
+      publish_to_skill: true,
+      reviewer_actor_id: "api-tool-reviewer",
+      reviewer_actor_type: "human",
+      review_reason: "Reviewed production API-backed tool contract.",
+      review_evidence_refs: ["api-review:evidence-production-rbac"],
+      reviewed_at: "2026-06-17T04:00:30.000Z",
+      ...productionApiToolPreparerContextArgs({
+        request_id: "req-api-tool-publish-rbac-blocked",
+        correlation_id: "corr-api-tool-publish-rbac-blocked",
+      }),
+    });
+    expect(blockedPublish?.isError).toBeUndefined();
+    expect(blockedPublish?.structuredContent).toEqual(expect.objectContaining({
+      ready_for_promotion: false,
+      promotion_blockers: expect.arrayContaining([
+        "api_tool_publication_review:api_tool_publication_review_governance_role_required:dojo:api-tool:publish|dojo:source:apply",
+      ]),
+      api_tool_publication_review: expect.objectContaining({
+        requested: true,
+        ok: false,
+        rbac_authorization: expect.objectContaining({
+          action: "api_tool_publish",
+          matched_roles: [],
+          required_roles: ["dojo:api-tool:publish", "dojo:source:apply"],
+        }),
+      }),
+      api_tool_publication: expect.objectContaining({
+        requested: true,
+        ok: false,
+        status: "blocked",
+      }),
+    }));
+
+    const published = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+      ...apiToolPreparationArgs,
+      publish_to_skill: true,
+      reviewer_actor_id: "api-tool-reviewer",
+      reviewer_actor_type: "human",
+      review_reason: "Reviewed production API-backed tool contract.",
+      review_evidence_refs: ["api-review:evidence-production-rbac"],
+      reviewed_at: "2026-06-17T04:01:30.000Z",
+      now: "2026-06-17T04:02:00.000Z",
+      ...productionApiToolPublisherContextArgs({
+        request_id: "req-api-tool-publish-rbac-approved",
+        correlation_id: "corr-api-tool-publish-rbac-approved",
+      }),
+    });
+    expect(published?.isError).toBeUndefined();
+    expect(published?.structuredContent).toEqual(expect.objectContaining({
+      ready_for_promotion: true,
+      promotion_blockers: [],
+      rbac_authorization: expect.objectContaining({
+        action: "api_tool_prepare",
+        matched_roles: ["dojo:api-tool:prepare"],
+      }),
+      api_tool_publication_review: expect.objectContaining({
+        requested: true,
+        ok: true,
+        rbac_authorization: expect.objectContaining({
+          action: "api_tool_publish",
+          matched_roles: ["dojo:api-tool:publish"],
+        }),
+      }),
+      api_tool_publication: expect.objectContaining({
+        requested: true,
+        ok: true,
+        status: "published",
+        published_tool_name: "synthi_api_save_invoice",
+      }),
+      mcp_skill_manifest: expect.objectContaining({
+        tool: expect.objectContaining({
+          name: "synthi_api_save_invoice",
+          kind: "api_backed",
+        }),
+      }),
     }));
   });
 
@@ -6133,6 +6352,41 @@ function productionPracticeRunnerContextArgs(overrides: Record<string, unknown> 
   return productionTenantContextArgs({
     ...overrides,
     roles: mergeRoleOverrides(["agent", "dojo:practice:run"], overrides["roles"]),
+  });
+}
+
+function productionRegistryViewerContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return productionTenantContextArgs({
+    ...overrides,
+    roles: mergeRoleOverrides(["agent", "dojo:registry:view"], overrides["roles"]),
+  });
+}
+
+function productionMetricsViewerContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return productionTenantContextArgs({
+    ...overrides,
+    roles: mergeRoleOverrides(["agent", "dojo:metrics:view"], overrides["roles"]),
+  });
+}
+
+function productionArtifactExporterContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return productionTenantContextArgs({
+    ...overrides,
+    roles: mergeRoleOverrides(["agent", "dojo:artifact:export"], overrides["roles"]),
+  });
+}
+
+function productionApiToolPreparerContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return productionTenantContextArgs({
+    ...overrides,
+    roles: mergeRoleOverrides(["agent", "dojo:api-tool:prepare"], overrides["roles"]),
+  });
+}
+
+function productionApiToolPublisherContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return productionTenantContextArgs({
+    ...overrides,
+    roles: mergeRoleOverrides(["agent", "dojo:api-tool:prepare", "dojo:api-tool:publish"], overrides["roles"]),
   });
 }
 

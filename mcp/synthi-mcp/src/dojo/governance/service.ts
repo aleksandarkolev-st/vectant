@@ -32,6 +32,9 @@ export type DojoGovernanceRbacAction =
   | "skill_publication"
   | "checkride_run"
   | "practice_run"
+  | "registry_view"
+  | "metrics_view"
+  | "artifact_export"
   | "permission_upgrade_review"
   | "case_law_review"
   | "case_law_record"
@@ -46,6 +49,8 @@ export type DojoGovernanceRbacAction =
   | "source_affordance_pr_prepare"
   | "source_affordance_pr_branch"
   | "source_drift_expiry"
+  | "api_tool_prepare"
+  | "api_tool_publish"
   | "hosted_runtime_session_create";
 
 export interface DojoGovernanceRbacPolicy {
@@ -76,6 +81,9 @@ export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPo
     skill_publication: ["dojo:skill:publish"],
     checkride_run: ["dojo:checkride:run"],
     practice_run: ["dojo:practice:run"],
+    registry_view: ["dojo:registry:view", "dojo:governance:view", "dojo:auditor"],
+    metrics_view: ["dojo:metrics:view", "dojo:governance:view", "dojo:auditor"],
+    artifact_export: ["dojo:artifact:export", "dojo:auditor"],
     permission_upgrade_review: ["dojo:approval:review", "dojo:license:review"],
     case_law_review: ["dojo:case-law:review"],
     case_law_record: ["dojo:case-law:record"],
@@ -90,6 +98,8 @@ export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPo
     source_affordance_pr_prepare: ["dojo:source:review", "source-registry"],
     source_affordance_pr_branch: ["dojo:source:apply"],
     source_drift_expiry: ["dojo:source:apply"],
+    api_tool_prepare: ["dojo:api-tool:prepare", "dojo:source:review", "source-registry"],
+    api_tool_publish: ["dojo:api-tool:publish", "dojo:source:apply"],
     hosted_runtime_session_create: ["dojo:runtime:create"],
   },
 };
@@ -1223,6 +1233,18 @@ function normalizeGovernanceRbacPolicy(
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.practice_run,
         ...(policy.action_roles?.practice_run ?? []),
       ]),
+      registry_view: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.registry_view,
+        ...(policy.action_roles?.registry_view ?? []),
+      ]),
+      metrics_view: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.metrics_view,
+        ...(policy.action_roles?.metrics_view ?? []),
+      ]),
+      artifact_export: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.artifact_export,
+        ...(policy.action_roles?.artifact_export ?? []),
+      ]),
       permission_upgrade_review: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.permission_upgrade_review,
         ...(policy.action_roles?.permission_upgrade_review ?? []),
@@ -1278,6 +1300,14 @@ function normalizeGovernanceRbacPolicy(
       source_drift_expiry: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.source_drift_expiry,
         ...(policy.action_roles?.source_drift_expiry ?? []),
+      ]),
+      api_tool_prepare: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.api_tool_prepare,
+        ...(policy.action_roles?.api_tool_prepare ?? []),
+      ]),
+      api_tool_publish: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.api_tool_publish,
+        ...(policy.action_roles?.api_tool_publish ?? []),
       ]),
       hosted_runtime_session_create: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.hosted_runtime_session_create,

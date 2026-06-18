@@ -107,6 +107,7 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       ...tenantContext({
         actor_id: "integration-publisher",
         actor_type: "human",
+        roles: ["dojo:skill:publish"],
         request_id: "req-postgres-proof-publish",
         correlation_id: "corr-postgres-proof-publish",
       }),
@@ -171,6 +172,7 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       skill_id: skillId,
       ...tenantContext({
         actor_id: "integration-proof-issuer",
+        roles: ["dojo:proof:issue"],
         request_id: "req-postgres-proof-issue",
         correlation_id: "corr-postgres-proof-issue",
       }),
