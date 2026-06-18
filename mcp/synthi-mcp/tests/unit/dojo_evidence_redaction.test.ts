@@ -71,7 +71,7 @@ describe("Dojo evidence redaction", () => {
       ].join("\n"),
     });
 
-    expect(result.redacted_content).toContain("Bearer [REDACTED_TOKEN]");
+    expect(result.redacted_content).toContain("Authorization: [REDACTED]");
     expect(result.redacted_content).toContain("JWT [REDACTED_TOKEN]");
     expect(result.redacted_content).toContain("access_token=[REDACTED]");
     expect(result.redacted_content).toContain("sid=[REDACTED]");
@@ -81,6 +81,8 @@ describe("Dojo evidence redaction", () => {
     expect(result.redacted_content).toContain("[REDACTED_EMAIL]");
     expect(result.redacted_content).toContain("/Users/[REDACTED_USER]/Downloads/report.pdf");
     expect(result.manifest.rules_applied).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rule_id: "bearer_token", count: 1 }),
+      expect.objectContaining({ rule_id: "raw_sensitive_header", count: 1 }),
       expect.objectContaining({ rule_id: "sensitive_url_param", count: 2 }),
     ]));
     expect(result.manifest.redaction_count).toBeGreaterThanOrEqual(6);
@@ -125,6 +127,37 @@ describe("Dojo evidence redaction", () => {
     }));
     expect(result.manifest.rules_applied).toEqual(expect.arrayContaining([
       expect.objectContaining({ rule_id: "sensitive_key", count: 4 }),
+    ]));
+    expect(verifyDojoRedactionManifest(result)).toEqual({ ok: true, blocked_by: [] });
+  });
+
+  it("redacts raw header and serialized JSON secret strings in text evidence", () => {
+    const result = redactDojoEvidenceArtifact({
+      artifact_kind: "trace",
+      created_at: "2026-06-11T00:00:00.000Z",
+      content: [
+        "Cookie: sid=raw-cookie-secret; theme=dark",
+        "Set-Cookie: refresh=raw-refresh-secret; HttpOnly",
+        "{\"accessToken\":\"json-secret-token\",\"safe\":\"kept\",\"headers\":{\"x-api-key\":\"raw-api-key\"}}",
+        "localStorage.setItem('authToken', 'browser-secret-token')",
+      ].join("\n"),
+    });
+
+    expect(result.redacted_content).toContain("Cookie: [REDACTED]");
+    expect(result.redacted_content).toContain("Set-Cookie: [REDACTED]");
+    expect(result.redacted_content).toContain("\"accessToken\":\"[REDACTED]\"");
+    expect(result.redacted_content).toContain("\"x-api-key\":\"[REDACTED]\"");
+    expect(result.redacted_content).toContain("localStorage.setItem('authToken', '[REDACTED]')");
+    expect(result.redacted_content).toContain("\"safe\":\"kept\"");
+    expect(result.redacted_content).not.toContain("raw-cookie-secret");
+    expect(result.redacted_content).not.toContain("raw-refresh-secret");
+    expect(result.redacted_content).not.toContain("json-secret-token");
+    expect(result.redacted_content).not.toContain("raw-api-key");
+    expect(result.redacted_content).not.toContain("browser-secret-token");
+    expect(result.manifest.rules_applied).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rule_id: "raw_sensitive_header", count: 2 }),
+      expect.objectContaining({ rule_id: "serialized_sensitive_pair", count: 2 }),
+      expect.objectContaining({ rule_id: "serialized_storage_secret", count: 1 }),
     ]));
     expect(verifyDojoRedactionManifest(result)).toEqual({ ok: true, blocked_by: [] });
   });

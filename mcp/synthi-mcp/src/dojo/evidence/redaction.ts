@@ -34,6 +34,9 @@ export interface DojoRedactionResult<T = unknown> {
 type RedactionCounts = Map<string, number>;
 
 const SENSITIVE_KEY_PATTERN = /(^|[_-])(authorization|cookie|set-cookie|token|secret|password|passwd|api[_-]?key|localstorage|sessionstorage|user[_-]?entered|user[_-]?input|typed[_-]?text|file[_-]?name|filename|document[_-]?name)([_-]|$)/i;
+const RAW_SENSITIVE_HEADER_PATTERN = /\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)\s*:\s*[^\r\n]+/gi;
+const SERIALIZED_SENSITIVE_PAIR_PATTERN = /((?:"|')?(?:authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|auth[-_]?token|access[-_]?token|refresh[-_]?token|id[-_]?token|api[-_]?key|secret|password|passwd|session|sid|token)(?:"|')?\s*[:=]\s*)(["'])(?:(?!\2).)*\2/gi;
+const SERIALIZED_STORAGE_SET_ITEM_PATTERN = /\b(localStorage|sessionStorage)\.setItem\(\s*(["'])([^"']*(?:token|secret|password|session|api[_-]?key|auth)[^"']*)\2\s*,\s*(["'])(?:(?!\4).)*\4\s*\)/gi;
 
 export function redactDojoEvidenceArtifact<T = unknown>(input: {
   artifact_kind: DojoRedactableArtifactKind;
@@ -120,6 +123,13 @@ function redactValue(value: unknown, counts: RedactionCounts, keyHint = ""): unk
 
 function redactString(value: string, counts: RedactionCounts): string {
   let next = replaceWithCount(value, /\bBearer\s+[A-Za-z0-9._~+/=-]+\b/g, "Bearer [REDACTED_TOKEN]", counts, "bearer_token");
+  next = replaceWithCount(
+    next,
+    RAW_SENSITIVE_HEADER_PATTERN,
+    (_match, headerName: string) => `${headerName}: [REDACTED]`,
+    counts,
+    "raw_sensitive_header"
+  );
   next = replaceWithCount(next, /\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "[REDACTED_TOKEN]", counts, "jwt_token");
   next = replaceWithCount(
     next,
@@ -127,6 +137,21 @@ function redactString(value: string, counts: RedactionCounts): string {
     (_match, prefix: string) => `${prefix}[REDACTED]`,
     counts,
     "sensitive_url_param"
+  );
+  next = replaceWithCount(
+    next,
+    SERIALIZED_SENSITIVE_PAIR_PATTERN,
+    (_match, prefix: string, quote: string) => `${prefix}${quote}[REDACTED]${quote}`,
+    counts,
+    "serialized_sensitive_pair"
+  );
+  next = replaceWithCount(
+    next,
+    SERIALIZED_STORAGE_SET_ITEM_PATTERN,
+    (_match, storageName: string, keyQuote: string, key: string, valueQuote: string) =>
+      `${storageName}.setItem(${keyQuote}${key}${keyQuote}, ${valueQuote}[REDACTED]${valueQuote})`,
+    counts,
+    "serialized_storage_secret"
   );
   next = replaceWithCount(next, /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]", counts, "email_address");
   next = replaceWithCount(next, /([A-Za-z]:\\Users\\)[^\\\s]+/g, (_match, prefix: string) => `${prefix}[REDACTED_USER]`, counts, "local_file_path");
