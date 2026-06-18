@@ -65,10 +65,7 @@ import {
 } from "../dojo/governance/service.js";
 import { compileDojoSkillGraphForSkill, compileDojoSkillGraphFromContract } from "../dojo/graph/compiler.js";
 import { validateDojoSkillGraph, type DojoSkillGraph } from "../dojo/graph/types.js";
-import {
-  contextKeyForDojoGuardrailPredicate,
-  normalizeDojoGuardrailPredicate,
-} from "../dojo/graph/guardrail_predicates.js";
+import { normalizeDojoGuardrailPredicate } from "../dojo/graph/guardrail_predicates.js";
 import { DojoSkillGraphRuntime, type DojoGraphRunResult } from "../dojo/graph/runtime.js";
 import {
   DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV,
@@ -5658,16 +5655,6 @@ function checkrideRuntimeInputsFor(skill: DojoSkill): Record<string, unknown> {
     mutation_isolation_available: true,
     human_review_ready: true,
   };
-  for (const claim of [
-    ...skill.permission_license.proof_requirements.required_context_claims,
-    ...skill.permission_license.proof_requirements.required_evidence_claims,
-  ]) {
-    inputs[claim] = true;
-  }
-  for (const guardrail of skill.guardrails) {
-    const contextKey = contextKeyForDojoGuardrailPredicate(guardrail.rule);
-    if (contextKey) inputs[contextKey] = true;
-  }
   return inputs;
 }
 
