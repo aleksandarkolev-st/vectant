@@ -33,6 +33,16 @@ export const DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV = "SYNTHI_DOJO_PROOF_SIGNING
 export const DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV = "SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM";
 export const DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV = "SYNTHI_DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM";
 export const DOJO_PROOF_SIGNING_KEY_ENV = "SYNTHI_DOJO_PROOF_SIGNING_KEY";
+export const DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PACKAGE_SCRIPT = "proof:dojo:managed-key-signing:observe";
+export const DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_COMMAND = "npm --prefix mcp/synthi-mcp run proof:dojo:managed-key-signing:observe -- --out-dir tmp/dojo-managed-key-signing-live";
+export const DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_DEFAULT_PATH = "tmp/dojo-managed-key-signing-live/managed-key-signing-release-observation.json";
+export const DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_REQUIRED_ENV = [
+  DOJO_PROOF_SIGNING_PROVIDER_ENV,
+  DOJO_PROOF_SIGNING_KEY_ID_ENV,
+  DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV,
+  DOJO_PROOF_SIGNING_COMMAND_ENV,
+  DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
+];
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -44,7 +54,7 @@ if (isDirectRun()) {
 }
 
 async function main() {
-  const outDir = path.resolve(args["out-dir"] || path.join(REPO_ROOT, "tmp", "dojo-managed-key-signing-live"));
+  const outDir = path.resolve(args["out-dir"] || path.dirname(path.resolve(REPO_ROOT, DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_DEFAULT_PATH)));
   const artifacts = await runDojoManagedKeySigningReleaseObservation({
     args,
     env: process.env,

@@ -85,6 +85,12 @@ import {
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "./dojo-managed-key-signing-self-check.mjs";
 import {
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_COMMAND,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_DEFAULT_PATH,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PACKAGE_SCRIPT,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_REQUIRED_ENV,
+} from "./dojo-managed-key-signing-release-observation.mjs";
+import {
   DOJO_MCP_SKILL_BUS_CAPABILITIES,
   DOJO_MCP_SKILL_BUS_TEST_FILES,
 } from "./dojo-mcp-skill-bus-self-check.mjs";
@@ -1008,6 +1014,12 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       release_observation_future_tolerance_ms: DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
       release_observation_schema_version: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
       required_release_observation_checks: [...DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS],
+      release_observation_producer: {
+        package_script: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PACKAGE_SCRIPT,
+        command: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_COMMAND,
+        default_observation_path: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_DEFAULT_PATH,
+        required_env: [...DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_REQUIRED_ENV],
+      },
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
     },
@@ -2604,6 +2616,23 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!Array.isArray(managedKeySigningGate.requires_env) || !managedKeySigningGate.requires_env.includes(DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_ENV)) {
       errors.push("managed_key_signing_missing_release_observation_env");
+    }
+    const releaseObservationProducer = managedKeySigningGate.release_artifact_requirements?.release_observation_producer || {};
+    if (releaseObservationProducer.package_script !== DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PACKAGE_SCRIPT) {
+      errors.push("managed_key_signing_missing_release_observation_producer_script");
+    }
+    if (releaseObservationProducer.command !== DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_COMMAND) {
+      errors.push("managed_key_signing_missing_release_observation_producer_command");
+    }
+    if (releaseObservationProducer.default_observation_path !== DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_DEFAULT_PATH) {
+      errors.push("managed_key_signing_missing_release_observation_producer_path");
+    }
+    const missingManagedKeyObservationProducerEnv = missingRequiredEntries(
+      DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_REQUIRED_ENV,
+      releaseObservationProducer.required_env,
+    );
+    if (missingManagedKeyObservationProducerEnv.length > 0) {
+      errors.push(`managed_key_signing_missing_release_observation_producer_env:${missingManagedKeyObservationProducerEnv.join(",")}`);
     }
     const requiredManagedKeySigningCapabilities = Array.isArray(managedKeySigningGate.release_artifact_requirements?.required_managed_key_signing_capabilities)
       ? managedKeySigningGate.release_artifact_requirements.required_managed_key_signing_capabilities

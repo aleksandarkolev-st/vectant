@@ -115,6 +115,12 @@ import {
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "../../scripts/dojo-managed-key-signing-self-check.mjs";
 import {
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_COMMAND,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_DEFAULT_PATH,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PACKAGE_SCRIPT,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_REQUIRED_ENV,
+} from "../../scripts/dojo-managed-key-signing-release-observation.mjs";
+import {
   DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
   DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
 } from "../../scripts/dojo-postgres-control-plane-self-check.mjs";
@@ -748,6 +754,12 @@ describe("Dojo release gate manifest", () => {
           release_observation_future_tolerance_ms: DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
           release_observation_schema_version: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
           required_release_observation_checks: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS,
+          release_observation_producer: {
+            package_script: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PACKAGE_SCRIPT,
+            command: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_COMMAND,
+            default_observation_path: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_DEFAULT_PATH,
+            required_env: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_REQUIRED_ENV,
+          },
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -1598,6 +1610,12 @@ describe("Dojo release gate manifest", () => {
     managedKeySigningGate.release_artifact_requirements.release_observation_future_tolerance_ms = -1;
     managedKeySigningGate.release_artifact_requirements.release_observation_schema_version = "broken";
     managedKeySigningGate.release_artifact_requirements.required_release_observation_checks = DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS.slice(1);
+    managedKeySigningGate.release_artifact_requirements.release_observation_producer = {
+      package_script: "proof:dojo:managed-key-signing:broken",
+      command: "node broken.js",
+      default_observation_path: "",
+      required_env: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_REQUIRED_ENV.slice(1),
+    };
     managedKeySigningGate.requires_env = [];
     expect(validateDojoReleaseGateManifest(brokenManagedKeySigning, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "managed_key_signing_missing_custody_requirement",
@@ -1608,6 +1626,10 @@ describe("Dojo release gate manifest", () => {
       "managed_key_signing_missing_release_observation_schema",
       `managed_key_signing_missing_release_observation_checks:${DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS[0]}`,
       "managed_key_signing_missing_release_observation_env",
+      "managed_key_signing_missing_release_observation_producer_script",
+      "managed_key_signing_missing_release_observation_producer_command",
+      "managed_key_signing_missing_release_observation_producer_path",
+      `managed_key_signing_missing_release_observation_producer_env:${DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_REQUIRED_ENV[0]}`,
       "managed_key_signing_missing_required_capabilities:managed_key_service_rejects_local_custody_metadata",
       `managed_key_signing_missing_required_test_files:${missingManagedKeySigningTestFile}`,
     ]));
