@@ -296,6 +296,43 @@ function assertControlPlaneStore(store: DojoControlPlaneStore): void {
     entity_kind: "ghost_shadow_evidence",
     entity_id: "ghost-evidence-unit-test",
   })).toThrow("dojo_audit_event_already_exists");
+
+  const consumedProof = proofStore.markProofCapsuleUsed(
+    capsule.capsule_id,
+    "run-store-interface-proof-use",
+    "2026-06-11T00:06:00.000Z"
+  );
+  expect(consumedProof).toEqual(expect.objectContaining({
+    ok: true,
+    status: "used",
+    blocked_by: [],
+    record: expect.objectContaining({
+      capsule_id: capsule.capsule_id,
+      status: "used",
+    }),
+  }));
+  const proofUseAuditEvents = auditStore.listAuditEvents({
+    entity_kind: "proof_capsule",
+    entity_id: capsule.capsule_id,
+  });
+  expect(proofUseAuditEvents).toEqual([
+    expect.objectContaining({
+      event_type: "proof_used",
+      tenant_id: expect.stringMatching(/^local-tenant-[a-f0-9]{12}$/),
+      workspace_id: expect.stringMatching(/^local-workspace-[a-f0-9]{12}$/),
+      request_id: `proof-used-${capsule.capsule_id}`,
+      correlation_id: `proof-${capsule.skill_id}-${capsule.capsule_id}`,
+      details: expect.objectContaining({
+        skill_id: capsule.skill_id,
+        requested_action: capsule.requested_action,
+        run_id: "run-store-interface-proof-use",
+        proof_status: "used",
+      }),
+    }),
+  ]);
+  expect(proofUseAuditEvents[0]?.tenant_id).not.toBe("legacy-local-tenant");
+  expect(proofUseAuditEvents[0]?.workspace_id).not.toBe("legacy-local-workspace");
+
   expect(store.clear).toEqual(expect.any(Function));
   expect(store.withTransaction).toBeUndefined();
 }

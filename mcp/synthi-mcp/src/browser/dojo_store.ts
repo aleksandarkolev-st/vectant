@@ -613,9 +613,10 @@ function auditEventRecordFromInput(event: DojoAuditEventInput): DojoAuditEventRe
 }
 
 function proofUseAuditEventInput(record: DojoProofCapsuleRecord, runId: string, now: string): DojoAuditEventInput {
+  const fallbackScopeDigest = proofRecordFallbackScopeDigest(record, runId);
   return {
-    tenant_id: record.tenant_id ?? "legacy-local-tenant",
-    workspace_id: record.workspace_id ?? "legacy-local-workspace",
+    tenant_id: scopedProofRecordTenantId(record, fallbackScopeDigest),
+    workspace_id: scopedProofRecordWorkspaceId(record, fallbackScopeDigest),
     actor: record.issued_by ?? { actor_id: "dojo-proof-store", actor_type: "service" },
     event_type: "proof_used",
     request_id: `proof-used-${record.capsule_id}`,
@@ -633,6 +634,29 @@ function proofUseAuditEventInput(record: DojoProofCapsuleRecord, runId: string, 
       substrate_claim: record.substrate_claim,
     },
   };
+}
+
+function proofRecordFallbackScopeDigest(record: DojoProofCapsuleRecord, runId: string): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      capsule_id: record.capsule_id,
+      skill_id: record.skill_id,
+      requested_action: record.requested_action,
+      nonce: record.nonce,
+      run_id: runId,
+    }))
+    .digest("hex")
+    .slice(0, 12);
+}
+
+function scopedProofRecordTenantId(record: DojoProofCapsuleRecord, fallbackScopeDigest: string): string {
+  const tenantId = record.tenant_id?.trim();
+  return tenantId && tenantId.length > 0 ? tenantId : `local-tenant-${fallbackScopeDigest}`;
+}
+
+function scopedProofRecordWorkspaceId(record: DojoProofCapsuleRecord, fallbackScopeDigest: string): string {
+  const workspaceId = record.workspace_id?.trim();
+  return workspaceId && workspaceId.length > 0 ? workspaceId : `local-workspace-${fallbackScopeDigest}`;
 }
 
 function proofConsumeBlocked(
