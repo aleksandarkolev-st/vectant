@@ -871,6 +871,7 @@ describe("Dojo release gate manifest", () => {
           require_fake_success_state_detection: true,
           require_partial_write_detection: true,
           require_api_downstream_failure_tissue: true,
+          require_api_entity_conflict_faults: true,
           require_prompt_injection_quarantine: true,
           require_ambiguous_document_names: true,
           require_document_tissue_specific_evidence: true,
@@ -1579,6 +1580,7 @@ describe("Dojo release gate manifest", () => {
     vivariumRuntimeGate.release_artifact_requirements.require_stale_missing_data_tissue = false;
     vivariumRuntimeGate.release_artifact_requirements.require_api_validation_latency_tissue = false;
     vivariumRuntimeGate.release_artifact_requirements.require_api_downstream_failure_tissue = false;
+    vivariumRuntimeGate.release_artifact_requirements.require_api_entity_conflict_faults = false;
     vivariumRuntimeGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenVivariumRuntime, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "vivarium_runtime_missing_evil_twin_hardening_requirement",
@@ -1595,6 +1597,7 @@ describe("Dojo release gate manifest", () => {
       "vivarium_runtime_missing_stale_missing_data_tissue_requirement",
       "vivarium_runtime_missing_api_validation_latency_tissue_requirement",
       "vivarium_runtime_missing_api_downstream_failure_tissue_requirement",
+      "vivarium_runtime_missing_api_entity_conflict_fault_requirement",
       "vivarium_runtime_missing_self_check_execution_requirement",
       "vivarium_runtime_missing_required_capabilities:evil_twin_hardening_reduces_attack_success_rate",
       `vivarium_runtime_missing_required_test_files:${missingVivariumRuntimeTestFile}`,

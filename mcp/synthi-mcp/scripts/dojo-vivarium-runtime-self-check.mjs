@@ -71,6 +71,7 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "api_fault_server_returns_fake_visual_success_without_commit",
   "api_fault_server_exposes_partial_write",
   "api_fault_server_supports_error_timeout_downstream",
+  "api_fault_server_supports_entity_conflict_faults",
   "vivarium_runner_executes_baseline_through_fixtures_graph_oracle",
   "vivarium_runner_classifies_fake_success_from_state",
   "vivarium_runner_executes_partial_write_faults",
@@ -252,6 +253,7 @@ export function buildDojoVivariumRuntimeEvidenceManifest({
       fake_success_state_detection_required: true,
       partial_write_detection_required: true,
       api_downstream_failure_tissue_required: true,
+      api_entity_conflict_faults_required: true,
       prompt_injection_quarantine_required: true,
       ambiguous_document_names_required: true,
       document_tissue_specific_evidence_required: true,
@@ -415,6 +417,8 @@ function capabilityMatchers(capability) {
       return ["api fault server leaves an oracle detectable partial write"];
     case "api_fault_server_supports_error_timeout_downstream":
       return ["api fault server supports success validation error timeout and downstream failure"];
+    case "api_fault_server_supports_entity_conflict_faults":
+      return ["exposes duplicate and stale entity api faults", "synthetic conflict state"];
     case "vivarium_runner_executes_baseline_through_fixtures_graph_oracle":
       return ["vivarium runner runs a baseline scenario", "materialized fixtures graph runtime and oracle"];
     case "vivarium_runner_classifies_fake_success_from_state":

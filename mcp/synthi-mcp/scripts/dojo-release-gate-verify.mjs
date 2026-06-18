@@ -3561,6 +3561,7 @@ export function validateDojoVivariumRuntimeEvidenceForRelease(evidence) {
     ["fake_success_state_detection_required", "vivarium_runtime_fake_success_requirement_missing"],
     ["partial_write_detection_required", "vivarium_runtime_partial_write_requirement_missing"],
     ["api_downstream_failure_tissue_required", "vivarium_runtime_api_downstream_failure_tissue_requirement_missing"],
+    ["api_entity_conflict_faults_required", "vivarium_runtime_api_entity_conflict_fault_requirement_missing"],
     ["prompt_injection_quarantine_required", "vivarium_runtime_prompt_injection_requirement_missing"],
     ["ambiguous_document_names_required", "vivarium_runtime_ambiguous_document_requirement_missing"],
     ["document_tissue_specific_evidence_required", "vivarium_runtime_document_tissue_specific_evidence_requirement_missing"],
@@ -5474,6 +5475,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
         stale_missing_data_tissue_required: false,
         api_validation_latency_tissue_required: false,
         api_downstream_failure_tissue_required: false,
+        api_entity_conflict_faults_required: false,
         document_tissue_specific_evidence_required: false,
         ui_tissue_specific_evidence_required: false,
         misleading_toast_tissue_required: false,
@@ -5495,6 +5497,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_stale_missing_data_tissue_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_api_validation_latency_tissue_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_api_downstream_failure_tissue_requirement_missing"));
+  assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_api_entity_conflict_fault_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_document_tissue_specific_evidence_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_ui_tissue_specific_evidence_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_misleading_toast_tissue_requirement_missing"));
@@ -8230,6 +8233,7 @@ async function writeVivariumRuntimeEvidenceForSelfCheck({
       fake_success_state_detection_required: true,
       partial_write_detection_required: true,
       api_downstream_failure_tissue_required: true,
+      api_entity_conflict_faults_required: true,
       prompt_injection_quarantine_required: true,
       ambiguous_document_names_required: true,
       document_tissue_specific_evidence_required: true,
