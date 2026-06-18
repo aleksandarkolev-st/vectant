@@ -343,6 +343,167 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       blocked_by: [],
     }));
 
+    const apiExecutionProofResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      ...tenantContext({
+        actor_id: "integration-api-proof-issuer",
+        roles: ["dojo:proof:issue"],
+        request_id: "req-postgres-proof-api-issue",
+        correlation_id: "corr-postgres-proof-api-issue",
+      }),
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      evidence_record_ids: [evidenceRecord.record_id],
+      ledger_checkpoint_hash: evidenceRecord.ledger_head_hash,
+      substrate_claim: "api",
+      now: "2026-06-11T00:06:25.000Z",
+      expires_at: "2026-06-11T00:16:00.000Z",
+    });
+    expect(apiExecutionProofResponse?.isError).toBeUndefined();
+    const apiExecutionProof = (apiExecutionProofResponse?.structuredContent as {
+      proof_capsule: typeof issuedContent.proof_capsule;
+    }).proof_capsule;
+    const executedApiToolArgs = {
+      ...apiToolArgs,
+      proof_capsule: apiExecutionProof,
+      idempotency_key: "idem-postgres-proof-ledger-api-execute",
+    };
+    const executedApiTool = await dispatchDojoTool("synthi_dojo_run_api_backed_tool", {
+      tool_name: "synthi_api_save_invoice",
+      tool_version: "1.0.0",
+      tool_args: executedApiToolArgs,
+      auth_scopes: ["invoice:write"],
+      dry_run: false,
+      run_id: "api-run-postgres-output-evidence",
+      now: "2026-06-11T00:06:30.000Z",
+      mock_response: {
+        status: 201,
+        body: { invoice: { status: "saved" } },
+      },
+      ...tenantContext({
+        actor_id: "integration-api-tool-runner",
+        roles: ["agent"],
+        request_id: "req-postgres-proof-api-tool-execute",
+        correlation_id: "corr-postgres-proof-api-tool-execute",
+      }),
+    });
+    expect(executedApiTool?.isError).toBeUndefined();
+    const executedApiContent = executedApiTool?.structuredContent as {
+      api_tool_execution: {
+        evidence_record_id: string;
+      };
+      api_tool_execution_evidence_ledger: {
+        ok: boolean;
+        required: boolean;
+        store_kind: string;
+        ledger_records: Array<{
+          record_id: string;
+          run_id: string;
+          skill_id: string;
+          artifact_sha256: string;
+          ledger_head_hash: string;
+          claim_ids: string[];
+          source_refs: string[];
+        }>;
+      };
+    };
+    const outputEvidenceRecordId = executedApiContent.api_tool_execution.evidence_record_id.replace(/^evidence:/, "");
+    expect(executedApiTool?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: false,
+      tool_name: "synthi_api_save_invoice",
+      proof_consume: expect.objectContaining({
+        ok: true,
+        status: "used",
+      }),
+      api_tool_execution: expect.objectContaining({
+        ok: true,
+        status: "executed",
+        evidence_record_id: `evidence:${outputEvidenceRecordId}`,
+      }),
+      api_tool_execution_evidence_ledger: expect.objectContaining({
+        ok: true,
+        required: true,
+        store_kind: "postgres",
+        ledger_records: [
+          expect.objectContaining({
+            record_id: outputEvidenceRecordId,
+            run_id: "api-run-postgres-output-evidence",
+            skill_id: skillId,
+            claim_ids: ["api_tool_execution_recorded"],
+            source_refs: expect.arrayContaining([
+              `proof_capsule:${apiExecutionProof.capsule_id}`,
+              "api_tool:synthi_api_save_invoice@1.0.0",
+              "transport:mock",
+            ]),
+          }),
+        ],
+      }),
+      blocked_by: [],
+    }));
+    const outputEvidenceRows = await pool.query<{
+      record_id: string;
+      skill_id: string;
+      run_id: string;
+      kind: string;
+      artifact_sha256: string;
+      claim_ids: string[];
+      source_refs: string[];
+    }>(
+      `SELECT record_id, skill_id, run_id, kind, artifact_sha256, claim_ids, source_refs
+      FROM dojo_evidence_records
+      WHERE tenant_id = $1 AND workspace_id = $2 AND record_id = $3`,
+      [tenantId, workspaceId, outputEvidenceRecordId]
+    );
+    expect(outputEvidenceRows.rows).toEqual([
+      expect.objectContaining({
+        record_id: outputEvidenceRecordId,
+        skill_id: skillId,
+        run_id: "api-run-postgres-output-evidence",
+        kind: "artifact",
+        artifact_sha256: executedApiContent.api_tool_execution_evidence_ledger.ledger_records[0]?.artifact_sha256,
+        claim_ids: ["api_tool_execution_recorded"],
+        source_refs: expect.arrayContaining([
+          `proof_capsule:${apiExecutionProof.capsule_id}`,
+          "api_tool:synthi_api_save_invoice@1.0.0",
+          "transport:mock",
+        ]),
+      }),
+    ]);
+    await expect(ledgerStore.verifyRecordChain("2026-06-11T00:06:35.000Z")).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      blocked_by: [],
+    }));
+
+    const replayedApiTool = await dispatchDojoTool("synthi_dojo_run_api_backed_tool", {
+      tool_name: "synthi_api_save_invoice",
+      tool_version: "1.0.0",
+      tool_args: executedApiToolArgs,
+      auth_scopes: ["invoice:write"],
+      dry_run: false,
+      run_id: "api-run-postgres-output-replay",
+      now: "2026-06-11T00:06:40.000Z",
+      mock_response: {
+        status: 201,
+        body: { invoice: { status: "saved" } },
+      },
+      ...tenantContext({
+        actor_id: "integration-api-tool-runner",
+        roles: ["agent"],
+        request_id: "req-postgres-proof-api-tool-replay",
+        correlation_id: "corr-postgres-proof-api-tool-replay",
+      }),
+    });
+    expect(replayedApiTool?.isError).toBe(true);
+    expect(replayedApiTool?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_evidence_ledger_resolution_failed",
+      ok: false,
+      proof_capsule_id: apiExecutionProof.capsule_id,
+      proof_not_consumed: true,
+      blocked_by: expect.arrayContaining(["evidence_ledger_checkpoint_mismatch"]),
+      error_codes: ["proof_evidence_claim_unverified"],
+    }));
+
     const forgedCheckpointId = `forged_${sha256(`${tenantId}:${workspaceId}:${skillId}:checkpoint`).slice(0, 24)}`;
     await pool.query(
       `INSERT INTO dojo_ledger_checkpoints (tenant_id, workspace_id, checkpoint_id, ledger_head_hash, record_count, created_at)

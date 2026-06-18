@@ -3452,28 +3452,152 @@ function apiBackedToolSkillBusPreflightSummary(result: DojoToolDispatchResult | 
 }
 
 type ApiBackedToolExecutionPayload = {
-  proof_consume: DojoProofConsumeResult;
+  proof_consume: DojoProofConsumeResult | null;
   api_tool_execution: Awaited<ReturnType<typeof executeDojoApiBackedToolInvocation>> | null;
   api_tool_execution_evidence: DojoApiToolExecutionEvidence[];
+  api_tool_execution_evidence_ledger: ApiBackedToolExecutionEvidenceLedgerSummary | null;
 };
+
+type ApiBackedToolExecutionEvidenceLedgerSummary = {
+  ok: boolean;
+  required: boolean;
+  store_kind: string;
+  configured_env: string[];
+  blocked_by: string[];
+  ledger_records: Array<{
+    record_id: string;
+    run_id: string;
+    skill_id: string;
+    artifact_sha256: string;
+    ledger_head_hash: string;
+    claim_ids: string[];
+    source_refs: string[];
+  }>;
+};
+
+type ApiBackedToolExecutionEvidenceLedgerResolution =
+  | {
+      ok: true;
+      summary: ApiBackedToolExecutionEvidenceLedgerSummary;
+      evidence_ledger?: DojoEvidenceLedgerAppendStore;
+      close?: () => Promise<void>;
+    }
+  | {
+      ok: false;
+      summary: ApiBackedToolExecutionEvidenceLedgerSummary;
+    };
 
 function apiBackedToolExecutionPayloadOpt(value: unknown): ApiBackedToolExecutionPayload | undefined {
   const record = objectOpt(value);
   if (!record) return undefined;
-  const proofConsume = objectOpt(record["proof_consume"]);
-  if (!proofConsume) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(record, "proof_consume")) return undefined;
+  const proofConsume = objectOpt(record["proof_consume"]) ?? null;
   return {
-    proof_consume: proofConsume as unknown as DojoProofConsumeResult,
+    proof_consume: proofConsume as unknown as DojoProofConsumeResult | null,
     api_tool_execution: (objectOpt(record["api_tool_execution"]) ?? null) as ApiBackedToolExecutionPayload["api_tool_execution"],
     api_tool_execution_evidence: Array.isArray(record["api_tool_execution_evidence"])
       ? record["api_tool_execution_evidence"] as DojoApiToolExecutionEvidence[]
       : [],
+    api_tool_execution_evidence_ledger: (objectOpt(record["api_tool_execution_evidence_ledger"]) ?? null) as ApiBackedToolExecutionPayload["api_tool_execution_evidence_ledger"],
   };
 }
 
 function apiBackedToolExecutionPayloadFromDispatchValue(value: unknown): ApiBackedToolExecutionPayload | undefined {
   return apiBackedToolExecutionPayloadOpt(value)
     ?? apiBackedToolExecutionPayloadOpt(objectOpt(value)?.["result"]);
+}
+
+async function resolveApiBackedToolExecutionEvidenceLedgerForRun(input: {
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  run_id: string;
+  checked_at: string;
+}): Promise<ApiBackedToolExecutionEvidenceLedgerResolution> {
+  const enforcement = resolveDojoEnforcementConfig();
+  const storeConfig = resolveDojoEvidenceLedgerStoreConfig();
+  const required = enforcement.production_enforcement && enforcement.require_evidence_ledger;
+  const baseSummary = {
+    required,
+    store_kind: storeConfig.store_kind,
+    configured_env: storeConfig.configured_env,
+    ledger_records: [],
+  };
+  if (!required) {
+    return {
+      ok: true,
+      summary: {
+        ...baseSummary,
+        ok: true,
+        blocked_by: [],
+      },
+    };
+  }
+
+  const resolution = await resolveDojoEvidenceLedgerAppendStore({
+    tenant_id: input.tenant.tenant_id,
+    workspace_id: input.tenant.workspace_id,
+    tenant_context: input.tenant,
+    app_origin: input.skill.app_origin,
+  });
+  if (!resolution.ok || !resolution.evidence_ledger) {
+    return {
+      ok: false,
+      summary: {
+        ...baseSummary,
+        ok: false,
+        store_kind: resolution.store_kind,
+        configured_env: [...new Set([...storeConfig.configured_env, ...resolution.configured_env])],
+        blocked_by: dedupeStrings([
+          "dojo_api_tool_execution_evidence_ledger_required",
+          ...resolution.blocked_by,
+        ]),
+      },
+    };
+  }
+  return {
+    ok: true,
+    evidence_ledger: resolution.evidence_ledger,
+    close: resolution.close,
+    summary: {
+      ...baseSummary,
+      ok: true,
+      store_kind: resolution.store_kind,
+      configured_env: [...new Set([...storeConfig.configured_env, ...resolution.configured_env])],
+      blocked_by: [],
+    },
+  };
+}
+
+function apiBackedToolExecutionEvidenceRecordId(input: {
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  run_id: string;
+  api_tool: DojoApiBackedMcpTool;
+  evidence_index: number;
+  artifact_sha256: string;
+}): string {
+  return `api_tool_${hashId([
+    input.tenant.tenant_id,
+    input.tenant.workspace_id,
+    input.skill.skill_id,
+    input.run_id,
+    input.api_tool.tool_name,
+    input.api_tool.tool_version,
+    String(input.evidence_index),
+    input.artifact_sha256,
+  ].join(":"))}`;
+}
+
+function apiBackedToolExecutionEvidenceLedgerRecordSummary(record: DojoEvidenceLedgerRecord): ApiBackedToolExecutionEvidenceLedgerSummary["ledger_records"][number] {
+  return {
+    record_id: record.record_id,
+    run_id: record.run_id,
+    skill_id: record.skill_id,
+    artifact_sha256: record.artifact_sha256,
+    ledger_head_hash: record.ledger_head_hash,
+    claim_ids: [...record.claim_ids],
+    source_refs: [...record.source_refs],
+  };
 }
 
 async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
@@ -3643,6 +3767,7 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         proof_consume: null,
         api_tool_execution: null,
         api_tool_execution_evidence: [],
+        api_tool_execution_evidence_ledger: null,
         blocked_by: blockedBy,
       });
     }
@@ -3673,6 +3798,9 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         proof_validation: proofValidation,
         license_kernel: licenseDecision,
         proof_consume: null,
+        api_tool_execution: null,
+        api_tool_execution_evidence: [],
+        api_tool_execution_evidence_ledger: null,
         blocked_by: preflightBlockedBy,
         error_codes: normalizeDojoProofErrorCodes(preflightBlockedBy),
       });
@@ -3689,20 +3817,21 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         evidence_ledger_validation: evidenceLedgerValidation,
         evidence_claim_results: evidenceClaimResults,
         proof_consume: null,
+        api_tool_execution: null,
+        api_tool_execution_evidence: [],
+        api_tool_execution_evidence_ledger: null,
         blocked_by: transport.blocked_by,
       });
     }
     const executeApiBackedTool = async (): Promise<ApiBackedToolExecutionPayload | ReturnType<typeof blockDojoMcpSkillBusExecution>> => {
-      const proofConsume = durableProofRegistry.context.required
-        ? await durableProofRegistry.context.proof_store.markProofCapsuleUsed(proofCapsule.capsule_id, runId, now)
-        : markDojoProofExecution({
-          registry: dojoSkillRegistry,
-          proof_capsule: proofCapsule,
-          run_id: runId,
-          now,
-        });
-      if (!proofConsume.ok) {
-        const blockedBy = dedupeStrings([...proofConsume.blocked_by, ...licenseDecision.blocked_by]);
+      const executionEvidenceLedger = await resolveApiBackedToolExecutionEvidenceLedgerForRun({
+        tenant,
+        skill: skill.skill,
+        run_id: runId,
+        checked_at: now,
+      });
+      if (!executionEvidenceLedger.ok) {
+        const blockedBy = executionEvidenceLedger.summary.blocked_by;
         return blockDojoMcpSkillBusExecution(
           blockedBy,
           {
@@ -3712,50 +3841,124 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
             error_codes: normalizeDojoProofErrorCodes(blockedBy),
           },
           {
-            proof_consume: proofConsume,
+            proof_consume: null,
             api_tool_execution: null,
             api_tool_execution_evidence: [],
+            api_tool_execution_evidence_ledger: executionEvidenceLedger.summary,
           } satisfies ApiBackedToolExecutionPayload
         );
       }
 
-      const evidenceRecords: DojoApiToolExecutionEvidence[] = [];
-      const execution = await executeDojoApiBackedToolInvocation({
-        tool: apiTool,
-        args: toolArgs,
-        license_context: licenseContext,
-        validate_proof: ({ proof_capsule }) => apiToolProofValidationForSkill(
-          skill.skill,
-          apiTool,
-          proof_capsule,
-          now,
-          licenseDecision.validation
-        ),
-        transport: transport.transport,
-        write_evidence: (evidence) => {
-          const record = cloneJson(evidence);
-          evidenceRecords.push(record);
-          return `evidence:api_tool_${hashId(JSON.stringify(record))}`;
-        },
-      });
-      const payload: ApiBackedToolExecutionPayload = {
-        proof_consume: proofConsume,
-        api_tool_execution: execution,
-        api_tool_execution_evidence: evidenceRecords,
-      };
-      if (!execution.ok) {
-        return blockDojoMcpSkillBusExecution(
-          execution.blocked_by,
-          {
-            ok: false,
-            status: "blocked",
-            blocked_by: [...execution.blocked_by],
-            error_codes: normalizeDojoProofErrorCodes(execution.blocked_by),
+      try {
+        const proofConsume = durableProofRegistry.context.required
+          ? await durableProofRegistry.context.proof_store.markProofCapsuleUsed(proofCapsule.capsule_id, runId, now)
+          : markDojoProofExecution({
+            registry: dojoSkillRegistry,
+            proof_capsule: proofCapsule,
+            run_id: runId,
+            now,
+          });
+        if (!proofConsume.ok) {
+          const blockedBy = dedupeStrings([...proofConsume.blocked_by, ...licenseDecision.blocked_by]);
+          return blockDojoMcpSkillBusExecution(
+            blockedBy,
+            {
+              ok: false,
+              status: "blocked",
+              blocked_by: blockedBy,
+              error_codes: normalizeDojoProofErrorCodes(blockedBy),
+            },
+            {
+              proof_consume: proofConsume,
+              api_tool_execution: null,
+              api_tool_execution_evidence: [],
+              api_tool_execution_evidence_ledger: executionEvidenceLedger.summary,
+            } satisfies ApiBackedToolExecutionPayload
+          );
+        }
+
+        const evidenceRecords: DojoApiToolExecutionEvidence[] = [];
+        const execution = await executeDojoApiBackedToolInvocation({
+          tool: apiTool,
+          args: toolArgs,
+          license_context: licenseContext,
+          validate_proof: ({ proof_capsule }) => apiToolProofValidationForSkill(
+            skill.skill,
+            apiTool,
+            proof_capsule,
+            now,
+            licenseDecision.validation
+          ),
+          transport: transport.transport,
+          write_evidence: async (evidence) => {
+            const record = cloneJson(evidence);
+            evidenceRecords.push(record);
+            if (!executionEvidenceLedger.evidence_ledger) {
+              return `evidence:api_tool_${hashId(JSON.stringify(record))}`;
+            }
+            const artifactPayload = JSON.stringify(record);
+            const artifactSha = sha256String(artifactPayload);
+            const redactionManifestSha = sha256String(JSON.stringify({
+              artifact_sha256: artifactSha,
+              redaction_policy: "digest_only",
+              raw_payload_stored: false,
+            }));
+            const ledgerRecord = await executionEvidenceLedger.evidence_ledger.append({
+              record_id: apiBackedToolExecutionEvidenceRecordId({
+                tenant,
+                skill: skill.skill,
+                run_id: runId,
+                api_tool: apiTool,
+                evidence_index: evidenceRecords.length - 1,
+                artifact_sha256: artifactSha,
+              }),
+              skill_id: skill.skill.skill_id,
+              run_id: runId,
+              kind: "artifact",
+              artifact_uri: `dojo://api-tool-execution/${encodeURIComponent(runId)}/${encodeURIComponent(apiTool.tool_name)}`,
+              artifact_sha256: artifactSha,
+              redaction_manifest_sha256: redactionManifestSha,
+              claim_ids: ["api_tool_execution_recorded"],
+              created_at: now,
+              created_by: tenant.actor_id,
+              retention_class: "standard",
+              source_refs: dedupeStrings([
+                `proof_capsule:${proofCapsule.capsule_id}`,
+                `api_tool:${apiTool.tool_name}@${apiTool.tool_version}`,
+                `request:${record.request_digest}`,
+                `response:${record.response_digest}`,
+                `transport:${transport.mode}`,
+                ...(record.idempotency_key ? [`idempotency_key_sha256:${sha256String(record.idempotency_key)}`] : []),
+              ]),
+            });
+            executionEvidenceLedger.summary.ledger_records.push(
+              apiBackedToolExecutionEvidenceLedgerRecordSummary(ledgerRecord)
+            );
+            return `evidence:${ledgerRecord.record_id}`;
           },
-          payload
-        );
+        });
+        const payload: ApiBackedToolExecutionPayload = {
+          proof_consume: proofConsume,
+          api_tool_execution: execution,
+          api_tool_execution_evidence: evidenceRecords,
+          api_tool_execution_evidence_ledger: executionEvidenceLedger.summary,
+        };
+        if (!execution.ok) {
+          return blockDojoMcpSkillBusExecution(
+            execution.blocked_by,
+            {
+              ok: false,
+              status: "blocked",
+              blocked_by: [...execution.blocked_by],
+              error_codes: normalizeDojoProofErrorCodes(execution.blocked_by),
+            },
+            payload
+          );
+        }
+        return payload;
+      } finally {
+        await executionEvidenceLedger.close?.();
       }
-      return payload;
     };
 
     const skillBusDispatch = skillBusResolution
@@ -3805,7 +4008,7 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
           ...licenseDecision,
           ok: false,
           status: "blocked",
-          proof_record: executionPayload?.proof_consume.record ?? licenseDecision.proof_record,
+          proof_record: executionPayload?.proof_consume?.record ?? licenseDecision.proof_record,
           blocked_by: blockedBy,
           error_codes: normalizeDojoProofErrorCodes(blockedBy),
           validation: {
@@ -3820,6 +4023,7 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         proof_consume: executionPayload?.proof_consume ?? null,
         api_tool_execution: executionPayload?.api_tool_execution ?? null,
         api_tool_execution_evidence: executionPayload?.api_tool_execution_evidence ?? [],
+        api_tool_execution_evidence_ledger: executionPayload?.api_tool_execution_evidence_ledger ?? null,
         blocked_by: blockedBy,
         error_codes: normalizeDojoProofErrorCodes(blockedBy),
       });
@@ -3839,13 +4043,21 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         mcp_skill_bus_dispatch: apiBackedToolSkillBusPreflightSummary(skillBusDispatch),
         evidence_ledger_validation: evidenceLedgerValidation,
         evidence_claim_results: evidenceClaimResults,
+        proof_consume: null,
+        api_tool_execution: null,
+        api_tool_execution_evidence: [],
+        api_tool_execution_evidence_ledger: null,
         blocked_by: ["api_tool_execution_result_missing"],
         error_codes: ["api_tool_execution_result_missing"],
       });
     }
     const { proof_consume: proofConsume, api_tool_execution: execution, api_tool_execution_evidence: evidenceRecords } = executionPayload;
     if (!execution) {
-      const blockedBy = dedupeStrings([...proofConsume.blocked_by, ...licenseDecision.blocked_by]);
+      const blockedBy = dedupeStrings([
+        ...(proofConsume?.blocked_by ?? []),
+        ...(executionPayload.api_tool_execution_evidence_ledger?.blocked_by ?? []),
+        ...licenseDecision.blocked_by,
+      ]);
       return errorResponse(blockedBy[0] ?? "dojo_api_backed_tool_proof_consume_blocked", {
         ok: false,
         error: blockedBy[0] ?? "dojo_api_backed_tool_proof_consume_blocked",
@@ -3868,7 +4080,7 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
           ...licenseDecision,
           ok: false,
           status: "blocked",
-          proof_record: proofConsume.record ?? licenseDecision.proof_record,
+          proof_record: proofConsume?.record ?? licenseDecision.proof_record,
           blocked_by: blockedBy,
           error_codes: normalizeDojoProofErrorCodes(blockedBy),
           validation: {
@@ -3883,6 +4095,7 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         proof_consume: proofConsume,
         api_tool_execution: null,
         api_tool_execution_evidence: [],
+        api_tool_execution_evidence_ledger: executionPayload.api_tool_execution_evidence_ledger ?? null,
         blocked_by: blockedBy,
         error_codes: normalizeDojoProofErrorCodes(blockedBy),
       });
@@ -3906,11 +4119,12 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
       proof_validation: execution.proof_validation ?? proofValidation,
       license_kernel: {
         ...licenseDecision,
-        proof_record: proofConsume.record ?? licenseDecision.proof_record,
+        proof_record: proofConsume?.record ?? licenseDecision.proof_record,
       },
       proof_consume: proofConsume,
       api_tool_execution: execution,
       api_tool_execution_evidence: evidenceRecords,
+      api_tool_execution_evidence_ledger: executionPayload.api_tool_execution_evidence_ledger ?? null,
       blocked_by: execution.blocked_by,
       ok: execution.ok,
     });
