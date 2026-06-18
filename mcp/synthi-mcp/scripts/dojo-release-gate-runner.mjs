@@ -155,11 +155,14 @@ export function buildDojoReleaseGateExecutionPlan({
     .map((id) => {
       const gate = gatesById.get(id);
       const missingEnv = missingRequiredEnv(gate, env);
+      const invalidEnv = missingEnv.length === 0 ? invalidRequiredEnv(gate, env) : [];
       const skipReason = missingEnv.length > 0 && !failOnMissingEnv
         ? "missing_required_env"
-        : gate.script_exists === false
-          ? "missing_package_script"
-          : null;
+        : invalidEnv.length > 0 && !failOnMissingEnv
+          ? "invalid_required_env"
+          : gate.script_exists === false
+            ? "missing_package_script"
+            : null;
       return {
         gate_id: gate.id,
         tier: gate.tier,
@@ -172,9 +175,11 @@ export function buildDojoReleaseGateExecutionPlan({
         expected_artifacts: expectedGateArtifacts(gate),
         requires_env: [...(gate.requires_env || [])],
         missing_env: missingEnv,
+        invalid_env: invalidEnv,
         status: skipReason ? "skipped" : "planned",
         skip_reason: skipReason,
         fail_if_missing_env: Boolean(failOnMissingEnv && missingEnv.length > 0),
+        fail_if_invalid_env: Boolean(failOnMissingEnv && invalidEnv.length > 0),
       };
     });
   return {
@@ -247,6 +252,15 @@ export async function executeDojoReleaseGatePlan({
         ...buildSkippedGateResult(gatePlan),
         status: "failed",
         failure_reason: "missing_required_env",
+      });
+      if (!continueOnFailure) break;
+      continue;
+    }
+    if (gatePlan.fail_if_invalid_env) {
+      results.push({
+        ...buildSkippedGateResult(gatePlan),
+        status: "failed",
+        failure_reason: "invalid_required_env",
       });
       if (!continueOnFailure) break;
       continue;
@@ -542,6 +556,7 @@ function buildDryRunGateResult(gatePlan) {
     expected_artifacts: gatePlan.expected_artifacts,
     requires_env: gatePlan.requires_env,
     missing_env: gatePlan.missing_env,
+    invalid_env: gatePlan.invalid_env,
   };
 }
 
@@ -556,6 +571,7 @@ function buildSkippedGateResult(gatePlan) {
     expected_artifacts: gatePlan.expected_artifacts,
     requires_env: gatePlan.requires_env,
     missing_env: gatePlan.missing_env,
+    invalid_env: gatePlan.invalid_env,
   };
 }
 
@@ -725,6 +741,38 @@ function resolveExpectedArtifactPath(value) {
 
 function missingRequiredEnv(gate, env = process.env) {
   return (gate.requires_env || []).filter((key) => !truthy(env[key]));
+}
+
+function invalidRequiredEnv(gate, env = process.env) {
+  const requirements = Array.isArray(gate.env_value_requirements) ? gate.env_value_requirements : [];
+  const invalid = [];
+  for (const requirement of requirements) {
+    const key = String(requirement?.env || "");
+    if (!key || !truthy(env[key])) continue;
+    const value = env[key];
+    if (requirement.type === "number") {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) {
+        invalid.push({ env: key, value: String(value), reason: "not_number" });
+        continue;
+      }
+      if (Number.isFinite(Number(requirement.min)) && numeric < Number(requirement.min)) {
+        invalid.push({
+          env: key,
+          value: String(value),
+          reason: `below_min:${Number(requirement.min)}`,
+        });
+      }
+      if (Number.isFinite(Number(requirement.max)) && numeric > Number(requirement.max)) {
+        invalid.push({
+          env: key,
+          value: String(value),
+          reason: `above_max:${Number(requirement.max)}`,
+        });
+      }
+    }
+  }
+  return invalid;
 }
 
 function inferNpmExtraArgs(gate) {

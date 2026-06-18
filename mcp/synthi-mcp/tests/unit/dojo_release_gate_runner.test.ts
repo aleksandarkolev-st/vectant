@@ -118,6 +118,22 @@ describe("Dojo release gate runner", () => {
       missing_env: ["SOAK_DURATION_MIN"],
     }));
 
+    const tooShortPlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "nightly",
+      env: { SYNTHI_SESSION_ID: "session-123", SOAK_DURATION_MIN: "10" },
+    });
+    expect(tooShortPlan.gates.find((gate) => gate.gate_id === "soak_performance")).toEqual(expect.objectContaining({
+      status: "skipped",
+      skip_reason: "invalid_required_env",
+      missing_env: [],
+      invalid_env: [expect.objectContaining({
+        env: "SOAK_DURATION_MIN",
+        value: "10",
+        reason: "below_min:60",
+      })],
+    }));
+
     const readyPlan = buildDojoReleaseGateExecutionPlan({
       manifest: releaseManifest,
       scope: "nightly",
@@ -126,6 +142,7 @@ describe("Dojo release gate runner", () => {
     expect(readyPlan.gates.find((gate) => gate.gate_id === "soak_performance")).toEqual(expect.objectContaining({
       status: "planned",
       missing_env: [],
+      invalid_env: [],
     }));
   });
 
@@ -172,6 +189,37 @@ describe("Dojo release gate runner", () => {
         status: "failed",
         failure_reason: "missing_required_env",
         missing_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
+      }),
+    ]);
+  });
+
+  it("can escalate invalid environment requirements into failed execution results", async () => {
+    const plan = buildDojoReleaseGateExecutionPlan({
+      manifest: manifest(),
+      scope: "nightly",
+      gateIds: ["soak_performance"],
+      env: { SYNTHI_SESSION_ID: "session-123", SOAK_DURATION_MIN: "10" },
+      failOnMissingEnv: true,
+    });
+    const results = await executeDojoReleaseGatePlan({
+      plan,
+      outDir: await mkdtemp(join(tmpdir(), "dojo-release-gate-runner-")),
+      executor: async () => {
+        throw new Error("executor_should_not_run_for_invalid_env");
+      },
+    });
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        gate_id: "soak_performance",
+        status: "failed",
+        failure_reason: "invalid_required_env",
+        missing_env: [],
+        invalid_env: [expect.objectContaining({
+          env: "SOAK_DURATION_MIN",
+          value: "10",
+          reason: "below_min:60",
+        })],
       }),
     ]);
   });

@@ -1460,6 +1460,14 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     required_for: ["nightly", "enterprise_release"],
     evidence_kind: "metrics",
     requires_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
+    env_value_requirements: [
+      {
+        env: "SOAK_DURATION_MIN",
+        type: "number",
+        min: 60,
+        reason: "enterprise soak artifacts must satisfy the 3600-second verifier threshold",
+      },
+    ],
     default_summary_path: "mcp/synthi-mcp/.soak/soak-summary.json",
     default_events_path: "mcp/synthi-mcp/.soak/soak-events.ndjson",
     enterprise_artifact_requirements: {
@@ -3321,6 +3329,14 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     );
     if (missingSoakEnv.length > 0) {
       errors.push(`soak_performance_missing_required_env:${missingSoakEnv.join(",")}`);
+    }
+    const soakDurationEnvRule = (soakPerformanceGate.env_value_requirements || [])
+      .find((requirement) => requirement?.env === "SOAK_DURATION_MIN");
+    if (!soakDurationEnvRule) {
+      errors.push("soak_performance_missing_duration_env_value_requirement");
+    } else {
+      if (soakDurationEnvRule.type !== "number") errors.push("soak_performance_duration_env_value_requirement_not_numeric");
+      if (Number(soakDurationEnvRule.min) < 60) errors.push("soak_performance_duration_env_value_min_too_low");
     }
     if (!Number.isFinite(Number(soakPerformanceGate.enterprise_artifact_requirements?.require_min_duration_seconds))) {
       errors.push("soak_performance_missing_duration_requirement");
