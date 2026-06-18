@@ -5016,7 +5016,7 @@ describe("Agent Dojo MCP tools", () => {
     expect(dojoSkillRegistry.listProofRecords()).toEqual([]);
   });
 
-  it("authorizes hosted runtime sessions before consuming production proof capsules", async () => {
+  it("enforces hosted runtime session RBAC before consuming production proof capsules", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
     expect(publish?.isError).toBeUndefined();
@@ -5076,6 +5076,37 @@ describe("Agent Dojo MCP tools", () => {
     }));
     expect(proofAfterBlockedRuntime).not.toHaveProperty("first_used_at");
 
+    const blockedSessionResponse = await dispatchDojoTool("synthi_dojo_create_hosted_runtime_session", {
+      skill_id: skillId,
+      run_id: "hosted-runtime-run-unauthorized-session",
+      workspace_url: "https://app.example.test/settings",
+      origin_allowlist: ["https://app.example.test"],
+      ttl_ms: 600_000,
+      credential_ttl_ms: 300_000,
+      now: "2026-06-11T00:01:20.000Z",
+      ...productionTenantContextArgs({
+        actor_id: "hosted-runtime-agent-a",
+        roles: ["agent"],
+        request_id: "req-hosted-runtime-session-blocked",
+        correlation_id: "corr-hosted-runtime-session-blocked",
+      }),
+    });
+    expect(blockedSessionResponse?.isError).toBe(true);
+    expect(blockedSessionResponse?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      error: "dojo_hosted_runtime_session_role_required",
+      skill_id: skillId,
+      run_id: "hosted-runtime-run-unauthorized-session",
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:runtime:create"]),
+      rbac_authorization: expect.objectContaining({
+        action: "hosted_runtime_session_create",
+        actor_id: "hosted-runtime-agent-a",
+        required_roles: ["dojo:runtime:create"],
+        matched_roles: [],
+      }),
+    }));
+    expect(blockedSessionResponse?.structuredContent).not.toHaveProperty("credentials");
+
     const sessionResponse = await dispatchDojoTool("synthi_dojo_create_hosted_runtime_session", {
       skill_id: skillId,
       run_id: "hosted-runtime-run-authorized",
@@ -5086,6 +5117,7 @@ describe("Agent Dojo MCP tools", () => {
       now: "2026-06-11T00:01:30.000Z",
       ...productionTenantContextArgs({
         actor_id: "hosted-runtime-agent-a",
+        roles: ["dojo:runtime:create"],
         request_id: "req-hosted-runtime-session",
         correlation_id: "corr-hosted-runtime-session",
       }),
@@ -5096,6 +5128,11 @@ describe("Agent Dojo MCP tools", () => {
       implementation_status: "executable",
       runtime_scope: "hosted_runtime_gateway",
       production_runtime: false,
+      rbac_authorization: expect.objectContaining({
+        action: "hosted_runtime_session_create",
+        actor_id: "hosted-runtime-agent-a",
+        matched_roles: ["dojo:runtime:create"],
+      }),
       runtime_session: expect.objectContaining({
         schema_version: "synthi.dojo.hostedRuntimeSession.v1",
         skill_id: skillId,

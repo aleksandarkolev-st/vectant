@@ -6496,6 +6496,24 @@ async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolRe
   }
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_create_hosted_runtime_session");
   if (!skill.ok) return skill.error;
+  const hostedRuntimeSessionRbacAuthorization = resolveDojoEnforcementConfig().production_enforcement
+    ? authorizeDojoGovernanceAction({
+      tenant_context: skill.tenant,
+      action: "hosted_runtime_session_create",
+    })
+    : undefined;
+  if (hostedRuntimeSessionRbacAuthorization && !hostedRuntimeSessionRbacAuthorization.ok) {
+    return errorResponse("dojo_hosted_runtime_session_role_required", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      run_id: runId,
+      workspace_id: skill.skill.workspace_id,
+      actor_id: skill.tenant.actor_id,
+      actor_type: skill.tenant.actor_type,
+      blocked_by: hostedRuntimeSessionRbacAuthorization.blocked_by,
+      rbac_authorization: hostedRuntimeSessionRbacAuthorization,
+    });
+  }
   const session = await gatewayResolution.gateway.createSession({
     tenant: skill.tenant,
     skill_id: skill.skill.skill_id,
@@ -6528,6 +6546,7 @@ async function dojoCreateHostedRuntimeSessionTool(args: unknown): Promise<ToolRe
     runtime_session: hostedRuntimeSessionPublicView(session.session),
     credentials: session.credentials,
     audit_event_id: session.audit_event_id,
+    ...(hostedRuntimeSessionRbacAuthorization ? { rbac_authorization: hostedRuntimeSessionRbacAuthorization } : {}),
   });
 }
 

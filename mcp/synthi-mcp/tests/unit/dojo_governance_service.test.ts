@@ -180,6 +180,15 @@ describe("Dojo governance service", () => {
       matched_roles: ["dojo:source:apply"],
       blocked_by: [],
     }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "hosted_runtime_session_create",
+      tenant_context: tenantContextFixture({ roles: ["dojo:runtime:create"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:runtime:create"],
+      blocked_by: [],
+    }));
   });
 
   it("fails closed for governance actions without required RBAC roles", () => {

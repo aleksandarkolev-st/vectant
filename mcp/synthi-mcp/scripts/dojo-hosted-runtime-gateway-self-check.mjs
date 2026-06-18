@@ -27,6 +27,7 @@ export const DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES = [
   "tests/unit/dojo_hosted_runtime_gateway.test.ts",
   "tests/unit/dojo_hosted_runtime_gateway_resolver.test.ts",
   "tests/unit/dojo_hosted_runtime_postgres_store.test.ts",
+  "tests/unit/dojo_tools.test.ts",
 ];
 
 export const DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES = [
@@ -38,6 +39,7 @@ export const DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES = [
   "hosted_runtime_blocks_local_network_without_explicit_egress_opt_in",
   "hosted_runtime_authorizes_only_matching_context_and_writes_evidence",
   "hosted_runtime_blocks_credential_origin_egress_and_run_mismatch",
+  "hosted_runtime_session_creation_enforces_rbac_before_credentials",
   "hosted_runtime_fails_closed_when_evidence_writer_missing",
   "hosted_runtime_requires_revocation_reason",
   "hosted_runtime_blocks_expired_and_revoked_sessions",
@@ -189,6 +191,7 @@ export function buildDojoHostedRuntimeGatewayEvidenceManifest({
       short_lived_credentials_required: true,
       stored_secret_redaction_required: true,
       origin_allowlist_required: true,
+      runtime_session_rbac_required: true,
       local_network_policy_required: true,
       screenshot_redaction_required: true,
       skill_run_binding_required: true,
@@ -286,6 +289,8 @@ function capabilityMatchers(capability) {
       return ["authorizes runtime actions only with matching tenant skill run origin credential", "evidence write"];
     case "hosted_runtime_blocks_credential_origin_egress_and_run_mismatch":
       return ["blocks action attempts", "wrong credentials", "origin drift", "local network egress", "run mismatch"];
+    case "hosted_runtime_session_creation_enforces_rbac_before_credentials":
+      return ["enforces hosted runtime session rbac", "before consuming production proof capsules"];
     case "hosted_runtime_fails_closed_when_evidence_writer_missing":
       return ["fails closed", "evidence cannot be written"];
     case "hosted_runtime_requires_revocation_reason":

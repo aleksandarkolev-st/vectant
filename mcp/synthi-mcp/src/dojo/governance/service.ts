@@ -39,7 +39,8 @@ export type DojoGovernanceRbacAction =
   | "source_drift_detection"
   | "source_affordance_pr_prepare"
   | "source_affordance_pr_branch"
-  | "source_drift_expiry";
+  | "source_drift_expiry"
+  | "hosted_runtime_session_create";
 
 export interface DojoGovernanceRbacPolicy {
   administrator_roles?: string[];
@@ -77,6 +78,7 @@ export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPo
     source_affordance_pr_prepare: ["dojo:source:review", "source-registry"],
     source_affordance_pr_branch: ["dojo:source:apply"],
     source_drift_expiry: ["dojo:source:apply"],
+    hosted_runtime_session_create: ["dojo:runtime:create"],
   },
 };
 
@@ -1240,6 +1242,10 @@ function normalizeGovernanceRbacPolicy(
       source_drift_expiry: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.source_drift_expiry,
         ...(policy.action_roles?.source_drift_expiry ?? []),
+      ]),
+      hosted_runtime_session_create: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.hosted_runtime_session_create,
+        ...(policy.action_roles?.hosted_runtime_session_create ?? []),
       ]),
     },
   };
