@@ -1186,6 +1186,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_evil_twin_attack_measurement: true,
       require_evil_twin_expanded_assumption_extraction: true,
       require_evil_twin_hardening_loop: true,
+      require_evil_twin_expanded_hardening_guardrails: true,
       require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
@@ -2747,6 +2748,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_evil_twin_attack_measurement", "vivarium_runtime_missing_evil_twin_measurement_requirement"],
       ["require_evil_twin_expanded_assumption_extraction", "vivarium_runtime_missing_evil_twin_expanded_assumption_requirement"],
       ["require_evil_twin_hardening_loop", "vivarium_runtime_missing_evil_twin_hardening_requirement"],
+      ["require_evil_twin_expanded_hardening_guardrails", "vivarium_runtime_missing_evil_twin_expanded_hardening_requirement"],
       ["require_self_check_executes_tests", "vivarium_runtime_missing_self_check_execution_requirement"],
     ]) {
       if (!vivariumRuntimeGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);

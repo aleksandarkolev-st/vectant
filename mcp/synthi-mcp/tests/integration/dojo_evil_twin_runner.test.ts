@@ -283,6 +283,59 @@ describe("Dojo Evil Twin runtime", () => {
       }),
     ]));
   });
+
+  it("synthesizes expanded hardening guardrails for runtime attack classes", async () => {
+    const reorderedRows = scenarioFixture({ mutation_kind: "reordered_rows", risk_tags: ["unstable_order"] });
+    const scenarios = [
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "stale_entity", risk_tags: ["stale_data"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "prompt_injection_unquarantined", risk_tags: ["prompt_injection", "untrusted_document"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "threshold_breach", risk_tags: ["policy_threshold"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "invalid_value", risk_tags: ["invalid_value"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "approval_unavailable", risk_tags: ["approval_unavailable"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "destructive_adjacency", risk_tags: ["destructive_write"] })),
+      toDojoScenarioDefinition(reorderedRows, { expected_outcome_overrides: { reordered_rows: "block" } }),
+    ];
+
+    const hardening = await hardenDojoEvilTwinAttacks({
+      graph: graphFixture(),
+      scenarios,
+      now: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(hardening.before.attack_success_rate).toBeGreaterThan(0);
+    expect(hardening.after.attack_success_rate).toBe(0);
+    expect(hardening.applied_guardrails).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        guardrail_id: "guard_fresh_entity_version",
+        predicate: "stale_entity_count == 0",
+      }),
+      expect.objectContaining({
+        guardrail_id: "guard_document_instruction_quarantined",
+        predicate: "document_instruction_quarantined == true",
+      }),
+      expect.objectContaining({
+        guardrail_id: "guard_policy_context_clear",
+        predicate: "policy_blocked_action_count == 0",
+      }),
+      expect.objectContaining({
+        guardrail_id: "guard_invalid_value_free",
+        predicate: "invalid_value_count == 0",
+      }),
+      expect.objectContaining({
+        guardrail_id: "guard_approver_available",
+        predicate: "identity_approver_unavailable == false",
+      }),
+      expect.objectContaining({
+        guardrail_id: "guard_no_destructive_adjacency",
+        predicate: "ui_destructive_adjacency == false",
+      }),
+      expect.objectContaining({
+        guardrail_id: "guard_stable_table_order",
+        predicate: "ui_table_reordered == false",
+      }),
+    ]));
+    expect(hardening.after.attacks.every((attack) => attack.attack_succeeded === false)).toBe(true);
+  });
 });
 
 function graphFixture(input: { requireAuth?: boolean } = {}): DojoSkillGraph {

@@ -3032,11 +3032,15 @@ describe("Dojo release gate artifact verifier", () => {
     const incomplete = vivariumRuntimeEvidenceFixture({
       ok: false,
       capability_coverage_complete: false,
-      missing_capabilities: ["evil_twin_hardening_reduces_attack_success_rate"],
+      missing_capabilities: [
+        "evil_twin_hardening_reduces_attack_success_rate",
+        "evil_twin_hardens_expanded_attack_classes",
+      ],
       vivarium_contract: {
         ...vivariumRuntimeEvidenceFixture().vivarium_contract,
         evil_twin_hardening_loop_required: false,
         evil_twin_expanded_assumption_extraction_required: false,
+        evil_twin_expanded_hardening_guardrails_required: false,
         executable_checkride_required: false,
         ambiguous_document_names_required: false,
         document_tissue_specific_evidence_required: false,
@@ -3064,9 +3068,10 @@ describe("Dojo release gate artifact verifier", () => {
     expect(rejected.errors).toEqual(expect.arrayContaining([
       "vivarium_runtime_not_ok",
       "vivarium_runtime_coverage_incomplete",
-      "vivarium_runtime_missing_capabilities:evil_twin_hardening_reduces_attack_success_rate",
+      "vivarium_runtime_missing_capabilities:evil_twin_hardening_reduces_attack_success_rate,evil_twin_hardens_expanded_attack_classes",
       "vivarium_runtime_evil_twin_hardening_requirement_missing",
       "vivarium_runtime_evil_twin_expanded_assumption_requirement_missing",
+      "vivarium_runtime_evil_twin_expanded_hardening_requirement_missing",
       "vivarium_runtime_checkride_requirement_missing",
       "vivarium_runtime_ambiguous_document_requirement_missing",
       "vivarium_runtime_document_tissue_specific_evidence_requirement_missing",
@@ -6644,6 +6649,7 @@ function vivariumRuntimeEvidenceFixture(overrides = {}) {
       evil_twin_attack_measurement_required: true,
       evil_twin_expanded_assumption_extraction_required: true,
       evil_twin_hardening_loop_required: true,
+      evil_twin_expanded_hardening_guardrails_required: true,
       self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_VIVARIUM_RUNTIME_TEST_FILES],

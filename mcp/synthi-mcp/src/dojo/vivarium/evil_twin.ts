@@ -81,6 +81,15 @@ interface DojoEvilTwinAssumptionRule {
   evidence_label: string;
 }
 
+interface DojoEvilTwinHardeningRule {
+  suggestion_id: string;
+  assumption_kinds: DojoEvilTwinAssumptionKind[];
+  mutation_kinds: string[];
+  blocked_by_includes: string[];
+  guardrail_id: string;
+  predicate: string;
+}
+
 const DOJO_EVIL_TWIN_ASSUMPTION_RULES: DojoEvilTwinAssumptionRule[] = [
   {
     kind: "entity_uniqueness",
@@ -178,6 +187,169 @@ const DOJO_EVIL_TWIN_ASSUMPTION_RULES: DojoEvilTwinAssumptionRule[] = [
     mutation_kinds: ["destructive_adjacency"],
     node_selector: "action",
     evidence_label: "destructive controls can be adjacent to safe controls",
+  },
+];
+
+const DOJO_EVIL_TWIN_HARDENING_RULES: DojoEvilTwinHardeningRule[] = [
+  {
+    suggestion_id: "require_stable_entity_identity_guardrail",
+    assumption_kinds: ["entity_uniqueness"],
+    mutation_kinds: ["duplicate_entity"],
+    blocked_by_includes: ["stable_entity_identity", "duplicate_entity"],
+    guardrail_id: "guard_stable_entity_identity",
+    predicate: "duplicate_display_name_count <= 1",
+  },
+  {
+    suggestion_id: "require_fresh_entity_version_guardrail",
+    assumption_kinds: ["entity_freshness"],
+    mutation_kinds: ["stale_entity"],
+    blocked_by_includes: ["stable_entity_identity", "stale_entity"],
+    guardrail_id: "guard_fresh_entity_version",
+    predicate: "stale_entity_count == 0",
+  },
+  {
+    suggestion_id: "require_durable_state_assertion",
+    assumption_kinds: ["stable_success_signal"],
+    mutation_kinds: ["fake_success"],
+    blocked_by_includes: ["durable_state_evidence", "fake_success"],
+    guardrail_id: "guard_no_fake_success",
+    predicate: "fake_success == false",
+  },
+  {
+    suggestion_id: "require_toast_state_assertion",
+    assumption_kinds: ["stable_success_signal"],
+    mutation_kinds: ["misleading_toast"],
+    blocked_by_includes: ["misleading_toast"],
+    guardrail_id: "guard_no_misleading_toast",
+    predicate: "ui_misleading_toast == false",
+  },
+  {
+    suggestion_id: "require_api_atomicity_assertion",
+    assumption_kinds: ["api_atomicity"],
+    mutation_kinds: ["partial_write"],
+    blocked_by_includes: ["partial_write"],
+    guardrail_id: "guard_no_partial_write",
+    predicate: "partial_write == false",
+  },
+  {
+    suggestion_id: "require_downstream_success_guardrail",
+    assumption_kinds: ["api_atomicity"],
+    mutation_kinds: ["downstream_failure"],
+    blocked_by_includes: ["downstream_failure"],
+    guardrail_id: "guard_downstream_available",
+    predicate: "api_downstream_failure == false",
+  },
+  {
+    suggestion_id: "require_api_latency_budget_guardrail",
+    assumption_kinds: ["api_latency"],
+    mutation_kinds: ["network_latency"],
+    blocked_by_includes: ["timeout", "latency"],
+    guardrail_id: "guard_api_latency_not_injected",
+    predicate: "api_latency_ms == 0",
+  },
+  {
+    suggestion_id: "require_auth_continuity_guardrail",
+    assumption_kinds: ["auth_continuity"],
+    mutation_kinds: ["auth_expiry"],
+    blocked_by_includes: ["auth_valid"],
+    guardrail_id: "guard_auth_valid",
+    predicate: "auth_valid == true",
+  },
+  {
+    suggestion_id: "require_role_permission_guardrail",
+    assumption_kinds: ["role_permission"],
+    mutation_kinds: ["permission_change"],
+    blocked_by_includes: ["permission", "role"],
+    guardrail_id: "guard_role_not_downgraded",
+    predicate: "permission_downgraded == false",
+  },
+  {
+    suggestion_id: "require_permission_presence_guardrail",
+    assumption_kinds: ["role_permission"],
+    mutation_kinds: ["missing_permission"],
+    blocked_by_includes: ["permission"],
+    guardrail_id: "guard_required_permission_present",
+    predicate: "missing_permission_count == 0",
+  },
+  {
+    suggestion_id: "require_visible_input_surface_guardrail",
+    assumption_kinds: ["input_visibility"],
+    mutation_kinds: ["input_omission", "hidden_required_field", "button_moved", "button_hidden_menu", "validation_below_fold", "modal_appears"],
+    blocked_by_includes: ["required_evidence_missing", "ui_"],
+    guardrail_id: "guard_visible_input_surface",
+    predicate: "ui_layout_mutation_count == 0",
+  },
+  {
+    suggestion_id: "require_stable_table_order_guardrail",
+    assumption_kinds: ["stable_table_order"],
+    mutation_kinds: ["reordered_rows"],
+    blocked_by_includes: ["table_reorder"],
+    guardrail_id: "guard_stable_table_order",
+    predicate: "ui_table_reordered == false",
+  },
+  {
+    suggestion_id: "require_valid_input_values_guardrail",
+    assumption_kinds: ["currency_validity"],
+    mutation_kinds: ["invalid_value"],
+    blocked_by_includes: ["invalid_value"],
+    guardrail_id: "guard_invalid_value_free",
+    predicate: "invalid_value_count == 0",
+  },
+  {
+    suggestion_id: "require_document_field_guardrail",
+    assumption_kinds: ["file_identity"],
+    mutation_kinds: ["missing_document_field"],
+    blocked_by_includes: ["document_missing_field"],
+    guardrail_id: "guard_document_fields_present",
+    predicate: "document_missing_field_count == 0",
+  },
+  {
+    suggestion_id: "require_uncorrupted_document_guardrail",
+    assumption_kinds: ["file_identity"],
+    mutation_kinds: ["corrupted_document"],
+    blocked_by_includes: ["document_corrupted"],
+    guardrail_id: "guard_document_not_corrupted",
+    predicate: "corrupted_document_count == 0",
+  },
+  {
+    suggestion_id: "require_unambiguous_document_guardrail",
+    assumption_kinds: ["file_identity"],
+    mutation_kinds: ["ambiguous_document_name"],
+    blocked_by_includes: ["document_ambiguous_name"],
+    guardrail_id: "guard_document_name_unambiguous",
+    predicate: "ambiguous_document_name_group_count == 0",
+  },
+  {
+    suggestion_id: "require_document_instruction_quarantine_guardrail",
+    assumption_kinds: ["document_trust"],
+    mutation_kinds: ["prompt_injection", "prompt_injection_unquarantined"],
+    blocked_by_includes: ["document_instruction"],
+    guardrail_id: "guard_document_instruction_quarantined",
+    predicate: "document_instruction_quarantined == true",
+  },
+  {
+    suggestion_id: "require_approver_availability_guardrail",
+    assumption_kinds: ["approval_availability"],
+    mutation_kinds: ["approval_unavailable"],
+    blocked_by_includes: ["approver", "human_decision_required"],
+    guardrail_id: "guard_approver_available",
+    predicate: "identity_approver_unavailable == false",
+  },
+  {
+    suggestion_id: "require_policy_threshold_guardrail",
+    assumption_kinds: ["policy_threshold"],
+    mutation_kinds: ["threshold_breach"],
+    blocked_by_includes: ["policy", "threshold"],
+    guardrail_id: "guard_policy_context_clear",
+    predicate: "policy_blocked_action_count == 0",
+  },
+  {
+    suggestion_id: "require_destructive_adjacency_guardrail",
+    assumption_kinds: ["destructive_adjacency"],
+    mutation_kinds: ["destructive_adjacency"],
+    blocked_by_includes: ["destructive"],
+    guardrail_id: "guard_no_destructive_adjacency",
+    predicate: "ui_destructive_adjacency == false",
   },
 ];
 
@@ -325,8 +497,7 @@ function attackRunForScenario(
   assumption: DojoEvilTwinAssumption,
   scenarioRun: DojoScenarioRunResult
 ): DojoEvilTwinAttackRun {
-  const attackSucceeded = scenarioRun.oracle_result.status === "failed"
-    || (!scenarioRun.oracle_result.expectation_met && scenarioRun.graph_result.status === "completed");
+  const attackSucceeded = evilTwinAttackSucceeded(scenarioRun);
   return {
     attack_id: `attack_${assumption.kind}_${scenarioRun.scenario_id}`,
     scenario_id: scenarioRun.scenario_id,
@@ -336,18 +507,32 @@ function attackRunForScenario(
     attack_succeeded: attackSucceeded,
     finding: scenarioRun.oracle_result.finding,
     blocked_by: scenarioRun.oracle_result.blocked_by,
-    hardening_suggestions: hardeningSuggestionsFor(scenarioRun),
+    hardening_suggestions: attackSucceeded ? hardeningSuggestionsFor(assumption, scenarioRun) : [],
     scenario_run: scenarioRun,
   };
 }
 
-function hardeningSuggestionsFor(scenarioRun: DojoScenarioRunResult): string[] {
-  return scenarioRun.oracle_result.blocked_by.map((reason) => {
-    if (reason.includes("stable_entity_identity")) return "require_stable_entity_identity_guardrail";
-    if (reason.includes("durable_state_evidence")) return "require_durable_state_assertion";
-    if (reason.includes("partial_write")) return "require_api_atomicity_assertion";
-    return `harden:${reason}`;
-  });
+function evilTwinAttackSucceeded(scenarioRun: DojoScenarioRunResult): boolean {
+  return scenarioRun.oracle_result.status === "failed"
+    || (!scenarioRun.oracle_result.expectation_met && scenarioRun.graph_result.status === "completed");
+}
+
+function hardeningSuggestionsFor(
+  assumption: DojoEvilTwinAssumption,
+  scenarioRun: DojoScenarioRunResult
+): string[] {
+  const suggestions = new Set<string>();
+  const blockedBy = scenarioRun.oracle_result.blocked_by;
+  for (const rule of DOJO_EVIL_TWIN_HARDENING_RULES) {
+    if (hardeningRuleMatchesAttack(rule, assumption, scenarioRun, blockedBy)) {
+      suggestions.add(rule.suggestion_id);
+    }
+  }
+  for (const reason of blockedBy) {
+    const matched = DOJO_EVIL_TWIN_HARDENING_RULES.some((rule) => reasonMatchesHardeningRule(rule, reason));
+    if (!matched) suggestions.add(`harden:${reason}`);
+  }
+  return [...suggestions].sort();
 }
 
 function hardeningGuardrailsFor(suggestions: string[]): Array<{
@@ -357,29 +542,32 @@ function hardeningGuardrailsFor(suggestions: string[]): Array<{
 }> {
   const guardrails = new Map<string, { guardrail_id: string; predicate: string; source_suggestion: string }>();
   for (const suggestion of suggestions) {
-    if (suggestion === "require_stable_entity_identity_guardrail") {
-      guardrails.set("guard_stable_entity_identity", {
-        guardrail_id: "guard_stable_entity_identity",
-        predicate: "duplicate_display_name_count <= 1",
-        source_suggestion: suggestion,
-      });
-    }
-    if (suggestion === "require_durable_state_assertion") {
-      guardrails.set("guard_no_fake_success", {
-        guardrail_id: "guard_no_fake_success",
-        predicate: "fake_success == false",
-        source_suggestion: suggestion,
-      });
-    }
-    if (suggestion === "require_api_atomicity_assertion") {
-      guardrails.set("guard_no_partial_write", {
-        guardrail_id: "guard_no_partial_write",
-        predicate: "partial_write == false",
-        source_suggestion: suggestion,
-      });
-    }
+    const rule = DOJO_EVIL_TWIN_HARDENING_RULES.find((candidate) => candidate.suggestion_id === suggestion);
+    if (!rule) continue;
+    guardrails.set(rule.guardrail_id, {
+      guardrail_id: rule.guardrail_id,
+      predicate: rule.predicate,
+      source_suggestion: suggestion,
+    });
   }
   return [...guardrails.values()];
+}
+
+function hardeningRuleMatchesAttack(
+  rule: DojoEvilTwinHardeningRule,
+  assumption: DojoEvilTwinAssumption,
+  scenarioRun: DojoScenarioRunResult,
+  blockedBy: string[]
+): boolean {
+  const matchesAssumption = rule.assumption_kinds.includes(assumption.kind);
+  const matchesMutation = rule.mutation_kinds.includes(scenarioRun.mutation_kind);
+  const matchesReason = blockedBy.some((reason) => reasonMatchesHardeningRule(rule, reason));
+  return (matchesAssumption && matchesMutation) || (matchesMutation && matchesReason);
+}
+
+function reasonMatchesHardeningRule(rule: DojoEvilTwinHardeningRule, reason: string): boolean {
+  const normalizedReason = reason.toLowerCase();
+  return rule.blocked_by_includes.some((needle) => normalizedReason.includes(needle.toLowerCase()));
 }
 
 function applyHardeningGuardrails(

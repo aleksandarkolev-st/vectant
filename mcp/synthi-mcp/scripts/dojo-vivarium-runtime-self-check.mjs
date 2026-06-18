@@ -112,6 +112,7 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "evil_twin_catches_auth_expiry_attacks",
   "evil_twin_passes_substrate_hooks",
   "evil_twin_hardening_reduces_attack_success_rate",
+  "evil_twin_hardens_expanded_attack_classes",
 ];
 
 const args = parseArgs(process.argv.slice(2));
@@ -284,6 +285,7 @@ export function buildDojoVivariumRuntimeEvidenceManifest({
       evil_twin_attack_measurement_required: true,
       evil_twin_expanded_assumption_extraction_required: true,
       evil_twin_hardening_loop_required: true,
+      evil_twin_expanded_hardening_guardrails_required: true,
       self_check_executes_tests_required: true,
     },
     test_files: [...testFiles],
@@ -507,6 +509,8 @@ function capabilityMatchers(capability) {
       return ["evil twin runtime passes substrate executor hooks"];
     case "evil_twin_hardening_reduces_attack_success_rate":
       return ["evil twin runtime reruns attacks after guardrail hardening", "reduces attack success rate"];
+    case "evil_twin_hardens_expanded_attack_classes":
+      return ["evil twin runtime synthesizes expanded hardening guardrails", "runtime attack classes"];
     default:
       return [normalizeText(capability)];
   }

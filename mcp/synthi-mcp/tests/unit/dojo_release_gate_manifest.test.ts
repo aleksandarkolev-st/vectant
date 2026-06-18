@@ -895,6 +895,7 @@ describe("Dojo release gate manifest", () => {
           require_evil_twin_attack_measurement: true,
           require_evil_twin_expanded_assumption_extraction: true,
           require_evil_twin_hardening_loop: true,
+          require_evil_twin_expanded_hardening_guardrails: true,
           require_self_check_executes_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
@@ -1565,11 +1566,15 @@ describe("Dojo release gate manifest", () => {
     const vivariumRuntimeGate = brokenVivariumRuntime.gates.find((gate) => gate.id === "dojo_vivarium_runtime_self_check");
     const missingVivariumRuntimeTestFile = DOJO_VIVARIUM_RUNTIME_TEST_FILES[0];
     vivariumRuntimeGate.release_artifact_requirements.required_vivarium_runtime_capabilities = DOJO_VIVARIUM_RUNTIME_CAPABILITIES
-      .filter((capability) => capability !== "evil_twin_hardening_reduces_attack_success_rate");
+      .filter((capability) => ![
+        "evil_twin_hardening_reduces_attack_success_rate",
+        "evil_twin_hardens_expanded_attack_classes",
+      ].includes(capability));
     vivariumRuntimeGate.release_artifact_requirements.required_test_files = DOJO_VIVARIUM_RUNTIME_TEST_FILES
       .filter((file) => file !== missingVivariumRuntimeTestFile);
     vivariumRuntimeGate.release_artifact_requirements.require_evil_twin_hardening_loop = false;
     vivariumRuntimeGate.release_artifact_requirements.require_evil_twin_expanded_assumption_extraction = false;
+    vivariumRuntimeGate.release_artifact_requirements.require_evil_twin_expanded_hardening_guardrails = false;
     vivariumRuntimeGate.release_artifact_requirements.require_executable_checkride = false;
     vivariumRuntimeGate.release_artifact_requirements.require_ambiguous_document_names = false;
     vivariumRuntimeGate.release_artifact_requirements.require_document_tissue_specific_evidence = false;
@@ -1589,6 +1594,7 @@ describe("Dojo release gate manifest", () => {
     expect(validateDojoReleaseGateManifest(brokenVivariumRuntime, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "vivarium_runtime_missing_evil_twin_hardening_requirement",
       "vivarium_runtime_missing_evil_twin_expanded_assumption_requirement",
+      "vivarium_runtime_missing_evil_twin_expanded_hardening_requirement",
       "vivarium_runtime_missing_checkride_requirement",
       "vivarium_runtime_missing_ambiguous_document_requirement",
       "vivarium_runtime_missing_document_tissue_specific_evidence_requirement",
@@ -1605,7 +1611,7 @@ describe("Dojo release gate manifest", () => {
       "vivarium_runtime_missing_api_entity_conflict_fault_requirement",
       "vivarium_runtime_missing_api_entity_conflict_runner_tissue_requirement",
       "vivarium_runtime_missing_self_check_execution_requirement",
-      "vivarium_runtime_missing_required_capabilities:evil_twin_hardening_reduces_attack_success_rate",
+      "vivarium_runtime_missing_required_capabilities:evil_twin_hardening_reduces_attack_success_rate,evil_twin_hardens_expanded_attack_classes",
       `vivarium_runtime_missing_required_test_files:${missingVivariumRuntimeTestFile}`,
     ]));
 
