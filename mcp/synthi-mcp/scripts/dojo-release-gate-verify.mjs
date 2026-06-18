@@ -20,6 +20,9 @@ import {
   validateDojoVisualProofReport,
 } from "./dojo-release-gate-manifest.mjs";
 import {
+  runDojoReleaseGateRunner,
+} from "./dojo-release-gate-runner.mjs";
+import {
   DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES,
   DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES,
 } from "./dojo-agent-ready-ui-contract-self-check.mjs";
@@ -221,10 +224,38 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       evidencePath: runnerEvidencePath,
       releaseCandidate,
     }, () => verifyDojoReleaseGateRunReportArtifact({
+      id: "release_gate_runner",
       reportPath,
       evidencePath: runnerEvidencePath,
       manifest,
       requirePromotionReady: releaseCandidate || truthy(args["require-release-gate-runner-promotion-ready"]),
+    })));
+  }
+  const shouldVerifyReleaseGateRunnerSelfCheck = releaseCandidate
+    || truthy(args["include-release-gate-runner-self-check-default"])
+    || args["release-gate-runner-self-check-report"]
+    || args["release-gate-runner-self-check-evidence"];
+  if (shouldVerifyReleaseGateRunnerSelfCheck) {
+    const runnerGate = findGate(manifest, "dojo_release_gate_runner_self_check") || {};
+    const reportPath = resolveRepoPath(args["release-gate-runner-self-check-report"]
+      || runnerGate.default_report_path
+      || path.join(DEFAULT_RELEASE_GATE_RUNNER_DIR, "dojo-release-gate-runner-report.json"));
+    const runnerEvidencePath = args["release-gate-runner-self-check-evidence"]
+      ? resolveRepoPath(args["release-gate-runner-self-check-evidence"])
+      : runnerGate.default_evidence_path
+        ? resolveRepoPath(runnerGate.default_evidence_path)
+        : resolveRepoPath(path.join(DEFAULT_RELEASE_GATE_RUNNER_DIR, "dojo-release-gate-runner.evidence.json"));
+    releaseGateRunnerResults.push(await verifyArtifactSection({
+      id: "dojo_release_gate_runner_self_check",
+      artifactPath: reportPath,
+      evidencePath: runnerEvidencePath,
+      releaseCandidate,
+    }, () => verifyDojoReleaseGateRunReportArtifact({
+      id: "dojo_release_gate_runner_self_check",
+      reportPath,
+      evidencePath: runnerEvidencePath,
+      manifest,
+      requirePromotionReady: false,
     })));
   }
 
@@ -892,6 +923,7 @@ export async function verifyDojoReleaseGateManifestArtifacts({ manifestPath, evi
 }
 
 export async function verifyDojoReleaseGateRunReportArtifact({
+  id = "release_gate_runner",
   reportPath,
   evidencePath,
   manifest,
@@ -965,7 +997,7 @@ export async function verifyDojoReleaseGateRunReportArtifact({
     });
   }
   return {
-    id: "release_gate_runner",
+    id,
     ok: errors.length === 0,
     errors,
     artifact_path: reportPath,
@@ -4560,6 +4592,24 @@ async function runSelfCheck({ outDir }) {
   });
   assert.equal(manifestResult.ok, true, manifestResult.errors.join(";"));
 
+  const runnerArtifacts = await runDojoReleaseGateRunner({
+    scope: "milestone",
+    dryRun: true,
+    execute: false,
+    outDir: path.join(outDir, "release-gate-runner"),
+    manifest: manifestArtifacts.manifest,
+    generatedAt: "2026-06-11T00:00:00.000Z",
+    env: {},
+  });
+  const releaseGateRunnerResult = await verifyDojoReleaseGateRunReportArtifact({
+    id: "dojo_release_gate_runner_self_check",
+    reportPath: runnerArtifacts.report_path,
+    evidencePath: runnerArtifacts.evidence_path,
+    manifest: manifestArtifacts.manifest,
+    requirePromotionReady: false,
+  });
+  assert.equal(releaseGateRunnerResult.ok, true, releaseGateRunnerResult.errors.join(";"));
+
   const proofSelfCheckDir = path.join(outDir, "proof-self-check");
   await mkdir(proofSelfCheckDir, { recursive: true });
   const proofSelfCheckArtifacts = await writeProofSelfCheckArtifactsForSelfCheck({ outDir: proofSelfCheckDir });
@@ -5563,6 +5613,7 @@ async function runSelfCheck({ outDir }) {
     ok: true,
     verified_sections: [
       summarizeSection(manifestResult),
+      summarizeSection(releaseGateRunnerResult),
       summarizeSection(postgresControlPlaneResult),
       summarizeSection(evidenceAuthorityResult),
       summarizeSection(implementationStatusResult),

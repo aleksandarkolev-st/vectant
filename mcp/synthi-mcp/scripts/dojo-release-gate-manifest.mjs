@@ -346,6 +346,29 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
   },
   {
+    id: "dojo_release_gate_runner_self_check",
+    tier: "T2",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:release-gates:runner:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:release-gates:runner:self-check",
+    required_for: ["milestone", "release"],
+    evidence_kind: "proof_artifact",
+    report_schema_version: "synthi.dojo.releaseGateRun.v1",
+    evidence_schema_version: "synthi.dojo.releaseGateRunEvidence.v1",
+    default_report_path: "tmp/dojo-release-gate-runner/dojo-release-gate-runner-report.json",
+    default_evidence_path: "tmp/dojo-release-gate-runner/dojo-release-gate-runner.evidence.json",
+    artifact_requirements: {
+      require_manifest_validation: true,
+      require_scope_plans: ["minimal-pr", "milestone"],
+      require_no_live_or_nightly_in_minimal_plan: true,
+      require_skips_missing_env_gates: true,
+      require_fake_execution_promotion_ready: true,
+      require_report_evidence_pair: true,
+      require_stdout_stderr_digest_match: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "mcp_integration_tests",
     tier: "T2",
     working_directory: "mcp/synthi-mcp",
@@ -1362,6 +1385,7 @@ export const DOJO_MINIMAL_PR_GATE_IDS = [
 export const DOJO_MILESTONE_GATE_IDS = [
   ...DOJO_MINIMAL_PR_GATE_IDS,
   "dojo_implementation_status_self_check",
+  "dojo_release_gate_runner_self_check",
   "mcp_integration_tests",
   "dojo_postgres_control_plane_self_check",
   "dojo_evidence_authority_self_check",
@@ -1612,6 +1636,38 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!implementationStatusGate.artifact_requirements?.require_json_report_digest_match) {
       errors.push("implementation_status_missing_json_report_digest_requirement");
+    }
+  }
+  const releaseGateRunnerGate = gates.find((gate) => gate.id === "dojo_release_gate_runner_self_check");
+  if (releaseGateRunnerGate) {
+    if (releaseGateRunnerGate.package_script !== "proof:dojo:release-gates:runner:self-check") {
+      errors.push("release_gate_runner_missing_package_script");
+    }
+    if (releaseGateRunnerGate.report_schema_version !== "synthi.dojo.releaseGateRun.v1") {
+      errors.push("release_gate_runner_missing_report_schema");
+    }
+    if (releaseGateRunnerGate.evidence_schema_version !== "synthi.dojo.releaseGateRunEvidence.v1") {
+      errors.push("release_gate_runner_missing_evidence_schema");
+    }
+    if (!releaseGateRunnerGate.default_report_path) errors.push("release_gate_runner_missing_default_report_path");
+    if (!releaseGateRunnerGate.default_evidence_path) errors.push("release_gate_runner_missing_default_evidence_path");
+    for (const [requirement, errorCode] of [
+      ["require_manifest_validation", "release_gate_runner_missing_manifest_validation_requirement"],
+      ["require_no_live_or_nightly_in_minimal_plan", "release_gate_runner_missing_minimal_scope_boundary_requirement"],
+      ["require_skips_missing_env_gates", "release_gate_runner_missing_missing_env_skip_requirement"],
+      ["require_fake_execution_promotion_ready", "release_gate_runner_missing_fake_execution_requirement"],
+      ["require_report_evidence_pair", "release_gate_runner_missing_report_evidence_pair_requirement"],
+      ["require_stdout_stderr_digest_match", "release_gate_runner_missing_log_digest_requirement"],
+      ["require_json_report_digest_match", "release_gate_runner_missing_json_report_digest_requirement"],
+    ]) {
+      if (!releaseGateRunnerGate.artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const missingRunnerScopes = missingRequiredEntries(
+      ["minimal-pr", "milestone"],
+      releaseGateRunnerGate.artifact_requirements?.require_scope_plans,
+    );
+    if (missingRunnerScopes.length > 0) {
+      errors.push(`release_gate_runner_missing_scope_plans:${missingRunnerScopes.join(",")}`);
     }
   }
   const dojoSelfCheckGate = gates.find((gate) => gate.id === "dojo_self_check");
@@ -3161,6 +3217,7 @@ export async function runSelfCheck({ outDir }) {
   assert.equal(manifest.tiers.length, 9);
   assert(manifest.minimal_pr_gate_ids.length > 0);
   assert(manifest.milestone_gate_ids.includes("dojo_self_check"));
+  assert(manifest.milestone_gate_ids.includes("dojo_release_gate_runner_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_postgres_control_plane_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_affordance_codemod_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_full_visual_proof"));

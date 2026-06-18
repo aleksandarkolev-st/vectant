@@ -142,6 +142,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:vivarium-runtime:self-check": "node scripts/dojo-vivarium-runtime-self-check.mjs",
     "proof:dojo:checkride-license:self-check": "node scripts/dojo-checkride-license-self-check.mjs",
     "proof:dojo:implementation-status:self-check": "node scripts/dojo-implementation-status-self-check.mjs",
+    "proof:dojo:release-gates:runner:self-check": "node scripts/dojo-release-gate-runner.mjs --self-check",
     "proof:dojo:case-law-runtime:self-check": "node scripts/dojo-case-law-runtime-self-check.mjs",
     "proof:dojo:hosted-runtime-gateway:self-check": "node scripts/dojo-hosted-runtime-gateway-self-check.mjs",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
@@ -228,6 +229,27 @@ describe("Dojo release gate manifest", () => {
           require_self_check_executes_tests: true,
           require_no_failed_tests: true,
           require_no_skipped_tests: true,
+          require_stdout_stderr_digest_match: true,
+          require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
+        id: "dojo_release_gate_runner_self_check",
+        tier: "T2",
+        package_script: "proof:dojo:release-gates:runner:self-check",
+        evidence_kind: "proof_artifact",
+        script_exists: true,
+        report_schema_version: "synthi.dojo.releaseGateRun.v1",
+        evidence_schema_version: "synthi.dojo.releaseGateRunEvidence.v1",
+        default_report_path: "tmp/dojo-release-gate-runner/dojo-release-gate-runner-report.json",
+        default_evidence_path: "tmp/dojo-release-gate-runner/dojo-release-gate-runner.evidence.json",
+        artifact_requirements: expect.objectContaining({
+          require_manifest_validation: true,
+          require_scope_plans: ["minimal-pr", "milestone"],
+          require_no_live_or_nightly_in_minimal_plan: true,
+          require_skips_missing_env_gates: true,
+          require_fake_execution_promotion_ready: true,
+          require_report_evidence_pair: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -1145,6 +1167,35 @@ describe("Dojo release gate manifest", () => {
       `implementation_status_missing_required_test_files:${missingImplementationStatusTestFile}`,
     ]));
 
+    const brokenReleaseGateRunner = JSON.parse(JSON.stringify(manifest));
+    const releaseGateRunnerGate = brokenReleaseGateRunner.gates.find((gate) => gate.id === "dojo_release_gate_runner_self_check");
+    releaseGateRunnerGate.report_schema_version = "wrong";
+    releaseGateRunnerGate.evidence_schema_version = "wrong";
+    releaseGateRunnerGate.default_report_path = "";
+    releaseGateRunnerGate.default_evidence_path = "";
+    releaseGateRunnerGate.artifact_requirements.require_scope_plans = ["minimal-pr"];
+    releaseGateRunnerGate.artifact_requirements.require_manifest_validation = false;
+    releaseGateRunnerGate.artifact_requirements.require_no_live_or_nightly_in_minimal_plan = false;
+    releaseGateRunnerGate.artifact_requirements.require_skips_missing_env_gates = false;
+    releaseGateRunnerGate.artifact_requirements.require_fake_execution_promotion_ready = false;
+    releaseGateRunnerGate.artifact_requirements.require_report_evidence_pair = false;
+    releaseGateRunnerGate.artifact_requirements.require_stdout_stderr_digest_match = false;
+    releaseGateRunnerGate.artifact_requirements.require_json_report_digest_match = false;
+    expect(validateDojoReleaseGateManifest(brokenReleaseGateRunner, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "release_gate_runner_missing_report_schema",
+      "release_gate_runner_missing_evidence_schema",
+      "release_gate_runner_missing_default_report_path",
+      "release_gate_runner_missing_default_evidence_path",
+      "release_gate_runner_missing_manifest_validation_requirement",
+      "release_gate_runner_missing_minimal_scope_boundary_requirement",
+      "release_gate_runner_missing_missing_env_skip_requirement",
+      "release_gate_runner_missing_fake_execution_requirement",
+      "release_gate_runner_missing_report_evidence_pair_requirement",
+      "release_gate_runner_missing_log_digest_requirement",
+      "release_gate_runner_missing_json_report_digest_requirement",
+      "release_gate_runner_missing_scope_plans:milestone",
+    ]));
+
     const brokenEvidenceAuthority = JSON.parse(JSON.stringify(manifest));
     const evidenceAuthorityGate = brokenEvidenceAuthority.gates.find((gate) => gate.id === "dojo_evidence_authority_self_check");
     const missingEvidenceAuthorityTestFile = DOJO_EVIDENCE_AUTHORITY_TEST_FILES[0];
@@ -1606,6 +1657,7 @@ describe("Dojo release gate manifest", () => {
     expect(manifest.minimal_pr_gate_ids).not.toContain("soak_performance");
     expect(manifest.release_gate_ids).toEqual(expect.arrayContaining([
       "dojo_implementation_status_self_check",
+      "dojo_release_gate_runner_self_check",
       "workflow_e2e_hosted",
       "dojo_mcp_host_conformance",
       "dojo_generated_pr_self_check",
@@ -1651,9 +1703,10 @@ describe("Dojo release gate manifest", () => {
       release_gate_count: manifest.release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 31,
+      proof_artifact_gate_count: 32,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_implementation_status_self_check",
+        "dojo_release_gate_runner_self_check",
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
         "dojo_evidence_authority_self_check",

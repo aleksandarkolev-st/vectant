@@ -1928,6 +1928,9 @@ describe("Dojo release gate artifact verifier", () => {
       generatedAt: "2026-06-11T00:00:00.000Z",
       packageScripts,
     });
+    const releaseGateRunnerGate = manifest.gates.find((gate) => gate.id === "dojo_release_gate_runner_self_check");
+    releaseGateRunnerGate.default_report_path = path.join(dir, "dojo-release-gate-runner-self-check.json");
+    releaseGateRunnerGate.default_evidence_path = path.join(dir, "dojo-release-gate-runner-self-check.evidence.json");
     const selfCheckGate = manifest.gates.find((gate) => gate.id === "dojo_self_check");
     selfCheckGate.default_report_path = selfCheck.summaryPath;
     selfCheckGate.default_evidence_path = selfCheck.productionEvidencePath;
@@ -1972,6 +1975,14 @@ describe("Dojo release gate artifact verifier", () => {
       });
       gate.default_report_path = visual.reportPath;
     }
+    const releaseGateRunner = await writeReleaseGateRunnerFixture({
+      dir,
+      basename: "dojo-release-gate-runner-self-check",
+      manifest,
+      packageScripts,
+    });
+    expect(releaseGateRunnerGate.default_report_path).toBe(releaseGateRunner.reportPath);
+    expect(releaseGateRunnerGate.default_evidence_path).toBe(releaseGateRunner.evidencePath);
     const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
     const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
     await writeManifestPair({ manifest, manifestPath, evidencePath });
@@ -2005,8 +2016,8 @@ describe("Dojo release gate artifact verifier", () => {
       },
     });
 
-    expect(verified.ok).toBe(true);
     expect(verified.errors).toEqual([]);
+    expect(verified.ok).toBe(true);
     expect(verified.dojo_self_check).toEqual([
       expect.objectContaining({
         id: "dojo_self_check",
@@ -2029,6 +2040,14 @@ describe("Dojo release gate artifact verifier", () => {
         evidence_path: implementationStatusEvidencePath,
       }),
     ]);
+    expect(verified.release_gate_runner).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "dojo_release_gate_runner_self_check",
+        ok: true,
+        artifact_path: releaseGateRunner.reportPath,
+        evidence_path: releaseGateRunner.evidencePath,
+      }),
+    ]));
     expect(verified.evidence_authority).toEqual([
       expect.objectContaining({
         id: "dojo_evidence_authority_self_check",
