@@ -26,6 +26,7 @@ import {
   type DojoGraphNodeRegistry,
 } from "./node_registry.js";
 import { isParseableDojoGuardrailPredicate } from "./guardrail_predicates.js";
+import { validateDojoTenantContext, type DojoTenantContext } from "../mcp/execution_policy_gate.js";
 
 export type DojoGraphNodeRunStatus = "completed" | "blocked" | "skipped" | "paused";
 export type DojoGraphRunStatus = "completed" | "blocked" | "failed" | "paused";
@@ -116,6 +117,7 @@ export type DojoGraphEvidenceWriter = (
 ) => string | void | Promise<string | void>;
 
 export interface DojoSkillGraphRuntimeInput {
+  tenant?: DojoTenantContext;
   graph: DojoSkillGraph;
   run_id?: string;
   mode?: DojoGraphMode;
@@ -142,6 +144,20 @@ export class DojoSkillGraphRuntime {
     const mode = input.mode ?? input.graph.mode;
     const graph = { ...input.graph, mode };
     const runId = input.run_id ?? createGraphRunId(graph);
+    if (mode === "production") {
+      const tenantBlockedBy = validateDojoTenantContext(input.tenant, "graph_runtime");
+      if (tenantBlockedBy.length > 0) {
+        return {
+          ok: false,
+          status: "blocked",
+          mode,
+          run_id: runId,
+          node_results: [],
+          blocked_by: tenantBlockedBy,
+          evidence_refs: [],
+        };
+      }
+    }
     const validation = validateDojoSkillGraph(graph);
     if (!validation.ok) {
       return {

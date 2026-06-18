@@ -12,6 +12,7 @@ import {
 } from "../../src/dojo/graph/node_registry.js";
 import { createFakeDojoSubstrateExecutor } from "../../src/dojo/graph/substrate_executor.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
+import type { DojoTenantContext } from "../../src/dojo/mcp/execution_policy_gate.js";
 
 describe("Dojo graph runtime", () => {
   it("validates node handler registry coverage and blocks missing runtime handlers", async () => {
@@ -31,6 +32,7 @@ describe("Dojo graph runtime", () => {
     );
     await expect(runtime.execute({
       graph,
+      tenant: graphTenantContext(),
       node_registry: missingActionRegistry,
       inputs: {
         workspace_verified: true,
@@ -55,6 +57,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -76,6 +79,51 @@ describe("Dojo graph runtime", () => {
     }));
   });
 
+  it("fails closed before graph validation, evidence, or substrate execution when production tenant context is incomplete", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const events: DojoGraphEvidenceEvent[] = [];
+    let substrateExecutions = 0;
+
+    const result = await runtime.execute({
+      graph: graphFixture(),
+      tenant: invalidGraphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: async () => {
+        substrateExecutions += 1;
+        return { ok: true, status: "executed", substrate: "dom", evidence_refs: ["substrate:should-not-run"] };
+      },
+      evidence_writer: (event) => {
+        events.push(event);
+        return `ledger://${event.run_id}/${event.node_id}`;
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      node_results: [],
+      blocked_by: [
+        "graph_runtime_tenant_required",
+        "graph_runtime_organization_required",
+        "graph_runtime_actor_required",
+        "graph_runtime_actor_type_invalid",
+        "graph_runtime_roles_invalid",
+        "graph_runtime_request_required",
+        "graph_runtime_correlation_required",
+      ],
+      evidence_refs: [],
+    }));
+    expect(substrateExecutions).toBe(0);
+    expect(events).toEqual([]);
+  });
+
   it("preflights production graph proof and guardrails without action execution", async () => {
     const runtime = new DojoSkillGraphRuntime();
     const events: DojoGraphEvidenceEvent[] = [];
@@ -83,6 +131,7 @@ describe("Dojo graph runtime", () => {
 
     const result = await runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       run_id: "graph-run-preflight",
       preflight_only: true,
       inputs: {
@@ -137,6 +186,7 @@ describe("Dojo graph runtime", () => {
 
     const result = await runtime.execute({
       graph,
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -162,6 +212,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       run_id: "graph-run-1",
       inputs: {
         workspace_verified: true,
@@ -218,6 +269,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       run_id: "graph-run-evidence-fail",
       inputs: {
         workspace_verified: true,
@@ -253,6 +305,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       run_id: "graph-run-evidence-missing",
       inputs: {
         workspace_verified: true,
@@ -281,6 +334,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       run_id: "graph-run-evidence-unbacked",
       inputs: {
         workspace_verified: true,
@@ -315,6 +369,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       inputs: { client_id_verified: true, assertion_results: { assert_submission_state: true } },
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
@@ -335,6 +390,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       inputs: { workspace_verified: true, client_id_verified: true, assertion_results: { assert_submission_state: true } },
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
@@ -348,6 +404,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -374,6 +431,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -402,6 +460,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -430,6 +489,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -463,6 +523,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -498,6 +559,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph,
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -535,6 +597,7 @@ describe("Dojo graph runtime", () => {
 
     const result = await runtime.execute({
       graph: proofNodeGraphFixture(),
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -567,6 +630,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -585,6 +649,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -612,6 +677,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -639,6 +705,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -985,6 +1052,7 @@ describe("Dojo graph runtime", () => {
 
     const result = await runtime.execute({
       graph: graphFixture(),
+      tenant: graphTenantContext(),
       run_id: "graph-run-malicious-resume",
       resume_state: {
         paused_node_id: "action_submit",
@@ -1068,6 +1136,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: invalid,
+      tenant: graphTenantContext(),
       inputs: { workspace_verified: true },
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
@@ -1088,6 +1157,7 @@ describe("Dojo graph runtime", () => {
 
     await expect(runtime.execute({
       graph: invalid,
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
@@ -1123,6 +1193,32 @@ describe("Dojo graph runtime", () => {
 
 const validProofValidator = () => ({ ok: true, blocked_by: [] });
 const graphEvidenceWriter = (event: DojoGraphEvidenceEvent) => `ledger://${event.run_id}/${event.node_id}`;
+
+function graphTenantContext(): DojoTenantContext {
+  return {
+    tenant_id: "tenant-a",
+    organization_id: "org-a",
+    workspace_id: "workspace-a",
+    actor_id: "agent-a",
+    actor_type: "agent",
+    roles: ["dojo:runtime"],
+    request_id: "request-a",
+    correlation_id: "correlation-a",
+  };
+}
+
+function invalidGraphTenantContext(): DojoTenantContext {
+  return {
+    ...graphTenantContext(),
+    tenant_id: "",
+    organization_id: "",
+    actor_id: "",
+    actor_type: "robot" as never,
+    roles: ["dojo:runtime", ""],
+    request_id: "",
+    correlation_id: "",
+  };
+}
 
 function graphFixture(): DojoSkillGraph {
   return {
