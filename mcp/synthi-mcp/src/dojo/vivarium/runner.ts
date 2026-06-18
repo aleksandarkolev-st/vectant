@@ -170,8 +170,8 @@ export class DojoVivariumRunner {
         now: startedAt,
         inputs: {
           ...input.materialized.definition.input_overrides,
-          ...fixtureInputs(input.materialized.fixture),
           ...(input.inputs ?? {}),
+          ...fixtureInputs(input.materialized.fixture),
         },
         evidence_writer: (event) => {
           graphEvents.push(event);

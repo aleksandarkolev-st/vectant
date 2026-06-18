@@ -560,6 +560,46 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("keeps materialized fixture signals authoritative over caller-provided inputs", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "duplicate_entity",
+      layer: "risk",
+      risk_tags: ["ambiguous_entity_match"],
+    }), {
+      expected_outcome_overrides: { duplicate_entity: "block" },
+    });
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "duplicate-authoritative-input-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: duplicateEntityGateGraphFixture(),
+      run_id: "scenario-run-duplicate-authoritative-input",
+      inputs: {
+        duplicate_display_name_count: 0,
+      },
+    });
+
+    expect(materialized.fixture.records).toHaveLength(2);
+    expect(result).toEqual(expect.objectContaining({
+      status: "blocked",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining(["duplicate_entity_state"]),
+      graph_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["precondition_failed:duplicate_display_name_count == 0"],
+      }),
+      oracle_result: expect.objectContaining({
+        status: "blocked",
+        expected_outcome: "block",
+      }),
+    }));
+  });
+
   it("emits stale entity data tissue evidence when stale IDs block execution", async () => {
     const runner = new DojoVivariumRunner();
     const definition = toDojoScenarioDefinition(scenarioFixture({
@@ -1400,6 +1440,18 @@ function invalidValueGateGraphFixture(): DojoSkillGraph {
       ? {
           ...node,
           preconditions: ["invalid_value_count == 0"],
+        }
+      : node),
+  };
+}
+
+function duplicateEntityGateGraphFixture(): DojoSkillGraph {
+  return {
+    ...graphFixture(),
+    nodes: graphFixture().nodes.map((node) => node.node_id === "action"
+      ? {
+          ...node,
+          preconditions: ["duplicate_display_name_count == 0"],
         }
       : node),
   };

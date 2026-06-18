@@ -5587,7 +5587,7 @@ async function dojoRunCheckrideTool(args: unknown): Promise<ToolResponse> {
   const executableCheckride = await runDojoExecutableCheckride({
     graph: compiledGraph.graph,
     scenarios: scenarioDefinitions,
-    base_inputs: checkrideRuntimeInputsFor(runtimeSkill),
+    base_inputs: checkrideRuntimeInputsFor(),
     build_inputs: ({ materialized }) => buildDojoVivariumGraphInputsForFixture(runtimeSkill, materialized.fixture),
     evidence_context: {
       tenant_id: workflow.tenant.tenant_id,
@@ -5639,23 +5639,8 @@ function withExecutableCheckrideGuardrails(skill: DojoSkill): DojoSkill {
   return updated;
 }
 
-function checkrideRuntimeInputsFor(skill: DojoSkill): Record<string, unknown> {
-  const assertionResults = Object.fromEntries(
-    skill.skill_seed.candidate_success_assertions.map((assertion) => [assertion.assertion_id, true])
-  );
-  const inputs: Record<string, unknown> = {
-    assertion_results: assertionResults,
-    workspace_verified: true,
-    proof_capsule_valid: true,
-    entrustment_level: skill.permission_license.entrustment_level,
-    client_id_verified: true,
-    source_anchor_current: true,
-    durable_state_verification_available: true,
-    durable_state_evidence: true,
-    mutation_isolation_available: true,
-    human_review_ready: true,
-  };
-  return inputs;
+function checkrideRuntimeInputsFor(): Record<string, unknown> {
+  return {};
 }
 
 function expectedOutcomeOverridesForExecutableCheckride(
@@ -5705,7 +5690,7 @@ async function executableCheckrideForSkillPublication(input: {
     executableCheckride = await runDojoExecutableCheckride({
       graph: compiledGraph.graph,
       scenarios: scenarioDefinitions,
-      base_inputs: checkrideRuntimeInputsFor(runtimeSkill),
+      base_inputs: checkrideRuntimeInputsFor(),
       build_inputs: ({ materialized }) => buildDojoVivariumGraphInputsForFixture(runtimeSkill, materialized.fixture),
       evidence_context: {
         tenant_id: input.tenant.tenant_id,
