@@ -126,6 +126,7 @@ import {
   validateDojoImplementationStatusEvidenceForRelease,
   validateDojoSourceDriftEvidenceForRelease,
   validateDojoMcpHostConformanceSelfCheckReport,
+  validateDojoMcpHostConformanceEvidenceForRelease,
   validateDojoMcpHostConformanceReportForRelease,
   validateDojoPrivateToolCodexAcceptanceForRelease,
   validateDojoPrivateToolCodexHostConformanceForRelease,
@@ -550,11 +551,28 @@ describe("Dojo release gate artifact verifier", () => {
         external_proof_signing: false,
         no_local_cdp_leakage: false,
       },
+      deploymentObservations: {
+        ...mcpHostDeploymentObservationsFixture(),
+        external_proof_signing: false,
+        no_local_cdp_leakage: false,
+      },
     });
     expect(validateDojoMcpHostConformanceReportForRelease(missingDeploymentClaims).errors).toEqual(expect.arrayContaining([
       "conformance_external_proof_signing_requirement_missing",
       "conformance_external_proof_signing_missing",
       "conformance_no_local_cdp_leakage_missing",
+    ]));
+
+    const selfAttestedDeploymentClaims = buildConformanceReport({
+      deploymentObservations: null,
+    });
+    expect(validateDojoMcpHostConformanceReportForRelease(selfAttestedDeploymentClaims).errors).toEqual(expect.arrayContaining([
+      "conformance_deployment_observations_missing",
+      "conformance_external_control_plane_store_missing",
+      "conformance_external_proof_signing_missing",
+      "conformance_bridge_token_required_missing",
+      "conformance_no_local_cdp_leakage_missing",
+      "conformance_licensed_skill_filtering_missing",
     ]));
 
     const missingRevocationPropagation = buildConformanceReport({
@@ -565,6 +583,28 @@ describe("Dojo release gate artifact verifier", () => {
       "conformance_release_gate_not_ok",
       "conformance_release_gate_failed:1",
       "conformance_revoked_validation_block_step_missing",
+    ]));
+
+    const evidence = buildConformanceEvidenceManifest({
+      report: valid,
+      reportPath: "/tmp/dojo-mcp-host-conformance.json",
+      serialized: JSON.stringify(valid, null, 2),
+    });
+    expect(validateDojoMcpHostConformanceEvidenceForRelease(evidence, valid)).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(validateDojoMcpHostConformanceEvidenceForRelease({
+      ...evidence,
+      deployment_observations: {
+        ...evidence.deployment_observations,
+        source: "deployment_claims",
+        external_proof_signing: false,
+      },
+    }, valid).errors).toEqual(expect.arrayContaining([
+      "conformance_evidence_deployment_observations_source_invalid:deployment_claims",
+      "conformance_evidence_external_proof_signing_missing",
+      "conformance_evidence_observation_mismatch:external_proof_signing",
     ]));
   });
 
@@ -7777,6 +7817,7 @@ function buildConformanceReport({
   schemaVersion = "synthi.dojo.mcpHostConformance.v1",
   executeProduction = true,
   deploymentClaims = mcpHostDeploymentClaimsFixture(),
+  deploymentObservations = mcpHostDeploymentObservationsFixture(),
   steps,
 } = {}) {
   const report = {
@@ -7794,6 +7835,7 @@ function buildConformanceReport({
       raw_backing_tool_required: true,
     },
     deployment_claims: deploymentClaims,
+    deployment_observations: deploymentObservations,
     steps: steps || buildConformanceSteps({ executeProduction }),
   };
   report.release_gate = buildConformanceReleaseGateSummary(report);
@@ -7836,6 +7878,7 @@ function buildConformanceSteps({ executeProduction = true } = {}) {
   return [
     { name: "initialize", ok: true },
     { name: "required Dojo tool surface advertised", ok: true },
+    { name: "observe production deployment readiness", ok: true },
     { name: "select published Dojo competency", ok: true },
     { name: "issue proof capsule", ok: true },
     { name: "validate proof capsule", ok: true },
@@ -7862,6 +7905,21 @@ function mcpHostDeploymentClaimsFixture() {
     require_no_local_cdp: true,
     no_local_cdp_leakage: true,
     require_licensed_skill_filtering: true,
+    licensed_skill_filtering: true,
+  };
+}
+
+function mcpHostDeploymentObservationsFixture() {
+  return {
+    source: "synthi_browser_get_deployment_readiness",
+    readiness_ok: true,
+    external_control_plane_store: true,
+    external_proof_signing: true,
+    bridge_token_required: true,
+    no_local_cdp_leakage: true,
+    hosted_runtime_non_loopback: true,
+    evidence_ledger: true,
+    mcp_manifest_signing: true,
     licensed_skill_filtering: true,
   };
 }

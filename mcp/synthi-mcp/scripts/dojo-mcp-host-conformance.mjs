@@ -31,6 +31,7 @@ const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
 
 export const REQUIRED_DOJO_HOST_TOOLS = [
+  "synthi_browser_get_deployment_readiness",
   "synthi_dojo_list_competencies",
   "synthi_dojo_issue_proof_capsule",
   "synthi_dojo_validate_proof_capsule",
@@ -153,6 +154,21 @@ async function main() {
     });
     log("ok", "required Dojo tool surface advertised");
 
+    const deploymentReadinessCall = await client.toolCall("synthi_browser_get_deployment_readiness", {
+      mode: "production",
+      require_workflow_bridge: true,
+    });
+    assertToolOk(deploymentReadinessCall, "observe production deployment readiness");
+    const deploymentReadiness = deploymentReadinessCall.parsed?.readiness;
+    report.deployment_observations = deploymentObservationsFromReadiness(deploymentReadiness);
+    report.steps.push({
+      name: "observe production deployment readiness",
+      ok: deploymentReadiness?.ok === true,
+      readiness: summarizeDeploymentReadiness(deploymentReadiness),
+      deployment_observations: report.deployment_observations,
+    });
+    log("ok", "observe production deployment readiness");
+
     const competenciesCall = await client.toolCall("synthi_dojo_list_competencies", {});
     assertToolOk(competenciesCall, "list Dojo competencies");
     const competencies = Array.isArray(competenciesCall.parsed?.competencies)
@@ -170,6 +186,7 @@ async function main() {
       selected: competencySummary(competency),
       competency_count: competencies.length,
     });
+    report.deployment_observations.licensed_skill_filtering = observesLicensedSkillFiltering(competencies);
     log("ok", `select published Dojo competency - skill=${competency.skill_id}`);
 
     const issueCall = await client.toolCall("synthi_dojo_issue_proof_capsule", {
@@ -734,6 +751,81 @@ function competencySummary(competency) {
   };
 }
 
+export function deploymentObservationsFromReadiness(readiness) {
+  const checkPassed = (id) => readinessCheck(readiness, id)?.status === "pass";
+  const checkConfigured = (id, envName) => {
+    const configured = readinessCheck(readiness, id)?.configured_env;
+    return Array.isArray(configured) && configured.includes(envName);
+  };
+  return {
+    source: "synthi_browser_get_deployment_readiness",
+    readiness_ok: readiness?.ok === true,
+    external_control_plane_store: checkPassed("dojo_durable_store"),
+    external_proof_signing: checkPassed("dojo_external_signing"),
+    bridge_token_required: checkPassed("browser_workflow_bridge")
+      && checkConfigured("browser_workflow_bridge", "SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN"),
+    no_local_cdp_leakage: checkPassed("local_cdp_env_absent"),
+    hosted_runtime_non_loopback: checkPassed("hosted_browser_runtime_endpoint"),
+    evidence_ledger: checkPassed("dojo_evidence_ledger"),
+    mcp_manifest_signing: checkPassed("dojo_mcp_manifest_signing"),
+    licensed_skill_filtering: false,
+  };
+}
+
+function readinessCheck(readiness, id) {
+  const checks = Array.isArray(readiness?.checks) ? readiness.checks : [];
+  return checks.find((check) => check?.id === id) || null;
+}
+
+function summarizeDeploymentReadiness(readiness) {
+  if (!readiness || typeof readiness !== "object") return null;
+  return {
+    schema_version: readiness.schema_version ?? null,
+    ok: readiness.ok === true,
+    mode: readiness.mode ?? null,
+    product_path: readiness.product_path ?? null,
+    summary: readiness.summary && typeof readiness.summary === "object"
+      ? {
+          passed: Number(readiness.summary.passed ?? 0),
+          warnings: Number(readiness.summary.warnings ?? 0),
+          failed: Number(readiness.summary.failed ?? 0),
+        }
+      : null,
+    hosted_runtime: readiness.hosted_runtime && typeof readiness.hosted_runtime === "object"
+      ? {
+          configured: readiness.hosted_runtime.configured === true,
+          runtime_host_class: readiness.hosted_runtime.runtime_host_class ?? null,
+          non_loopback_runtime: readiness.hosted_runtime.non_loopback_runtime === true,
+          origin_allowlist_count: Array.isArray(readiness.hosted_runtime.origin_allowlist)
+            ? readiness.hosted_runtime.origin_allowlist.length
+            : 0,
+          session_ttl_ms: Number(readiness.hosted_runtime.session_ttl_ms ?? 0),
+          redact_screenshots: readiness.hosted_runtime.redact_screenshots === true,
+        }
+      : null,
+    checks: (Array.isArray(readiness.checks) ? readiness.checks : []).map((check) => ({
+      id: check?.id ?? null,
+      status: check?.status ?? null,
+      configured_env: Array.isArray(check?.configured_env) ? [...check.configured_env].sort() : [],
+    })),
+  };
+}
+
+export function observesLicensedSkillFiltering(competencies) {
+  return Array.isArray(competencies)
+    && competencies.length > 0
+    && competencies.every((competency) => {
+      return typeof competency?.skill_id === "string"
+        && competency.skill_id.length > 0
+        && typeof competency?.published_tool_name === "string"
+        && competency.published_tool_name.length > 0
+        && typeof competency?.license?.license_id === "string"
+        && competency.license.license_id.length > 0
+        && competency?.mcp_skill_manifest
+        && typeof competency.mcp_skill_manifest === "object";
+    });
+}
+
 export function redactConformanceReport(report) {
   const clone = JSON.parse(JSON.stringify(report));
   const text = JSON.stringify(clone);
@@ -750,9 +842,13 @@ export function buildConformanceReleaseGateSummary(report) {
   const deploymentClaims = report?.deployment_claims && typeof report.deployment_claims === "object"
     ? report.deployment_claims
     : {};
+  const deploymentObservations = report?.deployment_observations && typeof report.deployment_observations === "object"
+    ? report.deployment_observations
+    : null;
   const checks = [
     { id: "mcp_initialize", ok: hasStep("initialize") },
     { id: "required_dojo_tool_surface", ok: hasStep("required Dojo tool surface advertised") },
+    { id: "production_deployment_readiness_observed", ok: hasStep("observe production deployment readiness") },
     { id: "published_competency_selected", ok: hasStep("select published Dojo competency") },
     { id: "proof_capsule_issued", ok: hasStep("issue proof capsule") },
     { id: "proof_capsule_validated", ok: hasStep("validate proof capsule") },
@@ -771,7 +867,8 @@ export function buildConformanceReleaseGateSummary(report) {
     if (deploymentClaims[requirement.requiredField] === true) {
       checks.push({
         id: requirement.id,
-        ok: deploymentClaims[requirement.observedField] === true,
+        ok: (deploymentObservations ?? deploymentClaims)[requirement.observedField] === true,
+        source: deploymentObservations?.source ?? "deployment_claims",
       });
     }
   }
@@ -798,6 +895,20 @@ export function buildConformanceEvidenceManifest({ report, reportPath, serialize
     mcp_host_class: report?.conformance?.mcp_host_class ?? null,
     non_loopback_mcp_host: report?.conformance?.non_loopback_mcp_host === true,
     raw_backing_tool_required: report?.config?.raw_backing_tool_required !== false,
+    deployment_observations: report?.deployment_observations && typeof report.deployment_observations === "object"
+      ? {
+          source: report.deployment_observations.source ?? null,
+          readiness_ok: report.deployment_observations.readiness_ok === true,
+          external_control_plane_store: report.deployment_observations.external_control_plane_store === true,
+          external_proof_signing: report.deployment_observations.external_proof_signing === true,
+          bridge_token_required: report.deployment_observations.bridge_token_required === true,
+          no_local_cdp_leakage: report.deployment_observations.no_local_cdp_leakage === true,
+          hosted_runtime_non_loopback: report.deployment_observations.hosted_runtime_non_loopback === true,
+          evidence_ledger: report.deployment_observations.evidence_ledger === true,
+          mcp_manifest_signing: report.deployment_observations.mcp_manifest_signing === true,
+          licensed_skill_filtering: report.deployment_observations.licensed_skill_filtering === true,
+        }
+      : null,
     deployment_claims: report?.deployment_claims && typeof report.deployment_claims === "object"
       ? {
           require_external_control_plane_store: report.deployment_claims.require_external_control_plane_store === true,
@@ -895,9 +1006,22 @@ async function runSelfCheck({ outDir }) {
       require_licensed_skill_filtering: true,
       licensed_skill_filtering: true,
     },
+    deployment_observations: {
+      source: "synthi_browser_get_deployment_readiness",
+      readiness_ok: true,
+      external_control_plane_store: true,
+      external_proof_signing: true,
+      bridge_token_required: true,
+      no_local_cdp_leakage: true,
+      hosted_runtime_non_loopback: true,
+      evidence_ledger: true,
+      mcp_manifest_signing: true,
+      licensed_skill_filtering: true,
+    },
     steps: [
       { name: "initialize", ok: true },
       { name: "required Dojo tool surface advertised", ok: true },
+      { name: "observe production deployment readiness", ok: true },
       { name: "select published Dojo competency", ok: true },
       { name: "issue proof capsule", ok: true },
       { name: "validate proof capsule", ok: true },

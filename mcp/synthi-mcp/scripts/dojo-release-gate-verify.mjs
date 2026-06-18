@@ -2673,6 +2673,7 @@ export async function verifyDojoMcpHostConformanceArtifacts({ reportPath, eviden
   if (Number(evidence.gate_failed || 0) !== 0) errors.push(`conformance_evidence_gate_failed:${evidence.gate_failed}`);
   if (releaseCandidate) {
     errors.push(...validateDojoMcpHostConformanceReportForRelease(report).errors);
+    errors.push(...validateDojoMcpHostConformanceEvidenceForRelease(evidence, report).errors);
   }
   return {
     id: "dojo_mcp_host_conformance",
@@ -2807,12 +2808,60 @@ export function validateDojoMcpHostConformanceReportForRelease(report) {
   const deploymentClaims = report?.deployment_claims && typeof report.deployment_claims === "object"
     ? report.deployment_claims
     : {};
+  const deploymentObservations = report?.deployment_observations && typeof report.deployment_observations === "object"
+    ? report.deployment_observations
+    : null;
+  if (!deploymentObservations) {
+    errors.push("conformance_deployment_observations_missing");
+  } else {
+    if (deploymentObservations.source !== "synthi_browser_get_deployment_readiness") {
+      errors.push(`conformance_deployment_observations_source_invalid:${deploymentObservations.source || "missing"}`);
+    }
+    if (deploymentObservations.readiness_ok !== true) {
+      errors.push("conformance_deployment_readiness_not_ok");
+    }
+  }
   for (const requirement of DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS) {
     if (deploymentClaims[requirement.requiredField] !== true) {
       errors.push(`conformance_${requirement.id}_requirement_missing`);
     }
-    if (deploymentClaims[requirement.observedField] !== true) {
+    if (deploymentObservations?.[requirement.observedField] !== true) {
       errors.push(`conformance_${requirement.id}_missing`);
+    }
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+export function validateDojoMcpHostConformanceEvidenceForRelease(evidence, report) {
+  const errors = [];
+  const evidenceObservations = evidence?.deployment_observations && typeof evidence.deployment_observations === "object"
+    ? evidence.deployment_observations
+    : null;
+  const reportObservations = report?.deployment_observations && typeof report.deployment_observations === "object"
+    ? report.deployment_observations
+    : null;
+  if (!evidenceObservations) {
+    errors.push("conformance_evidence_deployment_observations_missing");
+    return { ok: false, errors };
+  }
+  if (evidenceObservations.source !== "synthi_browser_get_deployment_readiness") {
+    errors.push(`conformance_evidence_deployment_observations_source_invalid:${evidenceObservations.source || "missing"}`);
+  }
+  if (evidenceObservations.readiness_ok !== true) {
+    errors.push("conformance_evidence_deployment_readiness_not_ok");
+  }
+  for (const requirement of DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS) {
+    if (evidenceObservations[requirement.observedField] !== true) {
+      errors.push(`conformance_evidence_${requirement.id}_missing`);
+    }
+    if (
+      reportObservations
+      && Boolean(evidenceObservations[requirement.observedField]) !== Boolean(reportObservations[requirement.observedField])
+    ) {
+      errors.push(`conformance_evidence_observation_mismatch:${requirement.observedField}`);
     }
   }
   return {
@@ -5955,9 +6004,22 @@ function buildReleaseCandidateConformanceReport({
       require_licensed_skill_filtering: true,
       licensed_skill_filtering: true,
     },
+    deployment_observations: {
+      source: "synthi_browser_get_deployment_readiness",
+      readiness_ok: true,
+      external_control_plane_store: true,
+      external_proof_signing: true,
+      bridge_token_required: true,
+      no_local_cdp_leakage: true,
+      hosted_runtime_non_loopback: true,
+      evidence_ledger: true,
+      mcp_manifest_signing: true,
+      licensed_skill_filtering: true,
+    },
     steps: [
       { name: "initialize", ok: true },
       { name: "required Dojo tool surface advertised", ok: true },
+      { name: "observe production deployment readiness", ok: true },
       { name: "select published Dojo competency", ok: true },
       { name: "issue proof capsule", ok: true },
       { name: "validate proof capsule", ok: true },

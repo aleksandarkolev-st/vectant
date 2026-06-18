@@ -5,9 +5,11 @@ import {
   buildConformanceReleaseGateSummary,
   buildDojoMcpHostConformanceConfig,
   classifyMcpHost,
+  deploymentObservationsFromReadiness,
   DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS,
   isExpectedBlockedToolCall,
   mcpHostConformance,
+  observesLicensedSkillFiltering,
   redactConformanceReport,
   resolveMcpCommandSpec,
   selectDojoCompetencyForConformance,
@@ -188,6 +190,62 @@ describe("Dojo MCP host conformance harness", () => {
     }, ["proof_capsule_revoked"])).toBe(false);
   });
 
+  it("derives deployment observations from host readiness instead of deployment claims", () => {
+    const readiness = {
+      ok: true,
+      checks: [
+        { id: "dojo_durable_store", status: "pass", configured_env: ["SYNTHI_DOJO_CONTROL_PLANE_STORE"] },
+        { id: "dojo_external_signing", status: "pass", configured_env: ["SYNTHI_DOJO_PROOF_SIGNING_PROVIDER"] },
+        {
+          id: "browser_workflow_bridge",
+          status: "pass",
+          configured_env: ["SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL", "SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN"],
+        },
+        { id: "local_cdp_env_absent", status: "pass", configured_env: [] },
+        { id: "hosted_browser_runtime_endpoint", status: "pass", configured_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"] },
+        { id: "dojo_evidence_ledger", status: "pass", configured_env: ["SYNTHI_DOJO_EVIDENCE_LEDGER_STORE"] },
+        { id: "dojo_mcp_manifest_signing", status: "pass", configured_env: ["SYNTHI_DOJO_MCP_MANIFEST_KEY_ID"] },
+      ],
+    };
+
+    expect(deploymentObservationsFromReadiness(readiness)).toEqual(expect.objectContaining({
+      source: "synthi_browser_get_deployment_readiness",
+      readiness_ok: true,
+      external_control_plane_store: true,
+      external_proof_signing: true,
+      bridge_token_required: true,
+      no_local_cdp_leakage: true,
+      hosted_runtime_non_loopback: true,
+      evidence_ledger: true,
+      mcp_manifest_signing: true,
+      licensed_skill_filtering: false,
+    }));
+    expect(deploymentObservationsFromReadiness({
+      ok: true,
+      checks: [
+        { id: "browser_workflow_bridge", status: "pass", configured_env: ["SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL"] },
+      ],
+    }).bridge_token_required).toBe(false);
+  });
+
+  it("observes licensed skill filtering from the returned competency shape", () => {
+    expect(observesLicensedSkillFiltering([
+      {
+        skill_id: "skill_a",
+        published_tool_name: "synthi_app_a",
+        license: { license_id: "license_a" },
+        mcp_skill_manifest: { signature: "ed25519:test" },
+      },
+    ])).toBe(true);
+    expect(observesLicensedSkillFiltering([
+      {
+        skill_id: "draft",
+        published_tool_name: "",
+        license: null,
+      },
+    ])).toBe(false);
+  });
+
   it("refuses to write reports containing proof secret material", () => {
     expect(() => redactConformanceReport({
       proof_capsule: { signature: "hmac-sha256:deadbeef" },
@@ -205,9 +263,11 @@ describe("Dojo MCP host conformance harness", () => {
     const requiredGate = buildConformanceReleaseGateSummary({
       config: { raw_backing_tool_required: true },
       deployment_claims: fullDeploymentClaims(),
+      deployment_observations: fullDeploymentObservations(),
       steps: [
         { name: "initialize", ok: true },
         { name: "required Dojo tool surface advertised", ok: true },
+        { name: "observe production deployment readiness", ok: true },
         { name: "select published Dojo competency", ok: true },
         { name: "issue proof capsule", ok: true },
         { name: "validate proof capsule", ok: true },
@@ -228,6 +288,7 @@ describe("Dojo MCP host conformance harness", () => {
     const skippedGate = buildConformanceReleaseGateSummary({
       config: { raw_backing_tool_required: false },
       deployment_claims: fullDeploymentClaims(),
+      deployment_observations: fullDeploymentObservations(),
       steps: requiredGate.checks
         .filter((check) => check.id !== "raw_backing_tool_blocked")
         .filter((check) => !DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS.some((requirement) => requirement.id === check.id))
@@ -248,9 +309,15 @@ describe("Dojo MCP host conformance harness", () => {
         external_proof_signing: false,
         licensed_skill_filtering: false,
       },
+      deployment_observations: {
+        ...fullDeploymentObservations(),
+        external_proof_signing: false,
+        licensed_skill_filtering: false,
+      },
       steps: [
         { name: "initialize", ok: true },
         { name: "required Dojo tool surface advertised", ok: true },
+        { name: "observe production deployment readiness", ok: true },
         { name: "select published Dojo competency", ok: true },
         { name: "issue proof capsule", ok: true },
         { name: "validate proof capsule", ok: true },
@@ -276,6 +343,7 @@ describe("Dojo MCP host conformance harness", () => {
       conformance: { mcp_host_class: "remote", non_loopback_mcp_host: true },
       config: { raw_backing_tool_required: true },
       deployment_claims: fullDeploymentClaims(),
+      deployment_observations: fullDeploymentObservations(),
     };
     const serialized = JSON.stringify(report, null, 2);
     const manifest = buildConformanceEvidenceManifest({
@@ -295,6 +363,7 @@ describe("Dojo MCP host conformance harness", () => {
       non_loopback_mcp_host: true,
       raw_backing_tool_required: true,
       deployment_claims: fullDeploymentClaims(),
+      deployment_observations: fullDeploymentObservations(),
     }));
     expect(manifest.report_sha256).toMatch(/^[a-f0-9]{64}$/);
   });
@@ -315,10 +384,26 @@ function fullDeploymentClaims(): Record<string, boolean> {
   };
 }
 
+function fullDeploymentObservations(): Record<string, boolean | string> {
+  return {
+    source: "synthi_browser_get_deployment_readiness",
+    readiness_ok: true,
+    external_control_plane_store: true,
+    external_proof_signing: true,
+    bridge_token_required: true,
+    no_local_cdp_leakage: true,
+    hosted_runtime_non_loopback: true,
+    evidence_ledger: true,
+    mcp_manifest_signing: true,
+    licensed_skill_filtering: true,
+  };
+}
+
 function nameForGateCheck(id: string): string {
   const names: Record<string, string> = {
     mcp_initialize: "initialize",
     required_dojo_tool_surface: "required Dojo tool surface advertised",
+    production_deployment_readiness_observed: "observe production deployment readiness",
     published_competency_selected: "select published Dojo competency",
     proof_capsule_issued: "issue proof capsule",
     proof_capsule_validated: "validate proof capsule",
