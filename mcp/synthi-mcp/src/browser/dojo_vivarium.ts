@@ -142,6 +142,7 @@ async function executeMaterializedScenario(
   const definition = toDojoScenarioDefinition(scenario, {
     target_graph_node_ids: ["action"],
     input_overrides: syntheticInputOverridesFor(skill, scenario),
+    route_context: routeContextForSkill(skill),
   });
   const runner = new DojoVivariumRunner();
   const materialized = runner.materialize({
@@ -184,6 +185,17 @@ function selectScenario(skill: DojoSkill, input: { scenario_id?: string; mutatio
   if (input.scenario_id) return skill.scenarios.find((scenario) => scenario.scenario_id === input.scenario_id) ?? null;
   if (input.mutation_kind) return skill.scenarios.find((scenario) => scenario.mutation_kind === input.mutation_kind) ?? null;
   return skill.scenarios[0] ?? null;
+}
+
+function routeContextForSkill(skill: DojoSkill): { expected_path?: string; source: "skill_seed" | "synthetic_default" } {
+  const routePattern = skill.skill_seed.observed_trace.route_pattern?.trim();
+  if (routePattern) {
+    return {
+      expected_path: routePattern,
+      source: "skill_seed",
+    };
+  }
+  return { source: "synthetic_default" };
 }
 
 function scenarioResultForRun(scenario: DojoScenario, scenarioRun: DojoScenarioRunResult): DojoScenarioResult {

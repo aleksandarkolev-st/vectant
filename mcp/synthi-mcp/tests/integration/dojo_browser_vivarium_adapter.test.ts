@@ -97,6 +97,7 @@ describe("browser Dojo Vivarium adapter", () => {
     };
 
     expect(fixture.route_state.changed).toBe(true);
+    expect(fixture.route_state.expected_path).toBe(skill.skill_seed.observed_trace.route_pattern);
     expect(fixture.route_state.current_path).not.toBe(fixture.route_state.expected_path);
     expect(fixture.ui_state.route).toBe(fixture.route_state.current_path);
     expect(fixture.graph_inputs).toEqual(expect.objectContaining({

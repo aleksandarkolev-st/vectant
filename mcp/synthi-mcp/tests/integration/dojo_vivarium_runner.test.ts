@@ -954,7 +954,7 @@ describe("Dojo Vivarium runner", () => {
     });
 
     expect(materialized.fixture.route_state).toEqual(expect.objectContaining({
-      expected_path: "/synthetic/workspace",
+      expected_path: "/synthetic/seed-a-scenario-route-change",
       changed: true,
       source: "synthetic_page_route",
     }));

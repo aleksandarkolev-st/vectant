@@ -242,10 +242,19 @@ describe("Dojo scenario DSL", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "route_change",
       risk_tags: ["route_drift"],
-    }));
+    }), {
+      route_context: {
+        expected_path: "/invoices",
+        source: "scenario_override",
+      },
+    });
 
     expect(definition.mutation_scopes).toEqual(["route"]);
     expect(definition.fixture_requirements.map((fixture) => fixture.kind)).toEqual(["synthetic_page_route"]);
+    expect(definition.route_context).toEqual({
+      expected_path: "/invoices",
+      source: "scenario_override",
+    });
     expect(definition.oracle).toEqual(expect.objectContaining({
       expected_outcome: "pass",
       observed_evidence_required: expect.arrayContaining([

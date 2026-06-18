@@ -460,8 +460,8 @@ describe("Dojo synthetic fixture materializer", () => {
     expect(fixture.synthetic_data_only).toBe(true);
     expect(fixture.route_state).toEqual({
       route_id: expect.stringMatching(/^synthetic_route_[a-f0-9]{12}$/),
-      expected_path: "/synthetic/workspace",
-      current_path: expect.stringMatching(/^\/synthetic\/route-[a-f0-9]{8}$/),
+      expected_path: "/synthetic/seed-a-scenario-route-change",
+      current_path: expect.stringMatching(/^\/synthetic\/seed-a-scenario-route-change\/route-drift-[a-f0-9]{8}$/),
       changed: true,
       source: "synthetic_page_route",
     });
@@ -472,6 +472,27 @@ describe("Dojo synthetic fixture materializer", () => {
       "synthetic_page_route_state",
     ]));
     expect(second).toEqual(fixture);
+  });
+
+  it("materializes route tissue from explicit scenario route context", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "route_change",
+      risk_tags: ["route_drift"],
+    }), {
+      route_context: {
+        expected_path: "https://app.example.test/invoices?tab=open",
+        changed_path: "/approvals",
+        source: "scenario_override",
+      },
+    });
+    const fixture = materializeDojoSyntheticFixture(definition, { seed: "route-context-seed" });
+
+    expect(fixture.route_state).toEqual(expect.objectContaining({
+      expected_path: "/invoices?tab=open",
+      current_path: "/approvals",
+      changed: true,
+    }));
+    expect(fixture.ui_state.route).toBe("/approvals");
   });
 
   it("materializes downstream API failures as synthetic API fault tissue", () => {

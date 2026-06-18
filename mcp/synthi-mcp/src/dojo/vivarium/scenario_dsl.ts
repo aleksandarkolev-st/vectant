@@ -44,6 +44,12 @@ export interface DojoScenarioBudget {
   max_model_calls: number;
 }
 
+export interface DojoScenarioRouteContext {
+  expected_path?: string;
+  changed_path?: string;
+  source: "skill_seed" | "scenario_override" | "synthetic_default";
+}
+
 export interface DojoScenarioDefinition {
   schema_version: "synthi.dojo.scenarioDefinition.v1";
   scenario_id: string;
@@ -58,6 +64,7 @@ export interface DojoScenarioDefinition {
   simulator_tier: number;
   reset_profile: DojoScenarioResetProfile;
   budget: DojoScenarioBudget;
+  route_context?: DojoScenarioRouteContext;
   provenance: {
     generated_from: DojoScenario["generated_from"];
     risk_tags: string[];
@@ -84,6 +91,7 @@ export function toDojoScenarioDefinitions(
     target_graph_node_ids?: string[];
     input_overrides?: Record<string, unknown>;
     expected_outcome_overrides?: Record<string, DojoScenarioExpectedOutcome>;
+    route_context?: DojoScenarioRouteContext;
   } = {}
 ): DojoScenarioDefinition[] {
   return scenarios.map((scenario) => toDojoScenarioDefinition(scenario, input));
@@ -95,6 +103,7 @@ export function toDojoScenarioDefinition(
     target_graph_node_ids?: string[];
     input_overrides?: Record<string, unknown>;
     expected_outcome_overrides?: Record<string, DojoScenarioExpectedOutcome>;
+    route_context?: DojoScenarioRouteContext;
   } = {}
 ): DojoScenarioDefinition {
   const mutationScopes = mutationScopesFor(scenario);
@@ -122,6 +131,7 @@ export function toDojoScenarioDefinition(
       max_estimated_ms: scenarioBudgetMsForTier(scenario.simulator_tier),
       max_model_calls: 0,
     },
+    ...(input.route_context ? { route_context: { ...input.route_context } } : {}),
     provenance: {
       generated_from: scenario.generated_from,
       risk_tags: [...scenario.risk_tags],

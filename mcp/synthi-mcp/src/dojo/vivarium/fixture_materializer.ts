@@ -557,15 +557,51 @@ function hiddenFieldsFor(definition: DojoScenarioDefinition, missingFields: stri
 }
 
 function routeStateFor(definition: DojoScenarioDefinition, seed: string): DojoSyntheticPageRoute {
-  const expectedPath = "/synthetic/workspace";
+  const expectedPath = normalizedRoutePath(definition.route_context?.expected_path)
+    ?? defaultSyntheticRoutePath(definition, seed);
   const changed = definition.mutation_kind === "route_change";
+  const changedPath = normalizedRoutePath(definition.route_context?.changed_path)
+    ?? changedSyntheticRoutePath(expectedPath, seed);
   return {
     route_id: `synthetic_route_${shortHash(`${seed}:route`)}`,
     expected_path: expectedPath,
-    current_path: changed ? `/synthetic/route-${shortHash(`${seed}:route:changed`).slice(0, 8)}` : expectedPath,
+    current_path: changed ? changedPath : expectedPath,
     changed,
     source: "synthetic_page_route",
   };
+}
+
+function normalizedRoutePath(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      return `${parsed.pathname || "/"}${parsed.search || ""}`;
+    } catch {
+      return null;
+    }
+  }
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+function defaultSyntheticRoutePath(definition: DojoScenarioDefinition, seed: string): string {
+  const base = slugRouteSegment(definition.scenario_id || definition.reset_profile.seed || seed);
+  return `/synthetic/${base}`;
+}
+
+function changedSyntheticRoutePath(expectedPath: string, seed: string): string {
+  const basePath = expectedPath.split(/[?#]/, 1)[0]?.replace(/\/+$/, "") || "/synthetic";
+  return `${basePath}/route-drift-${shortHash(`${seed}:route:changed`).slice(0, 8)}`;
+}
+
+function slugRouteSegment(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || `scenario-${shortHash(value).slice(0, 8)}`;
 }
 
 function layoutMutationsFor(definition: DojoScenarioDefinition): string[] {
