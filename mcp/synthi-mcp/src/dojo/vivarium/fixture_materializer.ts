@@ -22,6 +22,32 @@ export interface DojoSyntheticDocumentRecord {
   corrupted: boolean;
 }
 
+export type DojoSyntheticUiControlRole = "button" | "input" | "table" | "modal" | "validation";
+export type DojoSyntheticUiControlLocation =
+  | "primary"
+  | "menu"
+  | "below_fold"
+  | "table"
+  | "modal"
+  | "adjacent";
+
+export interface DojoSyntheticUiControl {
+  control_id: string;
+  role: DojoSyntheticUiControlRole;
+  label: string;
+  visible: boolean;
+  location: DojoSyntheticUiControlLocation;
+  destructive: boolean;
+  moved: boolean;
+}
+
+export interface DojoSyntheticUiValidationMessage {
+  field: string;
+  message: string;
+  visible: boolean;
+  location: "inline" | "below_fold" | "modal";
+}
+
 export interface DojoMaterializedFixture {
   schema_version: "synthi.dojo.materializedFixture.v1";
   fixture_id: string;
@@ -39,6 +65,17 @@ export interface DojoMaterializedFixture {
     hidden_fields: string[];
     duplicate_labels: string[];
     route: string;
+    layout_mutations: string[];
+    controls: DojoSyntheticUiControl[];
+    validation_messages: DojoSyntheticUiValidationMessage[];
+    table_order: string[];
+    viewport: "desktop" | "mobile";
+    modal_present: boolean;
+    reduced_motion: boolean;
+    hydration_delay_ms: number;
+    feature_flags: string[];
+    destructive_adjacency: boolean;
+    menu_hidden_controls: string[];
   };
   api_state: {
     latency_ms: number;
@@ -103,6 +140,7 @@ function fixtureFor(
   const missingFields = missingFieldsFor(definition);
   const thresholdBreaches = thresholdBreachesFor(definition);
   const documentState = documentStateFor(definition, seed);
+  const uiState = uiStateFor(definition, seed, records, missingFields);
   return {
     schema_version: "synthi.dojo.materializedFixture.v1",
     fixture_id: `fixture_${definition.scenario_id}_${shortHash(seed)}`,
@@ -115,12 +153,7 @@ function fixtureFor(
     records,
     missing_fields: missingFields,
     threshold_breaches: thresholdBreaches,
-    ui_state: {
-      labels: labelsFor(definition),
-      hidden_fields: definition.mutation_kind === "hidden_required_field" ? missingFields : [],
-      duplicate_labels: definition.mutation_kind === "duplicate_label" ? ["Submit", "Submit"] : [],
-      route: definition.mutation_kind === "route_change" ? "/synthetic/unexpected-route" : "/synthetic/workspace",
-    },
+    ui_state: uiState,
     api_state: {
       latency_ms: definition.mutation_kind === "network_latency" ? Math.min(definition.budget.max_estimated_ms, 750) : 0,
       partial_write: definition.mutation_kind === "partial_write",
@@ -192,6 +225,188 @@ function documentStateFor(
     corrupted_document_count: documents.filter((document) => document.corrupted).length,
     missing_fields: [...new Set(documents.flatMap((document) => document.missing_fields))],
   };
+}
+
+function uiStateFor(
+  definition: DojoScenarioDefinition,
+  seed: string,
+  records: DojoSyntheticEntityRecord[],
+  missingFields: string[]
+): DojoMaterializedFixture["ui_state"] {
+  const mutationKind = definition.mutation_kind;
+  const controls = controlsFor(definition, seed, missingFields);
+  const duplicateLabels = duplicateLabelsFor(controls);
+  return {
+    labels: controls.map((control) => control.label),
+    hidden_fields: hiddenFieldsFor(definition, missingFields),
+    duplicate_labels: duplicateLabels,
+    route: routeFor(definition),
+    layout_mutations: layoutMutationsFor(definition),
+    controls,
+    validation_messages: validationMessagesFor(definition, missingFields),
+    table_order: tableOrderFor(definition, records),
+    viewport: mutationKind === "viewport_mobile" ? "mobile" : "desktop",
+    modal_present: mutationKind === "modal_appears",
+    reduced_motion: mutationKind === "reduced_motion",
+    hydration_delay_ms: mutationKind === "hydration_delay" ? Math.min(definition.budget.max_estimated_ms, 500) : 0,
+    feature_flags: mutationKind === "feature_flag" ? [`synthetic_flag_${shortHash(`${seed}:feature`).slice(0, 8)}`] : [],
+    destructive_adjacency: mutationKind === "destructive_adjacency",
+    menu_hidden_controls: controls
+      .filter((control) => control.location === "menu" && !control.visible)
+      .map((control) => control.control_id),
+  };
+}
+
+function controlsFor(
+  definition: DojoScenarioDefinition,
+  seed: string,
+  missingFields: string[]
+): DojoSyntheticUiControl[] {
+  const mutationKind = definition.mutation_kind;
+  const primary: DojoSyntheticUiControl = {
+    control_id: `synthetic_control_${shortHash(`${seed}:primary-action`)}`,
+    role: "button",
+    label: mutationKind === "label_change" ? "Synthetic changed label" : "Synthetic action",
+    visible: mutationKind !== "button_hidden_menu",
+    location: mutationKind === "button_moved" || mutationKind === "feature_flag" ? "menu" : "primary",
+    destructive: false,
+    moved: mutationKind === "button_moved" || mutationKind === "viewport_mobile" || mutationKind === "feature_flag",
+  };
+  const controls = [primary];
+
+  if (mutationKind === "duplicate_label") {
+    controls.push({
+      control_id: `synthetic_control_${shortHash(`${seed}:duplicate-action`)}`,
+      role: "button",
+      label: primary.label,
+      visible: true,
+      location: "primary",
+      destructive: false,
+      moved: false,
+    });
+  }
+
+  if (mutationKind === "destructive_adjacency") {
+    controls.push({
+      control_id: `synthetic_control_${shortHash(`${seed}:destructive-action`)}`,
+      role: "button",
+      label: "Delete synthetic record",
+      visible: true,
+      location: "adjacent",
+      destructive: true,
+      moved: false,
+    });
+  }
+
+  if (mutationKind === "button_hidden_menu") {
+    controls.push({
+      ...primary,
+      control_id: `synthetic_control_${shortHash(`${seed}:hidden-menu-action`)}`,
+      visible: false,
+      location: "menu",
+      moved: true,
+    });
+  }
+
+  if (mutationKind === "modal_appears") {
+    controls.push({
+      control_id: `synthetic_control_${shortHash(`${seed}:modal`)}`,
+      role: "modal",
+      label: "Synthetic confirmation modal",
+      visible: true,
+      location: "modal",
+      destructive: false,
+      moved: false,
+    });
+  }
+
+  for (const field of missingFields) {
+    controls.push({
+      control_id: `synthetic_control_${shortHash(`${seed}:field:${field}`)}`,
+      role: "input",
+      label: field,
+      visible: mutationKind !== "hidden_required_field",
+      location: mutationKind === "validation_below_fold" || mutationKind === "hidden_required_field" ? "below_fold" : "primary",
+      destructive: false,
+      moved: mutationKind === "validation_below_fold",
+    });
+  }
+
+  if (mutationKind === "reordered_rows") {
+    controls.push({
+      control_id: `synthetic_control_${shortHash(`${seed}:table`)}`,
+      role: "table",
+      label: "Synthetic records table",
+      visible: true,
+      location: "table",
+      destructive: false,
+      moved: true,
+    });
+  }
+
+  return controls;
+}
+
+function hiddenFieldsFor(definition: DojoScenarioDefinition, missingFields: string[]): string[] {
+  return definition.mutation_kind === "hidden_required_field" ? missingFields : [];
+}
+
+function routeFor(definition: DojoScenarioDefinition): string {
+  return definition.mutation_kind === "route_change" ? "/synthetic/unexpected-route" : "/synthetic/workspace";
+}
+
+function layoutMutationsFor(definition: DojoScenarioDefinition): string[] {
+  switch (definition.mutation_kind) {
+    case "button_moved":
+    case "viewport_mobile":
+      return ["control_position_changed"];
+    case "button_hidden_menu":
+    case "feature_flag":
+      return ["control_hidden_in_menu"];
+    case "hidden_required_field":
+    case "validation_below_fold":
+      return ["validation_below_fold"];
+    case "reordered_rows":
+      return ["table_rows_reordered"];
+    case "destructive_adjacency":
+      return ["destructive_control_adjacent"];
+    case "modal_appears":
+      return ["modal_interruption"];
+    default:
+      return [];
+  }
+}
+
+function validationMessagesFor(
+  definition: DojoScenarioDefinition,
+  missingFields: string[]
+): DojoSyntheticUiValidationMessage[] {
+  const fields = missingFields.length > 0 ? missingFields : definition.mutation_kind === "validation_error" ? ["synthetic_required_field"] : [];
+  return fields.map((field) => ({
+    field,
+    message: `Synthetic validation requires ${field}`,
+    visible: true,
+    location: definition.mutation_kind === "modal_appears"
+      ? "modal"
+      : definition.mutation_kind === "hidden_required_field" || definition.mutation_kind === "validation_below_fold"
+        ? "below_fold"
+        : "inline",
+  }));
+}
+
+function tableOrderFor(definition: DojoScenarioDefinition, records: DojoSyntheticEntityRecord[]): string[] {
+  const stableIds = records.map((record) => record.stable_id);
+  return definition.mutation_kind === "reordered_rows" ? [...stableIds].reverse() : stableIds;
+}
+
+function duplicateLabelsFor(controls: DojoSyntheticUiControl[]): string[] {
+  const labelCounts = new Map<string, number>();
+  for (const control of controls) {
+    labelCounts.set(control.label, (labelCounts.get(control.label) ?? 0) + 1);
+  }
+  return [...labelCounts.entries()]
+    .filter(([, count]) => count > 1)
+    .flatMap(([label, count]) => Array.from({ length: count }, () => label));
 }
 
 function baseDocumentsFor(seed: string): DojoSyntheticDocumentRecord[] {
@@ -269,12 +484,6 @@ function promptInjectionDocumentFor(
     missing_fields: [],
     corrupted: false,
   };
-}
-
-function labelsFor(definition: DojoScenarioDefinition): string[] {
-  if (definition.mutation_kind === "label_change") return ["Synthetic changed label"];
-  if (definition.mutation_kind === "duplicate_label") return ["Submit", "Submit"];
-  return ["Synthetic action"];
 }
 
 function syntheticNameFor(seed: string): string {

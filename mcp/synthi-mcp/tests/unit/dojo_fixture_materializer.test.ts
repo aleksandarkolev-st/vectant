@@ -126,6 +126,115 @@ describe("Dojo synthetic fixture materializer", () => {
     expect(corruptedDocument.document_state.documents[0]?.corrupted).toBe(true);
   });
 
+  it("materializes UI tissue mutations for layout, labels, validation, and destructive adjacency", () => {
+    const labelChange = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "label_change",
+      risk_tags: ["locator_drift"],
+    })), { seed: "ui-label-seed" });
+    expect(labelChange.ui_state.labels).toContain("Synthetic changed label");
+
+    const duplicateLabel = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "duplicate_label",
+      risk_tags: ["ambiguous_locator"],
+    })), { seed: "ui-duplicate-seed" });
+    expect(duplicateLabel.ui_state.duplicate_labels).toEqual(["Synthetic action", "Synthetic action"]);
+    expect(duplicateLabel.ui_state.controls.filter((control) => control.label === "Synthetic action")).toHaveLength(2);
+
+    const hiddenRequired = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "hidden_required_field",
+      risk_tags: ["input_validation"],
+    })), { seed: "ui-hidden-field-seed" });
+    expect(hiddenRequired.ui_state.hidden_fields).toEqual(["synthetic_required_field"]);
+    expect(hiddenRequired.ui_state.validation_messages).toEqual([
+      expect.objectContaining({
+        field: "synthetic_required_field",
+        location: "below_fold",
+        visible: true,
+      }),
+    ]);
+    expect(hiddenRequired.ui_state.layout_mutations).toContain("validation_below_fold");
+
+    const reorderedRows = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "reordered_rows",
+      risk_tags: ["table_order"],
+    })), { seed: "ui-table-seed" });
+    expect(reorderedRows.ui_state.table_order).toEqual(reorderedRows.records.map((record) => record.stable_id).reverse());
+    expect(reorderedRows.ui_state.layout_mutations).toContain("table_rows_reordered");
+
+    const destructiveAdjacency = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "destructive_adjacency",
+      risk_tags: ["destructive_write"],
+    })), { seed: "ui-destructive-seed" });
+    expect(destructiveAdjacency.ui_state.destructive_adjacency).toBe(true);
+    expect(destructiveAdjacency.ui_state.controls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        destructive: true,
+        location: "adjacent",
+        visible: true,
+      }),
+    ]));
+  });
+
+  it("materializes adaptive UI tissue for menu-hidden controls, mobile viewport, motion, hydration, feature flags, and modal interruption", () => {
+    const buttonMoved = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "button_moved",
+      risk_tags: ["locator_drift"],
+    })), { seed: "ui-button-moved-seed" });
+    expect(buttonMoved.ui_state.layout_mutations).toContain("control_position_changed");
+    expect(buttonMoved.ui_state.controls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        location: "menu",
+        moved: true,
+      }),
+    ]));
+
+    const hiddenMenu = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "button_hidden_menu",
+      risk_tags: ["ui_variant"],
+    })), { seed: "ui-menu-seed" });
+    expect(hiddenMenu.ui_state.layout_mutations).toContain("control_hidden_in_menu");
+    expect(hiddenMenu.ui_state.menu_hidden_controls).toHaveLength(1);
+
+    const mobile = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "viewport_mobile",
+      risk_tags: ["viewport_variant"],
+    })), { seed: "ui-mobile-seed" });
+    expect(mobile.ui_state.viewport).toBe("mobile");
+    expect(mobile.ui_state.controls.some((control) => control.moved)).toBe(true);
+
+    const reducedMotion = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "reduced_motion",
+      risk_tags: ["motion_variant"],
+    })), { seed: "ui-motion-seed" });
+    expect(reducedMotion.ui_state.reduced_motion).toBe(true);
+
+    const hydrationDelay = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "hydration_delay",
+      risk_tags: ["hydration_delay"],
+    })), { seed: "ui-hydration-seed" });
+    expect(hydrationDelay.ui_state.hydration_delay_ms).toBeGreaterThan(0);
+    expect(hydrationDelay.ui_state.hydration_delay_ms).toBeLessThanOrEqual(500);
+
+    const featureFlag = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "feature_flag",
+      risk_tags: ["ui_variant"],
+    })), { seed: "ui-feature-seed" });
+    expect(featureFlag.ui_state.feature_flags).toHaveLength(1);
+    expect(featureFlag.ui_state.layout_mutations).toContain("control_hidden_in_menu");
+
+    const modal = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "modal_appears",
+      risk_tags: ["ui_variant"],
+    })), { seed: "ui-modal-seed" });
+    expect(modal.ui_state.modal_present).toBe(true);
+    expect(modal.ui_state.controls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "modal",
+        visible: true,
+      }),
+    ]));
+  });
+
   it("is deterministic for the same scenario and seed", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "duplicate_entity",
