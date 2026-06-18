@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { DojoPermissionLicense } from "../../src/browser/dojo.js";
 import {
   applyDojoSourceDriftExpiry,
+  buildDojoSourceDriftRecertificationHandoff,
   detectDojoSourceDrift,
   type DojoSourceDriftReport,
 } from "../../src/dojo/source/source_drift.js";
@@ -303,6 +304,108 @@ describe("Dojo source drift expiry", () => {
       expect.objectContaining({ trigger_id: "trigger-revoked", reason: "license_not_active", status: "revoked" }),
     ]);
     expect(store.expireCalls).toEqual([]);
+  });
+
+  it("builds source drift recertification handoff before relicense", async () => {
+    const report = reportFixture([
+      triggerFixture({ trigger_id: "trigger-submit", license_id: "license-a" }),
+    ]);
+    const application = await applyDojoSourceDriftExpiry({
+      report,
+      license_store: new FakeLicenseStore([licenseRecordFixture({
+        license_id: "license-a",
+        skill_id: "skill-a",
+      })]),
+      expired_by: actorFixture(),
+      now: "2026-06-12T00:00:00.000Z",
+    });
+
+    const dryRunHandoff = buildDojoSourceDriftRecertificationHandoff({
+      report,
+      application,
+      dry_run: true,
+      skills_by_id: {
+        "skill-a": { skill_id: "skill-a", workflow_id: "workflow-a" },
+      },
+    });
+
+    expect(dryRunHandoff).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.sourceDriftRecertificationHandoff.v1",
+      dry_run: true,
+      required_tool: "synthi_dojo_recertify_skill",
+      relicense_allowed_without_recertification: false,
+      queue_count: 1,
+      would_queue_count: 1,
+      queued_count: 0,
+      skipped_count: 0,
+      required_before_relicense: expect.arrayContaining([
+        "run_synthi_dojo_recertify_skill",
+        "provide_current_workflow_artifact",
+        "provide_explicit_evidence_refs",
+        "pass_executable_checkride",
+      ]),
+      evidence_policy: expect.objectContaining({
+        evidence_refs_required: true,
+        ledger_backed_when_enforced: true,
+      }),
+      blocked_by: [],
+      ok: true,
+    }));
+    expect(dryRunHandoff.queue[0]).toEqual(expect.objectContaining({
+      status: "would_queue",
+      skill_id: "skill-a",
+      workflow_id: "workflow-a",
+      license_id: "license-a",
+      required_tool: "synthi_dojo_recertify_skill",
+      suggested_args: expect.objectContaining({
+        skill_id: "skill-a",
+        workflow_id: "workflow-a",
+        evidence_refs: [],
+        actor_id: null,
+        actor_type: null,
+      }),
+      skipped_by: [],
+    }));
+    expect(dryRunHandoff.queue[0].source_drift_reason).toContain("source_drift:snapshot-previous->snapshot-next");
+
+    const queuedHandoff = buildDojoSourceDriftRecertificationHandoff({
+      report,
+      application,
+      dry_run: false,
+      skill_updates: [{
+        skill_id: "skill-a",
+        workflow_id: "workflow-a",
+        license_id: "license-a",
+        status: "expired",
+        recertification_trigger_id: "retrain-custom",
+      }],
+      skills_by_id: {
+        "skill-a": { skill_id: "skill-a", workflow_id: "workflow-a" },
+      },
+    });
+    expect(queuedHandoff.queue[0]).toEqual(expect.objectContaining({
+      status: "queued",
+      recertification_trigger: expect.objectContaining({ trigger_id: "retrain-custom" }),
+    }));
+
+    const skippedHandoff = buildDojoSourceDriftRecertificationHandoff({
+      report,
+      application,
+      dry_run: false,
+      skill_updates: [{
+        skill_id: "skill-a",
+        license_id: "license-a",
+        status: "skipped",
+        skipped_by: ["source_drift_skill_record_missing"],
+      }],
+      skills_by_id: {},
+    });
+    expect(skippedHandoff).toEqual(expect.objectContaining({
+      ok: false,
+      skipped_count: 1,
+      blocked_by: ["source_drift_skill_record_missing"],
+    }));
+    expect(skippedHandoff.queue[0].status).toBe("skipped");
   });
 });
 

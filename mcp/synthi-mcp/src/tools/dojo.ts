@@ -120,9 +120,14 @@ import {
 } from "../dojo/source/source_snapshot.js";
 import {
   applyDojoSourceDriftExpiry,
+  buildDojoSourceDriftRecertificationHandoff,
   detectDojoSourceDrift,
+  sourceDriftExpiredLicenseReason,
+  sourceDriftRecertificationTriggerId,
   type DojoGraphNodeSourceBinding,
+  type DojoSourceDriftExpiredSkillUpdate,
   type DojoSourceDriftExpiryApplication,
+  type DojoSourceDriftRecertificationSkillInfo,
   type DojoSourceDriftReport,
 } from "../dojo/source/source_drift.js";
 import {
@@ -2513,6 +2518,17 @@ async function dojoApplySourceDriftExpiryTool(args: unknown): Promise<ToolRespon
           }),
           now,
         });
+      const recertificationSkills = await sourceDriftRecertificationSkillsById({
+        application,
+        resolve_skill: (skillId) => resolution.skill_store.getSkill(skillId),
+      });
+      const recertificationHandoff = buildDojoSourceDriftRecertificationHandoff({
+        report,
+        application,
+        dry_run: dryRun,
+        skill_updates: skillUpdates,
+        skills_by_id: recertificationSkills,
+      });
       return jsonResponse({
         ok: application.ok,
         tenant_id: tenant.tenant_id,
@@ -2523,6 +2539,7 @@ async function dojoApplySourceDriftExpiryTool(args: unknown): Promise<ToolRespon
         expired_license_count: dryRun ? 0 : application.expired_license_count,
         would_expire_license_count: dryRun ? application.expired_license_count : 0,
         skill_updates: skillUpdates,
+        source_drift_recertification_handoff: recertificationHandoff,
         blocked_by: application.blocked_by,
       });
     } finally {
@@ -2546,6 +2563,29 @@ async function dojoApplySourceDriftExpiryTool(args: unknown): Promise<ToolRespon
   const expiredSkillIds = dryRun
     ? []
     : application.expired_licenses.map((license) => license.record.skill_id).sort();
+  const skillUpdates: DojoSourceDriftExpiredSkillUpdate[] = expiredSkillIds.map((skillId) => {
+    const skill = dojoSkillRegistry.get(skillId);
+    const expired = application.expired_licenses.find((license) => license.record.skill_id === skillId);
+    const reason = expired ? sourceDriftExpiredLicenseReason(report, expired) : null;
+    return {
+      skill_id: skillId,
+      license_id: expired?.license_id ?? skill?.permission_license.license_id ?? "",
+      status: "expired",
+      ...(skill?.workflow_id ? { workflow_id: skill.workflow_id } : {}),
+      ...(reason ? { recertification_trigger_id: sourceDriftRecertificationTriggerId(skillId, expired?.license_id ?? "", reason) } : {}),
+    };
+  }).filter((update) => update.license_id);
+  const recertificationSkills = await sourceDriftRecertificationSkillsById({
+    application,
+    resolve_skill: (skillId) => Promise.resolve(dojoSkillRegistry.get(skillId)),
+  });
+  const recertificationHandoff = buildDojoSourceDriftRecertificationHandoff({
+    report,
+    application,
+    dry_run: dryRun,
+    skill_updates: skillUpdates,
+    skills_by_id: recertificationSkills,
+  });
   return jsonResponse({
     ok: application.ok,
     tenant_id: tenant.tenant_id,
@@ -2555,7 +2595,16 @@ async function dojoApplySourceDriftExpiryTool(args: unknown): Promise<ToolRespon
     source_drift_expiry_application: application,
     expired_license_count: dryRun ? 0 : application.expired_license_count,
     would_expire_license_count: dryRun ? application.expired_license_count : 0,
-    skill_updates: expiredSkillIds.map((skillId) => ({ skill_id: skillId, status: "expired" })),
+    skill_updates: dryRun
+      ? []
+      : skillUpdates.map((update) => ({
+        skill_id: update.skill_id,
+        license_id: update.license_id,
+        status: update.status,
+        ...(update.workflow_id ? { workflow_id: update.workflow_id } : {}),
+        ...(update.recertification_trigger_id ? { recertification_trigger_id: update.recertification_trigger_id } : {}),
+      })),
+    source_drift_recertification_handoff: recertificationHandoff,
     blocked_by: application.blocked_by,
   });
 }
@@ -9270,7 +9319,7 @@ function expireCompatibilitySkillForSourceDrift(
   updated.retrain_triggers = [
     ...updated.retrain_triggers.filter((trigger) => trigger.condition !== condition),
     {
-      trigger_id: `retrain_${hashId(`${updated.skill_id}:${updated.permission_license.license_id}:${condition}`)}`,
+      trigger_id: sourceDriftRecertificationTriggerId(updated.skill_id, updated.permission_license.license_id, input.reason),
       source: "app",
       condition,
     },
@@ -9295,8 +9344,8 @@ async function persistSourceDriftExpiredSkills(input: {
   resolve_skill: (skillId: string) => Promise<DojoSkill | null> | DojoSkill | null;
   save_skill: (skill: DojoSkill) => Promise<{ skill_id: string; status: string; updated_at: string }>;
   now: string;
-}): Promise<Array<{ skill_id: string; license_id: string; status: string; updated_at?: string; skipped_by?: string[] }>> {
-  const updates: Array<{ skill_id: string; license_id: string; status: string; updated_at?: string; skipped_by?: string[] }> = [];
+}): Promise<DojoSourceDriftExpiredSkillUpdate[]> {
+  const updates: DojoSourceDriftExpiredSkillUpdate[] = [];
   for (const expired of input.application.expired_licenses) {
     const skill = await input.resolve_skill(expired.record.skill_id);
     if (!skill) {
@@ -9322,27 +9371,40 @@ async function persistSourceDriftExpiredSkills(input: {
       expired_at: input.now,
       expired_by: input.application.applied_by,
     });
+    const recertificationTrigger = updatedSkill.retrain_triggers.find((trigger) =>
+      trigger.condition === `source_drift:${sourceDriftExpiredLicenseReason(input.report, expired)}`
+    );
     const saved = await input.save_skill(updatedSkill);
     updates.push({
       skill_id: saved.skill_id,
       license_id: expired.license_id,
       status: saved.status,
       updated_at: saved.updated_at,
+      workflow_id: updatedSkill.workflow_id,
+      ...(recertificationTrigger ? { recertification_trigger_id: recertificationTrigger.trigger_id } : {}),
     });
   }
   return updates;
 }
 
-function sourceDriftExpiredLicenseReason(
-  report: DojoSourceDriftReport,
-  expired: DojoSourceDriftExpiryApplication["expired_licenses"][number]
-): string {
-  return [
-    `source_drift:${report.previous_snapshot_id}->${report.next_snapshot_id}`,
-    `licenses=${expired.license_id}`,
-    `tokens=${expired.source_token_ids.join(",")}`,
-    `nodes=${expired.node_ids.join(",")}`,
-  ].join(" ");
+async function sourceDriftRecertificationSkillsById(input: {
+  application: DojoSourceDriftExpiryApplication;
+  resolve_skill: (skillId: string) => Promise<DojoSkill | null | undefined> | DojoSkill | null | undefined;
+}): Promise<Record<string, DojoSourceDriftRecertificationSkillInfo | undefined>> {
+  const skillsById: Record<string, DojoSourceDriftRecertificationSkillInfo | undefined> = {};
+  const skillIds = [...new Set(input.application.expired_licenses.map((expired) => expired.record.skill_id))].sort();
+  for (const skillId of skillIds) {
+    const skill = await input.resolve_skill(skillId);
+    if (!skill) {
+      skillsById[skillId] = undefined;
+      continue;
+    }
+    skillsById[skillId] = {
+      skill_id: skill.skill_id,
+      workflow_id: skill.workflow_id,
+    };
+  }
+  return skillsById;
 }
 
 function codeOwnerRulesOpt(value: unknown): DojoGeneratedPrCodeOwnerRule[] {

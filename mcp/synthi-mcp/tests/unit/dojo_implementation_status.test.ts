@@ -181,6 +181,12 @@ describe("Dojo implementation status registry", () => {
     expect(getDojoToolImplementationMetadata("synthi_dojo_review_case_law").maturity_blockers).not.toContain(
       "case_law_review_requires_durable_enterprise_audit_for_production"
     );
+    expect(getDojoToolImplementationMetadata("synthi_dojo_apply_source_drift_expiry")).toEqual(
+      expect.objectContaining({
+        summary: expect.stringContaining("explicit recertification handoff"),
+        maturity_blockers: expect.not.arrayContaining(["source_drift_expiry_still_requires_recertification_to_relicense"]),
+      })
+    );
   });
 
   it("classifies current report artifacts without implying mature runtime backing", () => {
@@ -207,6 +213,7 @@ describe("Dojo implementation status registry", () => {
       "no_materialized_synthetic_fixture",
       "no_durable_control_plane",
       "no_authoritative_evidence_ledger",
+      "source_drift_expiry_still_requires_recertification_to_relicense",
     ];
     const allMetadata = [
       ...Object.values(DOJO_TOOL_IMPLEMENTATION_STATUS),

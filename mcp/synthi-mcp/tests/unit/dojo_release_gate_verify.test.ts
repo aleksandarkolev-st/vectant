@@ -1152,6 +1152,7 @@ describe("Dojo release gate artifact verifier", () => {
         changed_token_expiry_required: false,
         tamper_rejection_required: false,
         license_store_expiry_application_required: false,
+        recertification_handoff_required: false,
       },
     });
     const incompletePath = await writeSourceDriftEvidenceFixture({
@@ -1168,6 +1169,7 @@ describe("Dojo release gate artifact verifier", () => {
       "source_drift_changed_token_expiry_requirement_missing",
       "source_drift_tamper_rejection_requirement_missing",
       "source_drift_license_store_expiry_requirement_missing",
+      "source_drift_recertification_handoff_requirement_missing",
     ]));
 
     const missingExecutionPath = await writeSourceDriftEvidenceFixture({
@@ -4951,6 +4953,7 @@ function sourceDriftEvidenceFixture(overrides = {}) {
       unrelated_token_no_expiry_required: true,
       tamper_rejection_required: true,
       license_store_expiry_application_required: true,
+      recertification_handoff_required: true,
       self_check_executes_tests_required: true,
     },
     test_execution: {

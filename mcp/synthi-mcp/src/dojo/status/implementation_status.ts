@@ -70,8 +70,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_capture_source_snapshot: sourceGeneration("Creates and verifies a signed release-scoped source snapshot from caller-supplied source tokens; persistence and drift application remain explicit follow-up operations."),
   synthi_dojo_detect_source_drift: sourceGeneration("Verifies signed source snapshots and reports drifted tokens, affected graph nodes, and license expiry triggers without applying them."),
   synthi_dojo_apply_source_drift_expiry: controlPlaneWrite(
-    "Dry-runs or applies source-drift license expiry triggers against the tenant-scoped Dojo license store; production writes require the durable control plane.",
-    ["source_drift_expiry_still_requires_recertification_to_relicense"]
+    "Dry-runs or applies source-drift license expiry triggers against the tenant-scoped Dojo license store and returns an explicit recertification handoff to synthi_dojo_recertify_skill before any relicense; production writes require the durable control plane."
   ),
   synthi_dojo_get_source_affordance_pr_plan: sourceProjection("Returns a typed generated source-affordance PR plan; the codemod harness can patch controlled React fixtures and prove generated tests."),
   synthi_dojo_prepare_source_affordance_pr: sourceGeneration("Builds a generated source patch bundle, PR metadata, branch plan, and dry-run apply proof from supplied source files."),

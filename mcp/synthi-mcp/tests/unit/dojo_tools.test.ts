@@ -1699,7 +1699,7 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
-  it("applies source drift expiry triggers to matching licenses after a dry-run", async () => {
+  it("applies source drift expiry triggers to matching licenses with recertification handoff after a dry-run", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
     expect(publish?.isError).toBeUndefined();
@@ -1804,6 +1804,40 @@ describe("Agent Dojo MCP tools", () => {
           }),
         ],
       }),
+      source_drift_recertification_handoff: expect.objectContaining({
+        schema_version: "synthi.dojo.sourceDriftRecertificationHandoff.v1",
+        dry_run: true,
+        required_tool: "synthi_dojo_recertify_skill",
+        relicense_allowed_without_recertification: false,
+        queue_count: 1,
+        would_queue_count: 1,
+        queued_count: 0,
+        required_before_relicense: expect.arrayContaining([
+          "run_synthi_dojo_recertify_skill",
+          "provide_current_workflow_artifact",
+          "provide_explicit_evidence_refs",
+          "pass_executable_checkride",
+          "satisfy_evidence_ledger_policy_when_enforced",
+        ]),
+        queue: [
+          expect.objectContaining({
+            status: "would_queue",
+            skill_id: skillId,
+            workflow_id: publishedSkill.workflow_id,
+            license_id: publishedSkill.permission_license.license_id,
+            required_tool: "synthi_dojo_recertify_skill",
+            suggested_args: expect.objectContaining({
+              skill_id: skillId,
+              workflow_id: publishedSkill.workflow_id,
+              evidence_refs: [],
+              actor_id: null,
+              actor_type: null,
+            }),
+            skipped_by: [],
+          }),
+        ],
+        blocked_by: [],
+      }),
       blocked_by: [],
     }));
     expect(dojoSkillRegistry.get(skillId)?.license_expires_at).toBe(originalExpiry);
@@ -1827,6 +1861,21 @@ describe("Agent Dojo MCP tools", () => {
         skipped_trigger_count: 0,
         failed_expiration_count: 0,
       }),
+      source_drift_recertification_handoff: expect.objectContaining({
+        dry_run: false,
+        queue_count: 1,
+        would_queue_count: 0,
+        queued_count: 1,
+        queue: [
+          expect.objectContaining({
+            status: "queued",
+            skill_id: skillId,
+            workflow_id: publishedSkill.workflow_id,
+            license_id: publishedSkill.permission_license.license_id,
+            required_tool: "synthi_dojo_recertify_skill",
+          }),
+        ],
+      }),
       blocked_by: [],
     }));
     const expiredSkill = dojoSkillRegistry.get(skillId) as DojoSkill;
@@ -1836,6 +1885,17 @@ describe("Agent Dojo MCP tools", () => {
       expect.objectContaining({
         source: "app",
         condition: expect.stringContaining("source_drift:"),
+      }),
+    ]));
+    const appliedHandoff = (applied?.structuredContent as {
+      source_drift_recertification_handoff: {
+        queue: Array<{ recertification_trigger: { trigger_id: string; condition: string } }>;
+      };
+    }).source_drift_recertification_handoff;
+    expect(expiredSkill.retrain_triggers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        trigger_id: appliedHandoff.queue[0].recertification_trigger.trigger_id,
+        condition: appliedHandoff.queue[0].recertification_trigger.condition,
       }),
     ]));
 

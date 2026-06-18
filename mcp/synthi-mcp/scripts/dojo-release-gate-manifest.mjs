@@ -432,6 +432,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_unrelated_token_no_expiry: true,
       require_tamper_rejection: true,
       require_license_store_expiry_application: true,
+      require_recertification_handoff: true,
       require_self_check_executes_tests: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
@@ -1635,6 +1636,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_unrelated_token_no_expiry", "source_drift_missing_unrelated_no_expiry_requirement"],
       ["require_tamper_rejection", "source_drift_missing_tamper_rejection_requirement"],
       ["require_license_store_expiry_application", "source_drift_missing_license_store_expiry_requirement"],
+      ["require_recertification_handoff", "source_drift_missing_recertification_handoff_requirement"],
       ["require_self_check_executes_tests", "source_drift_missing_self_check_execution_requirement"],
     ]) {
       if (!sourceDriftGate.artifact_requirements?.[requirement]) errors.push(errorCode);

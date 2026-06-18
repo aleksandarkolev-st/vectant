@@ -90,6 +90,72 @@ export interface DojoSourceDriftExpiryApplication {
   ok: boolean;
 }
 
+export interface DojoSourceDriftRecertificationSkillInfo {
+  skill_id: string;
+  workflow_id?: string;
+}
+
+export interface DojoSourceDriftExpiredSkillUpdate {
+  skill_id: string;
+  license_id: string;
+  status: string;
+  updated_at?: string;
+  workflow_id?: string;
+  recertification_trigger_id?: string;
+  skipped_by?: string[];
+}
+
+export interface DojoSourceDriftRecertificationQueueItem {
+  queue_id: string;
+  status: "would_queue" | "queued" | "skipped";
+  skill_id: string;
+  workflow_id: string | null;
+  license_id: string;
+  node_ids: string[];
+  source_token_ids: string[];
+  trigger_ids: string[];
+  source_drift_reason: string;
+  required_tool: "synthi_dojo_recertify_skill";
+  recertification_trigger: {
+    trigger_id: string;
+    source: "app";
+    condition: string;
+  };
+  suggested_args: {
+    skill_id: string;
+    workflow_id: string | null;
+    reason: string;
+    evidence_refs: string[];
+    actor_id: null;
+    actor_type: null;
+  };
+  required_before_relicense: string[];
+  skipped_by: string[];
+}
+
+export interface DojoSourceDriftRecertificationHandoff {
+  schema_version: "synthi.dojo.sourceDriftRecertificationHandoff.v1";
+  previous_snapshot_id: string;
+  next_snapshot_id: string;
+  app_origin: string;
+  dry_run: boolean;
+  required_tool: "synthi_dojo_recertify_skill";
+  relicense_allowed_without_recertification: false;
+  evidence_policy: {
+    evidence_refs_required: true;
+    ledger_backed_when_enforced: true;
+    accepted_evidence_kinds: string[];
+  };
+  required_before_relicense: string[];
+  queue_count: number;
+  would_queue_count: number;
+  queued_count: number;
+  skipped_count: number;
+  queue: DojoSourceDriftRecertificationQueueItem[];
+  blocked_by: string[];
+  ok: boolean;
+}
+
 export function detectDojoSourceDrift(input: {
   previous_snapshot: DojoSourceSnapshot;
   next_snapshot: DojoSourceSnapshot;
@@ -250,6 +316,122 @@ export async function applyDojoSourceDriftExpiry(input: {
     blocked_by: blockedBy,
     ok: failedExpirations.length === 0,
   };
+}
+
+export function buildDojoSourceDriftRecertificationHandoff(input: {
+  report: DojoSourceDriftReport;
+  application: DojoSourceDriftExpiryApplication;
+  dry_run: boolean;
+  skill_updates?: DojoSourceDriftExpiredSkillUpdate[];
+  skills_by_id?: Record<string, DojoSourceDriftRecertificationSkillInfo | undefined>;
+}): DojoSourceDriftRecertificationHandoff {
+  const updatesByLicense = new Map((input.skill_updates ?? []).map((update) => [update.license_id, update]));
+  const requiredBeforeRelicense = [
+    "run_synthi_dojo_recertify_skill",
+    "provide_current_workflow_artifact",
+    "provide_explicit_recertification_reason",
+    "provide_explicit_evidence_refs",
+    "pass_executable_checkride",
+    "satisfy_evidence_ledger_policy_when_enforced",
+  ];
+  const queue = input.application.expired_licenses.map((expired): DojoSourceDriftRecertificationQueueItem => {
+    const update = updatesByLicense.get(expired.license_id);
+    const skillInfo = input.skills_by_id?.[expired.record.skill_id];
+    const workflowId = update?.workflow_id ?? skillInfo?.workflow_id ?? null;
+    const reason = sourceDriftExpiredLicenseReason(input.report, expired);
+    const condition = `source_drift:${reason}`;
+    const skippedBy = [
+      ...(update?.skipped_by ?? []),
+      ...(!skillInfo && !update?.workflow_id ? ["source_drift_skill_record_missing"] : []),
+    ];
+    const status: DojoSourceDriftRecertificationQueueItem["status"] = skippedBy.length > 0
+      ? "skipped"
+      : input.dry_run
+        ? "would_queue"
+        : "queued";
+
+    return {
+      queue_id: `source_drift_recert_${shortHash(`${expired.record.skill_id}:${expired.license_id}:${expired.trigger_ids.join(",")}`)}`,
+      status,
+      skill_id: expired.record.skill_id,
+      workflow_id: workflowId,
+      license_id: expired.license_id,
+      node_ids: [...expired.node_ids],
+      source_token_ids: [...expired.source_token_ids],
+      trigger_ids: [...expired.trigger_ids],
+      source_drift_reason: reason,
+      required_tool: "synthi_dojo_recertify_skill",
+      recertification_trigger: {
+        trigger_id: update?.recertification_trigger_id ?? sourceDriftRecertificationTriggerId(expired.record.skill_id, expired.license_id, reason),
+        source: "app",
+        condition,
+      },
+      suggested_args: {
+        skill_id: expired.record.skill_id,
+        workflow_id: workflowId,
+        reason,
+        evidence_refs: [],
+        actor_id: null,
+        actor_type: null,
+      },
+      required_before_relicense: [...requiredBeforeRelicense],
+      skipped_by: skippedBy,
+    };
+  });
+  const blockedBy = [
+    ...input.application.blocked_by,
+    ...queue.flatMap((item) => item.skipped_by),
+  ].filter((value, index, values) => values.indexOf(value) === index).sort();
+
+  return {
+    schema_version: "synthi.dojo.sourceDriftRecertificationHandoff.v1",
+    previous_snapshot_id: input.report.previous_snapshot_id,
+    next_snapshot_id: input.report.next_snapshot_id,
+    app_origin: input.report.app_origin,
+    dry_run: input.dry_run,
+    required_tool: "synthi_dojo_recertify_skill",
+    relicense_allowed_without_recertification: false,
+    evidence_policy: {
+      evidence_refs_required: true,
+      ledger_backed_when_enforced: true,
+      accepted_evidence_kinds: [
+        "source_drift_review",
+        "executable_checkride",
+        "recertification_approval",
+      ],
+    },
+    required_before_relicense: requiredBeforeRelicense,
+    queue_count: queue.length,
+    would_queue_count: queue.filter((item) => item.status === "would_queue").length,
+    queued_count: queue.filter((item) => item.status === "queued").length,
+    skipped_count: queue.filter((item) => item.status === "skipped").length,
+    queue,
+    blocked_by: blockedBy,
+    ok: input.application.ok && blockedBy.length === 0,
+  };
+}
+
+export function sourceDriftExpiredLicenseReason(
+  report: DojoSourceDriftReport,
+  expired: DojoSourceDriftExpiredLicense
+): string {
+  if (typeof expired.record.revoked_reason === "string" && expired.record.revoked_reason.trim()) {
+    return expired.record.revoked_reason;
+  }
+  return [
+    `source_drift:${report.previous_snapshot_id}->${report.next_snapshot_id}`,
+    `licenses=${expired.license_id}`,
+    `tokens=${expired.source_token_ids.join(",")}`,
+    `nodes=${expired.node_ids.join(",")}`,
+  ].join(" ");
+}
+
+export function sourceDriftRecertificationTriggerId(
+  skillId: string,
+  licenseId: string,
+  reason: string
+): string {
+  return `retrain_${shortHash(`${skillId}:${licenseId}:source_drift:${reason}`)}`;
 }
 
 function assertVerifiedSnapshot(

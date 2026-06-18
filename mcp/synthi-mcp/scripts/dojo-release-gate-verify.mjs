@@ -1606,6 +1606,7 @@ export function validateDojoSourceDriftEvidenceForRelease(evidence) {
     ["unrelated_token_no_expiry_required", "source_drift_unrelated_no_expiry_requirement_missing"],
     ["tamper_rejection_required", "source_drift_tamper_rejection_requirement_missing"],
     ["license_store_expiry_application_required", "source_drift_license_store_expiry_requirement_missing"],
+    ["recertification_handoff_required", "source_drift_recertification_handoff_requirement_missing"],
     ["self_check_executes_tests_required", "source_drift_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
@@ -4635,6 +4636,7 @@ async function runSelfCheck({ outDir }) {
         changed_token_expiry_required: false,
         tamper_rejection_required: false,
         license_store_expiry_application_required: false,
+        recertification_handoff_required: false,
         self_check_executes_tests_required: false,
       },
     },
@@ -4648,6 +4650,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedSourceDrift.errors.includes("source_drift_changed_token_expiry_requirement_missing"));
   assert(rejectedSourceDrift.errors.includes("source_drift_tamper_rejection_requirement_missing"));
   assert(rejectedSourceDrift.errors.includes("source_drift_license_store_expiry_requirement_missing"));
+  assert(rejectedSourceDrift.errors.includes("source_drift_recertification_handoff_requirement_missing"));
   assert(rejectedSourceDrift.errors.includes("source_drift_self_check_execution_requirement_missing"));
 
   const agentReadyUiContractDir = path.join(outDir, "agent-ready-ui-contract");
@@ -5770,6 +5773,7 @@ async function writeSourceDriftEvidenceForSelfCheck({
       unrelated_token_no_expiry_required: true,
       tamper_rejection_required: true,
       license_store_expiry_application_required: true,
+      recertification_handoff_required: true,
       self_check_executes_tests_required: true,
     },
     test_files: [...DOJO_SOURCE_DRIFT_TEST_FILES],
