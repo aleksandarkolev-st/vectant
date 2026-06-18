@@ -37,6 +37,7 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "scenario_dsl_validates_duplicate_entity",
   "scenario_dsl_validates_fake_success_oracle",
   "scenario_dsl_classifies_invalid_value_data_tissue",
+  "scenario_dsl_classifies_document_tissue_specific_evidence",
   "scenario_dsl_classifies_policy_tissue_scenarios",
   "scenario_dsl_classifies_expanded_identity_tissue_scenarios",
   "scenario_dsl_rejects_missing_oracle_or_fixtures",
@@ -74,6 +75,9 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "vivarium_runner_emits_invalid_value_evidence",
   "vivarium_runner_emits_stale_entity_data_tissue_evidence",
   "vivarium_runner_emits_missing_field_data_tissue_evidence",
+  "vivarium_runner_emits_missing_document_field_tissue_evidence",
+  "vivarium_runner_emits_corrupted_document_tissue_evidence",
+  "vivarium_runner_emits_ambiguous_document_name_tissue_evidence",
   "vivarium_runner_requires_prompt_injection_quarantine",
   "vivarium_runner_uses_deterministic_run_clock",
   "vivarium_runner_blocks_exhausted_budget",
@@ -239,6 +243,7 @@ export function buildDojoVivariumRuntimeEvidenceManifest({
       partial_write_detection_required: true,
       prompt_injection_quarantine_required: true,
       ambiguous_document_names_required: true,
+      document_tissue_specific_evidence_required: true,
       ui_tissue_mutations_required: true,
       policy_tissue_required: true,
       expanded_identity_tissue_required: true,
@@ -328,6 +333,8 @@ function capabilityMatchers(capability) {
       return ["scenario dsl validates fake success scenario definitions", "evidence oracle"];
     case "scenario_dsl_classifies_invalid_value_data_tissue":
       return ["scenario dsl classifies invalid value scenarios", "data validation tissue"];
+    case "scenario_dsl_classifies_document_tissue_specific_evidence":
+      return ["scenario dsl classifies document tissue scenarios", "specific evidence requirements"];
     case "scenario_dsl_classifies_policy_tissue_scenarios":
       return ["scenario dsl classifies policy tissue scenarios", "thresholds and unavailable approvals"];
     case "scenario_dsl_classifies_expanded_identity_tissue_scenarios":
@@ -402,6 +409,12 @@ function capabilityMatchers(capability) {
       return ["vivarium runner emits stale entity data tissue evidence", "stale ids block execution"];
     case "vivarium_runner_emits_missing_field_data_tissue_evidence":
       return ["vivarium runner emits missing field data tissue evidence", "required synthetic fields block execution"];
+    case "vivarium_runner_emits_missing_document_field_tissue_evidence":
+      return ["vivarium runner emits missing field document tissue evidence", "materialized documents"];
+    case "vivarium_runner_emits_corrupted_document_tissue_evidence":
+      return ["vivarium runner emits corrupted document tissue evidence", "materialized documents"];
+    case "vivarium_runner_emits_ambiguous_document_name_tissue_evidence":
+      return ["vivarium runner emits ambiguous name document tissue evidence", "distinct synthetic document ids"];
     case "vivarium_runner_requires_prompt_injection_quarantine":
       return ["vivarium runner passes prompt injection scenarios", "document instructions are quarantined"];
     case "vivarium_runner_uses_deterministic_run_clock":

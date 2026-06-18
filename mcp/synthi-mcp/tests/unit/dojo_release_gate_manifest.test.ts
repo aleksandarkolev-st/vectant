@@ -872,6 +872,7 @@ describe("Dojo release gate manifest", () => {
           require_partial_write_detection: true,
           require_prompt_injection_quarantine: true,
           require_ambiguous_document_names: true,
+          require_document_tissue_specific_evidence: true,
           require_ui_tissue_mutations: true,
           require_policy_tissue: true,
           require_expanded_identity_tissue: true,
@@ -1563,6 +1564,7 @@ describe("Dojo release gate manifest", () => {
     vivariumRuntimeGate.release_artifact_requirements.require_evil_twin_hardening_loop = false;
     vivariumRuntimeGate.release_artifact_requirements.require_executable_checkride = false;
     vivariumRuntimeGate.release_artifact_requirements.require_ambiguous_document_names = false;
+    vivariumRuntimeGate.release_artifact_requirements.require_document_tissue_specific_evidence = false;
     vivariumRuntimeGate.release_artifact_requirements.require_ui_tissue_mutations = false;
     vivariumRuntimeGate.release_artifact_requirements.require_policy_tissue = false;
     vivariumRuntimeGate.release_artifact_requirements.require_expanded_identity_tissue = false;
@@ -1574,6 +1576,7 @@ describe("Dojo release gate manifest", () => {
       "vivarium_runtime_missing_evil_twin_hardening_requirement",
       "vivarium_runtime_missing_checkride_requirement",
       "vivarium_runtime_missing_ambiguous_document_requirement",
+      "vivarium_runtime_missing_document_tissue_specific_evidence_requirement",
       "vivarium_runtime_missing_ui_tissue_requirement",
       "vivarium_runtime_missing_policy_tissue_requirement",
       "vivarium_runtime_missing_expanded_identity_tissue_requirement",

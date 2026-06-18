@@ -3562,6 +3562,7 @@ export function validateDojoVivariumRuntimeEvidenceForRelease(evidence) {
     ["partial_write_detection_required", "vivarium_runtime_partial_write_requirement_missing"],
     ["prompt_injection_quarantine_required", "vivarium_runtime_prompt_injection_requirement_missing"],
     ["ambiguous_document_names_required", "vivarium_runtime_ambiguous_document_requirement_missing"],
+    ["document_tissue_specific_evidence_required", "vivarium_runtime_document_tissue_specific_evidence_requirement_missing"],
     ["ui_tissue_mutations_required", "vivarium_runtime_ui_tissue_requirement_missing"],
     ["policy_tissue_required", "vivarium_runtime_policy_tissue_requirement_missing"],
     ["expanded_identity_tissue_required", "vivarium_runtime_expanded_identity_tissue_requirement_missing"],
@@ -5468,6 +5469,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
         invalid_value_data_tissue_required: false,
         stale_missing_data_tissue_required: false,
         api_validation_latency_tissue_required: false,
+        document_tissue_specific_evidence_required: false,
       },
     },
   });
@@ -5484,6 +5486,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_invalid_value_data_tissue_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_stale_missing_data_tissue_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_api_validation_latency_tissue_requirement_missing"));
+  assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_document_tissue_specific_evidence_requirement_missing"));
 
   const checkrideLicenseDir = path.join(outDir, "checkride-license");
   await mkdir(checkrideLicenseDir, { recursive: true });
@@ -8216,6 +8219,7 @@ async function writeVivariumRuntimeEvidenceForSelfCheck({
       partial_write_detection_required: true,
       prompt_injection_quarantine_required: true,
       ambiguous_document_names_required: true,
+      document_tissue_specific_evidence_required: true,
       ui_tissue_mutations_required: true,
       policy_tissue_required: true,
       expanded_identity_tissue_required: true,
