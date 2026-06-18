@@ -26,6 +26,14 @@ const BLOCKING_HEALTH_RECERTIFICATION_TRIGGERS = new Set([
 export type DojoGovernanceLicenseStatus = "active" | "expiring" | "expired" | "revoked";
 export type DojoGovernanceApprovalStatus = "pending" | "approved" | "denied";
 export type DojoGovernanceActionStatus = "applied" | "rejected";
+export type DojoGovernanceScheduledJobKind =
+  | "archive_compliance_evidence"
+  | "expire_stale_license"
+  | "notify_approver"
+  | "recompute_registry_metrics"
+  | "review_case_law"
+  | "run_recertification";
+export type DojoGovernanceScheduledJobStatus = "ready" | "waiting" | "blocked";
 export type DojoPermissionUpgradeDecision = "approved" | "denied";
 export type DojoCaseLawReviewDecision = "approved" | "deprecated";
 export type DojoGovernanceRbacAction =
@@ -273,6 +281,22 @@ export interface DojoGovernanceComplianceEvidencePack {
   retention_class: "standard" | "regulated" | "legal_hold";
 }
 
+export interface DojoGovernanceScheduledJobItem {
+  job_id: string;
+  kind: DojoGovernanceScheduledJobKind;
+  status: DojoGovernanceScheduledJobStatus;
+  priority: DojoGovernanceRecertificationQueueItem["priority"];
+  due_at: string;
+  reason: string;
+  evidence_refs: string[];
+  blocked_by: string[];
+  next_step: string;
+  queue_id?: string;
+  skill_id?: string;
+  workspace_id?: string;
+  license_id?: string;
+}
+
 export interface DojoGovernanceServiceView {
   schema_version: "synthi.dojo.governanceService.v1";
   generated_at: string;
@@ -282,6 +306,7 @@ export interface DojoGovernanceServiceView {
   skill_registry: DojoGovernanceSkillRegistryItem[];
   policy_gates: DojoGovernancePolicyGateItem[];
   recertification_queue: DojoGovernanceRecertificationQueueItem[];
+  scheduled_jobs: DojoGovernanceScheduledJobItem[];
   audit_exports: DojoGovernanceAuditExportItem[];
   compliance_evidence_pack: DojoGovernanceComplianceEvidencePack;
   metrics: {
@@ -700,6 +725,15 @@ export function buildDojoGovernanceServiceView(input: {
     proof_key_records: input.proof_key_records,
     generated_at: now,
   });
+  const scheduledJobs = queryDojoScheduledJobs({
+    generated_at: now,
+    license_health: licenseHealth,
+    approval_queue: approvalQueue,
+    case_law_review_queue: caseLawReviewQueue,
+    recertification_queue: recertificationQueue,
+    audit_exports: auditExports,
+    compliance_evidence_pack: complianceEvidencePack,
+  });
 
   return {
     schema_version: "synthi.dojo.governanceService.v1",
@@ -710,6 +744,7 @@ export function buildDojoGovernanceServiceView(input: {
     skill_registry: skillRegistry,
     policy_gates: policyGates,
     recertification_queue: recertificationQueue,
+    scheduled_jobs: scheduledJobs,
     audit_exports: auditExports,
     compliance_evidence_pack: complianceEvidencePack,
     metrics: {
@@ -956,6 +991,144 @@ export function queryDojoRecertificationQueue(input: {
       });
     })
     .sort((left, right) => prioritySort(left.priority) - prioritySort(right.priority) || left.skill_id.localeCompare(right.skill_id));
+}
+
+export function queryDojoScheduledJobs(input: {
+  generated_at: string;
+  license_health: DojoGovernanceLicenseHealth[];
+  approval_queue: DojoGovernanceApprovalQueueItem[];
+  case_law_review_queue: DojoGovernanceCaseLawReviewItem[];
+  recertification_queue: DojoGovernanceRecertificationQueueItem[];
+  audit_exports: DojoGovernanceAuditExportItem[];
+  compliance_evidence_pack: DojoGovernanceComplianceEvidencePack;
+}): DojoGovernanceScheduledJobItem[] {
+  const healthBySkill = new Map(input.license_health.map((item) => [item.skill_id, item]));
+  const jobs: DojoGovernanceScheduledJobItem[] = [];
+
+  for (const item of input.recertification_queue) {
+    const health = healthBySkill.get(item.skill_id);
+    const recertificationEvidenceRefs = uniqueStrings([
+      ...item.evidence_refs,
+      ...(health?.evidence_refs ?? []),
+    ]);
+    const blockedBy = recertificationEvidenceRefs.length === 0 ? ["recertification_evidence_refs_missing"] : [];
+    const shouldExpire = item.status === "overdue" && item.reason !== "license_expired";
+    jobs.push({
+      job_id: scheduledJobId(shouldExpire ? "expire_stale_license" : "run_recertification", [
+        item.queue_id,
+        item.skill_id,
+        item.reason,
+      ]),
+      kind: shouldExpire ? "expire_stale_license" : "run_recertification",
+      status: blockedBy.length > 0 ? "blocked" : item.status === "queued" ? "waiting" : "ready",
+      priority: item.priority,
+      due_at: item.due_at || input.generated_at,
+      reason: item.reason,
+      evidence_refs: recertificationEvidenceRefs,
+      blocked_by: blockedBy,
+      next_step: shouldExpire
+        ? "Expire the stale license scope or keep the skill blocked until recertification evidence is available."
+        : "Run executable checkride recertification and update license scope from evidence-backed results.",
+      queue_id: item.queue_id,
+      skill_id: item.skill_id,
+      workspace_id: health?.workspace_id,
+      license_id: health?.license_id,
+    });
+  }
+
+  for (const item of input.approval_queue.filter((queueItem) => queueItem.status === "pending")) {
+    jobs.push({
+      job_id: scheduledJobId("notify_approver", [
+        item.queue_id,
+        item.skill_id,
+        item.action,
+      ]),
+      kind: "notify_approver",
+      status: "ready",
+      priority: item.source === "permission_upgrade_request" ? "high" : "medium",
+      due_at: item.requested_at || input.generated_at,
+      reason: item.reason,
+      evidence_refs: uniqueStrings(item.evidence_refs ?? []),
+      blocked_by: [],
+      next_step: "Notify an authorized reviewer and collect approval evidence before expanding production scope.",
+      queue_id: item.queue_id,
+      skill_id: item.skill_id,
+      workspace_id: item.workspace_id,
+      license_id: item.license_id,
+    });
+  }
+
+  for (const item of input.case_law_review_queue) {
+    jobs.push({
+      job_id: scheduledJobId("review_case_law", [
+        item.case_id,
+        item.skill_id,
+        item.binding_scope,
+      ]),
+      kind: "review_case_law",
+      status: item.evidence_refs.length === 0 ? "blocked" : "ready",
+      priority: "high",
+      due_at: item.created_at || input.generated_at,
+      reason: item.finding,
+      evidence_refs: uniqueStrings(item.evidence_refs),
+      blocked_by: item.evidence_refs.length === 0 ? ["case_law_evidence_refs_missing"] : [],
+      next_step: "Review the proposed case law and bind, revise, or reject the generated guardrail.",
+      queue_id: `case_law_${item.case_id}`,
+      skill_id: item.skill_id,
+      workspace_id: item.workspace_id,
+    });
+  }
+
+  const availableComplianceArtifacts = input.compliance_evidence_pack.artifacts
+    .filter((artifact) => artifact.status === "available");
+  const missingComplianceArtifacts = input.compliance_evidence_pack.missing_artifacts;
+  if (availableComplianceArtifacts.length > 0 || missingComplianceArtifacts.length > 0) {
+    jobs.push({
+      job_id: scheduledJobId("archive_compliance_evidence", [
+        input.compliance_evidence_pack.pack_id,
+        ...input.compliance_evidence_pack.artifacts.map((artifact) => `${artifact.artifact_id}:${artifact.status}`),
+      ]),
+      kind: "archive_compliance_evidence",
+      status: missingComplianceArtifacts.length > 0 ? "blocked" : "ready",
+      priority: missingComplianceArtifacts.length > 0 ? "high" : "low",
+      due_at: input.compliance_evidence_pack.generated_at || input.generated_at,
+      reason: missingComplianceArtifacts.length > 0
+        ? `Compliance pack is missing ${missingComplianceArtifacts.join(", ")}.`
+        : "Compliance evidence pack is ready for retention and export.",
+      evidence_refs: uniqueStrings(availableComplianceArtifacts.flatMap((artifact) => artifact.evidence_refs)),
+      blocked_by: missingComplianceArtifacts.map((artifactId) => `compliance_artifact_missing:${artifactId}`),
+      next_step: missingComplianceArtifacts.length > 0
+        ? "Generate missing compliance artifacts before archiving the evidence pack."
+        : "Archive the evidence pack under the configured retention policy.",
+      queue_id: input.compliance_evidence_pack.pack_id,
+    });
+  }
+
+  if (input.license_health.length > 0 || input.audit_exports.length > 0 || jobs.length > 0) {
+    jobs.push({
+      job_id: scheduledJobId("recompute_registry_metrics", [
+        input.generated_at,
+        input.license_health.length,
+        input.audit_exports.length,
+        jobs.length,
+      ]),
+      kind: "recompute_registry_metrics",
+      status: "ready",
+      priority: "low",
+      due_at: input.generated_at,
+      reason: "Refresh governance dashboard metrics after scheduled queue evaluation.",
+      evidence_refs: input.audit_exports.flatMap((item) => item.audit_event_refs ?? []),
+      blocked_by: [],
+      next_step: "Recompute registry, queue, license-health, and compliance counters from durable control-plane state.",
+    });
+  }
+
+  return jobs.sort((left, right) =>
+    scheduledStatusSort(left.status) - scheduledStatusSort(right.status)
+      || prioritySort(left.priority) - prioritySort(right.priority)
+      || left.due_at.localeCompare(right.due_at)
+      || left.job_id.localeCompare(right.job_id)
+  );
 }
 
 export function queryDojoAuditExports(input: {
@@ -1343,6 +1516,21 @@ function prioritySort(priority: DojoGovernanceRecertificationQueueItem["priority
     case "low":
       return 2;
   }
+}
+
+function scheduledStatusSort(status: DojoGovernanceScheduledJobStatus): number {
+  switch (status) {
+    case "ready":
+      return 0;
+    case "blocked":
+      return 1;
+    case "waiting":
+      return 2;
+  }
+}
+
+function scheduledJobId(kind: DojoGovernanceScheduledJobKind, parts: Array<string | number>): string {
+  return `scheduled_${kind}_${slugFor(digestFor(parts.map((part) => String(part)))).slice(0, 18)}`;
 }
 
 function slugFor(value: string): string {

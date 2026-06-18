@@ -17,6 +17,7 @@ import {
   queryDojoLicenseHealth,
   queryDojoPolicyGates,
   queryDojoRecertificationQueue,
+  queryDojoScheduledJobs,
   queryDojoSkillRegistry,
   revokeDojoSkillLicense,
 } from "../../src/dojo/governance/service.js";
@@ -853,6 +854,13 @@ describe("Dojo governance service", () => {
     expect(view.recertification_queue).toEqual(expect.arrayContaining([
       expect.objectContaining({ skill_id: "skill-expired", status: "overdue", priority: "high" }),
     ]));
+    expect(view.scheduled_jobs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "expire_stale_license", skill_id: "skill-expired", status: "ready", priority: "high" }),
+      expect.objectContaining({ kind: "notify_approver", skill_id: "skill-active", status: "ready" }),
+      expect.objectContaining({ kind: "review_case_law", queue_id: "case_law_case-external", status: "ready" }),
+      expect.objectContaining({ kind: "archive_compliance_evidence", status: "ready" }),
+      expect.objectContaining({ kind: "recompute_registry_metrics", status: "ready" }),
+    ]));
     expect(view.audit_exports).toEqual(expect.arrayContaining([
       expect.objectContaining({ export_id: "skill_assurance_case", status: "available" }),
     ]));
@@ -938,6 +946,130 @@ describe("Dojo governance service", () => {
         reason: "license_expiry_invalid",
         status: "overdue",
         priority: "high",
+      }),
+    ]));
+  });
+
+  it("plans scheduled governance jobs from normalized queues", () => {
+    const expired = skillFixture({ skillId: "skill-expired", expiresAt: "2026-06-01T00:00:00.000Z" });
+    const active = skillFixture({
+      skillId: "skill-active",
+      gatedActions: [{ action: "submit_invoice", constraints: ["manager_approval"] }],
+    });
+    const caseLawRecord = externalCaseFixture();
+    const permissionUpgrade = permissionUpgradeRequestFixture(active);
+    const health = queryDojoLicenseHealth({
+      skills: [expired, active],
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const approvalQueue = queryDojoApprovalQueue({
+      skills: [expired, active],
+      permission_upgrade_requests: [permissionUpgrade],
+    });
+    const caseLawQueue = queryDojoCaseLawReviewQueue({
+      skills: [expired, active],
+      case_law_records: [caseLawRecord],
+    });
+    const recertificationQueue = queryDojoRecertificationQueue({
+      skills: [expired, active],
+      health,
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const auditExports = queryDojoAuditExports({
+      skills: [expired, active],
+      case_law_review_queue: caseLawQueue,
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+    const compliancePack = buildDojoComplianceEvidencePack({
+      skills: [expired, active],
+      case_law_review_queue: caseLawQueue,
+      audit_exports: auditExports,
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+
+    const jobs = queryDojoScheduledJobs({
+      generated_at: "2026-06-11T00:00:00.000Z",
+      license_health: health,
+      approval_queue: approvalQueue,
+      case_law_review_queue: caseLawQueue,
+      recertification_queue: recertificationQueue,
+      audit_exports: auditExports,
+      compliance_evidence_pack: compliancePack,
+    });
+
+    expect(jobs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "expire_stale_license",
+        skill_id: expired.skill_id,
+        status: "ready",
+        priority: "high",
+        evidence_refs: expect.arrayContaining(["skill:skill-expired", "evidence-passport"]),
+      }),
+      expect.objectContaining({
+        kind: "run_recertification",
+        skill_id: expired.skill_id,
+        status: "ready",
+        reason: "license_expired",
+      }),
+      expect.objectContaining({
+        kind: "notify_approver",
+        queue_id: `permission_upgrade_${permissionUpgrade.request_id}`,
+        status: "ready",
+        priority: "high",
+      }),
+      expect.objectContaining({
+        kind: "review_case_law",
+        queue_id: `case_law_${caseLawRecord.case_id}`,
+        status: "ready",
+        evidence_refs: caseLawRecord.evidence_refs,
+      }),
+      expect.objectContaining({
+        kind: "archive_compliance_evidence",
+        status: "ready",
+        priority: "low",
+        blocked_by: [],
+      }),
+      expect.objectContaining({
+        kind: "recompute_registry_metrics",
+        status: "ready",
+        priority: "low",
+      }),
+    ]));
+    expect(jobs.every((job) => job.job_id.startsWith(`scheduled_${job.kind}_`))).toBe(true);
+  });
+
+  it("blocks scheduled recertification jobs when evidence references are missing", () => {
+    const jobs = queryDojoScheduledJobs({
+      generated_at: "2026-06-11T00:00:00.000Z",
+      license_health: [],
+      approval_queue: [],
+      case_law_review_queue: [],
+      recertification_queue: [{
+        queue_id: "recert_skill-empty_missing-evidence",
+        skill_id: "skill-empty",
+        skill_name: "Skill empty",
+        reason: "license_expiring",
+        due_at: "2026-06-12T00:00:00.000Z",
+        status: "due",
+        priority: "medium",
+        evidence_refs: [],
+      }],
+      audit_exports: [],
+      compliance_evidence_pack: {
+        pack_id: "governance_pack_empty",
+        generated_at: "2026-06-11T00:00:00.000Z",
+        artifacts: [],
+        missing_artifacts: [],
+        retention_class: "regulated",
+      },
+    });
+
+    expect(jobs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "run_recertification",
+        skill_id: "skill-empty",
+        status: "blocked",
+        blocked_by: ["recertification_evidence_refs_missing"],
       }),
     ]));
   });

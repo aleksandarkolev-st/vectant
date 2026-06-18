@@ -175,6 +175,12 @@ describe("Agent Dojo core", () => {
     const compatibilityEvidenceManifest = JSON.parse(artifacts.find((artifact) =>
       artifact.path === ".synthi/dojo/skills/save_invoice/evidence-manifest.json"
     )?.content ?? "null") as { schema_version?: string };
+    const governanceReport = JSON.parse(artifacts.find((artifact) =>
+      artifact.path === ".synthi/dojo/skills/save_invoice/governance.report.json"
+    )?.content ?? "null") as {
+      schema_version?: string;
+      scheduled_jobs?: Array<{ kind?: string; status?: string }>;
+    };
     const redactedEvidenceManifest = JSON.parse(artifacts.find((artifact) =>
       artifact.path === ".synthi/dojo/evidence/save_invoice.redacted-evidence-manifest.json"
     )?.content ?? "null") as {
@@ -184,6 +190,12 @@ describe("Agent Dojo core", () => {
       excluded?: string[];
     };
     expect(compatibilityEvidenceManifest.schema_version).toBe("synthi.dojo.evidenceManifest.v1");
+    expect(governanceReport).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.governanceReport.v1",
+      scheduled_jobs: expect.arrayContaining([
+        expect.objectContaining({ kind: "recompute_registry_metrics", status: "ready" }),
+      ]),
+    }));
     expect(redactedEvidenceManifest).toEqual(expect.objectContaining({
       schema_version: "synthi.dojo.redactedEvidenceExport.v1",
       artifact_count: expect.any(Number),
@@ -4303,11 +4315,17 @@ describe("Agent Dojo MCP tools", () => {
     }));
     const governance = await dispatchDojoTool("synthi_dojo_get_governance_report", { skill_id: published.skill.skill_id });
     expect(governance?.structuredContent).toEqual(expect.objectContaining({
-      governance_report: expect.objectContaining({ schema_version: "synthi.dojo.governanceReport.v1" }),
+      governance_report: expect.objectContaining({
+        schema_version: "synthi.dojo.governanceReport.v1",
+        scheduled_jobs: expect.arrayContaining([
+          expect.objectContaining({ kind: "recompute_registry_metrics", status: "ready" }),
+        ]),
+      }),
       governance_service: expect.objectContaining({
         schema_version: "synthi.dojo.governanceService.v1",
         policy_gates: expect.any(Array),
         recertification_queue: expect.any(Array),
+        scheduled_jobs: expect.any(Array),
       }),
     }));
     const timeMachine = await dispatchDojoTool("synthi_dojo_run_time_machine_debugger", {

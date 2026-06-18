@@ -21,6 +21,10 @@ import {
   buildDojoEvidenceRetentionPlan,
   type DojoEvidenceRetentionPlan,
 } from "../dojo/evidence/retention.js";
+import {
+  buildDojoGovernanceServiceView,
+  type DojoGovernanceScheduledJobItem,
+} from "../dojo/governance/service.js";
 import type {
   DojoEvidenceLedgerRecord,
   DojoEvidenceRetentionClass,
@@ -68,6 +72,7 @@ export interface DojoGovernanceReport {
   };
   compliance_exports: string[];
   review_workflows: string[];
+  scheduled_jobs: DojoGovernanceScheduledJobItem[];
 }
 
 export interface DojoUniverseMetrics {
@@ -258,7 +263,7 @@ export function buildDojoUniverseDossier(
       "new_evidence_and_case_law",
     ],
     lifecycle: buildDojoLifecycleReport(skill, { now }),
-    governance: buildDojoGovernanceReport(skill),
+    governance: buildDojoGovernanceReport(skill, { now }),
     metrics: buildDojoUniverseMetrics(allSkills, { now }),
     evidence_ledger: buildDojoEvidenceLedger(skill),
     source_affordance_pr_plan: buildDojoSourceAffordancePrPlan(skill),
@@ -389,7 +394,18 @@ export function buildDojoLifecycleReport(skill: DojoSkill, options: { now?: stri
   };
 }
 
-export function buildDojoGovernanceReport(skill: DojoSkill): DojoGovernanceReport {
+export function buildDojoGovernanceReport(
+  skill: DojoSkill,
+  options: { now?: string } = {}
+): DojoGovernanceReport {
+  const now = options.now ?? new Date().toISOString();
+  const governanceService = buildDojoGovernanceServiceView({
+    skills: [skill],
+    case_law_records: [],
+    permission_upgrade_requests: [],
+    audit_events: [],
+    now,
+  });
   return {
     schema_version: "synthi.dojo.governanceReport.v1",
     governance_id: `governance_${hash(`${skill.skill_id}:${skill.permission_license.license_id}`)}`,
@@ -435,6 +451,7 @@ export function buildDojoGovernanceReport(skill: DojoSkill): DojoGovernanceRepor
       "operations_review_approval_queue",
       "recertify_on_drift_or_incident",
     ],
+    scheduled_jobs: governanceService.scheduled_jobs,
   };
 }
 
