@@ -2281,6 +2281,17 @@ describe("Agent Dojo MCP tools", () => {
           tool: expect.objectContaining({ kind: "api_backed" }),
         }),
       }),
+      mcp_skill_bus_preflight: expect.objectContaining({
+        ok: true,
+        status: "allowed",
+        dry_run: true,
+        blocked_by: [],
+        tool_name: "synthi_api_save_invoice",
+        validation: expect.objectContaining({ ok: true, status: "allowed" }),
+        resolution: expect.objectContaining({
+          resolved_tool: expect.objectContaining({ kind: "api_backed" }),
+        }),
+      }),
       proof_consume: null,
       blocked_by: [],
     }));
@@ -2309,6 +2320,13 @@ describe("Agent Dojo MCP tools", () => {
       tool_name: "synthi_api_save_invoice",
       mcp_skill_bus_resolution: expect.objectContaining({
         resolved_tool: expect.objectContaining({ kind: "api_backed" }),
+      }),
+      mcp_skill_bus_preflight: expect.objectContaining({
+        ok: true,
+        status: "allowed",
+        dry_run: true,
+        blocked_by: [],
+        validation: expect.objectContaining({ ok: true, status: "allowed" }),
       }),
       proof_consume: expect.objectContaining({ ok: true, status: "used" }),
       api_tool_execution: expect.objectContaining({

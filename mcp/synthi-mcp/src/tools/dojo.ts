@@ -157,6 +157,7 @@ import {
   blockDojoMcpSkillBusExecution,
   createInProcessDojoMcpSkillBus,
   createLegacyDojoTenantContext,
+  type DojoToolDispatchResult,
   type DojoToolResolution,
 } from "../dojo/mcp/skill_bus.js";
 import type { DojoTenantContext } from "../dojo/mcp/execution_policy_gate.js";
@@ -2976,6 +2977,68 @@ function apiBackedToolSkillBusResolutionSummary(resolution: DojoToolResolution |
   };
 }
 
+async function runApiBackedToolSkillBusPreflight(input: {
+  skill: DojoSkill;
+  tenant: DojoTenantContext;
+  apiTool: DojoApiBackedMcpTool;
+  toolArgs: Record<string, unknown>;
+  proofCapsule: DojoProofCarryingSkillCapsule;
+  proofValidation: { ok: boolean; blocked_by: string[] };
+  licenseDecision: { ok: boolean; status: string; blocked_by: string[]; error_codes?: string[] };
+}): Promise<DojoToolDispatchResult> {
+  const skillBus = createInProcessDojoMcpSkillBus({
+    listSkills: () => [input.skill],
+    proofConsumptionMode: "external_executor",
+    validateProof: () => {
+      const blockedBy = dedupeStrings([
+        ...input.proofValidation.blocked_by,
+        ...input.licenseDecision.blocked_by,
+      ]);
+      return {
+        ok: input.proofValidation.ok && input.licenseDecision.ok && blockedBy.length === 0,
+        status: blockedBy.length === 0 ? "allowed" : "blocked",
+        blocked_by: blockedBy,
+        error_codes: input.licenseDecision.error_codes ?? normalizeDojoProofErrorCodes(blockedBy),
+      };
+    },
+    executeTool: ({ resolved_tool }) => {
+      if (resolved_tool.kind !== "api_backed") {
+        return blockDojoMcpSkillBusExecution(["dojo_mcp_tool_not_api_backed"]);
+      }
+      return {
+        ok: true,
+        preflight_only: true,
+        tool_name: resolved_tool.tool_name,
+        tool_version: resolved_tool.tool_version,
+        resolved_tool_kind: resolved_tool.kind,
+      };
+    },
+  });
+  return skillBus.dispatch({
+    tenant: input.tenant,
+    tool_name: input.apiTool.tool_name,
+    tool_version: input.apiTool.tool_version,
+    requested_action: input.apiTool.action,
+    args: input.toolArgs,
+    proof_capsule: input.proofCapsule,
+    dry_run: true,
+  });
+}
+
+function apiBackedToolSkillBusPreflightSummary(result: DojoToolDispatchResult | null): Record<string, unknown> | null {
+  if (!result) return null;
+  return {
+    ok: result.ok,
+    status: result.status,
+    dry_run: result.dry_run,
+    blocked_by: [...result.blocked_by],
+    skill_id: result.skill_id,
+    tool_name: result.tool_name,
+    resolution: result.resolution ? apiBackedToolSkillBusResolutionSummary(result.resolution) : null,
+    validation: result.validation ?? null,
+  };
+}
+
 async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const toolArgs = objectOpt(a["tool_args"]);
@@ -3076,14 +3139,26 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
       now,
       licenseDecision.validation
     );
+    const skillBusPreflight = skillBusResolution
+      ? await runApiBackedToolSkillBusPreflight({
+        skill: skill.skill,
+        tenant,
+        apiTool,
+        toolArgs,
+        proofCapsule,
+        proofValidation,
+        licenseDecision,
+      })
+      : null;
     if (dryRun) {
       const blockedBy = dedupeStrings([
         ...invocationValidation.blocked_by,
         ...proofValidation.blocked_by,
         ...licenseDecision.blocked_by,
+        ...(skillBusPreflight?.blocked_by ?? []),
       ]);
       return jsonResponse({
-        ok: invocationValidation.ok && proofValidation.ok && licenseDecision.ok,
+        ok: invocationValidation.ok && proofValidation.ok && licenseDecision.ok && (skillBusPreflight?.ok ?? true),
         skill_id: skill.skill.skill_id,
         control_plane_source: skill.control_plane_source,
         run_id: runId,
@@ -3092,6 +3167,7 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         tool_name: apiTool.tool_name,
         tool_version: apiTool.tool_version,
         mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(skillBusResolution),
+        mcp_skill_bus_preflight: apiBackedToolSkillBusPreflightSummary(skillBusPreflight),
         api_backed_mcp_tool: apiTool,
         api_tool_invocation_validation: invocationValidation,
         proof_validation: proofValidation,
@@ -3107,8 +3183,9 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
       ...invocationValidation.blocked_by,
       ...proofValidation.blocked_by,
       ...licenseDecision.blocked_by,
+      ...(skillBusPreflight?.blocked_by ?? []),
     ]);
-    if (!invocationValidation.ok || !proofValidation.ok || !licenseDecision.ok) {
+    if (!invocationValidation.ok || !proofValidation.ok || !licenseDecision.ok || (skillBusPreflight && !skillBusPreflight.ok)) {
       return errorResponse(preflightBlockedBy[0] ?? "dojo_api_backed_tool_preflight_blocked", {
         ok: false,
         error: preflightBlockedBy[0] ?? "dojo_api_backed_tool_preflight_blocked",
@@ -3120,6 +3197,7 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         tool_name: apiTool.tool_name,
         tool_version: apiTool.tool_version,
         mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(skillBusResolution),
+        mcp_skill_bus_preflight: apiBackedToolSkillBusPreflightSummary(skillBusPreflight),
         api_backed_mcp_tool: apiTool,
         api_tool_invocation_validation: invocationValidation,
         proof_validation: proofValidation,
@@ -3216,6 +3294,7 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
       tool_name: apiTool.tool_name,
       tool_version: apiTool.tool_version,
       mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(skillBusResolution),
+      mcp_skill_bus_preflight: apiBackedToolSkillBusPreflightSummary(skillBusPreflight),
       api_backed_mcp_tool: apiTool,
       api_tool_invocation_validation: invocationValidation,
       proof_validation: execution.proof_validation ?? proofValidation,
