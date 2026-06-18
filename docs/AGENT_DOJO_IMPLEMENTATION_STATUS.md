@@ -71,6 +71,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - tenant-scoped governance scheduled-job runner with dry-run semantics, typed handlers, RBAC, and audit persistence for supported non-dry transitions
 - package-readiness release gate that runs `npm pack --dry-run`, verifies packed exports and release harness files, and emits digest-backed evidence
 - managed-key signing release-observation artifact generation from configured signer command/key URI/public verifier material, with redacted config and digest-backed verifier checks
+- hosted-runtime gateway release-observation artifact generation from live workflow/private-tool/MCP-host conformance artifacts, with digest-backed input references and section-scoped release verification
 - privacy-redaction and compliance-export release gates with focused test execution, digest-matched logs/reports, verifier include flags, and local evidence artifacts
 - repo artifact export
 - compact UI status surface plus dedicated Dojo routes
@@ -79,7 +80,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 
 - no managed KMS/HSM proof signer configured by default or proven against a real external KMS/HSM provider in deployed-host release gates
 - no externally deployed tenant-aware control plane proven against a production database
-- no live non-loopback MCP host conformance proof in the current validation bundle
+- no live non-loopback MCP host conformance proof in the current validation bundle; hosted-runtime release observation tooling exists, but it requires real live/deployed artifacts to make a release-ready claim
 - no broad arbitrary-app source/API promotion guarantee
 - no complete externally executed chaos, soak, performance, privacy, and compliance release bundle proven against deployed production infrastructure
 - some UI surfaces are read-only governance/inspection views rather than full operator workflows
@@ -175,7 +176,8 @@ Agent Dojo implements a repo-local proof-gated competency system with executable
 runtime foundations, materialized synthetic Vivarium scenarios, evidence/proof/ledger
 foundations, scoped licenses, repo exports, source/API scaffolding, API-backed skill-bus
 tool execution foundations, governance views, package-readiness release proof, managed-key
-signing release-observation harnessing, privacy/compliance release-gate proof artifacts, and MCP tool exposure.
+signing and hosted-runtime release-observation harnessing, privacy/compliance release-gate
+proof artifacts, and MCP tool exposure.
 ```
 
 Unsafe current claim:
