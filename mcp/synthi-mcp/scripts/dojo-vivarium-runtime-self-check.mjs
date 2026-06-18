@@ -65,6 +65,7 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "vivarium_runner_blocks_completed_budget_overruns",
   "vivarium_runner_blocks_runtime_execution_failures",
   "vivarium_runner_executes_targeted_nodes_and_ancestors",
+  "vivarium_runner_keeps_targeted_postcondition_assertions",
   "vivarium_runner_blocks_missing_target_nodes",
   "vivarium_runner_proves_deterministic_reset",
   "checkride_runner_rejects_happy_path_only_when_risk_fails",
@@ -225,6 +226,7 @@ export function buildDojoVivariumRuntimeEvidenceManifest({
       deterministic_reset_required: true,
       budget_enforcement_required: true,
       targeted_graph_execution_required: true,
+      targeted_postcondition_descendants_required: true,
       executable_checkride_required: true,
       license_constraints_from_blocked_risk_required: true,
       critical_guardrail_failure_required: true,
@@ -360,6 +362,8 @@ function capabilityMatchers(capability) {
       return ["vivarium runner classifies runtime execution failures", "blocked scenario runs"];
     case "vivarium_runner_executes_targeted_nodes_and_ancestors":
       return ["vivarium runner executes only targeted graph nodes", "required ancestors"];
+    case "vivarium_runner_keeps_targeted_postcondition_assertions":
+      return ["vivarium runner keeps postcondition assertion descendants", "targeted scenarios"];
     case "vivarium_runner_blocks_missing_target_nodes":
       return ["vivarium runner blocks scenarios", "missing target graph nodes"];
     case "vivarium_runner_proves_deterministic_reset":

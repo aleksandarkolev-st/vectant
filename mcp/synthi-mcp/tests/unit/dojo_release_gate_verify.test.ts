@@ -6592,6 +6592,7 @@ function vivariumRuntimeEvidenceFixture(overrides = {}) {
       deterministic_reset_required: true,
       budget_enforcement_required: true,
       targeted_graph_execution_required: true,
+      targeted_postcondition_descendants_required: true,
       executable_checkride_required: true,
       license_constraints_from_blocked_risk_required: true,
       critical_guardrail_failure_required: true,
