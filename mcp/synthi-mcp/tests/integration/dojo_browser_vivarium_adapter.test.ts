@@ -80,6 +80,35 @@ describe("browser Dojo Vivarium adapter", () => {
     expect(run.result.status).not.toBe("passed");
   });
 
+  it("derives source anchor freshness from materialized route state", async () => {
+    const skill = skillFixture();
+
+    const run = await runDojoVivariumScenario(skill, {
+      mutation_kind: "route_change",
+      now: "2026-06-11T00:00:00.000Z",
+      tenant_context: tenantContext(),
+    });
+
+    const fixture = run.materialized_fixture.tissues.fixture as {
+      route_state: { expected_path: string; current_path: string; changed: boolean };
+      ui_state: { route: string };
+      graph_inputs: Record<string, unknown>;
+      observed_evidence: string[];
+    };
+
+    expect(fixture.route_state.changed).toBe(true);
+    expect(fixture.route_state.current_path).not.toBe(fixture.route_state.expected_path);
+    expect(fixture.ui_state.route).toBe(fixture.route_state.current_path);
+    expect(fixture.graph_inputs).toEqual(expect.objectContaining({
+      source_anchor_current: false,
+      workspace_verified: true,
+    }));
+    expect(fixture.observed_evidence).toEqual(expect.arrayContaining([
+      "route_tissue_state",
+      "synthetic_page_route_state",
+    ]));
+  });
+
   it("uses deterministic core runner IDs when a run clock is supplied", async () => {
     const skill = skillFixture();
     const input = {

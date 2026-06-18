@@ -233,6 +233,7 @@ function materializedFixtureFor(
         missing_fields: fixture.missing_fields,
         threshold_breaches: fixture.threshold_breaches,
         ui_state: fixture.ui_state,
+        route_state: fixture.route_state,
         api_state: fixture.api_state,
         api_fault: scenarioRun.api_fault ?? null,
         identity_state: fixture.identity_state,
@@ -353,7 +354,9 @@ function lineItemsTotalVerifiedForFixture(fixture: DojoMaterializedFixture): boo
 }
 
 function sourceAnchorCurrentForFixture(fixture: DojoMaterializedFixture): boolean {
-  return fixture.ui_state.route === "/synthetic/workspace";
+  return fixture.route_state.changed === false
+    && fixture.route_state.current_path === fixture.route_state.expected_path
+    && fixture.ui_state.route === fixture.route_state.current_path;
 }
 
 function durableStateEvidenceForFixture(fixture: DojoMaterializedFixture): boolean {
