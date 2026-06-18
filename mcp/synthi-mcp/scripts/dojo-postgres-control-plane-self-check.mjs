@@ -71,6 +71,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES = [
   "tool_control_plane_recertification_path",
   "tool_control_plane_recertification_evidence_path",
   "tool_control_plane_permission_upgrade_path",
+  "tool_control_plane_permission_upgrade_promotion_claim_policy",
   "tool_control_plane_permission_upgrade_review_rbac_path",
   "tool_control_plane_case_law_path",
   "tool_control_plane_case_law_review_rbac_path",
@@ -422,6 +423,9 @@ function capabilityMatchers(capability) {
     ],
     tool_control_plane_permission_upgrade_path: [
       "dojo tool postgres control plane wiring persists permission upgrade request and review through postgres after local reset",
+    ],
+    tool_control_plane_permission_upgrade_promotion_claim_policy: [
+      "dojo tool postgres control plane wiring requires ledger backed permission upgrade review evidence and promotion claims when production evidence ledger is enforced",
     ],
     tool_control_plane_permission_upgrade_review_rbac_path: [
       "dojo tool postgres control plane wiring persists permission upgrade request and review through postgres after local reset and rejects unauthorized reviewers",

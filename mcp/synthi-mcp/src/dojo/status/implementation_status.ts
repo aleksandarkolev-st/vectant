@@ -90,12 +90,10 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_run_time_machine_debugger: syntheticRuntime("Runs causal Time Machine debugging with a materialized Vivarium branch, graph runtime execution, and oracle-backed runtime evidence."),
   synthi_dojo_run_ghost_mode: ghostRuntime("Records non-mutating Ghost Mode shadow evidence with human-vs-agent action comparison and entrustment impact."),
   synthi_dojo_request_permission_upgrade: controlPlaneWrite(
-    "Records a permission-upgrade request in the configured Dojo store and exposes it through the governance approval queue.",
-    ["license_promotion_still_requires_checkride_and_evidence_policy"]
+    "Records a permission-upgrade request in the configured Dojo store, derives required promotion steps, and exposes it through the governance approval queue."
   ),
   synthi_dojo_review_permission_upgrade: controlPlaneWrite(
-    "Records approval or denial review state for a stored permission-upgrade request and applies approved requests as gated license-scope updates.",
-    ["license_promotion_still_requires_checkride_and_evidence_policy"]
+    "Records approval or denial review state for a stored permission-upgrade request and applies approved requests only when the derived promotion evidence policy is satisfied."
   ),
   synthi_dojo_review_case_law: controlPlaneWrite(
     "Records approval or deprecation review state for a stored case-law record and exposes the result through governance views.",

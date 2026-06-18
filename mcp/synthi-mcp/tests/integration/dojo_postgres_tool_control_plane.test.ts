@@ -1352,6 +1352,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       reviewer_actor_type: "human",
       reason: "Evidence reviewed in durable control plane.",
       evidence_refs: ["evidence:integration-postgres-upgrade-review"],
+      promotion_evidence_claims: ["checkride_passed", "evidence_fresh"],
       actor_id: "postgres-upgrade-reviewer",
       actor_type: "human",
       roles: ["dojo:operator"],
@@ -1406,6 +1407,8 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         constraints: expect.arrayContaining([
           "permission_upgrade_approved",
           `permission_upgrade_request:${requestContent.permission_upgrade_request.request_id}`,
+          "promotion_claim:checkride_passed",
+          "promotion_claim:evidence_fresh",
         ]),
       }),
     ]));
@@ -1433,7 +1436,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     expect(dojoSkillRegistry.listPermissionUpgradeRequests({ request_id: requestContent.permission_upgrade_request.request_id })).toEqual([]);
   });
 
-  it("requires ledger-backed permission upgrade review evidence when production evidence ledger is enforced", async () => {
+  it("requires ledger-backed permission upgrade review evidence and promotion claims when production evidence ledger is enforced", async () => {
     const tenantId = `tenant_upgrade_ledger_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_upgrade_ledger_${Math.random().toString(16).slice(2)}`;
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
@@ -1547,6 +1550,47 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       }),
     ]);
 
+    const genericReviewEvidence = await appendGovernanceEvidenceRecordForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      skill_id: published.skill.skill_id,
+      record_id: `permission_upgrade_generic_review_${createHash("sha256").update(`${tenantId}:${workspaceId}:${published.skill.skill_id}:generic-review`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T02:44:30.000Z",
+      created_by: "postgres-upgrade-ledger-reviewer",
+      source_ref: "permission-upgrade:generic-review",
+      kind: "license",
+      run_id_prefix: "permission_upgrade",
+      claim_ids: ["permission_upgrade_reviewed"],
+    });
+    const genericLedgerReview = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      ...tenant,
+      request_id: requestContent.permission_upgrade_request.request_id,
+      decision: "approved",
+      reviewer_actor_id: "postgres-upgrade-ledger-reviewer",
+      reviewer_actor_type: "human",
+      reason: "Reject review because ledger evidence lacks promotion claims.",
+      evidence_refs: [genericReviewEvidence.record_id],
+      actor_id: "postgres-upgrade-ledger-reviewer",
+      actor_type: "human",
+      roles: ["dojo:operator"],
+      correlation_id: "corr-postgres-upgrade-ledger-review-generic",
+      decided_at: "2026-06-11T02:46:00.000Z",
+    });
+    expect(genericLedgerReview?.isError).toBe(true);
+    expect(genericLedgerReview?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_permission_upgrade_promotion_evidence_policy_failed",
+      failed_evidence_claims: ["checkride_passed"],
+      blocked_by: ["evidence_claim_missing:checkride_passed"],
+    }));
+    await expect(governanceStore.listPermissionUpgradeRequests({
+      request_id: requestContent.permission_upgrade_request.request_id,
+    })).resolves.toEqual([
+      expect.objectContaining({
+        request_id: requestContent.permission_upgrade_request.request_id,
+        status: "pending",
+      }),
+    ]);
+
     const reviewEvidence = await appendGovernanceEvidenceRecordForToolTest(pool, {
       tenant_id: tenantId,
       workspace_id: workspaceId,
@@ -1555,9 +1599,9 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       created_at: "2026-06-11T02:44:00.000Z",
       created_by: "postgres-upgrade-ledger-reviewer",
       source_ref: "permission-upgrade:review",
-      kind: "license",
+      kind: "checkride",
       run_id_prefix: "permission_upgrade",
-      claim_ids: ["permission_upgrade_reviewed"],
+      claim_ids: ["checkride_passed"],
     });
 
     const reviewed = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
@@ -1582,6 +1626,17 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         store_kind: "postgres",
         evidence_record_ids: [reviewEvidence.record_id],
         record_count: 1,
+        required_evidence_claims: expect.arrayContaining(["checkride_passed", "evidence_fresh"]),
+        evidence_claim_results: expect.arrayContaining([
+          expect.objectContaining({ claim_id: "checkride_passed", ok: true }),
+          expect.objectContaining({ claim_id: "evidence_fresh", ok: true }),
+        ]),
+      }),
+      promotion_evidence_policy: expect.objectContaining({
+        ok: true,
+        verification_source: "ledger",
+        authoritative: true,
+        required_claims: expect.arrayContaining(["checkride_passed", "evidence_fresh"]),
       }),
       permission_upgrade_request: expect.objectContaining({
         status: "approved",

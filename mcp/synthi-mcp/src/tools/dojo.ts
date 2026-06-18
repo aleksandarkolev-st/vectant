@@ -75,7 +75,12 @@ import {
   resolveDojoEvidenceLedgerRecords,
   type DojoEvidenceLedgerAppendStore,
 } from "../dojo/evidence/ledger_resolver.js";
-import { DOJO_SUPPORTED_EVIDENCE_CLAIMS } from "../dojo/evidence/claims.js";
+import {
+  DOJO_SUPPORTED_EVIDENCE_CLAIMS,
+  type DojoEvidenceClaimId,
+  type DojoEvidenceClaimResult,
+} from "../dojo/evidence/claims.js";
+import { resolveDojoEvidenceClaims } from "../dojo/evidence/verifier.js";
 import type { DojoEvidenceLedgerRecord } from "../dojo/evidence/types.js";
 import { buildDojoProofKeyRecord, type DojoProofKeyRecord } from "../dojo/proof/key_registry.js";
 import { buildDojoProofPublicVerificationBundle } from "../dojo/proof/public_verification_export.js";
@@ -1607,6 +1612,12 @@ export const DOJO_TOOLS = [
         reviewer_actor_type: { type: "string", enum: ["human", "agent", "service"] },
         reason: { type: "string" },
         evidence_refs: { type: "array", items: { type: "string" } },
+        promotion_evidence_claims: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Non-production compatibility assertion of the evidence claims that support license promotion. In production ledger mode these claims are resolved from evidence_refs instead.",
+        },
         decided_at: { type: "string" },
       },
       required: ["request_id", "decision", "reviewer_actor_id", "reviewer_actor_type", "evidence_refs"],
@@ -4168,16 +4179,54 @@ async function dojoReviewPermissionUpgradeTool(args: unknown): Promise<ToolRespo
   }
 
   let updatedRequest = review.request;
+  const promotionLedgerEnforced = (() => {
+    const enforcement = resolveDojoEnforcementConfig();
+    return enforcement.production_enforcement && enforcement.require_evidence_ledger;
+  })();
+  const promotionEvidencePolicy = validatePermissionUpgradePromotionEvidencePolicy({
+    request: updatedRequest,
+    asserted_claims: stringArrayOpt(a["promotion_evidence_claims"]),
+    production_ledger_enforced: promotionLedgerEnforced,
+  });
+  if (!promotionEvidencePolicy.ok) {
+    await durableResolution.context?.close?.();
+    return errorResponse("dojo_permission_upgrade_promotion_evidence_policy_failed", {
+      ok: false,
+      request_id: requestId,
+      requested_action: updatedRequest.requested_action,
+      required_steps: updatedRequest.required_steps,
+      promotion_evidence_policy: promotionEvidencePolicy.summary,
+      blocked_by: promotionEvidencePolicy.blocked_by,
+    });
+  }
   const evidenceLedgerValidation = await validatePermissionUpgradeEvidenceRefsAgainstLedgerIfRequired({
     operation: "synthi_dojo_review_permission_upgrade",
     tenant: authorization.tenant,
     skill,
     evidence_refs: updatedRequest.decision_evidence_refs ?? [],
     checked_at: updatedRequest.reviewed_at ?? new Date().toISOString(),
+    required_claims: promotionEvidencePolicy.summary.required_claims,
   });
   if (!evidenceLedgerValidation.ok) {
     await durableResolution.context?.close?.();
     return evidenceLedgerValidation.error;
+  }
+  const authoritativePromotionEvidencePolicy = validatePermissionUpgradePromotionEvidencePolicy({
+    request: updatedRequest,
+    asserted_claims: stringArrayOpt(a["promotion_evidence_claims"]),
+    evidence_claim_results: evidenceLedgerValidation.evidence_claim_results,
+    production_ledger_enforced: Boolean(evidenceLedgerValidation.evidence_claim_results),
+  });
+  if (!authoritativePromotionEvidencePolicy.ok) {
+    await durableResolution.context?.close?.();
+    return errorResponse("dojo_permission_upgrade_promotion_evidence_policy_failed", {
+      ok: false,
+      request_id: requestId,
+      requested_action: updatedRequest.requested_action,
+      required_steps: updatedRequest.required_steps,
+      promotion_evidence_policy: authoritativePromotionEvidencePolicy.summary,
+      blocked_by: authoritativePromotionEvidencePolicy.blocked_by,
+    });
   }
   let licensePromotion = permissionUpgradeLicensePromotionFor(skill, updatedRequest);
   let controlPlaneSource: "compatibility_registry" | "postgres" = "compatibility_registry";
@@ -4265,6 +4314,7 @@ async function dojoReviewPermissionUpgradeTool(args: unknown): Promise<ToolRespo
     permission_upgrade_license_promotion: licensePromotion.summary,
     control_plane_persistence: controlPlanePersistence,
     evidence_ledger_validation: evidenceLedgerValidation.evidence_ledger_resolution ?? null,
+    promotion_evidence_policy: authoritativePromotionEvidencePolicy.summary,
     license: skill.permission_license,
     review,
     governance_service: buildDojoGovernanceServiceView({
@@ -7326,14 +7376,20 @@ async function validatePermissionUpgradeEvidenceRefsAgainstLedgerIfRequired(inpu
   skill: DojoSkill;
   evidence_refs: string[];
   checked_at: string;
+  required_claims?: DojoEvidenceClaimId[];
 }): Promise<
-  | { ok: true; evidence_ledger_resolution?: Record<string, unknown> }
+  | {
+    ok: true;
+    evidence_ledger_resolution?: Record<string, unknown>;
+    evidence_claim_results?: DojoEvidenceClaimResult[];
+  }
   | { ok: false; error: ToolResponse }
 > {
   return validateGovernanceEvidenceRefsAgainstLedgerIfRequired({
     ...input,
     missing_error: "dojo_permission_upgrade_evidence_required",
     resolution_error: "dojo_permission_upgrade_evidence_ledger_resolution_failed",
+    claim_error: "dojo_permission_upgrade_promotion_evidence_policy_failed",
     scope_error: "dojo_permission_upgrade_evidence_ledger_scope_mismatch",
     missing_blocked_by: "permission_upgrade_evidence_refs_missing",
     scope_mismatch_block_prefix: "permission_upgrade_evidence_skill_mismatch",
@@ -7426,13 +7482,19 @@ async function validateGovernanceEvidenceRefsAgainstLedgerIfRequired(input: {
   skill: DojoSkill;
   evidence_refs: string[];
   checked_at: string;
+  required_claims?: DojoEvidenceClaimId[];
   missing_error: string;
   resolution_error: string;
+  claim_error?: string;
   scope_error: string;
   missing_blocked_by: string;
   scope_mismatch_block_prefix: string;
 }): Promise<
-  | { ok: true; evidence_ledger_resolution?: Record<string, unknown> }
+  | {
+    ok: true;
+    evidence_ledger_resolution?: Record<string, unknown>;
+    evidence_claim_results?: DojoEvidenceClaimResult[];
+  }
   | { ok: false; error: ToolResponse }
 > {
   const enforcement = resolveDojoEnforcementConfig();
@@ -7497,14 +7559,53 @@ async function validateGovernanceEvidenceRefsAgainstLedgerIfRequired(input: {
     };
   }
 
+  const requiredClaims = [...new Set(input.required_claims ?? [])];
+  const evidenceClaimResults = requiredClaims.length > 0
+    ? resolveDojoEvidenceClaims({
+      claim_ids: requiredClaims,
+      records: resolved.records,
+      tenant_id: input.tenant.tenant_id,
+      workspace_id: input.tenant.workspace_id,
+      skill_id: input.skill.skill_id,
+      checked_at: input.checked_at,
+    })
+    : undefined;
+  const failedEvidenceClaims = evidenceClaimResults?.filter((result) => !result.ok) ?? [];
+  if (failedEvidenceClaims.length > 0) {
+    return {
+      ok: false,
+      error: errorResponse(input.claim_error ?? input.resolution_error, {
+        ok: false,
+        operation: input.operation,
+        skill_id: input.skill.skill_id,
+        evidence_refs: evidenceRefs,
+        evidence_record_ids: resolved.records.map((record) => record.record_id),
+        required_evidence_claims: requiredClaims,
+        failed_evidence_claims: failedEvidenceClaims.map((result) => result.claim_id),
+        evidence_claim_results: evidenceClaimResults,
+        ledger_checkpoint_hash: resolved.ledger_checkpoint_hash,
+        evidence_ledger_store_kind: resolved.store_kind,
+        blocked_by: failedEvidenceClaims.flatMap((result) => result.blocked_by),
+        verification: resolved.verification,
+      }),
+    };
+  }
+
   return {
     ok: true,
+    evidence_claim_results: evidenceClaimResults,
     evidence_ledger_resolution: {
       store_kind: resolved.store_kind,
       evidence_record_ids: resolved.records.map((record) => record.record_id),
       record_count: resolved.records.length,
       ledger_checkpoint_hash: resolved.ledger_checkpoint_hash,
       verification: resolved.verification,
+      ...(evidenceClaimResults
+        ? {
+          required_evidence_claims: requiredClaims,
+          evidence_claim_results: evidenceClaimResults,
+        }
+        : {}),
     },
   };
 }
@@ -7970,6 +8071,186 @@ type DojoPermissionUpgradeLicensePromotion =
     summary: Record<string, unknown>;
   };
 
+type DojoPermissionUpgradePromotionEvidencePolicySummary = {
+  ok: boolean;
+  promotion_required: boolean;
+  requested_action: string;
+  required_steps: string[];
+  required_claims: DojoEvidenceClaimId[];
+  provided_claims: string[];
+  verification_source: "not_required" | "caller_asserted" | "ledger" | "ledger_deferred";
+  authoritative: boolean;
+  evidence_claim_results?: DojoEvidenceClaimResult[];
+  failed_evidence_claims?: string[];
+  missing_claims?: string[];
+  unmapped_required_steps?: string[];
+};
+
+type DojoPermissionUpgradePromotionEvidencePolicyResult =
+  | {
+    ok: true;
+    summary: DojoPermissionUpgradePromotionEvidencePolicySummary;
+    blocked_by: [];
+  }
+  | {
+    ok: false;
+    summary: DojoPermissionUpgradePromotionEvidencePolicySummary;
+    blocked_by: string[];
+  };
+
+function validatePermissionUpgradePromotionEvidencePolicy(input: {
+  request: DojoPermissionUpgradeRequestRecord;
+  asserted_claims?: string[];
+  evidence_claim_results?: DojoEvidenceClaimResult[];
+  production_ledger_enforced: boolean;
+}): DojoPermissionUpgradePromotionEvidencePolicyResult {
+  const requirement = permissionUpgradePromotionEvidenceRequirementFor(input.request);
+  const providedClaims = uniqueNonEmptyStrings(input.asserted_claims ?? []);
+  const baseSummary = {
+    promotion_required: requirement.required_claims.length > 0 || requirement.unmapped_required_steps.length > 0,
+    requested_action: input.request.requested_action,
+    required_steps: [...input.request.required_steps],
+    required_claims: requirement.required_claims,
+    provided_claims: providedClaims,
+  };
+  if (input.request.status !== "approved" || !baseSummary.promotion_required) {
+    return {
+      ok: true,
+      blocked_by: [],
+      summary: {
+        ok: true,
+        ...baseSummary,
+        verification_source: "not_required",
+        authoritative: true,
+      },
+    };
+  }
+  if (requirement.unmapped_required_steps.length > 0) {
+    const blockedBy = requirement.unmapped_required_steps.map((step) => `promotion_required_step_unmapped:${step}`);
+    return {
+      ok: false,
+      blocked_by: blockedBy,
+      summary: {
+        ok: false,
+        ...baseSummary,
+        verification_source: input.production_ledger_enforced ? "ledger" : "caller_asserted",
+        authoritative: input.production_ledger_enforced,
+        unmapped_required_steps: requirement.unmapped_required_steps,
+      },
+    };
+  }
+  if (input.production_ledger_enforced) {
+    if (!input.evidence_claim_results) {
+      return {
+        ok: true,
+        blocked_by: [],
+        summary: {
+          ok: true,
+          ...baseSummary,
+          verification_source: "ledger_deferred",
+          authoritative: false,
+        },
+      };
+    }
+    const failed = input.evidence_claim_results.filter((result) => !result.ok);
+    if (failed.length > 0) {
+      return {
+        ok: false,
+        blocked_by: failed.flatMap((result) => result.blocked_by),
+        summary: {
+          ok: false,
+          ...baseSummary,
+          verification_source: "ledger",
+          authoritative: true,
+          evidence_claim_results: input.evidence_claim_results,
+          failed_evidence_claims: failed.map((result) => result.claim_id),
+        },
+      };
+    }
+    return {
+      ok: true,
+      blocked_by: [],
+      summary: {
+        ok: true,
+        ...baseSummary,
+        verification_source: "ledger",
+        authoritative: true,
+        evidence_claim_results: input.evidence_claim_results,
+      },
+    };
+  }
+
+  const providedClaimSet = new Set(providedClaims);
+  const missingClaims = requirement.required_claims.filter((claim) => !providedClaimSet.has(claim));
+  if (missingClaims.length > 0) {
+    return {
+      ok: false,
+      blocked_by: missingClaims.map((claim) => `promotion_evidence_claim_missing:${claim}`),
+      summary: {
+        ok: false,
+        ...baseSummary,
+        verification_source: "caller_asserted",
+        authoritative: false,
+        missing_claims: missingClaims,
+      },
+    };
+  }
+  return {
+    ok: true,
+    blocked_by: [],
+    summary: {
+      ok: true,
+      ...baseSummary,
+      verification_source: "caller_asserted",
+      authoritative: false,
+    },
+  };
+}
+
+function permissionUpgradePromotionEvidenceRequirementFor(request: DojoPermissionUpgradeRequestRecord): {
+  required_claims: DojoEvidenceClaimId[];
+  unmapped_required_steps: string[];
+} {
+  const requiredClaims = new Set<DojoEvidenceClaimId>();
+  const unmappedRequiredSteps: string[] = [];
+  const actionableSteps = request.required_steps.filter((step) => step !== "no_upgrade_required_for_current_license");
+  for (const step of actionableSteps) {
+    const claims = permissionUpgradeEvidenceClaimsForRequiredStep(step);
+    if (!claims) {
+      unmappedRequiredSteps.push(step);
+      continue;
+    }
+    for (const claim of claims) requiredClaims.add(claim);
+  }
+  if (requiredClaims.size > 0) requiredClaims.add("evidence_fresh");
+  return {
+    required_claims: [...requiredClaims],
+    unmapped_required_steps: unmappedRequiredSteps,
+  };
+}
+
+function permissionUpgradeEvidenceClaimsForRequiredStep(step: string): DojoEvidenceClaimId[] | null {
+  switch (step) {
+    case "rerun_checkride_for_requested_action":
+    case "resolve_critical_checkride_failures":
+      return ["checkride_passed"];
+    case "activate_guardrails":
+    case "harden_evil_twin_escaped_attacks":
+      return ["guardrails_active", "checkride_passed"];
+    case "publish_backing_private_workflow_tool":
+    case "add_dom_source_or_mcp_substrate":
+      return ["substrate_allowed"];
+    case "no_upgrade_required_for_current_license":
+      return [];
+    default:
+      return null;
+  }
+}
+
+function uniqueNonEmptyStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
 function permissionUpgradeLicensePromotionFor(
   skill: DojoSkill,
   request: DojoPermissionUpgradeRequestRecord
@@ -8015,12 +8296,14 @@ function permissionUpgradeLicensePromotionFor(
 
   const updated = cloneJson(skill);
   const reviewedAt = request.reviewed_at ?? new Date().toISOString();
+  const promotionEvidenceRequirement = permissionUpgradePromotionEvidenceRequirementFor(request);
   const gatedConstraints = [...new Set([
     "permission_upgrade_approved",
     `permission_upgrade_request:${request.request_id}`,
     ...request.required_steps
       .filter((step) => step !== "no_upgrade_required_for_current_license")
       .map((step) => `required_step:${step}`),
+    ...promotionEvidenceRequirement.required_claims.map((claim) => `promotion_claim:${claim}`),
     ...(request.decision_evidence_refs ?? []).map((ref) => `review_evidence:${ref}`),
   ])];
   const nextLicense = {
@@ -8097,6 +8380,10 @@ function permissionUpgradeLicensePromotionFor(
       license_id: nextLicense.license_id,
       approval_required: true,
       constraints: gatedConstraints,
+      promotion_evidence_policy: {
+        required_claims: promotionEvidenceRequirement.required_claims,
+        unmapped_required_steps: promotionEvidenceRequirement.unmapped_required_steps,
+      },
       evidence_refs: [...request.evidence_refs],
       decision_evidence_refs: [...(request.decision_evidence_refs ?? [])],
       expires_at: updated.license_expires_at,

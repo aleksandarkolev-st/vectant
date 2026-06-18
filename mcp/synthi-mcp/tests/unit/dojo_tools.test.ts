@@ -903,6 +903,7 @@ describe("Agent Dojo MCP tools", () => {
       reviewer_actor_type: "human",
       reason: "Workspace reviewer approved visible request.",
       evidence_refs: ["evidence:review-visible-upgrade"],
+      promotion_evidence_claims: ["checkride_passed", "evidence_fresh"],
     });
     expect(visibleReview?.isError).toBeUndefined();
     expect(visibleReview?.structuredContent).toEqual(expect.objectContaining({
@@ -3557,6 +3558,29 @@ describe("Agent Dojo MCP tools", () => {
     const preUpgradeSkill = dojoSkillRegistry.get(published.skill.skill_id);
     expect(preUpgradeSkill?.permission_license.allowed_actions.map((action) => action.action)).not.toContain("commit_mutation");
     expect(preUpgradeSkill?.permission_license.gated_actions.map((action) => action.action)).not.toContain("commit_mutation");
+    const reviewMissingPromotionPolicy = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
+      request_id: "upgrade-test-request",
+      decision: "approved",
+      reviewer_actor_id: "reviewer-b",
+      reviewer_actor_type: "human",
+      reason: "Generic review evidence should not promote scope.",
+      evidence_refs: ["evidence:unit-review"],
+      decided_at: "2026-06-11T00:04:00.000Z",
+    });
+    expect(reviewMissingPromotionPolicy?.isError).toBe(true);
+    expect(reviewMissingPromotionPolicy?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_permission_upgrade_promotion_evidence_policy_failed",
+      blocked_by: expect.arrayContaining([
+        "promotion_evidence_claim_missing:checkride_passed",
+        "promotion_evidence_claim_missing:evidence_fresh",
+      ]),
+      promotion_evidence_policy: expect.objectContaining({
+        ok: false,
+        required_claims: expect.arrayContaining(["checkride_passed", "evidence_fresh"]),
+        verification_source: "caller_asserted",
+        authoritative: false,
+      }),
+    }));
     const reviewedUpgrade = await dispatchDojoTool("synthi_dojo_review_permission_upgrade", {
       request_id: "upgrade-test-request",
       decision: "approved",
@@ -3564,6 +3588,7 @@ describe("Agent Dojo MCP tools", () => {
       reviewer_actor_type: "human",
       reason: "Unit test reviewed evidence.",
       evidence_refs: ["evidence:unit-review"],
+      promotion_evidence_claims: ["checkride_passed", "evidence_fresh"],
       decided_at: "2026-06-11T00:04:00.000Z",
     });
     expect(reviewedUpgrade?.structuredContent).toEqual(expect.objectContaining({
@@ -3590,8 +3615,13 @@ describe("Agent Dojo MCP tools", () => {
           "permission_upgrade_approved",
           "permission_upgrade_request:upgrade-test-request",
           "required_step:rerun_checkride_for_requested_action",
+          "promotion_claim:checkride_passed",
+          "promotion_claim:evidence_fresh",
           "review_evidence:evidence:unit-review",
         ]),
+        promotion_evidence_policy: expect.objectContaining({
+          required_claims: expect.arrayContaining(["checkride_passed", "evidence_fresh"]),
+        }),
       }),
       control_plane_persistence: expect.objectContaining({
         ok: true,
@@ -3608,10 +3638,18 @@ describe("Agent Dojo MCP tools", () => {
             constraints: expect.arrayContaining([
               "permission_upgrade_approved",
               "permission_upgrade_request:upgrade-test-request",
+              "promotion_claim:checkride_passed",
+              "promotion_claim:evidence_fresh",
             ]),
           }),
         ]),
         approval_requirements: expect.arrayContaining(["commit_mutation"]),
+      }),
+      promotion_evidence_policy: expect.objectContaining({
+        ok: true,
+        required_claims: expect.arrayContaining(["checkride_passed", "evidence_fresh"]),
+        verification_source: "caller_asserted",
+        authoritative: false,
       }),
       review: expect.objectContaining({
         ok: true,
