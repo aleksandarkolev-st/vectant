@@ -76,8 +76,8 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_get_source_affordance_pr_plan: sourceProjection("Returns a typed generated source-affordance PR plan; the codemod harness can patch controlled React fixtures and prove generated tests."),
   synthi_dojo_prepare_source_affordance_pr: sourceGeneration("Builds a generated source patch bundle, PR metadata, branch plan, and dry-run apply proof from supplied source files."),
   synthi_dojo_create_source_affordance_pr_branch: sourceGeneration("Validates and optionally creates a local git branch for a generated source-affordance PR; dry-run is the default and remote PR creation remains external."),
-  synthi_dojo_prepare_api_backed_tool: apiGeneration("Reviews an API endpoint candidate or network trace and compiles a proof-gated API-backed MCP tool contract when safety gates pass."),
-  synthi_dojo_run_api_backed_tool: proofGatedDispatch("Dry-runs or executes a compiled API-backed MCP tool through proof validation, license pinning, idempotency, postcondition checks, and evidence output."),
+  synthi_dojo_prepare_api_backed_tool: apiGeneration("Reviews an API endpoint candidate or network trace, compiles a proof-gated API-backed MCP tool contract, and can publish reviewed tools into the skill-bus manifest when safety gates pass."),
+  synthi_dojo_run_api_backed_tool: proofGatedDispatch("Dry-runs or executes a compiled API-backed MCP tool or a published API-backed skill-bus tool name through skill-bus resolution/preflight, proof validation, license pinning, idempotency, postcondition checks, and evidence output."),
   synthi_dojo_get_registry: governanceReport("Returns organization registry report data with governance-service view models."),
   synthi_dojo_get_skill_assurance_case: reportWithRuntimeEvidence("Returns an assurance case artifact with executable checkride provenance when the skill was published or recertified through the runtime path."),
   synthi_dojo_get_entrustment_level: reportWithRuntimeEvidence("Returns stored entrustment and readiness with executable checkride provenance when the skill was published or recertified through the runtime path."),
@@ -273,7 +273,7 @@ function apiGeneration(summary: string): DojoImplementationMetadata {
     summary,
     maturity_blockers: [
       "api_candidate_requires_reviewer_approval_before_promotion",
-      "compiled_tool_requires_skill_bus_registration_before_production_exposure",
+      "unpublished_compiled_tools_are_not_production_exposed",
       "deployed_mcp_host_conformance_required",
     ],
   };

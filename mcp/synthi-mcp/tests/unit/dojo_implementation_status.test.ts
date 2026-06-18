@@ -216,6 +216,32 @@ describe("Dojo implementation status registry", () => {
     );
   });
 
+  it("describes API-backed tool execution as skill-bus preflighted without claiming deployed host maturity", () => {
+    expect(getDojoToolImplementationMetadata("synthi_dojo_prepare_api_backed_tool")).toEqual(
+      expect.objectContaining({
+        implementation_status: "executable",
+        summary: expect.stringContaining("publish reviewed tools into the skill-bus manifest"),
+        maturity_blockers: expect.arrayContaining([
+          "unpublished_compiled_tools_are_not_production_exposed",
+          "deployed_mcp_host_conformance_required",
+        ]),
+      })
+    );
+    expect(getDojoToolImplementationMetadata("synthi_dojo_prepare_api_backed_tool").maturity_blockers).not.toContain(
+      "compiled_tool_requires_skill_bus_registration_before_production_exposure"
+    );
+    expect(getDojoToolImplementationMetadata("synthi_dojo_run_api_backed_tool")).toEqual(
+      expect.objectContaining({
+        implementation_status: "executable",
+        runtime_enforced: true,
+        runtime_scope: "proof_gated_dispatch",
+        production_runtime: false,
+        summary: expect.stringContaining("published API-backed skill-bus tool name"),
+        maturity_blockers: expect.arrayContaining(["deployed_mcp_host_conformance_required"]),
+      })
+    );
+  });
+
   it("returns cloned metadata so callers cannot mutate the registry", () => {
     const metadata = buildDojoImplementationMetadata("synthi_dojo_get_workspace_organoid");
     metadata.maturity_blockers.push("mutated_by_test");

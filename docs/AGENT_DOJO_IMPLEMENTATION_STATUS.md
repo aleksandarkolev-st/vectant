@@ -66,7 +66,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - hosted runtime session authorization before production proof-gated execution consumes a proof capsule
 - case-law records that can bind guardrail predicates
 - non-mutating Ghost Mode shadow evidence records with control-plane audit events
-- source/API contract, linter, candidate, substrate, and React codemod foundations
+- source/API contract, linter, candidate, substrate, React codemod, and API-backed skill-bus tool foundations
 - dedicated Dojo product UX surfaces and governance view models
 - repo artifact export
 - compact UI status surface plus dedicated Dojo routes
@@ -101,7 +101,14 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_get_lifecycle` | `report_only` |
 | `synthi_dojo_get_governance_report` | `report_only` |
 | `synthi_dojo_get_metrics` | `report_only` |
+| `synthi_dojo_capture_source_snapshot` | `executable` |
+| `synthi_dojo_detect_source_drift` | `executable` |
+| `synthi_dojo_apply_source_drift_expiry` | `executable` |
 | `synthi_dojo_get_source_affordance_pr_plan` | `deterministic_projection` |
+| `synthi_dojo_prepare_source_affordance_pr` | `executable` |
+| `synthi_dojo_create_source_affordance_pr_branch` | `executable` |
+| `synthi_dojo_prepare_api_backed_tool` | `executable` |
+| `synthi_dojo_run_api_backed_tool` | `executable` |
 | `synthi_dojo_get_registry` | `report_only` |
 | `synthi_dojo_get_skill_assurance_case` | `report_only` |
 | `synthi_dojo_get_entrustment_level` | `report_only` |
@@ -109,9 +116,9 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_get_guardrails` | `deterministic_projection` |
 | `synthi_dojo_get_case_law` | `report_only` |
 | `synthi_dojo_explain_block` | `report_only` |
-| `synthi_dojo_explain_failure` | `report_only` |
-| `synthi_dojo_debug_counterfactual` | `deterministic_projection` |
-| `synthi_dojo_run_time_machine_debugger` | `deterministic_projection` |
+| `synthi_dojo_explain_failure` | `executable` |
+| `synthi_dojo_debug_counterfactual` | `executable` |
+| `synthi_dojo_run_time_machine_debugger` | `executable` |
 | `synthi_dojo_run_ghost_mode` | `executable` |
 | `synthi_dojo_request_permission_upgrade` | `executable` |
 | `synthi_dojo_review_permission_upgrade` | `executable` |
@@ -160,8 +167,8 @@ Safe current claim:
 ```text
 Agent Dojo implements a repo-local proof-gated competency system with executable graph
 runtime foundations, materialized synthetic Vivarium scenarios, evidence/proof/ledger
-foundations, scoped licenses, repo exports, source/API scaffolding, governance views, and
-MCP tool exposure.
+foundations, scoped licenses, repo exports, source/API scaffolding, API-backed skill-bus
+tool execution foundations, governance views, and MCP tool exposure.
 ```
 
 Unsafe current claim:
