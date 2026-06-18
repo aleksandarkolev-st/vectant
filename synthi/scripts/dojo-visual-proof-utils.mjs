@@ -65,12 +65,23 @@ async function removeStaleVisualProofLock(lockPath, staleMs) {
   try {
     const info = await stat(lockPath);
     if (Date.now() - info.mtimeMs < staleMs) return false;
-    await rm(lockPath, { force: true });
+    try {
+      await rm(lockPath, { force: true });
+    } catch (err) {
+      if (err?.code === "ENOENT") return true;
+      if (isTransientLockAccessError(err)) return false;
+      throw err;
+    }
     return true;
   } catch (err) {
     if (err?.code === "ENOENT") return true;
+    if (isTransientLockAccessError(err)) return false;
     throw err;
   }
+}
+
+function isTransientLockAccessError(err) {
+  return err?.code === "EPERM" || err?.code === "EACCES" || err?.code === "EBUSY";
 }
 
 export async function analyzeScreenshotVisualEvidence({
