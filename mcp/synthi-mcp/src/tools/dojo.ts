@@ -7925,6 +7925,7 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
   const runtime = new DojoSkillGraphRuntime();
   const graphRuntimePreflight = await runtime.execute({
     graph: compiled.graph,
+    tenant: input.tenant,
     run_id: `${input.run_id}_graph_preflight`,
     mode: "production",
     preflight_only: true,
@@ -10110,6 +10111,7 @@ function dojoTenantContextResultFromArgs(
   const missing = productionTenantContextMissingFields(a);
   const actorType = actorTypeInputOpt(a["actor_type"]);
   const actorTypeProvided = stringOpt(a["actor_type"]) !== undefined;
+  const rolesInvalid = tenantRolesInputInvalid(a, "roles");
   if (enforcement.production_enforcement && actorTypeProvided && !actorType) {
     return {
       ok: false,
@@ -10118,6 +10120,17 @@ function dojoTenantContextResultFromArgs(
         enforcement_mode: enforcement.enforcement_mode,
         accepted_actor_types: ["human", "agent", "service"],
         blocked_by: ["tenant_context_actor_type_invalid"],
+      }),
+    };
+  }
+  if (enforcement.production_enforcement && rolesInvalid) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_tenant_context_roles_invalid", {
+        ok: false,
+        enforcement_mode: enforcement.enforcement_mode,
+        accepted_roles: "non-empty string array",
+        blocked_by: ["tenant_context_roles_invalid"],
       }),
     };
   }
@@ -10169,6 +10182,14 @@ function productionTenantContextMissingFields(a: Record<string, unknown>): Produ
     if (!stringOpt(a[field])) missing.push(field);
   }
   return missing;
+}
+
+function tenantRolesInputInvalid(a: Record<string, unknown>, field: string): boolean {
+  if (!Object.prototype.hasOwnProperty.call(a, field)) return false;
+  const value = a[field];
+  if (!Array.isArray(value)) return true;
+  if (value.length === 0) return false;
+  return value.some((item) => typeof item !== "string" || item.trim().length === 0);
 }
 
 function dojoTenantContextFromArgs(args: unknown): DojoTenantContext {

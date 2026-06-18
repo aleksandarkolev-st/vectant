@@ -5767,6 +5767,22 @@ describe("Agent Dojo MCP tools", () => {
       blocked_by: ["tenant_context_actor_type_invalid"],
     }));
 
+    const invalidRolesContext = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      ...productionTenantContextArgs({ roles: ["agent", ""] }),
+      dry_run: true,
+      now: "2026-06-11T00:01:30.000Z",
+    });
+    expect(invalidRolesContext?.isError).toBe(true);
+    expect(invalidRolesContext?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_tenant_context_roles_invalid",
+      enforcement_mode: "production",
+      accepted_roles: "non-empty string array",
+      blocked_by: ["tenant_context_roles_invalid"],
+    }));
+
     const validContextValidation = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
       skill_id: skillId,
       requested_action: "run_workflow",
