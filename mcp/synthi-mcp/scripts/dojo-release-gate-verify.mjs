@@ -893,15 +893,16 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const chaosPerformanceResults = [];
-  if (enterpriseRelease || truthy(args["include-chaos-performance"]) || args["chaos-performance-evidence"]) {
+  const chaosPerformanceEnterpriseRelease = enterpriseRelease || truthy(args["chaos-performance-enterprise-release"]);
+  if (chaosPerformanceEnterpriseRelease || truthy(args["include-chaos-performance"]) || args["chaos-performance-evidence"]) {
     const evidencePath = resolveRepoPath(args["chaos-performance-evidence"] || path.join(DEFAULT_CHAOS_PERFORMANCE_DIR, "dojo-chaos-performance.evidence.json"));
     chaosPerformanceResults.push(await verifyArtifactSection({
       id: "dojo_chaos_performance_self_check",
       evidencePath,
-      enterpriseRelease,
+      enterpriseRelease: chaosPerformanceEnterpriseRelease,
     }, () => verifyDojoChaosPerformanceEvidenceArtifact({
       evidencePath,
-      enterpriseRelease,
+      enterpriseRelease: chaosPerformanceEnterpriseRelease,
     })));
   }
 
@@ -922,7 +923,8 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const dojoSoakPerformanceResults = [];
-  if (enterpriseRelease || truthy(args["include-dojo-soak-performance"]) || args["dojo-soak-performance-evidence"]) {
+  const dojoSoakPerformanceEnterpriseRelease = enterpriseRelease || truthy(args["dojo-soak-performance-enterprise-release"]);
+  if (dojoSoakPerformanceEnterpriseRelease || truthy(args["include-dojo-soak-performance"]) || args["dojo-soak-performance-evidence"]) {
     const dojoSoakGate = findGate(manifest, "dojo_soak_performance_self_check") || {};
     const evidencePath = resolveRepoPath(args["dojo-soak-performance-evidence"]
       || dojoSoakGate.default_evidence_path
@@ -930,10 +932,10 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     dojoSoakPerformanceResults.push(await verifyArtifactSection({
       id: "dojo_soak_performance_self_check",
       evidencePath,
-      enterpriseRelease,
+      enterpriseRelease: dojoSoakPerformanceEnterpriseRelease,
     }, () => verifyDojoSoakPerformanceEvidenceArtifact({
       evidencePath,
-      enterpriseRelease,
+      enterpriseRelease: dojoSoakPerformanceEnterpriseRelease,
     })));
   }
 

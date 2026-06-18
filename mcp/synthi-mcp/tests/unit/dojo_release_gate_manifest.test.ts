@@ -1214,6 +1214,13 @@ describe("Dojo release gate manifest", () => {
           required_dojo_release_metrics: DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
+          section_enterprise_verifier: {
+            flag: "--chaos-performance-enterprise-release",
+            evidence_arg: "--chaos-performance-evidence",
+            default_evidence_path: "tmp/dojo-chaos-performance/dojo-chaos-performance.evidence.json",
+            default_out_dir: "tmp/dojo-release-gate-verify-chaos-performance-enterprise-section",
+            command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --chaos-performance-enterprise-release --chaos-performance-evidence tmp/dojo-chaos-performance/dojo-chaos-performance.evidence.json --out-dir tmp/dojo-release-gate-verify-chaos-performance-enterprise-section",
+          },
         }),
       }),
       expect.objectContaining({
@@ -1253,6 +1260,13 @@ describe("Dojo release gate manifest", () => {
           require_event_digest_match: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
+          section_enterprise_verifier: {
+            flag: "--dojo-soak-performance-enterprise-release",
+            evidence_arg: "--dojo-soak-performance-evidence",
+            default_evidence_path: "tmp/dojo-soak-performance/dojo-soak-performance.evidence.json",
+            default_out_dir: "tmp/dojo-release-gate-verify-dojo-soak-performance-enterprise-section",
+            command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --dojo-soak-performance-enterprise-release --dojo-soak-performance-evidence tmp/dojo-soak-performance/dojo-soak-performance.evidence.json --out-dir tmp/dojo-release-gate-verify-dojo-soak-performance-enterprise-section",
+          },
         }),
       }),
       expect.objectContaining({
@@ -2076,12 +2090,23 @@ describe("Dojo release gate manifest", () => {
       .filter((metric) => metric !== "proof_validation_p95_ms");
     chaosGate.enterprise_artifact_requirements.require_no_skipped_tests = false;
     chaosGate.enterprise_artifact_requirements.require_dojo_release_metrics = false;
+    chaosGate.enterprise_artifact_requirements.section_enterprise_verifier = {
+      flag: "--wrong-chaos-enterprise-flag",
+      evidence_arg: "--wrong-chaos-evidence",
+      default_evidence_path: "tmp/wrong-chaos-evidence.json",
+      command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs",
+    };
     expect(validateDojoReleaseGateManifest(brokenChaos, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "chaos_performance_missing_required_scenarios:api_timeout",
       `chaos_performance_missing_required_test_files:${missingChaosTestFile}`,
       "chaos_performance_missing_no_skipped_requirement",
       "chaos_performance_missing_dojo_release_metrics_requirement",
       "chaos_performance_missing_required_dojo_release_metrics:proof_validation_p95_ms",
+      "chaos_performance_missing_section_enterprise_verifier_flag",
+      "chaos_performance_missing_section_enterprise_verifier_evidence_arg",
+      "chaos_performance_section_enterprise_verifier_evidence_path_mismatch",
+      "chaos_performance_missing_section_enterprise_verifier_out_dir",
+      "chaos_performance_missing_section_enterprise_verifier_command",
     ]));
 
     const brokenLiveChaos = JSON.parse(JSON.stringify(manifest));
@@ -2119,6 +2144,12 @@ describe("Dojo release gate manifest", () => {
     dojoSoakGate.enterprise_artifact_requirements.require_no_failed_operation_events = false;
     dojoSoakGate.enterprise_artifact_requirements.require_dojo_soak_metrics = false;
     dojoSoakGate.enterprise_artifact_requirements.require_event_digest_match = false;
+    dojoSoakGate.enterprise_artifact_requirements.section_enterprise_verifier = {
+      flag: "--wrong-dojo-soak-enterprise-flag",
+      evidence_arg: "--wrong-dojo-soak-evidence",
+      default_evidence_path: "tmp/wrong-dojo-soak-evidence.json",
+      command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs",
+    };
     expect(validateDojoReleaseGateManifest(brokenDojoSoak, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "dojo_soak_performance_missing_required_operation_classes:proof_validation",
       `dojo_soak_performance_missing_required_test_files:${missingDojoSoakTestFile}`,
@@ -2126,6 +2157,11 @@ describe("Dojo release gate manifest", () => {
       "dojo_soak_performance_missing_dojo_soak_metrics_requirement",
       "dojo_soak_performance_missing_required_dojo_soak_metrics:proof_validation_p95_ms",
       "dojo_soak_performance_missing_event_digest_requirement",
+      "dojo_soak_performance_missing_section_enterprise_verifier_flag",
+      "dojo_soak_performance_missing_section_enterprise_verifier_evidence_arg",
+      "dojo_soak_performance_section_enterprise_verifier_evidence_path_mismatch",
+      "dojo_soak_performance_missing_section_enterprise_verifier_out_dir",
+      "dojo_soak_performance_missing_section_enterprise_verifier_command",
     ]));
 
     const brokenSoak = JSON.parse(JSON.stringify(manifest));

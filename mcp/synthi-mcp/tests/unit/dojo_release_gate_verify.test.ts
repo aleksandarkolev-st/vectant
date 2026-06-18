@@ -572,6 +572,51 @@ describe("Dojo release gate artifact verifier", () => {
     ]);
   });
 
+  it("verifies local T8 chaos and Dojo soak evidence as enterprise sections without complete enterprise promotion", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-enterprise-section-t8-"));
+    const packageScripts = await readPackageScripts();
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    const chaosEvidencePath = await writeChaosEvidenceFixture({ dir });
+    const dojoSoakEvidencePath = await writeDojoSoakEvidenceFixture({ dir });
+    setManifestGateDefaultEvidencePath(manifest, "dojo_chaos_performance_self_check", chaosEvidencePath);
+    setManifestGateDefaultEvidencePath(manifest, "dojo_soak_performance_self_check", dojoSoakEvidencePath);
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+
+    const result = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "chaos-performance-enterprise-release": true,
+        "chaos-performance-evidence": chaosEvidencePath,
+        "dojo-soak-performance-enterprise-release": true,
+        "dojo-soak-performance-evidence": dojoSoakEvidencePath,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.enterprise_release).not.toBe(true);
+    expect(result.release_candidate).not.toBe(true);
+    expect(result.chaos_performance).toEqual([
+      expect.objectContaining({
+        id: "dojo_chaos_performance_self_check",
+        ok: true,
+        enterprise_release: true,
+      }),
+    ]);
+    expect(result.dojo_soak_performance).toEqual([
+      expect.objectContaining({
+        id: "dojo_soak_performance_self_check",
+        ok: true,
+        enterprise_release: true,
+      }),
+    ]);
+  });
+
   it("can include a live chaos report in aggregate artifact verification", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-live-chaos-aggregate-"));
     const packageScripts = await readPackageScripts();
@@ -5312,6 +5357,10 @@ function setManifestGateDefaultEvidencePath(manifest, gateId, evidencePath) {
   const sectionVerifier = gate.release_artifact_requirements?.section_release_verifier;
   if (sectionVerifier) {
     sectionVerifier.default_evidence_path = evidencePath;
+  }
+  const sectionEnterpriseVerifier = gate.enterprise_artifact_requirements?.section_enterprise_verifier;
+  if (sectionEnterpriseVerifier) {
+    sectionEnterpriseVerifier.default_evidence_path = evidencePath;
   }
   return gate;
 }

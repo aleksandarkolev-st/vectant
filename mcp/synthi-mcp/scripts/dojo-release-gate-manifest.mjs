@@ -1536,6 +1536,13 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       required_dojo_release_metrics: [...DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS],
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
+      section_enterprise_verifier: {
+        flag: "--chaos-performance-enterprise-release",
+        evidence_arg: "--chaos-performance-evidence",
+        default_evidence_path: "tmp/dojo-chaos-performance/dojo-chaos-performance.evidence.json",
+        default_out_dir: "tmp/dojo-release-gate-verify-chaos-performance-enterprise-section",
+        command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --chaos-performance-enterprise-release --chaos-performance-evidence tmp/dojo-chaos-performance/dojo-chaos-performance.evidence.json --out-dir tmp/dojo-release-gate-verify-chaos-performance-enterprise-section",
+      },
     },
   },
   {
@@ -1581,6 +1588,13 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_event_digest_match: true,
       require_json_report_digest_match: true,
       require_stdout_stderr_digest_match: true,
+      section_enterprise_verifier: {
+        flag: "--dojo-soak-performance-enterprise-release",
+        evidence_arg: "--dojo-soak-performance-evidence",
+        default_evidence_path: "tmp/dojo-soak-performance/dojo-soak-performance.evidence.json",
+        default_out_dir: "tmp/dojo-release-gate-verify-dojo-soak-performance-enterprise-section",
+        command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --dojo-soak-performance-enterprise-release --dojo-soak-performance-evidence tmp/dojo-soak-performance/dojo-soak-performance.evidence.json --out-dir tmp/dojo-release-gate-verify-dojo-soak-performance-enterprise-section",
+      },
     },
   },
   {
@@ -3527,6 +3541,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_json_report_digest_match) {
       errors.push("chaos_performance_missing_json_report_digest_requirement");
     }
+    validateSectionEnterpriseVerifier({
+      errors,
+      gate: chaosPerformanceGate,
+      prefix: "chaos_performance",
+      flag: "--chaos-performance-enterprise-release",
+      evidenceArg: "--chaos-performance-evidence",
+    });
   }
   const liveChaosGate = gates.find((gate) => gate.id === "dojo_live_chaos");
   if (!liveChaosGate) {
@@ -3618,6 +3639,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!dojoSoakPerformanceGate.enterprise_artifact_requirements?.require_json_report_digest_match) {
       errors.push("dojo_soak_performance_missing_json_report_digest_requirement");
     }
+    validateSectionEnterpriseVerifier({
+      errors,
+      gate: dojoSoakPerformanceGate,
+      prefix: "dojo_soak_performance",
+      flag: "--dojo-soak-performance-enterprise-release",
+      evidenceArg: "--dojo-soak-performance-evidence",
+    });
   }
   const soakPerformanceGate = gates.find((gate) => gate.id === "soak_performance");
   if (soakPerformanceGate) {
@@ -3698,6 +3726,33 @@ function validateSectionReleaseVerifier({
     || !sectionVerifier.command.includes(flag)
     || !sectionVerifier.command.includes(evidenceArg)) {
     errors.push(`${prefix}_missing_section_release_verifier_command`);
+  }
+}
+
+function validateSectionEnterpriseVerifier({
+  errors,
+  gate,
+  prefix,
+  flag,
+  evidenceArg,
+}) {
+  const sectionVerifier = gate.enterprise_artifact_requirements?.section_enterprise_verifier || {};
+  if (sectionVerifier.flag !== flag) {
+    errors.push(`${prefix}_missing_section_enterprise_verifier_flag`);
+  }
+  if (sectionVerifier.evidence_arg !== evidenceArg) {
+    errors.push(`${prefix}_missing_section_enterprise_verifier_evidence_arg`);
+  }
+  if (sectionVerifier.default_evidence_path !== gate.default_evidence_path) {
+    errors.push(`${prefix}_section_enterprise_verifier_evidence_path_mismatch`);
+  }
+  if (typeof sectionVerifier.default_out_dir !== "string" || sectionVerifier.default_out_dir.length === 0) {
+    errors.push(`${prefix}_missing_section_enterprise_verifier_out_dir`);
+  }
+  if (typeof sectionVerifier.command !== "string"
+    || !sectionVerifier.command.includes(flag)
+    || !sectionVerifier.command.includes(evidenceArg)) {
+    errors.push(`${prefix}_missing_section_enterprise_verifier_command`);
   }
 }
 
