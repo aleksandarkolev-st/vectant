@@ -1459,10 +1459,14 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     command: "npm --prefix mcp/synthi-mcp run soak",
     required_for: ["nightly", "enterprise_release"],
     evidence_kind: "metrics",
+    requires_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
     default_summary_path: "mcp/synthi-mcp/.soak/soak-summary.json",
     default_events_path: "mcp/synthi-mcp/.soak/soak-events.ndjson",
     enterprise_artifact_requirements: {
       require_min_duration_seconds: 3600,
+      require_live_session_env: "SYNTHI_SESSION_ID",
+      require_duration_env: "SOAK_DURATION_MIN",
+      require_duration_env_min_minutes: 60,
       require_zero_errors: true,
       require_iteration_events: true,
       require_tool_latency_metrics: true,
@@ -3311,8 +3315,24 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
   if (soakPerformanceGate) {
     if (!soakPerformanceGate.default_summary_path) errors.push("soak_performance_missing_default_summary_path");
     if (!soakPerformanceGate.default_events_path) errors.push("soak_performance_missing_default_events_path");
+    const missingSoakEnv = missingRequiredEntries(
+      ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
+      soakPerformanceGate.requires_env,
+    );
+    if (missingSoakEnv.length > 0) {
+      errors.push(`soak_performance_missing_required_env:${missingSoakEnv.join(",")}`);
+    }
     if (!Number.isFinite(Number(soakPerformanceGate.enterprise_artifact_requirements?.require_min_duration_seconds))) {
       errors.push("soak_performance_missing_duration_requirement");
+    }
+    if (soakPerformanceGate.enterprise_artifact_requirements?.require_live_session_env !== "SYNTHI_SESSION_ID") {
+      errors.push("soak_performance_missing_live_session_env_requirement");
+    }
+    if (soakPerformanceGate.enterprise_artifact_requirements?.require_duration_env !== "SOAK_DURATION_MIN") {
+      errors.push("soak_performance_missing_duration_env_requirement");
+    }
+    if (Number(soakPerformanceGate.enterprise_artifact_requirements?.require_duration_env_min_minutes) < 60) {
+      errors.push("soak_performance_duration_env_min_too_low");
     }
     if (!soakPerformanceGate.enterprise_artifact_requirements?.require_iteration_events) {
       errors.push("soak_performance_missing_event_requirement");

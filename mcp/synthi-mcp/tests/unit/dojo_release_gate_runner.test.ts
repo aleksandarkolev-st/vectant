@@ -93,6 +93,42 @@ describe("Dojo release gate runner", () => {
     }
   });
 
+  it("requires live soak session and duration env before planning the legacy soak gate", () => {
+    const releaseManifest = manifest();
+    const missingEnvPlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "nightly",
+      env: {},
+    });
+    const missingSoakGate = missingEnvPlan.gates.find((gate) => gate.gate_id === "soak_performance");
+
+    expect(missingSoakGate).toEqual(expect.objectContaining({
+      status: "skipped",
+      skip_reason: "missing_required_env",
+      missing_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
+    }));
+
+    const partialEnvPlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "nightly",
+      env: { SYNTHI_SESSION_ID: "session-123" },
+    });
+    expect(partialEnvPlan.gates.find((gate) => gate.gate_id === "soak_performance")).toEqual(expect.objectContaining({
+      status: "skipped",
+      missing_env: ["SOAK_DURATION_MIN"],
+    }));
+
+    const readyPlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "nightly",
+      env: { SYNTHI_SESSION_ID: "session-123", SOAK_DURATION_MIN: "60" },
+    });
+    expect(readyPlan.gates.find((gate) => gate.gate_id === "soak_performance")).toEqual(expect.objectContaining({
+      status: "planned",
+      missing_env: [],
+    }));
+  });
+
   it("represents missing environment requirements as explicit skipped gates by default", () => {
     const plan = buildDojoReleaseGateExecutionPlan({
       manifest: manifest(),

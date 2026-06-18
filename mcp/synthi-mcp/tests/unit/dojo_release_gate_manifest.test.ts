@@ -1139,10 +1139,14 @@ describe("Dojo release gate manifest", () => {
         tier: "T8",
         package_script: "soak",
         script_exists: true,
+        requires_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
         default_summary_path: "mcp/synthi-mcp/.soak/soak-summary.json",
         default_events_path: "mcp/synthi-mcp/.soak/soak-events.ndjson",
         enterprise_artifact_requirements: expect.objectContaining({
           require_min_duration_seconds: 3600,
+          require_live_session_env: "SYNTHI_SESSION_ID",
+          require_duration_env: "SOAK_DURATION_MIN",
+          require_duration_env_min_minutes: 60,
           require_zero_errors: true,
           require_iteration_events: true,
           require_tool_latency_metrics: true,
@@ -1868,9 +1872,17 @@ describe("Dojo release gate manifest", () => {
 
     const brokenSoak = JSON.parse(JSON.stringify(manifest));
     const soakGate = brokenSoak.gates.find((gate) => gate.id === "soak_performance");
+    soakGate.requires_env = ["SYNTHI_SESSION_ID"];
+    soakGate.enterprise_artifact_requirements.require_live_session_env = "";
+    soakGate.enterprise_artifact_requirements.require_duration_env = "";
+    soakGate.enterprise_artifact_requirements.require_duration_env_min_minutes = 10;
     soakGate.enterprise_artifact_requirements.require_zero_errors = false;
     soakGate.enterprise_artifact_requirements.require_tool_latency_metrics = false;
     expect(validateDojoReleaseGateManifest(brokenSoak, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "soak_performance_missing_required_env:SOAK_DURATION_MIN",
+      "soak_performance_missing_live_session_env_requirement",
+      "soak_performance_missing_duration_env_requirement",
+      "soak_performance_duration_env_min_too_low",
       "soak_performance_missing_zero_error_requirement",
       "soak_performance_missing_tool_latency_requirement",
     ]));
