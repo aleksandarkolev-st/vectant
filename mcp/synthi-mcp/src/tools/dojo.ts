@@ -6924,7 +6924,7 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   let capsule: DojoProofCarryingSkillCapsule;
   try {
     capsule = issueDojoProofCapsule(skill.skill, requestedAction, {
-      context_claims: objectOpt(a["context_claims"]) ?? { workspace_verified: true },
+      context_claims: objectOpt(a["context_claims"]) ?? (enforcement.production_enforcement ? {} : { workspace_verified: true }),
       evidence_claims: evidenceClaimsOpt(a["evidence_claims"]),
       evidence_ledger_records: evidenceLedgerRecords,
       evidence_max_age_ms: numberOpt(a["evidence_max_age_ms"]),

@@ -1960,8 +1960,45 @@ describe("Agent Dojo MCP tools", () => {
       error_codes: ["proof_evidence_claim_unverified"],
     }));
 
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "0";
     const storedSkill = dojoSkillRegistry.get(skillId);
     expect(storedSkill).toBeTruthy();
+    const productionDerivedContext = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      ...productionProofIssuerContextArgs({
+        actor_id: "proof-issuer-a",
+        request_id: "req-proof-derived-context",
+      }),
+      requested_action: "run_workflow",
+      evidence_ledger_records: evidenceLedgerRecordsForProof(storedSkill!, {
+        record_id: "evidence-production-proof-derived-context",
+        tenant_id: "tenant-a",
+      }),
+      require_verified_evidence: true,
+      now: "2026-06-11T00:05:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(productionDerivedContext?.isError).toBeUndefined();
+    expect(productionDerivedContext?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      enforcement_mode: "production",
+      require_verified_evidence: true,
+      proof_capsule: expect.objectContaining({
+        context_claims: expect.objectContaining({
+          workspace_verified: true,
+        }),
+        evidence_record_ids: ["evidence-production-proof-derived-context"],
+        evidence_claims: expect.arrayContaining([
+          expect.objectContaining({
+            claim: "workspace_verified",
+            satisfied: true,
+            evidence_refs: ["evidence:evidence-production-proof-derived-context"],
+          }),
+        ]),
+      }),
+    }));
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
+
     const evidenceRecord = buildDojoEvidenceLedgerRecord({
       record_id: "evidence-production-proof-001",
       tenant_id: "tenant-a",
