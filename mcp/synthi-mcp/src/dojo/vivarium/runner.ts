@@ -439,6 +439,10 @@ function fixtureInputs(fixture: DojoMaterializedFixture): Record<string, unknown
     ui_misleading_toast: fixture.ui_state.misleading_toast,
     ui_toast_count: fixture.ui_state.toast_messages.length,
     ui_destructive_adjacency: fixture.ui_state.destructive_adjacency,
+    synthetic_route_id: fixture.route_state.route_id,
+    expected_route_path: fixture.route_state.expected_path,
+    current_route_path: fixture.route_state.current_path,
+    route_changed: fixture.route_state.changed,
     prompt_injection_present: fixture.document_state.prompt_injection_present,
     document_instruction_quarantined: fixture.document_state.instruction_quarantined,
     document_missing_field_count: fixture.document_state.missing_fields.length,
@@ -488,6 +492,10 @@ function observedEvidenceForRun(
   if (materialized.fixture.missing_fields.length > 0) observed.add("missing_field_state");
   if (duplicateEntityCount > 0) observed.add("duplicate_entity_state");
   if (materialized.fixture.api_state.partial_write) observed.add("partial_write_state");
+  if (materialized.fixture.route_state.changed) {
+    observed.add("route_tissue_state");
+    observed.add("synthetic_page_route_state");
+  }
   for (const evidence of uiTissueEvidenceForFixture(materialized.fixture)) {
     observed.add(evidence);
   }

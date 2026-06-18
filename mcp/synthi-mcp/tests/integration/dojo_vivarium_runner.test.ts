@@ -781,6 +781,42 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("emits route tissue evidence from materialized synthetic page-route changes", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "route_change",
+      layer: "risk",
+      risk_tags: ["route_drift"],
+    }));
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "route-change-runner-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-route-change",
+    });
+
+    expect(materialized.fixture.route_state).toEqual(expect.objectContaining({
+      expected_path: "/synthetic/workspace",
+      changed: true,
+      source: "synthetic_page_route",
+    }));
+    expect(materialized.fixture.route_state.current_path).not.toBe(materialized.fixture.route_state.expected_path);
+    expect(result).toEqual(expect.objectContaining({
+      status: "passed",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining(["route_tissue_state", "synthetic_page_route_state"]),
+      oracle_result: expect.objectContaining({
+        observed_evidence: expect.arrayContaining(["route_tissue_state", "synthetic_page_route_state"]),
+        blocked_by: [],
+      }),
+    }));
+  });
+
   it("generates deterministic run IDs and timestamps when a run clock is supplied", async () => {
     const runner = new DojoVivariumRunner();
     const materialized = runner.materialize({

@@ -341,6 +341,9 @@ function observedEvidenceFor(
   if (scenario.mutation_kind === "ambiguous_document_name") {
     evidence.push("document_tissue_state", "document_ambiguous_name_state");
   }
+  if (scenario.mutation_kind === "route_change") {
+    evidence.push("route_tissue_state", "synthetic_page_route_state");
+  }
   return evidence;
 }
 

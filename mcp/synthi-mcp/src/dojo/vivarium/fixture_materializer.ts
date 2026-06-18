@@ -65,6 +65,14 @@ export interface DojoSyntheticUiToast {
   durable_success: boolean;
 }
 
+export interface DojoSyntheticPageRoute {
+  route_id: string;
+  expected_path: string;
+  current_path: string;
+  changed: boolean;
+  source: "synthetic_page_route";
+}
+
 export interface DojoSyntheticPolicyThreshold {
   policy_id: string;
   field: string;
@@ -131,6 +139,7 @@ export interface DojoMaterializedFixture {
     destructive_adjacency: boolean;
     menu_hidden_controls: string[];
   };
+  route_state: DojoSyntheticPageRoute;
   api_state: {
     latency_ms: number;
     partial_write: boolean;
@@ -192,7 +201,8 @@ function fixtureFor(
   const missingFields = missingFieldsFor(definition);
   const thresholdBreaches = thresholdBreachesFor(definition);
   const documentState = documentStateFor(definition, seed);
-  const uiState = uiStateFor(definition, seed, records, missingFields);
+  const routeState = routeStateFor(definition, seed);
+  const uiState = uiStateFor(definition, seed, records, missingFields, routeState);
   const identityState = identityStateFor(definition, seed);
   const policyState = policyStateFor(definition, seed, thresholdBreaches);
   return {
@@ -210,6 +220,7 @@ function fixtureFor(
     threshold_breaches: thresholdBreaches,
     policy_state: policyState,
     ui_state: uiState,
+    route_state: routeState,
     api_state: {
       latency_ms: definition.mutation_kind === "network_latency" ? Math.min(definition.budget.max_estimated_ms, 750) : 0,
       partial_write: definition.mutation_kind === "partial_write",
@@ -414,7 +425,8 @@ function uiStateFor(
   definition: DojoScenarioDefinition,
   seed: string,
   records: DojoSyntheticEntityRecord[],
-  missingFields: string[]
+  missingFields: string[],
+  routeState: DojoSyntheticPageRoute
 ): DojoMaterializedFixture["ui_state"] {
   const mutationKind = definition.mutation_kind;
   const controls = controlsFor(definition, seed, missingFields);
@@ -424,7 +436,7 @@ function uiStateFor(
     label_changed: mutationKind === "label_change",
     hidden_fields: hiddenFieldsFor(definition, missingFields),
     duplicate_labels: duplicateLabels,
-    route: routeFor(definition),
+    route: routeState.current_path,
     layout_mutations: layoutMutationsFor(definition),
     controls,
     validation_messages: validationMessagesFor(definition, missingFields),
@@ -537,8 +549,16 @@ function hiddenFieldsFor(definition: DojoScenarioDefinition, missingFields: stri
   return definition.mutation_kind === "hidden_required_field" ? missingFields : [];
 }
 
-function routeFor(definition: DojoScenarioDefinition): string {
-  return definition.mutation_kind === "route_change" ? "/synthetic/unexpected-route" : "/synthetic/workspace";
+function routeStateFor(definition: DojoScenarioDefinition, seed: string): DojoSyntheticPageRoute {
+  const expectedPath = "/synthetic/workspace";
+  const changed = definition.mutation_kind === "route_change";
+  return {
+    route_id: `synthetic_route_${shortHash(`${seed}:route`)}`,
+    expected_path: expectedPath,
+    current_path: changed ? `/synthetic/route-${shortHash(`${seed}:route:changed`).slice(0, 8)}` : expectedPath,
+    changed,
+    source: "synthetic_page_route",
+  };
 }
 
 function layoutMutationsFor(definition: DojoScenarioDefinition): string[] {

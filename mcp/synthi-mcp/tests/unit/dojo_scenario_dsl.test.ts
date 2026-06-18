@@ -206,6 +206,24 @@ describe("Dojo scenario DSL", () => {
     expect(validateDojoScenarioDefinition(workspaceChange).ok).toBe(true);
   });
 
+  it("classifies route change scenarios as synthetic page-route tissue", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "route_change",
+      risk_tags: ["route_drift"],
+    }));
+
+    expect(definition.mutation_scopes).toEqual(["route"]);
+    expect(definition.fixture_requirements.map((fixture) => fixture.kind)).toEqual(["synthetic_page_route"]);
+    expect(definition.oracle).toEqual(expect.objectContaining({
+      expected_outcome: "pass",
+      observed_evidence_required: expect.arrayContaining([
+        "route_tissue_state",
+        "synthetic_page_route_state",
+      ]),
+    }));
+    expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
+  });
+
   it("uses a tiered wall-clock budget that is stable under parallel integration load", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "fake_success",

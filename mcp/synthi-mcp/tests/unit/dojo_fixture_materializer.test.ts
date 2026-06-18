@@ -429,6 +429,31 @@ describe("Dojo synthetic fixture materializer", () => {
     expect(secondMisleadingToast).toEqual(misleadingToast);
   });
 
+  it("materializes route change tissue as a deterministic synthetic page route", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "route_change",
+      risk_tags: ["route_drift"],
+    }));
+    const fixture = materializeDojoSyntheticFixture(definition, { seed: "route-change-seed" });
+    const second = materializeDojoSyntheticFixture(definition, { seed: "route-change-seed" });
+
+    expect(fixture.synthetic_data_only).toBe(true);
+    expect(fixture.route_state).toEqual({
+      route_id: expect.stringMatching(/^synthetic_route_[a-f0-9]{12}$/),
+      expected_path: "/synthetic/workspace",
+      current_path: expect.stringMatching(/^\/synthetic\/route-[a-f0-9]{8}$/),
+      changed: true,
+      source: "synthetic_page_route",
+    });
+    expect(fixture.ui_state.route).toBe(fixture.route_state.current_path);
+    expect(definition.fixture_requirements.map((requirement) => requirement.kind)).toEqual(["synthetic_page_route"]);
+    expect(definition.oracle.observed_evidence_required).toEqual(expect.arrayContaining([
+      "route_tissue_state",
+      "synthetic_page_route_state",
+    ]));
+    expect(second).toEqual(fixture);
+  });
+
   it("is deterministic for the same scenario and seed", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "duplicate_entity",
