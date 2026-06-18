@@ -53,6 +53,7 @@ export const DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES = [
   "governance_surfaces_malformed_expiry_in_recertification_queue",
   "governance_builds_skill_registry_and_policy_gates",
   "governance_builds_recertification_audit_export_and_compliance_views",
+  "governance_builds_scheduled_jobs_from_lifecycle_queues",
   "governance_adds_proof_public_verification_custody",
 ];
 
@@ -206,6 +207,7 @@ export function buildDojoGovernanceLifecycleEvidenceManifest({
       policy_gates_required: true,
       audit_export_required: true,
       compliance_pack_required: true,
+      scheduled_jobs_required: true,
       proof_public_verification_custody_required: true,
       malformed_expiry_fails_closed_required: true,
       self_check_executes_tests_required: true,
@@ -411,6 +413,8 @@ function capabilityMatchers(capability) {
       return ["builds skill registry", "policy gates"];
     case "governance_builds_recertification_audit_export_and_compliance_views":
       return ["builds recertification", "audit export", "compliance pack views"];
+    case "governance_builds_scheduled_jobs_from_lifecycle_queues":
+      return ["plans scheduled governance jobs", "normalized queues"];
     case "governance_adds_proof_public_verification_custody":
       return ["adds proof public verification custody", "compliance pack"];
     default:

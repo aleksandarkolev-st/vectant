@@ -666,6 +666,7 @@ describe("Dojo release gate manifest", () => {
           require_policy_gates: true,
           require_audit_export: true,
           require_compliance_pack: true,
+          require_scheduled_jobs: true,
           require_proof_public_verification_custody: true,
           require_malformed_expiry_fails_closed: true,
           require_self_check_executes_tests: true,
@@ -1304,12 +1305,14 @@ describe("Dojo release gate manifest", () => {
     governanceLifecycleGate.release_artifact_requirements.require_rbac = false;
     governanceLifecycleGate.release_artifact_requirements.require_store_rbac = false;
     governanceLifecycleGate.release_artifact_requirements.require_compliance_pack = false;
+    governanceLifecycleGate.release_artifact_requirements.require_scheduled_jobs = false;
     governanceLifecycleGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenGovernanceLifecycle, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "governance_lifecycle_missing_license_revocation_requirement",
       "governance_lifecycle_missing_rbac_requirement",
       "governance_lifecycle_missing_store_rbac_requirement",
       "governance_lifecycle_missing_compliance_pack_requirement",
+      "governance_lifecycle_missing_scheduled_jobs_requirement",
       "governance_lifecycle_missing_self_check_execution_requirement",
       "governance_lifecycle_missing_required_capabilities:governance_revokes_license_to_blocked_scope_with_audit",
       `governance_lifecycle_missing_required_test_files:${missingGovernanceTestFile}`,

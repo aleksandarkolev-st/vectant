@@ -2325,6 +2325,7 @@ describe("Dojo release gate artifact verifier", () => {
         store_rbac_required: false,
         license_revocation_required: false,
         compliance_pack_required: false,
+        scheduled_jobs_required: false,
         self_check_executes_tests_required: false,
       },
     });
@@ -2343,6 +2344,7 @@ describe("Dojo release gate artifact verifier", () => {
       "governance_lifecycle_store_rbac_requirement_missing",
       "governance_lifecycle_license_revocation_requirement_missing",
       "governance_lifecycle_compliance_pack_requirement_missing",
+      "governance_lifecycle_scheduled_jobs_requirement_missing",
       "governance_lifecycle_self_check_execution_requirement_missing",
     ]));
 
@@ -5499,6 +5501,7 @@ function governanceLifecycleEvidenceFixture(overrides = {}) {
       policy_gates_required: true,
       audit_export_required: true,
       compliance_pack_required: true,
+      scheduled_jobs_required: true,
       proof_public_verification_custody_required: true,
       malformed_expiry_fails_closed_required: true,
       self_check_executes_tests_required: true,

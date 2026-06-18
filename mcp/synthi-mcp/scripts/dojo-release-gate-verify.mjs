@@ -2813,6 +2813,7 @@ export function validateDojoGovernanceLifecycleEvidenceForRelease(evidence) {
     ["policy_gates_required", "governance_lifecycle_policy_gates_requirement_missing"],
     ["audit_export_required", "governance_lifecycle_audit_export_requirement_missing"],
     ["compliance_pack_required", "governance_lifecycle_compliance_pack_requirement_missing"],
+    ["scheduled_jobs_required", "governance_lifecycle_scheduled_jobs_requirement_missing"],
     ["proof_public_verification_custody_required", "governance_lifecycle_public_verification_requirement_missing"],
     ["malformed_expiry_fails_closed_required", "governance_lifecycle_malformed_expiry_requirement_missing"],
     ["self_check_executes_tests_required", "governance_lifecycle_self_check_execution_requirement_missing"],
@@ -5025,6 +5026,7 @@ async function runSelfCheck({ outDir }) {
         store_rbac_required: false,
         license_revocation_required: false,
         compliance_pack_required: false,
+        scheduled_jobs_required: false,
         self_check_executes_tests_required: false,
       },
     },
@@ -5038,6 +5040,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_rbac_requirement_missing"));
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_license_revocation_requirement_missing"));
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_compliance_pack_requirement_missing"));
+  assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_scheduled_jobs_requirement_missing"));
   assert(rejectedGovernanceLifecycle.errors.includes("governance_lifecycle_self_check_execution_requirement_missing"));
 
   const graphRuntimeDir = path.join(outDir, "graph-runtime");
@@ -7318,6 +7321,7 @@ async function writeGovernanceLifecycleEvidenceForSelfCheck({
       policy_gates_required: true,
       audit_export_required: true,
       compliance_pack_required: true,
+      scheduled_jobs_required: true,
       proof_public_verification_custody_required: true,
       malformed_expiry_fails_closed_required: true,
       self_check_executes_tests_required: true,
