@@ -9,6 +9,57 @@ import RedactedEvidenceExportPanel from './RedactedEvidenceExportPanel';
 const panelStyle = {
   borderColor: 'var(--border-subtle)',
   background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+  boxSizing: 'border-box',
+};
+
+const pageStyle = {
+  minHeight: '100vh',
+  padding: 20,
+  boxSizing: 'border-box',
+  overflowX: 'hidden',
+  background: 'var(--bg-app)',
+  color: 'var(--text-primary)',
+};
+
+const pageInnerStyle = {
+  width: '100%',
+  maxWidth: 1280,
+  margin: '0 auto',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 16,
+  minWidth: 0,
+};
+
+const headerStyle = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'flex-start',
+  justifyContent: 'space-between',
+  gap: 16,
+  borderBottom: '1px solid var(--border-subtle)',
+  paddingBottom: 16,
+};
+
+const metricGridStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 150px), 1fr))',
+  gap: 12,
+  minWidth: 0,
+};
+
+const evidenceGridStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 420px), 1fr))',
+  gap: 16,
+  alignItems: 'start',
+  minWidth: 0,
+};
+
+const asideStyle = {
+  display: 'grid',
+  gap: 16,
+  minWidth: 0,
 };
 
 export default function EvidenceDashboard({
@@ -48,18 +99,18 @@ export default function EvidenceDashboard({
   return (
     <main
       className="min-h-screen px-5 py-5 text-sm"
-      style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+      style={pageStyle}
       data-testid="dojo-evidence-dashboard"
     >
-      <div className="mx-auto flex max-w-7xl flex-col gap-4">
-        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
-          <div className="min-w-0">
+      <div className="mx-auto flex max-w-7xl flex-col gap-4" style={pageInnerStyle}>
+        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={headerStyle}>
+          <div className="min-w-0" style={{ minWidth: 0 }}>
             <a href={backHref} className="mb-3 inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs" style={panelStyle}>
               <ArrowLeft size={13} aria-hidden="true" />
               Dojo
             </a>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{workspaceSlug || 'workspace'}</p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-normal">Evidence Custody</h1>
+            <p className="text-xs" style={{ color: 'var(--text-muted)', margin: '12px 0 0', overflowWrap: 'anywhere' }}>{workspaceSlug || 'workspace'}</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-normal" style={{ margin: '4px 0 0', overflowWrap: 'anywhere' }}>Evidence Custody</h1>
           </div>
           <div className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs" style={panelStyle}>
             <DatabaseZap size={14} aria-hidden="true" />
@@ -75,7 +126,7 @@ export default function EvidenceDashboard({
 
         {hasEvidence ? (
           <>
-            <section className="grid gap-3 md:grid-cols-5" aria-label="Evidence metrics">
+            <section className="grid gap-3 md:grid-cols-5" aria-label="Evidence metrics" style={metricGridStyle}>
               <Metric label="Records" value={metrics.recordCount} />
               <Metric label="Redacted" value={metrics.redactedCount} />
               <Metric label="Metadata" value={metrics.metadataOnlyCount} />
@@ -83,9 +134,9 @@ export default function EvidenceDashboard({
               <Metric label="Exports" value={metrics.exportArtifactCount} />
             </section>
 
-            <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_400px]">
+            <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_400px]" style={evidenceGridStyle}>
               <EvidenceLedgerChain ledger={evidence.ledger} />
-              <aside className="grid gap-4">
+              <aside className="grid gap-4" style={asideStyle}>
                 <CustodyPolicyPanel ledger={evidence.ledger} />
                 <EvidenceClaimsPanel claims={evidence.claims} />
               </aside>
@@ -115,7 +166,7 @@ function CustodyPolicyPanel({ ledger }) {
         <ShieldCheck size={15} aria-hidden="true" />
         Custody Policy
       </h2>
-      <dl className="mt-3 grid gap-2 text-xs">
+      <dl className="mt-3 grid gap-2 text-xs" style={{ display: 'grid', gap: 8 }}>
         <Info label="Store" value={storage.live_state_store || storage.liveStateStore || 'Not recorded'} />
         <Info label="Repo export" value={storage.repo_export_policy || storage.repoExportPolicy || 'Not recorded'} />
         <Info label="Organoid data" value={String(storage.production_data_allowed_in_organoid ?? storage.productionDataAllowedInOrganoid ?? false)} />
@@ -132,14 +183,14 @@ function EvidenceClaimsPanel({ claims }) {
     <section className="rounded-md border p-4" style={panelStyle} data-testid="evidence-claims-panel">
       <h2 className="text-sm font-semibold">Evidence Claims</h2>
       {claims.length ? (
-        <div className="mt-3 grid gap-2">
+        <div className="mt-3 grid gap-2" style={{ display: 'grid', gap: 8, minWidth: 0 }}>
           {claims.map((claim) => (
-            <article key={`${claim.claim}-${claim.status}`} className="rounded-md border p-3 text-xs" style={{ borderColor: 'var(--border-subtle)' }}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="font-semibold">{claim.claim}</h3>
+            <article key={`${claim.claim}-${claim.status}`} className="rounded-md border p-3 text-xs" style={{ borderColor: 'var(--border-subtle)', boxSizing: 'border-box', minWidth: 0, padding: 12 }}>
+              <div className="flex flex-wrap items-center justify-between gap-2" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8, minWidth: 0 }}>
+                <h3 className="font-semibold" style={{ margin: 0, overflowWrap: 'anywhere' }}>{claim.claim}</h3>
                 <span className="rounded-md border px-2 py-1" style={panelStyle}>{claim.status}</span>
               </div>
-              <p className="mt-2 truncate" style={{ color: 'var(--text-muted)' }}>{claim.evidenceRefs.join(', ') || 'No evidence refs'}</p>
+              <p className="mt-2 truncate" style={{ color: 'var(--text-muted)', margin: '8px 0 0', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{claim.evidenceRefs.join(', ') || 'No evidence refs'}</p>
             </article>
           ))}
         </div>
@@ -152,18 +203,18 @@ function EvidenceClaimsPanel({ claims }) {
 
 function Metric({ label, value }) {
   return (
-    <div className="rounded-md border px-3 py-3" style={panelStyle}>
+    <div className="rounded-md border px-3 py-3" style={{ ...panelStyle, minWidth: 0, padding: 12 }}>
       <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
-      <div className="mt-1 truncate text-xl font-semibold">{value}</div>
+      <div className="mt-1 truncate text-xl font-semibold" style={{ marginTop: 4, overflowWrap: 'anywhere' }}>{value}</div>
     </div>
   );
 }
 
 function Info({ label, value }) {
   return (
-    <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-3">
+    <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-3" style={{ display: 'grid', gridTemplateColumns: '88px minmax(0, 1fr)', gap: 12, minWidth: 0 }}>
       <dt style={{ color: 'var(--text-muted)' }}>{label}</dt>
-      <dd className="min-w-0 truncate text-right">{value}</dd>
+      <dd className="min-w-0 truncate text-right" style={{ margin: 0, minWidth: 0, overflowWrap: 'anywhere', textAlign: 'right', wordBreak: 'break-word' }}>{value}</dd>
     </div>
   );
 }
