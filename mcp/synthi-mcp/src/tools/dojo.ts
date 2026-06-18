@@ -2290,11 +2290,30 @@ async function dojoGetGovernanceReportTool(args: unknown): Promise<ToolResponse>
     "synthi_dojo_get_governance_report"
   );
   if (!visibleSkills.ok) return visibleSkills.error;
+  const enforcement = resolveDojoEnforcementConfig();
+  const governanceViewRbacAuthorization = enforcement.production_enforcement
+    ? authorizeDojoGovernanceAction({
+      tenant_context: skill.tenant,
+      action: "governance_view",
+    })
+    : undefined;
+  if (governanceViewRbacAuthorization && !governanceViewRbacAuthorization.ok) {
+    return errorResponse("dojo_governance_report_role_required", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      workspace_id: skill.skill.workspace_id,
+      actor_id: skill.tenant.actor_id,
+      actor_type: skill.tenant.actor_type,
+      blocked_by: governanceViewRbacAuthorization.blocked_by,
+      rbac_authorization: governanceViewRbacAuthorization,
+    });
+  }
   return jsonResponse({
     ok: true,
     control_plane_source: visibleSkills.control_plane_source,
     skill_id: skill.skill.skill_id,
     governance_report: buildDojoGovernanceReport(skill.skill),
+    ...(governanceViewRbacAuthorization ? { rbac_authorization: governanceViewRbacAuthorization } : {}),
     governance_service: await governanceServiceViewForTenant(skill.tenant, now, visibleSkills.skills),
   });
 }

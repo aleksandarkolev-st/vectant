@@ -531,7 +531,10 @@ describe("Agent Dojo MCP tools", () => {
 
       const authorized = await dispatchDojoTool(toolName, {
         skill_id: skillId,
-        ...productionTenantContextArgs({ request_id: `req-production-${toolName}` }),
+        ...productionTenantContextArgs({
+          ...(toolName === "synthi_dojo_get_governance_report" ? { roles: ["dojo:governance:view"] } : {}),
+          request_id: `req-production-${toolName}`,
+        }),
       });
       expect(authorized?.isError, toolName).toBeUndefined();
       expect(authorized?.structuredContent, toolName).not.toEqual(expect.objectContaining({
@@ -642,7 +645,10 @@ describe("Agent Dojo MCP tools", () => {
 
     const governance = await dispatchDojoTool("synthi_dojo_get_governance_report", {
       skill_id: visibleSkillId,
-      ...productionTenantContextArgs({ request_id: "req-production-governance" }),
+      ...productionTenantContextArgs({
+        roles: ["dojo:governance:view"],
+        request_id: "req-production-governance",
+      }),
     });
     expect(governance?.isError).toBeUndefined();
     const governanceService = (governance?.structuredContent as {
@@ -657,6 +663,60 @@ describe("Agent Dojo MCP tools", () => {
     expect(governanceService.approval_queue).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ request_id: "hidden-upgrade-request" }),
     ]));
+  });
+
+  it("enforces RBAC for production governance report through the MCP tool", async () => {
+    const { visibleSkillId } = await publishTwoWorkspaceSkillsForDojoToolTest();
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const blockedReport = await dispatchDojoTool("synthi_dojo_get_governance_report", {
+      skill_id: visibleSkillId,
+      ...productionTenantContextArgs({
+        actor_id: "workspace-a-agent",
+        actor_type: "agent",
+        roles: ["agent"],
+        request_id: "req-governance-report-rbac-blocked",
+        correlation_id: "corr-governance-report-rbac-blocked",
+      }),
+    });
+    expect(blockedReport?.isError).toBe(true);
+    expect(blockedReport?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_governance_report_role_required",
+      ok: false,
+      skill_id: visibleSkillId,
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:governance:view|dojo:auditor"]),
+      rbac_authorization: expect.objectContaining({
+        action: "governance_view",
+        actor_id: "workspace-a-agent",
+        required_roles: ["dojo:governance:view", "dojo:auditor"],
+      }),
+    }));
+
+    const allowedReport = await dispatchDojoTool("synthi_dojo_get_governance_report", {
+      skill_id: visibleSkillId,
+      ...productionTenantContextArgs({
+        actor_id: "workspace-a-auditor",
+        actor_type: "human",
+        roles: ["dojo:governance:view"],
+        request_id: "req-governance-report-rbac-approved",
+        correlation_id: "corr-governance-report-rbac-approved",
+      }),
+    });
+    expect(allowedReport?.isError).toBeUndefined();
+    expect(allowedReport?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill_id: visibleSkillId,
+      rbac_authorization: expect.objectContaining({
+        action: "governance_view",
+        actor_id: "workspace-a-auditor",
+        matched_roles: ["dojo:governance:view"],
+      }),
+      governance_service: expect.objectContaining({
+        skill_registry: [
+          expect.objectContaining({ skill_id: visibleSkillId }),
+        ],
+      }),
+    }));
   });
 
   it("requires tenant authorization for production skill operations and exports", async () => {
