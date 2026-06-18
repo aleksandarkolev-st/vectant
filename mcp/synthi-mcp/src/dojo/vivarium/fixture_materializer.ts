@@ -104,6 +104,7 @@ export interface DojoMaterializedFixture {
   };
   ui_state: {
     labels: string[];
+    label_changed: boolean;
     hidden_fields: string[];
     duplicate_labels: string[];
     route: string;
@@ -249,6 +250,7 @@ function entityRecord(seed: string, displayName: string, fields: Record<string, 
 function missingFieldsFor(definition: DojoScenarioDefinition): string[] {
   if (definition.mutation_kind === "input_omission") return Object.keys(definition.input_overrides).slice(0, 1);
   if (definition.mutation_kind === "hidden_required_field") return ["synthetic_required_field"];
+  if (definition.mutation_kind === "validation_below_fold") return ["synthetic_required_field"];
   return [];
 }
 
@@ -408,6 +410,7 @@ function uiStateFor(
   const duplicateLabels = duplicateLabelsFor(controls);
   return {
     labels: controls.map((control) => control.label),
+    label_changed: mutationKind === "label_change",
     hidden_fields: hiddenFieldsFor(definition, missingFields),
     duplicate_labels: duplicateLabels,
     route: routeFor(definition),

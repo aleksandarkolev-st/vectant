@@ -261,6 +261,7 @@ describe("Dojo synthetic fixture materializer", () => {
       mutation_kind: "label_change",
       risk_tags: ["locator_drift"],
     })), { seed: "ui-label-seed" });
+    expect(labelChange.ui_state.label_changed).toBe(true);
     expect(labelChange.ui_state.labels).toContain("Synthetic changed label");
 
     const duplicateLabel = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
@@ -283,6 +284,20 @@ describe("Dojo synthetic fixture materializer", () => {
       }),
     ]);
     expect(hiddenRequired.ui_state.layout_mutations).toContain("validation_below_fold");
+
+    const validationBelowFold = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "validation_below_fold",
+      risk_tags: ["input_validation"],
+    })), { seed: "ui-validation-below-fold-seed" });
+    expect(validationBelowFold.missing_fields).toEqual(["synthetic_required_field"]);
+    expect(validationBelowFold.ui_state.validation_messages).toEqual([
+      expect.objectContaining({
+        field: "synthetic_required_field",
+        location: "below_fold",
+        visible: true,
+      }),
+    ]);
+    expect(validationBelowFold.ui_state.layout_mutations).toContain("validation_below_fold");
 
     const reorderedRows = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "reordered_rows",

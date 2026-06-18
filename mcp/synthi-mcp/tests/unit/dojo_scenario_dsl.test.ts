@@ -105,6 +105,31 @@ describe("Dojo scenario DSL", () => {
     }
   });
 
+  it("classifies UI tissue scenarios with specific evidence requirements", () => {
+    const cases = [
+      ["label_change", ["ui_tissue_state", "ui_label_change_state"]],
+      ["duplicate_label", ["ui_tissue_state", "ui_duplicate_label_state"]],
+      ["button_moved", ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state"]],
+      ["button_hidden_menu", ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state", "ui_hidden_menu_state"]],
+      ["validation_below_fold", ["ui_tissue_state", "ui_layout_mutation_state", "ui_validation_surface_state"]],
+      ["reordered_rows", ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state", "ui_table_reorder_state"]],
+      ["destructive_adjacency", ["ui_tissue_state", "ui_layout_mutation_state", "ui_destructive_adjacency_state"]],
+      ["modal_appears", ["ui_tissue_state", "ui_layout_mutation_state", "ui_modal_interruption_state"]],
+    ] as const;
+
+    for (const [mutationKind, requiredEvidence] of cases) {
+      const definition = toDojoScenarioDefinition(scenarioFixture({
+        mutation_kind: mutationKind,
+        risk_tags: ["ui_tissue"],
+      }));
+
+      expect(definition.mutation_scopes).toContain("ui");
+      expect(definition.fixture_requirements.map((fixture) => fixture.kind)).toContain("synthetic_dom_snapshot");
+      expect(definition.oracle.observed_evidence_required).toEqual(expect.arrayContaining([...requiredEvidence]));
+      expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
+    }
+  });
+
   it("classifies policy tissue scenarios with thresholds and unavailable approvals", () => {
     const threshold = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "threshold_breach",

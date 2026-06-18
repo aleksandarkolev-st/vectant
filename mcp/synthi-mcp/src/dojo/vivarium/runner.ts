@@ -427,6 +427,16 @@ function fixtureInputs(fixture: DojoMaterializedFixture): Record<string, unknown
     api_validation_error: fixture.api_state.validation_error,
     partial_write: fixture.api_state.partial_write,
     fake_success: fixture.api_state.fake_success,
+    ui_label_changed: fixture.ui_state.label_changed,
+    ui_duplicate_label_count: fixture.ui_state.duplicate_labels.length,
+    ui_layout_mutation_count: fixture.ui_state.layout_mutations.length,
+    ui_layout_mutations: [...fixture.ui_state.layout_mutations],
+    ui_hidden_menu_control_count: fixture.ui_state.menu_hidden_controls.length,
+    ui_moved_control_count: fixture.ui_state.controls.filter((control) => control.moved).length,
+    ui_validation_below_fold: fixture.ui_state.validation_messages.some((message) => message.location === "below_fold"),
+    ui_table_reordered: fixture.ui_state.layout_mutations.includes("table_rows_reordered"),
+    ui_modal_present: fixture.ui_state.modal_present,
+    ui_destructive_adjacency: fixture.ui_state.destructive_adjacency,
     prompt_injection_present: fixture.document_state.prompt_injection_present,
     document_instruction_quarantined: fixture.document_state.instruction_quarantined,
     document_missing_field_count: fixture.document_state.missing_fields.length,
@@ -476,6 +486,9 @@ function observedEvidenceForRun(
   if (materialized.fixture.missing_fields.length > 0) observed.add("missing_field_state");
   if (duplicateEntityCount > 0) observed.add("duplicate_entity_state");
   if (materialized.fixture.api_state.partial_write) observed.add("partial_write_state");
+  for (const evidence of uiTissueEvidenceForFixture(materialized.fixture)) {
+    observed.add(evidence);
+  }
   if (materialized.fixture.document_state.prompt_injection_present && materialized.fixture.document_state.instruction_quarantined) {
     observed.add("document_instruction_quarantine");
   }
@@ -490,6 +503,39 @@ function observedEvidenceForRun(
   if (materialized.fixture.document_state.corrupted_document_count > 0) observed.add("document_corrupted_state");
   if (materialized.fixture.document_state.ambiguous_file_name_groups.length > 0) observed.add("document_ambiguous_name_state");
   return [...observed].sort();
+}
+
+function uiTissueEvidenceForFixture(fixture: DojoMaterializedFixture): string[] {
+  const evidence = new Set<string>();
+  const movedControlCount = fixture.ui_state.controls.filter((control) => control.moved).length;
+  const hasValidationBelowFold = fixture.ui_state.validation_messages.some((message) => message.location === "below_fold");
+  if (
+    fixture.ui_state.label_changed
+    || fixture.ui_state.duplicate_labels.length > 0
+    || fixture.ui_state.layout_mutations.length > 0
+    || fixture.ui_state.hidden_fields.length > 0
+    || fixture.ui_state.menu_hidden_controls.length > 0
+    || movedControlCount > 0
+    || hasValidationBelowFold
+    || fixture.ui_state.modal_present
+    || fixture.ui_state.destructive_adjacency
+    || fixture.ui_state.viewport !== "desktop"
+    || fixture.ui_state.reduced_motion
+    || fixture.ui_state.hydration_delay_ms > 0
+    || fixture.ui_state.feature_flags.length > 0
+  ) {
+    evidence.add("ui_tissue_state");
+  }
+  if (fixture.ui_state.label_changed) evidence.add("ui_label_change_state");
+  if (fixture.ui_state.duplicate_labels.length > 0) evidence.add("ui_duplicate_label_state");
+  if (fixture.ui_state.layout_mutations.length > 0) evidence.add("ui_layout_mutation_state");
+  if (movedControlCount > 0) evidence.add("ui_control_moved_state");
+  if (fixture.ui_state.menu_hidden_controls.length > 0) evidence.add("ui_hidden_menu_state");
+  if (hasValidationBelowFold || fixture.ui_state.hidden_fields.length > 0) evidence.add("ui_validation_surface_state");
+  if (fixture.ui_state.layout_mutations.includes("table_rows_reordered")) evidence.add("ui_table_reorder_state");
+  if (fixture.ui_state.destructive_adjacency) evidence.add("ui_destructive_adjacency_state");
+  if (fixture.ui_state.modal_present) evidence.add("ui_modal_interruption_state");
+  return [...evidence].sort();
 }
 
 async function executeApiFaultServerForScenario(

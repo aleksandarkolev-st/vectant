@@ -327,6 +327,7 @@ function observedEvidenceFor(
   ) {
     evidence.push("policy_tissue_state");
   }
+  evidence.push(...uiTissueEvidenceFor(scenario.mutation_kind));
   if (scenario.mutation_kind === "invalid_value") evidence.push("invalid_value_state");
   if (scenario.mutation_kind === "duplicate_entity" || scenario.mutation_kind === "stale_entity") evidence.push("stable_entity_identity");
   if (isPromptInjectionDocumentMutation(scenario.mutation_kind)) evidence.push("document_instruction_quarantine");
@@ -340,6 +341,30 @@ function observedEvidenceFor(
     evidence.push("document_tissue_state", "document_ambiguous_name_state");
   }
   return evidence;
+}
+
+function uiTissueEvidenceFor(mutationKind: string): string[] {
+  switch (mutationKind) {
+    case "label_change":
+      return ["ui_tissue_state", "ui_label_change_state"];
+    case "duplicate_label":
+      return ["ui_tissue_state", "ui_duplicate_label_state"];
+    case "button_moved":
+      return ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state"];
+    case "button_hidden_menu":
+      return ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state", "ui_hidden_menu_state"];
+    case "hidden_required_field":
+    case "validation_below_fold":
+      return ["ui_tissue_state", "ui_layout_mutation_state", "ui_validation_surface_state"];
+    case "reordered_rows":
+      return ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state", "ui_table_reorder_state"];
+    case "destructive_adjacency":
+      return ["ui_tissue_state", "ui_layout_mutation_state", "ui_destructive_adjacency_state"];
+    case "modal_appears":
+      return ["ui_tissue_state", "ui_layout_mutation_state", "ui_modal_interruption_state"];
+    default:
+      return [];
+  }
 }
 
 function errorIssue(issueId: string, message: string): DojoScenarioDefinitionValidationIssue {

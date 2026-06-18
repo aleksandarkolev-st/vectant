@@ -624,6 +624,111 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("emits UI tissue evidence from materialized layout, label, table, modal, and adjacency mutations", async () => {
+    const cases = [
+      {
+        mutation_kind: "label_change",
+        seed: "ui-runner-label-seed",
+        expected_evidence: ["ui_tissue_state", "ui_label_change_state"],
+        assertFixture: (materialized: ReturnType<DojoVivariumRunner["materialize"]>) => {
+          expect(materialized.fixture.ui_state.label_changed).toBe(true);
+        },
+      },
+      {
+        mutation_kind: "duplicate_label",
+        seed: "ui-runner-duplicate-label-seed",
+        expected_evidence: ["ui_tissue_state", "ui_duplicate_label_state"],
+        assertFixture: (materialized: ReturnType<DojoVivariumRunner["materialize"]>) => {
+          expect(materialized.fixture.ui_state.duplicate_labels).toEqual(["Synthetic action", "Synthetic action"]);
+        },
+      },
+      {
+        mutation_kind: "button_moved",
+        seed: "ui-runner-button-moved-seed",
+        expected_evidence: ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state"],
+        assertFixture: (materialized: ReturnType<DojoVivariumRunner["materialize"]>) => {
+          expect(materialized.fixture.ui_state.layout_mutations).toContain("control_position_changed");
+        },
+      },
+      {
+        mutation_kind: "button_hidden_menu",
+        seed: "ui-runner-hidden-menu-seed",
+        expected_evidence: ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state", "ui_hidden_menu_state"],
+        assertFixture: (materialized: ReturnType<DojoVivariumRunner["materialize"]>) => {
+          expect(materialized.fixture.ui_state.menu_hidden_controls).toHaveLength(1);
+        },
+      },
+      {
+        mutation_kind: "validation_below_fold",
+        seed: "ui-runner-validation-below-fold-seed",
+        expected_evidence: ["ui_tissue_state", "ui_layout_mutation_state", "ui_validation_surface_state"],
+        assertFixture: (materialized: ReturnType<DojoVivariumRunner["materialize"]>) => {
+          expect(materialized.fixture.ui_state.validation_messages).toEqual([
+            expect.objectContaining({
+              field: "synthetic_required_field",
+              location: "below_fold",
+            }),
+          ]);
+        },
+      },
+      {
+        mutation_kind: "reordered_rows",
+        seed: "ui-runner-reordered-rows-seed",
+        expected_evidence: ["ui_tissue_state", "ui_layout_mutation_state", "ui_control_moved_state", "ui_table_reorder_state"],
+        assertFixture: (materialized: ReturnType<DojoVivariumRunner["materialize"]>) => {
+          expect(materialized.fixture.ui_state.table_order).toEqual(materialized.fixture.records.map((record) => record.stable_id).reverse());
+        },
+      },
+      {
+        mutation_kind: "destructive_adjacency",
+        seed: "ui-runner-destructive-adjacency-seed",
+        expected_evidence: ["ui_tissue_state", "ui_layout_mutation_state", "ui_destructive_adjacency_state"],
+        assertFixture: (materialized: ReturnType<DojoVivariumRunner["materialize"]>) => {
+          expect(materialized.fixture.ui_state.destructive_adjacency).toBe(true);
+        },
+      },
+      {
+        mutation_kind: "modal_appears",
+        seed: "ui-runner-modal-seed",
+        expected_evidence: ["ui_tissue_state", "ui_layout_mutation_state", "ui_modal_interruption_state"],
+        assertFixture: (materialized: ReturnType<DojoVivariumRunner["materialize"]>) => {
+          expect(materialized.fixture.ui_state.modal_present).toBe(true);
+        },
+      },
+    ] as const;
+
+    const runner = new DojoVivariumRunner();
+    for (const scenarioCase of cases) {
+      const definition = toDojoScenarioDefinition(scenarioFixture({
+        mutation_kind: scenarioCase.mutation_kind,
+        layer: "risk",
+        risk_tags: ["ui_tissue"],
+      }));
+      const materialized = runner.materialize({
+        skill_id: "skill-a",
+        scenario: definition,
+        seed: scenarioCase.seed,
+      });
+
+      const result = await runner.run({
+        materialized,
+        graph: graphFixture(),
+        run_id: `scenario-run-${scenarioCase.mutation_kind}`,
+      });
+
+      scenarioCase.assertFixture(materialized);
+      expect(result).toEqual(expect.objectContaining({
+        status: "passed",
+        expectation_met: true,
+        observed_evidence: expect.arrayContaining([...scenarioCase.expected_evidence]),
+        oracle_result: expect.objectContaining({
+          observed_evidence: expect.arrayContaining([...scenarioCase.expected_evidence]),
+          blocked_by: [],
+        }),
+      }));
+    }
+  });
+
   it("generates deterministic run IDs and timestamps when a run clock is supplied", async () => {
     const runner = new DojoVivariumRunner();
     const materialized = runner.materialize({
