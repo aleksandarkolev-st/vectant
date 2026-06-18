@@ -934,6 +934,61 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("enforces RBAC for production license revocation through the MCP tool", async () => {
+    const { visibleSkillId } = await publishTwoWorkspaceSkillsForDojoToolTest();
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const blockedRevocation = await dispatchDojoTool("synthi_dojo_revoke_license", {
+      skill_id: visibleSkillId,
+      reason: "production rbac revocation test",
+      actor_id: "workspace-a-auditor",
+      actor_type: "human",
+      evidence_refs: ["evidence:revocation-rbac-blocked"],
+      ...productionTenantContextArgs({
+        actor_id: "workspace-a-auditor",
+        actor_type: "human",
+        roles: ["dojo:governance:view"],
+        request_id: "req-revocation-rbac-blocked",
+        correlation_id: "corr-revocation-rbac-blocked",
+      }),
+    });
+    expect(blockedRevocation?.isError).toBe(true);
+    expect(blockedRevocation?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_license_revocation_role_required",
+      ok: false,
+      skill_id: visibleSkillId,
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:license:revoke"]),
+    }));
+
+    const allowedRevocation = await dispatchDojoTool("synthi_dojo_revoke_license", {
+      skill_id: visibleSkillId,
+      reason: "production rbac revocation test approved",
+      actor_id: "workspace-a-license-operator",
+      actor_type: "human",
+      evidence_refs: ["evidence:revocation-rbac-approved"],
+      ...productionTenantContextArgs({
+        actor_id: "workspace-a-license-operator",
+        actor_type: "human",
+        roles: ["dojo:license:revoke"],
+        request_id: "req-revocation-rbac-approved",
+        correlation_id: "corr-revocation-rbac-approved",
+      }),
+    });
+    expect(allowedRevocation?.isError).toBeUndefined();
+    expect(allowedRevocation?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill_id: visibleSkillId,
+      license: expect.objectContaining({ entrustment_level: "EX", autonomy_level: "blocked" }),
+      revocation: expect.objectContaining({
+        rbac_authorization: expect.objectContaining({
+          action: "license_revocation",
+          actor_id: "workspace-a-license-operator",
+          matched_roles: ["dojo:license:revoke"],
+        }),
+      }),
+    }));
+  });
+
   it("requires tenant authorization for production proof lifecycle tools", async () => {
     const { hiddenSkill } = await publishTwoWorkspaceSkillsForDojoToolTest();
     const issuedHiddenProof = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {

@@ -5623,14 +5623,35 @@ async function dojoRevokeLicenseTool(args: unknown): Promise<ToolResponse> {
     checked_at: now,
   });
   if (!evidenceLedgerValidation.ok) return evidenceLedgerValidation.error;
-  const revocation = revokeDojoSkillLicense({
-    skill: skill.skill,
-    reason,
-    revoked_at: now,
-    revoked_by: revokedBy,
-    evidence_refs: evidenceRefs,
-  });
   const enforcement = resolveDojoEnforcementConfig();
+  const productionGovernanceRbacRequired = enforcement.production_enforcement;
+  let revocation: ReturnType<typeof revokeDojoSkillLicense>;
+  try {
+    revocation = revokeDojoSkillLicense({
+      skill: skill.skill,
+      reason,
+      revoked_at: now,
+      revoked_by: revokedBy,
+      evidence_refs: evidenceRefs,
+      tenant_context: productionGovernanceRbacRequired ? skill.tenant : undefined,
+      require_rbac: productionGovernanceRbacRequired,
+    });
+  } catch (error) {
+    const roleErrorPrefix = "dojo_license_revocation_role_required:";
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith(roleErrorPrefix)) {
+      const blockedBy = message.slice(roleErrorPrefix.length).split(",").filter(Boolean);
+      return errorResponse("dojo_license_revocation_role_required", {
+        ok: false,
+        skill_id: skill.skill.skill_id,
+        license_id: skill.skill.permission_license.license_id,
+        actor_id: revokedBy.actor_id,
+        actor_type: revokedBy.actor_type,
+        blocked_by: blockedBy,
+      });
+    }
+    throw error;
+  }
   let saved = revocation.skill;
   let controlPlanePersistence: Record<string, unknown> = {
     ok: true,

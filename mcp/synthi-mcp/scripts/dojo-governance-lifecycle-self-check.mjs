@@ -24,6 +24,7 @@ const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 
 export const DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES = [
+  "tests/unit/dojo_tools.test.ts",
   "tests/unit/dojo_governance_service.test.ts",
   "tests/unit/dojo_postgres_governance_store_rbac.test.ts",
 ];
@@ -270,6 +271,7 @@ function evidenceTitlesForCapability(capability, titles) {
       ["enforces rbac", "permission upgrade review"],
       ["enforces rbac", "case law review"],
       ["enforces rbac", "license revocation"],
+      ["enforces rbac", "production license revocation", "mcp tool"],
     ];
     const matched = [];
     for (const matchers of requiredTitleMatchers) {
