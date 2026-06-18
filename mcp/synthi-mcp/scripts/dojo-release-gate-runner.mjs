@@ -414,7 +414,13 @@ async function writeGateCommandResult({
   const stderrPath = path.join(logDir, `${gatePlan.gate_id}.stderr.log`);
   await writeFile(stdoutPath, stdout, "utf8");
   await writeFile(stderrPath, stderr, "utf8");
-  const status = exitCode === 0 && !timedOut ? "passed" : "failed";
+  const producedArtifacts = await collectDojoReleaseGateProducedArtifacts({
+    expectedArtifacts: gatePlan.expected_artifacts,
+  });
+  const missingExpectedArtifacts = producedArtifacts
+    .filter((artifact) => artifact.required && !artifact.exists)
+    .map((artifact) => artifact.kind);
+  const status = exitCode === 0 && !timedOut && missingExpectedArtifacts.length === 0 ? "passed" : "failed";
   return {
     schema_version: GATE_LOG_SCHEMA_VERSION,
     gate_id: gatePlan.gate_id,
@@ -427,7 +433,11 @@ async function writeGateCommandResult({
     exit_code: exitCode,
     signal,
     timed_out: Boolean(timedOut),
-    failure_reason: status === "failed" ? failureReason || "nonzero_exit" : null,
+    failure_reason: status === "failed"
+      ? failureReason || (missingExpectedArtifacts.length > 0
+        ? `expected_artifact_missing:${missingExpectedArtifacts.join(",")}`
+        : "nonzero_exit")
+      : null,
     stdout_path: normalizeRepoPath(path.relative(REPO_ROOT, stdoutPath)),
     stderr_path: normalizeRepoPath(path.relative(REPO_ROOT, stderrPath)),
     stdout_bytes: Buffer.byteLength(stdout),
@@ -435,6 +445,8 @@ async function writeGateCommandResult({
     stdout_sha256: sha256(stdout),
     stderr_sha256: sha256(stderr),
     expected_artifacts: gatePlan.expected_artifacts,
+    produced_artifacts: producedArtifacts,
+    missing_expected_artifacts: missingExpectedArtifacts,
   };
 }
 
@@ -464,6 +476,38 @@ function buildSkippedGateResult(gatePlan) {
     requires_env: gatePlan.requires_env,
     missing_env: gatePlan.missing_env,
   };
+}
+
+export async function collectDojoReleaseGateProducedArtifacts({ expectedArtifacts } = {}) {
+  const candidates = [
+    ["report", expectedArtifacts?.report_path],
+    ["evidence", expectedArtifacts?.evidence_path],
+    ["events", expectedArtifacts?.events_path],
+  ].filter(([, artifactPath]) => Boolean(artifactPath));
+  const artifacts = [];
+  for (const [kind, artifactPath] of candidates) {
+    const absolutePath = resolveExpectedArtifactPath(artifactPath);
+    try {
+      const bytes = await readFile(absolutePath);
+      artifacts.push({
+        kind,
+        path: normalizeRepoPath(path.relative(REPO_ROOT, absolutePath)),
+        exists: true,
+        required: true,
+        bytes: bytes.length,
+        sha256: sha256(bytes),
+      });
+    } catch (error) {
+      artifacts.push({
+        kind,
+        path: normalizeRepoPath(path.relative(REPO_ROOT, absolutePath)),
+        exists: false,
+        required: true,
+        error_code: error?.code || "read_failed",
+      });
+    }
+  }
+  return artifacts;
 }
 
 async function runSelfCheck({ outDir }) {
@@ -562,6 +606,10 @@ function expectedGateArtifacts(gate) {
     events_path: gate.default_events_path || null,
     evidence_kind: gate.evidence_kind,
   };
+}
+
+function resolveExpectedArtifactPath(value) {
+  return path.isAbsolute(String(value)) ? String(value) : path.resolve(REPO_ROOT, String(value));
 }
 
 function missingRequiredEnv(gate, env = process.env) {

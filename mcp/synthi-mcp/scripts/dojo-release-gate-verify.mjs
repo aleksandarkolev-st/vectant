@@ -9056,6 +9056,16 @@ async function validateRunnerGateResult({
   if (result.expected_artifacts?.evidence_kind !== gate.evidence_kind) {
     errors.push(`runner_result_evidence_kind_mismatch:${gateId}:${result.expected_artifacts?.evidence_kind}:${gate.evidence_kind}`);
   }
+  const expectedArtifacts = {
+    report_path: gate.default_report_path || gate.default_summary_path || null,
+    evidence_path: gate.default_evidence_path || null,
+    events_path: gate.default_events_path || null,
+  };
+  for (const [field, expectedPath] of Object.entries(expectedArtifacts)) {
+    if ((result.expected_artifacts?.[field] || null) !== expectedPath) {
+      errors.push(`runner_result_expected_artifact_mismatch:${gateId}:${field}:${result.expected_artifacts?.[field] || "missing"}:${expectedPath || "missing"}`);
+    }
+  }
   const validStatuses = new Set(["planned", "skipped", "passed", "failed"]);
   if (!validStatuses.has(result.status)) errors.push(`runner_result_unknown_status:${gateId}:${result.status}`);
   if (result.status === "passed") {
@@ -9063,12 +9073,47 @@ async function validateRunnerGateResult({
     if (result.exit_code !== 0) errors.push(`runner_passed_gate_exit_nonzero:${gateId}:${result.exit_code}`);
     await validateRunnerLogDigest({ result, gateId, kind: "stdout", errors });
     await validateRunnerLogDigest({ result, gateId, kind: "stderr", errors });
+    await validateRunnerProducedArtifacts({ result, gateId, errors });
   }
   if (result.status === "failed" && requirePromotionReady) errors.push(`runner_result_failed:${gateId}`);
   if (result.status === "skipped" && requirePromotionReady) errors.push(`runner_result_skipped:${gateId}:${result.skip_reason || "unknown"}`);
   if (result.status === "planned" && !result.executed && requirePromotionReady) errors.push(`runner_result_planned:${gateId}`);
   if (result.status !== "planned" && result.command !== result.command?.trim()) {
     errors.push(`runner_result_command_untrimmed:${gateId}`);
+  }
+}
+
+async function validateRunnerProducedArtifacts({ result, gateId, errors }) {
+  const expectedKinds = [
+    ["report", result.expected_artifacts?.report_path],
+    ["evidence", result.expected_artifacts?.evidence_path],
+    ["events", result.expected_artifacts?.events_path],
+  ].filter(([, artifactPath]) => Boolean(artifactPath)).map(([kind]) => kind);
+  const producedArtifacts = Array.isArray(result.produced_artifacts) ? result.produced_artifacts : [];
+  const producedByKind = new Map(producedArtifacts.map((artifact) => [artifact.kind, artifact]));
+  for (const kind of expectedKinds) {
+    if (!producedByKind.has(kind)) errors.push(`runner_produced_artifact_entry_missing:${gateId}:${kind}`);
+  }
+  for (const artifact of producedArtifacts) {
+    if (!expectedKinds.includes(artifact.kind)) errors.push(`runner_unexpected_produced_artifact:${gateId}:${artifact.kind}`);
+    if (artifact.required === true && artifact.exists !== true) {
+      errors.push(`runner_produced_artifact_missing:${gateId}:${artifact.kind}:${artifact.error_code || "missing"}`);
+      continue;
+    }
+    if (artifact.exists !== true) continue;
+    if (!artifact.path) {
+      errors.push(`runner_produced_artifact_path_missing:${gateId}:${artifact.kind}`);
+      continue;
+    }
+    const bytes = await readFile(resolveRepoPath(artifact.path));
+    const actualBytes = bytes.length;
+    const actualSha256 = sha256(bytes);
+    if (artifact.bytes !== actualBytes) {
+      errors.push(`runner_produced_artifact_bytes_mismatch:${gateId}:${artifact.kind}:${artifact.bytes}:${actualBytes}`);
+    }
+    if (artifact.sha256 !== actualSha256) {
+      errors.push(`runner_produced_artifact_sha256_mismatch:${gateId}:${artifact.kind}:${artifact.sha256}:${actualSha256}`);
+    }
   }
 }
 

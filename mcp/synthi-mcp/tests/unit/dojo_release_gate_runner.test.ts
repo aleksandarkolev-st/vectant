@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -15,6 +15,7 @@ import {
   buildDojoReleaseGateCommandSpec,
   buildDojoReleaseGateExecutionPlan,
   buildDojoReleaseGateRunReport,
+  collectDojoReleaseGateProducedArtifacts,
   executeDojoReleaseGatePlan,
   runDojoReleaseGateRunner,
   selectDojoReleaseGateIds,
@@ -218,5 +219,37 @@ describe("Dojo release gate runner", () => {
     expect(result.report.manifest.sha256).toBe(expectedSha256);
     expect(result.report.manifest.gate_count).toBe(releaseManifest.gates.length);
     expect(result.report.plan.selected_gate_ids).toEqual(["mcp_typecheck"]);
+  });
+
+  it("hashes expected gate artifacts and records missing artifacts explicitly", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dojo-release-gate-runner-"));
+    const evidencePath = join(dir, "evidence.json");
+    const missingReportPath = join(dir, "missing-report.json");
+    const evidenceBody = JSON.stringify({ ok: true, generated_at: "2026-06-11T00:00:00.000Z" });
+    await writeFile(evidencePath, evidenceBody, "utf8");
+
+    const artifacts = await collectDojoReleaseGateProducedArtifacts({
+      expectedArtifacts: {
+        report_path: missingReportPath,
+        evidence_path: evidencePath,
+        events_path: null,
+      },
+    });
+
+    expect(artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "evidence",
+        exists: true,
+        required: true,
+        bytes: Buffer.byteLength(evidenceBody),
+        sha256: createHash("sha256").update(evidenceBody).digest("hex"),
+      }),
+      expect.objectContaining({
+        kind: "report",
+        exists: false,
+        required: true,
+        error_code: "ENOENT",
+      }),
+    ]));
   });
 });
