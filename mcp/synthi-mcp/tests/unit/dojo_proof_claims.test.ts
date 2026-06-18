@@ -9,6 +9,10 @@ import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_re
 import type { DojoEvidenceLedgerRecord } from "../../src/dojo/evidence/types.js";
 import { compileWorkflowContract } from "../../src/browser/workflow.js";
 import type { BrowserTraceEvent } from "../../src/browser/types.js";
+import {
+  DOJO_PRODUCTION_ENFORCEMENT_ENV,
+  DOJO_REQUIRE_EVIDENCE_LEDGER_ENV,
+} from "../../src/dojo/config/enforcement.js";
 
 describe("Dojo proof issuance evidence claims", () => {
   it("signs verified evidence record IDs and ledger checkpoint into strict proof capsules", () => {
@@ -239,6 +243,36 @@ describe("Dojo proof issuance evidence claims", () => {
     );
   });
 
+  it("blocks production proof issuance when required claims have no ledger-backed evidence", () => {
+    const skill = skillFixture();
+
+    const error = withDojoProofEnv({
+      [DOJO_PRODUCTION_ENFORCEMENT_ENV]: "1",
+      [DOJO_REQUIRE_EVIDENCE_LEDGER_ENV]: "1",
+    }, () => captureProofIssueError(() => issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    })));
+
+    expect(error).toBeInstanceOf(DojoProofEvidenceClaimError);
+    expect(error).toEqual(expect.objectContaining({
+      code: "dojo_proof_evidence_claim_unverified",
+      failed_results: expect.arrayContaining([
+        expect.objectContaining({
+          claim_id: "checkride_passed",
+          status: "missing",
+          blocked_by: ["evidence_claim_missing:checkride_passed"],
+        }),
+        expect.objectContaining({
+          claim_id: "workspace_verified",
+          status: "missing",
+          blocked_by: ["evidence_claim_missing:workspace_verified"],
+        }),
+      ]),
+    }));
+  });
+
   it("blocks proof issuance when caller-supplied evidence refs are not backed by ledger records", () => {
     const skill = skillFixture();
     const requiredClaims = skill.permission_license.proof_requirements.required_evidence_claims;
@@ -348,6 +382,28 @@ function captureProofIssueError(issue: () => unknown): unknown {
     return error;
   }
   throw new Error("Expected proof issuance to fail");
+}
+
+function withDojoProofEnv<T>(env: Record<string, string | undefined>, run: () => T): T {
+  const previous = new Map(Object.keys(env).map((key) => [key, process.env[key]]));
+  try {
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    return run();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 }
 
 function skillFixture() {

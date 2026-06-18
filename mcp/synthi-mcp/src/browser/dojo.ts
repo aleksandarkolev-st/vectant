@@ -50,6 +50,7 @@ import {
   DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
   DOJO_PROOF_SIGNING_PROVIDER_ENV,
   DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
+  resolveDojoEnforcementConfig,
 } from "../dojo/config/enforcement.js";
 import {
   canonicalDojoProofPayload,
@@ -3412,7 +3413,7 @@ function evidenceClaimsForProofIssue(
     ]);
   }
   const records = input.evidence_ledger_records ?? [];
-  const strictEvidence = input.require_verified_evidence === true || records.length > 0;
+  const strictEvidence = proofIssueRequiresVerifiedEvidence(input.require_verified_evidence, records.length);
   if (!strictEvidence) {
     const claims = input.evidence_claims ?? defaultEvidenceClaimsFor(skill);
     const ledgerBindingFailures = evidenceClaimLedgerBindingFailures({
@@ -3495,7 +3496,10 @@ function contextClaimsForProofIssue(
   const contextClaims: Record<string, unknown> = {
     ...(input.context_claims ?? {}),
   };
-  const strictContext = input.require_verified_evidence === true || (input.evidence_ledger_records?.length ?? 0) > 0;
+  const strictContext = proofIssueRequiresVerifiedEvidence(
+    input.require_verified_evidence,
+    input.evidence_ledger_records?.length ?? 0
+  );
   if (!strictContext) return contextClaims;
   const verifiedEvidenceClaims = new Set(
     evidence.claims
@@ -3506,6 +3510,13 @@ function contextClaimsForProofIssue(
     contextClaims[claim] = verifiedEvidenceClaims.has(claim);
   }
   return contextClaims;
+}
+
+function proofIssueRequiresVerifiedEvidence(requireVerifiedEvidence: boolean | undefined, evidenceRecordCount: number): boolean {
+  if (requireVerifiedEvidence === true) return true;
+  if (evidenceRecordCount > 0) return true;
+  const config = resolveDojoEnforcementConfig();
+  return config.production_enforcement || config.require_evidence_ledger;
 }
 
 function latestLedgerHeadForEvidenceRecords(records: DojoEvidenceLedgerRecord[], recordIds: string[]): string | undefined {
