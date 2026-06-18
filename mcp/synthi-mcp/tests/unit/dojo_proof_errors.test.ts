@@ -17,6 +17,8 @@ import type { BrowserTraceEvent } from "../../src/browser/types.js";
 import type { DojoPermissionLicenseRecord } from "../../src/dojo/store/interfaces.js";
 import { verifiedProofEvidenceInput } from "./dojo_test_fixtures.js";
 
+const PROOF_ERROR_TEST_TENANT_ID = "legacy-local-tenant";
+
 beforeEach(() => {
   dojoSkillRegistry.useStoreForTests(new InMemoryDojoSkillStore());
   dojoSkillRegistry.resetForTests();
@@ -99,7 +101,7 @@ describe("Dojo proof error taxonomy", () => {
     });
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
-      ...verifiedProofEvidenceInput(skill),
+      ...verifiedProofEvidenceForProofErrorTest(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -126,7 +128,7 @@ describe("Dojo proof error taxonomy", () => {
     dojoSkillRegistry.publish(skill);
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
-      ...verifiedProofEvidenceInput(skill),
+      ...verifiedProofEvidenceForProofErrorTest(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -157,7 +159,7 @@ describe("Dojo proof error taxonomy", () => {
     dojoSkillRegistry.publish(malformedLicenseSkill);
     const capsule = issueDojoProofCapsule(malformedLicenseSkill, "run_workflow", {
       context_claims: { workspace_verified: true },
-      ...verifiedProofEvidenceInput(malformedLicenseSkill),
+      ...verifiedProofEvidenceForProofErrorTest(malformedLicenseSkill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -188,7 +190,7 @@ describe("Dojo proof error taxonomy", () => {
     dojoSkillRegistry.publish(skill);
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
-      ...verifiedProofEvidenceInput(skill),
+      ...verifiedProofEvidenceForProofErrorTest(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -254,7 +256,7 @@ describe("Dojo proof error taxonomy", () => {
     dojoSkillRegistry.publish(gatedSkill);
     const capsule = issueDojoProofCapsule(gatedSkill, "run_workflow", {
       context_claims: { workspace_verified: true },
-      ...verifiedProofEvidenceInput(gatedSkill),
+      ...verifiedProofEvidenceForProofErrorTest(gatedSkill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -361,10 +363,10 @@ describe("Dojo proof error taxonomy", () => {
       error_codes: ["approval_required"],
     }));
 
-    const baseEvidence = verifiedProofEvidenceInput(gatedSkill).evidence_ledger_records[0]!;
+    const baseEvidence = verifiedProofEvidenceForProofErrorTest(gatedSkill).evidence_ledger_records[0]!;
     const approvalEvidence = buildDojoEvidenceLedgerRecord({
       record_id: "approval-a",
-      tenant_id: "legacy-local-tenant",
+      tenant_id: PROOF_ERROR_TEST_TENANT_ID,
       workspace_id: gatedSkill.workspace_id,
       skill_id: gatedSkill.skill_id,
       run_id: `approval-${gatedSkill.skill_id}`,
@@ -378,6 +380,7 @@ describe("Dojo proof error taxonomy", () => {
       retention_class: "ephemeral",
     });
     const approvalCapsule = issueDojoProofCapsule(gatedSkill, "run_workflow", {
+      tenant_id: PROOF_ERROR_TEST_TENANT_ID,
       context_claims: { workspace_verified: true },
       evidence_claims: [{ claim: "approval_granted", satisfied: true, evidence_refs: ["evidence:approval-a"] }],
       evidence_ledger_records: [baseEvidence, approvalEvidence],
@@ -422,7 +425,7 @@ describe("Dojo proof error taxonomy", () => {
     dojoSkillRegistry.publish(skill);
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
-      ...verifiedProofEvidenceInput(skill),
+      ...verifiedProofEvidenceForProofErrorTest(skill),
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -517,7 +520,7 @@ function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {
 
 function licenseRecordFor(skill: ReturnType<typeof buildDojoSkill>, status: DojoPermissionLicenseRecord["status"]): DojoPermissionLicenseRecord {
   return {
-    tenant_id: "legacy-local-tenant",
+    tenant_id: PROOF_ERROR_TEST_TENANT_ID,
     workspace_id: skill.workspace_id,
     license_id: skill.permission_license.license_id,
     skill_id: skill.skill_id,
@@ -529,5 +532,12 @@ function licenseRecordFor(skill: ReturnType<typeof buildDojoSkill>, status: Dojo
     expires_at: skill.license_expires_at,
     created_at: "2026-06-11T00:00:00.000Z",
     updated_at: "2026-06-11T00:00:00.000Z",
+  };
+}
+
+function verifiedProofEvidenceForProofErrorTest(skill: ReturnType<typeof buildDojoSkill>) {
+  return {
+    tenant_id: PROOF_ERROR_TEST_TENANT_ID,
+    ...verifiedProofEvidenceInput(skill, { tenant_id: PROOF_ERROR_TEST_TENANT_ID }),
   };
 }
