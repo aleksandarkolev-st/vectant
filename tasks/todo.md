@@ -1318,3 +1318,105 @@ Validated the slice's substrate-dependent path on a throwaway Dataplane-V2 scrat
 - **Teardown:** scratch cluster deleted; `clusters list` → `synthi-beta-cluster` (prod) ONLY, billing stopped. AR `vectant-runtime:scratch` + `sysbox-deploy-k8s:v0.7.0-0` kept for re-spin. See lesson #36 (regional SSD_TOTAL_GB wall → pd-standard for scratch pool + PVC).
 
 **Slice 1 = DONE: code-complete · unit-tested · audit-clean · live-validated.**
+
+---
+
+# Slice 2 — Cloud-deploy Integration Merge Implementation Plan (2026-06-18)
+
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans (inline) or subagent-driven-development. Steps use `- [ ]`.
+
+**Goal:** Merge `origin/main` (the cloud-deploy trunk, 51 commits: preview discovery + workspace browser viewer + terminal OAuth relay) into `feat/docker-sysbox-engine` with both full test suites green and both preview surfaces intact, plus an infra-port filter so the program App tab never surfaces dockerd (2376).
+
+**Architecture:** ONE merge commit (not rebase); resolve 6 conflicts by additive union + lockfile regen; then a small TDD'd infra-port filter; full-suite + live re-validation. Spec: `docs/superpowers/specs/2026-06-18-cloud-deploy-integration-merge-design.md`.
+
+**Tech stack:** `git merge`, collab-server (CommonJS, `node:test`), Next.js (vitest), GKE/Sysbox scratch cluster.
+
+**Conventions:** The merge is ONE commit, finalized only after ALL 6 conflicts are resolved (Tasks 2–5). **Read every conflict hunk — union, never blind-accept.** Rollback: `git merge --abort` (pre-commit) or `git reset --hard $PRE_MERGE_SHA` (post-commit, pre-push). Commits end with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`. No push until Task 8 (pre-approved). Run from repo root; backend tests scoped (lesson #21).
+
+## Task 1: Pre-merge prep + green baseline
+**Files:** working tree only.
+- [ ] **Step 1: Record rollback point.** `git rev-parse --abbrev-ref HEAD` (expect `feat/docker-sysbox-engine`); `git rev-parse HEAD` → note as `$PRE_MERGE_SHA` (expect `33515abe…` or the spec commit `ec9ddc91…`).
+- [ ] **Step 2: Clean the tree (revert docker-detour artifacts).** `git checkout -- synthi/Dockerfile package-lock.json`. Then `git status --short` must show ONLY `?? memory/` and `?? tasks/handoff-real-programs-in-workspace.md`.
+- [ ] **Step 3: Baseline backend suite.** `node --test --test-timeout=20000 backend/collab-server/__tests__/*.test.js` → record `# pass/fail/skip` (expect 87 / 0 / 5).
+- [ ] **Step 4: Baseline frontend suite.** `cd synthi && npx vitest run src/lib/programs src/components/programs` → record (expect 149 / 0). No commit (prep only).
+
+## Task 2: Begin merge; resolve `workspacePodSpawner.js`
+**Files:** Modify (conflict): `backend/collab-server/workspacePodSpawner.js`
+- [ ] **Step 1: Start the merge.** `git merge origin/main --no-commit --no-edit`. Expect CONFLICTs in 6 files; `git status` lists them. (Do NOT commit anywhere in Tasks 2–4.)
+- [ ] **Step 2: Resolve `workspacePodSpawner.js` — union every hunk, keep BOTH sides:**
+  - OURS (HEAD): `spawnRuntimePod`, `ensureRuntimeService`/`deleteRuntimeService`, `buildRuntimePreviewSidecar` (runtime-pod sidecar), `runtimeLifecycleSnapshot`, `listActiveRuntimeSessions`, `getReadyRuntimePodForSession`, `runtimeSessionsFromDeployments`, `purgeRuntimeData`/`runtimeDockerDataDir`, runtime pin helpers, the `RUNTIME_*` consts.
+  - THEIRS (origin/main): enhanced `previewSidecarScript()` (in-pod `/proc/net/tcp` discovery + `INFRA_PORTS` + HTTP-app filtering + `SYNTHI_PREVIEW_SCAN_PORTS`), `workflowBridgeContainers` (browser-viewer/CDP/bridge envs), runtime-persistence hooks, prod-eviction durability, the `PREVIEW_PUBLIC_*`/`WORKFLOW_*` consts.
+  - Shared top-of-file constants block: keep every const from BOTH sides (no duplicates). These are disjoint functions; union preserves both.
+- [ ] **Step 3: Parse check.** `node --check backend/collab-server/workspacePodSpawner.js` → no output.
+
+## Task 3: Resolve `runtimePodTerminal.js` + `terminalService.js`
+**Files:** Modify (conflict): `backend/collab-server/runtimePodTerminal.js`, `backend/collab-server/terminalService.js`
+- [ ] **Step 1: `runtimePodTerminal.js` — union.** OURS: `programRuntimeTarget`, `pickRuntimeScopeForSlug`, `buildRuntimeShellScript`, `createRuntimePodProgram`, `waitForReadyRuntimePod` (plus existing `runtimeTerminalTarget`/`createRuntimePodPty`/`runtimeRunOnce`). THEIRS: runtime-persistence + OAuth-relay hooks. Merge `module.exports` to include BOTH sides' symbols.
+- [ ] **Step 2:** `node --check backend/collab-server/runtimePodTerminal.js`.
+- [ ] **Step 3: `terminalService.js` — union** both sides' edits (ours: runtime-pod terminal routing; theirs: OAuth-relay/loopback + persistence). `node --check backend/collab-server/terminalService.js`.
+
+## Task 4: Resolve `synthi/package-lock.json` (regenerate) + the 2 panel files
+**Files:** Modify (conflict): `synthi/package-lock.json`, `synthi/src/app/workspace/ActivityBar.jsx`, `synthi/src/components/docking-wm/components/DockingActivityBar.jsx`
+- [ ] **Step 1: Regenerate the lock** (never hand-merge). `git checkout --ours synthi/package-lock.json`; then `cd synthi && npm install --package-lock-only --no-audit --no-fund --cache D:/npm-cache-tmp && cd ..` (cache on D: — C: ENOSPC'd during the local rebuild); then `git add synthi/package-lock.json`.
+- [ ] **Step 2: `ActivityBar.jsx` — union** both activity-bar entries (ours: Programs; main's: workspace browser) — keep both imports + buttons.
+- [ ] **Step 3: `DockingActivityBar.jsx` — union** both panel registrations.
+- [ ] **Step 4: Stage resolved files.** `git add backend/collab-server/workspacePodSpawner.js backend/collab-server/runtimePodTerminal.js backend/collab-server/terminalService.js synthi/src/app/workspace/ActivityBar.jsx synthi/src/components/docking-wm/components/DockingActivityBar.jsx`.
+
+## Task 5: Reconcile auto-merged `server.js` + finalize the merge commit
+**Files:** `backend/collab-server/server.js` (auto-merged — verify intent), all merged modules.
+- [ ] **Step 1: Verify both lines survived in `server.js`.** `grep -nE "programRuntimeTarget|createRuntimePodProgram|recomputeRuntimeScopePorts" backend/collab-server/server.js` (our launch branch + port feed) AND grep the OAuth-relay/loopback routes (main's). Both present.
+- [ ] **Step 2: No remaining conflicts.** `git status` shows no "both modified". `node --check backend/collab-server/server.js`.
+- [ ] **Step 3: Full backend suite.** `node --test --test-timeout=20000 backend/collab-server/__tests__/*.test.js` → 0 fail (≥ baseline + main's new tests, e.g. `runtimePersistence.test.js`).
+- [ ] **Step 4: Full frontend suite.** `cd synthi && npx vitest run src/lib/programs src/components/programs` → 0 fail.
+- [ ] **Step 5: Finalize the merge commit.** `git commit --no-edit` (single merge commit; default message lists the merged branch).
+
+## Task 6: Infra-port filter in runtime attribution (TDD)
+**Files:** Modify: `backend/collab-server/programRuntimeManager.js`; Test: `backend/collab-server/__tests__/programRuntimeManager.test.js`
+- [ ] **Step 1: Write the failing test.**
+```js
+test('recomputeRuntimeScopePorts drops infra ports (dockerd 2376)', async () => {
+  const mgr = makeManager({ launchRuntime: async () => ({ ...createManagedRuntimeHandle(), runtimeScope: 'scope-1' }) });
+  await mgr.launchManagedSession({ sessionId: 'p1', workspaceSlug: 'w', command: 'x', runtimeType: 'container' });
+  mgr.recomputeRuntimeScopePorts('scope-1', [2376, 8080]);
+  assert.deepEqual(mgr.getManagedSession('p1').activePorts, [8080]);
+});
+```
+- [ ] **Step 2: Run → FAIL** (`activePorts` would be `[2376, 8080]`). `node --test --test-timeout=20000 backend/collab-server/__tests__/programRuntimeManager.test.js`.
+- [ ] **Step 3: Implement.** Add a parser near the other helpers:
+```js
+function parseInfraPorts(value) {
+  const out = new Set();
+  for (const part of String(value || '').split(',')) {
+    const p = parseInt(part.trim(), 10);
+    if (Number.isInteger(p) && p > 0 && p <= 65535) out.add(p);
+  }
+  return out;
+}
+```
+In `createProgramRuntimeManager`'s options destructure add: `infraPorts = parseInfraPorts(process.env.RUNTIME_INFRA_PORTS || '2376,18080'),`. In `recomputeRuntimeScopePorts`, filter before attribution:
+```js
+const detected = normalizePorts(detectedPorts).filter((p) => !infraPorts.has(p));
+const attribution = attributeSessionPorts({
+  sessions: scoped.map((r) => ({ sessionId: r.sessionId, state: r.state, declaredPorts: r.declaredPorts || [] })),
+  detectedPorts: detected,
+});
+```
+- [ ] **Step 4: Run → PASS**; full backend suite 0 fail.
+- [ ] **Step 5: Commit.** `feat(integration): filter infra ports (dockerd/sidecar) from runtime App-tab attribution (+ trailer)`.
+
+## Task 7: Live re-validation on a scratch cluster (the merged runtime)
+- [ ] **Step 1: Verify auth.** `gcloud auth print-access-token | cut -c1-12` (errors → ask the user to `gcloud auth login`). `gcloud container clusters list` → prod only.
+- [ ] **Step 2: Spin scratch.** `powershell -ExecutionPolicy Bypass -File k8s/sysbox/create-scratch-cluster.ps1`; if the sysbox-pool fails on `SSD_TOTAL_GB` (lesson #36): `gcloud container node-pools delete sysbox-pool …` then recreate with `--disk-type pd-standard --disk-size 50`.
+- [ ] **Step 3: Install Sysbox.** `kubectl apply -k k8s/sysbox/`; wait `sysbox-runtime=running`. Apply `%TEMP%/scratch-ns-pvc.yaml` (storageClassName `standard`); regenerate `%TEMP%/runtime.json` from the MERGED spec (`node %TEMP%/gen-runtime.js > %TEMP%/runtime.json`); `kubectl apply -f`; wait runtime pod Ready. **Verify `kubectl config current-context` = `…synthi-sysbox-scratch` before every apply.**
+- [ ] **Step 4: Re-run the slice-1 gate on merged code.** Write `/workspace/docker-compose.yml` (python http.server :8080) into the pod; `bash -lc 'cd /workspace && docker compose up -d'`; confirm: 8080 LISTEN (`/proc/net/tcp` `1F90`), HTTP 200 via in-pod `localhost:8080`, **2376 NOT in the surfaced set**, `docker compose logs`, `docker ps`. Capture evidence.
+- [ ] **Step 5: Tear down.** `gcloud container clusters delete synthi-sysbox-scratch --zone europe-west10-a --project vectant-proj --quiet --async`; poll `clusters list` → prod only.
+
+## Task 8: Wrap
+- [ ] **Step 1: Hardcoded-values audit.** `RUNTIME_INFRA_PORTS` env-driven (default `2376,18080` = universal infra ports — dockerd + preview sidecar — not env-specific/secret). No other new literals.
+- [ ] **Step 2: Docs.** Append a Review section here (merge SHA, suite deltas, live result); update `tasks/lessons.md` if the merge surfaced anything; give the plain-words recap.
+- [ ] **Step 3: Push (pre-approved).** `git push origin feat/docker-sysbox-engine`.
+
+## Self-review (writing-plans)
+- **Spec coverage:** §2 mechanism → T1+T5; §3 6-file conflicts → T2/T3/T4; §4 pre-merge cleanup → T1; §5 infra-port filter → T6; §6 verify (suites + live) → T5 + T7; §7 rollback → T1 + Conventions; §8 audit → T8. No gap.
+- **Placeholders:** none — conflict tasks name the exact symbols each side must keep; the filter task carries real test + impl.
+- **Type consistency:** `parseInfraPorts`/`infraPorts`/`RUNTIME_INFRA_PORTS`, `recomputeRuntimeScopePorts(scope, ports)`, `$PRE_MERGE_SHA` used consistently across tasks.
