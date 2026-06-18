@@ -1096,6 +1096,13 @@ describe("Dojo release gate manifest", () => {
           release_observation_max_age_ms: DOJO_RELEASE_OBSERVATION_MAX_AGE_MS,
           release_observation_future_tolerance_ms: DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
           required_release_observation_gate_ids: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS,
+          section_release_verifier: {
+            flag: "--hosted-runtime-gateway-release-candidate",
+            evidence_arg: "--hosted-runtime-gateway-evidence",
+            default_evidence_path: "tmp/dojo-hosted-runtime-gateway/dojo-hosted-runtime-gateway.evidence.json",
+            default_out_dir: "tmp/dojo-release-gate-verify-hosted-runtime-release-section",
+            command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --hosted-runtime-gateway-release-candidate --hosted-runtime-gateway-evidence tmp/dojo-hosted-runtime-gateway/dojo-hosted-runtime-gateway.evidence.json --out-dir tmp/dojo-release-gate-verify-hosted-runtime-release-section",
+          },
           require_self_check_executes_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
@@ -1866,6 +1873,12 @@ describe("Dojo release gate manifest", () => {
     hostedRuntimeGatewayGate.release_artifact_requirements.release_observation_future_tolerance_ms = -1;
     hostedRuntimeGatewayGate.release_artifact_requirements.required_release_observation_gate_ids = DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS
       .filter((gateId) => gateId !== "workflow_e2e_hosted");
+    hostedRuntimeGatewayGate.release_artifact_requirements.section_release_verifier = {
+      flag: "--wrong-hosted-runtime-flag",
+      evidence_arg: "--wrong-hosted-runtime-evidence",
+      default_evidence_path: "tmp/wrong-evidence.json",
+      command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs",
+    };
     hostedRuntimeGatewayGate.release_artifact_requirements.require_self_check_executes_tests = false;
     hostedRuntimeGatewayGate.requires_env = [];
     expect(validateDojoReleaseGateManifest(brokenHostedRuntimeGateway, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
@@ -1879,6 +1892,11 @@ describe("Dojo release gate manifest", () => {
       "hosted_runtime_gateway_missing_release_observation_freshness_requirement",
       "hosted_runtime_gateway_missing_release_observation_future_tolerance_requirement",
       "hosted_runtime_gateway_missing_release_observation_gate_ids:workflow_e2e_hosted",
+      "hosted_runtime_gateway_missing_section_release_verifier_flag",
+      "hosted_runtime_gateway_missing_section_release_verifier_evidence_arg",
+      "hosted_runtime_gateway_section_release_verifier_evidence_path_mismatch",
+      "hosted_runtime_gateway_missing_section_release_verifier_out_dir",
+      "hosted_runtime_gateway_missing_section_release_verifier_command",
       "hosted_runtime_gateway_missing_self_check_execution_requirement",
       "hosted_runtime_gateway_missing_required_capabilities:hosted_runtime_blocks_expired_and_revoked_sessions",
       `hosted_runtime_gateway_missing_required_test_files:${missingHostedRuntimeTestFile}`,

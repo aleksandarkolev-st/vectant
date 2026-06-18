@@ -1398,6 +1398,13 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       release_observation_max_age_ms: DOJO_RELEASE_OBSERVATION_MAX_AGE_MS,
       release_observation_future_tolerance_ms: DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
       required_release_observation_gate_ids: [...DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS],
+      section_release_verifier: {
+        flag: "--hosted-runtime-gateway-release-candidate",
+        evidence_arg: "--hosted-runtime-gateway-evidence",
+        default_evidence_path: "tmp/dojo-hosted-runtime-gateway/dojo-hosted-runtime-gateway.evidence.json",
+        default_out_dir: "tmp/dojo-release-gate-verify-hosted-runtime-release-section",
+        command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --hosted-runtime-gateway-release-candidate --hosted-runtime-gateway-evidence tmp/dojo-hosted-runtime-gateway/dojo-hosted-runtime-gateway.evidence.json --out-dir tmp/dojo-release-gate-verify-hosted-runtime-release-section",
+      },
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_self_check_executes_tests: true,
@@ -3263,6 +3270,24 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     );
     if (missingHostedRuntimeObservationGateIds.length > 0) {
       errors.push(`hosted_runtime_gateway_missing_release_observation_gate_ids:${missingHostedRuntimeObservationGateIds.join(",")}`);
+    }
+    const hostedRuntimeSectionVerifier = hostedRuntimeGatewayGate.release_artifact_requirements?.section_release_verifier || {};
+    if (hostedRuntimeSectionVerifier.flag !== "--hosted-runtime-gateway-release-candidate") {
+      errors.push("hosted_runtime_gateway_missing_section_release_verifier_flag");
+    }
+    if (hostedRuntimeSectionVerifier.evidence_arg !== "--hosted-runtime-gateway-evidence") {
+      errors.push("hosted_runtime_gateway_missing_section_release_verifier_evidence_arg");
+    }
+    if (hostedRuntimeSectionVerifier.default_evidence_path !== hostedRuntimeGatewayGate.default_evidence_path) {
+      errors.push("hosted_runtime_gateway_section_release_verifier_evidence_path_mismatch");
+    }
+    if (typeof hostedRuntimeSectionVerifier.default_out_dir !== "string" || hostedRuntimeSectionVerifier.default_out_dir.length === 0) {
+      errors.push("hosted_runtime_gateway_missing_section_release_verifier_out_dir");
+    }
+    if (typeof hostedRuntimeSectionVerifier.command !== "string"
+      || !hostedRuntimeSectionVerifier.command.includes("--hosted-runtime-gateway-release-candidate")
+      || !hostedRuntimeSectionVerifier.command.includes("--hosted-runtime-gateway-evidence")) {
+      errors.push("hosted_runtime_gateway_missing_section_release_verifier_command");
     }
     if (!hostedRuntimeGatewayGate.release_artifact_requirements?.require_no_skipped_tests) {
       errors.push("hosted_runtime_gateway_missing_no_skipped_requirement");
