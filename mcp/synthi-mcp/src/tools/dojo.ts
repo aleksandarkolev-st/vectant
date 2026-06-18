@@ -2502,6 +2502,29 @@ async function dojoApplySourceDriftExpiryTool(args: unknown): Promise<ToolRespon
     actor_type: tenant.actor_type,
   };
   const enforcement = resolveDojoEnforcementConfig();
+  const sourceDriftExpiryRbacAuthorization = enforcement.production_enforcement
+    ? authorizeDojoGovernanceAction({
+      tenant_context: tenant,
+      action: "source_drift_expiry",
+    })
+    : undefined;
+  if (sourceDriftExpiryRbacAuthorization && !sourceDriftExpiryRbacAuthorization.ok) {
+    return errorResponse("dojo_source_drift_expiry_role_required", {
+      ok: false,
+      tenant_id: tenant.tenant_id,
+      workspace_id: tenant.workspace_id,
+      actor_id: tenant.actor_id,
+      actor_type: tenant.actor_type,
+      dry_run: dryRun,
+      app_origin: report.app_origin,
+      previous_snapshot_id: report.previous_snapshot_id,
+      next_snapshot_id: report.next_snapshot_id,
+      affected_node_count: report.affected_nodes.length,
+      license_expiry_trigger_count: report.license_expiry_triggers.length,
+      blocked_by: sourceDriftExpiryRbacAuthorization.blocked_by,
+      rbac_authorization: sourceDriftExpiryRbacAuthorization,
+    });
+  }
 
   if (enforcement.production_enforcement && enforcement.require_durable_store) {
     const resolution = await createDojoControlPlaneStoresFromEnv({
@@ -2560,6 +2583,7 @@ async function dojoApplySourceDriftExpiryTool(args: unknown): Promise<ToolRespon
         skill_updates: skillUpdates,
         source_drift_recertification_handoff: recertificationHandoff,
         blocked_by: application.blocked_by,
+        ...(sourceDriftExpiryRbacAuthorization ? { rbac_authorization: sourceDriftExpiryRbacAuthorization } : {}),
       });
     } finally {
       await resolution.close?.();
@@ -2625,6 +2649,7 @@ async function dojoApplySourceDriftExpiryTool(args: unknown): Promise<ToolRespon
       })),
     source_drift_recertification_handoff: recertificationHandoff,
     blocked_by: application.blocked_by,
+    ...(sourceDriftExpiryRbacAuthorization ? { rbac_authorization: sourceDriftExpiryRbacAuthorization } : {}),
   });
 }
 

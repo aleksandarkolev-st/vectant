@@ -27,6 +27,7 @@ const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 export const DOJO_SOURCE_DRIFT_TEST_FILES = [
   "tests/unit/dojo_source_snapshot.test.ts",
   "tests/unit/dojo_source_drift.test.ts",
+  "tests/unit/dojo_source_drift_tool_rbac.test.ts",
 ];
 
 export const DOJO_SOURCE_DRIFT_CAPABILITIES = [
@@ -45,6 +46,7 @@ export const DOJO_SOURCE_DRIFT_CAPABILITIES = [
   "source_drift_rejects_unverified_snapshots",
   "source_drift_applies_license_store_expiry",
   "source_drift_returns_recertification_handoff",
+  "source_drift_expiry_enforces_rbac",
 ];
 
 const args = parseArgs(process.argv.slice(2));
@@ -290,6 +292,8 @@ function capabilityMatchers(capability) {
       return ["applies source drift expiry triggers", "license store"];
     case "source_drift_returns_recertification_handoff":
       return ["builds source drift recertification handoff", "relicense"];
+    case "source_drift_expiry_enforces_rbac":
+      return ["enforces rbac", "production source drift expiry application"];
     default:
       return [normalizeText(capability)];
   }

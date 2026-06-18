@@ -135,6 +135,15 @@ describe("Dojo governance service", () => {
       matched_roles: ["dojo:auditor"],
       blocked_by: [],
     }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "source_drift_expiry",
+      tenant_context: tenantContextFixture({ roles: ["dojo:source:apply"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:source:apply"],
+      blocked_by: [],
+    }));
   });
 
   it("fails closed for governance actions without required RBAC roles", () => {

@@ -34,7 +34,8 @@ export type DojoGovernanceRbacAction =
   | "license_revocation"
   | "license_recertification"
   | "compliance_export"
-  | "governance_view";
+  | "governance_view"
+  | "source_drift_expiry";
 
 export interface DojoGovernanceRbacPolicy {
   administrator_roles?: string[];
@@ -67,6 +68,7 @@ export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPo
     license_recertification: ["dojo:license:recertify"],
     compliance_export: ["dojo:compliance:export", "dojo:auditor"],
     governance_view: ["dojo:governance:view", "dojo:auditor"],
+    source_drift_expiry: ["dojo:source:apply"],
   },
 };
 
@@ -1210,6 +1212,10 @@ function normalizeGovernanceRbacPolicy(
       governance_view: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.governance_view,
         ...(policy.action_roles?.governance_view ?? []),
+      ]),
+      source_drift_expiry: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.source_drift_expiry,
+        ...(policy.action_roles?.source_drift_expiry ?? []),
       ]),
     },
   };
