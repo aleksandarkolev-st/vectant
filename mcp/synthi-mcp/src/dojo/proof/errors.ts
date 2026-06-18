@@ -50,6 +50,7 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     reason === "proof_workspace_required" ||
     reason === "proof_actor_required" ||
     reason === "proof_actor_type_required" ||
+    reason === "proof_roles_invalid" ||
     reason === "proof_request_required" ||
     reason === "proof_correlation_required"
   ) {

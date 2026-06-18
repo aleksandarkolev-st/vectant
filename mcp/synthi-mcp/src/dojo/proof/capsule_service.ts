@@ -347,6 +347,9 @@ function proofTenantContextBlockedBy(tenant: DojoTenantContext): string[] {
   if (!tenant?.workspace_id?.trim()) blockedBy.push("proof_workspace_required");
   if (!tenant?.actor_id?.trim()) blockedBy.push("proof_actor_required");
   if (!["human", "agent", "service"].includes(tenant?.actor_type)) blockedBy.push("proof_actor_type_required");
+  if (!Array.isArray(tenant?.roles) || tenant.roles.some((role) => typeof role !== "string" || !role.trim())) {
+    blockedBy.push("proof_roles_invalid");
+  }
   if (!tenant?.request_id?.trim()) blockedBy.push("proof_request_required");
   if (!tenant?.correlation_id?.trim()) blockedBy.push("proof_correlation_required");
   return blockedBy;

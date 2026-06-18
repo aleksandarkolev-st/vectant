@@ -197,6 +197,7 @@ describe("Dojo proof capsule service", () => {
         "proof_organization_required",
         "proof_actor_required",
         "proof_actor_type_required",
+        "proof_roles_invalid",
         "proof_request_required",
         "proof_correlation_required",
       ],
@@ -494,6 +495,7 @@ function invalidTenantFixture(workspaceId: string): DojoTenantContext {
     organization_id: "",
     actor_id: "",
     actor_type: "robot" as never,
+    roles: ["dojo:proof", ""],
     request_id: "",
     correlation_id: "",
   };
