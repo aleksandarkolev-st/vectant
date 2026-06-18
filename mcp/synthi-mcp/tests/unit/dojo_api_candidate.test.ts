@@ -71,6 +71,90 @@ describe("Dojo API endpoint candidate contract", () => {
     }));
   });
 
+  it("infers generic mutation safety hints without auto-promoting the candidate", () => {
+    const candidate = inferDojoApiEndpointCandidateFromTrace({
+      method: "PATCH",
+      url: "/api/invoices/invoice-a",
+      request_body: { amount: 42 },
+      request_headers: {
+        "Idempotency-Key": "idem-123",
+        Authorization: "Bearer opaque-token-that-must-not-be-copied",
+      },
+      auth_scope_hint: "invoice:write",
+      rollback_strategy_hint: "compensating_call",
+      postcondition_hint: "invoice.amount == request.amount",
+      proof_claim_mapping_hint: {
+        workspace_verified: "tenant.workspace_id",
+      },
+    });
+
+    expect(candidate).toEqual(expect.objectContaining({
+      auth_scope: "invoice:write",
+      idempotency_key_location: "header",
+      rollback_strategy: "compensating_call",
+      postcondition: "invoice.amount == request.amount",
+      proof_claim_mapping: { workspace_verified: "tenant.workspace_id" },
+      review_status: "candidate",
+      inferred_from: expect.arrayContaining([
+        "trace_hint:auth_scope",
+        "trace_hint:rollback_strategy",
+        "trace_hint:postcondition",
+        "trace_hint:proof_claim_mapping",
+        "network:idempotency_key_header",
+      ]),
+    }));
+    expect(JSON.stringify(candidate)).not.toContain("opaque-token-that-must-not-be-copied");
+    expect(reviewDojoApiEndpointCandidate(candidate)).toEqual(expect.objectContaining({
+      ok_to_promote: false,
+      issues: expect.arrayContaining([
+        expect.objectContaining({ issue_id: "api_candidate_review_approval_required" }),
+      ]),
+    }));
+  });
+
+  it("detects body and query idempotency carriers from generic trace shape", () => {
+    const bodyCandidate = inferDojoApiEndpointCandidateFromTrace({
+      method: "POST",
+      url: "/api/invoices",
+      request_body: { amount: 42, idempotency_key: "idem-body" },
+    });
+    const queryCandidate = inferDojoApiEndpointCandidateFromTrace({
+      method: "POST",
+      url: "/api/invoices?idempotencyKey=idem-query",
+      request_body: { amount: 42 },
+    });
+
+    expect(bodyCandidate.idempotency_key_location).toBe("body");
+    expect(bodyCandidate.inferred_from).toContain("network:idempotency_key_body");
+    expect(queryCandidate.idempotency_key_location).toBe("query");
+    expect(queryCandidate.inferred_from).toContain("network:idempotency_key_query");
+  });
+
+  it("does not invent safety approval fields from raw auth headers or response bodies", () => {
+    const candidate = inferDojoApiEndpointCandidateFromTrace({
+      method: "POST",
+      url: "/api/invoices",
+      request_body: { amount: 42 },
+      request_headers: {
+        Authorization: "Bearer opaque-token",
+      },
+      response_body: { invoice_id: "invoice-a", status: "saved" },
+    });
+
+    expect(candidate.auth_scope).toBeUndefined();
+    expect(candidate.postcondition).toBeUndefined();
+    expect(candidate.rollback_strategy).toBeUndefined();
+    expect(candidate.proof_claim_mapping).toEqual({});
+    expect(reviewDojoApiEndpointCandidate(candidate)).toEqual(expect.objectContaining({
+      ok_to_promote: false,
+      issues: expect.arrayContaining([
+        expect.objectContaining({ issue_id: "api_candidate_auth_scope_required" }),
+        expect.objectContaining({ issue_id: "api_candidate_postcondition_required" }),
+        expect.objectContaining({ issue_id: "api_candidate_proof_claim_mapping_required" }),
+      ]),
+    }));
+  });
+
   it("allows approved mutation candidates with required safety fields", () => {
     const candidate = {
       ...inferDojoApiEndpointCandidateFromTrace({

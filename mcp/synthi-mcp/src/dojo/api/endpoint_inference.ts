@@ -13,6 +13,12 @@ export interface DojoNetworkTraceEndpointInput {
   url: string;
   request_body?: unknown;
   response_body?: unknown;
+  request_headers?: Record<string, string | string[] | undefined>;
+  auth_scope_hint?: string;
+  idempotency_key_location_hint?: DojoApiEndpointCandidate["idempotency_key_location"];
+  rollback_strategy_hint?: DojoApiEndpointCandidate["rollback_strategy"];
+  postcondition_hint?: string;
+  proof_claim_mapping_hint?: Record<string, string>;
   status?: number;
   source_ref?: string;
 }
@@ -25,6 +31,7 @@ export function inferDojoApiEndpointCandidateFromTrace(
   const path = parsedUrl.pathname;
   const query = queryObjectFromUrl(parsedUrl);
   const querySchema = inferShape(query);
+  const safetyHints = inferSafetyHints(input, query);
   return {
     schema_version: "synthi.dojo.apiEndpointCandidate.v1",
     candidate_id: `api_candidate_${shortHash(`${method}:${path}:${canonicalJson(query)}:${canonicalJson(input.request_body ?? {})}`)}`,
@@ -34,9 +41,10 @@ export function inferDojoApiEndpointCandidateFromTrace(
     request_schema: inferShape(input.request_body),
     response_schema: inferShape(input.response_body),
     mutation_class: mutationClassFor(method, path),
-    proof_claim_mapping: {},
+    ...safetyHints.fields,
+    proof_claim_mapping: safetyHints.fields.proof_claim_mapping ?? {},
     review_status: "candidate",
-    inferred_from: [input.source_ref ?? `network:${method}:${path}`],
+    inferred_from: [input.source_ref ?? `network:${method}:${path}`, ...safetyHints.inferredFrom],
   };
 }
 
@@ -139,6 +147,98 @@ function mutationClassFor(method: DojoApiMethod, path: string): DojoApiMutationC
   if (method === "PUT" || method === "PATCH") return "update";
   if (method === "DELETE") return "delete";
   return "side_effect";
+}
+
+function inferSafetyHints(
+  input: DojoNetworkTraceEndpointInput,
+  query: Record<string, unknown>
+): {
+  fields: Partial<Pick<
+    DojoApiEndpointCandidate,
+    "auth_scope" | "idempotency_key_location" | "rollback_strategy" | "postcondition" | "proof_claim_mapping"
+  >>;
+  inferredFrom: string[];
+} {
+  const fields: Partial<Pick<
+    DojoApiEndpointCandidate,
+    "auth_scope" | "idempotency_key_location" | "rollback_strategy" | "postcondition" | "proof_claim_mapping"
+  >> = {};
+  const inferredFrom: string[] = [];
+
+  const authScope = input.auth_scope_hint?.trim();
+  if (authScope) {
+    fields.auth_scope = authScope;
+    inferredFrom.push("trace_hint:auth_scope");
+  }
+
+  const rollbackStrategy = input.rollback_strategy_hint;
+  if (rollbackStrategy) {
+    fields.rollback_strategy = rollbackStrategy;
+    inferredFrom.push("trace_hint:rollback_strategy");
+  }
+
+  const postcondition = input.postcondition_hint?.trim();
+  if (postcondition) {
+    fields.postcondition = postcondition;
+    inferredFrom.push("trace_hint:postcondition");
+  }
+
+  const proofClaimMapping = normalizedProofClaimMapping(input.proof_claim_mapping_hint);
+  if (proofClaimMapping && Object.keys(proofClaimMapping).length > 0) {
+    fields.proof_claim_mapping = proofClaimMapping;
+    inferredFrom.push("trace_hint:proof_claim_mapping");
+  }
+
+  const idempotencyKeyLocation =
+    input.idempotency_key_location_hint ??
+    idempotencyLocationFromHeaders(input.request_headers) ??
+    idempotencyLocationFromBody(input.request_body) ??
+    idempotencyLocationFromQuery(query);
+  if (idempotencyKeyLocation) {
+    fields.idempotency_key_location = idempotencyKeyLocation;
+    inferredFrom.push(input.idempotency_key_location_hint ? "trace_hint:idempotency_key_location" : `network:idempotency_key_${idempotencyKeyLocation}`);
+  }
+
+  return { fields, inferredFrom };
+}
+
+function idempotencyLocationFromHeaders(headers?: Record<string, string | string[] | undefined>): DojoApiEndpointCandidate["idempotency_key_location"] | undefined {
+  const value = headerValue(headers, "idempotency-key");
+  return value.length > 0 ? "header" : undefined;
+}
+
+function idempotencyLocationFromBody(body: unknown): DojoApiEndpointCandidate["idempotency_key_location"] | undefined {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+  const objectBody = body as Record<string, unknown>;
+  return hasNonEmptyValue(objectBody["idempotency_key"]) || hasNonEmptyValue(objectBody["idempotencyKey"]) ? "body" : undefined;
+}
+
+function idempotencyLocationFromQuery(query: Record<string, unknown>): DojoApiEndpointCandidate["idempotency_key_location"] | undefined {
+  return hasNonEmptyValue(query["idempotency_key"]) || hasNonEmptyValue(query["idempotencyKey"]) ? "query" : undefined;
+}
+
+function headerValue(headers: Record<string, string | string[] | undefined> | undefined, headerName: string): string[] {
+  if (!headers) return [];
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== headerName.toLowerCase()) continue;
+    const values = Array.isArray(value) ? value : [value];
+    return values.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  }
+  return [];
+}
+
+function hasNonEmptyValue(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  return value !== undefined && value !== null;
+}
+
+function normalizedProofClaimMapping(mapping?: Record<string, string>): Record<string, string> | undefined {
+  if (!mapping) return undefined;
+  const entries = Object.entries(mapping)
+    .map(([claimId, source]) => [claimId.trim(), source.trim()] as const)
+    .filter(([claimId, source]) => claimId.length > 0 && source.length > 0)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function inferShape(value: unknown): Record<string, unknown> {
