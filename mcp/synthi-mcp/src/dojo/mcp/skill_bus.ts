@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DojoProofCarryingSkillCapsule, DojoSkill } from "../../browser/dojo.js";
 import type { DojoApiBackedMcpTool } from "../api/api_tool_compiler.js";
 import type { DojoProofCapsuleService } from "../proof/capsule_service.js";
@@ -195,17 +195,23 @@ export function blockDojoMcpSkillBusExecution(
   };
 }
 
-export function createLegacyDojoTenantContext(workspaceId = "legacy-workspace"): DojoTenantContext {
+export function createLegacyDojoTenantContext(workspaceId = "local-workspace"): DojoTenantContext {
+  const normalizedWorkspaceId = workspaceId.trim() || "local-workspace";
+  const scopeDigest = localCompatibilityScopeDigest(normalizedWorkspaceId);
   return {
-    tenant_id: "legacy-local-tenant",
-    organization_id: "legacy-local-org",
-    workspace_id: workspaceId,
-    actor_id: "legacy-mcp-caller",
+    tenant_id: `local-tenant-${scopeDigest}`,
+    organization_id: `local-org-${scopeDigest}`,
+    workspace_id: normalizedWorkspaceId,
+    actor_id: `local-agent-${scopeDigest}`,
     actor_type: "agent",
     roles: ["dojo:legacy"],
-    request_id: "legacy-request",
-    correlation_id: "legacy-correlation",
+    request_id: `local-request-${scopeDigest}`,
+    correlation_id: `local-correlation-${scopeDigest}`,
   };
+}
+
+function localCompatibilityScopeDigest(workspaceId: string): string {
+  return createHash("sha256").update(workspaceId).digest("hex").slice(0, 12);
 }
 
 class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {

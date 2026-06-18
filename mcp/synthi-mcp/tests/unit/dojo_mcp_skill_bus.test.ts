@@ -38,7 +38,19 @@ describe("Dojo MCP skill bus", () => {
     ]);
     const adminCompetencies = await bus.listCompetencies({ tenant: tenant("workspace-a", ["dojo:admin"]) });
     expect(adminCompetencies.map((item) => item.workspace_id).sort()).toEqual(["workspace-a", "workspace-b"]);
-    const legacyCompetencies = await bus.listCompetencies({ tenant: createLegacyDojoTenantContext() });
+    const legacyContext = createLegacyDojoTenantContext();
+    expect(legacyContext).toEqual(expect.objectContaining({
+      tenant_id: expect.stringMatching(/^local-tenant-[a-f0-9]{12}$/),
+      organization_id: expect.stringMatching(/^local-org-[a-f0-9]{12}$/),
+      actor_id: expect.stringMatching(/^local-agent-[a-f0-9]{12}$/),
+      request_id: expect.stringMatching(/^local-request-[a-f0-9]{12}$/),
+      correlation_id: expect.stringMatching(/^local-correlation-[a-f0-9]{12}$/),
+      roles: ["dojo:legacy"],
+    }));
+    expect(legacyContext.tenant_id).not.toBe("legacy-local-tenant");
+    expect(createLegacyDojoTenantContext("workspace-a")).toEqual(createLegacyDojoTenantContext("workspace-a"));
+    expect(createLegacyDojoTenantContext("workspace-a").tenant_id).not.toBe(createLegacyDojoTenantContext("workspace-b").tenant_id);
+    const legacyCompetencies = await bus.listCompetencies({ tenant: legacyContext });
     expect(legacyCompetencies).toHaveLength(2);
   });
 

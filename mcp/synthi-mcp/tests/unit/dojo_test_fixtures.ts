@@ -28,9 +28,10 @@ export function dojoEvidenceRecordForProof(
     record_id: recordId,
     skill_id: skill.skill_id,
   });
+  const tenantId = options.tenant_id ?? skill.tenant_id ?? localFixtureTenantId(skill);
   return buildDojoEvidenceLedgerRecord({
     record_id: recordId,
-    tenant_id: options.tenant_id ?? "legacy-local-tenant",
+    tenant_id: tenantId,
     workspace_id: options.workspace_id ?? skill.workspace_id,
     skill_id: skill.skill_id,
     run_id: options.run_id ?? `checkride-${skill.skill_id}`,
@@ -50,13 +51,20 @@ export function verifiedProofEvidenceInput(
 ): {
   evidence_ledger_records: DojoEvidenceLedgerRecord[];
   require_verified_evidence: true;
+  tenant_id: string;
 } {
+  const tenantId = options.tenant_id ?? skill.tenant_id ?? localFixtureTenantId(skill);
   return {
-    evidence_ledger_records: [dojoEvidenceRecordForProof(skill, options)],
+    evidence_ledger_records: [dojoEvidenceRecordForProof(skill, { ...options, tenant_id: tenantId })],
     require_verified_evidence: true,
+    tenant_id: tenantId,
   };
 }
 
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function localFixtureTenantId(skill: DojoSkill): string {
+  return `local-tenant-${sha256Hex(`${skill.workspace_id}:${skill.skill_id}`).slice(0, 12)}`;
 }
