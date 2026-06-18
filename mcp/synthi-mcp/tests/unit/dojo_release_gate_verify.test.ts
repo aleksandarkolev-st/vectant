@@ -2656,6 +2656,103 @@ describe("Dojo release gate artifact verifier", () => {
     ]);
   });
 
+  it("verifies hosted runtime gateway evidence as a release candidate without aggregate release promotion", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-hosted-runtime-section-release-"));
+    const hostedRuntimeGatewayEvidencePath = await writeHostedRuntimeGatewayEvidenceFixture({ dir });
+    const packageScripts = await readPackageScripts();
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    manifest.gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check").default_evidence_path = hostedRuntimeGatewayEvidencePath;
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+
+    const verified = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "hosted-runtime-gateway-evidence": hostedRuntimeGatewayEvidencePath,
+        "hosted-runtime-gateway-release-candidate": "1",
+      },
+    });
+
+    expect(verified.ok).toBe(true);
+    expect(verified.release_candidate).not.toBe(true);
+    expect(verified.enterprise_release).not.toBe(true);
+    expect(verified.hosted_runtime_gateway).toEqual([
+      expect.objectContaining({
+        id: "dojo_hosted_runtime_gateway_self_check",
+        ok: true,
+        release_candidate: true,
+        release_observation_scope: "release",
+        release_observation_ready: true,
+        release_observation_gate_ids: expect.arrayContaining(DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS),
+      }),
+    ]);
+  });
+
+  it("rejects self-check-only hosted runtime evidence when section release-candidate strictness is requested", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-hosted-runtime-section-release-reject-"));
+    const hostedRuntimeGatewayEvidencePath = await writeHostedRuntimeGatewayEvidenceFixture({
+      dir,
+      evidence: hostedRuntimeGatewayEvidenceFixture({
+        hosted_runtime_contract: {
+          ...hostedRuntimeGatewayEvidenceFixture().hosted_runtime_contract,
+          release_runtime_observation_required: false,
+        },
+        release_runtime_observation: hostedRuntimeGatewayReleaseObservationFixture({
+          source: "unit_self_check",
+          scope: "self_check",
+          observed: false,
+          release_ready: false,
+          artifact_refs: [],
+        }),
+      }),
+    });
+    const packageScripts = await readPackageScripts();
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    manifest.gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check").default_evidence_path = hostedRuntimeGatewayEvidencePath;
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+
+    const verified = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "hosted-runtime-gateway-evidence": hostedRuntimeGatewayEvidencePath,
+        "hosted-runtime-gateway-release-candidate": "1",
+      },
+    });
+
+    expect(verified.ok).toBe(false);
+    expect(verified.release_candidate).not.toBe(true);
+    expect(verified.enterprise_release).not.toBe(true);
+    expect(verified.hosted_runtime_gateway).toEqual([
+      expect.objectContaining({
+        id: "dojo_hosted_runtime_gateway_self_check",
+        ok: false,
+        release_candidate: true,
+        errors: expect.arrayContaining([
+          "hosted_runtime_gateway_release_observation_not_observed",
+          "hosted_runtime_gateway_release_observation_not_ready",
+          "hosted_runtime_gateway_release_observation_scope_invalid:self_check",
+          "hosted_runtime_gateway_release_observation_self_check_only",
+          "hosted_runtime_gateway_release_observation_artifacts_missing",
+        ]),
+      }),
+    ]);
+    expect(verified.errors).toEqual(expect.arrayContaining([
+      "dojo_hosted_runtime_gateway_self_check:hosted_runtime_gateway_release_observation_scope_invalid:self_check",
+      "dojo_hosted_runtime_gateway_self_check:hosted_runtime_gateway_release_observation_self_check_only",
+    ]));
+  });
+
   it("can require complete release-gate artifact coverage outside release-candidate mode", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-strict-release-gate-coverage-"));
     const manifest = buildDojoReleaseGateManifest({

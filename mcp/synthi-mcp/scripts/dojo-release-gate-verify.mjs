@@ -828,7 +828,8 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const hostedRuntimeGatewayResults = [];
-  if (releasePromotion || truthy(args["include-hosted-runtime-gateway"]) || args["hosted-runtime-gateway-evidence"]) {
+  const hostedRuntimeGatewayReleaseCandidate = releasePromotion || truthy(args["hosted-runtime-gateway-release-candidate"]);
+  if (hostedRuntimeGatewayReleaseCandidate || truthy(args["include-hosted-runtime-gateway"]) || args["hosted-runtime-gateway-evidence"]) {
     const hostedRuntimeGatewayGate = findGate(manifest, "dojo_hosted_runtime_gateway_self_check") || {};
     const evidencePath = resolveRepoPath(args["hosted-runtime-gateway-evidence"]
       || hostedRuntimeGatewayGate.default_evidence_path
@@ -836,10 +837,10 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     hostedRuntimeGatewayResults.push(await verifyArtifactSection({
       id: "dojo_hosted_runtime_gateway_self_check",
       evidencePath,
-      releaseCandidate: releasePromotion,
+      releaseCandidate: hostedRuntimeGatewayReleaseCandidate,
     }, () => verifyDojoHostedRuntimeGatewayEvidenceArtifact({
       evidencePath,
-      releaseCandidate: releasePromotion,
+      releaseCandidate: hostedRuntimeGatewayReleaseCandidate,
     })));
   }
 
@@ -10805,6 +10806,7 @@ function summarizeSection(section) {
     release_candidate: section.release_candidate,
     release_observation_scope: section.release_observation_scope,
     release_observation_ready: section.release_observation_ready,
+    release_observation_gate_ids: section.release_observation_gate_ids,
     enterprise_release: section.enterprise_release,
     runner_scope: section.runner_scope,
     dry_run: section.dry_run,
