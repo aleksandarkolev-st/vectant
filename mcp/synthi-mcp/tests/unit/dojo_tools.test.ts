@@ -2034,7 +2034,7 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
-  it("publishes a reviewed API-backed MCP tool into the skill manifest", async () => {
+  it("publishes a reviewed API-backed MCP tool into the skill manifest only with reviewer evidence", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
     expect(publish?.isError).toBeUndefined();
@@ -2057,7 +2057,7 @@ describe("Agent Dojo MCP tools", () => {
       ],
     };
 
-    const prepared = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+    const apiToolPreparationArgs = {
       skill_id: publishedSkill.skill_id,
       network_trace: {
         method: "POST",
@@ -2081,13 +2081,47 @@ describe("Agent Dojo MCP tools", () => {
       tool_name: "synthi_api_save_invoice",
       auth_scopes: ["invoice:write"],
       publish_to_skill: true,
-      now: "2026-06-17T03:00:00.000Z",
       sample_invocation_args: {
         proof_capsule: proofCapsule,
         request: { client_id: "client-a", amount: 42 },
         query: { workspace: "workspace-a" },
         idempotency_key: "idem-api-tool-publish",
       },
+    };
+
+    const unreviewedPublication = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+      ...apiToolPreparationArgs,
+      now: "2026-06-17T02:59:00.000Z",
+    });
+    expect(unreviewedPublication?.isError).toBeUndefined();
+    expect(unreviewedPublication?.structuredContent).toEqual(expect.objectContaining({
+      ready_for_promotion: false,
+      promotion_blockers: expect.arrayContaining([
+        "api_tool_publication_review:api_tool_publication_reviewer_required",
+        "api_tool_publication_review:api_tool_publication_reviewer_actor_type_required",
+        "api_tool_publication_review:api_tool_publication_review_evidence_required",
+      ]),
+      api_tool_publication: expect.objectContaining({
+        requested: true,
+        ok: false,
+        status: "blocked",
+      }),
+      api_tool_publication_review: expect.objectContaining({
+        requested: true,
+        ok: false,
+        status: "blocked",
+      }),
+    }));
+    expect(dojoSkillRegistry.get(skillId)?.api_backed_mcp_tools ?? []).toEqual([]);
+
+    const prepared = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+      ...apiToolPreparationArgs,
+      reviewer_actor_id: "api-reviewer-a",
+      reviewer_actor_type: "human",
+      review_reason: "Reviewed endpoint schema, auth scope, idempotency, rollback, and postcondition.",
+      review_evidence_refs: ["api-review:evidence-save-invoice"],
+      reviewed_at: "2026-06-17T02:59:30.000Z",
+      now: "2026-06-17T03:00:00.000Z",
     });
 
     expect(prepared?.isError).toBeUndefined();
@@ -2110,6 +2144,20 @@ describe("Agent Dojo MCP tools", () => {
         status: "published",
         published_tool_name: "synthi_api_save_invoice",
         published_tool_version: "1.0.0",
+        review: expect.objectContaining({
+          requested: true,
+          ok: true,
+          status: "approved",
+          reviewer: { actor_id: "api-reviewer-a", actor_type: "human" },
+          evidence_refs: ["api-review:evidence-save-invoice"],
+        }),
+      }),
+      api_tool_publication_review: expect.objectContaining({
+        requested: true,
+        ok: true,
+        status: "approved",
+        reviewer: { actor_id: "api-reviewer-a", actor_type: "human" },
+        evidence_refs: ["api-review:evidence-save-invoice"],
       }),
       mcp_skill_manifest: expect.objectContaining({
         tool: expect.objectContaining({
@@ -2144,7 +2192,9 @@ describe("Agent Dojo MCP tools", () => {
     expect(updated.skill_passport.published_tools).toContain("synthi_api_save_invoice");
     expect(updated.assurance_case.evidence_refs).toEqual(expect.arrayContaining([
       "api_tool:synthi_api_save_invoice:1.0.0",
+      "api-review:evidence-save-invoice",
     ]));
+    expect(updated.training_report.evidence_refs).toEqual(expect.arrayContaining(["api-review:evidence-save-invoice"]));
 
     const listed = await dispatchDojoTool("synthi_dojo_list_competencies", {});
     expect(listed?.isError).toBeUndefined();
@@ -2198,6 +2248,11 @@ describe("Agent Dojo MCP tools", () => {
       tool_name: "synthi_api_save_invoice",
       auth_scopes: ["invoice:write"],
       publish_to_skill: true,
+      reviewer_actor_id: "api-reviewer-b",
+      reviewer_actor_type: "human",
+      review_reason: "Reviewed API-backed tool before skill-bus publication.",
+      review_evidence_refs: ["api-review:evidence-skill-bus"],
+      reviewed_at: "2026-06-17T03:09:30.000Z",
       now: "2026-06-17T03:10:00.000Z",
       sample_invocation_args: {
         proof_capsule: {

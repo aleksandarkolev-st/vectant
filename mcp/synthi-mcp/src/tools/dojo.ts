@@ -49,6 +49,7 @@ import { decideDojoEntrustment } from "../dojo/checkride/entrustment.js";
 import { decideDojoSkillReadiness } from "../dojo/checkride/readiness.js";
 import { runDojoExecutableCheckride, type DojoExecutableCheckrideReport } from "../dojo/checkride/runner.js";
 import {
+  authorizeDojoGovernanceAction,
   buildDojoGovernanceServiceView,
   decideDojoCaseLawReview,
   decideDojoPermissionUpgradeRequest,
@@ -1414,6 +1415,11 @@ export const DOJO_TOOLS = [
         sample_invocation_args: { type: "object" },
         auth_scopes: { type: "array", items: { type: "string" } },
         publish_to_skill: { type: "boolean" },
+        reviewer_actor_id: { type: "string" },
+        reviewer_actor_type: { type: "string", enum: ["human", "agent", "service"] },
+        review_reason: { type: "string" },
+        review_evidence_refs: { type: "array", items: { type: "string" } },
+        reviewed_at: { type: "string" },
         now: { type: "string" },
       },
       required: [],
@@ -2726,6 +2732,85 @@ function sourceAffordancePromotionBlockers(
   ]);
 }
 
+type DojoApiBackedToolPublicationReviewSummary = {
+  requested: boolean;
+  ok: boolean;
+  status: "not_requested" | "approved" | "blocked";
+  reviewer?: DojoAuditActor;
+  reviewed_at?: string;
+  reason?: string;
+  evidence_refs: string[];
+  blocked_by: string[];
+  rbac_authorization?: ReturnType<typeof authorizeDojoGovernanceAction>;
+};
+
+function validateApiBackedToolPublicationReview(input: {
+  publish_to_skill: boolean;
+  args: Record<string, unknown>;
+  tenant: DojoTenantContext;
+  now: string;
+}): { ok: boolean; blocked_by: string[]; summary: DojoApiBackedToolPublicationReviewSummary } {
+  if (!input.publish_to_skill) {
+    return {
+      ok: true,
+      blocked_by: [],
+      summary: {
+        requested: false,
+        ok: true,
+        status: "not_requested",
+        evidence_refs: [],
+        blocked_by: [],
+      },
+    };
+  }
+
+  const reviewerActorId = stringOpt(input.args["reviewer_actor_id"]);
+  const reviewerActorType = actorTypeInputOpt(input.args["reviewer_actor_type"]);
+  const evidenceRefs = stringArrayOpt(input.args["review_evidence_refs"]) ?? [];
+  const reviewedAt = stringOpt(input.args["reviewed_at"]) ?? input.now;
+  const reason = stringOpt(input.args["review_reason"]);
+  const blockedBy: string[] = [];
+  if (!reviewerActorId) blockedBy.push("api_tool_publication_reviewer_required");
+  if (!reviewerActorType) blockedBy.push("api_tool_publication_reviewer_actor_type_required");
+  if (evidenceRefs.length === 0) blockedBy.push("api_tool_publication_review_evidence_required");
+  if (!isValidIsoTimestamp(reviewedAt)) blockedBy.push("api_tool_publication_review_timestamp_invalid");
+
+  let rbacAuthorization: ReturnType<typeof authorizeDojoGovernanceAction> | undefined;
+  if (resolveDojoEnforcementConfig().production_enforcement) {
+    rbacAuthorization = authorizeDojoGovernanceAction({
+      action: "permission_upgrade_review",
+      tenant_context: input.tenant,
+    });
+    if (!rbacAuthorization.ok) {
+      blockedBy.push(...rbacAuthorization.blocked_by.map((reason) => `api_tool_publication_review_${reason}`));
+    }
+  }
+
+  const reviewer = reviewerActorId && reviewerActorType
+    ? { actor_id: reviewerActorId, actor_type: reviewerActorType }
+    : undefined;
+  return {
+    ok: blockedBy.length === 0,
+    blocked_by: blockedBy,
+    summary: {
+      requested: true,
+      ok: blockedBy.length === 0,
+      status: blockedBy.length === 0 ? "approved" : "blocked",
+      ...(reviewer ? { reviewer } : {}),
+      reviewed_at: reviewedAt,
+      ...(reason ? { reason } : {}),
+      evidence_refs: evidenceRefs,
+      blocked_by: blockedBy,
+      ...(rbacAuthorization ? { rbac_authorization: rbacAuthorization } : {}),
+    },
+  };
+}
+
+function isValidIsoTimestamp(value: string): boolean {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed);
+}
+
 async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse> {
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_prepare_api_backed_tool");
   if (!skill.ok) return skill.error;
@@ -2742,6 +2827,8 @@ async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse
   const requestedAction = stringOpt(a["requested_action"]);
   const toolName = stringOpt(a["tool_name"]);
   const toolVersion = stringOpt(a["tool_version"]);
+  const publishToSkill = boolOpt(a["publish_to_skill"]);
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const candidateReview = reviewDojoApiEndpointCandidate(candidate.candidate);
   const compileResult = compileDojoApiBackedMcpTool({
     candidate: candidate.candidate,
@@ -2776,16 +2863,22 @@ async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse
   const licenseBlockers = compileResult.tool
     ? apiBackedToolCurrentLicenseBlockedBy(compileResult.tool, skill.skill).map((reason) => `api_tool_license:${reason}`)
     : [];
+  const publicationReview = validateApiBackedToolPublicationReview({
+    publish_to_skill: publishToSkill,
+    args: a,
+    tenant: skill.tenant,
+    now,
+  });
+  const publicationReviewBlockers = publicationReview.blocked_by.map((reason) => `api_tool_publication_review:${reason}`);
   const promotionBlockers = [
     ...new Set([
       ...reviewBlockers,
       ...compileBlockers,
       ...invocationBlockers,
       ...licenseBlockers,
+      ...publicationReviewBlockers,
     ]),
   ];
-  const publishToSkill = boolOpt(a["publish_to_skill"]);
-  const now = stringOpt(a["now"]) ?? new Date().toISOString();
   let apiToolPublication:
     | {
       requested: boolean;
@@ -2797,6 +2890,7 @@ async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse
       skill?: DojoSkill;
       persistence?: Record<string, unknown>;
       mcp_skill_manifest?: ReturnType<typeof buildDojoMcpSkillManifest>;
+      review?: DojoApiBackedToolPublicationReviewSummary;
     }
     | undefined;
   if (!publishToSkill) {
@@ -2805,6 +2899,7 @@ async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse
       ok: true,
       status: "not_requested",
       blocked_by: [],
+      review: publicationReview.summary,
     };
   } else if (!compileResult.tool || promotionBlockers.length > 0) {
     apiToolPublication = {
@@ -2812,9 +2907,10 @@ async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse
       ok: false,
       status: "blocked",
       blocked_by: promotionBlockers.length > 0 ? promotionBlockers : ["api_backed_mcp_tool_not_compiled"],
+      review: publicationReview.summary,
     };
   } else {
-    const updated = skillWithPublishedApiBackedTool(skill.skill, compileResult.tool, now);
+    const updated = skillWithPublishedApiBackedTool(skill.skill, compileResult.tool, now, publicationReview.summary);
     const persistence = await persistPublishedSkillToDurableControlPlaneIfRequired({
       tenant: skill.tenant,
       skill: updated,
@@ -2838,6 +2934,7 @@ async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse
       skill: saved,
       persistence: persistence.persistence,
       mcp_skill_manifest: buildDojoMcpSkillManifest(saved, { tool_name: compileResult.tool.tool_name }),
+      review: publicationReview.summary,
     };
   }
   return jsonResponse({
@@ -2851,7 +2948,8 @@ async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse
     api_tool_compile: compileResult,
     api_backed_mcp_tool: compileResult.tool ?? null,
     sample_invocation_validation: invocationValidation,
-    ready_for_promotion: compileResult.ok && (invocationValidation?.ok ?? true) && licenseBlockers.length === 0,
+    api_tool_publication_review: publicationReview.summary,
+    ready_for_promotion: compileResult.ok && (invocationValidation?.ok ?? true) && licenseBlockers.length === 0 && publicationReview.ok,
     promotion_blockers: promotionBlockers,
     api_tool_publication: apiToolPublication,
     mcp_skill_manifest: apiToolPublication?.mcp_skill_manifest ?? null,
@@ -9405,7 +9503,8 @@ function apiBackedToolCurrentLicenseBlockedBy(tool: DojoApiBackedMcpTool, skill:
 function skillWithPublishedApiBackedTool(
   skill: DojoSkill,
   tool: DojoApiBackedMcpTool,
-  now: string
+  now: string,
+  review?: DojoApiBackedToolPublicationReviewSummary
 ): DojoSkill {
   const updated = cloneJson(skill);
   const existingTools = updated.api_backed_mcp_tools ?? [];
@@ -9440,6 +9539,14 @@ function skillWithPublishedApiBackedTool(
       ...updated.assurance_case.evidence_refs,
       `api_tool:${tool.tool_name}:${tool.tool_version}`,
       `api_candidate:${tool.candidate_id}`,
+      ...(review?.evidence_refs ?? []),
+    ]),
+  };
+  updated.training_report = {
+    ...updated.training_report,
+    evidence_refs: dedupeStrings([
+      ...updated.training_report.evidence_refs,
+      ...(review?.evidence_refs ?? []),
     ]),
   };
   updated.generated_at = now;

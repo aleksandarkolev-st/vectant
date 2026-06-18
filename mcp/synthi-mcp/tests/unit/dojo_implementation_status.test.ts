@@ -221,7 +221,7 @@ describe("Dojo implementation status registry", () => {
     expect(getDojoToolImplementationMetadata("synthi_dojo_prepare_api_backed_tool")).toEqual(
       expect.objectContaining({
         implementation_status: "executable",
-        summary: expect.stringContaining("publish reviewed tools into the skill-bus manifest"),
+        summary: expect.stringContaining("requires reviewer evidence before skill-bus publication"),
         maturity_blockers: expect.arrayContaining(["deployed_mcp_host_conformance_required"]),
       })
     );
@@ -233,6 +233,9 @@ describe("Dojo implementation status registry", () => {
     );
     expect(getDojoToolImplementationMetadata("synthi_dojo_prepare_api_backed_tool").maturity_blockers).not.toContain(
       "unpublished_compiled_tools_are_not_production_exposed"
+    );
+    expect(getDojoToolImplementationMetadata("synthi_dojo_prepare_api_backed_tool").maturity_blockers).not.toContain(
+      "api_candidate_requires_reviewer_approval_before_promotion"
     );
     expect(getDojoToolImplementationMetadata("synthi_dojo_run_api_backed_tool")).toEqual(
       expect.objectContaining({

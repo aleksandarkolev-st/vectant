@@ -47,6 +47,7 @@ export const DOJO_API_TOOL_COMPILER_CAPABILITIES = [
   "substrate_prefers_safest_licensed_substrate",
   "api_tool_public_surface_prepares_reviewed_contract",
   "api_tool_public_surface_publishes_api_backed_manifest",
+  "api_tool_public_surface_requires_reviewer_evidence_before_publication",
   "api_tool_public_surface_runs_compiled_tool",
   "api_tool_public_surface_runs_published_tool_name_via_skill_bus",
   "api_tool_public_surface_blocks_unpublished_compiled_tool_in_production",
@@ -300,6 +301,8 @@ function capabilityMatchers(capability) {
       return ["prepares a reviewed api backed mcp tool contract", "network trace metadata"];
     case "api_tool_public_surface_publishes_api_backed_manifest":
       return ["publishes a reviewed api backed mcp tool", "skill manifest"];
+    case "api_tool_public_surface_requires_reviewer_evidence_before_publication":
+      return ["publishes a reviewed api backed mcp tool", "reviewer evidence"];
     case "api_tool_public_surface_runs_compiled_tool":
       return ["runs a compiled api backed mcp tool", "proof validation", "postcondition", "evidence"];
     case "api_tool_public_surface_runs_published_tool_name_via_skill_bus":
