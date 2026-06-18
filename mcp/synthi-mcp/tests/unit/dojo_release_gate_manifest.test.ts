@@ -766,6 +766,13 @@ describe("Dojo release gate manifest", () => {
             default_observation_path: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_DEFAULT_PATH,
             required_env: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_REQUIRED_ENV,
           },
+          section_release_verifier: {
+            flag: "--managed-key-signing-release-candidate",
+            evidence_arg: "--managed-key-signing-evidence",
+            default_evidence_path: "tmp/dojo-managed-key-signing/dojo-managed-key-signing.evidence.json",
+            default_out_dir: "tmp/dojo-release-gate-verify-managed-key-release-section",
+            command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --managed-key-signing-release-candidate --managed-key-signing-evidence tmp/dojo-managed-key-signing/dojo-managed-key-signing.evidence.json --out-dir tmp/dojo-release-gate-verify-managed-key-release-section",
+          },
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
@@ -1635,6 +1642,12 @@ describe("Dojo release gate manifest", () => {
       default_observation_path: "",
       required_env: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_REQUIRED_ENV.slice(1),
     };
+    managedKeySigningGate.release_artifact_requirements.section_release_verifier = {
+      flag: "--wrong-managed-key-flag",
+      evidence_arg: "--wrong-managed-key-evidence",
+      default_evidence_path: "tmp/wrong-managed-key-evidence.json",
+      command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs",
+    };
     managedKeySigningGate.requires_env = [];
     expect(validateDojoReleaseGateManifest(brokenManagedKeySigning, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "managed_key_signing_missing_custody_requirement",
@@ -1649,6 +1662,11 @@ describe("Dojo release gate manifest", () => {
       "managed_key_signing_missing_release_observation_producer_command",
       "managed_key_signing_missing_release_observation_producer_path",
       `managed_key_signing_missing_release_observation_producer_env:${DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_REQUIRED_ENV[0]}`,
+      "managed_key_signing_missing_section_release_verifier_flag",
+      "managed_key_signing_missing_section_release_verifier_evidence_arg",
+      "managed_key_signing_section_release_verifier_evidence_path_mismatch",
+      "managed_key_signing_missing_section_release_verifier_out_dir",
+      "managed_key_signing_missing_section_release_verifier_command",
       "managed_key_signing_missing_required_capabilities:managed_key_service_rejects_local_custody_metadata",
       `managed_key_signing_missing_required_test_files:${missingManagedKeySigningTestFile}`,
     ]));

@@ -1026,6 +1026,13 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
         default_observation_path: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_DEFAULT_PATH,
         required_env: [...DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_REQUIRED_ENV],
       },
+      section_release_verifier: {
+        flag: "--managed-key-signing-release-candidate",
+        evidence_arg: "--managed-key-signing-evidence",
+        default_evidence_path: "tmp/dojo-managed-key-signing/dojo-managed-key-signing.evidence.json",
+        default_out_dir: "tmp/dojo-release-gate-verify-managed-key-release-section",
+        command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --managed-key-signing-release-candidate --managed-key-signing-evidence tmp/dojo-managed-key-signing/dojo-managed-key-signing.evidence.json --out-dir tmp/dojo-release-gate-verify-managed-key-release-section",
+      },
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
     },
@@ -2653,6 +2660,24 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     );
     if (missingManagedKeyObservationProducerEnv.length > 0) {
       errors.push(`managed_key_signing_missing_release_observation_producer_env:${missingManagedKeyObservationProducerEnv.join(",")}`);
+    }
+    const managedKeySectionVerifier = managedKeySigningGate.release_artifact_requirements?.section_release_verifier || {};
+    if (managedKeySectionVerifier.flag !== "--managed-key-signing-release-candidate") {
+      errors.push("managed_key_signing_missing_section_release_verifier_flag");
+    }
+    if (managedKeySectionVerifier.evidence_arg !== "--managed-key-signing-evidence") {
+      errors.push("managed_key_signing_missing_section_release_verifier_evidence_arg");
+    }
+    if (managedKeySectionVerifier.default_evidence_path !== managedKeySigningGate.default_evidence_path) {
+      errors.push("managed_key_signing_section_release_verifier_evidence_path_mismatch");
+    }
+    if (typeof managedKeySectionVerifier.default_out_dir !== "string" || managedKeySectionVerifier.default_out_dir.length === 0) {
+      errors.push("managed_key_signing_missing_section_release_verifier_out_dir");
+    }
+    if (typeof managedKeySectionVerifier.command !== "string"
+      || !managedKeySectionVerifier.command.includes("--managed-key-signing-release-candidate")
+      || !managedKeySectionVerifier.command.includes("--managed-key-signing-evidence")) {
+      errors.push("managed_key_signing_missing_section_release_verifier_command");
     }
     const requiredManagedKeySigningCapabilities = Array.isArray(managedKeySigningGate.release_artifact_requirements?.required_managed_key_signing_capabilities)
       ? managedKeySigningGate.release_artifact_requirements.required_managed_key_signing_capabilities
