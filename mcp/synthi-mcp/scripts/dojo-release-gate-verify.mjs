@@ -180,8 +180,8 @@ if (isDirectRun()) {
 async function main() {
   const outDir = path.resolve(args["out-dir"] || DEFAULT_VERIFY_DIR);
   if (truthy(args["self-check"])) {
-    const selfCheck = await runSelfCheck({ outDir });
-    console.log(`[ok] Dojo release gate verifier self-check passed - report=${selfCheck.report_path}`);
+    const selfCheck = await runDojoReleaseGateVerifierSelfCheck({ outDir });
+    console.log(`[ok] Dojo release gate verifier self-check passed - report=${selfCheck.report_path} evidence=${selfCheck.evidence_path}`);
     return;
   }
 
@@ -4582,7 +4582,7 @@ async function readDigestCheckedJsonPair({
   };
 }
 
-async function runSelfCheck({ outDir }) {
+export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
   const manifestArtifacts = await runReleaseGateManifestSelfCheck({
     outDir: path.join(outDir, "release-gates"),
   });
@@ -5680,8 +5680,42 @@ async function runSelfCheck({ outDir }) {
     ],
   };
   const reportPath = path.join(outDir, "dojo-release-gate-verifier-self-check.json");
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  return { report_path: reportPath, report };
+  const serializedReport = `${JSON.stringify(report, null, 2)}\n`;
+  await writeFile(reportPath, serializedReport, "utf8");
+  const evidence = buildDojoReleaseGateVerifierSelfCheckEvidenceManifest({
+    report,
+    reportPath,
+    serialized: serializedReport,
+  });
+  const evidencePath = path.join(outDir, "dojo-release-gate-verifier-self-check.evidence.json");
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    report_path: reportPath,
+    evidence_path: evidencePath,
+    report,
+    evidence,
+  };
+}
+
+export function buildDojoReleaseGateVerifierSelfCheckEvidenceManifest({ report, reportPath, serialized }) {
+  const body = typeof serialized === "string" ? serialized : JSON.stringify(report);
+  const verifiedSections = Array.isArray(report?.verified_sections) ? report.verified_sections : [];
+  const rejectedControls = Array.isArray(report?.rejected_controls) ? report.rejected_controls : [];
+  return {
+    schema_version: "synthi.dojo.releaseGateVerifierSelfCheckEvidence.v1",
+    generated_at: new Date().toISOString(),
+    report_path: reportPath,
+    report_sha256: sha256(body),
+    report_bytes: Buffer.byteLength(body),
+    ok: Boolean(report?.ok),
+    verified_section_count: verifiedSections.length,
+    rejected_control_count: rejectedControls.length,
+    verified_section_ids: verifiedSections.map((section) => section.id).filter(Boolean),
+    rejected_control_ids: rejectedControls.map((section) => section.id).filter(Boolean),
+    manifest_verified: verifiedSections.some((section) => section.id === "release_gate_manifest" && section.ok === true),
+    release_gate_runner_self_check_verified: verifiedSections.some((section) => section.id === "dojo_release_gate_runner_self_check" && section.ok === true),
+    negative_controls_present: rejectedControls.length > 0,
+  };
 }
 
 function buildReleaseCandidateConformanceReport({

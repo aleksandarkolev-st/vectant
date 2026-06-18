@@ -189,6 +189,8 @@ import {
   verifyDojoSoakPerformanceArtifacts,
   verifyDojoWorkflowPipelineE2EArtifact,
   verifyVisualProofArtifact,
+  buildDojoReleaseGateVerifierSelfCheckEvidenceManifest,
+  runDojoReleaseGateVerifierSelfCheck,
 } from "../../scripts/dojo-release-gate-verify.mjs";
 import {
   buildDojoReleaseGateExecutionPlan,
@@ -229,6 +231,37 @@ describe("Dojo release gate artifact verifier", () => {
       expect.stringMatching(/^manifest_sha256_mismatch:/),
       expect.stringMatching(/^manifest_invalid:unknown_release_gate_ids:dojo_mcp_host_conformance/),
     ]));
+  });
+
+  it("writes digest evidence for verifier self-check reports", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-gate-verifier-self-check-"));
+    const result = await runDojoReleaseGateVerifierSelfCheck({ outDir: dir });
+    const reportText = await readFile(result.report_path, "utf8");
+    const evidence = JSON.parse(await readFile(result.evidence_path, "utf8"));
+    const rebuiltEvidence = buildDojoReleaseGateVerifierSelfCheckEvidenceManifest({
+      report: result.report,
+      reportPath: result.report_path,
+      serialized: reportText,
+    });
+
+    expect(evidence).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.releaseGateVerifierSelfCheckEvidence.v1",
+      report_path: result.report_path,
+      report_sha256: createHash("sha256").update(reportText).digest("hex"),
+      report_bytes: Buffer.byteLength(reportText),
+      ok: true,
+      manifest_verified: true,
+      release_gate_runner_self_check_verified: true,
+      negative_controls_present: true,
+    }));
+    expect(evidence.verified_section_ids).toEqual(expect.arrayContaining([
+      "release_gate_manifest",
+      "dojo_release_gate_runner_self_check",
+    ]));
+    expect(evidence.verified_section_count).toBe(result.report.verified_sections.length);
+    expect(evidence.rejected_control_count).toBe(result.report.rejected_controls.length);
+    expect(rebuiltEvidence.report_sha256).toBe(evidence.report_sha256);
+    expect(rebuiltEvidence.verified_section_ids).toEqual(evidence.verified_section_ids);
   });
 
   it("verifies release-gate runner reports and rejects dry-run or tampered log proof for promotion", async () => {
