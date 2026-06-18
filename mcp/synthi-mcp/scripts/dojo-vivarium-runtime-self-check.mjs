@@ -45,6 +45,7 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "fixture_materializer_blocks_role_downgrade_identity_tissue",
   "fixture_materializer_fails_unquarantined_prompt_injection",
   "fixture_materializer_materializes_missing_corrupted_documents",
+  "fixture_materializer_materializes_ambiguous_document_names",
   "fixture_materializer_materializes_ui_tissue_mutations",
   "fixture_materializer_is_deterministic",
   "scenario_oracle_classifies_expected_block",
@@ -224,6 +225,7 @@ export function buildDojoVivariumRuntimeEvidenceManifest({
       fake_success_state_detection_required: true,
       partial_write_detection_required: true,
       prompt_injection_quarantine_required: true,
+      ambiguous_document_names_required: true,
       ui_tissue_mutations_required: true,
       deterministic_reset_required: true,
       budget_enforcement_required: true,
@@ -324,6 +326,8 @@ function capabilityMatchers(capability) {
       return ["materializes unquarantined prompt injection document fixtures", "failed synthetic tissue"];
     case "fixture_materializer_materializes_missing_corrupted_documents":
       return ["materializes missing and corrupted document tissue states"];
+    case "fixture_materializer_materializes_ambiguous_document_names":
+      return ["synthetic fixture materializer materializes ambiguous document names", "distinct synthetic document ids"];
     case "fixture_materializer_materializes_ui_tissue_mutations":
       return ["synthetic fixture materializer materializes ui tissue mutations", "layout labels validation and destructive adjacency"];
     case "fixture_materializer_is_deterministic":
