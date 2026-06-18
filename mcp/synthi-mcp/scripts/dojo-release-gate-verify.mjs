@@ -9609,6 +9609,9 @@ async function validateRunnerProducedArtifacts({ result, gateId, errors }) {
       continue;
     }
     if (artifact.exists !== true) continue;
+    if (artifact.required === true && artifact.fresh !== true) {
+      errors.push(`runner_produced_artifact_not_fresh:${gateId}:${artifact.kind}:${artifact.fresh ?? "missing"}`);
+    }
     if (!artifact.path) {
       errors.push(`runner_produced_artifact_path_missing:${gateId}:${artifact.kind}`);
       continue;
@@ -9621,6 +9624,18 @@ async function validateRunnerProducedArtifacts({ result, gateId, errors }) {
     }
     if (artifact.sha256 !== actualSha256) {
       errors.push(`runner_produced_artifact_sha256_mismatch:${gateId}:${artifact.kind}:${artifact.sha256}:${actualSha256}`);
+    }
+    if (artifact.required === true && artifact.fresh_after) {
+      const freshAfterMs = Date.parse(String(artifact.fresh_after));
+      const toleranceMs = Number.isFinite(Number(artifact.fresh_after_tolerance_ms))
+        ? Number(artifact.fresh_after_tolerance_ms)
+        : 0;
+      const info = await stat(resolveRepoPath(artifact.path));
+      if (!Number.isFinite(freshAfterMs)) {
+        errors.push(`runner_produced_artifact_fresh_after_invalid:${gateId}:${artifact.kind}`);
+      } else if (info.mtimeMs + toleranceMs < freshAfterMs) {
+        errors.push(`runner_produced_artifact_stale_on_disk:${gateId}:${artifact.kind}`);
+      }
     }
   }
 }

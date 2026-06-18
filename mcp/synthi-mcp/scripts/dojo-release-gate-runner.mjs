@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -31,6 +31,7 @@ const DEFAULT_PACKAGE_JSON = "mcp/synthi-mcp/package.json";
 const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const RUNNER_SCHEMA_VERSION = "synthi.dojo.releaseGateRun.v1";
 const GATE_LOG_SCHEMA_VERSION = "synthi.dojo.releaseGateCommandLog.v1";
+const ARTIFACT_FRESHNESS_TOLERANCE_MS = 2000;
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -455,11 +456,17 @@ async function writeGateCommandResult({
   await writeFile(stderrPath, stderr, "utf8");
   const producedArtifacts = await collectDojoReleaseGateProducedArtifacts({
     expectedArtifacts: gatePlan.expected_artifacts,
+    freshAfterIso: startedAtIso,
   });
   const missingExpectedArtifacts = producedArtifacts
     .filter((artifact) => artifact.required && !artifact.exists)
     .map((artifact) => artifact.kind);
-  const status = exitCode === 0 && !timedOut && missingExpectedArtifacts.length === 0 ? "passed" : "failed";
+  const staleExpectedArtifacts = producedArtifacts
+    .filter((artifact) => artifact.required && artifact.exists && artifact.fresh === false)
+    .map((artifact) => artifact.kind);
+  const status = exitCode === 0 && !timedOut && missingExpectedArtifacts.length === 0 && staleExpectedArtifacts.length === 0
+    ? "passed"
+    : "failed";
   return {
     schema_version: GATE_LOG_SCHEMA_VERSION,
     gate_id: gatePlan.gate_id,
@@ -475,6 +482,8 @@ async function writeGateCommandResult({
     failure_reason: status === "failed"
       ? failureReason || (missingExpectedArtifacts.length > 0
         ? `expected_artifact_missing:${missingExpectedArtifacts.join(",")}`
+        : staleExpectedArtifacts.length > 0
+          ? `expected_artifact_stale:${staleExpectedArtifacts.join(",")}`
         : "nonzero_exit")
       : null,
     stdout_path: normalizeRepoPath(path.relative(REPO_ROOT, stdoutPath)),
@@ -486,6 +495,7 @@ async function writeGateCommandResult({
     expected_artifacts: gatePlan.expected_artifacts,
     produced_artifacts: producedArtifacts,
     missing_expected_artifacts: missingExpectedArtifacts,
+    stale_expected_artifacts: staleExpectedArtifacts,
   };
 }
 
@@ -517,17 +527,28 @@ function buildSkippedGateResult(gatePlan) {
   };
 }
 
-export async function collectDojoReleaseGateProducedArtifacts({ expectedArtifacts } = {}) {
+export async function collectDojoReleaseGateProducedArtifacts({
+  expectedArtifacts,
+  freshAfterIso,
+  freshnessToleranceMs = ARTIFACT_FRESHNESS_TOLERANCE_MS,
+} = {}) {
   const candidates = [
     ["report", expectedArtifacts?.report_path],
     ["evidence", expectedArtifacts?.evidence_path],
     ["events", expectedArtifacts?.events_path],
   ].filter(([, artifactPath]) => Boolean(artifactPath));
   const artifacts = [];
+  const freshAfterMs = Number.isFinite(Date.parse(String(freshAfterIso)))
+    ? Date.parse(String(freshAfterIso))
+    : null;
   for (const [kind, artifactPath] of candidates) {
     const absolutePath = resolveExpectedArtifactPath(artifactPath);
     try {
       const bytes = await readFile(absolutePath);
+      const info = await stat(absolutePath);
+      const fresh = freshAfterMs === null
+        ? null
+        : info.mtimeMs + freshnessToleranceMs >= freshAfterMs;
       artifacts.push({
         kind,
         path: normalizeRepoPath(path.relative(REPO_ROOT, absolutePath)),
@@ -535,6 +556,13 @@ export async function collectDojoReleaseGateProducedArtifacts({ expectedArtifact
         required: true,
         bytes: bytes.length,
         sha256: sha256(bytes),
+        modified_at: info.mtime.toISOString(),
+        mtime_ms: Number(info.mtimeMs.toFixed(3)),
+        ...(freshAfterMs !== null ? {
+          fresh_after: new Date(freshAfterMs).toISOString(),
+          fresh_after_tolerance_ms: freshnessToleranceMs,
+          fresh,
+        } : {}),
       });
     } catch (error) {
       artifacts.push({

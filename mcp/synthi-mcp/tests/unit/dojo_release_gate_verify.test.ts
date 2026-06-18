@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -482,6 +482,36 @@ describe("Dojo release gate artifact verifier", () => {
     expect(rejected.errors).toEqual(expect.arrayContaining([
       expect.stringMatching(/^runner_produced_artifact_bytes_mismatch:dojo_implementation_status_self_check:evidence:/),
       expect.stringMatching(/^runner_produced_artifact_sha256_mismatch:dojo_implementation_status_self_check:evidence:/),
+    ]));
+
+    const staleReport = JSON.parse(await readFile(runner.reportPath, "utf8"));
+    const staleResult = staleReport.results.find((result) => result.gate_id === "dojo_implementation_status_self_check");
+    const staleProducedArtifact = staleResult.produced_artifacts.find((artifact) => artifact.kind === "evidence");
+    staleProducedArtifact.fresh = false;
+    staleProducedArtifact.fresh_after = "2999-01-01T00:00:00.000Z";
+    staleProducedArtifact.fresh_after_tolerance_ms = 0;
+    staleResult.status = "passed";
+    staleResult.failure_reason = null;
+    staleResult.stale_expected_artifacts = [];
+    const staleReportPath = path.join(dir, "dojo-release-gate-runner-stale-produced-artifact.json");
+    const staleEvidencePath = path.join(dir, "dojo-release-gate-runner-stale-produced-artifact.evidence.json");
+    const staleSerialized = `${JSON.stringify(staleReport, null, 2)}\n`;
+    await writeFile(staleReportPath, staleSerialized, "utf8");
+    await writeFile(staleEvidencePath, `${JSON.stringify(buildDojoReleaseGateRunEvidenceManifest({
+      report: staleReport,
+      reportPath: staleReportPath,
+      serialized: staleSerialized,
+    }), null, 2)}\n`, "utf8");
+    const staleRejected = await verifyDojoReleaseGateRunReportArtifact({
+      reportPath: staleReportPath,
+      evidencePath: staleEvidencePath,
+      manifest: manifestWithTempEvidence,
+      requirePromotionReady: true,
+    });
+    expect(staleRejected.ok).toBe(false);
+    expect(staleRejected.errors).toEqual(expect.arrayContaining([
+      "runner_produced_artifact_not_fresh:dojo_implementation_status_self_check:evidence:false",
+      "runner_produced_artifact_stale_on_disk:dojo_implementation_status_self_check:evidence",
     ]));
   });
 
@@ -4180,6 +4210,7 @@ async function writeReleaseGateRunnerFixture({
           await writeFile(outputPath, artifactBody, "utf8");
         }
         const artifactBytes = await readFile(outputPath);
+        const artifactStat = await stat(outputPath);
         producedArtifacts.push({
           kind,
           path: artifactPath,
@@ -4187,6 +4218,11 @@ async function writeReleaseGateRunnerFixture({
           required: true,
           bytes: artifactBytes.length,
           sha256: sha256(artifactBytes),
+          modified_at: artifactStat.mtime.toISOString(),
+          mtime_ms: Number(artifactStat.mtimeMs.toFixed(3)),
+          fresh_after: "2026-06-11T00:00:00.000Z",
+          fresh_after_tolerance_ms: 2000,
+          fresh: true,
         });
       }
     }

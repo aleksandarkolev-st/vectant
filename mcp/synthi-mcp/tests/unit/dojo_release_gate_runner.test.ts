@@ -262,4 +262,32 @@ describe("Dojo release gate runner", () => {
       }),
     ]));
   });
+
+  it("marks expected artifacts stale when they predate the gate command start", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dojo-release-gate-runner-"));
+    const evidencePath = join(dir, "evidence.json");
+    const evidenceBody = JSON.stringify({ ok: true, generated_at: "2026-06-11T00:00:00.000Z" });
+    await writeFile(evidencePath, evidenceBody, "utf8");
+
+    const artifacts = await collectDojoReleaseGateProducedArtifacts({
+      expectedArtifacts: {
+        report_path: null,
+        evidence_path: evidencePath,
+        events_path: null,
+      },
+      freshAfterIso: "2999-01-01T00:00:00.000Z",
+      freshnessToleranceMs: 0,
+    });
+
+    expect(artifacts).toEqual([
+      expect.objectContaining({
+        kind: "evidence",
+        exists: true,
+        required: true,
+        fresh_after: "2999-01-01T00:00:00.000Z",
+        fresh_after_tolerance_ms: 0,
+        fresh: false,
+      }),
+    ]);
+  });
 });
