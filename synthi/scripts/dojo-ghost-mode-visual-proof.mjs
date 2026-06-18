@@ -29,6 +29,12 @@ const OUT_DIR = path.resolve(args["out-dir"] || path.join(SYNTHI_ROOT, "tmp", "d
 const HOST = "127.0.0.1";
 const BASE_PORT = Number(args.port || process.env.SYNTHI_DOJO_GHOST_VISUAL_PORT || 3107);
 const DEV_SERVER_LOCK_PATH = path.join(SYNTHI_ROOT, "tmp", "dojo-visual-proof-dev-server.lock");
+const ROUTE_ID = "time-machine";
+const ROUTE_PATH = "/workspace/visual-dojo/dojo/debug/time-machine";
+const VIEWPORTS = [
+  { name: "desktop", width: 1440, height: 1100 },
+  { name: "mobile", width: 390, height: 1200 },
+];
 
 const DEV_OVERLAY_CSS = `
 nextjs-portal,
@@ -50,13 +56,17 @@ async function main() {
   const server = await startDevServer({ port });
   try {
     const results = [];
-    results.push(await captureGhostMode({ port, viewport: { width: 1440, height: 1100 }, name: "desktop" }));
-    results.push(await captureGhostMode({ port, viewport: { width: 390, height: 1200 }, name: "mobile" }));
+    for (const viewport of VIEWPORTS) {
+      results.push(await captureGhostMode({ port, viewport }));
+    }
     const report = {
       schema_version: "synthi.dojo.ghostModeVisualProof.v1",
       ok: results.every((result) => result.ok),
       generated_at: new Date().toISOString(),
-      route: `http://${HOST}:${port}/workspace/visual-dojo/dojo/debug/time-machine`,
+      route_id: ROUTE_ID,
+      route: `http://${HOST}:${port}${ROUTE_PATH}`,
+      route_count: 1,
+      screenshot_count: results.length,
       screenshots: results.map((result) => result.screenshot_path),
       results,
     };
@@ -69,16 +79,16 @@ async function main() {
   }
 }
 
-async function captureGhostMode({ port, viewport, name }) {
+async function captureGhostMode({ port, viewport }) {
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport });
+  const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
   try {
     await page.route("**/browser-workflows/state", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify(buildBridgeState()),
     }));
-    await page.goto(`http://${HOST}:${port}/workspace/visual-dojo/dojo/debug/time-machine`, { waitUntil: "networkidle" });
+    await page.goto(`http://${HOST}:${port}${ROUTE_PATH}`, { waitUntil: "networkidle" });
     await page.addStyleTag({ content: DEV_OVERLAY_CSS });
     await page.waitForSelector("[data-testid=\"ghost-shadow-evidence\"]", { timeout: 15_000 });
     const text = await page.locator("[data-testid=\"dojo-time-machine\"]").innerText();
@@ -90,7 +100,7 @@ async function captureGhostMode({ port, viewport, name }) {
       has_upgrade_block: text.includes("Ghost Mode mismatch prevents entrustment upgrade"),
       has_no_execute: text.includes("Would Execute") && text.includes("No"),
     };
-    const screenshotPath = path.join(OUT_DIR, `ghost-mode-shadow-${name}.png`);
+    const screenshotPath = path.join(OUT_DIR, `ghost-mode-shadow-${viewport.name}.png`);
     await page.screenshot({ path: screenshotPath, fullPage: true });
     const stats = await stat(screenshotPath);
     const screenshotSha256 = await sha256File(screenshotPath);
@@ -103,7 +113,9 @@ async function captureGhostMode({ port, viewport, name }) {
       viewport,
     });
     return {
-      name,
+      name: viewport.name,
+      route_id: ROUTE_ID,
+      viewport_name: viewport.name,
       ok: visualDecision.ok,
       viewport,
       checks,

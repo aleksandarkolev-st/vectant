@@ -10,6 +10,8 @@ import {
   buildDojoReleaseGateManifest,
   DOJO_FULL_VISUAL_ROUTE_IDS,
   DOJO_FULL_VISUAL_VIEWPORTS,
+  DOJO_GHOST_MODE_VISUAL_ROUTE_IDS,
+  DOJO_GHOST_MODE_VISUAL_VIEWPORTS,
 } from "../../scripts/dojo-release-gate-manifest.mjs";
 import {
   DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES,
@@ -3606,12 +3608,7 @@ async function writeConformancePair({ report, reportPath, evidencePath }) {
 }
 
 async function writeVisualReportFixture({ dir, basename, schemaVersion }) {
-  const routeIds = schemaVersion === "synthi.dojo.visualProof.v1"
-    ? DOJO_FULL_VISUAL_ROUTE_IDS
-    : ["visual-proof"];
-  const viewports = schemaVersion === "synthi.dojo.visualProof.v1"
-    ? DOJO_FULL_VISUAL_VIEWPORTS
-    : ["desktop"];
+  const { routeIds, viewports } = visualFixtureMatrixForSchema(schemaVersion);
   const results = [];
   for (const routeId of routeIds) {
     for (const viewport of viewports) {
@@ -3631,6 +3628,7 @@ async function writeVisualReportFixture({ dir, basename, schemaVersion }) {
   await writeFile(reportPath, JSON.stringify({
     schema_version: schemaVersion,
     ok: true,
+    route_id: routeIds.length === 1 ? routeIds[0] : undefined,
     route_count: routeIds.length,
     screenshot_count: results.length,
     screenshots: results.map((result) => result.screenshot_path),
@@ -3639,6 +3637,25 @@ async function writeVisualReportFixture({ dir, basename, schemaVersion }) {
   return {
     screenshotPath: results[0]?.screenshot_path,
     reportPath,
+  };
+}
+
+function visualFixtureMatrixForSchema(schemaVersion) {
+  if (schemaVersion === "synthi.dojo.visualProof.v1") {
+    return {
+      routeIds: DOJO_FULL_VISUAL_ROUTE_IDS,
+      viewports: DOJO_FULL_VISUAL_VIEWPORTS,
+    };
+  }
+  if (schemaVersion === "synthi.dojo.ghostModeVisualProof.v1") {
+    return {
+      routeIds: DOJO_GHOST_MODE_VISUAL_ROUTE_IDS,
+      viewports: DOJO_GHOST_MODE_VISUAL_VIEWPORTS,
+    };
+  }
+  return {
+    routeIds: ["visual-proof"],
+    viewports: ["desktop"],
   };
 }
 

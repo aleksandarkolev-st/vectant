@@ -201,6 +201,18 @@ export const DOJO_FULL_VISUAL_VIEWPORTS = Object.freeze([
 
 export const DOJO_FULL_VISUAL_RESULT_COUNT = DOJO_FULL_VISUAL_ROUTE_IDS.length * DOJO_FULL_VISUAL_VIEWPORTS.length;
 
+export const DOJO_GHOST_MODE_VISUAL_ROUTE_IDS = Object.freeze([
+  "time-machine",
+]);
+
+export const DOJO_GHOST_MODE_VISUAL_VIEWPORTS = Object.freeze([
+  "desktop",
+  "mobile",
+]);
+
+export const DOJO_GHOST_MODE_VISUAL_RESULT_COUNT =
+  DOJO_GHOST_MODE_VISUAL_ROUTE_IDS.length * DOJO_GHOST_MODE_VISUAL_VIEWPORTS.length;
+
 export const DOJO_VISUAL_REPORT_REQUIREMENTS = Object.freeze({
   requires_report_ok: true,
   requires_result_ok: true,
@@ -226,6 +238,18 @@ export const DOJO_FULL_VISUAL_REPORT_REQUIREMENTS = Object.freeze({
   required_route_ids: [...DOJO_FULL_VISUAL_ROUTE_IDS],
   required_viewports: [...DOJO_FULL_VISUAL_VIEWPORTS],
   min_result_count: DOJO_FULL_VISUAL_RESULT_COUNT,
+  requires_all_required_route_viewports: true,
+  requires_unique_screenshot_paths: true,
+  requires_top_level_screenshots_match_results: true,
+  requires_screenshot_count_matches_results: true,
+  requires_route_count_matches_required_routes: true,
+});
+
+export const DOJO_GHOST_MODE_VISUAL_REPORT_REQUIREMENTS = Object.freeze({
+  ...DOJO_VISUAL_REPORT_REQUIREMENTS,
+  required_route_ids: [...DOJO_GHOST_MODE_VISUAL_ROUTE_IDS],
+  required_viewports: [...DOJO_GHOST_MODE_VISUAL_VIEWPORTS],
+  min_result_count: DOJO_GHOST_MODE_VISUAL_RESULT_COUNT,
   requires_all_required_route_viewports: true,
   requires_unique_screenshot_paths: true,
   requires_top_level_screenshots_match_results: true,
@@ -618,7 +642,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     evidence_kind: "visual_report",
     report_schema_version: "synthi.dojo.ghostModeVisualProof.v1",
     default_report_path: "synthi/tmp/dojo-ghost-mode-visual/ghost-mode-shadow-visual-report.json",
-    visual_report_requirements: DOJO_VISUAL_REPORT_REQUIREMENTS,
+    visual_report_requirements: DOJO_GHOST_MODE_VISUAL_REPORT_REQUIREMENTS,
   },
   {
     id: "workflow_e2e_hosted",
@@ -1496,6 +1520,33 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       }
       if (Number(requirements.min_result_count) < DOJO_FULL_VISUAL_RESULT_COUNT) {
         errors.push(`full_visual_gate_min_result_count_too_low:${requirements.min_result_count ?? "missing"}`);
+      }
+    }
+    if (gate.id === "dojo_ghost_mode_visual_proof") {
+      const requirements = gate.visual_report_requirements || {};
+      for (const routeId of missingRequiredEntries(DOJO_GHOST_MODE_VISUAL_ROUTE_IDS, requirements.required_route_ids)) {
+        errors.push(`ghost_mode_visual_gate_missing_required_route:${routeId}`);
+      }
+      for (const viewport of missingRequiredEntries(DOJO_GHOST_MODE_VISUAL_VIEWPORTS, requirements.required_viewports)) {
+        errors.push(`ghost_mode_visual_gate_missing_required_viewport:${viewport}`);
+      }
+      if (requirements.requires_all_required_route_viewports !== true) {
+        errors.push("ghost_mode_visual_gate_missing_route_viewport_matrix_requirement");
+      }
+      if (requirements.requires_unique_screenshot_paths !== true) {
+        errors.push("ghost_mode_visual_gate_missing_unique_screenshot_requirement");
+      }
+      if (requirements.requires_top_level_screenshots_match_results !== true) {
+        errors.push("ghost_mode_visual_gate_missing_top_level_screenshot_count_requirement");
+      }
+      if (requirements.requires_screenshot_count_matches_results !== true) {
+        errors.push("ghost_mode_visual_gate_missing_screenshot_count_requirement");
+      }
+      if (requirements.requires_route_count_matches_required_routes !== true) {
+        errors.push("ghost_mode_visual_gate_missing_route_count_requirement");
+      }
+      if (Number(requirements.min_result_count) < DOJO_GHOST_MODE_VISUAL_RESULT_COUNT) {
+        errors.push(`ghost_mode_visual_gate_min_result_count_too_low:${requirements.min_result_count ?? "missing"}`);
       }
     }
   }
