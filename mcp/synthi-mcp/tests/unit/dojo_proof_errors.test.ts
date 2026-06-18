@@ -49,6 +49,11 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("license_expiry_invalid")).toBe("license_expired");
     expect(normalizeDojoProofErrorCode("proof_self_attestation_not_allowed_in_production")).toBe("proof_capsule_invalid");
     expect(normalizeDojoProofErrorCode("proof_validator_missing")).toBe("proof_capsule_invalid");
+    expect(normalizeDojoProofErrorCode("graph_runtime_tenant_required")).toBe("proof_tenant_context_invalid");
+    expect(normalizeDojoProofErrorCode("runtime_actor_type_invalid")).toBe("proof_tenant_context_invalid");
+    expect(normalizeDojoProofErrorCode("dojo_mcp_roles_invalid")).toBe("proof_tenant_context_invalid");
+    expect(normalizeDojoProofErrorCode("tenant_context_roles_invalid")).toBe("proof_tenant_context_invalid");
+    expect(normalizeDojoProofErrorCode("tenant_context_request_id_missing")).toBe("proof_tenant_context_invalid");
     expect(normalizeDojoProofErrorCode("proof_key_registry_write_failed")).toBe("proof_key_unavailable");
     expect(normalizeDojoProofErrorCode("dojo_proof_key_registry_write_failed")).toBe("proof_key_unavailable");
     expect(normalizeDojoProofErrorCode("proof_key_public_key_missing")).toBe("proof_key_unavailable");

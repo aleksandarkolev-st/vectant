@@ -56,6 +56,7 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
   ) {
     return "proof_tenant_context_invalid";
   }
+  if (isRuntimeTenantContextFailure(reason)) return "proof_tenant_context_invalid";
   if (reason.startsWith("proof_record_")) return "proof_capsule_registry_mismatch";
   if (reason === "proof_capsule_signature_invalid" || reason === "proof_capsule_signature_algorithm_mismatch") return "proof_signature_invalid";
   if (reason.startsWith("proof_key_") || reason.startsWith("dojo_proof_key_")) {
@@ -188,6 +189,11 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     return "dojo_execution_policy_blocked";
   }
   return "unknown";
+}
+
+function isRuntimeTenantContextFailure(reason: string): boolean {
+  return /^(dojo_execution|graph_runtime|runtime|dojo_mcp)_(tenant|organization|workspace|actor|actor_type|roles|request|correlation)_(required|invalid)$/.test(reason)
+    || /^tenant_context_(tenant_id|organization_id|workspace_id|actor_id|actor_type|roles|request_id|correlation_id)_(missing|invalid)$/.test(reason);
 }
 
 export function normalizeDojoProofErrorCodes(reasons: string[]): DojoProofErrorCode[] {
