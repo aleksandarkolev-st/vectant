@@ -395,6 +395,60 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       }),
     }));
 
+    const durableReportTools = [
+      ["synthi_dojo_get_skill_cortex", "skill_cortex"],
+      ["synthi_dojo_get_workspace_organoid", "workspace_organoid"],
+      ["synthi_dojo_get_wind_tunnel_report", "wind_tunnel"],
+      ["synthi_dojo_get_counterfactual_twin", "counterfactual_twin"],
+      ["synthi_dojo_get_evil_twin_report", "evil_twin"],
+      ["synthi_dojo_get_training_report", "training_report"],
+      ["synthi_dojo_get_skill_passport", "skill_passport"],
+      ["synthi_dojo_get_skill_genome", "skill_genome"],
+      ["synthi_dojo_get_antibodies", "antibodies"],
+      ["synthi_dojo_get_agent_ready_ui_contract", "agent_ready_ui_contract"],
+      ["synthi_dojo_get_cost_policy", "cost_control_policy"],
+      ["synthi_dojo_get_lifecycle", "lifecycle"],
+      ["synthi_dojo_get_source_affordance_pr_plan", "source_affordance_pr_plan"],
+      ["synthi_dojo_get_skill_assurance_case", "assurance_case"],
+      ["synthi_dojo_get_entrustment_level", "entrustment_level"],
+      ["synthi_dojo_get_license", "license"],
+      ["synthi_dojo_get_guardrails", "guardrails"],
+      ["synthi_dojo_get_case_law", "case_law"],
+    ] as const;
+    for (const [toolName, expectedField] of durableReportTools) {
+      const report = await dispatchDojoTool(toolName, {
+        ...readerTenant,
+        skill_id: published.skill.skill_id,
+        request_id: `req-postgres-aggregate-${toolName}`,
+        correlation_id: `corr-postgres-aggregate-${toolName}`,
+      });
+      expect(report?.isError, toolName).toBeUndefined();
+      const structured = report?.structuredContent as Record<string, unknown>;
+      expect(structured, toolName).toEqual(expect.objectContaining({
+        ok: true,
+        control_plane_source: "postgres",
+        skill_id: published.skill.skill_id,
+      }));
+      expect(structured[expectedField], `${toolName} payload`).toBeDefined();
+    }
+
+    const explainBlock = await dispatchDojoTool("synthi_dojo_explain_block", {
+      ...readerTenant,
+      skill_id: published.skill.skill_id,
+      requested_action: "open_details",
+      request_id: "req-postgres-aggregate-explain-block",
+      correlation_id: "corr-postgres-aggregate-explain-block",
+    });
+    expect(explainBlock?.isError).toBeUndefined();
+    expect(explainBlock?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      control_plane_source: "postgres",
+      requested_action: "open_details",
+      validation: expect.objectContaining({
+        error_codes: expect.arrayContaining(["proof_capsule_missing"]),
+      }),
+    }));
+
     const artifacts = await dispatchDojoTool("synthi_dojo_export_artifacts", {
       ...readerTenant,
       roles: ["agent", "dojo:artifact:export"],

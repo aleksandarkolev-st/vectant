@@ -1938,43 +1938,43 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoGetSkillTool(args);
         break;
       case "synthi_dojo_get_skill_cortex":
-        response = dojoGetSkillCortexTool(args);
+        response = await dojoGetSkillCortexTool(args);
         break;
       case "synthi_dojo_get_workspace_organoid":
-        response = dojoGetWorkspaceOrganoidTool(args);
+        response = await dojoGetWorkspaceOrganoidTool(args);
         break;
       case "synthi_dojo_get_wind_tunnel_report":
-        response = dojoGetWindTunnelReportTool(args);
+        response = await dojoGetWindTunnelReportTool(args);
         break;
       case "synthi_dojo_get_counterfactual_twin":
-        response = dojoGetCounterfactualTwinTool(args);
+        response = await dojoGetCounterfactualTwinTool(args);
         break;
       case "synthi_dojo_get_evil_twin_report":
-        response = dojoGetEvilTwinReportTool(args);
+        response = await dojoGetEvilTwinReportTool(args);
         break;
       case "synthi_dojo_get_training_report":
-        response = dojoGetTrainingReportTool(args);
+        response = await dojoGetTrainingReportTool(args);
         break;
       case "synthi_dojo_get_skill_passport":
-        response = dojoGetSkillPassportTool(args);
+        response = await dojoGetSkillPassportTool(args);
         break;
       case "synthi_dojo_get_skill_genome":
-        response = dojoGetSkillGenomeTool(args);
+        response = await dojoGetSkillGenomeTool(args);
         break;
       case "synthi_dojo_get_antibodies":
-        response = dojoGetAntibodiesTool(args);
+        response = await dojoGetAntibodiesTool(args);
         break;
       case "synthi_dojo_get_agent_ready_ui_contract":
-        response = dojoGetAgentReadyUiContractTool(args);
+        response = await dojoGetAgentReadyUiContractTool(args);
         break;
       case "synthi_dojo_get_cost_policy":
-        response = dojoGetCostPolicyTool(args);
+        response = await dojoGetCostPolicyTool(args);
         break;
       case "synthi_dojo_get_universe_dossier":
         response = await dojoGetUniverseDossierTool(args);
         break;
       case "synthi_dojo_get_lifecycle":
-        response = dojoGetLifecycleTool(args);
+        response = await dojoGetLifecycleTool(args);
         break;
       case "synthi_dojo_get_governance_report":
         response = await dojoGetGovernanceReportTool(args);
@@ -1992,7 +1992,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoApplySourceDriftExpiryTool(args);
         break;
       case "synthi_dojo_get_source_affordance_pr_plan":
-        response = dojoGetSourceAffordancePrPlanTool(args);
+        response = await dojoGetSourceAffordancePrPlanTool(args);
         break;
       case "synthi_dojo_prepare_source_affordance_pr":
         response = await dojoPrepareSourceAffordancePrTool(args);
@@ -2010,22 +2010,22 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoGetRegistryTool(args);
         break;
       case "synthi_dojo_get_skill_assurance_case":
-        response = dojoGetAssuranceCaseTool(args);
+        response = await dojoGetAssuranceCaseTool(args);
         break;
       case "synthi_dojo_get_entrustment_level":
-        response = dojoGetEntrustmentLevelTool(args);
+        response = await dojoGetEntrustmentLevelTool(args);
         break;
       case "synthi_dojo_get_license":
-        response = dojoGetLicenseTool(args);
+        response = await dojoGetLicenseTool(args);
         break;
       case "synthi_dojo_get_guardrails":
-        response = dojoGetGuardrailsTool(args);
+        response = await dojoGetGuardrailsTool(args);
         break;
       case "synthi_dojo_get_case_law":
-        response = dojoGetCaseLawTool(args);
+        response = await dojoGetCaseLawTool(args);
         break;
       case "synthi_dojo_explain_block":
-        response = dojoExplainBlockTool(args);
+        response = await dojoExplainBlockTool(args);
         break;
       case "synthi_dojo_explain_failure":
         response = await dojoExplainFailureTool(args);
@@ -2156,8 +2156,8 @@ async function dojoGetSkillTool(args: unknown): Promise<ToolResponse> {
   });
 }
 
-function dojoGetSkillCortexTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetSkillCortexTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_skill_cortex");
   if (!skill.ok) return skill.error;
   const caseLawRecords = storedCaseLawRecordsForSkill(skill.skill);
   const compiledGraph = compileDojoSkillGraphForSkill(skill.skill);
@@ -2165,6 +2165,7 @@ function dojoGetSkillCortexTool(args: unknown): ToolResponse {
   const executableGraphValidation = validateDojoSkillGraph(executableGraph);
   return jsonResponse({
     ok: true,
+    control_plane_source: skill.control_plane_source,
     skill_id: skill.skill.skill_id,
     skill_cortex: skill.skill.skill_cortex,
     executable_graph: executableGraph,
@@ -2173,25 +2174,36 @@ function dojoGetSkillCortexTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoGetWorkspaceOrganoidTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetWorkspaceOrganoidTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_workspace_organoid");
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, workspace_organoid: skill.skill.workspace_organoid });
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill_id: skill.skill.skill_id,
+    workspace_organoid: skill.skill.workspace_organoid,
+  });
 }
 
-function dojoGetWindTunnelReportTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetWindTunnelReportTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_wind_tunnel_report");
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, wind_tunnel: skill.skill.wind_tunnel });
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill_id: skill.skill.skill_id,
+    wind_tunnel: skill.skill.wind_tunnel,
+  });
 }
 
-function dojoGetCounterfactualTwinTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetCounterfactualTwinTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_counterfactual_twin");
   if (!skill.ok) return skill.error;
   const filters = scenarioFilters(args);
   const variants = filterByScenario(skill.skill.counterfactual_twin.variants, filters);
   return jsonResponse({
     ok: true,
+    control_plane_source: skill.control_plane_source,
     skill_id: skill.skill.skill_id,
     counterfactual_twin: {
       ...skill.skill.counterfactual_twin,
@@ -2200,24 +2212,35 @@ function dojoGetCounterfactualTwinTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoGetEvilTwinReportTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetEvilTwinReportTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_evil_twin_report");
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, evil_twin: skill.skill.evil_twin });
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill_id: skill.skill.skill_id,
+    evil_twin: skill.skill.evil_twin,
+  });
 }
 
-function dojoGetTrainingReportTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetTrainingReportTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_training_report");
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, training_report: skill.skill.training_report });
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill_id: skill.skill.skill_id,
+    training_report: skill.skill.training_report,
+  });
 }
 
-function dojoGetSkillPassportTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetSkillPassportTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_skill_passport");
   if (!skill.ok) return skill.error;
   const executableEntrustment = skill.skill.executable_entrustment;
   return jsonResponse({
     ok: true,
+    control_plane_source: skill.control_plane_source,
     skill_id: skill.skill.skill_id,
     skill_passport: skill.skill.skill_passport,
     entrustment_source: executableEntrustment ? "executable_checkride" : "legacy_license_artifact",
@@ -2232,28 +2255,48 @@ function dojoGetSkillPassportTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoGetSkillGenomeTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetSkillGenomeTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_skill_genome");
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, skill_genome: skill.skill.skill_genome });
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill_id: skill.skill.skill_id,
+    skill_genome: skill.skill.skill_genome,
+  });
 }
 
-function dojoGetAntibodiesTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetAntibodiesTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_antibodies");
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, antibodies: skill.skill.antibodies });
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill_id: skill.skill.skill_id,
+    antibodies: skill.skill.antibodies,
+  });
 }
 
-function dojoGetAgentReadyUiContractTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetAgentReadyUiContractTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_agent_ready_ui_contract");
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, agent_ready_ui_contract: skill.skill.agent_ready_ui_contract });
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill_id: skill.skill.skill_id,
+    agent_ready_ui_contract: skill.skill.agent_ready_ui_contract,
+  });
 }
 
-function dojoGetCostPolicyTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetCostPolicyTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_cost_policy");
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, cost_control_policy: skill.skill.cost_control_policy });
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill_id: skill.skill.skill_id,
+    cost_control_policy: skill.skill.cost_control_policy,
+  });
 }
 
 async function dojoGetUniverseDossierTool(args: unknown): Promise<ToolResponse> {
@@ -2276,10 +2319,15 @@ async function dojoGetUniverseDossierTool(args: unknown): Promise<ToolResponse> 
   });
 }
 
-function dojoGetLifecycleTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetLifecycleTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_lifecycle");
   if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, lifecycle: buildDojoLifecycleReport(skill.skill) });
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill_id: skill.skill.skill_id,
+    lifecycle: buildDojoLifecycleReport(skill.skill),
+  });
 }
 
 async function dojoGetGovernanceReportTool(args: unknown): Promise<ToolResponse> {
@@ -2720,11 +2768,12 @@ async function dojoApplySourceDriftExpiryTool(args: unknown): Promise<ToolRespon
   });
 }
 
-function dojoGetSourceAffordancePrPlanTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetSourceAffordancePrPlanTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_source_affordance_pr_plan");
   if (!skill.ok) return skill.error;
   return jsonResponse({
     ok: true,
+    control_plane_source: skill.control_plane_source,
     skill_id: skill.skill.skill_id,
     source_affordance_pr_plan: buildDojoSourceAffordancePrPlan(skill.skill),
   });
@@ -3834,12 +3883,13 @@ async function dojoGetRegistryTool(args: unknown): Promise<ToolResponse> {
   });
 }
 
-function dojoGetAssuranceCaseTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetAssuranceCaseTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_skill_assurance_case");
   if (!skill.ok) return skill.error;
   const assuranceArtifact = buildDojoSkillAssuranceArtifact(skill.skill);
   return jsonResponse({
     ok: true,
+    control_plane_source: skill.control_plane_source,
     skill_id: skill.skill.skill_id,
     assurance_case: skill.skill.assurance_case,
     assurance_artifact: assuranceArtifact,
@@ -3851,12 +3901,13 @@ function dojoGetAssuranceCaseTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoGetEntrustmentLevelTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetEntrustmentLevelTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_entrustment_level");
   if (!skill.ok) return skill.error;
   const executableEntrustment = skill.skill.executable_entrustment;
   return jsonResponse({
     ok: true,
+    control_plane_source: skill.control_plane_source,
     skill_id: skill.skill.skill_id,
     entrustment_level: skill.skill.entrustment_level,
     skill_readiness_level: skill.skill.skill_readiness_level,
@@ -3874,33 +3925,44 @@ function dojoGetEntrustmentLevelTool(args: unknown): ToolResponse {
   });
 }
 
-function dojoGetLicenseTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
-  if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, license: skill.skill.permission_license });
-}
-
-function dojoGetGuardrailsTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
-  if (!skill.ok) return skill.error;
-  return jsonResponse({ ok: true, skill_id: skill.skill.skill_id, guardrails: skill.skill.guardrails });
-}
-
-function dojoGetCaseLawTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoGetLicenseTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_license");
   if (!skill.ok) return skill.error;
   return jsonResponse({
     ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill_id: skill.skill.skill_id,
+    license: skill.skill.permission_license,
+  });
+}
+
+async function dojoGetGuardrailsTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_guardrails");
+  if (!skill.ok) return skill.error;
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
+    skill_id: skill.skill.skill_id,
+    guardrails: skill.skill.guardrails,
+  });
+}
+
+async function dojoGetCaseLawTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_get_case_law");
+  if (!skill.ok) return skill.error;
+  return jsonResponse({
+    ok: true,
+    control_plane_source: skill.control_plane_source,
     skill_id: skill.skill.skill_id,
     case_law: skill.skill.case_law,
     case_law_records: storedCaseLawRecordsForSkill(skill.skill),
   });
 }
 
-function dojoExplainBlockTool(args: unknown): ToolResponse {
+async function dojoExplainBlockTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const requestedAction = stringOpt(a["requested_action"]) ?? "run_workflow";
-  const skill = requiredAuthorizedSkill(args);
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_explain_block");
   if (!skill.ok) return skill.error;
   const capsule = proofCapsuleOpt(a["proof_capsule"]);
   const validation = capsule
@@ -3919,6 +3981,7 @@ function dojoExplainBlockTool(args: unknown): ToolResponse {
       };
   return jsonResponse({
     ok: validation.ok,
+    control_plane_source: skill.control_plane_source,
     requested_action: requestedAction,
     validation,
     refusal: validation.ok ? null : refusalFor(skill.skill, validation.blocked_by),
