@@ -694,6 +694,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     >
       <AgentWorkflowPanel
         workspaceSlug={ctx?.workspaceSlug}
+        isBusy={Boolean(busyAction)}
         workflowState={displayedWorkflowState}
         onWorkflowAction={handleWorkflowAction}
       />

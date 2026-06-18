@@ -568,9 +568,19 @@ function ReadinessRow({ row }) {
   );
 }
 
-function ActionButton({ action, label, icon, enabled = true, disabledReason, variant = 'secondary', onAction }) {
+function ActionButton({
+  action,
+  label,
+  icon,
+  enabled = true,
+  disabledReason,
+  variant = 'secondary',
+  isBusy = false,
+  onAction,
+}) {
   const Icon = STAGE_ICONS[icon] || (action === WORKFLOW_ACTIONS.BEGIN_TEACH ? Eye : action === WORKFLOW_ACTIONS.END_TEACH ? Square : Play);
-  const disabled = !enabled;
+  const disabled = isBusy || !enabled;
+  const disabledMessage = disabled ? disabledReason || (isBusy ? 'Workflow action in progress...' : undefined) : undefined;
   const primary = variant === 'primary';
 
   return (
@@ -587,7 +597,7 @@ function ActionButton({ action, label, icon, enabled = true, disabledReason, var
         color: primary ? 'var(--accent-foreground, var(--bg-app))' : 'var(--text-primary)',
       }}
       disabled={disabled}
-      title={disabled ? disabledReason : undefined}
+      title={disabledMessage}
       onClick={() => onAction?.(action)}
     >
       <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
@@ -664,9 +674,11 @@ function ProfileField({ label, value, onChange, multiline = false }) {
   );
 }
 
-function WorkflowStage({ stage, onAction }) {
+function WorkflowStage({ stage, onAction, isBusy = false }) {
   const Icon = STAGE_ICONS[stage.id] || Workflow;
   const style = toneStyle(stage.tone);
+  const disabled = isBusy || !stage.actionEnabled;
+  const disabledMessage = disabled ? (stage.disabledReason || (isBusy ? 'Workflow action in progress...' : undefined)) : undefined;
 
   return (
     <div className="grid min-h-16 grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -686,8 +698,8 @@ function WorkflowStage({ stage, onAction }) {
         type="button"
         className="inline-flex h-7 min-w-16 items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
         style={{ ...style, minWidth: 64 }}
-        disabled={!stage.actionEnabled}
-        title={stage.actionEnabled ? undefined : stage.disabledReason}
+        disabled={disabled}
+        title={disabledMessage}
         onClick={() => onAction?.(stage.action, { stageId: stage.id })}
       >
         {stage.action === WORKFLOW_ACTIONS.END_TEACH ? <Square className="h-3.5 w-3.5" strokeWidth={2} /> : <Play className="h-3.5 w-3.5" strokeWidth={2} />}
@@ -938,6 +950,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   workspaceSlug,
   workflowState,
   onWorkflowAction,
+  isBusy = false,
 }) {
   const [localRecording, setLocalRecording] = useState(false);
 
@@ -1035,7 +1048,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
 
           <div data-testid="agent-workflow-stages">
             {model.stages.map((stage) => (
-              <WorkflowStage key={stage.id} stage={stage} onAction={emitWorkflowAction} />
+              <WorkflowStage key={stage.id} stage={stage} onAction={emitWorkflowAction} isBusy={isBusy} />
             ))}
           </div>
         </section>
@@ -1065,6 +1078,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
           label={model.actions.primary?.label || 'Attach'}
           enabled={model.actions.primary?.enabled}
           disabledReason={model.actions.primary?.disabledReason}
+          isBusy={isBusy}
           variant="primary"
           icon={model.actions.primary?.action === WORKFLOW_ACTIONS.ATTACH_WORKSPACE ? 'connect' : undefined}
           onAction={emitWorkflowAction}
@@ -1078,6 +1092,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
               icon={action.icon}
               enabled={action.enabled}
               disabledReason={action.disabledReason}
+              isBusy={isBusy}
               onAction={emitWorkflowAction}
             />
           ))}
