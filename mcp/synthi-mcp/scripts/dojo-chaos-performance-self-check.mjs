@@ -23,6 +23,7 @@ export const DOJO_CHAOS_PERFORMANCE_TEST_FILES = [
   "tests/unit/dojo_fixture_materializer.test.ts",
   "tests/unit/dojo_evidence_record.test.ts",
   "tests/unit/dojo_graph_runtime.test.ts",
+  "tests/unit/dojo_proof_capsule_service.test.ts",
   "tests/unit/dojo_proof_signing.test.ts",
   "tests/unit/dojo_source_drift.test.ts",
   "tests/integration/dojo_api_fault_server.test.ts",
@@ -44,9 +45,67 @@ export const DOJO_CHAOS_SCENARIOS = [
   "evil_twin_attack_hardening",
   "hosted_runtime_preflight_fail_closed",
   "proof_not_consumed_on_failed_preflight",
+  "proof_replay_false_allow",
   "evidence_store_unavailable",
   "proof_signing_service_unavailable",
   "source_contract_drift_mid_run",
+];
+
+export const DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS = [
+  "proof_validation_p95_ms",
+  "proof_replay_rejection_p95_ms",
+  "proof_replay_false_allow_count",
+  "graph_node_execution_p95_ms",
+  "vivarium_scenario_runtime_p95_ms",
+  "checkride_runtime_p95_ms",
+  "evidence_append_p95_ms",
+  "api_fault_runtime_p95_ms",
+  "evil_twin_hardening_p95_ms",
+  "hosted_runtime_preflight_p95_ms",
+  "source_drift_expiry_p95_ms",
+];
+
+const DOJO_CHAOS_PERFORMANCE_METRIC_RULES = [
+  {
+    metric: "proof_validation_p95_ms",
+    aliases: ["validates without consuming", "reusable proof validation", "proof validator"],
+  },
+  {
+    metric: "proof_replay_rejection_p95_ms",
+    aliases: ["consumes exactly once", "proof capsule replay detected"],
+  },
+  {
+    metric: "graph_node_execution_p95_ms",
+    aliases: ["dojo graph runtime", "graph runtime"],
+  },
+  {
+    metric: "vivarium_scenario_runtime_p95_ms",
+    aliases: ["dojo vivarium runner", "executes scenario against materialized synthetic fixtures"],
+  },
+  {
+    metric: "checkride_runtime_p95_ms",
+    aliases: ["dojo executable checkride runner", "checkride runner"],
+  },
+  {
+    metric: "evidence_append_p95_ms",
+    aliases: ["appends checkride scenario evidence", "evidence signature", "ledger-backed checkride evidence"],
+  },
+  {
+    metric: "api_fault_runtime_p95_ms",
+    aliases: ["dojo api fault server", "api fault server"],
+  },
+  {
+    metric: "evil_twin_hardening_p95_ms",
+    aliases: ["evil twin", "attack hardening", "expanded hardening guardrails"],
+  },
+  {
+    metric: "hosted_runtime_preflight_p95_ms",
+    aliases: ["hosted runtime session", "before consuming production proof capsules", "runtime session not found"],
+  },
+  {
+    metric: "source_drift_expiry_p95_ms",
+    aliases: ["source drift expiry", "expires graph nodes mapped to changed source tokens"],
+  },
 ];
 
 const args = parseArgs(process.argv.slice(2));
@@ -223,7 +282,7 @@ export function buildDojoChaosPerformanceEvidenceManifest({
 }) {
   const testSummary = summarizeVitestJsonReport(jsonReport);
   const scenarioCoverage = buildScenarioCoverage({ scenarios, jsonReport });
-  const performanceMetrics = buildPerformanceMetrics({ durationMs, testSummary });
+  const performanceMetrics = buildPerformanceMetrics({ durationMs, testSummary, jsonReport });
   const budgetEvaluation = buildBudgetEvaluation({
     scenarioCoverage,
     performanceMetrics,
@@ -248,6 +307,9 @@ export function buildDojoChaosPerformanceEvidenceManifest({
     scenario_count: scenarioCoverage.filter((item) => item.covered).length,
     configured_scenario_count: scenarios.length,
     scenario_coverage_complete: scenarioCoverage.every((item) => item.covered),
+    release_metric_coverage_complete: performanceMetrics.dojo_metric_coverage.every((item) => item.covered),
+    missing_release_metrics: performanceMetrics.dojo_metric_coverage.filter((item) => !item.covered).map((item) => item.metric),
+    release_metric_coverage: performanceMetrics.dojo_metric_coverage,
     chaos_runner_required: true,
     chaos_runner: {
       ok: chaosRunnerReport?.ok === true && !chaosRunnerError,
@@ -336,14 +398,44 @@ export function buildScenarioCoverage({ scenarios, jsonReport }) {
   });
 }
 
-function buildPerformanceMetrics({ durationMs, testSummary }) {
+function buildPerformanceMetrics({ durationMs, testSummary, jsonReport }) {
+  const dojoMetricCoverage = buildDojoReleaseMetricCoverage({ jsonReport, testSummary });
+  const dojoMetrics = Object.fromEntries(dojoMetricCoverage.map((item) => [item.metric, item.value]));
   return {
     self_check_duration_ms: Number(durationMs.toFixed(3)),
     test_case_duration_p95_ms: testSummary.assertion_duration_p95_ms,
     test_file_duration_p95_ms: testSummary.test_file_duration_p95_ms,
     failed_test_count: testSummary.failed_tests,
     passed_test_count: testSummary.passed_tests,
+    dojo_metrics: dojoMetrics,
+    dojo_metric_coverage: dojoMetricCoverage,
   };
+}
+
+export function buildDojoReleaseMetricCoverage({ jsonReport, testSummary = summarizeVitestJsonReport(jsonReport) }) {
+  const assertionRecords = assertionDurationRecords(jsonReport);
+  const metricCoverage = DOJO_CHAOS_PERFORMANCE_METRIC_RULES.map((rule) => {
+    const evidence = assertionRecords.filter((record) => {
+      const normalizedTitle = normalizeScenarioText(record.title);
+      return rule.aliases.some((alias) => normalizedTitle.includes(normalizeScenarioText(alias)));
+    });
+    return {
+      metric: rule.metric,
+      covered: evidence.length > 0,
+      value: evidence.length > 0 ? percentile(evidence.map((record) => record.duration_ms), 0.95) : null,
+      sample_count: evidence.length,
+      evidence_titles: evidence.map((record) => record.title),
+    };
+  });
+  const replayEvidence = metricCoverage.find((item) => item.metric === "proof_replay_rejection_p95_ms");
+  metricCoverage.push({
+    metric: "proof_replay_false_allow_count",
+    covered: Boolean(replayEvidence?.covered) && testSummary.failed_tests === 0,
+    value: Boolean(replayEvidence?.covered) && testSummary.failed_tests === 0 ? 0 : null,
+    sample_count: replayEvidence?.sample_count ?? 0,
+    evidence_titles: replayEvidence?.evidence_titles ?? [],
+  });
+  return metricCoverage.sort((left, right) => left.metric.localeCompare(right.metric));
 }
 
 function buildBudgetEvaluation({
@@ -370,6 +462,10 @@ function buildBudgetEvaluation({
     self_check_within_timeout: performanceMetrics.self_check_duration_ms <= timeoutMs,
     test_case_p95_recorded: Number.isFinite(performanceMetrics.test_case_duration_p95_ms),
     test_file_p95_recorded: Number.isFinite(performanceMetrics.test_file_duration_p95_ms),
+    dojo_release_metrics_complete: performanceMetrics.dojo_metric_coverage.every((item) => item.covered),
+    proof_replay_false_allow_count_zero: typeof performanceMetrics.dojo_metrics.proof_replay_false_allow_count === "number"
+      && Number.isFinite(performanceMetrics.dojo_metrics.proof_replay_false_allow_count)
+      && performanceMetrics.dojo_metrics.proof_replay_false_allow_count === 0,
   };
   return {
     ok: Object.values(checks).every(Boolean),
@@ -394,8 +490,9 @@ function scenarioMatchers(scenario) {
     prompt_injection_fixture: ["prompt injection"],
     runtime_oracle_classification: ["oracle", "classifies"],
     evil_twin_attack_hardening: ["evil twin", "attack hardening", "hardening"],
-    hosted_runtime_preflight_fail_closed: ["authorizes hosted runtime sessions before consuming production proof capsules", "runtime session not found"],
+    hosted_runtime_preflight_fail_closed: ["hosted runtime session", "before consuming production proof capsules", "runtime session not found"],
     proof_not_consumed_on_failed_preflight: ["proof not consumed", "before consuming production proof capsules"],
+    proof_replay_false_allow: ["proof capsule replay detected", "consumes exactly once"],
     evidence_store_unavailable: [
       "evidence writing fails",
       "evidence writer does not return a ledger backed ref",
@@ -419,6 +516,17 @@ function scenarioMatchers(scenario) {
 
 function normalizeScenarioText(value) {
   return String(value || "").toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function assertionDurationRecords(report) {
+  const testResults = Array.isArray(report?.testResults) ? report.testResults : [];
+  return testResults.flatMap((result) => {
+    const assertions = Array.isArray(result.assertionResults) ? result.assertionResults : [];
+    return assertions.map((assertion) => ({
+      title: String(assertion.fullName || assertion.title || ""),
+      duration_ms: Number(assertion.duration),
+    })).filter((record) => record.title && Number.isFinite(record.duration_ms) && record.duration_ms >= 0);
+  });
 }
 
 function numberOrZero(value) {

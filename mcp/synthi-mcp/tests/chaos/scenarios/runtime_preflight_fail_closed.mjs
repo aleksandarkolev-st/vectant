@@ -11,7 +11,7 @@ export default {
       evidenceMatchers: [
         {
           id: "hosted_runtime_preflight_fail_closed",
-          aliases: ["authorizes hosted runtime sessions before consuming production proof capsules", "runtime session not found"],
+          aliases: ["hosted runtime session", "before consuming production proof capsules", "runtime session not found"],
         },
         {
           id: "proof_not_consumed_on_failed_preflight",

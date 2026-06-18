@@ -35,6 +35,7 @@ import {
   buildConformanceReleaseGateSummary,
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
 import {
+  DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS,
   DOJO_CHAOS_PERFORMANCE_TEST_FILES,
   DOJO_CHAOS_SCENARIOS,
 } from "../../scripts/dojo-chaos-performance-self-check.mjs";
@@ -3670,6 +3671,39 @@ describe("Dojo release gate artifact verifier", () => {
     expect(missingMetrics.errors).toEqual(expect.arrayContaining([
       "chaos_performance_missing_test_case_p95",
       "chaos_performance_missing_test_file_p95",
+      "chaos_performance_release_metric_invalid:proof_validation_p95_ms",
+    ]));
+
+    const missingReleaseMetricsPath = await writeChaosEvidenceFixture({
+      dir,
+      basename: "missing-release-metrics-chaos",
+      evidence: chaosEvidenceFixture({
+        release_metric_coverage_complete: false,
+        missing_release_metrics: ["proof_validation_p95_ms"],
+        release_metric_coverage: DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS
+          .filter((metric) => metric !== "proof_validation_p95_ms")
+          .map((metric) => ({
+            metric,
+            covered: true,
+            value: metric === "proof_replay_false_allow_count" ? 0 : 42,
+            sample_count: 1,
+            evidence_titles: [`evidence for ${metric}`],
+          })),
+        performance_metrics: {
+          ...chaosEvidenceFixture().performance_metrics,
+          dojo_metrics: {
+            ...chaosEvidenceFixture().performance_metrics.dojo_metrics,
+            proof_validation_p95_ms: undefined,
+          },
+        },
+      }),
+    });
+    const missingReleaseMetrics = await verifyDojoChaosPerformanceEvidenceArtifact({ evidencePath: missingReleaseMetricsPath });
+    expect(missingReleaseMetrics.errors).toEqual(expect.arrayContaining([
+      "chaos_performance_release_metric_coverage_incomplete",
+      "chaos_performance_missing_release_metrics:proof_validation_p95_ms",
+      "chaos_performance_required_release_metrics_missing:proof_validation_p95_ms",
+      "chaos_performance_release_metric_invalid:proof_validation_p95_ms",
     ]));
 
     const incompletePath = await writeChaosEvidenceFixture({
@@ -7410,6 +7444,15 @@ function chaosEvidenceFixture(overrides = {}) {
     configured_scenario_count: DOJO_CHAOS_SCENARIOS.length,
     scenario_coverage_complete: true,
     missing_chaos_scenarios: [],
+    release_metric_coverage_complete: true,
+    missing_release_metrics: [],
+    release_metric_coverage: DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS.map((metric) => ({
+      metric,
+      covered: true,
+      value: metric === "proof_replay_false_allow_count" ? 0 : 42,
+      sample_count: 1,
+      evidence_titles: [`evidence for ${metric}`],
+    })),
     test_files: [...DOJO_CHAOS_PERFORMANCE_TEST_FILES],
     test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
     reported_test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
@@ -7453,6 +7496,10 @@ function chaosEvidenceFixture(overrides = {}) {
       test_file_duration_p95_ms: 140,
       failed_test_count: 0,
       passed_test_count: 9,
+      dojo_metrics: Object.fromEntries(DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS.map((metric) => [
+        metric,
+        metric === "proof_replay_false_allow_count" ? 0 : 42,
+      ])),
     },
     stdout_path: "stdout.log",
     stderr_path: "stderr.log",

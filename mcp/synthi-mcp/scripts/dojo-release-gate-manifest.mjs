@@ -33,6 +33,7 @@ import {
   DOJO_COMPLIANCE_EXPORT_TEST_FILES,
 } from "./dojo-compliance-export-self-check.mjs";
 import {
+  DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS,
   DOJO_CHAOS_PERFORMANCE_TEST_FILES,
   DOJO_CHAOS_SCENARIOS,
 } from "./dojo-chaos-performance-self-check.mjs";
@@ -1385,6 +1386,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_no_skipped_tests: true,
       require_budget_ok: true,
       require_performance_metrics: true,
+      require_dojo_release_metrics: true,
+      required_dojo_release_metrics: [...DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS],
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
     },
@@ -3085,6 +3088,16 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_performance_metrics) {
       errors.push("chaos_performance_missing_metrics_requirement");
+    }
+    if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_dojo_release_metrics) {
+      errors.push("chaos_performance_missing_dojo_release_metrics_requirement");
+    }
+    const missingReleaseMetrics = missingRequiredEntries(
+      DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS,
+      chaosPerformanceGate.enterprise_artifact_requirements?.required_dojo_release_metrics,
+    );
+    if (missingReleaseMetrics.length > 0) {
+      errors.push(`chaos_performance_missing_required_dojo_release_metrics:${missingReleaseMetrics.join(",")}`);
     }
     if (!chaosPerformanceGate.enterprise_artifact_requirements?.require_json_report_digest_match) {
       errors.push("chaos_performance_missing_json_report_digest_requirement");

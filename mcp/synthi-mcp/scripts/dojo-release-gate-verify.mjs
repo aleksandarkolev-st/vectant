@@ -45,6 +45,7 @@ import {
   redactConformanceReport,
 } from "./dojo-mcp-host-conformance.mjs";
 import {
+  DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS,
   DOJO_CHAOS_PERFORMANCE_TEST_FILES,
   DOJO_CHAOS_SCENARIOS,
 } from "./dojo-chaos-performance-self-check.mjs";
@@ -4231,6 +4232,31 @@ export function validateDojoChaosPerformanceEvidenceForEnterprise(evidence) {
   }
   if (!Number.isFinite(Number(evidence?.performance_metrics?.test_file_duration_p95_ms))) {
     errors.push("chaos_performance_missing_test_file_p95");
+  }
+  const releaseMetricCoverage = Array.isArray(evidence?.release_metric_coverage)
+    ? evidence.release_metric_coverage
+    : [];
+  const releaseMetricNames = releaseMetricCoverage
+    .map((item) => String(item?.metric || ""))
+    .filter(Boolean);
+  if (evidence?.release_metric_coverage_complete !== true) {
+    errors.push("chaos_performance_release_metric_coverage_incomplete");
+  }
+  if (Array.isArray(evidence?.missing_release_metrics) && evidence.missing_release_metrics.length > 0) {
+    errors.push(`chaos_performance_missing_release_metrics:${evidence.missing_release_metrics.join(",")}`);
+  }
+  const missingRequiredMetrics = DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS
+    .filter((metric) => !releaseMetricNames.includes(metric));
+  if (missingRequiredMetrics.length > 0) {
+    errors.push(`chaos_performance_required_release_metrics_missing:${missingRequiredMetrics.join(",")}`);
+  }
+  const dojoMetrics = evidence?.performance_metrics?.dojo_metrics ?? {};
+  for (const metric of DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS) {
+    const value = Number(dojoMetrics[metric]);
+    if (!Number.isFinite(value) || value < 0) errors.push(`chaos_performance_release_metric_invalid:${metric}`);
+  }
+  if (Number(dojoMetrics.proof_replay_false_allow_count) !== 0) {
+    errors.push(`chaos_performance_proof_replay_false_allow_count_nonzero:${dojoMetrics.proof_replay_false_allow_count ?? "missing"}`);
   }
   return {
     ok: errors.length === 0,
@@ -9123,8 +9149,19 @@ async function writeChaosEvidenceForSelfCheck({
         self_check_within_timeout: true,
         test_case_p95_recorded: true,
         test_file_p95_recorded: true,
+        dojo_release_metrics_complete: true,
+        proof_replay_false_allow_count_zero: true,
       },
     },
+    release_metric_coverage_complete: true,
+    missing_release_metrics: [],
+    release_metric_coverage: DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS.map((metric) => ({
+      metric,
+      covered: true,
+      value: metric === "proof_replay_false_allow_count" ? 0 : 42,
+      sample_count: 1,
+      evidence_titles: [`evidence for ${metric}`],
+    })),
     chaos_runner_required: true,
     chaos_runner: {
       ok: true,
@@ -9157,6 +9194,10 @@ async function writeChaosEvidenceForSelfCheck({
       test_file_duration_p95_ms: 140,
       failed_test_count: 0,
       passed_test_count: 9,
+      dojo_metrics: Object.fromEntries(DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS.map((metric) => [
+        metric,
+        metric === "proof_replay_false_allow_count" ? 0 : 42,
+      ])),
     },
     test_files: [...DOJO_CHAOS_PERFORMANCE_TEST_FILES],
     test_file_count: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,

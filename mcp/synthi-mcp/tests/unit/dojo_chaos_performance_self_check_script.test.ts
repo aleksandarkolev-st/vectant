@@ -2,7 +2,9 @@
 import { describe, expect, it } from "vitest";
 import {
   buildDojoChaosPerformanceEvidenceManifest,
+  buildDojoReleaseMetricCoverage,
   buildScenarioCoverage,
+  DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS,
   DOJO_CHAOS_PERFORMANCE_TEST_FILES,
   DOJO_CHAOS_SCENARIOS,
   summarizeVitestJsonReport,
@@ -13,8 +15,8 @@ const VITEST_REPORT = {
   numTotalTestSuites: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
   numPassedTestSuites: DOJO_CHAOS_PERFORMANCE_TEST_FILES.length,
   numFailedTestSuites: 0,
-  numTotalTests: 18,
-  numPassedTests: 18,
+  numTotalTests: 21,
+  numPassedTests: 21,
   numFailedTests: 0,
   numPendingTests: 0,
   testResults: [
@@ -72,6 +74,19 @@ const VITEST_REPORT = {
           title: "blocks a node when one of its expiry triggers is active",
           status: "passed",
           duration: 24,
+        },
+      ],
+    },
+    {
+      name: "tests/unit/dojo_proof_capsule_service.test.ts",
+      startTime: 1125,
+      endTime: 1129,
+      assertionResults: [
+        {
+          fullName: "Dojo proof capsule service issues verified capsules, validates without consuming on dry run, and consumes exactly once",
+          title: "issues verified capsules, validates without consuming on dry run, and consumes exactly once",
+          status: "passed",
+          duration: 4,
         },
       ],
     },
@@ -163,6 +178,12 @@ const VITEST_REPORT = {
           duration: 14,
         },
         {
+          fullName: "Dojo executable checkride runner appends checkride scenario evidence to the ledger when required",
+          title: "appends checkride scenario evidence to the ledger when required",
+          status: "passed",
+          duration: 18,
+        },
+        {
           fullName: "Dojo executable checkride runner fails closed when ledger-backed checkride evidence is required but unavailable",
           title: "fails closed when ledger-backed checkride evidence is required but unavailable",
           status: "passed",
@@ -195,8 +216,8 @@ const VITEST_REPORT = {
       endTime: 1920,
       assertionResults: [
         {
-          fullName: "Agent Dojo MCP tools authorizes hosted runtime sessions before consuming production proof capsules",
-          title: "authorizes hosted runtime sessions before consuming production proof capsules",
+          fullName: "Agent Dojo MCP tools enforces hosted runtime session RBAC before consuming production proof capsules",
+          title: "enforces hosted runtime session RBAC before consuming production proof capsules",
           status: "passed",
           duration: 45,
         },
@@ -251,6 +272,7 @@ describe("Dojo chaos performance self-check script", () => {
       "tests/unit/dojo_fixture_materializer.test.ts",
       "tests/unit/dojo_evidence_record.test.ts",
       "tests/unit/dojo_graph_runtime.test.ts",
+      "tests/unit/dojo_proof_capsule_service.test.ts",
       "tests/unit/dojo_proof_signing.test.ts",
       "tests/unit/dojo_source_drift.test.ts",
       "tests/integration/dojo_api_fault_server.test.ts",
@@ -266,9 +288,23 @@ describe("Dojo chaos performance self-check script", () => {
       "evil_twin_attack_hardening",
       "hosted_runtime_preflight_fail_closed",
       "proof_not_consumed_on_failed_preflight",
+      "proof_replay_false_allow",
       "evidence_store_unavailable",
       "proof_signing_service_unavailable",
       "source_contract_drift_mid_run",
+    ]));
+    expect(DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS).toEqual(expect.arrayContaining([
+      "proof_validation_p95_ms",
+      "proof_replay_rejection_p95_ms",
+      "proof_replay_false_allow_count",
+      "graph_node_execution_p95_ms",
+      "vivarium_scenario_runtime_p95_ms",
+      "checkride_runtime_p95_ms",
+      "evidence_append_p95_ms",
+      "api_fault_runtime_p95_ms",
+      "evil_twin_hardening_p95_ms",
+      "hosted_runtime_preflight_p95_ms",
+      "source_drift_expiry_p95_ms",
     ]));
   });
 
@@ -311,19 +347,35 @@ describe("Dojo chaos performance self-check script", () => {
         "evidence_store_unavailable",
         "proof_signing_service_unavailable",
         "source_contract_drift_mid_run",
+        "proof_replay_false_allow",
       ]),
       test_summary: expect.objectContaining({
-        total_tests: 18,
-        passed_tests: 18,
+        total_tests: 21,
+        passed_tests: 21,
         failed_tests: 0,
-        assertion_duration_p95_ms: 60,
+        assertion_duration_p95_ms: 45,
         test_file_duration_p95_ms: 180,
       }),
       performance_metrics: expect.objectContaining({
         self_check_duration_ms: 2345.679,
-        test_case_duration_p95_ms: 60,
+        test_case_duration_p95_ms: 45,
         test_file_duration_p95_ms: 180,
+        dojo_metrics: expect.objectContaining({
+          proof_validation_p95_ms: 4,
+          proof_replay_rejection_p95_ms: 4,
+          proof_replay_false_allow_count: 0,
+          graph_node_execution_p95_ms: 42,
+          vivarium_scenario_runtime_p95_ms: 15,
+          checkride_runtime_p95_ms: 22,
+          evidence_append_p95_ms: 22,
+          api_fault_runtime_p95_ms: 40,
+          evil_twin_hardening_p95_ms: 60,
+          hosted_runtime_preflight_p95_ms: 45,
+          source_drift_expiry_p95_ms: 36,
+        }),
       }),
+      release_metric_coverage_complete: true,
+      missing_release_metrics: [],
       budget_evaluation: expect.objectContaining({
         ok: true,
         checks: expect.objectContaining({
@@ -333,6 +385,8 @@ describe("Dojo chaos performance self-check script", () => {
           chaos_runner_report_ok: true,
           chaos_runner_has_scenarios: true,
           chaos_runner_all_runs_passed: true,
+          dojo_release_metrics_complete: true,
+          proof_replay_false_allow_count_zero: true,
         }),
       }),
       chaos_runner_required: true,
@@ -359,6 +413,56 @@ describe("Dojo chaos performance self-check script", () => {
     expect(evidence.stderr_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(evidence.json_report_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(evidence.json_report_bytes).toBeGreaterThan(0);
+  });
+
+  it("fails metrics evidence when a required Dojo release metric has no JSON reporter evidence", () => {
+    const partialReport = {
+      ...VITEST_REPORT,
+      testResults: VITEST_REPORT.testResults.filter((result) => result.name !== "tests/unit/dojo_proof_capsule_service.test.ts"),
+    };
+    const reportedAssertions = partialReport.testResults.flatMap((result) => result.assertionResults);
+    partialReport.numTotalTests = reportedAssertions.length;
+    partialReport.numPassedTests = reportedAssertions.length;
+    const coverage = buildDojoReleaseMetricCoverage({ jsonReport: partialReport });
+    expect(coverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metric: "proof_validation_p95_ms",
+        covered: false,
+        value: null,
+      }),
+      expect.objectContaining({
+        metric: "proof_replay_false_allow_count",
+        covered: false,
+        value: null,
+      }),
+    ]));
+
+    const evidence = buildDojoChaosPerformanceEvidenceManifest({
+      now: "2026-06-11T00:00:00.000Z",
+      exitCode: 0,
+      signal: null,
+      durationMs: 2345.6789,
+      testFiles: DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+      scenarios: DOJO_CHAOS_SCENARIOS,
+      stdout: "chaos integration tests passed",
+      stderr: "",
+      stdoutPath: "tmp/stdout.log",
+      stderrPath: "tmp/stderr.log",
+      jsonReport: partialReport,
+      jsonReportPath: "tmp/vitest.json",
+      ...chaosRunnerEvidenceFixture(),
+      timeoutMs: 120000,
+    });
+
+    expect(evidence.ok).toBe(false);
+    expect(evidence.release_metric_coverage_complete).toBe(false);
+    expect(evidence.missing_release_metrics).toEqual(expect.arrayContaining([
+      "proof_validation_p95_ms",
+      "proof_replay_rejection_p95_ms",
+      "proof_replay_false_allow_count",
+    ]));
+    expect(evidence.budget_evaluation.checks.dojo_release_metrics_complete).toBe(false);
+    expect(evidence.budget_evaluation.checks.proof_replay_false_allow_count_zero).toBe(false);
   });
 
   it("fails metrics evidence when the Vitest report omits a configured chaos test file", () => {
@@ -435,10 +539,10 @@ describe("Dojo chaos performance self-check script", () => {
     const summary = summarizeVitestJsonReport(VITEST_REPORT);
     expect(summary).toEqual(expect.objectContaining({
       success: true,
-      total_tests: 18,
-      passed_tests: 18,
+      total_tests: 21,
+      passed_tests: 21,
       failed_tests: 0,
-      assertion_duration_p95_ms: 60,
+      assertion_duration_p95_ms: 45,
       test_file_duration_p95_ms: 180,
     }));
 
