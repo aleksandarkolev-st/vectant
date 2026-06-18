@@ -13,6 +13,9 @@ import {
   DOJO_FULL_VISUAL_VIEWPORTS,
   DOJO_GHOST_MODE_VISUAL_ROUTE_IDS,
   DOJO_GHOST_MODE_VISUAL_VIEWPORTS,
+  DOJO_LIVE_CHAOS_ENABLE_ENV,
+  DOJO_LIVE_CHAOS_REQUIRED_ENV,
+  DOJO_LIVE_CHAOS_SCENARIOS,
   DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
   DOJO_RELEASE_OBSERVATION_MAX_AGE_MS,
   validateDojoReleaseGateManifest,
@@ -164,6 +167,7 @@ import {
   validateDojoPostgresControlPlaneEvidenceForMilestone,
   validateDojoWorkflowPipelineE2EForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
+  validateDojoLiveChaosReportForEnterprise,
   validateDojoSoakPerformanceEvidenceForEnterprise,
   validateDojoComplianceExportEvidenceForRelease,
   validateDojoAffordanceCodemodEvidenceForRelease,
@@ -171,6 +175,7 @@ import {
   validateDojoSecurityAbuseEvidenceForRelease,
   validateDojoSoakPerformanceSummary,
   verifyDojoChaosPerformanceEvidenceArtifact,
+  verifyDojoLiveChaosReportArtifact,
   verifyDojoSoakPerformanceEvidenceArtifact,
   verifyDojoComplianceExportEvidenceArtifact,
   verifyDojoAffordanceCodemodEvidenceArtifact,
@@ -325,6 +330,87 @@ describe("Dojo release gate artifact verifier", () => {
       "verifier_self_check_missing_negative_controls",
     ]));
   }, 30000);
+
+  it("verifies live chaos runner reports and rejects missing scenarios or tampered command evidence", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-live-chaos-verify-"));
+    const reportPath = await writeLiveChaosRunnerReportFixture({ dir });
+    const report = JSON.parse(await readFile(reportPath, "utf8"));
+
+    expect(validateDojoLiveChaosReportForEnterprise(report)).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoLiveChaosReportArtifact({
+      reportPath,
+      enterpriseRelease: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_live_chaos",
+      ok: true,
+      errors: [],
+      report_schema_version: "synthi.chaosRunnerReport.v1",
+      result_count: DOJO_LIVE_CHAOS_SCENARIOS.length,
+      enterprise_release: true,
+    }));
+
+    const missingScenarioReport = {
+      ...report,
+      scenario_count: report.scenario_count - 1,
+      scenarios: report.scenarios.slice(1),
+      results: report.results.slice(1),
+      expected_run_count: report.expected_run_count - 1,
+      passed_run_count: report.passed_run_count - 1,
+    };
+    const missingScenarioValidation = validateDojoLiveChaosReportForEnterprise(missingScenarioReport);
+    expect(missingScenarioValidation.ok).toBe(false);
+    expect(missingScenarioValidation.errors).toEqual(expect.arrayContaining([
+      `live_chaos_required_scenarios_missing:${DOJO_LIVE_CHAOS_SCENARIOS[0]}`,
+      `live_chaos_required_result_missing:${DOJO_LIVE_CHAOS_SCENARIOS[0]}`,
+    ]));
+
+    const firstScenario = report.results[0].scenario;
+    await writeFile(report.results[0].evidence.stdout_path, "tampered live chaos stdout\n", "utf8");
+    const tampered = await verifyDojoLiveChaosReportArtifact({
+      reportPath,
+      enterpriseRelease: true,
+    });
+    expect(tampered.ok).toBe(false);
+    expect(tampered.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(new RegExp(`^live_chaos_stdout_${firstScenario}_sha256_mismatch:`)),
+      expect.stringMatching(new RegExp(`^live_chaos_stdout_${firstScenario}_bytes_mismatch:`)),
+    ]));
+  });
+
+  it("can include a live chaos report in aggregate artifact verification", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-live-chaos-aggregate-"));
+    const packageScripts = await readPackageScripts();
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+    const liveChaosReportPath = await writeLiveChaosRunnerReportFixture({ dir });
+
+    const aggregate = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "include-live-chaos": "1",
+        "live-chaos-report": liveChaosReportPath,
+      },
+    });
+
+    expect(aggregate.ok).toBe(true);
+    expect(aggregate.live_chaos).toEqual([
+      expect.objectContaining({
+        id: "dojo_live_chaos",
+        ok: true,
+        result_count: DOJO_LIVE_CHAOS_SCENARIOS.length,
+        report_schema_version: "synthi.chaosRunnerReport.v1",
+      }),
+    ]);
+  });
 
   it("verifies release-gate runner reports and rejects dry-run or tampered log proof for promotion", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-gate-runner-verify-"));
@@ -8624,6 +8710,85 @@ function chaosRunnerReportFixtureText() {
       { ok: true, name: "vivarium_oracle#1", scenario: "vivarium_oracle" },
     ],
   }, null, 2);
+}
+
+async function writeLiveChaosRunnerReportFixture({
+  dir,
+  basename = "live-chaos-runner",
+  overrides = {},
+}) {
+  const commandEnvs = DOJO_LIVE_CHAOS_REQUIRED_ENV
+    .filter((envName) => envName !== DOJO_LIVE_CHAOS_ENABLE_ENV);
+  const scenarios = DOJO_LIVE_CHAOS_SCENARIOS.map((scenarioName, index) => ({
+    name: scenarioName,
+    kind: "live",
+    description: `Live chaos fixture for ${scenarioName}`,
+    required_env: [
+      DOJO_LIVE_CHAOS_ENABLE_ENV,
+      commandEnvs[index] || commandEnvs[0],
+    ],
+  }));
+  const results = [];
+  for (const scenario of scenarios) {
+    const stdout = `${scenario.name} live command ok\n`;
+    const stderr = "";
+    const stdoutPath = path.join(dir, `${basename}.${scenario.name}.stdout.log`);
+    const stderrPath = path.join(dir, `${basename}.${scenario.name}.stderr.log`);
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    results.push({
+      ok: true,
+      name: `${scenario.name}#1`,
+      scenario: scenario.name,
+      description: scenario.description,
+      iteration: 1,
+      duration_ms: 10,
+      evidence: {
+        schema_version: "synthi.chaosLiveCommandScenarioEvidence.v1",
+        scenario: scenario.name,
+        kind: "live",
+        ok: true,
+        duration_ms: 10,
+        command_env: scenario.required_env[1],
+        command_argv0: process.execPath,
+        command_arg_count: 2,
+        expected_exit_code: 0,
+        exit_code: 0,
+        signal: null,
+        timed_out: false,
+        stdout_path: stdoutPath,
+        stderr_path: stderrPath,
+        stdout_sha256: sha256(stdout),
+        stderr_sha256: sha256(stderr),
+        stdout_bytes: Buffer.byteLength(stdout),
+        stderr_bytes: Buffer.byteLength(stderr),
+      },
+    });
+  }
+  const report = {
+    schema_version: "synthi.chaosRunnerReport.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    started_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    list_only: false,
+    duration_ms: 70,
+    scenario_count: scenarios.length,
+    iteration_count: 1,
+    expected_run_count: results.length,
+    passed_run_count: results.length,
+    failed_run_count: 0,
+    scenarios,
+    scenario_kinds: ["live"],
+    scenario_kind_filter: "live",
+    live_scenarios_included: true,
+    results,
+    artifact_dir: dir,
+    timeout_ms: 120000,
+    ...overrides,
+  };
+  const reportPath = path.join(dir, `${basename}.report.json`);
+  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  return reportPath;
 }
 
 async function writeDojoSoakEvidenceFixture({

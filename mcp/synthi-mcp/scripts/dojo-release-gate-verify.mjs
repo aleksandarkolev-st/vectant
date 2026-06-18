@@ -13,6 +13,9 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  DOJO_LIVE_CHAOS_ENABLE_ENV,
+  DOJO_LIVE_CHAOS_REQUIRED_ENV,
+  DOJO_LIVE_CHAOS_SCENARIOS,
   DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
   DOJO_RELEASE_OBSERVATION_MAX_AGE_MS,
   DOJO_FULL_VISUAL_ROUTE_IDS,
@@ -178,6 +181,7 @@ const DEFAULT_VIVARIUM_RUNTIME_DIR = path.join(REPO_ROOT, "tmp", "dojo-vivarium-
 const DEFAULT_SECURITY_ABUSE_DIR = path.join(REPO_ROOT, "tmp", "dojo-security-abuse");
 const DEFAULT_COMPLIANCE_EXPORT_DIR = path.join(REPO_ROOT, "tmp", "dojo-compliance-export");
 const DEFAULT_PRIVACY_REDACTION_DIR = path.join(REPO_ROOT, "tmp", "dojo-privacy-redaction");
+const DEFAULT_CHAOS_RUNNER_DIR = path.join(REPO_ROOT, "tmp", "dojo-chaos-runner");
 const DEFAULT_CHAOS_PERFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-chaos-performance");
 const DEFAULT_DOJO_SOAK_PERFORMANCE_DIR = path.join(REPO_ROOT, "tmp", "dojo-soak-performance");
 const DEFAULT_SOAK_DIR = path.join(MCP_ROOT, ".soak");
@@ -874,6 +878,22 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     })));
   }
 
+  const liveChaosResults = [];
+  if (enterpriseRelease || truthy(args["include-live-chaos"]) || args["live-chaos-report"]) {
+    const liveChaosGate = findGate(manifest, "dojo_live_chaos") || {};
+    const reportPath = resolveRepoPath(args["live-chaos-report"]
+      || liveChaosGate.default_report_path
+      || path.join(DEFAULT_CHAOS_RUNNER_DIR, "live-chaos-runner.report.json"));
+    liveChaosResults.push(await verifyArtifactSection({
+      id: "dojo_live_chaos",
+      artifactPath: reportPath,
+      enterpriseRelease,
+    }, () => verifyDojoLiveChaosReportArtifact({
+      reportPath,
+      enterpriseRelease,
+    })));
+  }
+
   const dojoSoakPerformanceResults = [];
   if (enterpriseRelease || truthy(args["include-dojo-soak-performance"]) || args["dojo-soak-performance-evidence"]) {
     const dojoSoakGate = findGate(manifest, "dojo_soak_performance_self_check") || {};
@@ -907,7 +927,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       })));
   }
 
-  const sections = [manifestResult, ...releaseGateRunnerResults, ...releaseGateVerifierResults, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...dojoSoakPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...releaseGateRunnerResults, ...releaseGateVerifierResults, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...liveChaosResults, ...dojoSoakPerformanceResults, ...soakPerformanceResults];
   const releaseGateCoverage = getVerifiableReleaseGateCoverage({
     manifest,
     sections,
@@ -959,6 +979,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     compliance_export: complianceExportResults.map(summarizeSection),
     privacy_redaction: privacyRedactionResults.map(summarizeSection),
     chaos_performance: chaosPerformanceResults.map(summarizeSection),
+    live_chaos: liveChaosResults.map(summarizeSection),
     dojo_soak_performance: dojoSoakPerformanceResults.map(summarizeSection),
     soak_performance: soakPerformanceResults.map(summarizeSection),
   };
@@ -987,6 +1008,7 @@ export function buildDojoReleaseGateVerificationEvidenceManifest({ report, repor
     release_gate_runner_section_count: Array.isArray(report?.release_gate_runner) ? report.release_gate_runner.length : 0,
     release_gate_verifier_section_count: Array.isArray(report?.release_gate_verifier) ? report.release_gate_verifier.length : 0,
     chaos_performance_section_count: Array.isArray(report?.chaos_performance) ? report.chaos_performance.length : 0,
+    live_chaos_section_count: Array.isArray(report?.live_chaos) ? report.live_chaos.length : 0,
     dojo_soak_performance_section_count: Array.isArray(report?.dojo_soak_performance) ? report.dojo_soak_performance.length : 0,
     soak_performance_section_count: Array.isArray(report?.soak_performance) ? report.soak_performance.length : 0,
   };
@@ -4481,6 +4503,130 @@ export function validateDojoPrivacyRedactionEvidenceForRelease(evidence) {
   };
 }
 
+export async function verifyDojoLiveChaosReportArtifact({ reportPath, enterpriseRelease = false }) {
+  const report = await readJsonFile(reportPath);
+  const errors = validateDojoLiveChaosReportForEnterprise(report).errors;
+  errors.push(...await validateDojoLiveChaosCommandEvidenceArtifacts(report, reportPath));
+  return {
+    id: "dojo_live_chaos",
+    ok: errors.length === 0,
+    errors,
+    artifact_path: reportPath,
+    enterprise_release: Boolean(enterpriseRelease),
+    report_schema_version: report?.schema_version ?? null,
+    result_count: Array.isArray(report?.results) ? report.results.length : 0,
+  };
+}
+
+export function validateDojoLiveChaosReportForEnterprise(report) {
+  const errors = [];
+  const scenarios = Array.isArray(report?.scenarios) ? report.scenarios : [];
+  const results = Array.isArray(report?.results) ? report.results : [];
+  const scenarioNames = scenarios
+    .map((scenario) => String(scenario?.name || ""))
+    .filter(Boolean);
+  const resultScenarioNames = results
+    .map((result) => String(result?.scenario || ""))
+    .filter(Boolean);
+  if (report?.schema_version !== "synthi.chaosRunnerReport.v1") {
+    errors.push(`live_chaos_schema_mismatch:${report?.schema_version || "missing"}`);
+  }
+  if (report?.ok !== true) errors.push("live_chaos_report_not_ok");
+  if (report?.list_only === true) errors.push("live_chaos_report_list_only");
+  if (report?.live_scenarios_included !== true) errors.push("live_chaos_live_scenarios_not_included");
+  if (report?.scenario_kind_filter !== "live") {
+    errors.push(`live_chaos_kind_filter_mismatch:${report?.scenario_kind_filter || "missing"}`);
+  }
+  const scenarioKinds = Array.isArray(report?.scenario_kinds) ? report.scenario_kinds.map(String) : [];
+  if (!scenarioKinds.includes("live")) errors.push("live_chaos_kind_missing");
+  const nonLiveScenarioNames = scenarios
+    .filter((scenario) => String(scenario?.kind || "") !== "live")
+    .map((scenario) => String(scenario?.name || "unknown"));
+  if (nonLiveScenarioNames.length > 0) {
+    errors.push(`live_chaos_non_live_scenarios:${nonLiveScenarioNames.join(",")}`);
+  }
+  const missingRequiredScenarios = DOJO_LIVE_CHAOS_SCENARIOS
+    .filter((scenarioName) => !scenarioNames.includes(scenarioName));
+  if (missingRequiredScenarios.length > 0) {
+    errors.push(`live_chaos_required_scenarios_missing:${missingRequiredScenarios.join(",")}`);
+  }
+  const requiredEnv = [...new Set(scenarios.flatMap((scenario) => (
+    Array.isArray(scenario?.required_env) ? scenario.required_env.map(String) : []
+  )))];
+  const missingRequiredEnv = DOJO_LIVE_CHAOS_REQUIRED_ENV
+    .filter((envName) => !requiredEnv.includes(envName));
+  if (missingRequiredEnv.length > 0) {
+    errors.push(`live_chaos_required_env_missing:${missingRequiredEnv.join(",")}`);
+  }
+  for (const scenario of scenarios) {
+    const name = String(scenario?.name || "unknown");
+    const scenarioRequiredEnv = Array.isArray(scenario?.required_env)
+      ? scenario.required_env.map(String)
+      : [];
+    if (!scenarioRequiredEnv.includes(DOJO_LIVE_CHAOS_ENABLE_ENV)) {
+      errors.push(`live_chaos_enable_env_missing:${name}`);
+    }
+  }
+  if (Number(report?.scenario_count || 0) !== scenarioNames.length) {
+    errors.push(`live_chaos_scenario_count_mismatch:${report?.scenario_count ?? "missing"}:${scenarioNames.length}`);
+  }
+  const iterationCount = Number(report?.iteration_count || 0);
+  if (!Number.isInteger(iterationCount) || iterationCount <= 0) {
+    errors.push(`live_chaos_iteration_count_invalid:${report?.iteration_count ?? "missing"}`);
+  }
+  const expectedRunCount = scenarioNames.length * (Number.isInteger(iterationCount) && iterationCount > 0 ? iterationCount : 0);
+  if (Number(report?.expected_run_count || 0) !== expectedRunCount) {
+    errors.push(`live_chaos_expected_run_count_mismatch:${report?.expected_run_count ?? "missing"}:${expectedRunCount}`);
+  }
+  if (results.length !== Number(report?.expected_run_count || 0)) {
+    errors.push(`live_chaos_result_count_mismatch:${results.length}:${report?.expected_run_count ?? "missing"}`);
+  }
+  if (Number(report?.failed_run_count || 0) !== 0) {
+    errors.push(`live_chaos_failed_runs:${report?.failed_run_count}`);
+  }
+  if (Number(report?.passed_run_count || 0) !== Number(report?.expected_run_count || 0)) {
+    errors.push(`live_chaos_passed_run_count_mismatch:${report?.passed_run_count ?? "missing"}:${report?.expected_run_count ?? "missing"}`);
+  }
+  for (const requiredScenario of DOJO_LIVE_CHAOS_SCENARIOS) {
+    if (!resultScenarioNames.includes(requiredScenario)) {
+      errors.push(`live_chaos_required_result_missing:${requiredScenario}`);
+    }
+  }
+  const requiredEnvSet = new Set(requiredEnv);
+  for (const result of results) {
+    const scenario = String(result?.scenario || "unknown");
+    if (result?.ok !== true) errors.push(`live_chaos_result_not_ok:${scenario}`);
+    const evidence = result?.evidence;
+    if (!evidence || typeof evidence !== "object") {
+      errors.push(`live_chaos_result_evidence_missing:${scenario}`);
+      continue;
+    }
+    if (evidence.schema_version !== "synthi.chaosLiveCommandScenarioEvidence.v1") {
+      errors.push(`live_chaos_result_evidence_schema_mismatch:${scenario}:${evidence.schema_version || "missing"}`);
+    }
+    if (evidence.ok !== true) errors.push(`live_chaos_result_evidence_not_ok:${scenario}`);
+    if (evidence.kind !== "live") errors.push(`live_chaos_result_evidence_kind_mismatch:${scenario}:${evidence.kind || "missing"}`);
+    if (String(evidence.scenario || "") !== scenario) {
+      errors.push(`live_chaos_result_evidence_scenario_mismatch:${scenario}:${evidence.scenario || "missing"}`);
+    }
+    if (!requiredEnvSet.has(String(evidence.command_env || ""))) {
+      errors.push(`live_chaos_result_command_env_unregistered:${scenario}:${evidence.command_env || "missing"}`);
+    }
+    if (Number(evidence.exit_code) !== Number(evidence.expected_exit_code)) {
+      errors.push(`live_chaos_result_exit_code_mismatch:${scenario}:${evidence.exit_code ?? "missing"}:${evidence.expected_exit_code ?? "missing"}`);
+    }
+    if (evidence.timed_out === true) errors.push(`live_chaos_result_timed_out:${scenario}`);
+    if (!String(evidence.command_argv0 || "")) errors.push(`live_chaos_result_command_argv0_missing:${scenario}`);
+    if (!Number.isFinite(Number(evidence.command_arg_count)) || Number(evidence.command_arg_count) < 0) {
+      errors.push(`live_chaos_result_command_arg_count_invalid:${scenario}:${evidence.command_arg_count ?? "missing"}`);
+    }
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
 export async function verifyDojoChaosPerformanceEvidenceArtifact({ evidencePath, enterpriseRelease = false }) {
   const evidence = await readJsonFile(evidencePath);
   const errors = validateDojoChaosPerformanceEvidenceForEnterprise(evidence).errors;
@@ -5103,6 +5249,32 @@ async function validateDojoChaosRunnerReferencedArtifacts(evidence, evidencePath
     expectedBytes: runner.stderr_bytes,
     evidencePath,
   }));
+  return errors;
+}
+
+async function validateDojoLiveChaosCommandEvidenceArtifacts(report, reportPath) {
+  const errors = [];
+  const results = Array.isArray(report?.results) ? report.results : [];
+  for (const result of results) {
+    const scenario = String(result?.scenario || "unknown")
+      .replace(/[^a-zA-Z0-9_:-]/g, "_");
+    const evidence = result?.evidence;
+    if (!evidence || typeof evidence !== "object") continue;
+    errors.push(...await validateDigestReferencedFile({
+      label: `live_chaos_stdout_${scenario}`,
+      filePath: evidence.stdout_path,
+      expectedSha256: evidence.stdout_sha256,
+      expectedBytes: evidence.stdout_bytes,
+      evidencePath: reportPath,
+    }));
+    errors.push(...await validateDigestReferencedFile({
+      label: `live_chaos_stderr_${scenario}`,
+      filePath: evidence.stderr_path,
+      expectedSha256: evidence.stderr_sha256,
+      expectedBytes: evidence.stderr_bytes,
+      evidencePath: reportPath,
+    }));
+  }
   return errors;
 }
 
@@ -6245,6 +6417,33 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
   });
   assert(rejectedChaos.errors.includes("chaos_performance_scenario_coverage_incomplete"));
   assert(rejectedChaos.errors.includes("chaos_performance_missing_scenarios:api_timeout"));
+
+  const liveChaosDir = path.join(outDir, "live-chaos");
+  await mkdir(liveChaosDir, { recursive: true });
+  const liveChaosReportPath = await writeLiveChaosReportForSelfCheck({ outDir: liveChaosDir });
+  const liveChaosResult = await verifyDojoLiveChaosReportArtifact({
+    reportPath: liveChaosReportPath,
+    enterpriseRelease: true,
+  });
+  assert.equal(liveChaosResult.ok, true, liveChaosResult.errors.join(";"));
+  const rejectedLiveChaosReportPath = await writeLiveChaosReportForSelfCheck({
+    outDir: liveChaosDir,
+    basename: "live-chaos-rejected",
+    overrides: {
+      ok: false,
+      live_scenarios_included: false,
+      scenario_kind_filter: "preflight",
+      failed_run_count: 1,
+    },
+  });
+  const rejectedLiveChaos = await verifyDojoLiveChaosReportArtifact({
+    reportPath: rejectedLiveChaosReportPath,
+    enterpriseRelease: true,
+  });
+  assert(rejectedLiveChaos.errors.includes("live_chaos_report_not_ok"));
+  assert(rejectedLiveChaos.errors.includes("live_chaos_live_scenarios_not_included"));
+  assert(rejectedLiveChaos.errors.includes("live_chaos_kind_filter_mismatch:preflight"));
+  assert(rejectedLiveChaos.errors.includes("live_chaos_failed_runs:1"));
 
   const dojoSoakDir = path.join(outDir, "dojo-soak-performance");
   await mkdir(dojoSoakDir, { recursive: true });
@@ -9870,6 +10069,85 @@ async function writeChaosEvidenceForSelfCheck({
     evidence_path: evidencePath,
     evidence,
   };
+}
+
+async function writeLiveChaosReportForSelfCheck({
+  outDir,
+  basename = "live-chaos-runner",
+  overrides = {},
+}) {
+  const commandEnvs = DOJO_LIVE_CHAOS_REQUIRED_ENV
+    .filter((envName) => envName !== DOJO_LIVE_CHAOS_ENABLE_ENV);
+  const scenarios = DOJO_LIVE_CHAOS_SCENARIOS.map((scenarioName, index) => ({
+    name: scenarioName,
+    kind: "live",
+    description: `Self-check live chaos fixture for ${scenarioName}.`,
+    required_env: [
+      DOJO_LIVE_CHAOS_ENABLE_ENV,
+      commandEnvs[index] || commandEnvs[0],
+    ],
+  }));
+  const results = [];
+  for (const scenario of scenarios) {
+    const stdout = `${scenario.name} live chaos command ok\n`;
+    const stderr = "";
+    const stdoutPath = path.join(outDir, `${basename}.${scenario.name}.stdout.log`);
+    const stderrPath = path.join(outDir, `${basename}.${scenario.name}.stderr.log`);
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    results.push({
+      ok: true,
+      name: `${scenario.name}#1`,
+      scenario: scenario.name,
+      description: scenario.description,
+      iteration: 1,
+      duration_ms: 12,
+      evidence: {
+        schema_version: "synthi.chaosLiveCommandScenarioEvidence.v1",
+        scenario: scenario.name,
+        kind: "live",
+        ok: true,
+        duration_ms: 12,
+        command_env: scenario.required_env[1],
+        command_argv0: process.execPath,
+        command_arg_count: 2,
+        expected_exit_code: 0,
+        exit_code: 0,
+        signal: null,
+        timed_out: false,
+        stdout_path: stdoutPath,
+        stderr_path: stderrPath,
+        stdout_sha256: sha256(stdout),
+        stderr_sha256: sha256(stderr),
+        stdout_bytes: Buffer.byteLength(stdout),
+        stderr_bytes: Buffer.byteLength(stderr),
+      },
+    });
+  }
+  const report = {
+    schema_version: "synthi.chaosRunnerReport.v1",
+    generated_at: new Date().toISOString(),
+    started_at: new Date().toISOString(),
+    ok: true,
+    list_only: false,
+    duration_ms: results.reduce((sum, result) => sum + Number(result.duration_ms || 0), 0),
+    scenario_count: scenarios.length,
+    iteration_count: 1,
+    expected_run_count: results.length,
+    passed_run_count: results.length,
+    failed_run_count: 0,
+    scenarios,
+    scenario_kinds: ["live"],
+    scenario_kind_filter: "live",
+    live_scenarios_included: true,
+    results,
+    artifact_dir: outDir,
+    timeout_ms: 120000,
+    ...overrides,
+  };
+  const reportPath = path.join(outDir, `${basename}.report.json`);
+  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  return reportPath;
 }
 
 async function writeDojoSoakEvidenceForSelfCheck({
