@@ -2620,6 +2620,42 @@ describe("Dojo release gate artifact verifier", () => {
     ]));
   });
 
+  it("verifies managed-key signing evidence as a release candidate without aggregate release promotion", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-managed-key-section-release-"));
+    const managedKeySigningEvidencePath = await writeManagedKeySigningEvidenceFixture({ dir });
+    const packageScripts = await readPackageScripts();
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path = managedKeySigningEvidencePath;
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+
+    const verified = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "managed-key-signing-evidence": managedKeySigningEvidencePath,
+        "managed-key-signing-release-candidate": "1",
+      },
+    });
+
+    expect(verified.ok).toBe(true);
+    expect(verified.release_candidate).not.toBe(true);
+    expect(verified.enterprise_release).not.toBe(true);
+    expect(verified.managed_key_signing).toEqual([
+      expect.objectContaining({
+        id: "dojo_managed_key_signing_self_check",
+        ok: true,
+        release_candidate: true,
+        release_observation_scope: "release",
+        release_observation_ready: true,
+      }),
+    ]);
+  });
+
   it("can require complete release-gate artifact coverage outside release-candidate mode", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-strict-release-gate-coverage-"));
     const manifest = buildDojoReleaseGateManifest({

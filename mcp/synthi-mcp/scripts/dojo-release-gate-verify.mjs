@@ -667,7 +667,8 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const managedKeySigningResults = [];
-  if (releasePromotion || truthy(args["include-managed-key-signing"]) || args["managed-key-signing-evidence"]) {
+  const managedKeySigningReleaseCandidate = releasePromotion || truthy(args["managed-key-signing-release-candidate"]);
+  if (managedKeySigningReleaseCandidate || truthy(args["include-managed-key-signing"]) || args["managed-key-signing-evidence"]) {
     const managedKeyGate = findGate(manifest, "dojo_managed_key_signing_self_check") || {};
     const evidencePath = resolveRepoPath(args["managed-key-signing-evidence"]
       || managedKeyGate.default_evidence_path
@@ -675,10 +676,10 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     managedKeySigningResults.push(await verifyArtifactSection({
       id: "dojo_managed_key_signing_self_check",
       evidencePath,
-      releaseCandidate: releasePromotion,
+      releaseCandidate: managedKeySigningReleaseCandidate,
     }, () => verifyDojoManagedKeySigningEvidenceArtifact({
       evidencePath,
-      releaseCandidate: releasePromotion,
+      releaseCandidate: managedKeySigningReleaseCandidate,
     })));
   }
 
@@ -10802,6 +10803,8 @@ function summarizeSection(section) {
     report_schema_version: section.report_schema_version,
     result_count: section.result_count,
     release_candidate: section.release_candidate,
+    release_observation_scope: section.release_observation_scope,
+    release_observation_ready: section.release_observation_ready,
     enterprise_release: section.enterprise_release,
     runner_scope: section.runner_scope,
     dry_run: section.dry_run,
