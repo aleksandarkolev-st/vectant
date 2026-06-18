@@ -194,11 +194,19 @@ async function main() {
   const result = await verifyDojoReleaseGateArtifactsFromArgs({ args });
   await mkdir(outDir, { recursive: true });
   const reportPath = path.join(outDir, "dojo-release-gate-verification.json");
-  await writeFile(reportPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+  const serializedReport = `${JSON.stringify(result, null, 2)}\n`;
+  await writeFile(reportPath, serializedReport, "utf8");
+  const evidencePath = path.join(outDir, "dojo-release-gate-verification.evidence.json");
+  const evidence = buildDojoReleaseGateVerificationEvidenceManifest({
+    report: result,
+    reportPath,
+    serialized: serializedReport,
+  });
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
   if (!result.ok) {
     throw new Error(`dojo_release_gate_verify_failed:${result.errors.join(";")}`);
   }
-  console.log(`[ok] Dojo release gate artifacts verified - report=${reportPath}`);
+  console.log(`[ok] Dojo release gate artifacts verified - report=${reportPath} evidence=${evidencePath}`);
 }
 
 export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {}) {
@@ -929,6 +937,33 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     privacy_redaction: privacyRedactionResults.map(summarizeSection),
     chaos_performance: chaosPerformanceResults.map(summarizeSection),
     soak_performance: soakPerformanceResults.map(summarizeSection),
+  };
+}
+
+export function buildDojoReleaseGateVerificationEvidenceManifest({ report, reportPath, serialized }) {
+  const body = typeof serialized === "string" ? serialized : JSON.stringify(report);
+  const errors = Array.isArray(report?.errors) ? report.errors : [];
+  return {
+    schema_version: "synthi.dojo.releaseGateVerificationEvidence.v1",
+    generated_at: new Date().toISOString(),
+    report_path: reportPath,
+    report_sha256: sha256(body),
+    report_bytes: Buffer.byteLength(body),
+    ok: Boolean(report?.ok),
+    enterprise_release: Boolean(report?.enterprise_release),
+    complete_release_gate_coverage_required: Boolean(report?.complete_release_gate_coverage_required),
+    verifiable_release_gate_count: Array.isArray(report?.verifiable_release_gate_ids) ? report.verifiable_release_gate_ids.length : 0,
+    attempted_release_gate_count: Array.isArray(report?.attempted_release_gate_ids) ? report.attempted_release_gate_ids.length : 0,
+    verified_release_gate_count: Array.isArray(report?.verified_release_gate_ids) ? report.verified_release_gate_ids.length : 0,
+    failed_verifiable_release_gate_count: Array.isArray(report?.failed_verifiable_release_gate_ids) ? report.failed_verifiable_release_gate_ids.length : 0,
+    missing_verifiable_release_gate_count: Array.isArray(report?.missing_verifiable_release_gate_ids) ? report.missing_verifiable_release_gate_ids.length : 0,
+    error_count: errors.length,
+    errors_sha256: sha256(JSON.stringify(errors)),
+    manifest_ok: Boolean(report?.manifest?.ok),
+    release_gate_runner_section_count: Array.isArray(report?.release_gate_runner) ? report.release_gate_runner.length : 0,
+    release_gate_verifier_section_count: Array.isArray(report?.release_gate_verifier) ? report.release_gate_verifier.length : 0,
+    chaos_performance_section_count: Array.isArray(report?.chaos_performance) ? report.chaos_performance.length : 0,
+    soak_performance_section_count: Array.isArray(report?.soak_performance) ? report.soak_performance.length : 0,
   };
 }
 

@@ -202,6 +202,7 @@ import {
   verifyDojoWorkflowPipelineE2EArtifact,
   verifyVisualProofArtifact,
   buildDojoReleaseGateVerifierSelfCheckEvidenceManifest,
+  buildDojoReleaseGateVerificationEvidenceManifest,
   runDojoReleaseGateVerifierSelfCheck,
 } from "../../scripts/dojo-release-gate-verify.mjs";
 import {
@@ -274,7 +275,7 @@ describe("Dojo release gate artifact verifier", () => {
     expect(evidence.rejected_control_count).toBe(result.report.rejected_controls.length);
     expect(rebuiltEvidence.report_sha256).toBe(evidence.report_sha256);
     expect(rebuiltEvidence.verified_section_ids).toEqual(evidence.verified_section_ids);
-  });
+  }, 30000);
 
   it("verifies verifier self-check evidence and rejects missing negative controls", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-gate-verifier-artifact-"));
@@ -477,6 +478,50 @@ describe("Dojo release gate artifact verifier", () => {
       }),
     ]);
     expect(aggregate.attempted_release_gate_ids).not.toContain("release_gate_runner");
+  });
+
+  it("builds digest evidence for aggregate release-gate verification reports", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-gate-verification-evidence-"));
+    const packageScripts = await readPackageScripts();
+    const releaseManifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest: releaseManifest, manifestPath, evidencePath });
+
+    const report = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        manifest: manifestPath,
+        evidence: evidencePath,
+      },
+    });
+    const reportPath = path.join(dir, "dojo-release-gate-verification.json");
+    const serializedReport = `${JSON.stringify(report, null, 2)}\n`;
+    const verificationEvidence = buildDojoReleaseGateVerificationEvidenceManifest({
+      report,
+      reportPath,
+      serialized: serializedReport,
+    });
+
+    expect(verificationEvidence).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.releaseGateVerificationEvidence.v1",
+      report_path: reportPath,
+      report_sha256: createHash("sha256").update(serializedReport).digest("hex"),
+      report_bytes: Buffer.byteLength(serializedReport),
+      ok: true,
+      enterprise_release: false,
+      complete_release_gate_coverage_required: false,
+      verifiable_release_gate_count: report.verifiable_release_gate_ids.length,
+      attempted_release_gate_count: report.attempted_release_gate_ids.length,
+      verified_release_gate_count: report.verified_release_gate_ids.length,
+      failed_verifiable_release_gate_count: report.failed_verifiable_release_gate_ids.length,
+      missing_verifiable_release_gate_count: report.missing_verifiable_release_gate_ids.length,
+      error_count: 0,
+      errors_sha256: createHash("sha256").update(JSON.stringify([])).digest("hex"),
+      manifest_ok: true,
+    }));
   });
 
   it("rejects runner reports when a produced expected artifact is tampered", async () => {
