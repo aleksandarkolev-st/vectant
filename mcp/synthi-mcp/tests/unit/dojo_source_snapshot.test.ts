@@ -94,6 +94,35 @@ describe("Dojo source snapshot contract", () => {
     })).toThrow(/dojo_source_token_duplicate/);
   });
 
+  it("rejects invalid source token action and risk metadata at runtime", () => {
+    expect(() => snapshotFixture({
+      source_tokens: [{
+        token_id: " save-button ",
+        route: "/invoices",
+        component: "InvoiceForm",
+        action: "   ",
+        source_locator: "src/InvoiceForm.jsx:42",
+      }],
+    })).toThrow(/dojo_source_snapshot_source_token_action_required/);
+
+    expect(() => snapshotFixture({
+      source_tokens: [{
+        token_id: "save-button",
+        route: "/invoices",
+        component: "InvoiceForm",
+        source_locator: "src/InvoiceForm.jsx:42",
+        risk: "catastrophic" as never,
+      }],
+    })).toThrow(/dojo_source_snapshot_source_token_risk_invalid/);
+
+    expect(() => snapshotFixture({
+      source_tokens: [
+        { token_id: " save-button ", route: "/a", component: "A", source_locator: "src/A.jsx:1" },
+        { token_id: "save-button", route: "/b", component: "B", source_locator: "src/B.jsx:1" },
+      ],
+    })).toThrow(/dojo_source_token_duplicate/);
+  });
+
   it("detects tampered source snapshot material and missing signing keys", () => {
     const snapshot = snapshotFixture();
     const tampered = {

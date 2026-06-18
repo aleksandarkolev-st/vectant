@@ -37,6 +37,7 @@ export const DOJO_SOURCE_DRIFT_CAPABILITIES = [
   "source_snapshot_includes_source_content_hashes",
   "source_snapshot_rejects_invalid_hashes",
   "source_snapshot_rejects_duplicate_token_ids",
+  "source_snapshot_rejects_invalid_token_metadata",
   "source_snapshot_detects_tampering_and_missing_keys",
   "source_snapshot_capture_enforces_rbac",
   "source_drift_expires_changed_source_tokens",
@@ -278,6 +279,8 @@ function capabilityMatchers(capability) {
       return ["rejects invalid source content hashes"];
     case "source_snapshot_rejects_duplicate_token_ids":
       return ["rejects duplicate source token ids"];
+    case "source_snapshot_rejects_invalid_token_metadata":
+      return ["rejects invalid source token action", "risk metadata"];
     case "source_snapshot_detects_tampering_and_missing_keys":
       return ["detects tampered source snapshot material", "missing signing keys"];
     case "source_snapshot_capture_enforces_rbac":

@@ -154,20 +154,22 @@ function normalizeTokens(tokens: DojoSourceTokenSnapshot[]): DojoSourceTokenSnap
   const seen = new Set<string>();
   return tokens
     .map((token) => {
-      requireNonEmpty(token.token_id, "source_token_id");
-      requireNonEmpty(token.route, "source_token_route");
-      requireNonEmpty(token.component, "source_token_component");
-      requireNonEmpty(token.source_locator, "source_token_locator");
-      if (seen.has(token.token_id)) throw new Error("dojo_source_token_duplicate");
-      seen.add(token.token_id);
+      const tokenId = requireNonEmpty(token.token_id, "source_token_id");
+      const route = requireNonEmpty(token.route, "source_token_route");
+      const component = requireNonEmpty(token.component, "source_token_component");
+      const sourceLocator = requireNonEmpty(token.source_locator, "source_token_locator");
+      const action = token.action === undefined ? undefined : requireNonEmpty(token.action, "source_token_action");
+      const risk = normalizeRisk(token.risk);
+      if (seen.has(tokenId)) throw new Error("dojo_source_token_duplicate");
+      seen.add(tokenId);
       return {
-        token_id: token.token_id,
-        route: token.route,
-        component: token.component,
-        ...(token.action ? { action: token.action } : {}),
-        source_locator: normalizePath(token.source_locator),
+        token_id: tokenId,
+        route,
+        component,
+        ...(action ? { action } : {}),
+        source_locator: normalizePath(sourceLocator),
         ...(token.source_sha256 ? { source_sha256: normalizeSha256(token.source_sha256, "source_token_source_sha256") } : {}),
-        ...(token.risk ? { risk: token.risk } : {}),
+        ...(risk ? { risk } : {}),
       };
     })
     .sort((left, right) => left.token_id.localeCompare(right.token_id));
@@ -183,8 +185,18 @@ function normalizeSha256(value: string, field: string): string {
   return normalized;
 }
 
-function requireNonEmpty(value: string, field: string): void {
-  if (!value.trim()) throw new Error(`dojo_source_snapshot_${field}_required`);
+function normalizeRisk(value: DojoSourceTokenSnapshot["risk"] | undefined): DojoSourceTokenSnapshot["risk"] | undefined {
+  if (value === undefined) return undefined;
+  if (value !== "safe" && value !== "mutation" && value !== "dangerous") {
+    throw new Error("dojo_source_snapshot_source_token_risk_invalid");
+  }
+  return value;
+}
+
+function requireNonEmpty(value: string, field: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error(`dojo_source_snapshot_${field}_required`);
+  return trimmed;
 }
 
 function canonicalJson(value: unknown): string {
