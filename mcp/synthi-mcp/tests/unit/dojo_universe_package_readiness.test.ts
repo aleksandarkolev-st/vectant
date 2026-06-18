@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildDojoSkill } from "../../src/browser/dojo.js";
 import {
+  buildDojoEvidenceLedger,
   buildDojoPackageReadiness,
   buildDojoUniverseDossier,
   type DojoPackageReadinessEvidenceSummary,
@@ -123,9 +124,40 @@ describe("Dojo universe package readiness", () => {
     expect(dossier.package_readiness.release_gate.evidence_path).toBe("tmp/dojo-package-readiness/custom.evidence.json");
     expect(dossier.package_readiness.release_gate.packed_file_count).toBe(9);
   });
+
+  it("scopes evidence retention records by skill tenant or deterministic local fallback", () => {
+    const tenantScopedSkill = skillFixture({ tenant_id: "tenant-a" });
+    const tenantScopedLedger = buildDojoEvidenceLedger(tenantScopedSkill);
+
+    expect(tenantScopedLedger.retention_plan.tenant_id).toBe("tenant-a");
+    expect(tenantScopedLedger.retention_plan.workspace_id).toBe(tenantScopedSkill.workspace_id);
+    expect(tenantScopedLedger.retention_plan.decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tenant_id: "tenant-a",
+          workspace_id: tenantScopedSkill.workspace_id,
+        }),
+      ])
+    );
+
+    const firstLocalLedger = buildDojoEvidenceLedger(skillFixture({ workspace_id: "workspace-local" }));
+    const secondLocalLedger = buildDojoEvidenceLedger(skillFixture({ workspace_id: "workspace-local" }));
+
+    expect(firstLocalLedger.retention_plan.tenant_id).toMatch(/^local-tenant-[a-f0-9]{12}$/);
+    expect(firstLocalLedger.retention_plan.tenant_id).not.toBe("legacy-local-tenant");
+    expect(firstLocalLedger.retention_plan.tenant_id).toBe(secondLocalLedger.retention_plan.tenant_id);
+    expect(firstLocalLedger.retention_plan.decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tenant_id: firstLocalLedger.retention_plan.tenant_id,
+          workspace_id: "workspace-local",
+        }),
+      ])
+    );
+  });
 });
 
-function skillFixture() {
+function skillFixture(options: { tenant_id?: string; workspace_id?: string } = {}) {
   return buildDojoSkill(compileWorkflowContract([
     event({
       event_id: "client",
@@ -147,7 +179,8 @@ function skillFixture() {
       ],
     }),
   ]).contract, {
-    workspace_id: "workspace-a",
+    workspace_id: options.workspace_id ?? "workspace-a",
+    tenant_id: options.tenant_id,
     now: "2026-06-11T00:00:00.000Z",
   });
 }

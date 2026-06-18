@@ -30,8 +30,6 @@ import type {
   DojoEvidenceRetentionClass,
 } from "../dojo/evidence/types.js";
 
-const LOCAL_EVIDENCE_LEDGER_TENANT_ID = "legacy-local-tenant";
-
 export interface DojoLifecycleReport {
   schema_version: "synthi.dojo.lifecycleReport.v1";
   lifecycle_id: string;
@@ -639,7 +637,9 @@ export function buildDojoEvidenceLedger(skill: DojoSkill): DojoEvidenceLedger {
 
 function tenantIdForEvidenceLedgerReport(skill: DojoSkill): string {
   const licenseWithTenant = skill.permission_license as DojoSkill["permission_license"] & { tenant_id?: string };
-  return licenseWithTenant.tenant_id?.trim() || LOCAL_EVIDENCE_LEDGER_TENANT_ID;
+  return skill.tenant_id?.trim()
+    || licenseWithTenant.tenant_id?.trim()
+    || `local-tenant-${hash(`${skill.workspace_id}:${skill.skill_id}`).slice(0, 12)}`;
 }
 
 function retentionClassForEvidenceKind(kind: DojoEvidenceLedger["records"][number]["kind"]): DojoEvidenceRetentionClass {
