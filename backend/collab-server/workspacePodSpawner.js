@@ -699,6 +699,48 @@ async function getPodSnapshotForSession(sessionId) {
 
 // ── Dynamic Service per workspace ─────────────────────────────────────────
 
+function normalizeServicePort(port = {}) {
+  return {
+    name: String(port.name || ''),
+    port: Number(port.port),
+    targetPort: String(port.targetPort ?? port.port ?? ''),
+    protocol: String(port.protocol || 'TCP'),
+  };
+}
+
+function sameStringMap(left = {}, right = {}) {
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key, index) => key === rightKeys[index] && String(left[key]) === String(right[key]));
+}
+
+function serviceNeedsReconcile(existing, selector, ports) {
+  if (!existing?.spec) return true;
+  if (!sameStringMap(existing.spec.selector || {}, selector)) return true;
+
+  const existingPorts = (existing.spec.ports || []).map(normalizeServicePort);
+  const desiredPorts = (ports || []).map(normalizeServicePort);
+  if (existingPorts.length !== desiredPorts.length) return true;
+
+  const byName = new Map(existingPorts.map((port) => [port.name, port]));
+  return desiredPorts.some((desired) => {
+    const current = byName.get(desired.name);
+    return !current ||
+      current.port !== desired.port ||
+      current.targetPort !== desired.targetPort ||
+      current.protocol !== desired.protocol;
+  });
+}
+
+function k8sErrorMessage(err) {
+  return err?.body?.message ||
+    err?.response?.body?.message ||
+    err?.response?.body?.error ||
+    err?.message ||
+    String(err);
+}
+
 /**
  * Create a ClusterIP Service pointing at the workspace pod.
  * Idempotent — 409 Conflict means it already exists.
@@ -740,6 +782,10 @@ async function ensureService(sessionId) {
   } catch (err) {
     if (err.response?.statusCode === 409) {
       try {
+        const { body: existingService } = await coreApi.readNamespacedService(name, NAMESPACE);
+        if (!serviceNeedsReconcile(existingService, selector, ports)) {
+          return;
+        }
         await coreApi.patchNamespacedService(
           name,
           NAMESPACE,
@@ -758,10 +804,10 @@ async function ensureService(sessionId) {
         );
         console.log(`[Spawner] Reconciled Service: ${name}`);
       } catch (patchErr) {
-        console.error(`[Spawner] Service reconciliation failed for ${name}:`, patchErr.message);
+        console.error(`[Spawner] Service reconciliation failed for ${name}:`, k8sErrorMessage(patchErr));
       }
     } else {
-      console.error(`[Spawner] Service creation failed for ${name}:`, err.message);
+      console.error(`[Spawner] Service creation failed for ${name}:`, k8sErrorMessage(err));
     }
   }
 }
