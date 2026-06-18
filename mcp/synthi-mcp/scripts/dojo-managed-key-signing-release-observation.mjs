@@ -383,10 +383,18 @@ function sha256(value) {
 }
 
 function parseArgs(argv) {
-  const parsed = {};
+  const parsed = { _: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (!arg.startsWith("--")) continue;
+    if (!arg.startsWith("--")) {
+      parsed._.push(arg);
+      continue;
+    }
+    const equalsAt = arg.indexOf("=");
+    if (equalsAt > 2) {
+      parsed[arg.slice(2, equalsAt)] = arg.slice(equalsAt + 1);
+      continue;
+    }
     const key = arg.slice(2);
     const next = argv[i + 1];
     if (!next || next.startsWith("--")) {
