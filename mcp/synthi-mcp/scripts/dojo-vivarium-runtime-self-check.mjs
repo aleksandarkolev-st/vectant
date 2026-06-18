@@ -70,6 +70,8 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "vivarium_runner_emits_policy_tissue_evidence",
   "vivarium_runner_emits_expanded_identity_evidence",
   "vivarium_runner_emits_invalid_value_evidence",
+  "vivarium_runner_emits_stale_entity_data_tissue_evidence",
+  "vivarium_runner_emits_missing_field_data_tissue_evidence",
   "vivarium_runner_requires_prompt_injection_quarantine",
   "vivarium_runner_uses_deterministic_run_clock",
   "vivarium_runner_blocks_exhausted_budget",
@@ -239,6 +241,7 @@ export function buildDojoVivariumRuntimeEvidenceManifest({
       policy_tissue_required: true,
       expanded_identity_tissue_required: true,
       invalid_value_data_tissue_required: true,
+      stale_missing_data_tissue_required: true,
       deterministic_reset_required: true,
       budget_enforcement_required: true,
       targeted_graph_execution_required: true,
@@ -388,6 +391,10 @@ function capabilityMatchers(capability) {
       return ["vivarium runner emits expanded identity evidence", "workspace context changes block execution"];
     case "vivarium_runner_emits_invalid_value_evidence":
       return ["vivarium runner emits invalid value evidence", "invalid data blocks execution"];
+    case "vivarium_runner_emits_stale_entity_data_tissue_evidence":
+      return ["vivarium runner emits stale entity data tissue evidence", "stale ids block execution"];
+    case "vivarium_runner_emits_missing_field_data_tissue_evidence":
+      return ["vivarium runner emits missing field data tissue evidence", "required synthetic fields block execution"];
     case "vivarium_runner_requires_prompt_injection_quarantine":
       return ["vivarium runner passes prompt injection scenarios", "document instructions are quarantined"];
     case "vivarium_runner_uses_deterministic_run_clock":
