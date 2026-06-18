@@ -2343,6 +2343,24 @@ async function dojoGetMetricsTool(args: unknown): Promise<ToolResponse> {
 function dojoCaptureSourceSnapshotTool(args: unknown): ToolResponse {
   const tenantContext = dojoTenantContextResultFromArgs(args);
   if (!tenantContext.ok) return tenantContext.error;
+  const enforcement = resolveDojoEnforcementConfig();
+  const sourceSnapshotCaptureRbacAuthorization = enforcement.production_enforcement
+    ? authorizeDojoGovernanceAction({
+      tenant_context: tenantContext.tenant,
+      action: "source_snapshot_capture",
+    })
+    : undefined;
+  if (sourceSnapshotCaptureRbacAuthorization && !sourceSnapshotCaptureRbacAuthorization.ok) {
+    return errorResponse("dojo_source_snapshot_capture_role_required", {
+      ok: false,
+      tenant_id: tenantContext.tenant.tenant_id,
+      workspace_id: tenantContext.tenant.workspace_id,
+      actor_id: tenantContext.tenant.actor_id,
+      actor_type: tenantContext.tenant.actor_type,
+      blocked_by: sourceSnapshotCaptureRbacAuthorization.blocked_by,
+      rbac_authorization: sourceSnapshotCaptureRbacAuthorization,
+    });
+  }
   const a = obj(args);
   const appOrigin = stringOpt(a["app_origin"]);
   const appVersion = stringOpt(a["app_version"]);
@@ -2406,6 +2424,7 @@ function dojoCaptureSourceSnapshotTool(args: unknown): ToolResponse {
       verification,
       source_token_count: snapshot.source_tokens.length,
       blocked_by: verification.blocked_by,
+      ...(sourceSnapshotCaptureRbacAuthorization ? { rbac_authorization: sourceSnapshotCaptureRbacAuthorization } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -2421,6 +2440,24 @@ function dojoCaptureSourceSnapshotTool(args: unknown): ToolResponse {
 function dojoDetectSourceDriftTool(args: unknown): ToolResponse {
   const tenantContext = dojoTenantContextResultFromArgs(args);
   if (!tenantContext.ok) return tenantContext.error;
+  const enforcement = resolveDojoEnforcementConfig();
+  const sourceDriftDetectionRbacAuthorization = enforcement.production_enforcement
+    ? authorizeDojoGovernanceAction({
+      tenant_context: tenantContext.tenant,
+      action: "source_drift_detection",
+    })
+    : undefined;
+  if (sourceDriftDetectionRbacAuthorization && !sourceDriftDetectionRbacAuthorization.ok) {
+    return errorResponse("dojo_source_drift_detection_role_required", {
+      ok: false,
+      tenant_id: tenantContext.tenant.tenant_id,
+      workspace_id: tenantContext.tenant.workspace_id,
+      actor_id: tenantContext.tenant.actor_id,
+      actor_type: tenantContext.tenant.actor_type,
+      blocked_by: sourceDriftDetectionRbacAuthorization.blocked_by,
+      rbac_authorization: sourceDriftDetectionRbacAuthorization,
+    });
+  }
   const a = obj(args);
   const previousSnapshot = objectOpt(a["previous_snapshot"]) as DojoSourceSnapshot | undefined;
   const nextSnapshot = objectOpt(a["next_snapshot"]) as DojoSourceSnapshot | undefined;
@@ -2469,6 +2506,7 @@ function dojoDetectSourceDriftTool(args: unknown): ToolResponse {
       license_expiry_trigger_count: driftReport.license_expiry_triggers.length,
       review_required_token_count: driftReport.review_required_token_ids.length,
       blocked_by: [],
+      ...(sourceDriftDetectionRbacAuthorization ? { rbac_authorization: sourceDriftDetectionRbacAuthorization } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

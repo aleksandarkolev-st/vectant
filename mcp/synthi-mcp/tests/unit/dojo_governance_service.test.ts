@@ -144,6 +144,24 @@ describe("Dojo governance service", () => {
       matched_roles: ["dojo:source:apply"],
       blocked_by: [],
     }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "source_snapshot_capture",
+      tenant_context: tenantContextFixture({ roles: ["source-registry"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["source-registry"],
+      blocked_by: [],
+    }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "source_drift_detection",
+      tenant_context: tenantContextFixture({ roles: ["dojo:source:review"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:source:review"],
+      blocked_by: [],
+    }));
   });
 
   it("fails closed for governance actions without required RBAC roles", () => {

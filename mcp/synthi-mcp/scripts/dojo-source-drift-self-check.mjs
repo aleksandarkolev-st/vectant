@@ -38,12 +38,14 @@ export const DOJO_SOURCE_DRIFT_CAPABILITIES = [
   "source_snapshot_rejects_invalid_hashes",
   "source_snapshot_rejects_duplicate_token_ids",
   "source_snapshot_detects_tampering_and_missing_keys",
+  "source_snapshot_capture_enforces_rbac",
   "source_drift_expires_changed_source_tokens",
   "source_drift_ignores_unrelated_token_change",
   "source_drift_marks_removed_tokens",
   "source_drift_expires_stable_token_content_change",
   "source_drift_reports_added_risky_affordances",
   "source_drift_rejects_unverified_snapshots",
+  "source_drift_detection_enforces_rbac",
   "source_drift_applies_license_store_expiry",
   "source_drift_returns_recertification_handoff",
   "source_drift_expiry_enforces_rbac",
@@ -276,6 +278,8 @@ function capabilityMatchers(capability) {
       return ["rejects duplicate source token ids"];
     case "source_snapshot_detects_tampering_and_missing_keys":
       return ["detects tampered source snapshot material", "missing signing keys"];
+    case "source_snapshot_capture_enforces_rbac":
+      return ["enforces rbac", "production source snapshot capture"];
     case "source_drift_expires_changed_source_tokens":
       return ["expires graph nodes", "changed source tokens"];
     case "source_drift_ignores_unrelated_token_change":
@@ -288,6 +292,8 @@ function capabilityMatchers(capability) {
       return ["reports newly added risky affordances", "review"];
     case "source_drift_rejects_unverified_snapshots":
       return ["rejects drift reports", "unverifiable source snapshots"];
+    case "source_drift_detection_enforces_rbac":
+      return ["enforces rbac", "production source drift detection"];
     case "source_drift_applies_license_store_expiry":
       return ["applies source drift expiry triggers", "license store"];
     case "source_drift_returns_recertification_handoff":
