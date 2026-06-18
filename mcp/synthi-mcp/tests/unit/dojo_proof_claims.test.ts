@@ -184,6 +184,42 @@ describe("Dojo proof issuance evidence claims", () => {
     }));
   });
 
+  it("blocks strict proof issuance when the supplied evidence record head hash is tampered", () => {
+    const skill = skillFixture();
+    const record = evidenceRecord(
+      "evidence-head-tampered",
+      skill.skill_id,
+      proofEvidenceClaimIds(skill),
+      "2026-06-11T00:00:00.000Z"
+    );
+    const tampered = {
+      ...record,
+      ledger_head_hash: "f".repeat(64),
+    };
+
+    const error = captureProofIssueError(() => issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: [tampered],
+      require_verified_evidence: true,
+      tenant_id: "tenant-a",
+      now: "2026-06-11T00:05:00.000Z",
+    }));
+
+    expect(error).toBeInstanceOf(DojoProofEvidenceClaimError);
+    expect(error).toEqual(expect.objectContaining({
+      code: "dojo_proof_evidence_claim_unverified",
+      failed_results: [
+        expect.objectContaining({
+          claim_id: "evidence_record_integrity",
+          ok: false,
+          status: "failed",
+          evidence_record_ids: ["evidence-head-tampered"],
+          blocked_by: ["evidence_record_head_hash_mismatch"],
+        }),
+      ],
+    }));
+  });
+
   it("blocks strict proof issuance when backing evidence is stale", () => {
     const skill = skillFixture();
     const record = evidenceRecord("evidence-old", skill.skill_id, proofEvidenceClaimIds(skill), "2026-06-10T00:00:00.000Z");

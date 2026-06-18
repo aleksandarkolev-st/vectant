@@ -3666,7 +3666,7 @@ function evidenceRecordIntegrityFailures(records: DojoEvidenceLedgerRecord[], ch
       const rebuilt = buildDojoEvidenceLedgerRecord(evidenceRecordInputFromLedgerRecord(record));
       const blockedBy = [
         ...(rebuilt.record_hash !== record.record_hash ? ["evidence_record_hash_mismatch"] : []),
-        ...(record.ledger_head_hash !== record.record_hash ? ["evidence_record_ledger_head_mismatch"] : []),
+        ...(record.ledger_head_hash !== record.record_hash ? ["evidence_record_head_hash_mismatch"] : []),
       ];
       return blockedBy.length > 0
         ? [evidenceRecordIntegrityResult(record.record_id, checkedAt, blockedBy)]
