@@ -1264,6 +1264,25 @@ describe("Dojo release gate manifest", () => {
     ]));
   });
 
+  it("does not share nested gate artifact requirement objects between manifests", () => {
+    const first = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts: PACKAGE_SCRIPTS,
+    });
+    const firstManagedKeyGate = first.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check");
+    firstManagedKeyGate.release_artifact_requirements.section_release_verifier.default_evidence_path =
+      "tmp/test-specific-managed-key.evidence.json";
+
+    const second = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts: PACKAGE_SCRIPTS,
+    });
+    const secondManagedKeyGate = second.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check");
+
+    expect(secondManagedKeyGate.release_artifact_requirements.section_release_verifier.default_evidence_path)
+      .toBe("tmp/dojo-managed-key-signing/dojo-managed-key-signing.evidence.json");
+  });
+
   it("validates referenced package scripts and required release tiers", () => {
     const manifest = buildDojoReleaseGateManifest({
       generatedAt: "2026-06-11T00:00:00.000Z",

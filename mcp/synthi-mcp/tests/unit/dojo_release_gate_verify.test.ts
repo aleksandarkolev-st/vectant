@@ -2628,7 +2628,7 @@ describe("Dojo release gate artifact verifier", () => {
       generatedAt: "2026-06-11T00:00:00.000Z",
       packageScripts,
     });
-    manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path = managedKeySigningEvidencePath;
+    setManifestGateDefaultEvidencePath(manifest, "dojo_managed_key_signing_self_check", managedKeySigningEvidencePath);
     const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
     const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
     await writeManifestPair({ manifest, manifestPath, evidencePath });
@@ -2664,7 +2664,7 @@ describe("Dojo release gate artifact verifier", () => {
       generatedAt: "2026-06-11T00:00:00.000Z",
       packageScripts,
     });
-    manifest.gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check").default_evidence_path = hostedRuntimeGatewayEvidencePath;
+    setManifestGateDefaultEvidencePath(manifest, "dojo_hosted_runtime_gateway_self_check", hostedRuntimeGatewayEvidencePath);
     const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
     const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
     await writeManifestPair({ manifest, manifestPath, evidencePath });
@@ -2678,6 +2678,7 @@ describe("Dojo release gate artifact verifier", () => {
       },
     });
 
+    expect(verified.errors).toEqual([]);
     expect(verified.ok).toBe(true);
     expect(verified.release_candidate).not.toBe(true);
     expect(verified.enterprise_release).not.toBe(true);
@@ -2716,7 +2717,7 @@ describe("Dojo release gate artifact verifier", () => {
       generatedAt: "2026-06-11T00:00:00.000Z",
       packageScripts,
     });
-    manifest.gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check").default_evidence_path = hostedRuntimeGatewayEvidencePath;
+    setManifestGateDefaultEvidencePath(manifest, "dojo_hosted_runtime_gateway_self_check", hostedRuntimeGatewayEvidencePath);
     const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
     const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
     await writeManifestPair({ manifest, manifestPath, evidencePath });
@@ -2893,7 +2894,7 @@ describe("Dojo release gate artifact verifier", () => {
     conformanceSelfCheckGate.default_report_path = conformanceSelfCheckReportPath;
     conformanceSelfCheckGate.default_evidence_path = conformanceSelfCheckEvidencePath;
     manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
-    manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path = managedKeySigningEvidencePath;
+    setManifestGateDefaultEvidencePath(manifest, "dojo_managed_key_signing_self_check", managedKeySigningEvidencePath);
     manifest.gates.find((gate) => gate.id === "dojo_public_proof_verification_self_check").default_evidence_path = publicProofVerificationEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_governance_lifecycle_self_check").default_evidence_path = governanceLifecycleEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_graph_runtime_self_check").default_evidence_path = graphRuntimeEvidencePath;
@@ -2903,7 +2904,7 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "dojo_vivarium_runtime_self_check").default_evidence_path = vivariumRuntimeEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_checkride_license_self_check").default_evidence_path = checkrideLicenseEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_case_law_runtime_self_check").default_evidence_path = caseLawRuntimeEvidencePath;
-    manifest.gates.find((gate) => gate.id === "dojo_hosted_runtime_gateway_self_check").default_evidence_path = hostedRuntimeGatewayEvidencePath;
+    setManifestGateDefaultEvidencePath(manifest, "dojo_hosted_runtime_gateway_self_check", hostedRuntimeGatewayEvidencePath);
     manifest.gates.find((gate) => gate.id === "privacy_redaction_suite").default_evidence_path = privacyEvidencePath;
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowE2E.reportPath;
     manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioAcceptance.transcriptPath;
@@ -5246,6 +5247,17 @@ async function writeManifestPair({ manifest, manifestPath, evidencePath }) {
   });
   await writeFile(manifestPath, serialized, "utf8");
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2), "utf8");
+}
+
+function setManifestGateDefaultEvidencePath(manifest, gateId, evidencePath) {
+  const gate = manifest.gates.find((candidate) => candidate.id === gateId);
+  if (!gate) throw new Error(`missing_release_gate:${gateId}`);
+  gate.default_evidence_path = evidencePath;
+  const sectionVerifier = gate.release_artifact_requirements?.section_release_verifier;
+  if (sectionVerifier) {
+    sectionVerifier.default_evidence_path = evidencePath;
+  }
+  return gate;
 }
 
 async function writeReleaseGateRunnerFixture({

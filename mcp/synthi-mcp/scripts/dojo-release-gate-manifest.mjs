@@ -1689,7 +1689,7 @@ export function buildDojoReleaseGateManifest({
   packageScripts = {},
 } = {}) {
   const commands = DOJO_RELEASE_GATE_COMMANDS.map((gate) => ({
-    ...gate,
+    ...cloneReleaseGateDefinition(gate),
     runnable: Boolean(gate.package_script || gate.command),
     script_exists: gate.package_script ? packageScriptExists(packageScripts, gate) : null,
   }));
@@ -1716,6 +1716,10 @@ export function buildDojoReleaseGateManifest({
         "First foundation PRs require T0, T1, and focused touched-surface tests; live, deployed, chaos, and soak gates wait for release scope.",
     },
   };
+}
+
+function cloneReleaseGateDefinition(gate) {
+  return JSON.parse(JSON.stringify(gate));
 }
 
 export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} } = {}) {
