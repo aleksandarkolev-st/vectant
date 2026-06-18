@@ -52,6 +52,33 @@ function event(overrides) {
   };
 }
 
+const REQUIRED_DOJO_SELF_CHECK_MUTATIONS = [
+  "baseline",
+  "input_omission",
+  "invalid_value",
+  "duplicate_entity",
+  "stale_entity",
+  "fake_success",
+  "auth_expiry",
+  "partial_write",
+  "permission_change",
+  "destructive_adjacency",
+];
+
+function assertDojoScenarioSet(scenarios, label) {
+  assert(Array.isArray(scenarios), `${label} scenarios should be an array`);
+  assert(scenarios.length >= REQUIRED_DOJO_SELF_CHECK_MUTATIONS.length, `${label} should include required scenario coverage`);
+  const scenarioIds = scenarios.map((scenario) => String(scenario?.scenario_id || ""));
+  assert.equal(new Set(scenarioIds).size, scenarioIds.length, `${label} scenario ids should be unique`);
+  const mutationKinds = new Set(scenarios.map((scenario) => String(scenario?.mutation_kind || "")));
+  const missingMutations = REQUIRED_DOJO_SELF_CHECK_MUTATIONS.filter((kind) => !mutationKinds.has(kind));
+  assert.deepEqual(missingMutations, [], `${label} missing required mutation kinds`);
+  const layers = new Set(scenarios.map((scenario) => String(scenario?.layer || "")));
+  for (const layer of ["knowledge", "risk", "skill"]) {
+    assert(layers.has(layer), `${label} should include ${layer} scenarios`);
+  }
+}
+
 function safeArtifactPath(root, artifactPath) {
   const normalized = path.posix.normalize(`/${String(artifactPath || "")}`).replace(/^\/+/, "");
   if (!normalized || normalized.startsWith("../") || normalized === ".." || path.isAbsolute(normalized)) {
@@ -562,11 +589,15 @@ async function main() {
   }));
 
   const scenarios = structured(await dispatchDojoTool("synthi_dojo_generate_vivarium_scenarios", { workspace_id: workspaceId }));
-  assert.equal(scenarios.organoid.scenarios.length, 20, "vivarium should generate the standard scenario set");
+  assertDojoScenarioSet(scenarios.organoid.scenarios, "vivarium");
   log("ok", "generated vivarium scenarios");
 
   const checkride = structured(await dispatchDojoTool("synthi_dojo_run_checkride", { workspace_id: workspaceId }));
-  assert.equal(checkride.checkride.results.length, 20, "checkride should evaluate all scenarios");
+  assert.equal(
+    checkride.checkride.results.length,
+    scenarios.organoid.scenarios.length,
+    "checkride should evaluate every generated scenario"
+  );
   assert(checkride.repo_artifacts.length > 20, "checkride preview should expose Dojo artifacts");
   log("ok", "ran Dojo checkride");
 
