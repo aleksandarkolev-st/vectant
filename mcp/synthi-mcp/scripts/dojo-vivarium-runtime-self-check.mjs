@@ -37,12 +37,14 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "scenario_dsl_validates_duplicate_entity",
   "scenario_dsl_validates_fake_success_oracle",
   "scenario_dsl_classifies_policy_tissue_scenarios",
+  "scenario_dsl_classifies_expanded_identity_tissue_scenarios",
   "scenario_dsl_rejects_missing_oracle_or_fixtures",
   "scenario_dsl_converts_generated_scenarios",
   "fixture_materializer_creates_duplicate_stable_ids",
   "fixture_materializer_rejects_production_data_refs",
   "fixture_materializer_materializes_stale_missing_threshold_states",
   "fixture_materializer_materializes_policy_tissue",
+  "fixture_materializer_materializes_expanded_identity_tissue",
   "fixture_materializer_quarantines_prompt_injection_documents",
   "fixture_materializer_blocks_role_downgrade_identity_tissue",
   "fixture_materializer_fails_unquarantined_prompt_injection",
@@ -64,6 +66,7 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "vivarium_runner_classifies_fake_success_from_state",
   "vivarium_runner_executes_partial_write_faults",
   "vivarium_runner_emits_policy_tissue_evidence",
+  "vivarium_runner_emits_expanded_identity_evidence",
   "vivarium_runner_requires_prompt_injection_quarantine",
   "vivarium_runner_uses_deterministic_run_clock",
   "vivarium_runner_blocks_exhausted_budget",
@@ -231,6 +234,7 @@ export function buildDojoVivariumRuntimeEvidenceManifest({
       ambiguous_document_names_required: true,
       ui_tissue_mutations_required: true,
       policy_tissue_required: true,
+      expanded_identity_tissue_required: true,
       deterministic_reset_required: true,
       budget_enforcement_required: true,
       targeted_graph_execution_required: true,
@@ -314,6 +318,8 @@ function capabilityMatchers(capability) {
       return ["scenario dsl validates fake success scenario definitions", "evidence oracle"];
     case "scenario_dsl_classifies_policy_tissue_scenarios":
       return ["scenario dsl classifies policy tissue scenarios", "thresholds and unavailable approvals"];
+    case "scenario_dsl_classifies_expanded_identity_tissue_scenarios":
+      return ["scenario dsl classifies expanded identity tissue scenarios", "permissions and workspace context"];
     case "scenario_dsl_rejects_missing_oracle_or_fixtures":
       return ["scenario dsl rejects invalid scenarios", "without oracle or synthetic fixtures"];
     case "scenario_dsl_converts_generated_scenarios":
@@ -326,6 +332,8 @@ function capabilityMatchers(capability) {
       return ["materializes stale entity missing field and threshold breach fixture states"];
     case "fixture_materializer_materializes_policy_tissue":
       return ["synthetic fixture materializer materializes policy approval blockers", "without production policy data"];
+    case "fixture_materializer_materializes_expanded_identity_tissue":
+      return ["synthetic fixture materializer materializes expanded identity tissue", "auth expiry missing permissions and workspace changes"];
     case "fixture_materializer_quarantines_prompt_injection_documents":
       return ["materializes prompt injection document fixtures", "quarantined synthetic tissue"];
     case "fixture_materializer_blocks_role_downgrade_identity_tissue":
@@ -368,6 +376,8 @@ function capabilityMatchers(capability) {
       return ["vivarium runner executes partial write scenarios", "api fault server"];
     case "vivarium_runner_emits_policy_tissue_evidence":
       return ["vivarium runner emits policy tissue evidence", "policy fixtures block scenario execution"];
+    case "vivarium_runner_emits_expanded_identity_evidence":
+      return ["vivarium runner emits expanded identity evidence", "workspace context changes block execution"];
     case "vivarium_runner_requires_prompt_injection_quarantine":
       return ["vivarium runner passes prompt injection scenarios", "document instructions are quarantined"];
     case "vivarium_runner_uses_deterministic_run_clock":
