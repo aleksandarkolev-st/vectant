@@ -676,7 +676,7 @@ async function main() {
       workspace_id: workspaceId,
       actor_id: "dojo-proof-self-check",
       actor_type: "service",
-      roles: ["agent"],
+      roles: ["agent", "dojo:proof:issue", "dojo:runtime:create"],
     };
     const productionProof = structured(await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: publish.skill.skill_id,
@@ -690,6 +690,11 @@ async function main() {
       now: proofEvidenceCreatedAt,
     }));
     assert.equal(productionProof.validation.ok, true, "production proof capsule should issue with verified evidence");
+    assert.equal(
+      productionProof.rbac_authorization?.matched_roles?.includes("dojo:proof:issue"),
+      true,
+      "production proof issuance should require proof issuer RBAC"
+    );
 
     const productionRunId = `dojo-proof-self-check-production-${sha256Hex(productionProof.proof_capsule.capsule_id).slice(0, 12)}`;
     const runtimeSession = structured(await dispatchDojoTool("synthi_dojo_create_hosted_runtime_session", {
@@ -707,6 +712,11 @@ async function main() {
     }));
     assert.equal(runtimeSession.runtime_session.skill_id, publish.skill.skill_id, "runtime session should bind to the skill");
     assert.equal(runtimeSession.runtime_session.run_id, productionRunId, "runtime session should bind to the production run");
+    assert.equal(
+      runtimeSession.rbac_authorization?.matched_roles?.includes("dojo:runtime:create"),
+      true,
+      "hosted runtime session should require runtime session RBAC"
+    );
     assert.equal(runtimeSession.runtime_session.redaction_policy.screenshots, true, "sensitive hosted runtime sessions must keep screenshot privacy filtering enabled");
 
     const productionRun = structured(await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
@@ -755,9 +765,11 @@ async function main() {
       requested_action: "run_prefix_validation",
       proof_capsule_id: productionProof.proof_capsule.capsule_id,
       proof_consumed: productionRun.proof_consume?.status === "used",
+      proof_issue_rbac_authorization: productionProof.rbac_authorization ?? null,
       replay_blocked: replay?.isError === true,
       replay_error: replayContent.error ?? null,
       runtime_session: runtimeSession.runtime_session,
+      runtime_session_rbac_authorization: runtimeSession.rbac_authorization ?? null,
       runtime_authorization: productionRun.runtime_authorization,
       proof_record: productionRun.proof_record,
       audit_event_types: dojoSkillRegistry.listAuditEvents()

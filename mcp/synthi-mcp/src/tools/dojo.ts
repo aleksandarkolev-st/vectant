@@ -6113,6 +6113,24 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
       blocked_by: ["proof_issuer_actor_type_invalid"],
     });
   }
+  const proofIssueRbacAuthorization = enforcement.production_enforcement
+    ? authorizeDojoGovernanceAction({
+      tenant_context: tenant,
+      action: "proof_capsule_issue",
+    })
+    : undefined;
+  if (proofIssueRbacAuthorization && !proofIssueRbacAuthorization.ok) {
+    return errorResponse("dojo_proof_capsule_issue_role_required", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      requested_action: requestedAction,
+      workspace_id: skill.skill.workspace_id,
+      actor_id: tenant.actor_id,
+      actor_type: tenant.actor_type,
+      blocked_by: proofIssueRbacAuthorization.blocked_by,
+      rbac_authorization: proofIssueRbacAuthorization,
+    });
+  }
   const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_issue_proof_capsule", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const issuedBy = enforcement.production_enforcement
@@ -6313,6 +6331,7 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
       proof_capsule: capsule,
       proof_record: proofRecord,
       validation,
+      ...(proofIssueRbacAuthorization ? { rbac_authorization: proofIssueRbacAuthorization } : {}),
     });
   } finally {
     if (durableProofRegistry.context.required) {
@@ -6446,6 +6465,24 @@ async function dojoRevokeProofCapsuleTool(args: unknown): Promise<ToolResponse> 
     });
     const authorization = authorizeTenantForDojoSkill(args, skill);
     if (!authorization.ok) return authorization.error;
+    const proofRevokeRbacAuthorization = enforcement.production_enforcement
+      ? authorizeDojoGovernanceAction({
+        tenant_context: authorization.tenant,
+        action: "proof_capsule_revoke",
+      })
+      : undefined;
+    if (proofRevokeRbacAuthorization && !proofRevokeRbacAuthorization.ok) {
+      return errorResponse("dojo_proof_capsule_revocation_role_required", {
+        ok: false,
+        capsule_id: capsuleId,
+        skill_id: skill.skill_id,
+        workspace_id: skill.workspace_id,
+        actor_id: authorization.tenant.actor_id,
+        actor_type: authorization.tenant.actor_type,
+        blocked_by: proofRevokeRbacAuthorization.blocked_by,
+        rbac_authorization: proofRevokeRbacAuthorization,
+      });
+    }
     const evidenceLedgerValidation = await validateProofCapsuleRevocationEvidenceRefsAgainstLedgerIfRequired({
       operation: "synthi_dojo_revoke_proof_capsule",
       tenant: authorization.tenant,
@@ -6472,6 +6509,7 @@ async function dojoRevokeProofCapsuleTool(args: unknown): Promise<ToolResponse> 
         : "compatibility_registry",
       evidence_ledger_validation: evidenceLedgerValidation.evidence_ledger_resolution ?? null,
       proof_record: record,
+      ...(proofRevokeRbacAuthorization ? { rbac_authorization: proofRevokeRbacAuthorization } : {}),
     });
   } finally {
     if (durableProofRegistry?.ok && durableProofRegistry.context.required) {

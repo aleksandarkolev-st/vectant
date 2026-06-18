@@ -198,6 +198,24 @@ describe("Dojo governance service", () => {
       matched_roles: ["dojo:case-law:record"],
       blocked_by: [],
     }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "proof_capsule_issue",
+      tenant_context: tenantContextFixture({ roles: ["dojo:proof:issue"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:proof:issue"],
+      blocked_by: [],
+    }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "proof_capsule_revoke",
+      tenant_context: tenantContextFixture({ roles: ["dojo:proof:revoke"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:proof:revoke"],
+      blocked_by: [],
+    }));
   });
 
   it("fails closed for governance actions without required RBAC roles", () => {

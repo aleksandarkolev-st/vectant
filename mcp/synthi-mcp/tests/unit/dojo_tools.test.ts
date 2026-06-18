@@ -1451,6 +1451,124 @@ describe("Agent Dojo MCP tools", () => {
     expect(dojoSkillRegistry.list()).toHaveLength(0);
   });
 
+  it("enforces RBAC before issuing production proof capsules through the MCP tool", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
+      ...productionTenantContextArgs({
+        actor_id: "unit-publisher",
+        actor_type: "human",
+        request_id: "req-production-proof-rbac-publish",
+        correlation_id: "corr-production-proof-rbac-publish",
+      }),
+    }));
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
+
+    const blockedIssue = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      ...productionTenantContextArgs({
+        actor_id: "proof-viewer-a",
+        roles: ["agent"],
+        request_id: "req-proof-issue-rbac-blocked",
+        correlation_id: "corr-proof-issue-rbac-blocked",
+      }),
+      now: "2026-06-11T00:05:00.000Z",
+    });
+    expect(blockedIssue?.isError).toBe(true);
+    expect(blockedIssue?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      error: "dojo_proof_capsule_issue_role_required",
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:proof:issue"]),
+      rbac_authorization: expect.objectContaining({
+        action: "proof_capsule_issue",
+        actor_id: "proof-viewer-a",
+        required_roles: ["dojo:proof:issue"],
+        matched_roles: [],
+      }),
+    }));
+    expect(dojoSkillRegistry.listProofRecords()).toEqual([]);
+  });
+
+  it("enforces RBAC before revoking production proof capsules through the MCP tool", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const proofIssue = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+    });
+    expect(proofIssue?.isError).toBeUndefined();
+    const proofCapsule = (proofIssue?.structuredContent as {
+      proof_capsule: { capsule_id: string };
+    }).proof_capsule;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const blockedRevoke = await dispatchDojoTool("synthi_dojo_revoke_proof_capsule", {
+      capsule_id: proofCapsule.capsule_id,
+      reason: "proof lifecycle RBAC test",
+      evidence_refs: ["evidence:proof-rbac-blocked"],
+      ...productionTenantContextArgs({
+        actor_id: "proof-viewer-a",
+        actor_type: "human",
+        roles: ["agent"],
+        request_id: "req-proof-revoke-rbac-blocked",
+        correlation_id: "corr-proof-revoke-rbac-blocked",
+      }),
+    });
+    expect(blockedRevoke?.isError).toBe(true);
+    expect(blockedRevoke?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      error: "dojo_proof_capsule_revocation_role_required",
+      capsule_id: proofCapsule.capsule_id,
+      skill_id: skillId,
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:proof:revoke"]),
+      rbac_authorization: expect.objectContaining({
+        action: "proof_capsule_revoke",
+        actor_id: "proof-viewer-a",
+        required_roles: ["dojo:proof:revoke"],
+        matched_roles: [],
+      }),
+    }));
+    expect(dojoSkillRegistry.getProofRecord(proofCapsule.capsule_id)).toEqual(expect.objectContaining({
+      status: "issued",
+    }));
+
+    const allowedRevoke = await dispatchDojoTool("synthi_dojo_revoke_proof_capsule", {
+      capsule_id: proofCapsule.capsule_id,
+      reason: "proof lifecycle RBAC test",
+      evidence_refs: ["evidence:proof-rbac-approved"],
+      ...productionProofRevokerContextArgs({
+        actor_id: "proof-revoker-a",
+        actor_type: "human",
+        request_id: "req-proof-revoke-rbac-approved",
+        correlation_id: "corr-proof-revoke-rbac-approved",
+      }),
+      now: "2026-06-11T00:07:00.000Z",
+    });
+    expect(allowedRevoke?.isError).toBeUndefined();
+    expect(allowedRevoke?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      proof_record: expect.objectContaining({
+        status: "revoked",
+        revoked_at: "2026-06-11T00:07:00.000Z",
+        revoked_by: { actor_id: "proof-revoker-a", actor_type: "human" },
+      }),
+      rbac_authorization: expect.objectContaining({
+        action: "proof_capsule_revoke",
+        actor_id: "proof-revoker-a",
+        matched_roles: ["dojo:proof:revoke"],
+      }),
+    }));
+  });
+
   it("requires ledger-backed evidence before issuing proof capsules in production enforcement", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
@@ -1468,7 +1586,7 @@ describe("Agent Dojo MCP tools", () => {
 
     const missingEvidence = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
-      ...productionTenantContextArgs({
+      ...productionProofIssuerContextArgs({
         actor_id: "proof-issuer-a",
         request_id: "req-proof-missing-evidence",
       }),
@@ -1554,7 +1672,7 @@ describe("Agent Dojo MCP tools", () => {
     });
     const wrongScope = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
-      ...productionTenantContextArgs({
+      ...productionProofIssuerContextArgs({
         actor_id: "proof-issuer-a",
         request_id: "req-proof-wrong-scope",
       }),
@@ -1580,7 +1698,7 @@ describe("Agent Dojo MCP tools", () => {
 
     const inlineEvidence = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
-      ...productionTenantContextArgs({
+      ...productionProofIssuerContextArgs({
         actor_id: "proof-issuer-a",
         request_id: "req-proof-inline-evidence",
       }),
@@ -1620,7 +1738,7 @@ describe("Agent Dojo MCP tools", () => {
 
     const response = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: skillId,
-      ...productionTenantContextArgs({
+      ...productionProofIssuerContextArgs({
         actor_id: "proof-issuer-a",
         request_id: "req-proof-id-resolution",
       }),
@@ -5228,7 +5346,7 @@ describe("Agent Dojo MCP tools", () => {
         tenant_id: "tenant-a",
       }),
       require_verified_evidence: true,
-      ...productionTenantContextArgs({
+      ...productionProofIssuerContextArgs({
         actor_id: "hosted-runtime-agent-a",
         request_id: "req-hosted-runtime-workflow-proof-issue",
         correlation_id: "corr-hosted-runtime-workflow-proof-issue",
@@ -5913,6 +6031,25 @@ function productionTenantContextArgs(overrides: Record<string, unknown> = {}): R
     correlation_id: "corr-production-a",
     ...overrides,
   };
+}
+
+function productionProofIssuerContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return productionTenantContextArgs({
+    ...overrides,
+    roles: mergeRoleOverrides(["agent", "dojo:proof:issue"], overrides["roles"]),
+  });
+}
+
+function productionProofRevokerContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return productionTenantContextArgs({
+    ...overrides,
+    roles: mergeRoleOverrides(["agent", "dojo:proof:revoke"], overrides["roles"]),
+  });
+}
+
+function mergeRoleOverrides(defaultRoles: string[], overrideRoles: unknown): string[] {
+  if (!Array.isArray(overrideRoles)) return defaultRoles;
+  return [...new Set([...defaultRoles, ...overrideRoles.map((role) => String(role))])];
 }
 
 function runtimeClaimsForSkillGuardrails(skill: DojoSkill): Record<string, unknown> {

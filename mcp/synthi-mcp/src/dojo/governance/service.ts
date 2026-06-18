@@ -32,6 +32,8 @@ export type DojoGovernanceRbacAction =
   | "permission_upgrade_review"
   | "case_law_review"
   | "case_law_record"
+  | "proof_capsule_issue"
+  | "proof_capsule_revoke"
   | "license_revocation"
   | "license_recertification"
   | "compliance_export"
@@ -71,6 +73,8 @@ export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPo
     permission_upgrade_review: ["dojo:approval:review", "dojo:license:review"],
     case_law_review: ["dojo:case-law:review"],
     case_law_record: ["dojo:case-law:record"],
+    proof_capsule_issue: ["dojo:proof:issue"],
+    proof_capsule_revoke: ["dojo:proof:revoke"],
     license_revocation: ["dojo:license:revoke"],
     license_recertification: ["dojo:license:recertify"],
     compliance_export: ["dojo:compliance:export", "dojo:auditor"],
@@ -1212,6 +1216,14 @@ function normalizeGovernanceRbacPolicy(
       case_law_record: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.case_law_record,
         ...(policy.action_roles?.case_law_record ?? []),
+      ]),
+      proof_capsule_issue: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.proof_capsule_issue,
+        ...(policy.action_roles?.proof_capsule_issue ?? []),
+      ]),
+      proof_capsule_revoke: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.proof_capsule_revoke,
+        ...(policy.action_roles?.proof_capsule_revoke ?? []),
       ]),
       license_revocation: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.license_revocation,
