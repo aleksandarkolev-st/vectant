@@ -1370,7 +1370,7 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
-  it("runs scheduled governance jobs through RBAC, dry-run, and audit persistence", async () => {
+  it("runs scheduled governance jobs through RBAC, dry-run, archive manifests, and audit persistence", async () => {
     const { visibleSkillId } = await publishTwoWorkspaceSkillsForDojoToolTest();
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
 

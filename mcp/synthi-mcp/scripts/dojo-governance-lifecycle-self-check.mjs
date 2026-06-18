@@ -57,6 +57,7 @@ export const DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES = [
   "governance_executes_scheduled_jobs_with_handler_contract",
   "governance_persists_scheduled_job_audit_results",
   "governance_exposes_scheduled_job_runner_mcp_tool",
+  "governance_archives_compliance_evidence_with_hashed_manifest",
   "governance_adds_proof_public_verification_custody",
 ];
 
@@ -212,6 +213,7 @@ export function buildDojoGovernanceLifecycleEvidenceManifest({
       compliance_pack_required: true,
       scheduled_jobs_required: true,
       scheduled_job_runner_tool_required: true,
+      compliance_archive_manifest_required: true,
       proof_public_verification_custody_required: true,
       malformed_expiry_fails_closed_required: true,
       self_check_executes_tests_required: true,
@@ -362,6 +364,22 @@ function evidenceTitlesForCapability(capability, titles) {
     }
     return matched;
   }
+  if (capability === "governance_archives_compliance_evidence_with_hashed_manifest") {
+    const requiredTitleMatchers = [
+      ["builds tenant scoped compliance archive manifests", "complete packs"],
+      ["runs scheduled governance jobs", "rbac", "dry run", "archive manifests", "audit persistence"],
+    ];
+    const matched = [];
+    for (const matchers of requiredTitleMatchers) {
+      const title = titles.find((candidate) => {
+        const normalizedTitle = normalizeText(candidate);
+        return matchers.every((matcher) => normalizedTitle.includes(matcher));
+      });
+      if (!title) return [];
+      matched.push(title);
+    }
+    return matched;
+  }
   const matchers = capabilityMatchers(capability);
   return titles.filter((title) => {
     const normalizedTitle = normalizeText(title);
@@ -425,6 +443,8 @@ function capabilityMatchers(capability) {
       return ["persists scheduled job audit results", "tenant scoped audit context"];
     case "governance_exposes_scheduled_job_runner_mcp_tool":
       return ["runs scheduled governance jobs", "rbac", "dry run", "audit persistence"];
+    case "governance_archives_compliance_evidence_with_hashed_manifest":
+      return ["builds tenant scoped compliance archive manifests", "complete packs"];
     case "governance_adds_proof_public_verification_custody":
       return ["adds proof public verification custody", "compliance pack"];
     default:
