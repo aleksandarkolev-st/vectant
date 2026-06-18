@@ -56,6 +56,7 @@ export const DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES = [
   "governance_builds_scheduled_jobs_from_lifecycle_queues",
   "governance_executes_scheduled_jobs_with_handler_contract",
   "governance_persists_scheduled_job_audit_results",
+  "governance_exposes_scheduled_job_runner_mcp_tool",
   "governance_adds_proof_public_verification_custody",
 ];
 
@@ -210,6 +211,7 @@ export function buildDojoGovernanceLifecycleEvidenceManifest({
       audit_export_required: true,
       compliance_pack_required: true,
       scheduled_jobs_required: true,
+      scheduled_job_runner_tool_required: true,
       proof_public_verification_custody_required: true,
       malformed_expiry_fails_closed_required: true,
       self_check_executes_tests_required: true,
@@ -421,6 +423,8 @@ function capabilityMatchers(capability) {
       return ["executes scheduled jobs", "handler contract", "audit results"];
     case "governance_persists_scheduled_job_audit_results":
       return ["persists scheduled job audit results", "tenant scoped audit context"];
+    case "governance_exposes_scheduled_job_runner_mcp_tool":
+      return ["runs scheduled governance jobs", "rbac", "dry run", "audit persistence"];
     case "governance_adds_proof_public_verification_custody":
       return ["adds proof public verification custody", "compliance pack"];
     default:
