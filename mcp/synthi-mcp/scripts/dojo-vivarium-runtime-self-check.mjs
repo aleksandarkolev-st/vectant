@@ -39,6 +39,7 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "scenario_dsl_classifies_invalid_value_data_tissue",
   "scenario_dsl_classifies_document_tissue_specific_evidence",
   "scenario_dsl_classifies_ui_tissue_specific_evidence",
+  "scenario_dsl_classifies_misleading_toast_ui_tissue",
   "scenario_dsl_classifies_policy_tissue_scenarios",
   "scenario_dsl_classifies_expanded_identity_tissue_scenarios",
   "scenario_dsl_rejects_missing_oracle_or_fixtures",
@@ -80,6 +81,7 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "vivarium_runner_emits_corrupted_document_tissue_evidence",
   "vivarium_runner_emits_ambiguous_document_name_tissue_evidence",
   "vivarium_runner_emits_ui_tissue_evidence",
+  "vivarium_runner_emits_misleading_toast_ui_evidence",
   "vivarium_runner_requires_prompt_injection_quarantine",
   "vivarium_runner_uses_deterministic_run_clock",
   "vivarium_runner_blocks_exhausted_budget",
@@ -248,6 +250,7 @@ export function buildDojoVivariumRuntimeEvidenceManifest({
       document_tissue_specific_evidence_required: true,
       ui_tissue_mutations_required: true,
       ui_tissue_specific_evidence_required: true,
+      misleading_toast_tissue_required: true,
       policy_tissue_required: true,
       expanded_identity_tissue_required: true,
       invalid_value_data_tissue_required: true,
@@ -340,6 +343,8 @@ function capabilityMatchers(capability) {
       return ["scenario dsl classifies document tissue scenarios", "specific evidence requirements"];
     case "scenario_dsl_classifies_ui_tissue_specific_evidence":
       return ["scenario dsl classifies ui tissue scenarios", "specific evidence requirements"];
+    case "scenario_dsl_classifies_misleading_toast_ui_tissue":
+      return ["scenario dsl classifies misleading toast ui tissue", "specific evidence requirements"];
     case "scenario_dsl_classifies_policy_tissue_scenarios":
       return ["scenario dsl classifies policy tissue scenarios", "thresholds and unavailable approvals"];
     case "scenario_dsl_classifies_expanded_identity_tissue_scenarios":
@@ -422,6 +427,8 @@ function capabilityMatchers(capability) {
       return ["vivarium runner emits ambiguous name document tissue evidence", "distinct synthetic document ids"];
     case "vivarium_runner_emits_ui_tissue_evidence":
       return ["vivarium runner emits ui tissue evidence", "layout label table modal and adjacency mutations"];
+    case "vivarium_runner_emits_misleading_toast_ui_evidence":
+      return ["vivarium runner emits misleading toast ui evidence", "materialized false success toast state"];
     case "vivarium_runner_requires_prompt_injection_quarantine":
       return ["vivarium runner passes prompt injection scenarios", "document instructions are quarantined"];
     case "vivarium_runner_uses_deterministic_run_clock":
