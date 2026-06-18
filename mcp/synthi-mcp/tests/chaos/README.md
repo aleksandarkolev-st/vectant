@@ -35,6 +35,8 @@ node tests/chaos/runner.mjs --require-scenarios --json ../../tmp/dojo-chaos-runn
 
 node tests/chaos/runner.mjs --list
 
+node tests/chaos/runner.mjs --kind live --list
+
 node tests/chaos/runner.mjs --only api_fault_server --iterations 3
 ```
 
@@ -60,8 +62,27 @@ Each result includes:
 
 ## Future Live Chaos
 
-The mature release plan still calls for slower live chaos scenarios such as
-worker kill, signaling partition, Redis restart, Postgres restart during proof
-validation, and browser crash. Those should land as additional scenario modules
-using the same runner contract, with environment-gated live requirements instead
-of replacing the deterministic preflight.
+Live chaos hooks now exist, but they are never part of the default preflight.
+The runner selects deterministic preflight scenarios by default. To list live
+hooks:
+
+```bash
+node tests/chaos/runner.mjs --kind live --list
+```
+
+To execute live hooks, set `SYNTHI_CHAOS_ENABLE_LIVE=1`, select `--kind live`
+or `--kind all --include-live`, and provide each hook's command as a JSON argv
+array. The runner executes those argv arrays with `shell: false`.
+
+Examples of command env vars:
+
+- `SYNTHI_CHAOS_WORKER_KILL_COMMAND_JSON`
+- `SYNTHI_CHAOS_SIGNALING_PARTITION_COMMAND_JSON`
+- `SYNTHI_CHAOS_REDIS_RESTART_COMMAND_JSON`
+- `SYNTHI_CHAOS_POSTGRES_RESTART_PROOF_COMMAND_JSON`
+- `SYNTHI_CHAOS_BROWSER_CRASH_COMMAND_JSON`
+- `SYNTHI_CHAOS_EVIDENCE_STORE_UNAVAILABLE_COMMAND_JSON`
+- `SYNTHI_CHAOS_PROOF_SIGNING_OUTAGE_COMMAND_JSON`
+
+This keeps destructive Docker/network/service operations external to the repo
+and makes live execution an explicit release-operator decision.

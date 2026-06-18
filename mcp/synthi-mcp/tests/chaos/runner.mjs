@@ -14,6 +14,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MCP_ROOT = resolve(__dirname, "../..");
 const REPO_ROOT = resolve(MCP_ROOT, "../..");
+const SCENARIO_KINDS = new Set(["preflight", "live"]);
+const SCENARIO_KIND_FILTERS = new Set(["preflight", "live", "all"]);
 
 export function parseArgs(argv) {
   const opts = {
@@ -24,6 +26,8 @@ export function parseArgs(argv) {
     requireScenarios: false,
     timeoutMs: 120000,
     artifactDir: null,
+    scenarioKind: "preflight",
+    includeLive: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -34,6 +38,12 @@ export function parseArgs(argv) {
     else if (arg === "--require-scenarios") opts.requireScenarios = true;
     else if (arg === "--timeout-ms") opts.timeoutMs = Math.max(1, Number(argv[++i]) || 120000);
     else if (arg === "--artifact-dir") opts.artifactDir = argv[++i] ?? null;
+    else if (arg === "--kind") {
+      const kind = String(argv[++i] ?? "");
+      if (!SCENARIO_KIND_FILTERS.has(kind)) throw new Error(`chaos_runner_invalid_kind:${kind || "missing"}`);
+      opts.scenarioKind = kind;
+    }
+    else if (arg === "--include-live") opts.includeLive = true;
     else if (arg === "--help" || arg === "-h") {
       process.stderr.write(
         [
@@ -41,6 +51,8 @@ export function parseArgs(argv) {
           "",
           "  --only <name>         run a single scenario by file name without .mjs",
           "  --iterations <n>      repeat each scenario n times; default 1",
+          "  --kind <kind>         scenario kind: preflight, live, or all; default preflight",
+          "  --include-live        include live scenarios with the default preflight set",
           "  --list                enumerate scenarios without running",
           "  --json <path>         write a machine-readable report",
           "  --require-scenarios   fail if no concrete scenarios are present",
@@ -59,7 +71,7 @@ export function parseArgs(argv) {
   return opts;
 }
 
-export async function loadScenarios(only) {
+export async function loadScenarios(only, filters = {}) {
   const dir = join(__dirname, "scenarios");
   let files;
   try {
@@ -67,6 +79,8 @@ export async function loadScenarios(only) {
   } catch {
     return [];
   }
+  const scenarioKind = normalizeScenarioKindFilter(filters.scenarioKind ?? filters.kind ?? "preflight");
+  const includeLive = Boolean(filters.includeLive);
   const modules = [];
   for (const fileName of files.sort()) {
     if (!fileName.endsWith(".mjs")) continue;
@@ -79,7 +93,13 @@ export async function loadScenarios(only) {
       process.stderr.write(`chaos: skipping ${fileName} - does not match scenario shape\n`);
       continue;
     }
-    modules.push(scenario);
+    const kind = normalizeScenarioKind(scenario.kind);
+    if (!kind) {
+      process.stderr.write(`chaos: skipping ${fileName} - invalid scenario kind ${scenario.kind}\n`);
+      continue;
+    }
+    if (!matchesScenarioKind({ kind, scenarioKind, includeLive })) continue;
+    modules.push({ ...scenario, kind });
   }
   return modules;
 }
@@ -129,11 +149,14 @@ export async function runOne(scenario, iteration, opts = {}) {
 export async function runChaosSuite(opts = parseArgs([])) {
   const startedAt = new Date().toISOString();
   const start = Date.now();
-  const scenarios = await loadScenarios(opts.only);
+  const scenarios = await loadScenarios(opts.only, {
+    scenarioKind: opts.scenarioKind,
+    includeLive: opts.includeLive,
+  });
 
   if (opts.listOnly) {
     for (const scenario of scenarios) {
-      process.stdout.write(`${scenario.name}\t${scenario.description ?? ""}\n`);
+      process.stdout.write(`${scenario.name}\t${scenario.kind}\t${scenario.description ?? ""}\n`);
     }
     const report = buildReport({ startedAt, durationMs: Date.now() - start, opts, scenarios, results: [], listOnly: true });
     await maybeWriteJson(opts.jsonPath, report);
@@ -184,8 +207,13 @@ function buildReport({ startedAt, durationMs, opts, scenarios, results, listOnly
     failed_run_count: failed.length,
     scenarios: scenarios.map((scenario) => ({
       name: scenario.name,
+      kind: scenario.kind ?? "preflight",
       description: scenario.description ?? "",
+      required_env: Array.isArray(scenario.required_env) ? scenario.required_env : [],
     })),
+    scenario_kinds: [...new Set(scenarios.map((scenario) => scenario.kind ?? "preflight"))].sort(),
+    scenario_kind_filter: opts.scenarioKind ?? "preflight",
+    live_scenarios_included: scenarios.some((scenario) => scenario.kind === "live"),
     results,
     artifact_dir: resolve(opts.artifactDir ?? join(REPO_ROOT, "tmp", "dojo-chaos-runner")),
     timeout_ms: opts.timeoutMs,
@@ -211,4 +239,21 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.stderr.write(`chaos runner unhandled: ${err?.stack ?? err}\n`);
     process.exit(1);
   });
+}
+
+function normalizeScenarioKind(kind) {
+  const normalized = String(kind || "preflight").trim();
+  return SCENARIO_KINDS.has(normalized) ? normalized : null;
+}
+
+function normalizeScenarioKindFilter(kind) {
+  const normalized = String(kind || "preflight").trim();
+  if (!SCENARIO_KIND_FILTERS.has(normalized)) throw new Error(`chaos_runner_invalid_kind:${normalized || "missing"}`);
+  return normalized;
+}
+
+function matchesScenarioKind({ kind, scenarioKind, includeLive }) {
+  if (scenarioKind === "all") return true;
+  if (includeLive && scenarioKind === "preflight") return kind === "preflight" || kind === "live";
+  return kind === scenarioKind;
 }

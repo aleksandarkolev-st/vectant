@@ -245,6 +245,8 @@
     "spike:E4": "tsx tests/spike/E4_cost_budget.ts",
     "soak": "node tests/soak/soak_loop.mjs",
     "chaos:dojo:preflight": "node tests/chaos/runner.mjs --require-scenarios --json ../../tmp/dojo-chaos-runner/chaos-runner.report.json",
+    "chaos:dojo:live:list": "node tests/chaos/runner.mjs --kind live --list",
+    "chaos:dojo:live": "node tests/chaos/runner.mjs --kind live --require-scenarios --json ../../tmp/dojo-chaos-runner/live-chaos-runner.report.json",
     "live:phase3": "node scripts/live-test-phase3.mjs",
     "live:browser": "node scripts/live-browser-smoke.mjs",
     "live:browser:workspace": "node scripts/live-browser-smoke.mjs --workspace",
