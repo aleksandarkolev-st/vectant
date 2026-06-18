@@ -28,6 +28,15 @@ function previewText(value) {
     : value || '';
 }
 
+function isStateResponse(value) {
+  return (
+    value
+    && typeof value === 'object'
+    && value.state !== undefined
+    && typeof value.state === 'object'
+  );
+}
+
 function browserDefaultBridgeUrl() {
   if (typeof window === 'undefined') return DEFAULT_SERVER_URL;
   const hostname = window.location?.hostname || 'localhost';
@@ -102,7 +111,12 @@ export async function getAgentWorkflowState({ url, token, runtime, signal } = {}
     signal,
   });
   const body = await readJsonOrEmpty(res);
-  if (!res.ok) throw bridgeError('workflow_state_failed', res.status, body);
+  if (!res.ok && !isStateResponse(body)) {
+    throw bridgeError('workflow_state_failed', res.status, body);
+  }
+  if (isStateResponse(body) && !Object.prototype.hasOwnProperty.call(body, 'ok')) {
+    body.ok = false;
+  }
   return body?.state || body;
 }
 
@@ -124,6 +138,15 @@ export async function callAgentWorkflowTool({
   });
   const body = await readJsonOrEmpty(res);
   const payload = body && typeof body === 'object' ? body : {};
+  if (!res.ok && isStateResponse(payload)) {
+    if (!Object.prototype.hasOwnProperty.call(payload, 'status')) {
+      payload.status = res.status;
+    }
+    if (!Object.prototype.hasOwnProperty.call(payload, 'ok')) {
+      payload.ok = false;
+    }
+    return payload;
+  }
   if (payload && payload.state) {
     payload.status = payload.status || res.status;
     if (!Object.prototype.hasOwnProperty.call(payload, 'ok')) {
