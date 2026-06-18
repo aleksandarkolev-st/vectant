@@ -2940,6 +2940,7 @@ describe("Agent Dojo MCP tools", () => {
       license_id: license.license_id,
       license_version: license.license_version,
       requested_action: "run_workflow",
+      substrate_claim: "api",
       evidence_record_ids: ["evidence-workspace", "evidence-checkride"],
       ledger_checkpoint_hash: "sha256:checkpoint-api-tool-a",
       evidence_claims: [
@@ -3048,6 +3049,7 @@ describe("Agent Dojo MCP tools", () => {
       license_id: license.license_id,
       license_version: license.license_version,
       requested_action: "run_workflow",
+      substrate_claim: "api",
       evidence_record_ids: ["evidence-workspace", "evidence-checkride"],
       ledger_checkpoint_hash: "sha256:checkpoint-api-tool-publish",
       evidence_claims: [
@@ -3417,6 +3419,7 @@ describe("Agent Dojo MCP tools", () => {
           license_id: publishedSkill.permission_license.license_id,
           license_version: publishedSkill.permission_license.license_version,
           requested_action: "run_workflow",
+          substrate_claim: "api",
           evidence_record_ids: ["evidence-workspace", "evidence-checkride"],
           ledger_checkpoint_hash: "sha256:checkpoint-api-tool-name-sample",
           evidence_claims: [

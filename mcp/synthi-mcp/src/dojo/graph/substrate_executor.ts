@@ -224,10 +224,16 @@ function proofCapsuleBindingBlockedBy(graphProofCapsule: unknown, apiToolArgs: R
 
   const graphCapsuleId = stringOpt(graphProof["capsule_id"]);
   const graphNonce = stringOpt(graphProof["nonce"]);
+  const graphSubstrate = stringOpt(graphProof["substrate_claim"]);
   const apiCapsuleId = stringOpt(apiProof["capsule_id"]);
   const apiNonce = stringOpt(apiProof["nonce"]);
   const blockedBy: string[] = [];
   if (!graphCapsuleId || !graphNonce) blockedBy.push("api_tool_graph_proof_required");
+  if (!graphSubstrate) {
+    blockedBy.push("api_tool_graph_proof_substrate_required");
+  } else if (graphSubstrate !== "api") {
+    blockedBy.push("api_tool_graph_proof_substrate_mismatch");
+  }
   if (graphCapsuleId && apiCapsuleId && graphCapsuleId !== apiCapsuleId) blockedBy.push("api_tool_graph_proof_mismatch");
   if (graphNonce && apiNonce && graphNonce !== apiNonce) blockedBy.push("api_tool_graph_proof_mismatch");
   return [...new Set(blockedBy)];

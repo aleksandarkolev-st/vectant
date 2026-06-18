@@ -350,6 +350,14 @@ export function validateDojoApiBackedToolInvocation(input: {
       blockedBy,
       "api_tool_proof_action_mismatch"
     );
+    requireMatchingProofField(
+      proofCapsule,
+      "substrate_claim",
+      "api",
+      "api_tool_proof_substrate_required",
+      blockedBy,
+      "api_tool_proof_substrate_mismatch"
+    );
     requireProofEvidenceBacked(proofCapsule, Object.keys(input.tool.proof_claim_mapping), blockedBy);
   }
   if (input.tool.enforcement.idempotency_required && typeof input.args["idempotency_key"] !== "string") {

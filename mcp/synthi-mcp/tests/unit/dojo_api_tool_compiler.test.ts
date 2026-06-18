@@ -138,6 +138,44 @@ describe("Dojo API-backed MCP tool compiler", () => {
     expect(validateDojoApiBackedToolInvocation({
       tool,
       args: {
+        proof_capsule: { ...proofCapsuleFixture(), substrate_claim: "dom" },
+        request: { client_id: "client-a", amount: 42 },
+        idempotency_key: "idem-a",
+      },
+      license_context: {
+        skill_id: "dojo_save_invoice",
+        license_id: "license_save_invoice",
+        license_version: "1.0.0",
+        action: "run_workflow",
+        auth_scopes: ["invoice:write"],
+      },
+    })).toEqual({
+      ok: false,
+      blocked_by: ["api_tool_proof_substrate_mismatch"],
+    });
+
+    expect(validateDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: { ...proofCapsuleFixture(), substrate_claim: undefined },
+        request: { client_id: "client-a", amount: 42 },
+        idempotency_key: "idem-a",
+      },
+      license_context: {
+        skill_id: "dojo_save_invoice",
+        license_id: "license_save_invoice",
+        license_version: "1.0.0",
+        action: "run_workflow",
+        auth_scopes: ["invoice:write"],
+      },
+    })).toEqual({
+      ok: false,
+      blocked_by: ["api_tool_proof_substrate_required"],
+    });
+
+    expect(validateDojoApiBackedToolInvocation({
+      tool,
+      args: {
         proof_capsule: proofCapsuleFixture(),
         request: { client_id: "client-a", amount: 42 },
         idempotency_key: "idem-a",
@@ -211,6 +249,47 @@ describe("Dojo API-backed MCP tool compiler", () => {
       ok: false,
       blocked_by: ["api_tool_proof_evidence_claim_ref_unbound:checkride_passed"],
     });
+  });
+
+  it("requires API tool proof substrate mismatch checks before reusable proof validation", async () => {
+    const tool = compileDojoApiBackedMcpTool({
+      candidate: approvedMutationCandidate(),
+      skill_id: "dojo_save_invoice",
+      license_id: "license_save_invoice",
+      license_version: "1.0.0",
+      action: "run_workflow",
+    }).tool!;
+    const requests: DojoApiToolHttpRequest[] = [];
+    const evidenceRecords: DojoApiToolExecutionEvidence[] = [];
+
+    const result = await executeDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: { ...proofCapsuleFixture(), substrate_claim: "dom" },
+        request: { client_id: "client-a", amount: 42 },
+        idempotency_key: "idem-a",
+      },
+      license_context: licenseContext(),
+      validate_proof: () => {
+        throw new Error("proof validator must not run after API substrate mismatch");
+      },
+      transport: (request) => {
+        requests.push(request);
+        return { status: 201, body: { status: "saved" } };
+      },
+      write_evidence: (evidence) => {
+        evidenceRecords.push(evidence);
+        return "evidence:api-tool-a";
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_proof_substrate_mismatch"],
+    }));
+    expect(requests).toEqual([]);
+    expect(evidenceRecords).toEqual([]);
   });
 
   it("enforces the compiled API tool input schema before transport execution", () => {
@@ -502,6 +581,35 @@ describe("Dojo API-backed MCP tool compiler", () => {
     }));
     expect(requests).toEqual([]);
     expect(evidenceRecords).toEqual([]);
+
+    const mismatchedSubstrate = await executeDojoApiBackedToolInvocation({
+      tool,
+      args: {
+        proof_capsule: { ...proofCapsuleFixture(), substrate_claim: "dom" },
+        request: { client_id: "client-a", amount: 42 },
+        idempotency_key: "idem-a",
+      },
+      license_context: licenseContext(),
+      validate_proof: () => {
+        throw new Error("proof validator must not run after substrate mismatch");
+      },
+      transport: (request) => {
+        requests.push(request);
+        return { status: 201, body: { status: "saved" } };
+      },
+      write_evidence: (evidence) => {
+        evidenceRecords.push(evidence);
+        return "evidence:api-tool-a";
+      },
+    });
+
+    expect(mismatchedSubstrate).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["api_tool_proof_substrate_mismatch"],
+    }));
+    expect(requests).toEqual([]);
+    expect(evidenceRecords).toEqual([]);
   });
 
   it("does not call the API transport when reusable proof validation blocks execution", async () => {
@@ -601,6 +709,7 @@ function proofCapsuleFixture() {
     license_id: "license_save_invoice",
     license_version: "1.0.0",
     requested_action: "run_workflow",
+    substrate_claim: "api",
     evidence_record_ids: ["evidence-workspace", "evidence-checkride"],
     ledger_checkpoint_hash: "sha256:checkpoint-a",
     evidence_claims: [

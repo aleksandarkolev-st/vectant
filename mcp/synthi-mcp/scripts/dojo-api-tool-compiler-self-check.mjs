@@ -36,6 +36,7 @@ export const DOJO_API_TOOL_COMPILER_CAPABILITIES = [
   "api_candidate_requires_mutation_safety_fields",
   "api_tool_compiles_proof_gated_strict_contract",
   "api_tool_validates_proof_license_idempotency_and_payload",
+  "api_tool_requires_api_substrate_proof_claim",
   "api_tool_enforces_strict_input_schema",
   "api_tool_executes_with_idempotency_postcondition_and_evidence",
   "api_tool_blocks_transport_on_proof_or_license_failure",
@@ -44,6 +45,7 @@ export const DOJO_API_TOOL_COMPILER_CAPABILITIES = [
   "substrate_requires_compiled_api_tool_for_production",
   "substrate_executes_compiled_api_with_transport_and_evidence_callbacks",
   "substrate_blocks_graph_api_proof_mismatch",
+  "substrate_blocks_non_api_graph_proof_for_api_execution",
   "substrate_prefers_safest_licensed_substrate",
   "api_tool_public_surface_prepares_reviewed_contract",
   "api_tool_public_surface_publishes_api_backed_manifest",
@@ -200,6 +202,7 @@ export function buildDojoApiToolCompilerEvidenceManifest({
       postcondition_required: true,
       evidence_write_required: true,
       graph_proof_match_required: true,
+      api_substrate_proof_claim_required: true,
       production_candidate_only_execution_allowed: false,
       self_check_executes_tests_required: true,
     },
@@ -279,6 +282,8 @@ function capabilityMatchers(capability) {
       return ["compiles an approved mutation endpoint", "proof gated strict"];
     case "api_tool_validates_proof_license_idempotency_and_payload":
       return ["validates invocation proof", "license context", "idempotency"];
+    case "api_tool_requires_api_substrate_proof_claim":
+      return ["requires api tool proof substrate mismatch", "before reusable proof validation"];
     case "api_tool_enforces_strict_input_schema":
       return ["enforces the compiled api tool input schema"];
     case "api_tool_executes_with_idempotency_postcondition_and_evidence":
@@ -295,6 +300,8 @@ function capabilityMatchers(capability) {
       return ["executes compiled api substrate", "transport", "evidence callbacks"];
     case "substrate_blocks_graph_api_proof_mismatch":
       return ["does not execute compiled api transport", "graph proof and api proof do not match"];
+    case "substrate_blocks_non_api_graph_proof_for_api_execution":
+      return ["does not execute compiled api transport", "graph proof is not api bound"];
     case "substrate_prefers_safest_licensed_substrate":
       return ["prefers the safest licensed substrate"];
     case "api_tool_public_surface_prepares_reviewed_contract":
