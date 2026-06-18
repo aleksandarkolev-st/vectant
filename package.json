@@ -2,7 +2,8 @@
   "private": true,
   "workspaces": ["synthi", "mcp/synthi-mcp", "packages/*"],
   "scripts": {
-    "start:collab": "node ./backend/collab-server/server.js"
+    "start:collab": "node ./backend/collab-server/server.js",
+    "build:oauth-relay-extension": "node ./scripts/build-oauth-relay-extension.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.30.0",

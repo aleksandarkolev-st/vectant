@@ -38,6 +38,7 @@ const k8s = require('@kubernetes/client-node');
 const { runtimeResourceId, metadataHash, dnsLabelValue } = require('./runtimeIdentity');
 const { ensureRuntimeFilesystem, releaseRuntimeFilesystem } = require('./runtimeFilesystem');
 const { buildRuntimeDeployment, buildRuntimeService, runtimeDeploymentName, isSysboxRuntimeEnabled, RUNTIME_MANAGED_BY, RUNTIME_DOCKER_DATA_SUBDIR } = require('./runtimePodSpec');
+const { persistentRuntimeEnvEntries, persistentRuntimeShellSetup } = require('./runtimePersistence');
 const lifecycle = require('./sessionLifecycle');
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -59,9 +60,23 @@ const WORKSPACE_REPOS_PATH = (process.env.WORKSPACE_REPOS_PATH || `${WORKSPACE_D
 const PREVIEW_SIDECAR_PORT = parseSinglePort(process.env.SYNTHI_PREVIEW_SIDECAR_PORT, 18080);
 const PREVIEW_SIDECAR_PREFIX = normalizePreviewPrefix(process.env.SYNTHI_PREVIEW_SIDECAR_PREFIX || '/__synthi_preview');
 const PREVIEW_SIDECAR_IMAGE = (process.env.SYNTHI_PREVIEW_SIDECAR_IMAGE || 'node:20-alpine').trim();
+const PREVIEW_SIDECAR_TIMEOUT_MS = parsePositiveInt(process.env.SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS, 30_000);
+const PREVIEW_PORT_PROBE_TIMEOUT_MS = parsePositiveInt(process.env.SYNTHI_PREVIEW_PORT_PROBE_TIMEOUT_MS, 1_500);
+const PREVIEW_PUBLIC_DOMAIN = (process.env.SYNTHI_PREVIEW_PUBLIC_DOMAIN || '').trim();
+const PREVIEW_PUBLIC_PROTOCOL = (process.env.SYNTHI_PREVIEW_PUBLIC_PROTOCOL || 'https').trim();
+const PREVIEW_SCAN_PORTS = (process.env.SYNTHI_PREVIEW_SCAN_PORTS || '').trim();
+const PREVIEW_EXCLUDE_PORTS = (
+  process.env.SYNTHI_PREVIEW_EXCLUDE_PORTS ||
+  process.env.SYNTHI_PREVIEW_INFRA_PORTS ||
+  ''
+).trim();
 const WORKFLOW_BRIDGE_IMAGE = (process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE || '').trim();
 const WORKFLOW_BRIDGE_PORT = parseSinglePort(process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT, 9466);
+const WORKFLOW_EXTERNAL_OPEN_BODY_LIMIT_BYTES = parsePositiveInt(process.env.SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES, 20_000);
+const WORKFLOW_EXTERNAL_OPEN_TIMEOUT_MS = parsePositiveInt(process.env.SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS, 15_000);
 const HOSTED_BROWSER_CDP_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT, 9222);
+const HOSTED_BROWSER_VIEW_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT, 6080);
+const HOSTED_BROWSER_VNC_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_VNC_PORT, 5900);
 
 // ── Sysbox runtime-pod config (Slice 2; dark behind RUNTIME_BACKEND=sysbox-pod) ──
 // Separate caps/timeouts from the worker's so the two untrusted workloads are
@@ -156,6 +171,11 @@ function parseSinglePort(value, fallback) {
   return fallback;
 }
 
+function parsePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? '').trim(), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function normalizePreviewPrefix(value) {
   const raw = String(value || '').trim() || '/__synthi_preview';
   const withSlash = raw.startsWith('/') ? raw : `/${raw}`;
@@ -212,6 +232,12 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
           valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN' } },
         },
         { name: 'SYNTHI_HOSTED_BROWSER_CDP_URL', value: `http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}` },
+        { name: 'SYNTHI_PREVIEW_SIDECAR_PORT', value: String(PREVIEW_SIDECAR_PORT) },
+        { name: 'SYNTHI_PREVIEW_SIDECAR_PREFIX', value: PREVIEW_SIDECAR_PREFIX },
+        { name: 'SYNTHI_PREVIEW_PUBLIC_DOMAIN', value: PREVIEW_PUBLIC_DOMAIN },
+        { name: 'SYNTHI_PREVIEW_PUBLIC_PROTOCOL', value: PREVIEW_PUBLIC_PROTOCOL },
+        { name: 'SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES', value: String(WORKFLOW_EXTERNAL_OPEN_BODY_LIMIT_BYTES) },
+        { name: 'SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS', value: String(WORKFLOW_EXTERNAL_OPEN_TIMEOUT_MS) },
         { name: 'SYNTHI_WORKSPACE_ID', value: workspaceId },
         { name: 'SYNTHI_WORKSPACE_URL', value: workspaceUrl },
         { name: 'SYNTHI_HOSTED_BROWSER_WORKSPACE_URL', value: workspaceUrl },
@@ -270,15 +296,32 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
       args: [
         [
           'set -euo pipefail',
+          'export DISPLAY="${DISPLAY:-:99}"',
           'BROWSER="$(node -e "const { chromium } = require(\'playwright-core\'); process.stdout.write(chromium.executablePath())")"',
-          'exec "$BROWSER" --headless=new --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-address=0.0.0.0 --remote-debugging-port="$SYNTHI_HOSTED_BROWSER_CDP_PORT" --user-data-dir=/tmp/synthi-chrome-profile about:blank',
+          'VIEW_SIZE="${SYNTHI_HOSTED_BROWSER_VIEW_SIZE:-1366x768x24}"',
+          'WINDOW_SIZE="${SYNTHI_HOSTED_BROWSER_WINDOW_SIZE:-1366,768}"',
+          'rm -f /tmp/.X99-lock',
+          'Xvfb "$DISPLAY" -screen 0 "$VIEW_SIZE" -ac +extension GLX +render -noreset &',
+          'XVFB_PID="$!"',
+          'sleep 0.5',
+          'x11vnc -display "$DISPLAY" -localhost -nopw -shared -forever -rfbport "$SYNTHI_HOSTED_BROWSER_VNC_PORT" -quiet &',
+          'VNC_PID="$!"',
+          'websockify --web=/usr/share/novnc "$SYNTHI_HOSTED_BROWSER_VIEW_PORT" "127.0.0.1:$SYNTHI_HOSTED_BROWSER_VNC_PORT" &',
+          'NOVNC_PID="$!"',
+          '"$BROWSER" --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-address=0.0.0.0 --remote-debugging-port="$SYNTHI_HOSTED_BROWSER_CDP_PORT" --user-data-dir=/tmp/synthi-chrome-profile --window-size="$WINDOW_SIZE" --start-maximized about:blank &',
+          'BROWSER_PID="$!"',
+          'trap \'kill "$BROWSER_PID" "$NOVNC_PID" "$VNC_PID" "$XVFB_PID" 2>/dev/null || true\' EXIT TERM INT',
+          'wait "$BROWSER_PID"',
         ].join('\n'),
       ],
       env: [
         { name: 'SYNTHI_HOSTED_BROWSER_CDP_PORT', value: String(HOSTED_BROWSER_CDP_PORT) },
+        { name: 'SYNTHI_HOSTED_BROWSER_VIEW_PORT', value: String(HOSTED_BROWSER_VIEW_PORT) },
+        { name: 'SYNTHI_HOSTED_BROWSER_VNC_PORT', value: String(HOSTED_BROWSER_VNC_PORT) },
       ],
       ports: [
         { name: 'cdp', containerPort: HOSTED_BROWSER_CDP_PORT },
+        { name: 'browser-view', containerPort: HOSTED_BROWSER_VIEW_PORT },
       ],
       resources: {
         requests: { cpu: '200m', memory: '512Mi' },
@@ -289,7 +332,7 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
           command: [
             'node',
             '-e',
-            `fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
+            `Promise.all([fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version'),fetch('http://127.0.0.1:${HOSTED_BROWSER_VIEW_PORT}/vnc.html')]).then(rs=>process.exit(rs.every(r=>r.ok)?0:1)).catch(()=>process.exit(1))`,
           ],
         },
         initialDelaySeconds: 3,
@@ -300,7 +343,7 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
           command: [
             'node',
             '-e',
-            `fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
+            `Promise.all([fetch('http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}/json/version'),fetch('http://127.0.0.1:${HOSTED_BROWSER_VIEW_PORT}/vnc.html')]).then(rs=>process.exit(rs.every(r=>r.ok)?0:1)).catch(()=>process.exit(1))`,
           ],
         },
         initialDelaySeconds: 15,
@@ -319,17 +362,96 @@ function previewSidecarScript() {
     "'use strict';",
     "const http = require('http');",
     "const net = require('net');",
+    "const fs = require('fs');",
     "const { URL } = require('url');",
     "const LISTEN_PORT = Number(process.env.SYNTHI_PREVIEW_SIDECAR_PORT || '18080');",
     "const PREFIX = normalizePrefix(process.env.SYNTHI_PREVIEW_SIDECAR_PREFIX || '/__synthi_preview');",
-    "const TIMEOUT_MS = Number(process.env.SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS || '30000');",
+    `const TIMEOUT_MS = Number(process.env.SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS || '${PREVIEW_SIDECAR_TIMEOUT_MS}');`,
+    `const PORT_PROBE_TIMEOUT_MS = Math.max(250, Math.min(Number(process.env.SYNTHI_PREVIEW_PORT_PROBE_TIMEOUT_MS || '${PREVIEW_PORT_PROBE_TIMEOUT_MS}'), TIMEOUT_MS));`,
+    "const INFRA_PORTS = new Set([",
+    "  LISTEN_PORT,",
+    "  Number(process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT || 0),",
+    "  Number(process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT || 0),",
+    "  Number(process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT || 0),",
+    "  Number(process.env.SYNTHI_HOSTED_BROWSER_VNC_PORT || 0),",
+    "  ...parsePortList(process.env.SYNTHI_PREVIEW_EXCLUDE_PORTS || process.env.SYNTHI_PREVIEW_INFRA_PORTS || ''),",
+    "].filter((port) => Number.isInteger(port) && port > 0));",
     "function normalizePrefix(value) { const raw = String(value || '').trim() || '/__synthi_preview'; const withSlash = raw.startsWith('/') ? raw : '/' + raw; return withSlash.replace(/\\/+$/, '') || '/__synthi_preview'; }",
     "function sendJson(res, status, payload) { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)); }",
+    "function parsePortList(value) {",
+    "  const ports = new Set();",
+    "  for (const rawPart of String(value || '').split(',')) {",
+    "    const part = rawPart.trim();",
+    "    if (!part) continue;",
+    "    const range = /^(\\d+)\\s*-\\s*(\\d+)$/.exec(part);",
+    "    if (range) {",
+    "      const start = Number(range[1]);",
+    "      const end = Number(range[2]);",
+    "      if (!Number.isInteger(start) || !Number.isInteger(end)) continue;",
+    "      const low = Math.max(1, Math.min(start, end));",
+    "      const high = Math.min(65535, Math.max(start, end));",
+    "      for (let port = low; port <= high; port += 1) ports.add(port);",
+    "      continue;",
+    "    }",
+    "    const port = Number(part);",
+    "    if (Number.isInteger(port) && port > 0 && port <= 65535) ports.add(port);",
+    "  }",
+    "  return [...ports];",
+    "}",
+    "function discoverProcListeningPorts(file) {",
+    "  try {",
+    "    const lines = fs.readFileSync(file, 'utf8').trim().split('\\n').slice(1);",
+    "    return lines.flatMap((line) => {",
+    "      const parts = line.trim().split(/\\s+/);",
+    "      if (parts[3] !== '0A') return [];",
+    "      const local = parts[1] || '';",
+    "      const portHex = local.split(':').pop();",
+    "      const port = Number.parseInt(portHex, 16);",
+    "      return Number.isInteger(port) && port > 0 && port <= 65535 ? [port] : [];",
+    "    });",
+    "  } catch (_) {",
+    "    return [];",
+    "  }",
+    "}",
+    "function discoverListeningPorts() {",
+    "  const ports = new Set([",
+    "    ...discoverProcListeningPorts('/proc/net/tcp'),",
+    "    ...discoverProcListeningPorts('/proc/net/tcp6'),",
+    "    ...parsePortList(process.env.SYNTHI_PREVIEW_SCAN_PORTS || ''),",
+    "  ]);",
+    "  return [...ports]",
+    "    .filter((port) => !INFRA_PORTS.has(port))",
+    "    .sort((a, b) => a - b);",
+    "}",
+    "function probeHttpPort(port) {",
+    "  return new Promise((resolve) => {",
+    "    const req = http.request({",
+    "      hostname: 'localhost',",
+    "      port,",
+    "      path: '/',",
+    "      method: 'HEAD',",
+    "      timeout: PORT_PROBE_TIMEOUT_MS,",
+    "      autoSelectFamily: true,",
+    "    }, (probeRes) => {",
+    "      probeRes.resume();",
+    "      resolve(true);",
+    "    });",
+    "    req.on('timeout', () => req.destroy(new Error('preview_probe_timeout')));",
+    "    req.on('error', () => resolve(false));",
+    "    req.end();",
+    "  });",
+    "}",
+    "async function discoverActivePreviewPorts() {",
+    "  const ports = discoverListeningPorts();",
+    "  const results = await Promise.all(ports.map(async (port) => ({ port, http: await probeHttpPort(port) })));",
+    "  return results.filter((result) => result.http).map((result) => result.port);",
+    "}",
     "function parsePreviewUrl(rawUrl) {",
     "  const url = new URL(rawUrl || '/', 'http://preview.local');",
     "  if (url.pathname === '/healthz') return { health: true };",
     "  if (url.pathname !== PREFIX && !url.pathname.startsWith(PREFIX + '/')) return null;",
     "  const suffix = url.pathname.slice(PREFIX.length);",
+    "  if (suffix === '/ports') return { ports: true };",
     "  const match = /^\\/(\\d+)(\\/.*)?$/.exec(suffix);",
     "  if (!match) return null;",
     "  const port = Number(match[1]);",
@@ -342,9 +464,16 @@ function previewSidecarScript() {
     "  next['accept-encoding'] = 'identity';",
     "  return next;",
     "}",
-    "function proxyHttp(req, res) {",
-    "  const parsed = parsePreviewUrl(req.url);",
+    "async function proxyHttp(req, res) {",
+    "  let parsed;",
+    "  try { parsed = parsePreviewUrl(req.url); }",
+    "  catch (err) { sendJson(res, 400, { error: 'invalid_preview_url', detail: err.message }); return; }",
     "  if (parsed && parsed.health) { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('ok'); return; }",
+    "  if (parsed && parsed.ports) {",
+    "    const activePorts = await discoverActivePreviewPorts();",
+    "    sendJson(res, 200, { activePorts, source: 'runtime_sidecar' });",
+    "    return;",
+    "  }",
     "  if (!parsed) { sendJson(res, 404, { error: 'invalid_preview_path' }); return; }",
     "  const upstream = http.request({",
     "    hostname: 'localhost',",
@@ -704,6 +833,7 @@ async function ensurePod(sessionId, userId, metadata = {}) {
 
   // 3. Create the Deployment.
   const workspaceDir = workspaceDirForMetadata({ ...metadata, filesystemUserId });
+  const persistentEnv = persistentRuntimeEnvEntries(workspaceDir);
   const deployment = {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -746,6 +876,7 @@ async function ensurePod(sessionId, userId, metadata = {}) {
               command: ['/bin/bash', '-c'],
               args: [
                 `export PATH="/usr/local/cargo/bin:/usr/local/bin:\${PATH}"
+${persistentRuntimeShellSetup()}
 exec worker`,
               ],
               env: [
@@ -795,6 +926,7 @@ exec worker`,
                 { name: 'REPOS_DIR', value: WORKSPACE_REPOS_PATH },
                 { name: 'SYNTHI_REPOS_PATH', value: WORKSPACE_REPOS_PATH },
                 { name: 'WORKSPACE_DIR', value: workspaceDir },
+                ...persistentEnv,
               ],
               resources: {
                 requests: { cpu: '2', memory: '4Gi' },
@@ -823,6 +955,14 @@ exec worker`,
               env: [
                 { name: 'SYNTHI_PREVIEW_SIDECAR_PORT', value: String(PREVIEW_SIDECAR_PORT) },
                 { name: 'SYNTHI_PREVIEW_SIDECAR_PREFIX', value: PREVIEW_SIDECAR_PREFIX },
+                { name: 'SYNTHI_PREVIEW_SIDECAR_TIMEOUT_MS', value: String(PREVIEW_SIDECAR_TIMEOUT_MS) },
+                { name: 'SYNTHI_PREVIEW_PORT_PROBE_TIMEOUT_MS', value: String(PREVIEW_PORT_PROBE_TIMEOUT_MS) },
+                { name: 'SYNTHI_PREVIEW_SCAN_PORTS', value: PREVIEW_SCAN_PORTS },
+                { name: 'SYNTHI_PREVIEW_EXCLUDE_PORTS', value: PREVIEW_EXCLUDE_PORTS },
+                { name: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT', value: String(WORKFLOW_BRIDGE_PORT) },
+                { name: 'SYNTHI_HOSTED_BROWSER_CDP_PORT', value: String(HOSTED_BROWSER_CDP_PORT) },
+                { name: 'SYNTHI_HOSTED_BROWSER_VIEW_PORT', value: String(HOSTED_BROWSER_VIEW_PORT) },
+                { name: 'SYNTHI_HOSTED_BROWSER_VNC_PORT', value: String(HOSTED_BROWSER_VNC_PORT) },
               ],
               ports: [
                 { name: 'preview-proxy', containerPort: PREVIEW_SIDECAR_PORT },

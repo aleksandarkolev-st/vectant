@@ -68,6 +68,28 @@ spec:
 apiVersion: cloud.google.com/v1
 kind: BackendConfig
 metadata:
+  name: preview-backend-config
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  # Preview subdomains must stay reachable by the hosted browser sidecar. The
+  # main beta application remains IAP-protected on its own backend configs.
+  timeoutSec: 3600
+  connectionDraining:
+    drainingTimeoutSec: 30
+  healthCheck:
+    type: HTTP
+    requestPath: /healthz
+    port: 1234
+    checkIntervalSec: 15
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
   name: gateway-backend-config
   namespace: synthi
   labels:
@@ -171,6 +193,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: collab-server
+                name: collab-preview
                 port:
                   number: 1234

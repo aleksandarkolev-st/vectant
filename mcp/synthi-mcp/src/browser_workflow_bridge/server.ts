@@ -16,12 +16,14 @@
  * Endpoints:
  *   GET  /healthz                     -> "ok"
  *   GET  /browser-workflows/state     -> panel-safe state, no screenshots
+ *   POST /browser-workflows/open-external -> open http(s) URL in hosted browser, no page inspection
  *   POST /browser-workflows/tool      -> { tool, arguments }
  */
 
 import http from "node:http";
 import { browserBroker, type BrowserRecordingIssue } from "../browser/broker.js";
-import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
+import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
+import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
 import {
   mutationSafetyPlanFor,
   replayIsolationProfileManifestFor,
@@ -67,6 +69,10 @@ interface BrowserWorkflowOverlayBody {
   url?: unknown;
 }
 
+interface BrowserWorkflowExternalOpenBody {
+  url?: unknown;
+}
+
 interface PreviewDiscoveryResult {
   ok: boolean;
   url?: string;
@@ -76,6 +82,8 @@ interface PreviewDiscoveryResult {
 
 const MAX_HISTORY = 8;
 const PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
+const EXTERNAL_OPEN_BODY_LIMIT_BYTES = parsePositiveInt(process.env["SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES"], 20_000);
+const EXTERNAL_OPEN_TIMEOUT_MS = parsePositiveInt(process.env["SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS"], 15_000);
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -132,6 +140,11 @@ class BridgeToolInputError extends Error {
     this.detail = detail;
     this.status = status;
   }
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 async function readJsonBody<T>(req: http.IncomingMessage, maxBytes: number = 1_000_000): Promise<T> {
@@ -236,6 +249,47 @@ function isLoopbackHost(host: string): boolean {
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
+function normalizeExternalBrowserUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureHostedRuntimeAttached(input: {
+  workspace_id?: string;
+  workspace_url?: string;
+  runtime_id?: string;
+} = {}): Promise<
+  { ok: true } | { ok: false; status: number; error: string; detail?: unknown }
+> {
+  const runtime = browserBroker.runtimeAttachment();
+  if (browserPlaywrightAdapter.isAttached() && runtime?.kind === "hosted") {
+    return { ok: true };
+  }
+
+  const attached = await attachHostedBrowserRuntime(
+    {
+      workspace_id: input.workspace_id,
+      workspace_url: input.workspace_url,
+      runtime_id: input.runtime_id,
+      open_workspace: false,
+    },
+    browserPlaywrightAdapter,
+    browserBroker
+  );
+  if (attached.ok) return { ok: true };
+  return {
+    ok: false,
+    status: 503,
+    error: attached.error,
+    detail: attached.runtime,
+  };
+}
+
 function requestUrlFromArgs(args: unknown): string | undefined {
   const a = objectArgs(args);
   return stringOpt(a["url"]) ?? stringOpt(a["workspace_url"]);
@@ -264,6 +318,19 @@ async function enrichToolArgs(toolName: string, args: unknown): Promise<Record<s
     !stringOpt(base["preferred_url"]) &&
     !stringOpt(base["preview_url"])
   ) {
+    const runtime = await ensureHostedRuntimeAttached({
+      workspace_id: stringOpt(base["workspace_id"]) ?? workspaceSlugFromArgs(base),
+      workspace_url: stringOpt(base["workspace_url"]) ?? defaultWorkspaceUrl(base),
+      runtime_id: stringOpt(base["runtime_id"]),
+    });
+    if (!runtime.ok) {
+      throw new BridgeToolInputError(runtime.error, {
+        tool: toolName,
+        runtime: runtime.detail,
+        required_action: "attach_hosted_browser_runtime",
+      }, runtime.status);
+    }
+
     const preview = await discoverWorkspacePreviewUrl(base);
     if (preview.ok && preview.url) {
       return { ...base, preferred_url: preview.url, preview_url: preview.url };
@@ -286,6 +353,27 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
     stringOpt(args["runtime_scope"]) ??
     stringOpt(args["runtimeScope"]) ??
     stringOpt(process.env["SYNTHI_WORKFLOW_RUNTIME_SCOPE"]);
+
+  const centralPreview = collab
+    ? await discoverCollabPreviewUrl(slug, runtimeScope, collab)
+    : null;
+  if (centralPreview?.ok && centralPreview.url) return centralPreview;
+
+  const runtimePreview = await discoverRuntimeSidecarPreviewUrl(runtimeScope, collab?.url);
+  if (runtimePreview.ok && runtimePreview.url) return runtimePreview;
+  if (!runtimePreview.ok && centralPreview?.ok === false) {
+    return {
+      ok: false,
+      error: runtimePreview.error ?? centralPreview.error ?? "preview_discovery_failed",
+      detail: {
+        workspace: slug,
+        runtimeScope,
+        central: centralPreview.detail,
+        runtime: runtimePreview.detail,
+      },
+    };
+  }
+
   if (!collab) {
     return {
       ok: false,
@@ -296,6 +384,32 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
       },
     };
   }
+
+  if (!centralPreview?.ok) {
+    return {
+      ok: false,
+      error: centralPreview?.error ?? "preview_not_found",
+      detail: {
+        workspace: slug,
+        runtimeScope,
+        central: centralPreview?.detail,
+        runtime: runtimePreview.detail,
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    error: "preview_not_found",
+    detail: { workspace: slug, runtimeScope, collab_url: collab.url, collab_url_source: collab.source },
+  };
+}
+
+async function discoverCollabPreviewUrl(
+  slug: string,
+  runtimeScope: string | undefined,
+  collab: { url: string; source: string }
+): Promise<PreviewDiscoveryResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PREVIEW_DISCOVERY_TIMEOUT_MS);
   try {
@@ -313,7 +427,7 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
       };
     }
     const payload = await response.json() as Record<string, unknown>;
-    const preview = previewUrlFromPortsPayload(payload, collab.url);
+    const preview = previewUrlFromPortsPayload(payload, collab.url, runtimeScope);
     if (preview) return { ok: true, url: preview };
     return {
       ok: false,
@@ -329,6 +443,53 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
         runtimeScope,
         collab_url: collab.url,
         collab_url_source: collab.source,
+        message: err instanceof Error ? err.message : String(err),
+      },
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function discoverRuntimeSidecarPreviewUrl(
+  runtimeScope: string | undefined,
+  collabUrl: string | undefined
+): Promise<PreviewDiscoveryResult> {
+  if (!runtimeScope) {
+    return {
+      ok: false,
+      error: "runtime_scope_required",
+      detail: { reason: "sidecar preview discovery requires runtime scope" },
+    };
+  }
+
+  const sidecarUrl = previewSidecarPortsUrl();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PREVIEW_DISCOVERY_TIMEOUT_MS);
+  try {
+    const response = await fetch(sidecarUrl, { signal: controller.signal });
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: "preview_sidecar_discovery_failed",
+        detail: { sidecar_url: sidecarUrl, status: response.status, runtimeScope },
+      };
+    }
+    const payload = await response.json() as Record<string, unknown>;
+    const preview = previewUrlFromPortsPayload(payload, collabUrl, runtimeScope);
+    if (preview) return { ok: true, url: preview };
+    return {
+      ok: false,
+      error: "preview_not_found",
+      detail: { sidecar_url: sidecarUrl, runtimeScope, source: payload["source"] },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: "preview_sidecar_discovery_failed",
+      detail: {
+        sidecar_url: sidecarUrl,
+        runtimeScope,
         message: err instanceof Error ? err.message : String(err),
       },
     };
@@ -365,7 +526,11 @@ function envUrl(name: string): { url: string; source: string } | null {
   return value ? { url: value.replace(/\/$/, ""), source: name } : null;
 }
 
-function previewUrlFromPortsPayload(payload: Record<string, unknown>, collabUrl: string): string | null {
+function previewUrlFromPortsPayload(
+  payload: Record<string, unknown>,
+  collabUrl: string | undefined,
+  runtimeScope?: string
+): string | null {
   const previews = Array.isArray(payload["previews"]) ? payload["previews"] : [];
   for (const item of previews) {
     if (!item || typeof item !== "object") continue;
@@ -378,17 +543,57 @@ function previewUrlFromPortsPayload(payload: Record<string, unknown>, collabUrl:
     .map((port) => Number(port))
     .filter((port) => Number.isInteger(port) && port > 0 && port <= 65_535)
     .sort((a, b) => a - b);
-  return ports[0] ? resolvePreviewUrl(`/port/${ports[0]}/`, collabUrl) : null;
+  if (!ports[0]) return null;
+  const publicUrl = previewPublicUrl(ports[0], runtimeScope);
+  if (publicUrl) return publicUrl;
+  const path = runtimeScope
+    ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${ports[0]}/`
+    : `/port/${ports[0]}/`;
+  return resolvePreviewUrl(path, collabUrl);
 }
 
-function resolvePreviewUrl(url: string | undefined, collabUrl: string): string | null {
+function resolvePreviewUrl(url: string | undefined, collabUrl: string | undefined): string | null {
   if (!url) return null;
+  if (!collabUrl && !/^https?:\/\//i.test(url)) return null;
   try {
-    const parsed = new URL(url, `${collabUrl}/`);
+    const parsed = new URL(url, collabUrl ? `${collabUrl}/` : undefined);
     return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
   } catch {
     return null;
   }
+}
+
+function previewSidecarPortsUrl(): string {
+  const port = parsePositiveInt(process.env["SYNTHI_PREVIEW_SIDECAR_PORT"], 18_080);
+  const prefix = normalizePathPrefix(process.env["SYNTHI_PREVIEW_SIDECAR_PREFIX"] || "/__synthi_preview") || "/__synthi_preview";
+  return `http://127.0.0.1:${port}${prefix}/ports`;
+}
+
+function previewPublicUrl(port: number, runtimeScope: string | undefined): string | null {
+  const runtimeId = stringOpt(process.env["SYNTHI_HOSTED_BROWSER_RUNTIME_ID"]);
+  const publicDomain = normalizeHostname(process.env["SYNTHI_PREVIEW_PUBLIC_DOMAIN"]);
+  if (!runtimeScope || !runtimeId || !publicDomain) return null;
+  const protocol = normalizePreviewProtocol(process.env["SYNTHI_PREVIEW_PUBLIC_PROTOCOL"]);
+  return `${protocol}://p${port}-${runtimeId}.${publicDomain}/`;
+}
+
+function normalizePathPrefix(value: unknown): string {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "/") return "";
+  return `/${raw.replace(/^\/+|\/+$/g, "")}`;
+}
+
+function normalizeHostname(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "")
+    .replace(/\.$/, "");
+}
+
+function normalizePreviewProtocol(value: unknown): "http" | "https" {
+  return String(value || "").trim().toLowerCase().replace(/:$/, "") === "http" ? "http" : "https";
 }
 
 function updateBridgeState(
@@ -686,6 +891,44 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
       return;
     }
 
+    if (url === "/browser-workflows/open-external" && method === "POST") {
+      let body: BrowserWorkflowExternalOpenBody;
+      try {
+        body = await readJsonBody(req, EXTERNAL_OPEN_BODY_LIMIT_BYTES);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        writeJson(res, 400, { ok: false, error: "invalid_body", detail: msg });
+        return;
+      }
+
+      const openUrl = normalizeExternalBrowserUrl(body.url);
+      if (!openUrl) {
+        writeJson(res, 400, { ok: false, error: "invalid_url" });
+        return;
+      }
+
+      const runtime = await ensureHostedRuntimeAttached();
+      if (!runtime.ok) {
+        writeJson(res, runtime.status, { ok: false, error: runtime.error, detail: runtime.detail });
+        return;
+      }
+
+      try {
+        const opened = await browserPlaywrightAdapter.openExternal(openUrl, { timeoutMs: EXTERNAL_OPEN_TIMEOUT_MS });
+        writeJson(res, 200, {
+          ok: true,
+          opened: {
+            tab_id: opened.tab_id,
+            navigation_started: opened.navigation_started,
+          },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        writeJson(res, 502, { ok: false, error: "browser_open_failed", detail: msg });
+      }
+      return;
+    }
+
     if (url === "/browser-workflows/tool" && method === "POST") {
       let body: { tool?: unknown; arguments?: unknown };
       try {
@@ -708,9 +951,10 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
         args = await enrichToolArgs(tool, body.arguments);
       } catch (err) {
         if (err instanceof BridgeToolInputError) {
-          writeJson(res, err.status, {
+          writeJson(res, 200, {
             ok: false,
             error: err.code,
+            status: err.status,
             requested_tool: requestedTool,
             tool,
             ...err.detail,
@@ -718,9 +962,32 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
           });
           return;
         }
-        throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        writeJson(res, 500, {
+          ok: false,
+          error: "workflow_tool_prepare_failed",
+          requested_tool: requestedTool,
+          tool,
+          detail: msg,
+          state: buildBrowserWorkflowPanelState(bridgeState),
+        });
+        return;
       }
-      const result = await dispatchWorkflowTool(tool, args);
+      let result;
+      try {
+        result = await dispatchWorkflowTool(tool, args);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        writeJson(res, 500, {
+          ok: false,
+          error: "workflow_tool_dispatch_failed",
+          requested_tool: requestedTool,
+          tool,
+          detail: msg,
+          state: buildBrowserWorkflowPanelState(bridgeState),
+        });
+        return;
+      }
       if (!result) {
         writeJson(res, 404, {
           error: "unknown_workflow_tool",

@@ -67,7 +67,7 @@ function showBrowserNotification(fixes) {
   try {
     new Notification(`${severity}: ${count} AI issue${count > 1 ? 's' : ''} found`, {
       body,
-      icon: '/favicon.ico',
+      icon: '/vectant/the_V.png',
       tag: 'ai-healing',
       requireInteraction: false,
     });

@@ -234,7 +234,7 @@ export const IDE_PANEL_DEFINITIONS = [
   {
     panelType: IDE_PANEL.AI_HEALING,
     displayName: 'AI Healing',
-    icon: 'sparkles',
+    icon: 'shield',
     category: 'sidebar',
     component: AIHealingPanelWrapper,
     allowMultiple: false,

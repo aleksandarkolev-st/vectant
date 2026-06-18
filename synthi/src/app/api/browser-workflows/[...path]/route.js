@@ -6,6 +6,7 @@ export const runtime = 'nodejs';
 
 const DEFAULT_LOCAL_BRIDGE_URL = 'http://127.0.0.1:9466';
 const BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
+const HOSTED_BROWSER_VIEWER_PATH = '/vnc.html?autoconnect=1&resize=scale&reconnect=1';
 
 function hashRuntimeScopePart(value) {
   const text = String(value || 'unknown');
@@ -188,12 +189,83 @@ function workflowBridgeBaseUrl(runtimeScope) {
   return process.env.NODE_ENV === 'production' ? '' : DEFAULT_LOCAL_BRIDGE_URL;
 }
 
+function normalizePathPrefix(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw === '/') return '';
+  return `/${raw.replace(/^\/+|\/+$/g, '')}`;
+}
+
+function normalizePreviewProtocol(value) {
+  const raw = String(value || '').trim().toLowerCase().replace(/:$/, '');
+  return raw === 'http' ? 'http' : 'https';
+}
+
+function hostedBrowserViewerPort() {
+  const rawPort = String(process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT || '6080').trim();
+  const port = Number(rawPort);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+function hostedBrowserViewerUrl(runtimeScope) {
+  if (!runtimeScope) return null;
+
+  const port = hostedBrowserViewerPort();
+  if (!port) return null;
+
+  const runtimeId = runtimeResourceId(runtimeScope);
+  const publicDomain = String(process.env.SYNTHI_PREVIEW_PUBLIC_DOMAIN || '').trim().toLowerCase().replace(/\.$/, '');
+  const viewerPath = HOSTED_BROWSER_VIEWER_PATH;
+  if (publicDomain) {
+    const protocol = normalizePreviewProtocol(process.env.SYNTHI_PREVIEW_PUBLIC_PROTOCOL || 'https');
+    return `${protocol}://p${port}-${runtimeId}.${publicDomain}${viewerPath}`;
+  }
+
+  const prefix = normalizePathPrefix(process.env.SYNTHI_PREVIEW_PUBLIC_PREFIX || '/collab');
+  return `${prefix}/runtime/${encodeURIComponent(runtimeScope)}/port/${port}${viewerPath}`;
+}
+
 function responseHeaders(upstream) {
   const headers = new Headers();
   const contentType = upstream.headers.get('content-type');
   if (contentType) headers.set('content-type', contentType);
   headers.set('cache-control', 'no-store');
   return headers;
+}
+
+function runtimeToolContextArgs(runtimeContext) {
+  const args = {};
+  if (runtimeContext.workspaceSlug) args.workspace_id = runtimeContext.workspaceSlug;
+  if (runtimeContext.runtimeScope) {
+    args.runtime_scope = runtimeContext.runtimeScope;
+    args.runtime_id = runtimeResourceId(runtimeContext.runtimeScope);
+  }
+  if (runtimeContext.runtimeKind) args.runtime_kind = runtimeContext.runtimeKind;
+  if (runtimeContext.collabSessionId) args.collab_session_id = runtimeContext.collabSessionId;
+  return args;
+}
+
+async function requestBodyForUpstream(request, path, runtimeContext) {
+  if (request.method === 'GET' || request.method === 'HEAD') return undefined;
+  const raw = await request.arrayBuffer();
+  if (path !== 'tool') return raw;
+
+  try {
+    const text = new TextDecoder().decode(raw);
+    const body = text ? JSON.parse(text) : {};
+    const currentArgs =
+      body?.arguments && typeof body.arguments === 'object' && !Array.isArray(body.arguments)
+        ? body.arguments
+        : {};
+    return JSON.stringify({
+      ...body,
+      arguments: {
+        ...runtimeToolContextArgs(runtimeContext),
+        ...currentArgs,
+      },
+    });
+  } catch (_) {
+    return raw;
+  }
 }
 
 async function ensureRuntimeBridge(context) {
@@ -204,18 +276,28 @@ async function ensureRuntimeBridge(context) {
   if (!collabUrl) return { ok: true };
 
   const userId = context.actorUserId || context.filesystemUserId || runtimeScope;
-  const res = await fetch(`${collabUrl}/api/spawner/ensure`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    cache: 'no-store',
-    body: JSON.stringify({
-      session_id: runtimeScope,
-      user_id: userId,
-      workspaceSlug: context.workspaceSlug || '',
-      runtimeKind: context.runtimeKind || '',
-      filesystemUserId: context.filesystemUserId || userId,
-    }),
-  });
+  let res;
+  try {
+    res = await fetch(`${collabUrl}/api/spawner/ensure`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({
+        session_id: runtimeScope,
+        user_id: userId,
+        workspaceSlug: context.workspaceSlug || '',
+        runtimeKind: context.runtimeKind || '',
+        filesystemUserId: context.filesystemUserId || userId,
+      }),
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      status: 503,
+      error: 'workflow_runtime_ensure_unreachable',
+      detail: err?.message || String(err),
+    };
+  }
 
   if (res.ok) return { ok: true };
   let detail = `HTTP ${res.status}`;
@@ -225,7 +307,7 @@ async function ensureRuntimeBridge(context) {
   } catch (_) {
     // ignore non-JSON errors
   }
-  return { ok: false, status: res.status, detail };
+  return { ok: false, status: res.status, error: 'workflow_runtime_ensure_failed', detail };
 }
 
 export async function proxyWorkflowBridge(request, routeContext) {
@@ -250,19 +332,21 @@ export async function proxyWorkflowBridge(request, routeContext) {
     );
   }
 
-  const ensure = await ensureRuntimeBridge(runtimeContext);
-  if (!ensure.ok) {
-    return NextResponse.json(
-      { error: 'workflow_runtime_unavailable', detail: ensure.detail },
-      { status: ensure.status || 503 },
-    );
-  }
-
   const params = await routeContext.params;
   const path = Array.isArray(params?.path) ? params.path.join('/') : '';
   const incomingUrl = new URL(request.url);
   const upstreamUrl = new URL(`/browser-workflows/${path}`, baseUrl);
   upstreamUrl.search = incomingUrl.search;
+
+  if (path !== 'state') {
+    const ensure = await ensureRuntimeBridge(runtimeContext);
+    if (!ensure.ok) {
+      return NextResponse.json(
+        { error: ensure.error || 'workflow_runtime_unavailable', detail: ensure.detail },
+        { status: ensure.status || 503 },
+      );
+    }
+  }
 
   const headers = new Headers();
   const contentType = request.headers.get('content-type');
@@ -283,12 +367,32 @@ export async function proxyWorkflowBridge(request, routeContext) {
     headers,
     cache: 'no-store',
   };
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    init.body = await request.arrayBuffer();
+  const upstreamBody = await requestBodyForUpstream(request, path, runtimeContext);
+  if (upstreamBody !== undefined) {
+    init.body = upstreamBody;
   }
 
   try {
     const upstream = await fetch(upstreamUrl, init);
+    if (path === 'open-external' && request.method === 'POST') {
+      const body = await upstream.json().catch(() => ({}));
+      const viewerUrl = hostedBrowserViewerUrl(runtimeContext.runtimeScope);
+      return NextResponse.json(
+        viewerUrl
+          ? {
+              ...body,
+              workspaceBrowser: {
+                kind: 'novnc',
+                url: viewerUrl,
+                port: hostedBrowserViewerPort(),
+                runtimeScope: runtimeContext.runtimeScope,
+                runtimeId: runtimeResourceId(runtimeContext.runtimeScope),
+              },
+            }
+          : body,
+        { status: upstream.status },
+      );
+    }
     return new NextResponse(upstream.body, {
       status: upstream.status,
       headers: responseHeaders(upstream),

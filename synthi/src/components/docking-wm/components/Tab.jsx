@@ -6,6 +6,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, memo } from "react";
+import { motion } from "framer-motion";
 import { useDragPanel } from "../hooks/use-drag-panel";
 import { useDockingActions } from "../hooks/use-docking";
 
@@ -89,6 +90,7 @@ export const Tab = memo(function Tab({
 
   // Get icon from registry
   const icon = tab.icon || panelDef?.icon;
+  const isTerminalTab = tab.panelType === "terminal";
 
   // The editor panel is a meta-container; its content already provides
   // its own file-tab strip. We never want the docking system to show
@@ -138,10 +140,10 @@ export const Tab = memo(function Tab({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: "6px",
+        gap: isTerminalTab ? "4px" : "6px",
         height: "calc(100% - 4px)",
         margin: "4px 0 0",
-        padding: "0 12px",
+        padding: isTerminalTab ? "0 10px" : "0 12px",
         fontSize: "12px",
         color: isActive
           ? "var(--dock-tab-active-fg, #fff)"
@@ -160,13 +162,35 @@ export const Tab = memo(function Tab({
         userSelect: "none",
         opacity: isDragging ? 0.5 : 1,
         whiteSpace: "nowrap",
-        maxWidth: "160px",
+        maxWidth: isTerminalTab ? "64px" : "160px",
         position: "relative",
         flexShrink: 0,
       }}
     >
-      {/* Icon */}
-      {icon && (
+      {isTerminalTab ? (
+        <motion.span
+          aria-hidden="true"
+          initial={{ opacity: 0, scale: 0.88 }}
+          animate={{ opacity: 1, scale: 1 }}
+          whileHover={{ scale: 1.06 }}
+          transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: "22px",
+            height: "22px",
+            flexShrink: 0,
+          }}
+        >
+          <img
+            src="/vectant/the_V.png"
+            alt=""
+            draggable={false}
+            style={{ width: "18px", height: "18px", objectFit: "contain" }}
+          />
+        </motion.span>
+      ) : icon && (
         <span
           className={`codicon codicon-${icon}`}
           style={{ fontSize: "14px", flexShrink: 0 }}
@@ -176,11 +200,28 @@ export const Tab = memo(function Tab({
       {/* Title — hidden when empty (meta-container panels like the
           Editor wrapper rely only on the icon since their content
           carries its own tab strip). */}
-      {tab.title && (
+      {tab.title && !isTerminalTab && (
         <span
           style={{
             overflow: "hidden",
             textOverflow: "ellipsis",
+          }}
+        >
+          {tab.title}
+        </span>
+      )}
+      {tab.title && isTerminalTab && (
+        <span
+          style={{
+            border: 0,
+            clip: "rect(0 0 0 0)",
+            height: "1px",
+            margin: "-1px",
+            overflow: "hidden",
+            padding: 0,
+            position: "absolute",
+            whiteSpace: "nowrap",
+            width: "1px",
           }}
         >
           {tab.title}

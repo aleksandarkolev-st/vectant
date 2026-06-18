@@ -1323,7 +1323,7 @@ class GitService {
                 // Fall through — use the default .git path
             }
 
-            const patterns = ['.git-archive.tar.gz', '.synthi-migrated', '_upstream.git', 'sessions/'];
+            const patterns = ['.git-archive.tar.gz', '.synthi/', '.synthi-migrated', '_upstream.git', 'sessions/'];
 
             // Dynamically exclude per-user repo subdirectories from the slug-
             // level repo.  Without this, git at the slug level tracks user

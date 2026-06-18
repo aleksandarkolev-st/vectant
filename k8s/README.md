@@ -125,6 +125,23 @@ Search-and-replace `synthi.example.com` in:
 - `k8s/configmap.yaml` — public URLs
 - `k8s/ingress.yaml` — Ingress host + ManagedCertificate
 
+### Configure Workspace Node Pool
+
+The app manifests schedule runtime pods onto the `workspace-pool` node pool via
+`cloud.google.com/gke-nodepool=workspace-pool`. The node pool itself is GKE
+infrastructure, not a Kubernetes manifest, so configure it with `gcloud`:
+
+```bash
+scripts/configure-workspace-node-pool.sh \
+  --machine-type n2-standard-4 \
+  --min-nodes 0 \
+  --max-nodes 2
+```
+
+For closed beta, the intended default is `n2-standard-4` with autoscaling from
+0 to 2 nodes. Idle runtime pods are removed by the spawner; when no runtime pods
+remain, the workspace pool can scale down instead of burning node CPU/RAM.
+
 ### Configure DNS
 
 After reserving the static IP and deploying the Ingress, set up DNS:
@@ -161,6 +178,16 @@ https://p3000-rt-<runtime-id>.preview.vectant.dev/
 This keeps user app assets, HMR WebSockets, cookies, localStorage, and service
 workers rooted at `/` on an isolated origin. The fallback path proxy under
 `/collab/runtime/.../port/...` remains only for local/debug use.
+
+The same preview-domain machinery exposes the per-runtime workspace browser
+viewer used for terminal OAuth flows:
+
+```text
+https://p6080-rt-<runtime-id>.preview.vectant.dev/vnc.html?autoconnect=1&resize=scale&reconnect=1
+```
+
+`6080` is configurable through `SYNTHI_HOSTED_BROWSER_VIEW_PORT`; it is a
+reserved runtime infrastructure port, not a user application port.
 
 The `preview.vectant.dev` sub-zone is delegated to Cloud DNS, and
 `*.preview.vectant.dev` points at the same static IP as `beta.vectant.dev`.
@@ -332,6 +359,14 @@ Static worker replicas are kept at `0`. The collab server creates a one-replica 
 
 ### Runtime Filesystem Storage
 Runtime pods and the collab server both mount `/data/repos`, so `collab-data-pvc` must use ReadWriteMany storage when pods can schedule on different node pools. The production manifest defaults to GKE Filestore CSI `enterprise-multishare-rwx`; override the StorageClass if your cluster uses another RWX Filestore or NFS class.
+
+Runtime pod cleanup deletes the Kubernetes Deployment/Pod, not the workspace
+filesystem. In production `REPO_CACHE_DELETE_ON_EVICT=false` makes collab-server
+LRU eviction memory-only, so `/data/repos/<workspace>/<filesystem-user>` remains
+on the PVC. Terminals also store generic CLI/package-manager state under
+`/data/repos/<workspace>/<filesystem-user>/.synthi/runtime`, which keeps npm
+global installs, language caches, and CLI login state across idle teardown and
+runtime recreation without placing hidden auth files directly in the user repo.
 
 ### WebSocket Health Checks
 For GKE Ingress, timeout settings alone are not enough. Each public WebSocket backend also needs a valid HTTP health target. In this deployment:

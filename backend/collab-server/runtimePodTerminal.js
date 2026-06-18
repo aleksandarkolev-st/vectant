@@ -4,6 +4,7 @@ const { PassThrough } = require('stream');
 const k8s = require('@kubernetes/client-node');
 const spawner = require('./spawner');
 const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
+const { persistentRuntimeShellSetup } = require('./runtimePersistence');
 
 const NAMESPACE = process.env.K8S_NAMESPACE || 'synthi';
 const CONTAINER_NAME = process.env.SYNTHI_TERMINAL_K8S_CONTAINER || 'worker';
@@ -153,15 +154,17 @@ class RuntimePodPty {
  * cd into the workspace mount, then run `finalCommand`. Shared by the interactive
  * terminal (createRuntimePodPty) and the program exec (createRuntimePodProgram).
  * DOCKER_HOST is never added here — it is inherited from the runtime container's
- * own pod-level env.
+ * own pod-level env. Optional `setup` (e.g. persistentRuntimeShellSetup()) is
+ * injected right after the env exports.
  */
-function buildRuntimeShellScript({ env = {}, cwd, finalCommand }) {
+function buildRuntimeShellScript({ env = {}, cwd, finalCommand, setup }) {
   const exports = Object.entries(env)
     .filter(([key, value]) => key && value !== undefined && value !== null)
     .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
     .join('; ');
   return [
     exports,
+    setup,
     `export WORKSPACE_DIR=${shellQuote(cwd)}`,
     'mkdir -p "$WORKSPACE_DIR"',
     'cd "$WORKSPACE_DIR"',
@@ -207,6 +210,7 @@ async function createRuntimePodPty({
   const commandScript = buildRuntimeShellScript({
     env: terminalEnv,
     cwd: effectiveCwd,
+    setup: persistentRuntimeShellSetup(),
     finalCommand: `stty rows ${safeRows} cols ${safeCols} 2>/dev/null || true; exec /bin/bash --login -i`,
   });
 
