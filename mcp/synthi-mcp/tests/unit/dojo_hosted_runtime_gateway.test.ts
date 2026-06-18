@@ -77,6 +77,93 @@ describe("Dojo hosted runtime gateway", () => {
     expect(audit.events.map((event) => event.event_type)).toEqual(["runtime_session_created"]);
   });
 
+  it("fails closed before credentials, store writes, audit, or evidence when tenant context is incomplete", async () => {
+    const audit = new MemoryAuditStore();
+    const store = new InMemoryDojoHostedRuntimeSessionStore();
+    const evidence = new MemoryRuntimeEvidenceWriter();
+    const gateway = gatewayWith({
+      audit,
+      store,
+      evidence,
+      ids: ["session-id", "runtime-id", "credential-id"],
+      secrets: ["secret-a"],
+    });
+    const caller = invalidTenant("tenant-a", "workspace-a");
+    const expectedBlockedBy = [
+      "runtime_tenant_required",
+      "runtime_organization_required",
+      "runtime_actor_required",
+      "runtime_actor_type_invalid",
+      "runtime_roles_invalid",
+      "runtime_request_required",
+      "runtime_correlation_required",
+    ];
+
+    const blockedCreate = await gateway.createSession({
+      tenant: caller,
+      skill_id: "skill-a",
+      run_id: "run-a",
+      workspace_url: "https://workspace.example.test/app",
+      origin_allowlist: ["https://workspace.example.test"],
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    expect(blockedCreate).toEqual({
+      ok: false,
+      blocked_by: expectedBlockedBy,
+    });
+    expect(audit.events).toEqual([]);
+    expect(store.listSessions({ tenant_id: "tenant-a", workspace_id: "workspace-a" })).toEqual([]);
+
+    const blockedAuthorize = await gateway.authorizeAction({
+      tenant: caller,
+      session_id: "dojo_runtime_session_session-id",
+      skill_id: "skill-a",
+      run_id: "run-a",
+      action_kind: "graph_action",
+      url: "https://workspace.example.test/app",
+      credential_id: "runtime_cred_credential-id",
+      credential_secret: "secret-a",
+      now: "2026-06-11T00:00:30.000Z",
+    });
+    expect(blockedAuthorize).toEqual({
+      ok: false,
+      status: "blocked",
+      session_id: "dojo_runtime_session_session-id",
+      action_kind: "graph_action",
+      blocked_by: expectedBlockedBy,
+      evidence_record_ids: [],
+    });
+    expect(evidence.records).toEqual([]);
+
+    const blockedRevoke = await gateway.revokeSession({
+      tenant: caller,
+      session_id: "dojo_runtime_session_session-id",
+      reason: "operator_revoked",
+      now: "2026-06-11T00:00:30.000Z",
+    });
+    expect(blockedRevoke).toEqual({
+      ok: false,
+      blocked_by: expectedBlockedBy,
+    });
+    expect(audit.events).toEqual([]);
+
+    const validCreate = await gateway.createSession({
+      tenant: tenant("tenant-a", "workspace-a"),
+      skill_id: "skill-a",
+      run_id: "run-a",
+      workspace_url: "https://workspace.example.test/app",
+      origin_allowlist: ["https://workspace.example.test"],
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    expect(validCreate).toEqual(expect.objectContaining({
+      ok: true,
+      credentials: expect.objectContaining({
+        credential_id: "runtime_cred_credential-id",
+        credential_secret: "secret-a",
+      }),
+    }));
+  });
+
   it("rejects unsafe session configuration before credentials are issued", async () => {
     const audit = new MemoryAuditStore();
     const gateway = gatewayWith({ audit });
@@ -546,6 +633,19 @@ function tenant(tenantId: string, workspaceId: string): DojoTenantContext {
     roles: ["dojo:runtime"],
     request_id: `req-${tenantId}-${workspaceId}`,
     correlation_id: `corr-${tenantId}-${workspaceId}`,
+  };
+}
+
+function invalidTenant(tenantId: string, workspaceId: string): DojoTenantContext {
+  return {
+    ...tenant(tenantId, workspaceId),
+    tenant_id: "",
+    organization_id: "",
+    actor_id: "",
+    actor_type: "robot" as never,
+    roles: ["dojo:runtime", ""],
+    request_id: "",
+    correlation_id: "",
   };
 }
 

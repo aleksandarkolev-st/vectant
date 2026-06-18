@@ -33,6 +33,7 @@ export const DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES = [
 export const DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES = [
   "hosted_runtime_normalizes_origin_allowlists",
   "hosted_runtime_creates_tenant_bound_short_lived_sessions_without_secret_persistence",
+  "hosted_runtime_rejects_invalid_tenant_context_before_side_effects",
   "hosted_runtime_rejects_unsafe_session_configuration_before_credentials",
   "hosted_runtime_requires_skill_and_run_binding",
   "hosted_runtime_rejects_invalid_timestamps_as_auditable_blocks",
@@ -225,6 +226,7 @@ export function buildDojoHostedRuntimeGatewayEvidenceManifest({
     capability_coverage_complete: capabilityCoverage.every((item) => item.covered),
     hosted_runtime_contract: {
       tenant_scoped_sessions_required: true,
+      tenant_context_validation_required: true,
       short_lived_credentials_required: true,
       stored_secret_redaction_required: true,
       origin_allowlist_required: true,
@@ -372,6 +374,8 @@ function capabilityMatchers(capability) {
       return ["normalizes origin allowlists", "url origin"];
     case "hosted_runtime_creates_tenant_bound_short_lived_sessions_without_secret_persistence":
       return ["creates tenant bound short lived sessions", "without exposing credential secrets"];
+    case "hosted_runtime_rejects_invalid_tenant_context_before_side_effects":
+      return ["fails closed", "tenant context is incomplete", "before credentials store writes audit or evidence"];
     case "hosted_runtime_rejects_unsafe_session_configuration_before_credentials":
       return ["rejects unsafe session configuration", "before credentials are issued"];
     case "hosted_runtime_requires_skill_and_run_binding":
