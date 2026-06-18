@@ -61,7 +61,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - materialized synthetic Vivarium fixtures and oracle-backed scenario runs
 - runtime-backed Wind Tunnel, Evil Twin, and checkride runner foundations
 - durable proof replay repository and append-only evidence ledger store modules
-- license and proof capsule issuance/validation with strict evidence-claim mode, Ed25519 signing support, external command signing, and managed-key-service signing with explicit key-custody metadata
+- license and proof capsule issuance/validation with strict evidence-claim mode, Ed25519 signing support, external command signing, managed-key-service signing with explicit key-custody metadata, and a release-observation harness for configured managed-key signers
 - proof-gated backing private workflow tool and raw workflow boundary checks
 - hosted runtime session authorization before production proof-gated execution consumes a proof capsule
 - case-law records that can bind guardrail predicates
@@ -70,13 +70,14 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - dedicated Dojo product UX surfaces and governance view models
 - tenant-scoped governance scheduled-job runner with dry-run semantics, typed handlers, RBAC, and audit persistence for supported non-dry transitions
 - package-readiness release gate that runs `npm pack --dry-run`, verifies packed exports and release harness files, and emits digest-backed evidence
+- managed-key signing release-observation artifact generation from configured signer command/key URI/public verifier material, with redacted config and digest-backed verifier checks
 - privacy-redaction and compliance-export release gates with focused test execution, digest-matched logs/reports, verifier include flags, and local evidence artifacts
 - repo artifact export
 - compact UI status surface plus dedicated Dojo routes
 
 It does not yet prove the full mature Vivarium Cortex universe in production:
 
-- no managed KMS/HSM proof signer configured by default or proven in deployed-host release gates
+- no managed KMS/HSM proof signer configured by default or proven against a real external KMS/HSM provider in deployed-host release gates
 - no externally deployed tenant-aware control plane proven against a production database
 - no live non-loopback MCP host conformance proof in the current validation bundle
 - no broad arbitrary-app source/API promotion guarantee
@@ -173,8 +174,8 @@ Safe current claim:
 Agent Dojo implements a repo-local proof-gated competency system with executable graph
 runtime foundations, materialized synthetic Vivarium scenarios, evidence/proof/ledger
 foundations, scoped licenses, repo exports, source/API scaffolding, API-backed skill-bus
-tool execution foundations, governance views, package-readiness release proof, privacy/compliance
-release-gate proof artifacts, and MCP tool exposure.
+tool execution foundations, governance views, package-readiness release proof, managed-key
+signing release-observation harnessing, privacy/compliance release-gate proof artifacts, and MCP tool exposure.
 ```
 
 Unsafe current claim:
