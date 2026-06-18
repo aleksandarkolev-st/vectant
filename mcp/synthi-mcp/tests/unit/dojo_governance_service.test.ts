@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { DojoSkill } from "../../src/browser/dojo.js";
 import type { DojoCaseLawRecord } from "../../src/dojo/case_law/registry.js";
+import type {
+  DojoGovernanceScheduledJobItem,
+  DojoGovernanceScheduledJobKind,
+  DojoGovernanceScheduledJobStatus,
+} from "../../src/dojo/governance/service.js";
 import type { DojoTenantContext } from "../../src/dojo/mcp/execution_policy_gate.js";
 import { buildDojoProofKeyRecord } from "../../src/dojo/proof/key_registry.js";
 import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
@@ -20,6 +25,7 @@ import {
   queryDojoScheduledJobs,
   queryDojoSkillRegistry,
   revokeDojoSkillLicense,
+  runDojoScheduledGovernanceJobs,
 } from "../../src/dojo/governance/service.js";
 
 describe("Dojo governance service", () => {
@@ -1074,6 +1080,173 @@ describe("Dojo governance service", () => {
     ]));
   });
 
+  it("executes scheduled jobs with handler contract and audit results", async () => {
+    const expired = skillFixture({ skillId: "skill-expired", expiresAt: "2026-06-01T00:00:00.000Z" });
+    const health = queryDojoLicenseHealth({
+      skills: [expired],
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const recertificationQueue = queryDojoRecertificationQueue({
+      skills: [expired],
+      health,
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const jobs = queryDojoScheduledJobs({
+      generated_at: "2026-06-11T00:00:00.000Z",
+      license_health: health,
+      approval_queue: [],
+      case_law_review_queue: [],
+      recertification_queue: recertificationQueue,
+      audit_exports: [],
+      compliance_evidence_pack: {
+        pack_id: "governance_pack_empty",
+        generated_at: "2026-06-11T00:00:00.000Z",
+        artifacts: [],
+        missing_artifacts: [],
+        retention_class: "regulated",
+      },
+    });
+    const handled: string[] = [];
+    const run = await runDojoScheduledGovernanceJobs({
+      jobs: jobs.filter((job) => job.kind === "run_recertification" || job.kind === "expire_stale_license"),
+      actor: { actor_id: "governance-scheduler", actor_type: "service" },
+      tenant_context: tenantContextFixture({ actorId: "governance-scheduler", roles: ["dojo:operator"] }),
+      now: "2026-06-11T01:00:00.000Z",
+      handlers: {
+        run_recertification: ({ job, now }) => {
+          handled.push(`${job.kind}:${job.skill_id}:${now}`);
+          return {
+            ok: true,
+            evidence_refs: [`recertification-run:${job.queue_id}`],
+            details: { checkride_mode: "scheduled_recertification" },
+          };
+        },
+        expire_stale_license: ({ job }) => {
+          handled.push(`${job.kind}:${job.skill_id}`);
+          return {
+            ok: true,
+            status: "skipped",
+            evidence_refs: [`expiry-reviewed:${job.queue_id}`],
+            details: { reason: "already_expired_by_license_health" },
+          };
+        },
+      },
+    });
+
+    expect(handled).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^run_recertification:skill-expired:2026-06-11T01:00:00\.000Z$/),
+    ]));
+    expect(run).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.governanceScheduledJobRun.v1",
+      generated_at: "2026-06-11T01:00:00.000Z",
+      attempted_count: 2,
+      applied_count: 1,
+      skipped_count: 1,
+      blocked_count: 0,
+      failed_count: 0,
+    }));
+    expect(run.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "run_recertification",
+        status: "applied",
+        evidence_refs: expect.arrayContaining(["recertification-run:recert_skill-expired_license_expired"]),
+        audit_event: expect.objectContaining({
+          event_type: "governance_scheduled_job_completed",
+          actor: { actor_id: "governance-scheduler", actor_type: "service" },
+          skill_id: "skill-expired",
+          license_id: "license-skill-expired",
+        }),
+        details: { checkride_mode: "scheduled_recertification" },
+      }),
+      expect.objectContaining({
+        kind: "expire_stale_license",
+        status: "skipped",
+        audit_event: expect.objectContaining({ event_type: "governance_scheduled_job_completed" }),
+      }),
+    ]));
+  });
+
+  it("fails closed when scheduled jobs are not ready or handlers are missing", async () => {
+    const waitingJob = scheduledJobFixture({
+      jobId: "scheduled_waiting",
+      kind: "run_recertification",
+      status: "waiting",
+      skillId: "skill-waiting",
+    });
+    const readyWithoutHandler = scheduledJobFixture({
+      jobId: "scheduled_ready_missing_handler",
+      kind: "notify_approver",
+      status: "ready",
+      skillId: "skill-notify",
+    });
+    const throwingJob = scheduledJobFixture({
+      jobId: "scheduled_throwing_handler",
+      kind: "review_case_law",
+      status: "ready",
+      skillId: "skill-case",
+    });
+    const run = await runDojoScheduledGovernanceJobs({
+      jobs: [waitingJob, readyWithoutHandler, throwingJob],
+      actor: { actor_id: "governance-scheduler", actor_type: "service" },
+      now: "2026-06-11T01:05:00.000Z",
+      handlers: {
+        review_case_law: () => {
+          throw new Error("case law reviewer unavailable");
+        },
+      },
+    });
+
+    expect(run).toEqual(expect.objectContaining({
+      applied_count: 0,
+      blocked_count: 2,
+      failed_count: 1,
+    }));
+    expect(run.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        job_id: "scheduled_waiting",
+        status: "blocked",
+        blocked_by: ["scheduled_job_not_ready:waiting"],
+        audit_event: expect.objectContaining({ event_type: "governance_scheduled_job_blocked" }),
+      }),
+      expect.objectContaining({
+        job_id: "scheduled_ready_missing_handler",
+        status: "blocked",
+        blocked_by: ["scheduled_job_handler_missing:notify_approver"],
+        audit_event: expect.objectContaining({ event_type: "governance_scheduled_job_blocked" }),
+      }),
+      expect.objectContaining({
+        job_id: "scheduled_throwing_handler",
+        status: "failed",
+        blocked_by: ["scheduled_job_handler_failed"],
+        error: "case law reviewer unavailable",
+        audit_event: expect.objectContaining({ event_type: "governance_scheduled_job_failed" }),
+      }),
+    ]));
+  });
+
+  it("blocks scheduled job execution when the scheduler actor is invalid", async () => {
+    const run = await runDojoScheduledGovernanceJobs({
+      jobs: [scheduledJobFixture({ jobId: "scheduled_actor_invalid", kind: "recompute_registry_metrics" })],
+      actor: { actor_id: "", actor_type: undefined as never },
+      now: "2026-06-11T01:10:00.000Z",
+      handlers: {
+        recompute_registry_metrics: () => ({ ok: true }),
+      },
+    });
+
+    expect(run).toEqual(expect.objectContaining({
+      attempted_count: 1,
+      applied_count: 0,
+      blocked_count: 1,
+      failed_count: 0,
+    }));
+    expect(run.results[0]).toEqual(expect.objectContaining({
+      status: "blocked",
+      blocked_by: ["scheduled_job_actor_required", "scheduled_job_actor_type_required"],
+      audit_event: expect.objectContaining({ event_type: "governance_scheduled_job_blocked" }),
+    }));
+  });
+
   it("builds skill registry and policy gates from licenses and binding case law", () => {
     const skill = skillFixture({
       skillId: "skill-a",
@@ -1398,6 +1571,30 @@ function permissionUpgradeRequestFixture(skill: DojoSkill): DojoPermissionUpgrad
       request_id: `upgrade-${skill.skill_id}`,
       correlation_id: `upgrade-${skill.skill_id}-correlation`,
     },
+  };
+}
+
+function scheduledJobFixture(input: {
+  jobId: string;
+  kind: DojoGovernanceScheduledJobKind;
+  status?: DojoGovernanceScheduledJobStatus;
+  skillId?: string;
+}): DojoGovernanceScheduledJobItem {
+  const skillId = input.skillId ?? `skill-${input.kind}`;
+  return {
+    job_id: input.jobId,
+    kind: input.kind,
+    status: input.status ?? "ready",
+    priority: "medium",
+    due_at: "2026-06-11T01:00:00.000Z",
+    reason: `scheduled ${input.kind}`,
+    evidence_refs: [`evidence:${input.jobId}`],
+    blocked_by: [],
+    next_step: `Handle ${input.kind} through injected governance scheduler handler.`,
+    queue_id: `queue-${input.jobId}`,
+    skill_id: skillId,
+    workspace_id: "workspace-a",
+    license_id: `license-${skillId}`,
   };
 }
 

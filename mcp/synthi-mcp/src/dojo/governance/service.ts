@@ -297,6 +297,58 @@ export interface DojoGovernanceScheduledJobItem {
   license_id?: string;
 }
 
+export type DojoGovernanceScheduledJobExecutionStatus = "applied" | "blocked" | "failed" | "skipped";
+
+export interface DojoGovernanceScheduledJobHandlerResult {
+  ok: boolean;
+  status?: Extract<DojoGovernanceScheduledJobExecutionStatus, "applied" | "skipped">;
+  evidence_refs?: string[];
+  blocked_by?: string[];
+  details?: Record<string, unknown>;
+  audit_event?: DojoGovernanceActionAuditSummary;
+}
+
+export type DojoGovernanceScheduledJobHandler = (input: {
+  job: DojoGovernanceScheduledJobItem;
+  tenant_context?: DojoTenantContext;
+  actor: DojoAuditActor;
+  now: string;
+}) => DojoGovernanceScheduledJobHandlerResult | Promise<DojoGovernanceScheduledJobHandlerResult>;
+
+export type DojoGovernanceScheduledJobHandlers = Partial<Record<
+  DojoGovernanceScheduledJobKind,
+  DojoGovernanceScheduledJobHandler
+>>;
+
+export interface DojoGovernanceScheduledJobExecutionResult {
+  job_id: string;
+  kind: DojoGovernanceScheduledJobKind;
+  status: DojoGovernanceScheduledJobExecutionStatus;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  reason: string;
+  evidence_refs: string[];
+  blocked_by: string[];
+  next_step: string;
+  audit_event: DojoGovernanceActionAuditSummary;
+  details?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface DojoGovernanceScheduledJobRun {
+  schema_version: "synthi.dojo.governanceScheduledJobRun.v1";
+  generated_at: string;
+  actor: DojoAuditActor;
+  job_count: number;
+  attempted_count: number;
+  applied_count: number;
+  skipped_count: number;
+  blocked_count: number;
+  failed_count: number;
+  results: DojoGovernanceScheduledJobExecutionResult[];
+}
+
 export interface DojoGovernanceServiceView {
   schema_version: "synthi.dojo.governanceService.v1";
   generated_at: string;
@@ -1131,6 +1183,141 @@ export function queryDojoScheduledJobs(input: {
   );
 }
 
+export async function runDojoScheduledGovernanceJobs(input: {
+  jobs: DojoGovernanceScheduledJobItem[];
+  handlers: DojoGovernanceScheduledJobHandlers;
+  actor: DojoAuditActor;
+  tenant_context?: DojoTenantContext;
+  now?: string;
+  limit?: number;
+}): Promise<DojoGovernanceScheduledJobRun> {
+  const generatedAt = input.now ?? new Date().toISOString();
+  const sortedJobs = [...input.jobs].sort((left, right) =>
+    scheduledStatusSort(left.status) - scheduledStatusSort(right.status)
+    || prioritySort(left.priority) - prioritySort(right.priority)
+    || left.due_at.localeCompare(right.due_at)
+    || left.job_id.localeCompare(right.job_id)
+  );
+  const limit = typeof input.limit === "number" && input.limit >= 0
+    ? Math.floor(input.limit)
+    : sortedJobs.length;
+  const selectedJobs = sortedJobs.slice(0, limit);
+  const actorBlockedBy = validateScheduledJobActor(input.actor);
+  const results: DojoGovernanceScheduledJobExecutionResult[] = [];
+
+  for (const job of selectedJobs) {
+    const startedAt = generatedAt;
+    const baseEvidenceRefs = uniqueStrings(job.evidence_refs);
+    if (actorBlockedBy.length > 0) {
+      results.push(buildScheduledJobExecutionResult({
+        job,
+        actor: input.actor,
+        status: "blocked",
+        startedAt,
+        finishedAt: generatedAt,
+        evidenceRefs: baseEvidenceRefs,
+        blockedBy: actorBlockedBy,
+        details: { scheduler_block: "actor_invalid" },
+      }));
+      continue;
+    }
+    if (job.status !== "ready") {
+      results.push(buildScheduledJobExecutionResult({
+        job,
+        actor: input.actor,
+        status: "blocked",
+        startedAt,
+        finishedAt: generatedAt,
+        evidenceRefs: baseEvidenceRefs,
+        blockedBy: uniqueStrings([
+          ...job.blocked_by,
+          `scheduled_job_not_ready:${job.status}`,
+        ]),
+        details: { scheduler_block: "job_not_ready" },
+      }));
+      continue;
+    }
+
+    const handler = input.handlers[job.kind];
+    if (!handler) {
+      results.push(buildScheduledJobExecutionResult({
+        job,
+        actor: input.actor,
+        status: "blocked",
+        startedAt,
+        finishedAt: generatedAt,
+        evidenceRefs: baseEvidenceRefs,
+        blockedBy: [`scheduled_job_handler_missing:${job.kind}`],
+        details: { scheduler_block: "handler_missing" },
+      }));
+      continue;
+    }
+
+    try {
+      const handlerResult = await handler({
+        job: cloneJson(job),
+        tenant_context: input.tenant_context,
+        actor: cloneJson(input.actor),
+        now: generatedAt,
+      });
+      const evidenceRefs = uniqueStrings([
+        ...baseEvidenceRefs,
+        ...(handlerResult.evidence_refs ?? []),
+      ]);
+      if (!handlerResult.ok) {
+        results.push(buildScheduledJobExecutionResult({
+          job,
+          actor: input.actor,
+          status: "blocked",
+          startedAt,
+          finishedAt: generatedAt,
+          evidenceRefs,
+          blockedBy: uniqueStrings(handlerResult.blocked_by ?? ["scheduled_job_handler_rejected"]),
+          details: handlerResult.details,
+          auditEvent: handlerResult.audit_event,
+        }));
+        continue;
+      }
+      results.push(buildScheduledJobExecutionResult({
+        job,
+        actor: input.actor,
+        status: handlerResult.status ?? "applied",
+        startedAt,
+        finishedAt: generatedAt,
+        evidenceRefs,
+        blockedBy: [],
+        details: handlerResult.details,
+        auditEvent: handlerResult.audit_event,
+      }));
+    } catch (err) {
+      results.push(buildScheduledJobExecutionResult({
+        job,
+        actor: input.actor,
+        status: "failed",
+        startedAt,
+        finishedAt: generatedAt,
+        evidenceRefs: baseEvidenceRefs,
+        blockedBy: ["scheduled_job_handler_failed"],
+        details: { scheduler_block: "handler_exception" },
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    }
+  }
+
+  return {
+    schema_version: "synthi.dojo.governanceScheduledJobRun.v1",
+    generated_at: generatedAt,
+    actor: cloneJson(input.actor),
+    job_count: input.jobs.length,
+    attempted_count: results.length,
+    applied_count: results.filter((result) => result.status === "applied").length,
+    skipped_count: results.filter((result) => result.status === "skipped").length,
+    blocked_count: results.filter((result) => result.status === "blocked").length,
+    failed_count: results.filter((result) => result.status === "failed").length,
+    results,
+  };
+}
+
 export function queryDojoAuditExports(input: {
   skills: DojoSkill[];
   case_law_review_queue: DojoGovernanceCaseLawReviewItem[];
@@ -1350,6 +1537,76 @@ function blockingHealthRecertificationTriggers(health: DojoGovernanceLicenseHeal
 
 function isBlockingHealthRecertificationTrigger(reason: string): boolean {
   return BLOCKING_HEALTH_RECERTIFICATION_TRIGGERS.has(reason);
+}
+
+function validateScheduledJobActor(actor: DojoAuditActor): string[] {
+  const blockedBy: string[] = [];
+  if (!actor?.actor_id?.trim()) blockedBy.push("scheduled_job_actor_required");
+  if (!["human", "agent", "service"].includes(actor?.actor_type)) {
+    blockedBy.push("scheduled_job_actor_type_required");
+  }
+  return blockedBy;
+}
+
+function buildScheduledJobExecutionResult(input: {
+  job: DojoGovernanceScheduledJobItem;
+  actor: DojoAuditActor;
+  status: DojoGovernanceScheduledJobExecutionStatus;
+  startedAt: string;
+  finishedAt: string;
+  evidenceRefs: string[];
+  blockedBy: string[];
+  details?: Record<string, unknown>;
+  auditEvent?: DojoGovernanceActionAuditSummary;
+  error?: string;
+}): DojoGovernanceScheduledJobExecutionResult {
+  const evidenceRefs = uniqueStrings(input.evidenceRefs);
+  const blockedBy = uniqueStrings(input.blockedBy);
+  const auditEvent = input.auditEvent ?? {
+    event_type: scheduledJobAuditEventType(input.status),
+    actor: cloneJson(input.actor),
+    occurred_at: input.finishedAt,
+    workspace_id: input.job.workspace_id ?? "",
+    skill_id: input.job.skill_id ?? "",
+    license_id: input.job.license_id,
+    request_id: input.job.queue_id,
+    reason: input.job.reason,
+    evidence_refs: evidenceRefs,
+  };
+  return {
+    job_id: input.job.job_id,
+    kind: input.job.kind,
+    status: input.status,
+    started_at: input.startedAt,
+    finished_at: input.finishedAt,
+    duration_ms: durationMs(input.startedAt, input.finishedAt),
+    reason: input.job.reason,
+    evidence_refs: evidenceRefs,
+    blocked_by: blockedBy,
+    next_step: input.job.next_step,
+    audit_event: auditEvent,
+    ...(input.details ? { details: cloneJson(input.details) } : {}),
+    ...(input.error ? { error: input.error } : {}),
+  };
+}
+
+function scheduledJobAuditEventType(status: DojoGovernanceScheduledJobExecutionStatus): DojoAuditEventType {
+  switch (status) {
+    case "applied":
+    case "skipped":
+      return "governance_scheduled_job_completed";
+    case "blocked":
+      return "governance_scheduled_job_blocked";
+    case "failed":
+      return "governance_scheduled_job_failed";
+  }
+}
+
+function durationMs(startedAt: string, finishedAt: string): number {
+  const startedMs = Date.parse(startedAt);
+  const finishedMs = Date.parse(finishedAt);
+  if (!Number.isFinite(startedMs) || !Number.isFinite(finishedMs)) return 0;
+  return Math.max(0, finishedMs - startedMs);
 }
 
 function validateReviewActor(

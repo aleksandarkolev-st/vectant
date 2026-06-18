@@ -364,6 +364,9 @@ export type DojoAuditEventType =
   | "mcp_host_conformance_recorded"
   | "mcp_tool_invocation_allowed"
   | "mcp_tool_invocation_blocked"
+  | "governance_scheduled_job_completed"
+  | "governance_scheduled_job_blocked"
+  | "governance_scheduled_job_failed"
   | "ghost_shadow_evidence_recorded";
 
 export interface DojoAuditActor {
