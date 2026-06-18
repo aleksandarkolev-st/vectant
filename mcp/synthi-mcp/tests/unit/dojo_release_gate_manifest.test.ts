@@ -10,6 +10,10 @@ import {
   DOJO_FULL_VISUAL_VIEWPORTS,
   DOJO_GHOST_MODE_VISUAL_ROUTE_IDS,
   DOJO_GHOST_MODE_VISUAL_VIEWPORTS,
+  DOJO_LIVE_CHAOS_COMMAND_ENVS,
+  DOJO_LIVE_CHAOS_ENABLE_ENV,
+  DOJO_LIVE_CHAOS_REQUIRED_ENV,
+  DOJO_LIVE_CHAOS_SCENARIOS,
   DOJO_MCP_HOST_CONFORMANCE_REQUIREMENTS,
   DOJO_MILESTONE_GATE_IDS,
   DOJO_MINIMAL_PR_GATE_IDS,
@@ -166,6 +170,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:chaos-performance:self-check": "node scripts/dojo-chaos-performance-self-check.mjs",
     "proof:dojo:soak-performance:self-check": "node scripts/dojo-soak-performance-self-check.mjs",
     "proof:dojo:public-proof-verification:self-check": "node scripts/dojo-public-proof-verification-self-check.mjs",
+    "chaos:dojo:live": "node tests/chaos/runner.mjs --kind live --require-scenarios --json ../../tmp/dojo-chaos-runner/live-chaos-runner.report.json",
     "live:browser:workflow-pipeline": "node scripts/workflow-pipeline-e2e.mjs",
     "live:browser:private-tool-stdio": "node scripts/private-tool-stdio-acceptance.mjs",
     "live:browser:private-tool-codex": "node scripts/private-tool-codex-acceptance.mjs",
@@ -1112,6 +1117,22 @@ describe("Dojo release gate manifest", () => {
         }),
       }),
       expect.objectContaining({
+        id: "dojo_live_chaos",
+        tier: "T8",
+        package_script: "chaos:dojo:live",
+        script_exists: true,
+        required_for: ["enterprise_release"],
+        requires_env: DOJO_LIVE_CHAOS_REQUIRED_ENV,
+        default_report_path: "tmp/dojo-chaos-runner/live-chaos-runner.report.json",
+        enterprise_artifact_requirements: expect.objectContaining({
+          require_explicit_live_enable_env: DOJO_LIVE_CHAOS_ENABLE_ENV,
+          required_live_scenarios: DOJO_LIVE_CHAOS_SCENARIOS,
+          require_live_scenarios_included: true,
+          require_all_live_scenarios_passed: true,
+          require_command_digest_evidence: true,
+        }),
+      }),
+      expect.objectContaining({
         id: "dojo_soak_performance_self_check",
         tier: "T8",
         package_script: "proof:dojo:soak-performance:self-check",
@@ -1178,10 +1199,10 @@ describe("Dojo release gate manifest", () => {
 
     const brokenEnterpriseRelease = JSON.parse(JSON.stringify(manifest));
     brokenEnterpriseRelease.enterprise_release_gate_ids = brokenEnterpriseRelease.enterprise_release_gate_ids
-      .filter((id) => !["workflow_e2e_hosted", "dojo_chaos_performance_self_check", "dojo_soak_performance_self_check", "soak_performance"].includes(id));
+      .filter((id) => !["workflow_e2e_hosted", "dojo_chaos_performance_self_check", "dojo_live_chaos", "dojo_soak_performance_self_check", "soak_performance"].includes(id));
     expect(validateDojoReleaseGateManifest(brokenEnterpriseRelease, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "enterprise_release_missing_release_gate_ids:workflow_e2e_hosted",
-      "enterprise_release_missing_required_gate_ids:dojo_chaos_performance_self_check,dojo_soak_performance_self_check,soak_performance",
+      "enterprise_release_missing_required_gate_ids:dojo_chaos_performance_self_check,dojo_live_chaos,dojo_soak_performance_self_check,soak_performance",
       "enterprise_release_missing_T8",
     ]));
 
@@ -1856,6 +1877,29 @@ describe("Dojo release gate manifest", () => {
       "chaos_performance_missing_required_dojo_release_metrics:proof_validation_p95_ms",
     ]));
 
+    const brokenLiveChaos = JSON.parse(JSON.stringify(manifest));
+    const liveChaosGate = brokenLiveChaos.gates.find((gate) => gate.id === "dojo_live_chaos");
+    liveChaosGate.required_for = ["nightly"];
+    liveChaosGate.default_report_path = "";
+    liveChaosGate.requires_env = DOJO_LIVE_CHAOS_REQUIRED_ENV
+      .filter((envName) => envName !== DOJO_LIVE_CHAOS_COMMAND_ENVS[0]);
+    liveChaosGate.enterprise_artifact_requirements.require_explicit_live_enable_env = "";
+    liveChaosGate.enterprise_artifact_requirements.required_live_scenarios = DOJO_LIVE_CHAOS_SCENARIOS
+      .filter((scenario) => scenario !== DOJO_LIVE_CHAOS_SCENARIOS[0]);
+    liveChaosGate.enterprise_artifact_requirements.require_live_scenarios_included = false;
+    liveChaosGate.enterprise_artifact_requirements.require_all_live_scenarios_passed = false;
+    liveChaosGate.enterprise_artifact_requirements.require_command_digest_evidence = false;
+    expect(validateDojoReleaseGateManifest(brokenLiveChaos, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "live_chaos_missing_enterprise_release_requirement",
+      "live_chaos_missing_default_report_path",
+      `live_chaos_missing_required_env:${DOJO_LIVE_CHAOS_COMMAND_ENVS[0]}`,
+      "live_chaos_missing_explicit_enable_env_requirement",
+      `live_chaos_missing_required_scenarios:${DOJO_LIVE_CHAOS_SCENARIOS[0]}`,
+      "live_chaos_missing_included_requirement",
+      "live_chaos_missing_all_passed_requirement",
+      "live_chaos_missing_command_digest_requirement",
+    ]));
+
     const brokenDojoSoak = JSON.parse(JSON.stringify(manifest));
     const dojoSoakGate = brokenDojoSoak.gates.find((gate) => gate.id === "dojo_soak_performance_self_check");
     const missingDojoSoakTestFile = DOJO_SOAK_PERFORMANCE_TEST_FILES[0];
@@ -1911,6 +1955,7 @@ describe("Dojo release gate manifest", () => {
 
     expect(new Set(manifest.minimal_pr_gate_ids.map((id) => gatesById.get(id)?.tier))).toEqual(new Set(["T0", "T1"]));
     expect(manifest.minimal_pr_gate_ids).not.toContain("dojo_mcp_host_conformance");
+    expect(manifest.minimal_pr_gate_ids).not.toContain("dojo_live_chaos");
     expect(manifest.minimal_pr_gate_ids).not.toContain("dojo_soak_performance_self_check");
     expect(manifest.minimal_pr_gate_ids).not.toContain("soak_performance");
     expect(manifest.release_gate_ids).toEqual(expect.arrayContaining([
@@ -1936,11 +1981,13 @@ describe("Dojo release gate manifest", () => {
       "compliance_export_suite",
       "privacy_redaction_suite",
     ]));
+    expect(manifest.release_gate_ids).not.toContain("dojo_live_chaos");
     expect(manifest.release_gate_ids).not.toContain("dojo_soak_performance_self_check");
     expect(manifest.release_gate_ids).not.toContain("soak_performance");
     expect(manifest.enterprise_release_gate_ids).toEqual(expect.arrayContaining([
       ...manifest.release_gate_ids,
       "dojo_chaos_performance_self_check",
+      "dojo_live_chaos",
       "dojo_soak_performance_self_check",
       "soak_performance",
     ]));

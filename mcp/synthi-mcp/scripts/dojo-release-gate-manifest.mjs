@@ -128,6 +128,29 @@ const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 
 export const DOJO_RELEASE_OBSERVATION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
+export const DOJO_LIVE_CHAOS_ENABLE_ENV = "SYNTHI_CHAOS_ENABLE_LIVE";
+export const DOJO_LIVE_CHAOS_COMMAND_ENVS = [
+  "SYNTHI_CHAOS_BROWSER_CRASH_COMMAND_JSON",
+  "SYNTHI_CHAOS_EVIDENCE_STORE_UNAVAILABLE_COMMAND_JSON",
+  "SYNTHI_CHAOS_POSTGRES_RESTART_PROOF_COMMAND_JSON",
+  "SYNTHI_CHAOS_PROOF_SIGNING_OUTAGE_COMMAND_JSON",
+  "SYNTHI_CHAOS_REDIS_RESTART_COMMAND_JSON",
+  "SYNTHI_CHAOS_SIGNALING_PARTITION_COMMAND_JSON",
+  "SYNTHI_CHAOS_WORKER_KILL_COMMAND_JSON",
+];
+export const DOJO_LIVE_CHAOS_REQUIRED_ENV = [
+  DOJO_LIVE_CHAOS_ENABLE_ENV,
+  ...DOJO_LIVE_CHAOS_COMMAND_ENVS,
+];
+export const DOJO_LIVE_CHAOS_SCENARIOS = [
+  "live_browser_session_crash",
+  "live_evidence_store_unavailable",
+  "live_postgres_restart_during_proof_validation",
+  "live_proof_signing_outage",
+  "live_redis_restart",
+  "live_signaling_partition",
+  "live_worker_kill",
+];
 
 export const DOJO_RELEASE_GATE_TIERS = [
   {
@@ -1422,6 +1445,24 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       required_dojo_release_metrics: [...DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS],
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
+    },
+  },
+  {
+    id: "dojo_live_chaos",
+    tier: "T8",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "chaos:dojo:live",
+    command: "npm --prefix mcp/synthi-mcp run chaos:dojo:live",
+    required_for: ["enterprise_release"],
+    evidence_kind: "metrics",
+    requires_env: [...DOJO_LIVE_CHAOS_REQUIRED_ENV],
+    default_report_path: "tmp/dojo-chaos-runner/live-chaos-runner.report.json",
+    enterprise_artifact_requirements: {
+      require_explicit_live_enable_env: DOJO_LIVE_CHAOS_ENABLE_ENV,
+      required_live_scenarios: [...DOJO_LIVE_CHAOS_SCENARIOS],
+      require_live_scenarios_included: true,
+      require_all_live_scenarios_passed: true,
+      require_command_digest_evidence: true,
     },
   },
   {
@@ -3264,6 +3305,42 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       errors.push("chaos_performance_missing_json_report_digest_requirement");
     }
   }
+  const liveChaosGate = gates.find((gate) => gate.id === "dojo_live_chaos");
+  if (!liveChaosGate) {
+    errors.push("live_chaos_gate_missing");
+  } else {
+    if (liveChaosGate.tier !== "T8") errors.push("live_chaos_gate_wrong_tier");
+    if (liveChaosGate.package_script !== "chaos:dojo:live") errors.push("live_chaos_missing_package_script");
+    if (!liveChaosGate.required_for?.includes("enterprise_release")) {
+      errors.push("live_chaos_missing_enterprise_release_requirement");
+    }
+    if (liveChaosGate.default_report_path !== "tmp/dojo-chaos-runner/live-chaos-runner.report.json") {
+      errors.push("live_chaos_missing_default_report_path");
+    }
+    const missingLiveEnv = missingRequiredEntries(DOJO_LIVE_CHAOS_REQUIRED_ENV, liveChaosGate.requires_env);
+    if (missingLiveEnv.length > 0) {
+      errors.push(`live_chaos_missing_required_env:${missingLiveEnv.join(",")}`);
+    }
+    if (liveChaosGate.enterprise_artifact_requirements?.require_explicit_live_enable_env !== DOJO_LIVE_CHAOS_ENABLE_ENV) {
+      errors.push("live_chaos_missing_explicit_enable_env_requirement");
+    }
+    const missingLiveScenarios = missingRequiredEntries(
+      DOJO_LIVE_CHAOS_SCENARIOS,
+      liveChaosGate.enterprise_artifact_requirements?.required_live_scenarios,
+    );
+    if (missingLiveScenarios.length > 0) {
+      errors.push(`live_chaos_missing_required_scenarios:${missingLiveScenarios.join(",")}`);
+    }
+    if (!liveChaosGate.enterprise_artifact_requirements?.require_live_scenarios_included) {
+      errors.push("live_chaos_missing_included_requirement");
+    }
+    if (!liveChaosGate.enterprise_artifact_requirements?.require_all_live_scenarios_passed) {
+      errors.push("live_chaos_missing_all_passed_requirement");
+    }
+    if (!liveChaosGate.enterprise_artifact_requirements?.require_command_digest_evidence) {
+      errors.push("live_chaos_missing_command_digest_requirement");
+    }
+  }
   const dojoSoakPerformanceGate = gates.find((gate) => gate.id === "dojo_soak_performance_self_check");
   if (dojoSoakPerformanceGate) {
     if (dojoSoakPerformanceGate.evidence_schema_version !== "synthi.dojo.soakPerformanceEvidence.v1") {
@@ -3572,9 +3649,11 @@ export async function runSelfCheck({ outDir }) {
     assert(manifest.enterprise_release_gate_ids.includes(gateId), `enterprise_release_missing_release_gate:${gateId}`);
   }
   assert(manifest.enterprise_release_gate_ids.includes("dojo_chaos_performance_self_check"));
+  assert(manifest.enterprise_release_gate_ids.includes("dojo_live_chaos"));
   assert(manifest.enterprise_release_gate_ids.includes("dojo_soak_performance_self_check"));
   assert(manifest.enterprise_release_gate_ids.includes("soak_performance"));
   assert(manifest.gates.some((gate) => gate.id === "dojo_chaos_performance_self_check" && gate.tier === "T8"));
+  assert(manifest.gates.some((gate) => gate.id === "dojo_live_chaos" && gate.tier === "T8"));
   assert(manifest.gates.some((gate) => gate.id === "dojo_soak_performance_self_check" && gate.tier === "T8"));
   assert(manifest.gates.some((gate) => gate.tier === "T8"));
   return writeDojoReleaseGateArtifacts({ outDir, manifest });
