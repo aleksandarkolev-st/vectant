@@ -9,13 +9,20 @@ import type {
 import type { DojoTenantContext } from "../../src/dojo/mcp/execution_policy_gate.js";
 import { buildDojoProofKeyRecord } from "../../src/dojo/proof/key_registry.js";
 import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
-import type { DojoAuditEventRecord, DojoPermissionUpgradeRequestRecord } from "../../src/dojo/store/interfaces.js";
+import type {
+  DojoAuditEventInput,
+  DojoAuditEventListFilter,
+  DojoAuditEventRecord,
+  DojoAuditStore,
+  DojoPermissionUpgradeRequestRecord,
+} from "../../src/dojo/store/interfaces.js";
 import {
   authorizeDojoGovernanceAction,
   buildDojoGovernanceServiceView,
   buildDojoComplianceEvidencePack,
   decideDojoCaseLawReview,
   decideDojoPermissionUpgradeRequest,
+  persistDojoScheduledJobRunAuditEvents,
   queryDojoApprovalQueue,
   queryDojoAuditExports,
   queryDojoCaseLawReviewQueue,
@@ -1247,6 +1254,95 @@ describe("Dojo governance service", () => {
     }));
   });
 
+  it("persists scheduled job audit results with tenant scoped audit context", async () => {
+    const auditStore = new MemoryAuditStore();
+    const run = await runDojoScheduledGovernanceJobs({
+      jobs: [scheduledJobFixture({ jobId: "scheduled_persist_audit", kind: "recompute_registry_metrics" })],
+      actor: { actor_id: "governance-scheduler", actor_type: "service" },
+      now: "2026-06-11T01:15:00.000Z",
+      handlers: {
+        recompute_registry_metrics: () => ({
+          ok: true,
+          evidence_refs: ["metrics:recomputed"],
+          details: { metric_count: 6 },
+        }),
+      },
+    });
+
+    const persistence = await persistDojoScheduledJobRunAuditEvents({
+      run,
+      audit_store: auditStore,
+      tenant_context: tenantContextFixture({
+        actorId: "governance-scheduler",
+        roles: ["dojo:operator"],
+      }),
+      request_id: "request-scheduled-audit",
+      correlation_id: "correlation-scheduled-audit",
+    });
+
+    expect(persistence).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.governanceScheduledJobAuditPersistence.v1",
+      persisted_count: 1,
+      blocked_count: 0,
+    }));
+    expect(auditStore.events).toEqual([
+      expect.objectContaining({
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        event_type: "governance_scheduled_job_completed",
+        request_id: "request-scheduled-audit",
+        correlation_id: "correlation-scheduled-audit",
+        entity_kind: "governance_scheduled_job",
+        entity_id: "scheduled_persist_audit",
+        details: expect.objectContaining({
+          kind: "recompute_registry_metrics",
+          status: "applied",
+          evidence_refs: expect.arrayContaining(["metrics:recomputed"]),
+        }),
+      }),
+    ]);
+  });
+
+  it("blocks scheduled job audit persistence when workspace scope does not match tenant context", async () => {
+    const auditStore = new MemoryAuditStore();
+    const run = await runDojoScheduledGovernanceJobs({
+      jobs: [
+        {
+          ...scheduledJobFixture({
+            jobId: "scheduled_workspace_mismatch",
+            kind: "review_case_law",
+            skillId: "skill-case",
+          }),
+          workspace_id: "workspace-b",
+        },
+      ],
+      actor: { actor_id: "governance-scheduler", actor_type: "service" },
+      now: "2026-06-11T01:20:00.000Z",
+      handlers: {
+        review_case_law: () => ({ ok: true, evidence_refs: ["case-law:reviewed"] }),
+      },
+    });
+
+    const persistence = await persistDojoScheduledJobRunAuditEvents({
+      run,
+      audit_store: auditStore,
+      tenant_context: tenantContextFixture({
+        actorId: "governance-scheduler",
+        roles: ["dojo:operator"],
+      }),
+    });
+
+    expect(persistence).toEqual(expect.objectContaining({
+      persisted_count: 0,
+      blocked_count: 1,
+    }));
+    expect(persistence.results[0]).toEqual(expect.objectContaining({
+      status: "blocked",
+      blocked_by: ["scheduled_job_audit_workspace_mismatch"],
+    }));
+    expect(auditStore.events).toEqual([]);
+  });
+
   it("builds skill registry and policy gates from licenses and binding case law", () => {
     const skill = skillFixture({
       skillId: "skill-a",
@@ -1612,6 +1708,42 @@ function tenantContextFixture(input: {
     request_id: "request-governance-rbac",
     correlation_id: "correlation-governance-rbac",
   };
+}
+
+class MemoryAuditStore implements DojoAuditStore {
+  readonly events: DojoAuditEventRecord[] = [];
+
+  appendAuditEvent(event: DojoAuditEventInput): DojoAuditEventRecord {
+    const record: DojoAuditEventRecord = {
+      tenant_id: event.tenant_id,
+      workspace_id: event.workspace_id,
+      audit_event_id: event.audit_event_id ?? `audit-${this.events.length + 1}`,
+      actor: { ...event.actor },
+      event_type: event.event_type,
+      request_id: event.request_id,
+      correlation_id: event.correlation_id,
+      entity_kind: event.entity_kind,
+      entity_id: event.entity_id,
+      details: { ...(event.details ?? {}) },
+      created_at: event.created_at ?? "2026-06-11T00:00:00.000Z",
+    };
+    this.events.push(record);
+    return record;
+  }
+
+  listAuditEvents(filter: DojoAuditEventListFilter = {}): DojoAuditEventRecord[] {
+    return this.events
+      .filter((event) => !filter.event_type || event.event_type === filter.event_type)
+      .filter((event) => !filter.entity_kind || event.entity_kind === filter.entity_kind)
+      .filter((event) => !filter.entity_id || event.entity_id === filter.entity_id)
+      .filter((event) => !filter.correlation_id || event.correlation_id === filter.correlation_id)
+      .slice(0, filter.limit ?? this.events.length)
+      .map((event) => ({
+        ...event,
+        actor: { ...event.actor },
+        details: { ...event.details },
+      }));
+  }
 }
 
 function externalCaseFixture(): DojoCaseLawRecord {

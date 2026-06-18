@@ -10,6 +10,7 @@ import type {
   DojoAuditActor,
   DojoAuditEventRecord,
   DojoAuditEventType,
+  DojoAuditStore,
   DojoPermissionUpgradeRequestRecord,
 } from "../store/interfaces.js";
 import type { DojoCaseLawRecord } from "../case_law/registry.js";
@@ -347,6 +348,22 @@ export interface DojoGovernanceScheduledJobRun {
   blocked_count: number;
   failed_count: number;
   results: DojoGovernanceScheduledJobExecutionResult[];
+}
+
+export interface DojoGovernanceScheduledJobAuditPersistenceItem {
+  job_id: string;
+  kind: DojoGovernanceScheduledJobKind;
+  status: "persisted" | "blocked";
+  audit_event?: DojoAuditEventRecord;
+  blocked_by: string[];
+}
+
+export interface DojoGovernanceScheduledJobAuditPersistenceResult {
+  schema_version: "synthi.dojo.governanceScheduledJobAuditPersistence.v1";
+  generated_at: string;
+  persisted_count: number;
+  blocked_count: number;
+  results: DojoGovernanceScheduledJobAuditPersistenceItem[];
 }
 
 export interface DojoGovernanceServiceView {
@@ -1318,6 +1335,71 @@ export async function runDojoScheduledGovernanceJobs(input: {
   };
 }
 
+export async function persistDojoScheduledJobRunAuditEvents(input: {
+  run: DojoGovernanceScheduledJobRun;
+  audit_store: DojoAuditStore;
+  tenant_context: DojoTenantContext;
+  request_id?: string;
+  correlation_id?: string;
+}): Promise<DojoGovernanceScheduledJobAuditPersistenceResult> {
+  const results: DojoGovernanceScheduledJobAuditPersistenceItem[] = [];
+  const generatedAt = input.run.generated_at;
+  for (const result of input.run.results) {
+    const workspaceId = result.audit_event.workspace_id || input.tenant_context.workspace_id;
+    const blockedBy = validateScheduledJobAuditPersistenceScope({
+      tenantContext: input.tenant_context,
+      workspaceId,
+      result,
+    });
+    if (blockedBy.length > 0) {
+      results.push({
+        job_id: result.job_id,
+        kind: result.kind,
+        status: "blocked",
+        blocked_by: blockedBy,
+      });
+      continue;
+    }
+    const record = await input.audit_store.appendAuditEvent({
+      tenant_id: input.tenant_context.tenant_id,
+      workspace_id: workspaceId,
+      actor: result.audit_event.actor,
+      event_type: result.audit_event.event_type,
+      request_id: input.request_id ?? result.audit_event.request_id ?? input.tenant_context.request_id,
+      correlation_id: input.correlation_id ?? input.tenant_context.correlation_id,
+      entity_kind: "governance_scheduled_job",
+      entity_id: result.job_id,
+      details: {
+        job_id: result.job_id,
+        kind: result.kind,
+        status: result.status,
+        reason: result.reason,
+        blocked_by: result.blocked_by,
+        next_step: result.next_step,
+        evidence_refs: result.evidence_refs,
+        ...(result.details ? { details: result.details } : {}),
+        ...(result.error ? { error: result.error } : {}),
+      },
+      created_at: result.finished_at,
+    });
+    results.push({
+      job_id: result.job_id,
+      kind: result.kind,
+      status: "persisted",
+      audit_event: record,
+      blocked_by: [],
+    });
+  }
+
+  return {
+    schema_version: "synthi.dojo.governanceScheduledJobAuditPersistence.v1",
+    generated_at: generatedAt,
+    persisted_count: results.filter((item) => item.status === "persisted").length,
+    blocked_count: results.filter((item) => item.status === "blocked").length,
+    results,
+  };
+}
+
 export function queryDojoAuditExports(input: {
   skills: DojoSkill[];
   case_law_review_queue: DojoGovernanceCaseLawReviewItem[];
@@ -1607,6 +1689,26 @@ function durationMs(startedAt: string, finishedAt: string): number {
   const finishedMs = Date.parse(finishedAt);
   if (!Number.isFinite(startedMs) || !Number.isFinite(finishedMs)) return 0;
   return Math.max(0, finishedMs - startedMs);
+}
+
+function validateScheduledJobAuditPersistenceScope(input: {
+  tenantContext: DojoTenantContext;
+  workspaceId: string;
+  result: DojoGovernanceScheduledJobExecutionResult;
+}): string[] {
+  const blockedBy: string[] = [];
+  if (!input.tenantContext.tenant_id?.trim()) blockedBy.push("scheduled_job_audit_tenant_required");
+  if (!input.tenantContext.workspace_id?.trim()) blockedBy.push("scheduled_job_audit_workspace_required");
+  if (!input.tenantContext.request_id?.trim()) blockedBy.push("scheduled_job_audit_request_required");
+  if (!input.tenantContext.correlation_id?.trim()) blockedBy.push("scheduled_job_audit_correlation_required");
+  if (input.workspaceId && input.workspaceId !== input.tenantContext.workspace_id) {
+    blockedBy.push("scheduled_job_audit_workspace_mismatch");
+  }
+  if (!input.result.audit_event.actor?.actor_id?.trim()) blockedBy.push("scheduled_job_audit_actor_required");
+  if (!["human", "agent", "service"].includes(input.result.audit_event.actor?.actor_type)) {
+    blockedBy.push("scheduled_job_audit_actor_type_required");
+  }
+  return blockedBy;
 }
 
 function validateReviewActor(

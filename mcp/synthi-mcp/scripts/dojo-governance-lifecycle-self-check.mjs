@@ -55,6 +55,7 @@ export const DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES = [
   "governance_builds_recertification_audit_export_and_compliance_views",
   "governance_builds_scheduled_jobs_from_lifecycle_queues",
   "governance_executes_scheduled_jobs_with_handler_contract",
+  "governance_persists_scheduled_job_audit_results",
   "governance_adds_proof_public_verification_custody",
 ];
 
@@ -418,6 +419,8 @@ function capabilityMatchers(capability) {
       return ["plans scheduled governance jobs", "normalized queues"];
     case "governance_executes_scheduled_jobs_with_handler_contract":
       return ["executes scheduled jobs", "handler contract", "audit results"];
+    case "governance_persists_scheduled_job_audit_results":
+      return ["persists scheduled job audit results", "tenant scoped audit context"];
     case "governance_adds_proof_public_verification_custody":
       return ["adds proof public verification custody", "compliance pack"];
     default:
