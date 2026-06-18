@@ -215,6 +215,80 @@ function responseHeaders(upstream) {
   return headers;
 }
 
+function sanitizeErrorDetail(value) {
+  if (!value) return '';
+  const text = String(value);
+  return text.length > 2048 ? `${text.slice(0, 2040)}…` : text;
+}
+
+function isThenable(value) {
+  return typeof value?.then === 'function';
+}
+
+function asStringArrayPath(rawPath) {
+  if (Array.isArray(rawPath)) {
+    return rawPath
+      .filter((segment) => typeof segment === 'string' && segment.trim().length > 0)
+      .map((segment) => segment.trim());
+  }
+
+  if (typeof rawPath === 'string') {
+    return rawPath
+      .split('/')
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+  }
+
+  return [];
+}
+
+function inferWorkflowPathFromUrl(request) {
+  const normalizedPath = new URL(request.url).pathname;
+  const marker = '/browser-workflows/';
+  const markerIndex = normalizedPath.indexOf(marker);
+  if (markerIndex === -1) return '';
+
+  return normalizedPath
+    .slice(markerIndex + marker.length)
+    .replace(/^\/+|\/+$/g, '')
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+    .join('/');
+}
+
+async function resolveWorkflowPath(routeContext, request) {
+  const rawParams = routeContext?.params;
+  const params = isThenable(rawParams) ? await rawParams : rawParams;
+  const fromParams = asStringArrayPath(params?.path).join('/');
+  if (fromParams) return fromParams;
+
+  const fromUrl = inferWorkflowPathFromUrl(request);
+  return fromUrl;
+}
+
+async function upstreamErrorPayload(upstream) {
+  try {
+    const clone = upstream.clone();
+    const contentType = clone.headers.get('content-type') || '';
+    const raw = await clone.text();
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return { contentType, detail: '' };
+    }
+    if (contentType.includes('application/json') || contentType.includes('+json')) {
+      try {
+        return { contentType, payload: JSON.parse(trimmed) };
+      } catch (_) {
+        return { contentType, detail: sanitizeErrorDetail(trimmed) };
+      }
+    }
+    return { contentType, detail: sanitizeErrorDetail(trimmed) };
+  } catch (_) {
+    return { contentType: upstream.headers.get('content-type') || '', detail: '' };
+  }
+}
+
 async function ensureRuntimeBridge(context) {
   const runtimeScope = context.runtimeScope;
   if (!runtimeScope) return { ok: true };
@@ -256,9 +330,63 @@ async function ensureRuntimeBridge(context) {
   }
 }
 
+async function forwardToBridge(upstreamUrl, request) {
+  const init = {
+    method: request.method,
+    headers: new Headers(),
+    cache: 'no-store',
+  };
+
+  const contentType = request.headers.get('content-type');
+  if (contentType) init.headers.set('content-type', contentType);
+  const accept = request.headers.get('accept');
+  if (accept) init.headers.set('accept', accept);
+
+  const serverToken = process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN;
+  const browserToken = request.headers.get('x-synthi-workflow-token');
+  if (serverToken) {
+    init.headers.set('x-synthi-workflow-token', serverToken);
+  } else if (browserToken) {
+    init.headers.set('x-synthi-workflow-token', browserToken);
+  }
+
+  [
+    'x-synthi-runtime-scope',
+    'x-synthi-workspace-slug',
+    'x-synthi-runtime-kind',
+    'x-synthi-filesystem-user-id',
+    'x-synthi-actor-user-id',
+    'x-synthi-collab-session-id',
+  ].forEach((headerName) => {
+    const value = request.headers.get(headerName);
+    if (value) init.headers.set(headerName, value);
+  });
+
+  const propagatedHeaders = Object.fromEntries(init.headers.entries());
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    init.body = await request.arrayBuffer();
+    init.headers.set('content-length', `${(init.body?.byteLength || 0)}`);
+    propagatedHeaders['content-length'] = `${(init.body?.byteLength || 0)}`;
+  }
+
+  const upstream = await fetch(upstreamUrl, init);
+  return { upstream, propagatedHeaders };
+}
+
 async function proxyWorkflowBridge(request, routeContext) {
   try {
-    const authorized = await authorizeRuntimeContext(parseRuntimeContext(request));
+    let authorized;
+    try {
+      authorized = await authorizeRuntimeContext(parseRuntimeContext(request));
+    } catch (err) {
+      return NextResponse.json(
+        {
+          error: 'workflow_access_check_failed',
+          detail: err instanceof Error ? err.message : String(err),
+        },
+        { status: 503 },
+      );
+    }
     if (!authorized.ok) {
       return NextResponse.json(
         { error: authorized.error },
@@ -279,10 +407,16 @@ async function proxyWorkflowBridge(request, routeContext) {
       );
     }
 
-    const params = await routeContext.params;
-    const path = Array.isArray(params?.path)
-      ? params.path.filter((segment) => typeof segment === 'string' && segment.trim().length > 0).join('/')
-      : '';
+    const path = await resolveWorkflowPath(routeContext, request);
+    if (!path) {
+      return NextResponse.json(
+        {
+          error: 'workflow_unknown_path',
+          path,
+        },
+        { status: 400 },
+      );
+    }
     const isStatePath = path === 'state' || path === 'state/';
     if (!isStatePath) {
       const ensure = await ensureRuntimeBridge(runtimeContext);
@@ -298,41 +432,67 @@ async function proxyWorkflowBridge(request, routeContext) {
     const upstreamUrl = new URL(`/browser-workflows/${path}`, baseUrl);
     upstreamUrl.search = incomingUrl.search;
 
-    const headers = new Headers();
-    const contentType = request.headers.get('content-type');
-    if (contentType) headers.set('content-type', contentType);
-    const accept = request.headers.get('accept');
-    if (accept) headers.set('accept', accept);
-    [
-      'x-synthi-runtime-scope',
-      'x-synthi-workspace-slug',
-      'x-synthi-runtime-kind',
-      'x-synthi-filesystem-user-id',
-      'x-synthi-actor-user-id',
-      'x-synthi-collab-session-id',
-    ].forEach((headerName) => {
-      const value = request.headers.get(headerName);
-      if (value) headers.set(headerName, value);
-    });
-
-    const serverToken = process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN;
-    const browserToken = request.headers.get('x-synthi-workflow-token');
-    if (serverToken) {
-      headers.set('x-synthi-workflow-token', serverToken);
-    } else if (browserToken) {
-      headers.set('x-synthi-workflow-token', browserToken);
+    let upstream;
+    let propagatedHeaders;
+    try {
+      ({ upstream, propagatedHeaders } = await forwardToBridge(upstreamUrl, request));
+    } catch (err) {
+      return NextResponse.json(
+        {
+          error: 'workflow_bridge_unreachable',
+          detail: err instanceof Error ? err.message : String(err),
+          action: `${request.method || 'GET'}:${path}`,
+          path,
+          upstream_url: upstreamUrl.toString(),
+          headers: propagatedHeaders,
+        },
+        {
+          status: 502,
+          headers: {
+            'cache-control': 'no-store',
+          },
+        },
+      );
     }
 
-    const init = {
-      method: request.method,
-      headers,
-      cache: 'no-store',
-    };
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      init.body = await request.arrayBuffer();
+    if (!upstream.ok) {
+      const details = await upstreamErrorPayload(upstream);
+      const sourcePayload = details.payload && typeof details.payload === 'object' && !Array.isArray(details.payload)
+        ? details.payload
+        : {};
+      const isToolPath = path === 'tool' || path === 'tool/';
+      const merged = {
+        error: details.payload?.error || 'workflow_bridge_upstream_error',
+        status: upstream.status,
+        upstream_status: upstream.status,
+        upstream_content_type: details.contentType || undefined,
+        ...(sourcePayload || {}),
+      };
+      if (!Object.prototype.hasOwnProperty.call(merged, 'detail') && typeof details.detail === 'string' && details.detail) {
+        merged.detail = details.detail;
+      }
+
+      const hasWorkflowState = merged.state && typeof merged.state === 'object';
+      if (isToolPath && hasWorkflowState) {
+        if (!Object.prototype.hasOwnProperty.call(merged, 'ok')) {
+          merged.ok = false;
+        }
+        return NextResponse.json(merged, {
+          status: 200,
+          headers: {
+            'cache-control': 'no-store',
+          },
+        });
+      }
+
+      return NextResponse.json(merged, {
+        status: upstream.status,
+        headers: {
+          'cache-control': 'no-store',
+        },
+      });
     }
 
-    const upstream = await fetch(upstreamUrl, init);
     return new NextResponse(upstream.body, {
       status: upstream.status,
       headers: responseHeaders(upstream),
@@ -345,6 +505,7 @@ async function proxyWorkflowBridge(request, routeContext) {
       },
       { status: 500 },
     );
+  }
 }
 
 export async function GET(request, routeContext) {

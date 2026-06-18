@@ -14,11 +14,18 @@
 
 const DEFAULT_BRIDGE_PORT = '9466';
 const DEFAULT_SERVER_URL = `http://127.0.0.1:${DEFAULT_BRIDGE_PORT}`;
+const MAX_RESPONSE_BODY_PREVIEW = 12_000;
 
 function normalizeBridgeUrl(value) {
   return typeof value === 'string' && value.trim()
     ? value.trim().replace(/\/$/, '')
     : '';
+}
+
+function previewText(value) {
+  return typeof value === 'string' && value.length > MAX_RESPONSE_BODY_PREVIEW
+    ? `${value.slice(0, MAX_RESPONSE_BODY_PREVIEW)}…`
+    : value || '';
 }
 
 function browserDefaultBridgeUrl() {
@@ -60,12 +67,25 @@ function bridgeHeaders(token, includeJson = false, runtime = {}) {
 }
 
 async function readJsonOrEmpty(res) {
-  return res.json().catch(() => ({}));
+  const body = await res.text().catch(() => '');
+  if (!body) return {};
+  try {
+    return JSON.parse(body);
+  } catch {
+    return {
+      ok: false,
+      error: 'invalid_json_response',
+      detail: previewText(body),
+      status: res.status,
+      statusText: res.statusText,
+      _body: body,
+    };
+  }
 }
 
 function bridgeError(prefix, status, body) {
   const code = body?.error || `${prefix}_${status}`;
-  const detail = body?.detail || body?.message || '';
+  const detail = body?.detail || body?.message || body?._body || '';
   const err = new Error(detail ? `${code}: ${detail}` : code);
   err.code = code;
   err.status = status;
@@ -103,8 +123,15 @@ export async function callAgentWorkflowTool({
     signal,
   });
   const body = await readJsonOrEmpty(res);
-  if (!res.ok) throw bridgeError('workflow_tool_failed', res.status, body);
-  return body;
+  const payload = body && typeof body === 'object' ? body : {};
+  if (payload && payload.state) {
+    payload.status = payload.status || res.status;
+    if (!Object.prototype.hasOwnProperty.call(payload, 'ok')) {
+      payload.ok = false;
+    }
+  }
+  if (!res.ok) throw bridgeError('workflow_tool_failed', res.status, payload);
+  return payload;
 }
 
 export async function openAgentWorkflowExternalUrl({
