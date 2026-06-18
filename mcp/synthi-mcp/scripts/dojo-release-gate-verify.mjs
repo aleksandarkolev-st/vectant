@@ -1057,6 +1057,7 @@ export async function verifyDojoReleaseGateRunReportArtifact({
   if (report?.counts?.selected !== selectedGateIds.length) {
     errors.push(`runner_selected_count_mismatch:${report?.counts?.selected}:${selectedGateIds.length}`);
   }
+  errors.push(...validateRunnerResultCoverage({ selectedGateIds, results }));
   if (runnerPair.evidence) {
     validateRunnerEvidenceSummary({ evidence: runnerPair.evidence, report, results, errors });
   }
@@ -9818,6 +9819,28 @@ function findGate(manifest, gateId) {
   const gates = Array.isArray(manifest?.gates) ? manifest.gates : [];
   if (gateId) return gates.find((gate) => gate.id === gateId);
   return gates.find((gate) => gate.evidence_kind === "visual_report");
+}
+
+function validateRunnerResultCoverage({ selectedGateIds, results }) {
+  const selected = Array.isArray(selectedGateIds) ? selectedGateIds.map(String) : [];
+  const selectedSet = new Set(selected);
+  const resultIds = (Array.isArray(results) ? results : [])
+    .map((result) => result?.gate_id)
+    .filter((gateId) => typeof gateId === "string" && gateId.length > 0)
+    .map(String);
+  const resultCounts = new Map();
+  for (const gateId of resultIds) {
+    resultCounts.set(gateId, (resultCounts.get(gateId) || 0) + 1);
+  }
+  const errors = [];
+  for (const gateId of selected) {
+    if (!resultCounts.has(gateId)) errors.push(`runner_selected_gate_result_missing:${gateId}`);
+  }
+  for (const [gateId, count] of resultCounts.entries()) {
+    if (count > 1) errors.push(`runner_duplicate_result_gate:${gateId}`);
+    if (!selectedSet.has(gateId)) errors.push(`runner_unselected_result_gate:${gateId}`);
+  }
+  return errors;
 }
 
 async function validateRunnerGateResult({

@@ -351,6 +351,33 @@ describe("Dojo release gate artifact verifier", () => {
       runner_scope: "release",
     }));
 
+    const forgedReport = JSON.parse(await readFile(artifacts.reportPath, "utf8"));
+    forgedReport.results[forgedReport.results.length - 1] = { ...forgedReport.results[0] };
+    forgedReport.complete = true;
+    forgedReport.promotion_ready = true;
+    forgedReport.ok = true;
+    forgedReport.errors = [];
+    const forgedReportPath = path.join(dir, "dojo-release-gate-runner-forged-duplicate-result.json");
+    const forgedEvidencePath = path.join(dir, "dojo-release-gate-runner-forged-duplicate-result.evidence.json");
+    const forgedSerialized = `${JSON.stringify(forgedReport, null, 2)}\n`;
+    await writeFile(forgedReportPath, forgedSerialized, "utf8");
+    await writeFile(forgedEvidencePath, `${JSON.stringify(buildDojoReleaseGateRunEvidenceManifest({
+      report: forgedReport,
+      reportPath: forgedReportPath,
+      serialized: forgedSerialized,
+    }), null, 2)}\n`, "utf8");
+    const forgedRejected = await verifyDojoReleaseGateRunReportArtifact({
+      reportPath: forgedReportPath,
+      evidencePath: forgedEvidencePath,
+      manifest: releaseManifest,
+      requirePromotionReady: true,
+    });
+    expect(forgedRejected.ok).toBe(false);
+    expect(forgedRejected.errors).toEqual(expect.arrayContaining([
+      `runner_selected_gate_result_missing:${releaseGateIds[releaseGateIds.length - 1]}`,
+      `runner_duplicate_result_gate:${releaseGateIds[0]}`,
+    ]));
+
     const enterpriseArtifacts = await writeReleaseGateRunnerFixture({
       dir,
       basename: "dojo-release-gate-runner-enterprise",

@@ -205,6 +205,55 @@ describe("Dojo release gate runner", () => {
     }));
   });
 
+  it("does not mark duplicated runner results as selected-gate coverage", async () => {
+    const releaseManifest = manifest();
+    const validation = validateDojoReleaseGateManifest(releaseManifest, { packageScripts: realPackageScripts() });
+    const plan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "minimal-pr",
+      gateIds: ["mcp_typecheck", "frontend_build"],
+      env: {},
+    });
+    const results = await executeDojoReleaseGatePlan({
+      plan,
+      outDir: await mkdtemp(join(tmpdir(), "dojo-release-gate-runner-")),
+      executor: async ({ gatePlan }) => ({
+        gate_id: gatePlan.gate_id,
+        tier: gatePlan.tier,
+        status: "passed",
+        executed: true,
+        command: gatePlan.execution_spec.canonical_command,
+        exit_code: 0,
+        stdout_sha256: "0".repeat(64),
+        stderr_sha256: "0".repeat(64),
+        expected_artifacts: gatePlan.expected_artifacts,
+      }),
+    });
+    const duplicatedResults = [
+      results[0],
+      { ...results[0] },
+    ];
+    const report = buildDojoReleaseGateRunReport({
+      manifest: releaseManifest,
+      manifestValidation: validation,
+      plan,
+      results: duplicatedResults,
+      scope: "minimal-pr",
+      dryRun: false,
+      generatedAt: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(report).toEqual(expect.objectContaining({
+      ok: false,
+      complete: false,
+      promotion_ready: false,
+    }));
+    expect(report.errors).toEqual(expect.arrayContaining([
+      "runner_selected_gate_result_missing:frontend_build",
+      "runner_duplicate_result_gate:mcp_typecheck",
+    ]));
+  });
+
   it("writes dry-run artifacts without claiming promotion readiness", async () => {
     const outDir = await mkdtemp(join(tmpdir(), "dojo-release-gate-runner-"));
     const result = await runDojoReleaseGateRunner({

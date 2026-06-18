@@ -286,7 +286,12 @@ export function buildDojoReleaseGateRunReport({
   for (const result of results || []) {
     if (result.status === "failed") errors.push(`gate_failed:${result.gate_id}:${result.failure_reason || result.exit_code}`);
   }
-  const allSelectedCovered = counts.selected === results.length && (plan?.unknown_gate_ids || []).length === 0;
+  const gateCoverage = summarizeRunnerGateResultCoverage({
+    selectedGateIds: plan?.selected_gate_ids || [],
+    results: results || [],
+  });
+  errors.push(...gateCoverage.errors);
+  const allSelectedCovered = gateCoverage.ok && (plan?.unknown_gate_ids || []).length === 0;
   const complete = !dryRun
     && allSelectedCovered
     && counts.failed === 0
@@ -318,6 +323,31 @@ export function buildDojoReleaseGateRunReport({
     },
     counts,
     results,
+  };
+}
+
+function summarizeRunnerGateResultCoverage({ selectedGateIds, results }) {
+  const selected = Array.isArray(selectedGateIds) ? selectedGateIds.map(String) : [];
+  const selectedSet = new Set(selected);
+  const resultIds = (Array.isArray(results) ? results : [])
+    .map((result) => result?.gate_id)
+    .filter((gateId) => typeof gateId === "string" && gateId.length > 0)
+    .map(String);
+  const resultCounts = new Map();
+  for (const gateId of resultIds) {
+    resultCounts.set(gateId, (resultCounts.get(gateId) || 0) + 1);
+  }
+  const errors = [];
+  for (const gateId of selected) {
+    if (!resultCounts.has(gateId)) errors.push(`runner_selected_gate_result_missing:${gateId}`);
+  }
+  for (const [gateId, count] of resultCounts.entries()) {
+    if (count > 1) errors.push(`runner_duplicate_result_gate:${gateId}`);
+    if (!selectedSet.has(gateId)) errors.push(`runner_unselected_result_gate:${gateId}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
   };
 }
 
