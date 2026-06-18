@@ -84,6 +84,9 @@ import {
 } from "./dojo-skill-passport-self-check.mjs";
 import {
   DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_CHECKS,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_SCHEMA_VERSION,
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "./dojo-hosted-runtime-gateway-self-check.mjs";
 import {
@@ -3918,7 +3921,7 @@ export function validateDojoCaseLawRuntimeEvidenceForRelease(evidence) {
 
 export async function verifyDojoHostedRuntimeGatewayEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
   const evidence = await readJsonFile(evidencePath);
-  const errors = validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence).errors;
+  const errors = validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence, { releaseCandidate }).errors;
   errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
   return {
     id: "dojo_hosted_runtime_gateway_self_check",
@@ -3927,10 +3930,15 @@ export async function verifyDojoHostedRuntimeGatewayEvidenceArtifact({ evidenceP
     evidence_path: evidencePath,
     release_candidate: Boolean(releaseCandidate),
     report_schema_version: evidence?.schema_version ?? null,
+    release_observation_scope: evidence?.release_runtime_observation?.scope ?? null,
+    release_observation_ready: evidence?.release_runtime_observation?.release_ready === true,
+    release_observation_gate_ids: Array.isArray(evidence?.release_runtime_observation?.artifact_refs)
+      ? evidence.release_runtime_observation.artifact_refs.map((ref) => ref?.gate_id).filter(Boolean)
+      : [],
   };
 }
 
-export function validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence) {
+export function validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence, { releaseCandidate = true } = {}) {
   const errors = [];
   const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
     ? evidence.configured_capabilities.map(String)
@@ -4017,10 +4025,56 @@ export function validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence) {
       errors.push("hosted_runtime_gateway_test_execution_args_missing");
     }
   }
+  if (releaseCandidate) {
+    errors.push(...validateDojoHostedRuntimeGatewayReleaseObservation(evidence?.release_runtime_observation));
+  }
   return {
     ok: errors.length === 0,
     errors,
   };
+}
+
+export function validateDojoHostedRuntimeGatewayReleaseObservation(observation) {
+  const errors = [];
+  if (!observation || typeof observation !== "object") {
+    return ["hosted_runtime_gateway_release_observation_missing"];
+  }
+  if (observation.schema_version !== DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_SCHEMA_VERSION) {
+    errors.push(`hosted_runtime_gateway_release_observation_schema_mismatch:${observation.schema_version || "missing"}`);
+  }
+  if (observation.observed !== true) errors.push("hosted_runtime_gateway_release_observation_not_observed");
+  if (observation.release_ready !== true) errors.push("hosted_runtime_gateway_release_observation_not_ready");
+  if (observation.scope !== "release") {
+    errors.push(`hosted_runtime_gateway_release_observation_scope_invalid:${observation.scope || "missing"}`);
+  }
+  if (observation.source === "unit_self_check") {
+    errors.push("hosted_runtime_gateway_release_observation_self_check_only");
+  }
+  const checks = observation.checks && typeof observation.checks === "object" ? observation.checks : {};
+  for (const check of DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_CHECKS) {
+    if (checks[check] !== true) {
+      errors.push(`hosted_runtime_gateway_release_observation_check_missing:${check}`);
+    }
+  }
+  const refs = Array.isArray(observation.artifact_refs) ? observation.artifact_refs : [];
+  if (refs.length === 0) {
+    errors.push("hosted_runtime_gateway_release_observation_artifacts_missing");
+  }
+  const gateIds = refs.map((ref) => String(ref?.gate_id || "")).filter(Boolean);
+  const missingGateIds = DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS
+    .filter((gateId) => !gateIds.includes(gateId));
+  if (missingGateIds.length > 0) {
+    errors.push(`hosted_runtime_gateway_release_observation_gate_refs_missing:${missingGateIds.join(",")}`);
+  }
+  refs.forEach((ref, index) => {
+    if (typeof ref?.artifact_path !== "string" || ref.artifact_path.length === 0) {
+      errors.push(`hosted_runtime_gateway_release_observation_artifact_path_missing:${index}`);
+    }
+    if (typeof ref?.artifact_sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(ref.artifact_sha256)) {
+      errors.push(`hosted_runtime_gateway_release_observation_artifact_sha256_invalid:${index}`);
+    }
+  });
+  return errors;
 }
 
 export async function verifyDojoSecurityAbuseEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
@@ -9002,7 +9056,9 @@ async function writeHostedRuntimeGatewayEvidenceForSelfCheck({
       durable_postgres_session_gate_id: "dojo_postgres_control_plane_self_check",
       malformed_record_rejection_required: true,
       self_check_executes_tests_required: true,
+      release_runtime_observation_required: true,
     },
+    release_runtime_observation: buildHostedRuntimeGatewayReleaseObservationForSelfCheck(),
     test_files: [...DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES],
     test_file_count: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.length,
     reported_test_file_count: DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES.length,
@@ -9052,6 +9108,25 @@ async function writeHostedRuntimeGatewayEvidenceForSelfCheck({
   return {
     evidence_path: evidencePath,
     evidence,
+  };
+}
+
+function buildHostedRuntimeGatewayReleaseObservationForSelfCheck(overrides = {}) {
+  return {
+    schema_version: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_SCHEMA_VERSION,
+    source: "release_gate_verifier_self_check",
+    scope: "release",
+    observed_at: "2026-06-11T00:00:00.000Z",
+    observed: true,
+    release_ready: true,
+    checks: Object.fromEntries(DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_CHECKS.map((check) => [check, true])),
+    artifact_refs: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS.map((gateId, index) => ({
+      gate_id: gateId,
+      artifact_path: `tmp/dojo-release-gates/${gateId}.json`,
+      artifact_sha256: sha256(`hosted-runtime-release-observation:${gateId}`),
+      kind: index === 0 ? "summary" : "evidence",
+    })),
+    ...overrides,
   };
 }
 

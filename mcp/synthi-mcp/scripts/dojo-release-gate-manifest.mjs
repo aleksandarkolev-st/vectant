@@ -64,6 +64,8 @@ import {
 } from "./dojo-ghost-mode-evidence-self-check.mjs";
 import {
   DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_ENV,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS,
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "./dojo-hosted-runtime-gateway-self-check.mjs";
 import {
@@ -1281,6 +1283,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     package_script: "proof:dojo:hosted-runtime-gateway:self-check",
     command: "npm --prefix mcp/synthi-mcp run proof:dojo:hosted-runtime-gateway:self-check",
     required_for: ["release"],
+    requires_env: [DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_ENV],
     evidence_kind: "proof_artifact",
     evidence_schema_version: "synthi.dojo.hostedRuntimeGatewayEvidence.v1",
     default_evidence_path: "tmp/dojo-hosted-runtime-gateway/dojo-hosted-runtime-gateway.evidence.json",
@@ -1304,6 +1307,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_durable_postgres_session_gate: true,
       durable_postgres_session_gate_id: "dojo_postgres_control_plane_self_check",
       require_malformed_record_rejection: true,
+      require_release_runtime_observation: true,
+      required_release_observation_gate_ids: [...DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS],
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
       require_self_check_executes_tests: true,
@@ -2918,6 +2923,14 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       errors.push("hosted_runtime_gateway_missing_package_script");
     }
     if (!hostedRuntimeGatewayGate.default_evidence_path) errors.push("hosted_runtime_gateway_missing_default_evidence_path");
+    const requiredHostedRuntimeGatewayEnv = [DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_ENV];
+    const missingHostedRuntimeGatewayEnv = missingRequiredEntries(
+      requiredHostedRuntimeGatewayEnv,
+      hostedRuntimeGatewayGate.requires_env,
+    );
+    if (missingHostedRuntimeGatewayEnv.length > 0) {
+      errors.push(`hosted_runtime_gateway_missing_release_observation_env:${missingHostedRuntimeGatewayEnv.join(",")}`);
+    }
     if (!hostedRuntimeGatewayGate.release_artifact_requirements?.require_all_hosted_runtime_gateway_capabilities_covered) {
       errors.push("hosted_runtime_gateway_missing_capability_requirement");
     }
@@ -2937,6 +2950,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_postgres_session_store", "hosted_runtime_gateway_missing_postgres_store_requirement"],
       ["require_durable_postgres_session_gate", "hosted_runtime_gateway_missing_durable_postgres_gate_requirement"],
       ["require_malformed_record_rejection", "hosted_runtime_gateway_missing_malformed_record_requirement"],
+      ["require_release_runtime_observation", "hosted_runtime_gateway_missing_release_observation_requirement"],
       ["require_self_check_executes_tests", "hosted_runtime_gateway_missing_self_check_execution_requirement"],
     ]) {
       if (!hostedRuntimeGatewayGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
@@ -2958,6 +2972,16 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     );
     if (missingHostedRuntimeTestFiles.length > 0) {
       errors.push(`hosted_runtime_gateway_missing_required_test_files:${missingHostedRuntimeTestFiles.join(",")}`);
+    }
+    const requiredHostedRuntimeObservationGateIds = Array.isArray(hostedRuntimeGatewayGate.release_artifact_requirements?.required_release_observation_gate_ids)
+      ? hostedRuntimeGatewayGate.release_artifact_requirements.required_release_observation_gate_ids
+      : [];
+    const missingHostedRuntimeObservationGateIds = missingRequiredEntries(
+      DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS,
+      requiredHostedRuntimeObservationGateIds,
+    );
+    if (missingHostedRuntimeObservationGateIds.length > 0) {
+      errors.push(`hosted_runtime_gateway_missing_release_observation_gate_ids:${missingHostedRuntimeObservationGateIds.join(",")}`);
     }
     if (!hostedRuntimeGatewayGate.release_artifact_requirements?.require_no_skipped_tests) {
       errors.push("hosted_runtime_gateway_missing_no_skipped_requirement");

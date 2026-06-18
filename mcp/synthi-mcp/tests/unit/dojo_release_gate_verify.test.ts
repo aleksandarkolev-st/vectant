@@ -79,6 +79,9 @@ import {
 } from "../../scripts/dojo-skill-passport-self-check.mjs";
 import {
   DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_CHECKS,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_SCHEMA_VERSION,
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "../../scripts/dojo-hosted-runtime-gateway-self-check.mjs";
 import {
@@ -141,6 +144,7 @@ import {
   validateDojoSkillPassportEvidenceForRelease,
   validateDojoTimeMachineDebuggerEvidenceForRelease,
   validateDojoHostedRuntimeGatewayEvidenceForRelease,
+  validateDojoHostedRuntimeGatewayReleaseObservation,
   validateDojoVivariumRuntimeEvidenceForRelease,
   validateDojoCheckrideLicenseEvidenceForRelease,
   validateDojoCaseLawRuntimeEvidenceForRelease,
@@ -3447,6 +3451,9 @@ describe("Dojo release gate artifact verifier", () => {
       ok: true,
       errors: [],
       release_candidate: true,
+      release_observation_scope: "release",
+      release_observation_ready: true,
+      release_observation_gate_ids: expect.arrayContaining(DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS),
     }));
 
     const incomplete = hostedRuntimeGatewayEvidenceFixture({
@@ -3494,6 +3501,51 @@ describe("Dojo release gate artifact verifier", () => {
     expect((await verifyDojoHostedRuntimeGatewayEvidenceArtifact({ evidencePath: missingExecutionPath })).errors).toEqual(expect.arrayContaining([
       "hosted_runtime_gateway_self_check_execution_requirement_missing",
       "hosted_runtime_gateway_test_execution_missing",
+    ]));
+
+    const selfCheckOnlyPath = await writeHostedRuntimeGatewayEvidenceFixture({
+      dir,
+      basename: "hosted-runtime-gateway-self-check-only",
+      evidence: hostedRuntimeGatewayEvidenceFixture({
+        hosted_runtime_contract: {
+          ...hostedRuntimeGatewayEvidenceFixture().hosted_runtime_contract,
+          release_runtime_observation_required: false,
+        },
+        release_runtime_observation: {
+          ...hostedRuntimeGatewayReleaseObservationFixture(),
+          source: "unit_self_check",
+          scope: "self_check",
+          observed: false,
+          release_ready: false,
+        },
+      }),
+    });
+    expect((await verifyDojoHostedRuntimeGatewayEvidenceArtifact({ evidencePath: selfCheckOnlyPath })).ok).toBe(true);
+    const selfCheckOnlyRelease = await verifyDojoHostedRuntimeGatewayEvidenceArtifact({
+      evidencePath: selfCheckOnlyPath,
+      releaseCandidate: true,
+    });
+    expect(selfCheckOnlyRelease.ok).toBe(false);
+    expect(selfCheckOnlyRelease.errors).toEqual(expect.arrayContaining([
+      "hosted_runtime_gateway_release_observation_not_observed",
+      "hosted_runtime_gateway_release_observation_not_ready",
+      "hosted_runtime_gateway_release_observation_scope_invalid:self_check",
+      "hosted_runtime_gateway_release_observation_self_check_only",
+    ]));
+
+    const incompleteObservation = hostedRuntimeGatewayReleaseObservationFixture({
+      checks: {
+        ...Object.fromEntries(DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_CHECKS.map((check) => [check, true])),
+        non_loopback_runtime_observed: false,
+      },
+      artifact_refs: hostedRuntimeGatewayReleaseObservationFixture().artifact_refs
+        .filter((ref) => ref.gate_id !== "workflow_e2e_hosted")
+        .map((ref, index) => index === 0 ? { ...ref, artifact_sha256: "not-a-sha" } : ref),
+    });
+    expect(validateDojoHostedRuntimeGatewayReleaseObservation(incompleteObservation)).toEqual(expect.arrayContaining([
+      "hosted_runtime_gateway_release_observation_check_missing:non_loopback_runtime_observed",
+      "hosted_runtime_gateway_release_observation_gate_refs_missing:workflow_e2e_hosted",
+      "hosted_runtime_gateway_release_observation_artifact_sha256_invalid:0",
     ]));
 
     const driftedPath = await writeHostedRuntimeGatewayEvidenceFixture({
@@ -7179,11 +7231,12 @@ async function writeHostedRuntimeGatewayEvidenceFixture({
     stderr_path: stderrPath,
     json_report_path: jsonReportPath,
   });
+  const keepExistingPath = (value, placeholder) => value && value !== placeholder && existsSync(value);
   const withLogDefaults = {
     ...body,
-    stdout_path: body.stdout_path && body.stdout_path !== "stdout.log" ? body.stdout_path : stdoutPath,
-    stderr_path: body.stderr_path && body.stderr_path !== "stderr.log" ? body.stderr_path : stderrPath,
-    json_report_path: body.json_report_path && body.json_report_path !== "vitest.json" ? body.json_report_path : jsonReportPath,
+    stdout_path: keepExistingPath(body.stdout_path, "stdout.log") ? body.stdout_path : stdoutPath,
+    stderr_path: keepExistingPath(body.stderr_path, "stderr.log") ? body.stderr_path : stderrPath,
+    json_report_path: keepExistingPath(body.json_report_path, "vitest.json") ? body.json_report_path : jsonReportPath,
     json_report_sha256: body.json_report_sha256 && body.json_report_sha256 !== "json-report-sha256" ? body.json_report_sha256 : sha256(jsonReport),
     json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
       ? body.json_report_bytes
@@ -7227,7 +7280,9 @@ function hostedRuntimeGatewayEvidenceFixture(overrides = {}) {
       durable_postgres_session_gate_id: "dojo_postgres_control_plane_self_check",
       malformed_record_rejection_required: true,
       self_check_executes_tests_required: true,
+      release_runtime_observation_required: true,
     },
+    release_runtime_observation: hostedRuntimeGatewayReleaseObservationFixture(),
     test_execution: {
       command: process.execPath,
       args: ["vitest", "run", ...DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES],
@@ -7259,6 +7314,25 @@ function hostedRuntimeGatewayEvidenceFixture(overrides = {}) {
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
     json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function hostedRuntimeGatewayReleaseObservationFixture(overrides = {}) {
+  return {
+    schema_version: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_SCHEMA_VERSION,
+    source: "release_gate_observation",
+    scope: "release",
+    observed_at: "2026-06-11T00:00:00.000Z",
+    observed: true,
+    release_ready: true,
+    checks: Object.fromEntries(DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_CHECKS.map((check) => [check, true])),
+    artifact_refs: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS.map((gateId, index) => ({
+      gate_id: gateId,
+      artifact_path: `tmp/dojo-release/${gateId}.json`,
+      artifact_sha256: createHash("sha256").update(`hosted-runtime-release-observation:${gateId}`).digest("hex"),
+      kind: index === 0 ? "summary" : "evidence",
+    })),
     ...overrides,
   };
 }

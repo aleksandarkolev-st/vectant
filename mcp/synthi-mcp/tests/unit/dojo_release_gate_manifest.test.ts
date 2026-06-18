@@ -77,6 +77,8 @@ import {
 } from "../../scripts/dojo-skill-passport-self-check.mjs";
 import {
   DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_ENV,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS,
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "../../scripts/dojo-hosted-runtime-gateway-self-check.mjs";
 import {
@@ -980,6 +982,7 @@ describe("Dojo release gate manifest", () => {
         script_exists: true,
         evidence_schema_version: "synthi.dojo.hostedRuntimeGatewayEvidence.v1",
         default_evidence_path: "tmp/dojo-hosted-runtime-gateway/dojo-hosted-runtime-gateway.evidence.json",
+        requires_env: [DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_ENV],
         release_artifact_requirements: expect.objectContaining({
           require_all_hosted_runtime_gateway_capabilities_covered: true,
           required_hosted_runtime_gateway_capabilities: DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES,
@@ -1000,6 +1003,8 @@ describe("Dojo release gate manifest", () => {
           require_durable_postgres_session_gate: true,
           durable_postgres_session_gate_id: "dojo_postgres_control_plane_self_check",
           require_malformed_record_rejection: true,
+          require_release_runtime_observation: true,
+          required_release_observation_gate_ids: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS,
           require_self_check_executes_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
@@ -1677,12 +1682,19 @@ describe("Dojo release gate manifest", () => {
     hostedRuntimeGatewayGate.release_artifact_requirements.require_evidence_write = false;
     hostedRuntimeGatewayGate.release_artifact_requirements.require_durable_postgres_session_gate = false;
     hostedRuntimeGatewayGate.release_artifact_requirements.durable_postgres_session_gate_id = "wrong_gate";
+    hostedRuntimeGatewayGate.release_artifact_requirements.require_release_runtime_observation = false;
+    hostedRuntimeGatewayGate.release_artifact_requirements.required_release_observation_gate_ids = DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS
+      .filter((gateId) => gateId !== "workflow_e2e_hosted");
     hostedRuntimeGatewayGate.release_artifact_requirements.require_self_check_executes_tests = false;
+    hostedRuntimeGatewayGate.requires_env = [];
     expect(validateDojoReleaseGateManifest(brokenHostedRuntimeGateway, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "hosted_runtime_gateway_missing_revocation_expiry_requirement",
       "hosted_runtime_gateway_missing_evidence_requirement",
       "hosted_runtime_gateway_missing_durable_postgres_gate_requirement",
       "hosted_runtime_gateway_missing_durable_postgres_gate_id",
+      `hosted_runtime_gateway_missing_release_observation_env:${DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_ENV}`,
+      "hosted_runtime_gateway_missing_release_observation_requirement",
+      "hosted_runtime_gateway_missing_release_observation_gate_ids:workflow_e2e_hosted",
       "hosted_runtime_gateway_missing_self_check_execution_requirement",
       "hosted_runtime_gateway_missing_required_capabilities:hosted_runtime_blocks_expired_and_revoked_sessions",
       `hosted_runtime_gateway_missing_required_test_files:${missingHostedRuntimeTestFile}`,

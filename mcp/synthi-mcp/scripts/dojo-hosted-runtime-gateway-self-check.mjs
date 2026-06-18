@@ -51,6 +51,36 @@ export const DOJO_HOSTED_RUNTIME_GATEWAY_CAPABILITIES = [
   "hosted_runtime_postgres_store_rejects_malformed_records",
 ];
 
+export const DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_SCHEMA_VERSION = "synthi.dojo.hostedRuntimeGatewayReleaseObservation.v1";
+
+export const DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_ENV = "SYNTHI_DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_PATH";
+
+export const DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS = [
+  "workflow_e2e_hosted",
+  "private_tool_stdio_acceptance",
+  "private_tool_codex_acceptance",
+  "dojo_mcp_host_conformance",
+  "private_tool_stdio_host_conformance",
+  "private_tool_codex_host_conformance",
+];
+
+export const DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_CHECKS = [
+  "non_loopback_runtime_observed",
+  "hosted_runtime_gateway_observed",
+  "external_session_store_observed",
+  "tenant_session_isolation_observed",
+  "short_lived_credentials_observed",
+  "origin_policy_observed",
+  "local_network_policy_observed",
+  "screenshot_redaction_observed",
+  "audit_event_observed",
+  "evidence_write_observed",
+  "revocation_observed",
+  "expiry_observed",
+  "no_static_cdp_endpoint_observed",
+  "no_long_lived_credentials_observed",
+];
+
 const args = parseArgs(process.argv.slice(2));
 
 if (isDirectRun()) {
@@ -113,6 +143,11 @@ export async function runDojoHostedRuntimeGatewaySelfCheck({
   const stderrPath = path.join(outputDir, "dojo-hosted-runtime-gateway.evidence-builder.stderr.log");
   await writeFile(stdoutPath, stdout);
   await writeFile(stderrPath, stderr);
+  const releaseObservationPath = args["release-observation"] || process.env[DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_ENV];
+  const releaseObservation = await loadDojoHostedRuntimeGatewayReleaseObservation({
+    observationPath: releaseObservationPath,
+    now,
+  });
   const evidence = buildDojoHostedRuntimeGatewayEvidenceManifest({
     now,
     exitCode: testRun?.exitCode ?? (jsonReport?.success === true ? 0 : 1),
@@ -129,6 +164,7 @@ export async function runDojoHostedRuntimeGatewaySelfCheck({
     timeoutMs,
     error: jsonReportError ?? testRun?.error,
     testRun,
+    releaseObservation,
   });
   const evidencePath = path.join(outputDir, "dojo-hosted-runtime-gateway.evidence.json");
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
@@ -158,6 +194,7 @@ export function buildDojoHostedRuntimeGatewayEvidenceManifest({
   timeoutMs = 120000,
   error,
   testRun,
+  releaseObservation,
 }) {
   const testSummary = summarizeVitestJsonReport(jsonReport);
   const capabilityCoverage = buildHostedRuntimeGatewayCapabilityCoverage({
@@ -205,7 +242,9 @@ export function buildDojoHostedRuntimeGatewayEvidenceManifest({
       durable_postgres_session_gate_id: "dojo_postgres_control_plane_self_check",
       malformed_record_rejection_required: true,
       self_check_executes_tests_required: true,
+      release_runtime_observation_required: releaseObservation?.release_ready === true,
     },
+    release_runtime_observation: normalizeDojoHostedRuntimeGatewayReleaseObservation(releaseObservation, { now }),
     test_files: [...testFiles],
     test_file_count: testFiles.length,
     reported_test_file_count: testSummary.reported_test_file_count,
@@ -236,6 +275,62 @@ export function buildDojoHostedRuntimeGatewayEvidenceManifest({
       : null,
     ...(error ? { error } : {}),
   };
+}
+
+export async function loadDojoHostedRuntimeGatewayReleaseObservation({ observationPath, now = new Date().toISOString() } = {}) {
+  if (!observationPath) {
+    return buildDojoHostedRuntimeGatewaySelfCheckObservation({ now });
+  }
+  const resolvedPath = path.resolve(String(observationPath));
+  const parsed = JSON.parse(await readFile(resolvedPath, "utf8"));
+  return normalizeDojoHostedRuntimeGatewayReleaseObservation(extractReleaseObservation(parsed), {
+    now,
+    observationPath: resolvedPath,
+  });
+}
+
+export function buildDojoHostedRuntimeGatewaySelfCheckObservation({ now = new Date().toISOString() } = {}) {
+  return {
+    schema_version: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_SCHEMA_VERSION,
+    source: "unit_self_check",
+    scope: "self_check",
+    observed_at: now,
+    observed: false,
+    release_ready: false,
+    checks: Object.fromEntries(DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_CHECKS.map((check) => [check, false])),
+    artifact_refs: [],
+    reason: "focused hosted runtime gateway unit self-check does not observe a deployed non-loopback runtime gateway",
+  };
+}
+
+export function normalizeDojoHostedRuntimeGatewayReleaseObservation(observation, { now = new Date().toISOString(), observationPath } = {}) {
+  const source = observation && typeof observation === "object" ? observation : {};
+  const checks = source.checks && typeof source.checks === "object" ? source.checks : {};
+  return {
+    schema_version: source.schema_version || DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_SCHEMA_VERSION,
+    source: String(source.source || "unknown"),
+    scope: String(source.scope || "unknown"),
+    observed_at: String(source.observed_at || now),
+    observed: source.observed === true,
+    release_ready: source.release_ready === true,
+    checks: Object.fromEntries(DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_CHECKS.map((check) => [check, checks[check] === true])),
+    artifact_refs: Array.isArray(source.artifact_refs)
+      ? source.artifact_refs.map((ref) => ({
+        gate_id: String(ref?.gate_id || ""),
+        artifact_path: String(ref?.artifact_path || ""),
+        artifact_sha256: String(ref?.artifact_sha256 || ""),
+        kind: String(ref?.kind || "artifact"),
+      }))
+      : [],
+    ...(observationPath ? { observation_path: observationPath } : {}),
+    ...(source.reason ? { reason: String(source.reason) } : {}),
+  };
+}
+
+function extractReleaseObservation(parsed) {
+  if (parsed?.schema_version === DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_SCHEMA_VERSION) return parsed;
+  if (parsed?.release_runtime_observation) return parsed.release_runtime_observation;
+  return parsed;
 }
 
 export function buildHostedRuntimeGatewayCapabilityCoverage({ capabilities, jsonReport }) {
