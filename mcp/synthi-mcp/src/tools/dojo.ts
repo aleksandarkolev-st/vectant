@@ -54,6 +54,7 @@ import {
   decideDojoCaseLawReview,
   decideDojoPermissionUpgradeRequest,
   revokeDojoSkillLicense,
+  type DojoGovernanceRbacAction,
 } from "../dojo/governance/service.js";
 import { compileDojoSkillGraphForSkill, compileDojoSkillGraphFromContract } from "../dojo/graph/compiler.js";
 import { validateDojoSkillGraph, type DojoSkillGraph } from "../dojo/graph/types.js";
@@ -3961,6 +3962,17 @@ async function dojoExplainFailureTool(args: unknown): Promise<ToolResponse> {
 async function dojoDebugCounterfactualTool(args: unknown): Promise<ToolResponse> {
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_debug_counterfactual");
   if (!skill.ok) return skill.error;
+  const practiceRunRbac = requireDojoProductionGovernanceRbac({
+    tenant: skill.tenant,
+    action: "practice_run",
+    error: "dojo_practice_run_role_required",
+    details: {
+      operation: "synthi_dojo_debug_counterfactual",
+      skill_id: skill.skill.skill_id,
+      workspace_id: skill.skill.workspace_id,
+    },
+  });
+  if (!practiceRunRbac.ok) return practiceRunRbac.error;
   const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_debug_counterfactual", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const filters = scenarioFilters(args);
@@ -4031,12 +4043,24 @@ async function dojoDebugCounterfactualTool(args: unknown): Promise<ToolResponse>
     persisted_skill: skillListItem(persisted),
     control_plane_persistence: durablePersistence.persistence ?? null,
     license_health: await licenseHealthFor(persisted, skill.tenant),
+    ...(practiceRunRbac.rbac_authorization ? { rbac_authorization: practiceRunRbac.rbac_authorization } : {}),
   });
 }
 
 async function dojoRunTimeMachineDebuggerTool(args: unknown): Promise<ToolResponse> {
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_run_time_machine_debugger");
   if (!skill.ok) return skill.error;
+  const practiceRunRbac = requireDojoProductionGovernanceRbac({
+    tenant: skill.tenant,
+    action: "practice_run",
+    error: "dojo_practice_run_role_required",
+    details: {
+      operation: "synthi_dojo_run_time_machine_debugger",
+      skill_id: skill.skill.skill_id,
+      workspace_id: skill.skill.workspace_id,
+    },
+  });
+  if (!practiceRunRbac.ok) return practiceRunRbac.error;
   const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_time_machine_debugger", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const a = obj(args);
@@ -4064,6 +4088,7 @@ async function dojoRunTimeMachineDebuggerTool(args: unknown): Promise<ToolRespon
       persisted_skill: skillListItem(skill.skill),
       control_plane_persistence: null,
       license_health: await licenseHealthFor(skill.skill, skill.tenant),
+      ...(practiceRunRbac.rbac_authorization ? { rbac_authorization: practiceRunRbac.rbac_authorization } : {}),
     });
   }
   const updated = skillWithDojoRuns(skill.skill, [runtimeBranch.scenario_run.run], undefined, {
@@ -4093,6 +4118,7 @@ async function dojoRunTimeMachineDebuggerTool(args: unknown): Promise<ToolRespon
     persisted_skill: skillListItem(persisted),
     control_plane_persistence: durablePersistence.persistence ?? null,
     license_health: await licenseHealthFor(persisted, skill.tenant),
+    ...(practiceRunRbac.rbac_authorization ? { rbac_authorization: practiceRunRbac.rbac_authorization } : {}),
   });
 }
 
@@ -4160,6 +4186,17 @@ async function runDojoTimeMachineRuntimeBranch(input: {
 async function dojoRunGhostModeTool(args: unknown): Promise<ToolResponse> {
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_run_ghost_mode");
   if (!skill.ok) return skill.error;
+  const practiceRunRbac = requireDojoProductionGovernanceRbac({
+    tenant: skill.tenant,
+    action: "practice_run",
+    error: "dojo_practice_run_role_required",
+    details: {
+      operation: "synthi_dojo_run_ghost_mode",
+      skill_id: skill.skill.skill_id,
+      workspace_id: skill.skill.workspace_id,
+    },
+  });
+  if (!practiceRunRbac.ok) return practiceRunRbac.error;
   const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_ghost_mode", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const a = obj(args);
@@ -4312,6 +4349,7 @@ async function dojoRunGhostModeTool(args: unknown): Promise<ToolResponse> {
     shadow_evidence_recorded: true,
     shadow_evidence_audit_event: shadowEvidenceAuditEvent,
     guardrails: guardrailsTriggered,
+    ...(practiceRunRbac.rbac_authorization ? { rbac_authorization: practiceRunRbac.rbac_authorization } : {}),
   });
 }
 
@@ -4764,6 +4802,17 @@ function dojoGenerateVivariumScenariosTool(args: unknown): ToolResponse {
 async function dojoRunVivariumScenarioTool(args: unknown): Promise<ToolResponse> {
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_run_vivarium_scenario");
   if (!skill.ok) return skill.error;
+  const practiceRunRbac = requireDojoProductionGovernanceRbac({
+    tenant: skill.tenant,
+    action: "practice_run",
+    error: "dojo_practice_run_role_required",
+    details: {
+      operation: "synthi_dojo_run_vivarium_scenario",
+      skill_id: skill.skill.skill_id,
+      workspace_id: skill.skill.workspace_id,
+    },
+  });
+  if (!practiceRunRbac.ok) return practiceRunRbac.error;
   const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_vivarium_scenario", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const a = obj(args);
@@ -4796,12 +4845,24 @@ async function dojoRunVivariumScenarioTool(args: unknown): Promise<ToolResponse>
     persisted_skill: skillListItem(persisted),
     control_plane_persistence: durablePersistence.persistence ?? null,
     license_health: await licenseHealthFor(persisted, skill.tenant),
+    ...(practiceRunRbac.rbac_authorization ? { rbac_authorization: practiceRunRbac.rbac_authorization } : {}),
   });
 }
 
 async function dojoRunWindTunnelTool(args: unknown): Promise<ToolResponse> {
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_run_wind_tunnel");
   if (!skill.ok) return skill.error;
+  const practiceRunRbac = requireDojoProductionGovernanceRbac({
+    tenant: skill.tenant,
+    action: "practice_run",
+    error: "dojo_practice_run_role_required",
+    details: {
+      operation: "synthi_dojo_run_wind_tunnel",
+      skill_id: skill.skill.skill_id,
+      workspace_id: skill.skill.workspace_id,
+    },
+  });
+  if (!practiceRunRbac.ok) return practiceRunRbac.error;
   const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_wind_tunnel", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const a = obj(args);
@@ -4837,12 +4898,24 @@ async function dojoRunWindTunnelTool(args: unknown): Promise<ToolResponse> {
     persisted_skill: skillListItem(persisted),
     control_plane_persistence: durablePersistence.persistence ?? null,
     license_health: await licenseHealthFor(persisted, skill.tenant),
+    ...(practiceRunRbac.rbac_authorization ? { rbac_authorization: practiceRunRbac.rbac_authorization } : {}),
   });
 }
 
 async function dojoRunEvilTwinTool(args: unknown): Promise<ToolResponse> {
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_run_evil_twin");
   if (!skill.ok) return skill.error;
+  const practiceRunRbac = requireDojoProductionGovernanceRbac({
+    tenant: skill.tenant,
+    action: "practice_run",
+    error: "dojo_practice_run_role_required",
+    details: {
+      operation: "synthi_dojo_run_evil_twin",
+      skill_id: skill.skill.skill_id,
+      workspace_id: skill.skill.workspace_id,
+    },
+  });
+  if (!practiceRunRbac.ok) return practiceRunRbac.error;
   const a = obj(args);
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
   const runtimeSkill = withExecutableCheckrideGuardrails(skill.skill);
@@ -4874,12 +4947,24 @@ async function dojoRunEvilTwinTool(args: unknown): Promise<ToolResponse> {
     evil_twin_runtime: evilTwinRuntime,
     hardening,
     license_health: await licenseHealthFor(skill.skill, skill.tenant),
+    ...(practiceRunRbac.rbac_authorization ? { rbac_authorization: practiceRunRbac.rbac_authorization } : {}),
   });
 }
 
 async function dojoRunCheckrideTool(args: unknown): Promise<ToolResponse> {
   const workflow = requiredAuthorizedWorkflowArtifact(args);
   if (!workflow.ok) return workflow.error;
+  const checkrideRunRbac = requireDojoProductionGovernanceRbac({
+    tenant: workflow.tenant,
+    action: "checkride_run",
+    error: "dojo_checkride_run_role_required",
+    details: {
+      operation: "synthi_dojo_run_checkride",
+      workflow_id: workflow.artifact.workflow_id,
+      workspace_id: workflow.workspace_id,
+    },
+  });
+  if (!checkrideRunRbac.ok) return checkrideRunRbac.error;
   const a = obj(args);
   const contract = workflow.artifact.workflow.contract;
   const workspaceId = workflow.workspace_id;
@@ -4938,6 +5023,7 @@ async function dojoRunCheckrideTool(args: unknown): Promise<ToolResponse> {
     scenario_definitions: scenarioDefinitions,
     scenario_definition_validation: scenarioDefinitionValidation,
     runtime_guardrails: runtimeSkill.guardrails,
+    ...(checkrideRunRbac.rbac_authorization ? { rbac_authorization: checkrideRunRbac.rbac_authorization } : {}),
     case_law: previewSkill.case_law,
     guardrails: previewSkill.guardrails,
     license_preview: previewSkill.permission_license,
@@ -7517,6 +7603,37 @@ function requiredAuthorizedSkill(
   const authorization = authorizeTenantForDojoSkill(args, skill.skill);
   if (!authorization.ok) return authorization;
   return { ok: true, skill: skill.skill, tenant: authorization.tenant };
+}
+
+function requireDojoProductionGovernanceRbac(input: {
+  tenant: DojoTenantContext;
+  action: DojoGovernanceRbacAction;
+  error: string;
+  details?: Record<string, unknown>;
+}): { ok: true; rbac_authorization?: ReturnType<typeof authorizeDojoGovernanceAction> } | { ok: false; error: ToolResponse } {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement) return { ok: true };
+  const rbacAuthorization = authorizeDojoGovernanceAction({
+    tenant_context: input.tenant,
+    action: input.action,
+  });
+  if (rbacAuthorization.ok) {
+    return {
+      ok: true,
+      rbac_authorization: rbacAuthorization,
+    };
+  }
+  return {
+    ok: false,
+    error: errorResponse(input.error, {
+      ok: false,
+      ...(input.details ?? {}),
+      actor_id: input.tenant.actor_id,
+      actor_type: input.tenant.actor_type,
+      blocked_by: rbacAuthorization.blocked_by,
+      rbac_authorization: rbacAuthorization,
+    }),
+  };
 }
 
 async function requiredAuthorizedSkillForProductionRead(

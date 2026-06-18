@@ -30,6 +30,8 @@ export type DojoPermissionUpgradeDecision = "approved" | "denied";
 export type DojoCaseLawReviewDecision = "approved" | "deprecated";
 export type DojoGovernanceRbacAction =
   | "skill_publication"
+  | "checkride_run"
+  | "practice_run"
   | "permission_upgrade_review"
   | "case_law_review"
   | "case_law_record"
@@ -72,6 +74,8 @@ export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPo
   administrator_roles: ["admin", "dojo:admin", "dojo:operator"],
   action_roles: {
     skill_publication: ["dojo:skill:publish"],
+    checkride_run: ["dojo:checkride:run"],
+    practice_run: ["dojo:practice:run"],
     permission_upgrade_review: ["dojo:approval:review", "dojo:license:review"],
     case_law_review: ["dojo:case-law:review"],
     case_law_record: ["dojo:case-law:record"],
@@ -1210,6 +1214,14 @@ function normalizeGovernanceRbacPolicy(
       skill_publication: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.skill_publication,
         ...(policy.action_roles?.skill_publication ?? []),
+      ]),
+      checkride_run: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.checkride_run,
+        ...(policy.action_roles?.checkride_run ?? []),
+      ]),
+      practice_run: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.practice_run,
+        ...(policy.action_roles?.practice_run ?? []),
       ]),
       permission_upgrade_review: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.permission_upgrade_review,

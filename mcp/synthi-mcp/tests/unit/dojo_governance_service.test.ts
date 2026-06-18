@@ -146,6 +146,24 @@ describe("Dojo governance service", () => {
     }));
 
     expect(authorizeDojoGovernanceAction({
+      action: "checkride_run",
+      tenant_context: tenantContextFixture({ roles: ["dojo:checkride:run"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:checkride:run"],
+      blocked_by: [],
+    }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "practice_run",
+      tenant_context: tenantContextFixture({ roles: ["dojo:practice:run"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:practice:run"],
+      blocked_by: [],
+    }));
+
+    expect(authorizeDojoGovernanceAction({
       action: "source_drift_expiry",
       tenant_context: tenantContextFixture({ roles: ["dojo:source:apply"] }),
     })).toEqual(expect.objectContaining({

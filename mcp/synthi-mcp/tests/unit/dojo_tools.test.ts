@@ -432,7 +432,28 @@ describe("Agent Dojo MCP tools", () => {
       skill_seed: expect.objectContaining({ workspace_id: "workspace-a" }),
     }));
 
-    const checkride = await dispatchDojoTool("synthi_dojo_run_checkride", productionTenantContextArgs({
+    const blockedCheckrideRole = await dispatchDojoTool("synthi_dojo_run_checkride", productionTenantContextArgs({
+      actor_id: "checkride-tester",
+      actor_type: "human",
+      roles: ["agent"],
+      request_id: "req-production-workflow-checkride-rbac-blocked",
+      correlation_id: "corr-production-workflow-checkride-rbac-blocked",
+      now: "2026-06-11T00:00:00.000Z",
+    }));
+    expect(blockedCheckrideRole?.isError).toBe(true);
+    expect(blockedCheckrideRole?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_checkride_run_role_required",
+      workflow_id: expect.any(String),
+      workspace_id: "workspace-a",
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:checkride:run"]),
+      rbac_authorization: expect.objectContaining({
+        action: "checkride_run",
+        matched_roles: [],
+        required_roles: ["dojo:checkride:run"],
+      }),
+    }));
+
+    const checkride = await dispatchDojoTool("synthi_dojo_run_checkride", productionCheckrideRunnerContextArgs({
       actor_id: "checkride-tester",
       actor_type: "human",
       request_id: "req-production-workflow-checkride",
@@ -457,6 +478,10 @@ describe("Agent Dojo MCP tools", () => {
             }),
           }),
         ]),
+      }),
+      rbac_authorization: expect.objectContaining({
+        action: "checkride_run",
+        matched_roles: ["dojo:checkride:run"],
       }),
     }));
 
@@ -520,6 +545,11 @@ describe("Agent Dojo MCP tools", () => {
       "synthi_dojo_run_time_machine_debugger",
       "synthi_dojo_run_ghost_mode",
     ];
+    const practiceRunReportTools = new Set([
+      "synthi_dojo_debug_counterfactual",
+      "synthi_dojo_run_time_machine_debugger",
+      "synthi_dojo_run_ghost_mode",
+    ]);
 
     for (const toolName of skillReportTools) {
       const missingContext = await dispatchDojoTool(toolName, { skill_id: skillId });
@@ -531,10 +561,12 @@ describe("Agent Dojo MCP tools", () => {
 
       const authorized = await dispatchDojoTool(toolName, {
         skill_id: skillId,
-        ...productionTenantContextArgs({
+        ...(practiceRunReportTools.has(toolName) ? productionPracticeRunnerContextArgs({
+          request_id: `req-production-${toolName}`,
+        }) : productionTenantContextArgs({
           ...(toolName === "synthi_dojo_get_governance_report" ? { roles: ["dojo:governance:view"] } : {}),
           request_id: `req-production-${toolName}`,
-        }),
+        })),
       });
       expect(authorized?.isError, toolName).toBeUndefined();
       expect(authorized?.structuredContent, toolName).not.toEqual(expect.objectContaining({
@@ -893,14 +925,39 @@ describe("Agent Dojo MCP tools", () => {
       artifact_count: expect.any(Number),
     }));
 
+    const blockedPracticeRun = await dispatchDojoTool("synthi_dojo_run_vivarium_scenario", {
+      skill_id: visibleSkillId,
+      mutation_kind: "duplicate_entity",
+      ...productionTenantContextArgs({
+        roles: ["agent"],
+        request_id: "req-production-visible-vivarium-rbac-blocked",
+      }),
+    });
+    expect(blockedPracticeRun?.isError).toBe(true);
+    expect(blockedPracticeRun?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_practice_run_role_required",
+      skill_id: visibleSkillId,
+      workspace_id: "workspace-a",
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:practice:run"]),
+      rbac_authorization: expect.objectContaining({
+        action: "practice_run",
+        matched_roles: [],
+        required_roles: ["dojo:practice:run"],
+      }),
+    }));
+
     const visibleVivarium = await dispatchDojoTool("synthi_dojo_run_vivarium_scenario", {
       skill_id: visibleSkillId,
       mutation_kind: "duplicate_entity",
-      ...productionTenantContextArgs({ request_id: "req-production-visible-vivarium" }),
+      ...productionPracticeRunnerContextArgs({ request_id: "req-production-visible-vivarium" }),
     });
     expect(visibleVivarium?.isError).toBeUndefined();
     expect(visibleVivarium?.structuredContent).toEqual(expect.objectContaining({
       skill_id: visibleSkillId,
+      rbac_authorization: expect.objectContaining({
+        action: "practice_run",
+        matched_roles: ["dojo:practice:run"],
+      }),
       vivarium_run: expect.objectContaining({
         schema_version: "synthi.dojo.vivariumScenarioRun.v1",
         tenant_context: expect.objectContaining({ workspace_id: "workspace-a" }),
@@ -6062,6 +6119,20 @@ function productionSkillPublisherContextArgs(overrides: Record<string, unknown> 
   return productionTenantContextArgs({
     ...overrides,
     roles: mergeRoleOverrides(["agent", "dojo:skill:publish"], overrides["roles"]),
+  });
+}
+
+function productionCheckrideRunnerContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return productionTenantContextArgs({
+    ...overrides,
+    roles: mergeRoleOverrides(["agent", "dojo:checkride:run"], overrides["roles"]),
+  });
+}
+
+function productionPracticeRunnerContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return productionTenantContextArgs({
+    ...overrides,
+    roles: mergeRoleOverrides(["agent", "dojo:practice:run"], overrides["roles"]),
   });
 }
 

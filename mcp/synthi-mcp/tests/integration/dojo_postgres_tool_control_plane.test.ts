@@ -2111,7 +2111,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       agent_planned_action: { action: "click", name: "Open details" },
       actor_id: "postgres-ghost-agent",
       actor_type: "agent",
-      roles: ["agent"],
+      roles: ["agent", "dojo:practice:run"],
       request_id: "req-postgres-ghost-run",
       correlation_id: "corr-postgres-ghost-run",
       now: "2026-06-11T03:30:00.000Z",
@@ -2136,6 +2136,10 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         event_type: "ghost_shadow_evidence_recorded",
         correlation_id: "corr-postgres-ghost-run",
         entity_kind: "ghost_shadow_evidence",
+      }),
+      rbac_authorization: expect.objectContaining({
+        action: "practice_run",
+        matched_roles: ["dojo:practice:run"],
       }),
       ghost_run: expect.objectContaining({
         status: "matched",
@@ -2222,7 +2226,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       skill_id: published.skill.skill_id,
       actor_id: "postgres-vivarium-agent",
       actor_type: "agent",
-      roles: ["agent"],
+      roles: ["agent", "dojo:practice:run"],
       request_id: "req-postgres-vivarium-run",
       correlation_id: "corr-postgres-vivarium-run",
       now: "2026-06-11T04:00:00.000Z",
@@ -2237,6 +2241,10 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         store_kind: "postgres",
         operation: "synthi_dojo_run_vivarium_scenario",
         persisted_run_count: 1,
+      }),
+      rbac_authorization: expect.objectContaining({
+        action: "practice_run",
+        matched_roles: ["dojo:practice:run"],
       }),
       vivarium_run: expect.objectContaining({
         skill_id: published.skill.skill_id,
@@ -2315,7 +2323,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       max_scenarios: 2,
       actor_id: "postgres-wind-agent",
       actor_type: "agent",
-      roles: ["agent"],
+      roles: ["agent", "dojo:practice:run"],
       request_id: "req-postgres-wind-run",
       correlation_id: "corr-postgres-wind-run",
       now: "2026-06-11T04:30:00.000Z",
@@ -2330,6 +2338,10 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         store_kind: "postgres",
         operation: "synthi_dojo_run_wind_tunnel",
         persisted_run_count: 2,
+      }),
+      rbac_authorization: expect.objectContaining({
+        action: "practice_run",
+        matched_roles: ["dojo:practice:run"],
       }),
       wind_tunnel_execution: expect.objectContaining({
         skill_id: published.skill.skill_id,
