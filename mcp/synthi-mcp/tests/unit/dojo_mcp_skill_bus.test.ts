@@ -11,6 +11,7 @@ import {
   createInMemoryDojoMcpSkillBusRateLimiter,
   createInProcessDojoMcpSkillBus,
   createLegacyDojoTenantContext,
+  validateDojoMcpTenantContext,
   type DojoSkillBusProofValidation,
 } from "../../src/dojo/mcp/skill_bus.js";
 import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
@@ -39,6 +40,69 @@ describe("Dojo MCP skill bus", () => {
     expect(adminCompetencies.map((item) => item.workspace_id).sort()).toEqual(["workspace-a", "workspace-b"]);
     const legacyCompetencies = await bus.listCompetencies({ tenant: createLegacyDojoTenantContext() });
     expect(legacyCompetencies).toHaveLength(2);
+  });
+
+  it("fails closed before skill lookup or dispatch side effects when tenant context is incomplete", async () => {
+    const invalidCaller = invalidTenant("workspace-a");
+    const auditEvents: DojoAuditEventRecord[] = [];
+    const sideEffects: string[] = [];
+    const bus = createInProcessDojoMcpSkillBus({
+      listSkills: () => {
+        sideEffects.push("listSkills");
+        throw new Error("skill lookup must not run");
+      },
+      env: manifestEnv(),
+      rateLimiter: {
+        evaluate: () => {
+          sideEffects.push("rateLimiter");
+          return { ok: true, blocked_by: [] };
+        },
+      },
+      validateProof: () => {
+        sideEffects.push("validateProof");
+        return { ok: true, status: "allowed", blocked_by: [] };
+      },
+      executeTool: () => {
+        sideEffects.push("executeTool");
+        return { ok: true };
+      },
+      auditStore: memoryAuditStore(auditEvents),
+    });
+    const expectedBlockedBy = [
+      "dojo_mcp_tenant_required",
+      "dojo_mcp_organization_required",
+      "dojo_mcp_actor_required",
+      "dojo_mcp_actor_type_invalid",
+      "dojo_mcp_roles_invalid",
+      "dojo_mcp_request_required",
+      "dojo_mcp_correlation_required",
+    ];
+
+    expect(validateDojoMcpTenantContext(invalidCaller)).toEqual(expectedBlockedBy);
+    await expect(bus.listCompetencies({ tenant: invalidCaller })).resolves.toEqual([]);
+    await expect(bus.resolveTool({
+      tenant: invalidCaller,
+      tool_name: "synthi_app_open_details",
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: expectedBlockedBy,
+      tool_name: "synthi_app_open_details",
+    }));
+    await expect(bus.dispatch({
+      tenant: invalidCaller,
+      tool_name: "synthi_app_open_details",
+      args: {},
+      dry_run: false,
+    })).resolves.toEqual({
+      ok: false,
+      status: "blocked",
+      dry_run: false,
+      blocked_by: expectedBlockedBy,
+      tool_name: "synthi_app_open_details",
+    });
+    expect(sideEffects).toEqual([]);
+    expect(auditEvents).toEqual([]);
   });
 
   it("resolves signed tool manifests with authorization and version checks", async () => {
@@ -1100,6 +1164,19 @@ function tenant(workspaceId: string, roles = ["agent"], actorId = "agent-a"): Do
     roles,
     request_id: `req-${workspaceId}`,
     correlation_id: `corr-${workspaceId}`,
+  };
+}
+
+function invalidTenant(workspaceId: string): DojoTenantContext {
+  return {
+    ...tenant(workspaceId),
+    tenant_id: "",
+    organization_id: "",
+    actor_id: "",
+    actor_type: "robot" as never,
+    roles: ["agent", ""],
+    request_id: "",
+    correlation_id: "",
   };
 }
 

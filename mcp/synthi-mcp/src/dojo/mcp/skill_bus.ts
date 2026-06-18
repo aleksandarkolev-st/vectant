@@ -232,6 +232,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
   }
 
   async listCompetencies(input: { tenant: DojoTenantContext }): Promise<DojoCompetencySummary[]> {
+    if (validateDojoMcpTenantContext(input.tenant).length > 0) return [];
     const skills = await this.listSkills();
     return skills
       .filter((skill) => this.isVisibleSkill(skill, input.tenant))
@@ -243,6 +244,13 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
   async resolveTool(input: { tenant: DojoTenantContext; tool_name: string; tool_version?: string }): Promise<DojoToolResolution> {
     const toolName = input.tool_name.trim();
     if (!toolName) return blockedResolution("not_found", ["dojo_mcp_tool_name_required"]);
+    const tenantBlockedBy = validateDojoMcpTenantContext(input.tenant);
+    if (tenantBlockedBy.length > 0) {
+      return blockedResolution("blocked", tenantBlockedBy, {
+        tool_name: toolName,
+        tool_version: input.tool_version,
+      });
+    }
     const skills = await this.listSkills();
     const matches = skills.filter((item) => skillPublishesToolName(item, toolName));
     const visibleMatches = matches.filter((item) => this.isVisibleSkill(item, input.tenant));
@@ -331,6 +339,16 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     proof_capsule?: DojoProofCarryingSkillCapsule;
     dry_run?: boolean;
   }): Promise<DojoToolDispatchResult> {
+    const tenantBlockedBy = validateDojoMcpTenantContext(input.tenant);
+    if (tenantBlockedBy.length > 0) {
+      return {
+        ok: false,
+        status: "blocked",
+        dry_run: input.dry_run === true,
+        blocked_by: tenantBlockedBy,
+        tool_name: input.tool_name,
+      };
+    }
     const resolution = await this.resolveTool(input);
     if (!resolution.ok || !resolution.skill || !resolution.mcp_skill_manifest) {
       return this.auditDispatch(input, {
@@ -609,6 +627,23 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       });
     }
   }
+}
+
+export function validateDojoMcpTenantContext(tenant: DojoTenantContext | undefined): string[] {
+  const blockedBy: string[] = [];
+  if (!tenant?.tenant_id?.trim()) blockedBy.push("dojo_mcp_tenant_required");
+  if (!tenant?.organization_id?.trim()) blockedBy.push("dojo_mcp_organization_required");
+  if (!tenant?.workspace_id?.trim()) blockedBy.push("dojo_mcp_workspace_required");
+  if (!tenant?.actor_id?.trim()) blockedBy.push("dojo_mcp_actor_required");
+  if (tenant?.actor_type !== "human" && tenant?.actor_type !== "agent" && tenant?.actor_type !== "service") {
+    blockedBy.push("dojo_mcp_actor_type_invalid");
+  }
+  if (!Array.isArray(tenant?.roles) || tenant.roles.some((role) => typeof role !== "string" || !role.trim())) {
+    blockedBy.push("dojo_mcp_roles_invalid");
+  }
+  if (!tenant?.request_id?.trim()) blockedBy.push("dojo_mcp_request_required");
+  if (!tenant?.correlation_id?.trim()) blockedBy.push("dojo_mcp_correlation_required");
+  return blockedBy;
 }
 
 function proofServiceValidator(
