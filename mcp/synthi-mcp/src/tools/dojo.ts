@@ -2079,7 +2079,7 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         response = await dojoRecordCaseLawTool(args);
         break;
       case "synthi_dojo_export_artifacts":
-        response = dojoExportArtifactsTool(args);
+        response = await dojoExportArtifactsTool(args);
         break;
       case "synthi_dojo_export_compliance_pack":
         response = await dojoExportCompliancePackTool(args);
@@ -6149,8 +6149,8 @@ async function dojoRecordCaseLawTool(args: unknown): Promise<ToolResponse> {
   });
 }
 
-function dojoExportArtifactsTool(args: unknown): ToolResponse {
-  const skill = requiredAuthorizedSkill(args);
+async function dojoExportArtifactsTool(args: unknown): Promise<ToolResponse> {
+  const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_export_artifacts");
   if (!skill.ok) return skill.error;
   const artifactExportRbac = requireDojoProductionGovernanceRbac({
     tenant: skill.tenant,
@@ -6166,6 +6166,7 @@ function dojoExportArtifactsTool(args: unknown): ToolResponse {
   const artifacts = exportDojoRepoArtifacts(skill.skill);
   return jsonResponse({
     ok: true,
+    control_plane_source: skill.control_plane_source,
     skill_id: skill.skill.skill_id,
     artifact_count: artifacts.length,
     artifacts,

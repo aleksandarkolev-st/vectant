@@ -395,6 +395,25 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       }),
     }));
 
+    const artifacts = await dispatchDojoTool("synthi_dojo_export_artifacts", {
+      ...readerTenant,
+      roles: ["agent", "dojo:artifact:export"],
+      skill_id: published.skill.skill_id,
+      request_id: "req-postgres-aggregate-artifacts",
+      correlation_id: "corr-postgres-aggregate-artifacts",
+    });
+    expect(artifacts?.isError).toBeUndefined();
+    expect(artifacts?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      control_plane_source: "postgres",
+      skill_id: published.skill.skill_id,
+      artifact_count: expect.any(Number),
+      rbac_authorization: expect.objectContaining({
+        action: "artifact_export",
+        matched_roles: ["dojo:artifact:export"],
+      }),
+    }));
+
     const compliance = await dispatchDojoTool("synthi_dojo_export_compliance_pack", {
       ...readerTenant,
       roles: ["agent", "dojo:compliance:export"],
