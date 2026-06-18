@@ -989,6 +989,76 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("enforces RBAC for production license recertification through the MCP tool", async () => {
+    const { visibleSkillId } = await publishTwoWorkspaceSkillsForDojoToolTest();
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const blockedRecertification = await dispatchDojoTool("synthi_dojo_recertify_skill", {
+      skill_id: visibleSkillId,
+      reason: "production rbac recertification test",
+      actor_id: "workspace-a-auditor",
+      actor_type: "human",
+      evidence_refs: ["evidence:recertification-rbac-blocked"],
+      ...productionTenantContextArgs({
+        actor_id: "workspace-a-auditor",
+        actor_type: "human",
+        roles: ["dojo:governance:view"],
+        request_id: "req-recertification-rbac-blocked",
+        correlation_id: "corr-recertification-rbac-blocked",
+      }),
+    });
+    expect(blockedRecertification?.isError).toBe(true);
+    expect(blockedRecertification?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_license_recertification_role_required",
+      ok: false,
+      skill_id: visibleSkillId,
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:license:recertify"]),
+      rbac_authorization: expect.objectContaining({
+        action: "license_recertification",
+        actor_id: "workspace-a-auditor",
+        required_roles: ["dojo:license:recertify"],
+      }),
+    }));
+
+    const allowedRecertification = await dispatchDojoTool("synthi_dojo_recertify_skill", {
+      skill_id: visibleSkillId,
+      reason: "production rbac recertification test approved",
+      actor_id: "workspace-a-license-operator",
+      actor_type: "human",
+      evidence_refs: ["evidence:recertification-rbac-approved"],
+      now: "2026-06-11T00:04:40.000Z",
+      ...productionTenantContextArgs({
+        actor_id: "workspace-a-license-operator",
+        actor_type: "human",
+        roles: ["dojo:license:recertify"],
+        request_id: "req-recertification-rbac-approved",
+        correlation_id: "corr-recertification-rbac-approved",
+      }),
+    });
+    expect(allowedRecertification?.isError).toBeUndefined();
+    expect(allowedRecertification?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill: expect.objectContaining({ skill_id: visibleSkillId }),
+      recertification: expect.objectContaining({
+        ok: true,
+        status: "applied",
+        skill_id: visibleSkillId,
+        rbac_authorization: expect.objectContaining({
+          action: "license_recertification",
+          actor_id: "workspace-a-license-operator",
+          matched_roles: ["dojo:license:recertify"],
+        }),
+        audit_event: expect.objectContaining({
+          event_type: "checkride_run_completed",
+          tenant_context: expect.objectContaining({
+            actor_id: "workspace-a-license-operator",
+            roles: ["dojo:license:recertify"],
+          }),
+        }),
+      }),
+    }));
+  });
+
   it("requires tenant authorization for production proof lifecycle tools", async () => {
     const { hiddenSkill } = await publishTwoWorkspaceSkillsForDojoToolTest();
     const issuedHiddenProof = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {

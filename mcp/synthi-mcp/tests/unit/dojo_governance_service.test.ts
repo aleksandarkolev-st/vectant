@@ -117,6 +117,15 @@ describe("Dojo governance service", () => {
       ok: true,
       matched_roles: ["finance:reviewer"],
     }));
+
+    expect(authorizeDojoGovernanceAction({
+      action: "license_recertification",
+      tenant_context: tenantContextFixture({ roles: ["dojo:license:recertify"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:license:recertify"],
+      blocked_by: [],
+    }));
   });
 
   it("fails closed for governance actions without required RBAC roles", () => {

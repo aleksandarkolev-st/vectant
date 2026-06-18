@@ -5439,6 +5439,24 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
   if (!actorId) return errorResponse("dojo_recertification_actor_required");
   const actorType = actorTypeInputOpt(a["actor_type"]);
   if (!actorType) return errorResponse("dojo_recertification_actor_type_required");
+  const productionGovernanceRbacRequired = enforcement.production_enforcement;
+  const recertificationRbacAuthorization = productionGovernanceRbacRequired
+    ? authorizeDojoGovernanceAction({
+      tenant_context: tenant,
+      action: "license_recertification",
+    })
+    : undefined;
+  if (recertificationRbacAuthorization && !recertificationRbacAuthorization.ok) {
+    return errorResponse("dojo_license_recertification_role_required", {
+      ok: false,
+      skill_id: existing?.skill_id ?? "",
+      license_id: existing?.permission_license.license_id ?? "",
+      actor_id: actorId,
+      actor_type: actorType,
+      blocked_by: recertificationRbacAuthorization.blocked_by,
+      rbac_authorization: recertificationRbacAuthorization,
+    });
+  }
   const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_recertify_skill", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const previousLicenseVersion = existing?.permission_license.license_version ?? null;
@@ -5486,6 +5504,7 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
     tenant_context: tenant,
     reason,
     evidence_refs: evidenceRefs,
+    ...(recertificationRbacAuthorization ? { rbac_authorization: recertificationRbacAuthorization } : {}),
   };
   let controlPlaneSource: "compatibility_registry" | "postgres" = "compatibility_registry";
   let controlPlanePersistence: Record<string, unknown> = {
@@ -5572,6 +5591,7 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
       readiness_decision: recertificationCheckride.publication_checkride.readiness_decision,
       evidence_policy: recertificationCheckride.publication_checkride.evidence_policy,
       evidence_ledger_validation: evidenceLedgerValidation.evidence_ledger_resolution ?? null,
+      ...(recertificationRbacAuthorization ? { rbac_authorization: recertificationRbacAuthorization } : {}),
       audit_event: auditEvent,
       control_plane_persistence: controlPlanePersistence,
       ...(durableAuditEvent ? { durable_audit_event: durableAuditEvent } : {}),

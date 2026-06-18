@@ -34,6 +34,7 @@ export const DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES = [
   "governance_reports_revoked_licenses_before_expiry",
   "governance_fails_closed_on_malformed_license_expiry",
   "governance_enforces_rbac_for_review_and_revocation",
+  "governance_enforces_rbac_for_recertification",
   "governance_store_enforces_rbac_before_persisting_reviewed_records",
   "governance_records_permission_upgrade_decisions_with_evidence",
   "governance_rejects_non_pending_permission_upgrade_decisions",
@@ -193,6 +194,7 @@ export function buildDojoGovernanceLifecycleEvidenceManifest({
       approval_queue_required: true,
       approval_decision_audit_required: true,
       rbac_required: true,
+      recertification_rbac_required: true,
       store_rbac_required: true,
       case_law_review_required: true,
       license_revocation_required: true,
@@ -284,6 +286,22 @@ function evidenceTitlesForCapability(capability, titles) {
     }
     return matched;
   }
+  if (capability === "governance_enforces_rbac_for_recertification") {
+    const requiredTitleMatchers = [
+      ["authorizes governance actions", "generic rbac roles"],
+      ["enforces rbac", "production license recertification", "mcp tool"],
+    ];
+    const matched = [];
+    for (const matchers of requiredTitleMatchers) {
+      const title = titles.find((candidate) => {
+        const normalizedTitle = normalizeText(candidate);
+        return matchers.every((matcher) => normalizedTitle.includes(matcher));
+      });
+      if (!title) return [];
+      matched.push(title);
+    }
+    return matched;
+  }
   if (capability === "governance_store_enforces_rbac_before_persisting_reviewed_records") {
     const requiredTitleMatchers = [
       ["postgresdojogovernancestore rbac enforcement", "rejects reviewed permission upgrade records before sql"],
@@ -319,6 +337,8 @@ function capabilityMatchers(capability) {
       return ["fails closed", "license health expiry metadata", "malformed"];
     case "governance_enforces_rbac_for_review_and_revocation":
       return ["enforces rbac"];
+    case "governance_enforces_rbac_for_recertification":
+      return ["enforces rbac", "recertification"];
     case "governance_store_enforces_rbac_before_persisting_reviewed_records":
       return ["postgres dojo governance store rbac enforcement"];
     case "governance_records_permission_upgrade_decisions_with_evidence":
