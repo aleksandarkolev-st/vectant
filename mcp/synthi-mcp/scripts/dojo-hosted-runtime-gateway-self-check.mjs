@@ -198,6 +198,8 @@ export function buildDojoHostedRuntimeGatewayEvidenceManifest({
       revocation_and_expiry_required: true,
       durable_store_production_requirement_required: true,
       postgres_session_store_required: true,
+      durable_postgres_session_gate_required: true,
+      durable_postgres_session_gate_id: "dojo_postgres_control_plane_self_check",
       malformed_record_rejection_required: true,
       self_check_executes_tests_required: true,
     },

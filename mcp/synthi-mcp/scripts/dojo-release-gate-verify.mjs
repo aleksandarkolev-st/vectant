@@ -3641,10 +3641,14 @@ export function validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence) {
     ["revocation_and_expiry_required", "hosted_runtime_gateway_revocation_expiry_requirement_missing"],
     ["durable_store_production_requirement_required", "hosted_runtime_gateway_durable_store_requirement_missing"],
     ["postgres_session_store_required", "hosted_runtime_gateway_postgres_store_requirement_missing"],
+    ["durable_postgres_session_gate_required", "hosted_runtime_gateway_durable_postgres_gate_requirement_missing"],
     ["malformed_record_rejection_required", "hosted_runtime_gateway_malformed_record_requirement_missing"],
     ["self_check_executes_tests_required", "hosted_runtime_gateway_self_check_execution_requirement_missing"],
   ]) {
     if (contract[field] !== true) errors.push(errorCode);
+  }
+  if (contract.durable_postgres_session_gate_id !== "dojo_postgres_control_plane_self_check") {
+    errors.push("hosted_runtime_gateway_durable_postgres_gate_id_missing");
   }
   if (evidence?.budget_evaluation?.ok !== true) errors.push("hosted_runtime_gateway_budget_not_ok");
   if (Number(evidence?.test_summary?.failed_tests || 0) !== 0) {
@@ -8486,6 +8490,8 @@ async function writeHostedRuntimeGatewayEvidenceForSelfCheck({
       revocation_and_expiry_required: true,
       durable_store_production_requirement_required: true,
       postgres_session_store_required: true,
+      durable_postgres_session_gate_required: true,
+      durable_postgres_session_gate_id: "dojo_postgres_control_plane_self_check",
       malformed_record_rejection_required: true,
       self_check_executes_tests_required: true,
     },

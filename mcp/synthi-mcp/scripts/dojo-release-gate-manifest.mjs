@@ -1175,6 +1175,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_revocation_and_expiry: true,
       require_durable_store_production_requirement: true,
       require_postgres_session_store: true,
+      require_durable_postgres_session_gate: true,
+      durable_postgres_session_gate_id: "dojo_postgres_control_plane_self_check",
       require_malformed_record_rejection: true,
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
@@ -2665,10 +2667,14 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_revocation_and_expiry", "hosted_runtime_gateway_missing_revocation_expiry_requirement"],
       ["require_durable_store_production_requirement", "hosted_runtime_gateway_missing_durable_store_requirement"],
       ["require_postgres_session_store", "hosted_runtime_gateway_missing_postgres_store_requirement"],
+      ["require_durable_postgres_session_gate", "hosted_runtime_gateway_missing_durable_postgres_gate_requirement"],
       ["require_malformed_record_rejection", "hosted_runtime_gateway_missing_malformed_record_requirement"],
       ["require_self_check_executes_tests", "hosted_runtime_gateway_missing_self_check_execution_requirement"],
     ]) {
       if (!hostedRuntimeGatewayGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    if (hostedRuntimeGatewayGate.release_artifact_requirements?.durable_postgres_session_gate_id !== "dojo_postgres_control_plane_self_check") {
+      errors.push("hosted_runtime_gateway_missing_durable_postgres_gate_id");
     }
     const requiredHostedRuntimeCapabilities = Array.isArray(hostedRuntimeGatewayGate.release_artifact_requirements?.required_hosted_runtime_gateway_capabilities)
       ? hostedRuntimeGatewayGate.release_artifact_requirements.required_hosted_runtime_gateway_capabilities

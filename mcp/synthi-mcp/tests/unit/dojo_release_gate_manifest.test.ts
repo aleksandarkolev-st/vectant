@@ -918,6 +918,8 @@ describe("Dojo release gate manifest", () => {
           require_revocation_and_expiry: true,
           require_durable_store_production_requirement: true,
           require_postgres_session_store: true,
+          require_durable_postgres_session_gate: true,
+          durable_postgres_session_gate_id: "dojo_postgres_control_plane_self_check",
           require_malformed_record_rejection: true,
           require_self_check_executes_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -1450,10 +1452,14 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingHostedRuntimeTestFile);
     hostedRuntimeGatewayGate.release_artifact_requirements.require_revocation_and_expiry = false;
     hostedRuntimeGatewayGate.release_artifact_requirements.require_evidence_write = false;
+    hostedRuntimeGatewayGate.release_artifact_requirements.require_durable_postgres_session_gate = false;
+    hostedRuntimeGatewayGate.release_artifact_requirements.durable_postgres_session_gate_id = "wrong_gate";
     hostedRuntimeGatewayGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenHostedRuntimeGateway, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "hosted_runtime_gateway_missing_revocation_expiry_requirement",
       "hosted_runtime_gateway_missing_evidence_requirement",
+      "hosted_runtime_gateway_missing_durable_postgres_gate_requirement",
+      "hosted_runtime_gateway_missing_durable_postgres_gate_id",
       "hosted_runtime_gateway_missing_self_check_execution_requirement",
       "hosted_runtime_gateway_missing_required_capabilities:hosted_runtime_blocks_expired_and_revoked_sessions",
       `hosted_runtime_gateway_missing_required_test_files:${missingHostedRuntimeTestFile}`,

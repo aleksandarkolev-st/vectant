@@ -122,7 +122,8 @@ describe("Dojo implementation status registry", () => {
         runtime_scope: "hosted_runtime_gateway",
         production_runtime: false,
         evidence_backing: "runtime_validation",
-        maturity_blockers: expect.arrayContaining(["in_process_session_store_until_hosted_gateway_configured"]),
+        summary: expect.stringContaining("Postgres-backed session custody"),
+        maturity_blockers: expect.not.arrayContaining(["in_process_session_store_until_hosted_gateway_configured"]),
       })
     );
   });

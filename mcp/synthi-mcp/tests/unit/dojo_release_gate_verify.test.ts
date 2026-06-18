@@ -2997,6 +2997,8 @@ describe("Dojo release gate artifact verifier", () => {
         ...hostedRuntimeGatewayEvidenceFixture().hosted_runtime_contract,
         revocation_and_expiry_required: false,
         evidence_write_required: false,
+        durable_postgres_session_gate_required: false,
+        durable_postgres_session_gate_id: "wrong_gate",
         self_check_executes_tests_required: false,
       },
     });
@@ -3013,6 +3015,8 @@ describe("Dojo release gate artifact verifier", () => {
       "hosted_runtime_gateway_missing_capabilities:hosted_runtime_blocks_expired_and_revoked_sessions",
       "hosted_runtime_gateway_revocation_expiry_requirement_missing",
       "hosted_runtime_gateway_evidence_requirement_missing",
+      "hosted_runtime_gateway_durable_postgres_gate_requirement_missing",
+      "hosted_runtime_gateway_durable_postgres_gate_id_missing",
       "hosted_runtime_gateway_self_check_execution_requirement_missing",
     ]));
 
@@ -6497,6 +6501,8 @@ function hostedRuntimeGatewayEvidenceFixture(overrides = {}) {
       revocation_and_expiry_required: true,
       durable_store_production_requirement_required: true,
       postgres_session_store_required: true,
+      durable_postgres_session_gate_required: true,
+      durable_postgres_session_gate_id: "dojo_postgres_control_plane_self_check",
       malformed_record_rejection_required: true,
       self_check_executes_tests_required: true,
     },
