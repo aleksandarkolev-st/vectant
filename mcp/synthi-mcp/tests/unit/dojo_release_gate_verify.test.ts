@@ -3039,6 +3039,7 @@ describe("Dojo release gate artifact verifier", () => {
         executable_checkride_required: false,
         ambiguous_document_names_required: false,
         ui_tissue_mutations_required: false,
+        policy_tissue_required: false,
       },
     });
     const incompletePath = await writeVivariumRuntimeEvidenceFixture({
@@ -3056,6 +3057,7 @@ describe("Dojo release gate artifact verifier", () => {
       "vivarium_runtime_checkride_requirement_missing",
       "vivarium_runtime_ambiguous_document_requirement_missing",
       "vivarium_runtime_ui_tissue_requirement_missing",
+      "vivarium_runtime_policy_tissue_requirement_missing",
     ]));
 
     const missingExecutionPath = await writeVivariumRuntimeEvidenceFixture({
@@ -6595,6 +6597,7 @@ function vivariumRuntimeEvidenceFixture(overrides = {}) {
       prompt_injection_quarantine_required: true,
       ambiguous_document_names_required: true,
       ui_tissue_mutations_required: true,
+      policy_tissue_required: true,
       deterministic_reset_required: true,
       budget_enforcement_required: true,
       targeted_graph_execution_required: true,

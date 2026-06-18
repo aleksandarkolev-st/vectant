@@ -3563,6 +3563,7 @@ export function validateDojoVivariumRuntimeEvidenceForRelease(evidence) {
     ["prompt_injection_quarantine_required", "vivarium_runtime_prompt_injection_requirement_missing"],
     ["ambiguous_document_names_required", "vivarium_runtime_ambiguous_document_requirement_missing"],
     ["ui_tissue_mutations_required", "vivarium_runtime_ui_tissue_requirement_missing"],
+    ["policy_tissue_required", "vivarium_runtime_policy_tissue_requirement_missing"],
     ["deterministic_reset_required", "vivarium_runtime_reset_requirement_missing"],
     ["budget_enforcement_required", "vivarium_runtime_budget_requirement_missing"],
     ["targeted_graph_execution_required", "vivarium_runtime_targeted_graph_requirement_missing"],
@@ -5458,6 +5459,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
         ...vivariumRuntimeArtifacts.evidence.vivarium_contract,
         evil_twin_hardening_loop_required: false,
         executable_checkride_required: false,
+        policy_tissue_required: false,
       },
     },
   });
@@ -5469,6 +5471,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_missing_capabilities:evil_twin_hardening_reduces_attack_success_rate"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_evil_twin_hardening_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_checkride_requirement_missing"));
+  assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_policy_tissue_requirement_missing"));
 
   const checkrideLicenseDir = path.join(outDir, "checkride-license");
   await mkdir(checkrideLicenseDir, { recursive: true });
@@ -8202,6 +8205,7 @@ async function writeVivariumRuntimeEvidenceForSelfCheck({
       prompt_injection_quarantine_required: true,
       ambiguous_document_names_required: true,
       ui_tissue_mutations_required: true,
+      policy_tissue_required: true,
       deterministic_reset_required: true,
       budget_enforcement_required: true,
       targeted_graph_execution_required: true,

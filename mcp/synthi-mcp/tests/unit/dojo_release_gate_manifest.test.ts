@@ -873,6 +873,7 @@ describe("Dojo release gate manifest", () => {
           require_prompt_injection_quarantine: true,
           require_ambiguous_document_names: true,
           require_ui_tissue_mutations: true,
+          require_policy_tissue: true,
           require_deterministic_reset: true,
           require_budget_enforcement: true,
           require_targeted_graph_execution: true,
@@ -1559,12 +1560,14 @@ describe("Dojo release gate manifest", () => {
     vivariumRuntimeGate.release_artifact_requirements.require_executable_checkride = false;
     vivariumRuntimeGate.release_artifact_requirements.require_ambiguous_document_names = false;
     vivariumRuntimeGate.release_artifact_requirements.require_ui_tissue_mutations = false;
+    vivariumRuntimeGate.release_artifact_requirements.require_policy_tissue = false;
     vivariumRuntimeGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenVivariumRuntime, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "vivarium_runtime_missing_evil_twin_hardening_requirement",
       "vivarium_runtime_missing_checkride_requirement",
       "vivarium_runtime_missing_ambiguous_document_requirement",
       "vivarium_runtime_missing_ui_tissue_requirement",
+      "vivarium_runtime_missing_policy_tissue_requirement",
       "vivarium_runtime_missing_self_check_execution_requirement",
       "vivarium_runtime_missing_required_capabilities:evil_twin_hardening_reduces_attack_success_rate",
       `vivarium_runtime_missing_required_test_files:${missingVivariumRuntimeTestFile}`,
