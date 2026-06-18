@@ -318,6 +318,80 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("emits stale entity data tissue evidence when stale IDs block execution", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "stale_entity",
+      layer: "risk",
+      risk_tags: ["stale_data"],
+    }), {
+      expected_outcome_overrides: { stale_entity: "block" },
+    });
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "stale-entity-runner-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: staleEntityGateGraphFixture(),
+      run_id: "scenario-run-stale-entity",
+    });
+
+    expect(materialized.fixture.records.filter((record) => record.stale)).toHaveLength(1);
+    expect(result).toEqual(expect.objectContaining({
+      status: "blocked",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining(["data_tissue_state", "stale_entity_state"]),
+      graph_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["precondition_failed:stale_entity_count == 0"],
+      }),
+      oracle_result: expect.objectContaining({
+        status: "blocked",
+        expected_outcome: "block",
+        observed_evidence: expect.arrayContaining(["data_tissue_state", "stale_entity_state"]),
+      }),
+    }));
+  });
+
+  it("emits missing field data tissue evidence when required synthetic fields block execution", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "hidden_required_field",
+      layer: "knowledge",
+      risk_tags: ["input_validation"],
+    }));
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "missing-field-runner-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: missingFieldGateGraphFixture(),
+      run_id: "scenario-run-missing-field",
+    });
+
+    expect(materialized.fixture.missing_fields).toEqual(["synthetic_required_field"]);
+    expect(result).toEqual(expect.objectContaining({
+      status: "blocked",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining(["data_tissue_state", "missing_field_state"]),
+      graph_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["precondition_failed:missing_field_count == 0"],
+      }),
+      oracle_result: expect.objectContaining({
+        status: "blocked",
+        expected_outcome: "block",
+        observed_evidence: expect.arrayContaining(["data_tissue_state", "missing_field_state"]),
+      }),
+    }));
+  });
+
   it("passes prompt injection scenarios only when document instructions are quarantined", async () => {
     const runner = new DojoVivariumRunner();
     const definition = toDojoScenarioDefinition(scenarioFixture({
@@ -778,6 +852,30 @@ function invalidValueGateGraphFixture(): DojoSkillGraph {
       ? {
           ...node,
           preconditions: ["invalid_value_count == 0"],
+        }
+      : node),
+  };
+}
+
+function staleEntityGateGraphFixture(): DojoSkillGraph {
+  return {
+    ...graphFixture(),
+    nodes: graphFixture().nodes.map((node) => node.node_id === "action"
+      ? {
+          ...node,
+          preconditions: ["stale_entity_count == 0"],
+        }
+      : node),
+  };
+}
+
+function missingFieldGateGraphFixture(): DojoSkillGraph {
+  return {
+    ...graphFixture(),
+    nodes: graphFixture().nodes.map((node) => node.node_id === "action"
+      ? {
+          ...node,
+          preconditions: ["missing_field_count == 0"],
         }
       : node),
   };

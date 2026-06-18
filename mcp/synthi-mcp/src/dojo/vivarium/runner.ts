@@ -419,6 +419,10 @@ function fixtureInputs(fixture: DojoMaterializedFixture): Record<string, unknown
     invalid_value_count: fixture.invalid_values.length,
     invalid_value_fields: fixture.invalid_values.map((invalidValue) => invalidValue.field),
     duplicate_display_name_count: duplicateDisplayNameCount(fixture),
+    stale_entity_count: fixture.records.filter((record) => record.stale).length,
+    stale_entity_ids: fixture.records.filter((record) => record.stale).map((record) => record.stable_id),
+    missing_field_count: fixture.missing_fields.length,
+    missing_field_names: [...fixture.missing_fields],
     partial_write: fixture.api_state.partial_write,
     fake_success: fixture.api_state.fake_success,
     prompt_injection_present: fixture.document_state.prompt_injection_present,
@@ -453,6 +457,18 @@ function observedEvidenceForRun(
     observed.add("policy_tissue_state");
   }
   if (materialized.fixture.invalid_values.length > 0) observed.add("invalid_value_state");
+  const staleEntityCount = materialized.fixture.records.filter((record) => record.stale).length;
+  const duplicateEntityCount = duplicateDisplayNameCount(materialized.fixture);
+  if (
+    staleEntityCount > 0
+    || materialized.fixture.missing_fields.length > 0
+    || duplicateEntityCount > 0
+  ) {
+    observed.add("data_tissue_state");
+  }
+  if (staleEntityCount > 0) observed.add("stale_entity_state");
+  if (materialized.fixture.missing_fields.length > 0) observed.add("missing_field_state");
+  if (duplicateEntityCount > 0) observed.add("duplicate_entity_state");
   if (materialized.fixture.api_state.partial_write) observed.add("partial_write_state");
   if (materialized.fixture.document_state.prompt_injection_present && materialized.fixture.document_state.instruction_quarantined) {
     observed.add("document_instruction_quarantine");
