@@ -831,14 +831,15 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function parseArgs(argv) {
+export function parseDojoReleaseGateRunnerArgs(argv) {
   const parsed = {};
   for (let i = 0; i < argv.length; i += 1) {
     const item = argv[i];
     if (!item.startsWith("--")) continue;
-    const key = item.slice(2);
+    const inlineMatch = item.match(/^--([^=]+)=(.*)$/);
+    const key = inlineMatch ? inlineMatch[1] : item.slice(2);
     const next = argv[i + 1];
-    const value = !next || next.startsWith("--") ? "1" : next;
+    const value = inlineMatch ? inlineMatch[2] : !next || next.startsWith("--") ? "1" : next;
     if (parsed[key] === undefined) {
       parsed[key] = value;
     } else if (Array.isArray(parsed[key])) {
@@ -846,9 +847,13 @@ function parseArgs(argv) {
     } else {
       parsed[key] = [parsed[key], value];
     }
-    if (next && !next.startsWith("--")) i += 1;
+    if (!inlineMatch && next && !next.startsWith("--")) i += 1;
   }
   return parsed;
+}
+
+function parseArgs(argv) {
+  return parseDojoReleaseGateRunnerArgs(argv);
 }
 
 function argList(value) {

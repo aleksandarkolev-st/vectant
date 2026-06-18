@@ -18,6 +18,7 @@ import {
   buildDojoReleaseGateRunReport,
   collectDojoReleaseGateProducedArtifacts,
   executeDojoReleaseGatePlan,
+  parseDojoReleaseGateRunnerArgs,
   runDojoReleaseGateRunner,
   selectDojoReleaseGateIds,
 } from "../../scripts/dojo-release-gate-runner.mjs";
@@ -39,6 +40,23 @@ function manifest() {
 }
 
 describe("Dojo release gate runner", () => {
+  it("parses inline CLI arguments without dropping runner execution flags", () => {
+    expect(parseDojoReleaseGateRunnerArgs([
+      "--scope=minimal-pr",
+      "--execute",
+      "--continue-on-failure=true",
+      "--out-dir=tmp/dojo-release-gate-runner-inline",
+      "--gate=mcp_typecheck",
+      "--gate=frontend_build",
+    ])).toEqual({
+      scope: "minimal-pr",
+      execute: "1",
+      "continue-on-failure": "true",
+      "out-dir": "tmp/dojo-release-gate-runner-inline",
+      gate: ["mcp_typecheck", "frontend_build"],
+    });
+  });
+
   it("selects gate IDs from the authoritative manifest scopes", () => {
     const releaseManifest = manifest();
 
