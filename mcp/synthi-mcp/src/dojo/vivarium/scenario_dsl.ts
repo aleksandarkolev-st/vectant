@@ -330,12 +330,14 @@ function observedEvidenceFor(
   if (scenario.mutation_kind === "invalid_value") evidence.push("invalid_value_state");
   if (scenario.mutation_kind === "duplicate_entity" || scenario.mutation_kind === "stale_entity") evidence.push("stable_entity_identity");
   if (isPromptInjectionDocumentMutation(scenario.mutation_kind)) evidence.push("document_instruction_quarantine");
-  if (
-    scenario.mutation_kind === "missing_document_field"
-    || scenario.mutation_kind === "corrupted_document"
-    || scenario.mutation_kind === "ambiguous_document_name"
-  ) {
-    evidence.push("document_tissue_state");
+  if (scenario.mutation_kind === "missing_document_field") {
+    evidence.push("document_tissue_state", "document_missing_field_state");
+  }
+  if (scenario.mutation_kind === "corrupted_document") {
+    evidence.push("document_tissue_state", "document_corrupted_state");
+  }
+  if (scenario.mutation_kind === "ambiguous_document_name") {
+    evidence.push("document_tissue_state", "document_ambiguous_name_state");
   }
   return evidence;
 }

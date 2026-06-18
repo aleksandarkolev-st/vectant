@@ -429,7 +429,11 @@ function fixtureInputs(fixture: DojoMaterializedFixture): Record<string, unknown
     fake_success: fixture.api_state.fake_success,
     prompt_injection_present: fixture.document_state.prompt_injection_present,
     document_instruction_quarantined: fixture.document_state.instruction_quarantined,
+    document_missing_field_count: fixture.document_state.missing_fields.length,
+    document_missing_field_names: [...fixture.document_state.missing_fields],
     corrupted_document_count: fixture.document_state.corrupted_document_count,
+    ambiguous_document_name_group_count: fixture.document_state.ambiguous_file_name_groups.length,
+    ambiguous_document_ids: fixture.document_state.ambiguous_file_name_groups.flatMap((group) => group.document_ids),
   };
 }
 
@@ -482,6 +486,9 @@ function observedEvidenceForRun(
   ) {
     observed.add("document_tissue_state");
   }
+  if (materialized.fixture.document_state.missing_fields.length > 0) observed.add("document_missing_field_state");
+  if (materialized.fixture.document_state.corrupted_document_count > 0) observed.add("document_corrupted_state");
+  if (materialized.fixture.document_state.ambiguous_file_name_groups.length > 0) observed.add("document_ambiguous_name_state");
   return [...observed].sort();
 }
 

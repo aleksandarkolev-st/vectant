@@ -511,6 +511,119 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("emits missing-field document tissue evidence from materialized documents", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "missing_document_field",
+      layer: "risk",
+      risk_tags: ["document_validation"],
+    }));
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "missing-document-field-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-missing-document-field",
+    });
+
+    expect(materialized.fixture.document_state.missing_fields).toEqual(["amount"]);
+    expect(result).toEqual(expect.objectContaining({
+      status: "passed",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining([
+        "document_tissue_state",
+        "document_missing_field_state",
+      ]),
+      oracle_result: expect.objectContaining({
+        observed_evidence: expect.arrayContaining([
+          "document_tissue_state",
+          "document_missing_field_state",
+        ]),
+        blocked_by: [],
+      }),
+    }));
+  });
+
+  it("emits corrupted document tissue evidence from materialized documents", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "corrupted_document",
+      layer: "risk",
+      risk_tags: ["document_validation"],
+    }));
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "corrupted-document-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-corrupted-document",
+    });
+
+    expect(materialized.fixture.document_state.corrupted_document_count).toBe(1);
+    expect(result).toEqual(expect.objectContaining({
+      status: "passed",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining([
+        "document_tissue_state",
+        "document_corrupted_state",
+      ]),
+      oracle_result: expect.objectContaining({
+        observed_evidence: expect.arrayContaining([
+          "document_tissue_state",
+          "document_corrupted_state",
+        ]),
+        blocked_by: [],
+      }),
+    }));
+  });
+
+  it("emits ambiguous-name document tissue evidence with distinct synthetic document IDs", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "ambiguous_document_name",
+      layer: "risk",
+      risk_tags: ["document_validation"],
+    }));
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "ambiguous-document-runtime-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-ambiguous-document-name",
+    });
+
+    const groups = materialized.fixture.document_state.ambiguous_file_name_groups;
+    expect(groups).toHaveLength(1);
+    expect(new Set(groups[0]?.document_ids).size).toBe(2);
+    expect(result).toEqual(expect.objectContaining({
+      status: "passed",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining([
+        "document_tissue_state",
+        "document_ambiguous_name_state",
+      ]),
+      oracle_result: expect.objectContaining({
+        observed_evidence: expect.arrayContaining([
+          "document_tissue_state",
+          "document_ambiguous_name_state",
+        ]),
+        blocked_by: [],
+      }),
+    }));
+  });
+
   it("generates deterministic run IDs and timestamps when a run clock is supplied", async () => {
     const runner = new DojoVivariumRunner();
     const materialized = runner.materialize({

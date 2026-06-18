@@ -79,19 +79,30 @@ describe("Dojo scenario DSL", () => {
     expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
   });
 
-  it("classifies ambiguous document-name scenarios as synthetic document tissue", () => {
-    const definition = toDojoScenarioDefinition(scenarioFixture({
-      mutation_kind: "ambiguous_document_name",
-      risk_tags: ["document_validation"],
-    }));
+  it("classifies document tissue scenarios with specific evidence requirements", () => {
+    const cases = [
+      ["missing_document_field", "document_missing_field_state"],
+      ["corrupted_document", "document_corrupted_state"],
+      ["ambiguous_document_name", "document_ambiguous_name_state"],
+    ] as const;
 
-    expect(definition.mutation_scopes).toEqual(["document", "ui"]);
-    expect(definition.fixture_requirements.map((fixture) => fixture.kind)).toEqual([
-      "fake_documents",
-      "synthetic_dom_snapshot",
-    ]);
-    expect(definition.oracle.observed_evidence_required).toContain("document_tissue_state");
-    expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
+    for (const [mutationKind, requiredEvidence] of cases) {
+      const definition = toDojoScenarioDefinition(scenarioFixture({
+        mutation_kind: mutationKind,
+        risk_tags: ["document_validation"],
+      }));
+
+      expect(definition.mutation_scopes).toEqual(["document", "ui"]);
+      expect(definition.fixture_requirements.map((fixture) => fixture.kind)).toEqual([
+        "fake_documents",
+        "synthetic_dom_snapshot",
+      ]);
+      expect(definition.oracle.observed_evidence_required).toEqual(expect.arrayContaining([
+        "document_tissue_state",
+        requiredEvidence,
+      ]));
+      expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
+    }
   });
 
   it("classifies policy tissue scenarios with thresholds and unavailable approvals", () => {
