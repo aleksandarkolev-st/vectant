@@ -305,6 +305,9 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
   const [workflowState, setWorkflowState] = useState(null);
   const [busyAction, setBusyAction] = useState(null);
   const latestRequestRef = useRef(0);
+  const inFlightActionRef = useRef(0);
+  const isActionLockedRef = useRef(false);
+  const workflowStateRef = useRef(null);
   const workflowUserId = session?.user?.id || session?.user?.email || null;
   const bridgeConfig = useMemo(() => ({
     url: resolveAgentWorkflowBridgeUrl(),
@@ -521,6 +524,10 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     }
   }, [ctx?.workspaceSlug]);
 
+  useEffect(() => {
+    workflowStateRef.current = workflowState;
+  }, [workflowState]);
+
   const persistWorkflowHandoff = useCallback(async ({ generated, manifest }) => {
     const workspaceId = ctx?.workspaceSlug;
     if (!workspaceId) throw new Error('workflow_handoff_workspace_unavailable');
@@ -550,6 +557,9 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
   const handleWorkflowAction = useCallback(async (detail) => {
     const action = detail?.action;
     if (!action) return;
+    if (isActionLockedRef.current) return;
+    const actionId = ++inFlightActionRef.current;
+    isActionLockedRef.current = true;
     setBusyAction(action);
     try {
       const currentUrl = workspaceUrl();
@@ -568,8 +578,8 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           break;
         case WORKFLOW_ACTIONS.BEGIN_TEACH:
           {
-            const observedState = workflowState?.observe?.status === 'ready'
-              ? { state: workflowState }
+            const observedState = workflowStateRef.current?.observe?.status === 'ready'
+              ? { state: workflowStateRef.current }
               : await ensureObservedWorkspace();
             const selectedTabId = observedState?.state?.observe?.selectedTabId;
             await callWorkflowTool(WORKFLOW_ACTIONS.BEGIN_TEACH, {
@@ -642,9 +652,12 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           : stateWithBridgeError(err, prev)
       ));
     } finally {
-      setBusyAction(null);
+      if (actionId === inFlightActionRef.current) {
+        isActionLockedRef.current = false;
+        setBusyAction(null);
+      }
     }
-  }, [bridgeConfig.runtime, callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, stateWithBridgeError, stateWithWorkflowActionError, workflowState, workspaceUrl]);
+  }, [bridgeConfig.runtime, callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, stateWithBridgeError, stateWithWorkflowActionError, workspaceUrl]);
 
   useEffect(() => {
     const controller = new AbortController();
