@@ -254,8 +254,9 @@ function collectProxyHeaders(request) {
 
 async function readStateFromUpstreamBridge(baseUrl, request) {
   if (!baseUrl) return null;
-  const target = new URL('/browser-workflows/state', baseUrl);
+  let target;
   try {
+    target = new URL('/browser-workflows/state', baseUrl);
     const headers = collectProxyHeaders(request);
     const response = await fetch(target.href, {
       method: 'GET',
@@ -546,7 +547,39 @@ async function proxyWorkflowBridge(request, routeContext) {
     }
 
     const incomingUrl = new URL(request.url);
-    const upstreamUrl = new URL(`/browser-workflows/${path}`, baseUrl);
+    let upstreamUrl;
+    try {
+      upstreamUrl = new URL(`/browser-workflows/${path}`, baseUrl);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      if (isStatefulPath) {
+        return statefulWorkflowErrorResponse(
+          {
+            error: 'workflow_bridge_url_invalid',
+            status: 502,
+            detail,
+            action: `${request.method || 'GET'}:${path}`,
+            path,
+          },
+          `workflow_bridge_url_invalid: ${detail}`,
+          'workflow_bridge_url_invalid',
+        );
+      }
+      return NextResponse.json(
+        {
+          error: 'workflow_bridge_url_invalid',
+          detail,
+          action: `${request.method || 'GET'}:${path}`,
+          path,
+        },
+        {
+          status: 502,
+          headers: {
+            'cache-control': 'no-store',
+          },
+        },
+      );
+    }
     upstreamUrl.search = incomingUrl.search;
 
     let upstream;
