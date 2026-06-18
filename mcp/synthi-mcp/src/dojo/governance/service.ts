@@ -52,6 +52,7 @@ export type DojoGovernanceRbacAction =
   | "license_revocation"
   | "license_recertification"
   | "compliance_export"
+  | "scheduled_job_run"
   | "governance_view"
   | "source_snapshot_capture"
   | "source_drift_detection"
@@ -101,6 +102,7 @@ export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPo
     license_revocation: ["dojo:license:revoke"],
     license_recertification: ["dojo:license:recertify"],
     compliance_export: ["dojo:compliance:export", "dojo:auditor"],
+    scheduled_job_run: ["dojo:governance:schedule", "dojo:operator"],
     governance_view: ["dojo:governance:view", "dojo:auditor"],
     source_snapshot_capture: ["dojo:source:capture", "source-registry"],
     source_drift_detection: ["dojo:source:review", "source-registry"],
@@ -1808,6 +1810,10 @@ function normalizeGovernanceRbacPolicy(
       compliance_export: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.compliance_export,
         ...(policy.action_roles?.compliance_export ?? []),
+      ]),
+      scheduled_job_run: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.scheduled_job_run,
+        ...(policy.action_roles?.scheduled_job_run ?? []),
       ]),
       governance_view: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.governance_view,

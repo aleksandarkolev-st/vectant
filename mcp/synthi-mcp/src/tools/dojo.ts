@@ -53,8 +53,13 @@ import {
   buildDojoGovernanceServiceView,
   decideDojoCaseLawReview,
   decideDojoPermissionUpgradeRequest,
+  persistDojoScheduledJobRunAuditEvents,
   revokeDojoSkillLicense,
+  runDojoScheduledGovernanceJobs,
   type DojoGovernanceRbacAction,
+  type DojoGovernanceServiceView,
+  type DojoGovernanceScheduledJobHandlers,
+  type DojoGovernanceScheduledJobKind,
 } from "../dojo/governance/service.js";
 import { compileDojoSkillGraphForSkill, compileDojoSkillGraphFromContract } from "../dojo/graph/compiler.js";
 import { validateDojoSkillGraph, type DojoSkillGraph } from "../dojo/graph/types.js";
@@ -224,6 +229,7 @@ export const DOJO_TOOL_NAMES = [
   "synthi_dojo_request_permission_upgrade",
   "synthi_dojo_review_permission_upgrade",
   "synthi_dojo_review_case_law",
+  "synthi_dojo_run_scheduled_governance_jobs",
   "synthi_dojo_generate_vivarium_scenarios",
   "synthi_dojo_run_vivarium_scenario",
   "synthi_dojo_run_wind_tunnel",
@@ -1656,6 +1662,36 @@ export const DOJO_TOOLS = [
     },
   },
   {
+    name: "synthi_dojo_run_scheduled_governance_jobs",
+    description:
+      "Run ready governance scheduled jobs for the tenant/workspace, using typed handlers and persisting audit events for non-dry runs. Defaults to dry-run and blocks jobs that require external notification or human review.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
+        job_ids: { type: "array", items: { type: "string" } },
+        job_kinds: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: [
+              "archive_compliance_evidence",
+              "expire_stale_license",
+              "notify_approver",
+              "recompute_registry_metrics",
+              "review_case_law",
+              "run_recertification",
+            ],
+          },
+        },
+        limit: { type: "number" },
+        dry_run: { type: "boolean" },
+        now: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
     name: "synthi_dojo_generate_vivarium_scenarios",
     description:
       "Extract a Skill Seed from the current or saved workflow contract and generate a task-specific synthetic Workspace Organoid scenario set.",
@@ -2047,6 +2083,9 @@ export async function dispatchDojoTool(toolName: string, args: unknown): Promise
         break;
       case "synthi_dojo_review_case_law":
         response = await dojoReviewCaseLawTool(args);
+        break;
+      case "synthi_dojo_run_scheduled_governance_jobs":
+        response = await dojoRunScheduledGovernanceJobsTool(args);
         break;
       case "synthi_dojo_generate_vivarium_scenarios":
         response = dojoGenerateVivariumScenariosTool(args);
@@ -4875,6 +4914,116 @@ async function dojoReviewCaseLawTool(args: unknown): Promise<ToolResponse> {
       now: updatedRecord.updated_at,
     }),
   });
+}
+
+async function dojoRunScheduledGovernanceJobsTool(args: unknown): Promise<ToolResponse> {
+  const a = obj(args);
+  const tenantContext = dojoTenantContextResultFromArgs(args);
+  if (!tenantContext.ok) return tenantContext.error;
+  const tenant = tenantContext.tenant;
+  const now = stringOpt(a["now"]) ?? new Date().toISOString();
+  const dryRun = optionalBoolOpt(a["dry_run"]) ?? true;
+  const limit = numberOpt(a["limit"]);
+  if (limit !== undefined && limit < 0) {
+    return errorResponse("dojo_scheduled_governance_job_limit_invalid", {
+      ok: false,
+      operation: "synthi_dojo_run_scheduled_governance_jobs",
+      limit,
+      blocked_by: ["scheduled_job_limit_negative"],
+    });
+  }
+  const requestedKinds = scheduledJobKindSetFromInput(a["job_kinds"]);
+  if (!requestedKinds.ok) {
+    return errorResponse("dojo_scheduled_governance_job_kind_invalid", {
+      ok: false,
+      operation: "synthi_dojo_run_scheduled_governance_jobs",
+      invalid_job_kinds: requestedKinds.invalid,
+      allowed_job_kinds: SCHEDULED_GOVERNANCE_JOB_KINDS,
+      blocked_by: ["scheduled_job_kind_invalid"],
+    });
+  }
+
+  const rbac = requireDojoProductionGovernanceRbac({
+    tenant,
+    action: "scheduled_job_run",
+    error: "dojo_scheduled_governance_job_role_required",
+    details: {
+      operation: "synthi_dojo_run_scheduled_governance_jobs",
+      workspace_id: tenant.workspace_id,
+      dry_run: dryRun,
+    },
+  });
+  if (!rbac.ok) return rbac.error;
+
+  const visibleSkills = await visibleDojoSkillsForTenantFromControlPlaneIfRequired(
+    tenant,
+    "synthi_dojo_run_scheduled_governance_jobs"
+  );
+  if (!visibleSkills.ok) return visibleSkills.error;
+  const governanceService = await governanceServiceViewForTenant(tenant, now, visibleSkills.skills);
+  const requestedJobIds = new Set(stringArrayOpt(a["job_ids"]));
+  const jobs = governanceService.scheduled_jobs.filter((job) => {
+    if (requestedJobIds.size > 0 && !requestedJobIds.has(job.job_id)) return false;
+    if (requestedKinds.kinds.size > 0 && !requestedKinds.kinds.has(job.kind)) return false;
+    return true;
+  });
+
+  let resolution: Awaited<ReturnType<typeof createDojoControlPlaneStoresFromEnv>> | undefined;
+  if (!dryRun) {
+    const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_run_scheduled_governance_jobs", {
+      postgres_wired: true,
+    });
+    if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
+    const enforcement = resolveDojoEnforcementConfig();
+    if (enforcement.production_enforcement && enforcement.require_durable_store) {
+      resolution = await createDojoControlPlaneStoresFromEnv({ tenant });
+      if (!resolution.ok) return controlPlaneResolutionError("synthi_dojo_run_scheduled_governance_jobs", resolution);
+    }
+  }
+
+  try {
+    const handlers = buildScheduledGovernanceJobHandlersForTool({
+      dry_run: dryRun,
+      tenant,
+      now,
+      skills: visibleSkills.skills,
+      governance_service: governanceService,
+      license_store: resolution?.ok ? resolution.license_store : undefined,
+    });
+    const run = await runDojoScheduledGovernanceJobs({
+      jobs,
+      handlers,
+      actor: {
+        actor_id: tenant.actor_id,
+        actor_type: tenant.actor_type,
+      },
+      tenant_context: tenant,
+      now,
+      limit,
+    });
+    const auditPersistence = dryRun
+      ? undefined
+      : await persistDojoScheduledJobRunAuditEvents({
+        run,
+        audit_store: resolution?.ok ? resolution.audit_store : dojoHostedRuntimeAuditStore,
+        tenant_context: tenant,
+      });
+
+    return jsonResponse({
+      ok: true,
+      control_plane_source: resolution?.ok ? "postgres" : visibleSkills.control_plane_source,
+      dry_run: dryRun,
+      selected_job_count: jobs.length,
+      selected_job_ids: jobs.map((job) => job.job_id),
+      selected_job_kinds: [...new Set(jobs.map((job) => job.kind))].sort(),
+      scheduled_job_run: run,
+      ...(auditPersistence ? { scheduled_job_audit_persistence: auditPersistence } : {}),
+      governance_service: governanceService,
+      ...(rbac.rbac_authorization ? { rbac_authorization: rbac.rbac_authorization } : {}),
+    });
+  } finally {
+    if (resolution?.ok) await resolution.close?.();
+  }
 }
 
 function dojoGenerateVivariumScenariosTool(args: unknown): ToolResponse {
@@ -8335,6 +8484,198 @@ async function governanceServiceViewForTenant(
     proof_key_records: options.proof_key_records,
     now,
   });
+}
+
+const SCHEDULED_GOVERNANCE_JOB_KINDS: DojoGovernanceScheduledJobKind[] = [
+  "archive_compliance_evidence",
+  "expire_stale_license",
+  "notify_approver",
+  "recompute_registry_metrics",
+  "review_case_law",
+  "run_recertification",
+];
+
+function scheduledJobKindSetFromInput(value: unknown): (
+  | { ok: true; kinds: Set<DojoGovernanceScheduledJobKind> }
+  | { ok: false; invalid: string[] }
+) {
+  if (!Array.isArray(value)) return { ok: true, kinds: new Set() };
+  const allowed = new Set<string>(SCHEDULED_GOVERNANCE_JOB_KINDS);
+  const values = stringArrayOpt(value);
+  const invalid = values.filter((item) => !allowed.has(item));
+  if (invalid.length > 0) return { ok: false, invalid };
+  return { ok: true, kinds: new Set(values as DojoGovernanceScheduledJobKind[]) };
+}
+
+function buildScheduledGovernanceJobHandlersForTool(input: {
+  dry_run: boolean;
+  tenant: DojoTenantContext;
+  now: string;
+  skills: DojoSkill[];
+  governance_service: DojoGovernanceServiceView;
+  license_store?: DojoLicenseStore;
+}): DojoGovernanceScheduledJobHandlers {
+  const dryRun = (jobKind: DojoGovernanceScheduledJobKind, nextStep: string) => ({
+    ok: true,
+    status: "skipped" as const,
+    details: {
+      dry_run: true,
+      job_kind: jobKind,
+      next_step: nextStep,
+    },
+  });
+
+  return {
+    recompute_registry_metrics: ({ job }) => {
+      if (input.dry_run) return dryRun(job.kind, job.next_step);
+      return {
+        ok: true,
+        evidence_refs: job.evidence_refs,
+        details: {
+          recomputed_at: input.now,
+          metrics: input.governance_service.metrics,
+        },
+      };
+    },
+    archive_compliance_evidence: ({ job }) => {
+      if (input.dry_run) return dryRun(job.kind, job.next_step);
+      return {
+        ok: false,
+        blocked_by: ["scheduled_job_compliance_archive_store_required"],
+        details: {
+          pack_id: input.governance_service.compliance_evidence_pack.pack_id,
+          retention_class: input.governance_service.compliance_evidence_pack.retention_class,
+          artifact_count: input.governance_service.compliance_evidence_pack.artifacts.length,
+          missing_artifacts: input.governance_service.compliance_evidence_pack.missing_artifacts,
+          required_capability: "compliance_evidence_archive_store",
+        },
+      };
+    },
+    expire_stale_license: async ({ job, actor, now }) => {
+      if (input.dry_run) return dryRun(job.kind, job.next_step);
+      if (!job.license_id) {
+        return {
+          ok: false,
+          blocked_by: ["scheduled_job_license_id_missing"],
+          details: { job_id: job.job_id, skill_id: job.skill_id ?? null },
+        };
+      }
+      if (!input.license_store) {
+        return {
+          ok: false,
+          blocked_by: ["scheduled_job_durable_license_store_required"],
+          details: {
+            license_id: job.license_id,
+            required_store: "DojoLicenseStore",
+          },
+        };
+      }
+      const expired = await input.license_store.expireLicense(job.license_id, job.reason, now, actor, {
+        expires_at: now,
+      });
+      if (!expired) {
+        return {
+          ok: false,
+          blocked_by: ["scheduled_job_license_not_found"],
+          details: { license_id: job.license_id },
+        };
+      }
+      return {
+        ok: true,
+        evidence_refs: [`license:${expired.license_id}:expired`],
+        details: {
+          license_id: expired.license_id,
+          skill_id: expired.skill_id,
+          status: expired.status,
+          expires_at: expired.expires_at ?? now,
+        },
+      };
+    },
+    notify_approver: ({ job }) => {
+      if (input.dry_run) return dryRun(job.kind, job.next_step);
+      return {
+        ok: false,
+        blocked_by: ["scheduled_job_external_notification_dispatcher_required"],
+        details: {
+          queue_id: job.queue_id ?? null,
+          skill_id: job.skill_id ?? null,
+          required_follow_up: "synthi_dojo_review_permission_upgrade",
+        },
+      };
+    },
+    review_case_law: ({ job }) => {
+      if (input.dry_run) return dryRun(job.kind, job.next_step);
+      return {
+        ok: false,
+        blocked_by: ["scheduled_job_human_case_law_review_required"],
+        details: {
+          queue_id: job.queue_id ?? null,
+          skill_id: job.skill_id ?? null,
+          required_follow_up: "synthi_dojo_review_case_law",
+        },
+      };
+    },
+    run_recertification: async ({ job }) => {
+      if (input.dry_run) return dryRun(job.kind, job.next_step);
+      if (!job.skill_id) {
+        return {
+          ok: false,
+          blocked_by: ["scheduled_job_skill_id_missing"],
+          details: { job_id: job.job_id },
+        };
+      }
+      const skill = input.skills.find((candidate) => candidate.skill_id === job.skill_id);
+      if (!skill) {
+        return {
+          ok: false,
+          blocked_by: ["scheduled_job_skill_not_visible"],
+          details: { skill_id: job.skill_id },
+        };
+      }
+      const recertification = await dojoRecertifySkillTool({
+        ...tenantContextArgs(input.tenant),
+        skill_id: skill.skill_id,
+        workflow_id: skill.workflow_id,
+        reason: job.reason,
+        evidence_refs: job.evidence_refs,
+        actor_id: input.tenant.actor_id,
+        actor_type: input.tenant.actor_type,
+        now: input.now,
+      });
+      if (recertification.isError) {
+        return {
+          ok: false,
+          blocked_by: ["scheduled_job_recertification_failed"],
+          details: {
+            skill_id: skill.skill_id,
+            recertification_response: recertification.structuredContent ?? {},
+          },
+        };
+      }
+      return {
+        ok: true,
+        evidence_refs: [`recertification:${job.queue_id ?? skill.skill_id}`],
+        details: {
+          skill_id: skill.skill_id,
+          recertification: obj(recertification.structuredContent)["recertification"] ?? recertification.structuredContent ?? {},
+        },
+      };
+    },
+  };
+}
+
+function tenantContextArgs(tenant: DojoTenantContext): Record<string, unknown> {
+  return {
+    tenant_id: tenant.tenant_id,
+    organization_id: tenant.organization_id,
+    workspace_id: tenant.workspace_id,
+    actor_id: tenant.actor_id,
+    actor_type: tenant.actor_type,
+    roles: [...tenant.roles],
+    request_id: tenant.request_id,
+    correlation_id: tenant.correlation_id,
+    ...(tenant.data_region ? { data_region: tenant.data_region } : {}),
+  };
 }
 
 async function proofPublicVerificationExportForTenant(input: {

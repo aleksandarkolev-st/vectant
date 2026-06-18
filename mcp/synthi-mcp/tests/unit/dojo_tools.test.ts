@@ -1370,6 +1370,140 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("runs scheduled governance jobs through RBAC, dry-run, and audit persistence", async () => {
+    const { visibleSkillId } = await publishTwoWorkspaceSkillsForDojoToolTest();
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const blocked = await dispatchDojoTool("synthi_dojo_run_scheduled_governance_jobs", {
+      job_kinds: ["recompute_registry_metrics"],
+      dry_run: true,
+      now: "2026-06-11T00:05:00.000Z",
+      ...productionTenantContextArgs({
+        actor_id: "workspace-a-viewer",
+        actor_type: "human",
+        roles: ["dojo:governance:view"],
+        request_id: "req-scheduled-governance-rbac-blocked",
+        correlation_id: "corr-scheduled-governance-rbac-blocked",
+      }),
+    });
+    expect(blocked?.isError).toBe(true);
+    expect(blocked?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_scheduled_governance_job_role_required",
+      ok: false,
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:governance:schedule|dojo:operator"]),
+      rbac_authorization: expect.objectContaining({
+        action: "scheduled_job_run",
+        actor_id: "workspace-a-viewer",
+        required_roles: ["dojo:governance:schedule", "dojo:operator"],
+      }),
+    }));
+
+    const dryRun = await dispatchDojoTool("synthi_dojo_run_scheduled_governance_jobs", {
+      job_kinds: ["recompute_registry_metrics"],
+      dry_run: true,
+      now: "2026-06-11T00:05:10.000Z",
+      ...productionScheduledJobRunnerContextArgs({
+        actor_id: "workspace-a-scheduler",
+        actor_type: "service",
+        request_id: "req-scheduled-governance-dry-run",
+        correlation_id: "corr-scheduled-governance-dry-run",
+      }),
+    });
+    expect(dryRun?.isError).toBeUndefined();
+    expect(dryRun?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: true,
+      implementation_status: "executable",
+      selected_job_count: 1,
+      selected_job_kinds: ["recompute_registry_metrics"],
+      scheduled_job_run: expect.objectContaining({
+        schema_version: "synthi.dojo.governanceScheduledJobRun.v1",
+        job_count: 1,
+        attempted_count: 1,
+        skipped_count: 1,
+        applied_count: 0,
+        results: [
+          expect.objectContaining({
+            kind: "recompute_registry_metrics",
+            status: "skipped",
+            details: expect.objectContaining({ dry_run: true }),
+          }),
+        ],
+      }),
+    }));
+    expect((dryRun?.structuredContent as Record<string, unknown>).scheduled_job_audit_persistence).toBeUndefined();
+
+    const applied = await dispatchDojoTool("synthi_dojo_run_scheduled_governance_jobs", {
+      job_kinds: ["recompute_registry_metrics"],
+      dry_run: false,
+      now: "2026-06-11T00:05:20.000Z",
+      ...productionScheduledJobRunnerContextArgs({
+        actor_id: "workspace-a-scheduler",
+        actor_type: "service",
+        request_id: "req-scheduled-governance-apply",
+        correlation_id: "corr-scheduled-governance-apply",
+      }),
+    });
+    expect(applied?.isError).toBeUndefined();
+    expect(applied?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: false,
+      selected_job_count: 1,
+      selected_job_kinds: ["recompute_registry_metrics"],
+      scheduled_job_run: expect.objectContaining({
+        attempted_count: 1,
+        applied_count: 1,
+        blocked_count: 0,
+        results: [
+          expect.objectContaining({
+            kind: "recompute_registry_metrics",
+            status: "applied",
+            audit_event: expect.objectContaining({
+              event_type: "governance_scheduled_job_completed",
+              actor: { actor_id: "workspace-a-scheduler", actor_type: "service" },
+            }),
+          }),
+        ],
+      }),
+      scheduled_job_audit_persistence: expect.objectContaining({
+        persisted_count: 1,
+        blocked_count: 0,
+        results: [
+          expect.objectContaining({
+            status: "persisted",
+            audit_event: expect.objectContaining({
+              event_type: "governance_scheduled_job_completed",
+              request_id: "req-scheduled-governance-apply",
+              correlation_id: "corr-scheduled-governance-apply",
+              entity_kind: "governance_scheduled_job",
+            }),
+          }),
+        ],
+      }),
+    }));
+
+    const governance = await dispatchDojoTool("synthi_dojo_get_governance_report", {
+      skill_id: visibleSkillId,
+      ...productionTenantContextArgs({
+        roles: ["dojo:governance:view"],
+        request_id: "req-scheduled-governance-report-after-apply",
+        correlation_id: "corr-scheduled-governance-report-after-apply",
+      }),
+    });
+    expect(governance?.structuredContent).toEqual(expect.objectContaining({
+      governance_service: expect.objectContaining({
+        audit_exports: expect.arrayContaining([
+          expect.objectContaining({
+            export_id: "control_plane_audit",
+            event_type_counts: expect.objectContaining({
+              governance_scheduled_job_completed: expect.any(Number),
+            }),
+          }),
+        ]),
+      }),
+    }));
+  });
+
   it("requires tenant authorization for production proof lifecycle tools", async () => {
     const { hiddenSkill } = await publishTwoWorkspaceSkillsForDojoToolTest();
     const issuedHiddenProof = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
@@ -6405,6 +6539,13 @@ function productionApiToolPublisherContextArgs(overrides: Record<string, unknown
   return productionTenantContextArgs({
     ...overrides,
     roles: mergeRoleOverrides(["agent", "dojo:api-tool:prepare", "dojo:api-tool:publish"], overrides["roles"]),
+  });
+}
+
+function productionScheduledJobRunnerContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return productionTenantContextArgs({
+    ...overrides,
+    roles: mergeRoleOverrides(["agent", "dojo:governance:schedule"], overrides["roles"]),
   });
 }
 
