@@ -856,7 +856,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const complianceExportResults = [];
-  if (releasePromotion || args["compliance-export-evidence"]) {
+  if (releasePromotion || truthy(args["include-compliance-export"]) || args["compliance-export-evidence"]) {
     const complianceGate = findGate(manifest, "compliance_export_suite") || {};
     const evidencePath = resolveRepoPath(args["compliance-export-evidence"]
       || complianceGate.default_evidence_path
@@ -872,7 +872,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const privacyRedactionResults = [];
-  if (releasePromotion || args["privacy-redaction-evidence"]) {
+  if (releasePromotion || truthy(args["include-privacy-redaction"]) || args["privacy-redaction-evidence"]) {
     const privacyGate = findGate(manifest, "privacy_redaction_suite") || {};
     const evidencePath = resolveRepoPath(args["privacy-redaction-evidence"]
       || privacyGate.default_evidence_path

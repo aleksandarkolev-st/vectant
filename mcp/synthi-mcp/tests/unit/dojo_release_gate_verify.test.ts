@@ -467,6 +467,55 @@ describe("Dojo release gate artifact verifier", () => {
     expect(result.verified_release_gate_ids).toContain("dojo_package_readiness_self_check");
   });
 
+  it("can include compliance export and privacy redaction default evidence in aggregate verification", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-privacy-compliance-aggregate-"));
+    const packageScripts = await readPackageScripts();
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    const complianceEvidencePath = await writeComplianceExportEvidenceFixture({ dir });
+    const privacyEvidencePath = await writePrivacyRedactionEvidenceFixture({ dir });
+    manifest.gates.find((gate) => gate.id === "compliance_export_suite").default_evidence_path = complianceEvidencePath;
+    manifest.gates.find((gate) => gate.id === "privacy_redaction_suite").default_evidence_path = privacyEvidencePath;
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+
+    const result = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "include-compliance-export": true,
+        "include-privacy-redaction": true,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.compliance_export).toEqual([
+      expect.objectContaining({
+        id: "compliance_export_suite",
+        ok: true,
+        evidence_path: complianceEvidencePath,
+      }),
+    ]);
+    expect(result.privacy_redaction).toEqual([
+      expect.objectContaining({
+        id: "privacy_redaction_suite",
+        ok: true,
+        evidence_path: privacyEvidencePath,
+      }),
+    ]);
+    expect(result.attempted_release_gate_ids).toEqual(expect.arrayContaining([
+      "compliance_export_suite",
+      "privacy_redaction_suite",
+    ]));
+    expect(result.verified_release_gate_ids).toEqual(expect.arrayContaining([
+      "compliance_export_suite",
+      "privacy_redaction_suite",
+    ]));
+  });
+
   it("can include a live chaos report in aggregate artifact verification", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-live-chaos-aggregate-"));
     const packageScripts = await readPackageScripts();
