@@ -44,6 +44,7 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "scenario_dsl_classifies_expanded_identity_tissue_scenarios",
   "scenario_dsl_classifies_route_tissue_scenarios",
   "scenario_dsl_classifies_downstream_failure_api_tissue",
+  "scenario_dsl_classifies_api_entity_conflict_tissue",
   "scenario_dsl_rejects_missing_oracle_or_fixtures",
   "scenario_dsl_converts_generated_scenarios",
   "fixture_materializer_creates_duplicate_stable_ids",
@@ -54,6 +55,7 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "fixture_materializer_materializes_expanded_identity_tissue",
   "fixture_materializer_materializes_route_tissue",
   "fixture_materializer_materializes_downstream_failure_api_tissue",
+  "fixture_materializer_materializes_api_entity_conflict_tissue",
   "fixture_materializer_quarantines_prompt_injection_documents",
   "fixture_materializer_blocks_role_downgrade_identity_tissue",
   "fixture_materializer_fails_unquarantined_prompt_injection",
@@ -78,6 +80,8 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "vivarium_runner_executes_validation_error_api_tissue",
   "vivarium_runner_executes_latency_timeout_api_tissue",
   "vivarium_runner_executes_downstream_failure_api_tissue",
+  "vivarium_runner_executes_duplicate_entity_api_conflict_tissue",
+  "vivarium_runner_executes_stale_entity_api_conflict_tissue",
   "vivarium_runner_emits_policy_tissue_evidence",
   "vivarium_runner_emits_expanded_identity_evidence",
   "vivarium_runner_emits_invalid_value_evidence",
@@ -254,6 +258,7 @@ export function buildDojoVivariumRuntimeEvidenceManifest({
       partial_write_detection_required: true,
       api_downstream_failure_tissue_required: true,
       api_entity_conflict_faults_required: true,
+      api_entity_conflict_runner_tissue_required: true,
       prompt_injection_quarantine_required: true,
       ambiguous_document_names_required: true,
       document_tissue_specific_evidence_required: true,
@@ -363,6 +368,8 @@ function capabilityMatchers(capability) {
       return ["scenario dsl classifies route change scenarios", "synthetic page route tissue"];
     case "scenario_dsl_classifies_downstream_failure_api_tissue":
       return ["scenario dsl classifies downstream failure scenarios", "api fault tissue"];
+    case "scenario_dsl_classifies_api_entity_conflict_tissue":
+      return ["scenario dsl classifies api entity conflict scenarios", "fake api server tissue"];
     case "scenario_dsl_rejects_missing_oracle_or_fixtures":
       return ["scenario dsl rejects invalid scenarios", "without oracle or synthetic fixtures"];
     case "scenario_dsl_converts_generated_scenarios":
@@ -383,6 +390,8 @@ function capabilityMatchers(capability) {
       return ["synthetic fixture materializer materializes route change tissue", "deterministic synthetic page route"];
     case "fixture_materializer_materializes_downstream_failure_api_tissue":
       return ["synthetic fixture materializer materializes downstream api failures", "synthetic api fault tissue"];
+    case "fixture_materializer_materializes_api_entity_conflict_tissue":
+      return ["synthetic fixture materializer materializes api entity conflict flags", "fake api tissue"];
     case "fixture_materializer_quarantines_prompt_injection_documents":
       return ["materializes prompt injection document fixtures", "quarantined synthetic tissue"];
     case "fixture_materializer_blocks_role_downgrade_identity_tissue":
@@ -431,6 +440,10 @@ function capabilityMatchers(capability) {
       return ["vivarium runner executes latency api tissue", "timeout through the api fault server"];
     case "vivarium_runner_executes_downstream_failure_api_tissue":
       return ["vivarium runner executes downstream failure api tissue", "api fault server"];
+    case "vivarium_runner_executes_duplicate_entity_api_conflict_tissue":
+      return ["vivarium runner executes duplicate entity conflicts", "api fault server"];
+    case "vivarium_runner_executes_stale_entity_api_conflict_tissue":
+      return ["vivarium runner executes stale entity conflicts", "api fault server"];
     case "vivarium_runner_emits_policy_tissue_evidence":
       return ["vivarium runner emits policy tissue evidence", "policy fixtures block scenario execution"];
     case "vivarium_runner_emits_expanded_identity_evidence":
