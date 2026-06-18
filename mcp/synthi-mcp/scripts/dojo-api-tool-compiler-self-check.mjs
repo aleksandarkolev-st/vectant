@@ -27,6 +27,7 @@ export const DOJO_API_TOOL_COMPILER_TEST_FILES = [
   "tests/unit/dojo_api_candidate.test.ts",
   "tests/unit/dojo_api_tool_compiler.test.ts",
   "tests/unit/dojo_substrate_executor.test.ts",
+  "tests/unit/dojo_tools.test.ts",
 ];
 
 export const DOJO_API_TOOL_COMPILER_CAPABILITIES = [
@@ -44,6 +45,10 @@ export const DOJO_API_TOOL_COMPILER_CAPABILITIES = [
   "substrate_executes_compiled_api_with_transport_and_evidence_callbacks",
   "substrate_blocks_graph_api_proof_mismatch",
   "substrate_prefers_safest_licensed_substrate",
+  "api_tool_public_surface_prepares_reviewed_contract",
+  "api_tool_public_surface_publishes_api_backed_manifest",
+  "api_tool_public_surface_runs_compiled_tool",
+  "api_tool_public_surface_runs_published_tool_name_via_skill_bus",
 ];
 
 const args = parseArgs(process.argv.slice(2));
@@ -290,6 +295,14 @@ function capabilityMatchers(capability) {
       return ["does not execute compiled api transport", "graph proof and api proof do not match"];
     case "substrate_prefers_safest_licensed_substrate":
       return ["prefers the safest licensed substrate"];
+    case "api_tool_public_surface_prepares_reviewed_contract":
+      return ["prepares a reviewed api backed mcp tool contract", "network trace metadata"];
+    case "api_tool_public_surface_publishes_api_backed_manifest":
+      return ["publishes a reviewed api backed mcp tool", "skill manifest"];
+    case "api_tool_public_surface_runs_compiled_tool":
+      return ["runs a compiled api backed mcp tool", "proof validation", "postcondition", "evidence"];
+    case "api_tool_public_surface_runs_published_tool_name_via_skill_bus":
+      return ["runs a published api backed mcp tool", "tool name", "skill bus resolution"];
     default:
       return [normalizeText(capability)];
   }

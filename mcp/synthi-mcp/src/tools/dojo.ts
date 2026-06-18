@@ -157,6 +157,7 @@ import {
   blockDojoMcpSkillBusExecution,
   createInProcessDojoMcpSkillBus,
   createLegacyDojoTenantContext,
+  type DojoToolResolution,
 } from "../dojo/mcp/skill_bus.js";
 import type { DojoTenantContext } from "../dojo/mcp/execution_policy_gate.js";
 import type { BrowserWorkflowArtifact } from "../browser/broker.js";
@@ -1420,6 +1421,8 @@ export const DOJO_TOOLS = [
       properties: {
         ...DOJO_TENANT_CONTEXT_INPUT_PROPERTIES,
         api_backed_mcp_tool: { type: "object" },
+        tool_name: { type: "string" },
+        tool_version: { type: "string" },
         tool_args: { type: "object" },
         auth_scopes: { type: "array", items: { type: "string" } },
         dry_run: { type: "boolean" },
@@ -1437,7 +1440,7 @@ export const DOJO_TOOLS = [
         api_base_url: { type: "string" },
         request_headers: { type: "object", additionalProperties: { type: "string" } },
       },
-      required: ["api_backed_mcp_tool", "tool_args"],
+      required: ["tool_args"],
     },
   },
   {
@@ -2843,27 +2846,151 @@ async function dojoPrepareApiBackedToolTool(args: unknown): Promise<ToolResponse
   });
 }
 
+type ResolvedApiBackedToolForRun =
+  | {
+      ok: true;
+      skill: {
+        ok: true;
+        skill: DojoSkill;
+        tenant: DojoTenantContext;
+        control_plane_source: "compatibility_registry" | "postgres";
+      };
+      apiTool: DojoApiBackedMcpTool;
+      skillBusResolution: DojoToolResolution | null;
+    }
+  | { ok: false; error: ToolResponse };
+
+async function resolveApiBackedToolForRun(args: unknown, operation: string): Promise<ResolvedApiBackedToolForRun> {
+  const a = obj(args);
+  const suppliedApiTool = apiBackedMcpToolOpt(a["api_backed_mcp_tool"]);
+  const requestedToolName = stringOpt(a["tool_name"]);
+  const requestedToolVersion = stringOpt(a["tool_version"]);
+  if (suppliedApiTool) {
+    const blockedBy = dedupeStrings([
+      ...(requestedToolName && requestedToolName !== suppliedApiTool.tool_name ? ["api_backed_tool_name_mismatch"] : []),
+      ...(requestedToolVersion && requestedToolVersion !== suppliedApiTool.tool_version ? ["api_backed_tool_version_mismatch"] : []),
+    ]);
+    if (blockedBy.length > 0) {
+      return {
+        ok: false,
+        error: errorResponse("dojo_api_backed_tool_identity_mismatch", {
+          ok: false,
+          error: "dojo_api_backed_tool_identity_mismatch",
+          requested_tool_name: requestedToolName ?? null,
+          requested_tool_version: requestedToolVersion ?? null,
+          api_backed_mcp_tool_name: suppliedApiTool.tool_name,
+          api_backed_mcp_tool_version: suppliedApiTool.tool_version,
+          blocked_by: blockedBy,
+        }),
+      };
+    }
+    const skill = await requiredAuthorizedSkillForProductionRead(
+      { ...a, skill_id: suppliedApiTool.skill_id },
+      operation
+    );
+    if (!skill.ok) return skill;
+    return {
+      ok: true,
+      skill,
+      apiTool: suppliedApiTool,
+      skillBusResolution: null,
+    };
+  }
+
+  if (!requestedToolName) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_api_backed_tool_inputs_invalid", {
+        ok: false,
+        error: "dojo_api_backed_tool_inputs_invalid",
+        blocked_by: ["api_backed_tool_name_required"],
+        expected_shape: "api_backed_mcp_tool or published tool_name plus tool_args",
+      }),
+    };
+  }
+
+  const tenantContext = dojoTenantContextResultFromArgs(args);
+  if (!tenantContext.ok) return tenantContext;
+  const durableSkills = await listDurableDojoSkillsForTenantIfRequired(tenantContext.tenant, operation);
+  if (!durableSkills.ok) return durableSkills;
+  const skills = durableSkills.skills ?? dojoSkillRegistry.list();
+  const skillBus = createInProcessDojoMcpSkillBus({ listSkills: () => skills });
+  const resolution = await skillBus.resolveTool({
+    tenant: tenantContext.tenant,
+    tool_name: requestedToolName,
+    tool_version: requestedToolVersion,
+  });
+  if (!resolution.ok || !resolution.skill) {
+    return {
+      ok: false,
+      error: errorResponse(resolution.blocked_by[0] ?? "dojo_api_backed_tool_resolution_failed", {
+        ok: false,
+        error: resolution.blocked_by[0] ?? "dojo_api_backed_tool_resolution_failed",
+        tool_name: requestedToolName,
+        tool_version: requestedToolVersion ?? null,
+        mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(resolution),
+        blocked_by: resolution.blocked_by.length > 0 ? resolution.blocked_by : ["dojo_mcp_tool_not_resolved"],
+      }),
+    };
+  }
+  if (resolution.resolved_tool?.kind !== "api_backed" || !resolution.api_backed_mcp_tool) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_api_backed_tool_not_api_backed", {
+        ok: false,
+        error: "dojo_api_backed_tool_not_api_backed",
+        skill_id: resolution.skill.skill_id,
+        tool_name: requestedToolName,
+        tool_version: requestedToolVersion ?? null,
+        mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(resolution),
+        blocked_by: ["dojo_mcp_tool_not_api_backed"],
+      }),
+    };
+  }
+  return {
+    ok: true,
+    skill: {
+      ok: true,
+      skill: resolution.skill,
+      tenant: tenantContext.tenant,
+      control_plane_source: durableSkills.source,
+    },
+    apiTool: resolution.api_backed_mcp_tool,
+    skillBusResolution: resolution,
+  };
+}
+
+function apiBackedToolSkillBusResolutionSummary(resolution: DojoToolResolution | null): Record<string, unknown> | null {
+  if (!resolution) return null;
+  return {
+    ok: resolution.ok,
+    status: resolution.status,
+    blocked_by: [...resolution.blocked_by],
+    skill_id: resolution.skill_id,
+    workflow_id: resolution.workflow_id,
+    tool_name: resolution.tool_name,
+    tool_version: resolution.tool_version,
+    resolved_tool: resolution.resolved_tool ?? null,
+    mcp_skill_manifest: resolution.mcp_skill_manifest ?? null,
+    manifest_validation: resolution.manifest_validation ?? null,
+  };
+}
+
 async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
-  const apiTool = apiBackedMcpToolOpt(a["api_backed_mcp_tool"]);
   const toolArgs = objectOpt(a["tool_args"]);
-  if (!apiTool || !toolArgs) {
+  if (!toolArgs) {
     return errorResponse("dojo_api_backed_tool_inputs_invalid", {
       ok: false,
       error: "dojo_api_backed_tool_inputs_invalid",
-      blocked_by: [
-        ...(!apiTool ? ["api_backed_mcp_tool_invalid"] : []),
-        ...(!toolArgs ? ["api_backed_tool_args_invalid"] : []),
-      ],
-      expected_shape: "api_backed_mcp_tool plus tool_args containing proof_capsule, request, query?, idempotency_key?",
+      blocked_by: ["api_backed_tool_args_invalid"],
+      expected_shape: "api_backed_mcp_tool or tool_name plus tool_args containing proof_capsule, request, query?, idempotency_key?",
     });
   }
 
-  const skill = await requiredAuthorizedSkillForProductionRead(
-    { ...a, skill_id: apiTool.skill_id },
-    "synthi_dojo_run_api_backed_tool"
-  );
-  if (!skill.ok) return skill.error;
+  const resolvedApiTool = await resolveApiBackedToolForRun(args, "synthi_dojo_run_api_backed_tool");
+  if (!resolvedApiTool.ok) return resolvedApiTool.error;
+  const { skill, apiTool, skillBusResolution } = resolvedApiTool;
   const currentLicense = skill.skill.permission_license;
   const toolMismatch = apiBackedToolCurrentLicenseBlockedBy(apiTool, skill.skill);
   if (toolMismatch.length > 0) {
@@ -2962,6 +3089,9 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         run_id: runId,
         dry_run: true,
         proof_key: validationOptions.proof_key ?? null,
+        tool_name: apiTool.tool_name,
+        tool_version: apiTool.tool_version,
+        mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(skillBusResolution),
         api_backed_mcp_tool: apiTool,
         api_tool_invocation_validation: invocationValidation,
         proof_validation: proofValidation,
@@ -2987,6 +3117,9 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         run_id: runId,
         dry_run: false,
         proof_key: validationOptions.proof_key ?? null,
+        tool_name: apiTool.tool_name,
+        tool_version: apiTool.tool_version,
+        mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(skillBusResolution),
         api_backed_mcp_tool: apiTool,
         api_tool_invocation_validation: invocationValidation,
         proof_validation: proofValidation,
@@ -3080,6 +3213,9 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
       dry_run: false,
       transport_mode: transport.mode,
       proof_key: validationOptions.proof_key ?? null,
+      tool_name: apiTool.tool_name,
+      tool_version: apiTool.tool_version,
+      mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(skillBusResolution),
       api_backed_mcp_tool: apiTool,
       api_tool_invocation_validation: invocationValidation,
       proof_validation: execution.proof_validation ?? proofValidation,
