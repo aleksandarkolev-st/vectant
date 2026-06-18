@@ -70,6 +70,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - dedicated Dojo product UX surfaces and governance view models
 - tenant-scoped governance scheduled-job runner with dry-run semantics, typed handlers, RBAC, and audit persistence for supported non-dry transitions
 - package-readiness release gate that runs `npm pack --dry-run`, verifies packed exports and release harness files, and emits digest-backed evidence
+- privacy-redaction and compliance-export release gates with focused test execution, digest-matched logs/reports, verifier include flags, and local evidence artifacts
 - repo artifact export
 - compact UI status surface plus dedicated Dojo routes
 
@@ -172,7 +173,8 @@ Safe current claim:
 Agent Dojo implements a repo-local proof-gated competency system with executable graph
 runtime foundations, materialized synthetic Vivarium scenarios, evidence/proof/ledger
 foundations, scoped licenses, repo exports, source/API scaffolding, API-backed skill-bus
-tool execution foundations, governance views, package-readiness release proof, and MCP tool exposure.
+tool execution foundations, governance views, package-readiness release proof, privacy/compliance
+release-gate proof artifacts, and MCP tool exposure.
 ```
 
 Unsafe current claim:
