@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -197,5 +198,25 @@ describe("Dojo release gate runner", () => {
     expect(report.promotion_ready).toBe(false);
     expect(report.plan.selected_gate_ids).toEqual(DOJO_MINIMAL_PR_GATE_IDS);
     expect(report.results.every((gate) => gate.status === "planned")).toBe(true);
+  });
+
+  it("can bind a runner report to a supplied manifest artifact", async () => {
+    const outDir = await mkdtemp(join(tmpdir(), "dojo-release-gate-runner-"));
+    const releaseManifest = manifest();
+    const result = await runDojoReleaseGateRunner({
+      scope: "minimal-pr",
+      gateIds: ["mcp_typecheck"],
+      dryRun: true,
+      execute: false,
+      outDir,
+      generatedAt: "2026-06-18T00:00:00.000Z",
+      env: {},
+      manifest: releaseManifest,
+    });
+    const expectedSha256 = createHash("sha256").update(JSON.stringify(releaseManifest)).digest("hex");
+
+    expect(result.report.manifest.sha256).toBe(expectedSha256);
+    expect(result.report.manifest.gate_count).toBe(releaseManifest.gates.length);
+    expect(result.report.plan.selected_gate_ids).toEqual(["mcp_typecheck"]);
   });
 });

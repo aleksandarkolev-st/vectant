@@ -12,6 +12,7 @@ import {
   DOJO_FULL_VISUAL_VIEWPORTS,
   DOJO_GHOST_MODE_VISUAL_ROUTE_IDS,
   DOJO_GHOST_MODE_VISUAL_VIEWPORTS,
+  validateDojoReleaseGateManifest,
 } from "../../scripts/dojo-release-gate-manifest.mjs";
 import {
   DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES,
@@ -182,12 +183,17 @@ import {
   verifyDojoProofSelfCheckArtifacts,
   verifyDojoReleaseGateArtifactsFromArgs,
   verifyDojoReleaseGateManifestArtifacts,
+  verifyDojoReleaseGateRunReportArtifact,
   verifyDojoPrivacyRedactionEvidenceArtifact,
   verifyDojoSecurityAbuseEvidenceArtifact,
   verifyDojoSoakPerformanceArtifacts,
   verifyDojoWorkflowPipelineE2EArtifact,
   verifyVisualProofArtifact,
 } from "../../scripts/dojo-release-gate-verify.mjs";
+import {
+  buildDojoReleaseGateExecutionPlan,
+  buildDojoReleaseGateRunReport,
+} from "../../scripts/dojo-release-gate-runner.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -222,6 +228,103 @@ describe("Dojo release gate artifact verifier", () => {
       expect.stringMatching(/^manifest_sha256_mismatch:/),
       expect.stringMatching(/^manifest_invalid:unknown_release_gate_ids:dojo_mcp_host_conformance/),
     ]));
+  });
+
+  it("verifies release-gate runner reports and rejects dry-run or tampered log proof for promotion", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-gate-runner-verify-"));
+    const packageScripts = await readPackageScripts();
+    const releaseManifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    const artifacts = await writeReleaseGateRunnerFixture({
+      dir,
+      manifest: releaseManifest,
+      packageScripts,
+    });
+
+    expect(await verifyDojoReleaseGateRunReportArtifact({
+      reportPath: artifacts.reportPath,
+      manifest: releaseManifest,
+      requirePromotionReady: true,
+    })).toEqual(expect.objectContaining({
+      id: "release_gate_runner",
+      ok: true,
+      errors: [],
+      report_schema_version: "synthi.dojo.releaseGateRun.v1",
+      result_count: 1,
+      promotion_ready: true,
+    }));
+
+    await writeFile(artifacts.stdoutPath, "tampered stdout\n", "utf8");
+    const tampered = await verifyDojoReleaseGateRunReportArtifact({
+      reportPath: artifacts.reportPath,
+      manifest: releaseManifest,
+      requirePromotionReady: true,
+    });
+    expect(tampered.ok).toBe(false);
+    expect(tampered.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^runner_stdout_bytes_mismatch:mcp_typecheck:/),
+      expect.stringMatching(/^runner_stdout_sha256_mismatch:mcp_typecheck:/),
+    ]));
+
+    const dryRunArtifacts = await writeReleaseGateRunnerFixture({
+      dir,
+      basename: "dojo-release-gate-runner-dry-run",
+      manifest: releaseManifest,
+      packageScripts,
+      dryRun: true,
+    });
+    const dryRunRejected = await verifyDojoReleaseGateRunReportArtifact({
+      reportPath: dryRunArtifacts.reportPath,
+      manifest: releaseManifest,
+      requirePromotionReady: true,
+    });
+    expect(dryRunRejected.ok).toBe(false);
+    expect(dryRunRejected.errors).toEqual(expect.arrayContaining([
+      "runner_report_dry_run",
+      "runner_report_not_complete",
+      "runner_report_not_promotion_ready",
+      "runner_planned_gates_present:1",
+      "runner_result_planned:mcp_typecheck",
+    ]));
+  });
+
+  it("can include a release-gate runner report in aggregate artifact verification", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-gate-runner-aggregate-"));
+    const packageScripts = await readPackageScripts();
+    const releaseManifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest: releaseManifest, manifestPath, evidencePath });
+    const runner = await writeReleaseGateRunnerFixture({
+      dir,
+      manifest: releaseManifest,
+      packageScripts,
+    });
+
+    const aggregate = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "release-gate-run-report": runner.reportPath,
+        "require-release-gate-runner-promotion-ready": "1",
+      },
+    });
+
+    expect(aggregate.ok).toBe(true);
+    expect(aggregate.release_gate_runner).toEqual([
+      expect.objectContaining({
+        id: "release_gate_runner",
+        ok: true,
+        result_count: 1,
+        promotion_ready: true,
+      }),
+    ]);
+    expect(aggregate.attempted_release_gate_ids).not.toContain("release_gate_runner");
   });
 
   it("reports manifest-declared verifiable release gates that have no verifier section", () => {
@@ -3594,6 +3697,89 @@ async function writeManifestPair({ manifest, manifestPath, evidencePath }) {
   });
   await writeFile(manifestPath, serialized, "utf8");
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2), "utf8");
+}
+
+async function writeReleaseGateRunnerFixture({
+  dir,
+  basename = "dojo-release-gate-runner",
+  manifest,
+  packageScripts,
+  dryRun = false,
+}) {
+  const plan = buildDojoReleaseGateExecutionPlan({
+    manifest,
+    scope: "minimal-pr",
+    gateIds: ["mcp_typecheck"],
+    env: {},
+  });
+  const validation = validateDojoReleaseGateManifest(manifest, { packageScripts });
+  const logsDir = path.join(dir, `${basename}-logs`);
+  await mkdir(logsDir, { recursive: true });
+  const stdout = "typecheck ok\n";
+  const stderr = "";
+  const stdoutPath = path.join(logsDir, "mcp_typecheck.stdout.log");
+  const stderrPath = path.join(logsDir, "mcp_typecheck.stderr.log");
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  const results = dryRun
+    ? [{
+      gate_id: "mcp_typecheck",
+      tier: "T0",
+      status: "planned",
+      executed: false,
+      command: "npm --prefix mcp/synthi-mcp run typecheck",
+      expected_artifacts: {
+        report_path: null,
+        evidence_path: null,
+        events_path: null,
+        evidence_kind: "log",
+      },
+      requires_env: [],
+      missing_env: [],
+    }]
+    : [{
+      schema_version: "synthi.dojo.releaseGateCommandLog.v1",
+      gate_id: "mcp_typecheck",
+      tier: "T0",
+      status: "passed",
+      executed: true,
+      started_at: "2026-06-11T00:00:00.000Z",
+      duration_ms: 12,
+      command: "npm --prefix mcp/synthi-mcp run typecheck",
+      exit_code: 0,
+      signal: null,
+      timed_out: false,
+      failure_reason: null,
+      stdout_path: stdoutPath,
+      stderr_path: stderrPath,
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr),
+      stdout_sha256: sha256(stdout),
+      stderr_sha256: sha256(stderr),
+      expected_artifacts: {
+        report_path: null,
+        evidence_path: null,
+        events_path: null,
+        evidence_kind: "log",
+      },
+    }];
+  const report = buildDojoReleaseGateRunReport({
+    manifest,
+    manifestValidation: validation,
+    plan,
+    results,
+    scope: "minimal-pr",
+    dryRun,
+    generatedAt: "2026-06-11T00:00:00.000Z",
+  });
+  const reportPath = path.join(dir, `${basename}.json`);
+  await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
+  return {
+    reportPath,
+    stdoutPath,
+    stderrPath,
+    report,
+  };
 }
 
 async function writeConformancePair({ report, reportPath, evidencePath }) {

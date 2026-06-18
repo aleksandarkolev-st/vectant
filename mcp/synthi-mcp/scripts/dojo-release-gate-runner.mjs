@@ -56,6 +56,7 @@ async function main() {
     dryRun,
     execute: truthy(args.execute),
     outDir,
+    manifest: args.manifest ? await readJsonFile(path.resolve(String(args.manifest))) : undefined,
     gateIds: argList(args.gate || args.gates),
     failOnMissingEnv: truthy(args["fail-on-missing-env"]),
     continueOnFailure: truthy(args["continue-on-failure"]),
@@ -83,10 +84,11 @@ export async function runDojoReleaseGateRunner({
   env = process.env,
   executor = runGateCommand,
   generatedAt = new Date().toISOString(),
+  manifest: suppliedManifest,
 } = {}) {
   await mkdir(outDir, { recursive: true });
   const packageScripts = await readPackageScriptsForReleaseGates();
-  const manifest = buildDojoReleaseGateManifest({ generatedAt, packageScripts });
+  const manifest = suppliedManifest || buildDojoReleaseGateManifest({ generatedAt, packageScripts });
   const validation = validateDojoReleaseGateManifest(manifest, { packageScripts });
   const plan = buildDojoReleaseGateExecutionPlan({
     manifest,
@@ -547,6 +549,10 @@ async function readPackageScriptsForReleaseGates() {
     entries.push([normalizeRepoPath(packageJsonPath), parsed.scripts || {}]);
   }
   return Object.fromEntries(entries);
+}
+
+async function readJsonFile(filePath) {
+  return JSON.parse(await readFile(filePath, "utf8"));
 }
 
 function expectedGateArtifacts(gate) {

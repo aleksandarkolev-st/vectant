@@ -130,6 +130,7 @@ const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
 
 const DEFAULT_RELEASE_GATE_DIR = path.join(REPO_ROOT, "tmp", "dojo-release-gates");
 const DEFAULT_VERIFY_DIR = path.join(REPO_ROOT, "tmp", "dojo-release-gate-verify");
+const DEFAULT_RELEASE_GATE_RUNNER_DIR = path.join(REPO_ROOT, "tmp", "dojo-release-gate-runner");
 const DEFAULT_WORKFLOW_PIPELINE_E2E_DIR = path.join(REPO_ROOT, "tmp", "workflow-pipeline-e2e");
 const DEFAULT_PRIVATE_TOOL_STDIO_ACCEPTANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-stdio-acceptance");
 const DEFAULT_PRIVATE_TOOL_CODEX_ACCEPTANCE_DIR = path.join(REPO_ROOT, "tmp", "private-tool-codex-acceptance");
@@ -204,6 +205,21 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     evidencePath,
   }, () => verifyDojoReleaseGateManifestArtifacts({ manifestPath, evidencePath }));
   const manifest = manifestResult.manifest || { gates: [], release_gate_ids: [] };
+
+  const releaseGateRunnerResults = [];
+  if (truthy(args["include-release-gate-runner-default"]) || args["release-gate-run-report"]) {
+    const reportPath = resolveRepoPath(args["release-gate-run-report"]
+      || path.join(DEFAULT_RELEASE_GATE_RUNNER_DIR, "dojo-release-gate-runner-report.json"));
+    releaseGateRunnerResults.push(await verifyArtifactSection({
+      id: "release_gate_runner",
+      artifactPath: reportPath,
+      releaseCandidate,
+    }, () => verifyDojoReleaseGateRunReportArtifact({
+      reportPath,
+      manifest,
+      requirePromotionReady: releaseCandidate || truthy(args["require-release-gate-runner-promotion-ready"]),
+    })));
+  }
 
   const proofSelfCheckResults = [];
   const shouldVerifyDojoSelfCheck = releaseCandidate
@@ -785,7 +801,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     })));
   }
 
-  const sections = [manifestResult, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...releaseGateRunnerResults, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const releaseGateCoverage = getVerifiableReleaseGateCoverage({
     manifest,
     sections,
@@ -806,6 +822,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     failed_verifiable_release_gate_ids: releaseGateCoverage.failed_verifiable_release_gate_ids,
     missing_verifiable_release_gate_ids: releaseGateCoverage.missing_verifiable_release_gate_ids,
     manifest: summarizeSection(manifestResult),
+    release_gate_runner: releaseGateRunnerResults.map(summarizeSection),
     dojo_self_check: proofSelfCheckResults.map(summarizeSection),
     visual_reports: visualResults.map(summarizeSection),
     postgres_control_plane: postgresControlPlaneResults.map(summarizeSection),
@@ -864,6 +881,78 @@ export async function verifyDojoReleaseGateManifestArtifacts({ manifestPath, evi
     evidence,
     artifact_path: manifestPath,
     evidence_path: evidencePath,
+  };
+}
+
+export async function verifyDojoReleaseGateRunReportArtifact({
+  reportPath,
+  manifest,
+  requirePromotionReady = false,
+} = {}) {
+  const report = await readJsonFile(reportPath);
+  const errors = [];
+  const gatesById = new Map((Array.isArray(manifest?.gates) ? manifest.gates : []).map((gate) => [gate.id, gate]));
+  if (report?.schema_version !== "synthi.dojo.releaseGateRun.v1") {
+    errors.push(`runner_schema_mismatch:${report?.schema_version || "missing"}`);
+  }
+  if (report?.ok !== true) errors.push("runner_report_not_ok");
+  if (report?.manifest?.validation_ok !== true) errors.push("runner_manifest_validation_not_ok");
+  const expectedManifestSha256 = sha256(JSON.stringify(manifest || {}));
+  if (report?.manifest?.sha256 !== expectedManifestSha256) {
+    errors.push(`runner_manifest_sha256_mismatch:${report?.manifest?.sha256 || "missing"}:${expectedManifestSha256}`);
+  }
+  const selectedGateIds = Array.isArray(report?.plan?.selected_gate_ids) ? report.plan.selected_gate_ids : [];
+  const unknownGateIds = Array.isArray(report?.plan?.unknown_gate_ids) ? report.plan.unknown_gate_ids : [];
+  for (const gateId of selectedGateIds) {
+    if (!gatesById.has(gateId)) errors.push(`runner_unknown_selected_gate:${gateId}`);
+  }
+  for (const gateId of unknownGateIds) errors.push(`runner_unknown_gate:${gateId}`);
+  const results = Array.isArray(report?.results) ? report.results : [];
+  const counts = {
+    selected: selectedGateIds.length,
+    planned: results.filter((result) => result.status === "planned").length,
+    executed: results.filter((result) => result.executed === true).length,
+    passed: results.filter((result) => result.status === "passed").length,
+    failed: results.filter((result) => result.status === "failed").length,
+    skipped: results.filter((result) => result.status === "skipped").length,
+  };
+  for (const key of Object.keys(counts)) {
+    if (report?.counts?.[key] !== counts[key]) errors.push(`runner_count_mismatch:${key}:${report?.counts?.[key]}:${counts[key]}`);
+  }
+  if (report?.plan?.gate_count !== results.length) {
+    errors.push(`runner_plan_result_count_mismatch:${report?.plan?.gate_count}:${results.length}`);
+  }
+  if (report?.counts?.selected !== selectedGateIds.length) {
+    errors.push(`runner_selected_count_mismatch:${report?.counts?.selected}:${selectedGateIds.length}`);
+  }
+  if (requirePromotionReady) {
+    if (report?.dry_run === true) errors.push("runner_report_dry_run");
+    if (report?.complete !== true) errors.push("runner_report_not_complete");
+    if (report?.promotion_ready !== true) errors.push("runner_report_not_promotion_ready");
+    if (counts.planned > 0) errors.push(`runner_planned_gates_present:${counts.planned}`);
+    if (counts.skipped > 0) errors.push(`runner_skipped_gates_present:${counts.skipped}`);
+    if (counts.failed > 0) errors.push(`runner_failed_gates_present:${counts.failed}`);
+  }
+  for (const result of results) {
+    await validateRunnerGateResult({
+      result,
+      gatesById,
+      requirePromotionReady,
+      errors,
+    });
+  }
+  return {
+    id: "release_gate_runner",
+    ok: errors.length === 0,
+    errors,
+    artifact_path: reportPath,
+    report_schema_version: report?.schema_version,
+    result_count: results.length,
+    release_candidate: Boolean(requirePromotionReady),
+    runner_scope: report?.scope,
+    dry_run: Boolean(report?.dry_run),
+    complete: Boolean(report?.complete),
+    promotion_ready: Boolean(report?.promotion_ready),
   };
 }
 
@@ -8951,6 +9040,58 @@ function findGate(manifest, gateId) {
   return gates.find((gate) => gate.evidence_kind === "visual_report");
 }
 
+async function validateRunnerGateResult({
+  result,
+  gatesById,
+  requirePromotionReady,
+  errors,
+}) {
+  const gateId = String(result?.gate_id || "");
+  const gate = gatesById.get(gateId);
+  if (!gate) {
+    errors.push(`runner_unknown_result_gate:${gateId || "missing"}`);
+    return;
+  }
+  if (result.tier !== gate.tier) errors.push(`runner_result_tier_mismatch:${gateId}:${result.tier}:${gate.tier}`);
+  if (result.expected_artifacts?.evidence_kind !== gate.evidence_kind) {
+    errors.push(`runner_result_evidence_kind_mismatch:${gateId}:${result.expected_artifacts?.evidence_kind}:${gate.evidence_kind}`);
+  }
+  const validStatuses = new Set(["planned", "skipped", "passed", "failed"]);
+  if (!validStatuses.has(result.status)) errors.push(`runner_result_unknown_status:${gateId}:${result.status}`);
+  if (result.status === "passed") {
+    if (result.executed !== true) errors.push(`runner_passed_gate_not_executed:${gateId}`);
+    if (result.exit_code !== 0) errors.push(`runner_passed_gate_exit_nonzero:${gateId}:${result.exit_code}`);
+    await validateRunnerLogDigest({ result, gateId, kind: "stdout", errors });
+    await validateRunnerLogDigest({ result, gateId, kind: "stderr", errors });
+  }
+  if (result.status === "failed" && requirePromotionReady) errors.push(`runner_result_failed:${gateId}`);
+  if (result.status === "skipped" && requirePromotionReady) errors.push(`runner_result_skipped:${gateId}:${result.skip_reason || "unknown"}`);
+  if (result.status === "planned" && !result.executed && requirePromotionReady) errors.push(`runner_result_planned:${gateId}`);
+  if (result.status !== "planned" && result.command !== result.command?.trim()) {
+    errors.push(`runner_result_command_untrimmed:${gateId}`);
+  }
+}
+
+async function validateRunnerLogDigest({ result, gateId, kind, errors }) {
+  const pathField = `${kind}_path`;
+  const bytesField = `${kind}_bytes`;
+  const digestField = `${kind}_sha256`;
+  const logPath = result?.[pathField];
+  if (!logPath) {
+    errors.push(`runner_${kind}_path_missing:${gateId}`);
+    return;
+  }
+  const bytes = await readFile(resolveRepoPath(logPath));
+  const actualBytes = bytes.length;
+  const actualSha256 = sha256(bytes);
+  if (result?.[bytesField] !== actualBytes) {
+    errors.push(`runner_${kind}_bytes_mismatch:${gateId}:${result?.[bytesField]}:${actualBytes}`);
+  }
+  if (result?.[digestField] !== actualSha256) {
+    errors.push(`runner_${kind}_sha256_mismatch:${gateId}:${result?.[digestField]}:${actualSha256}`);
+  }
+}
+
 async function verifyArtifactSection({
   id,
   artifactPath,
@@ -9036,6 +9177,10 @@ function summarizeSection(section) {
     result_count: section.result_count,
     release_candidate: section.release_candidate,
     enterprise_release: section.enterprise_release,
+    runner_scope: section.runner_scope,
+    dry_run: section.dry_run,
+    complete: section.complete,
+    promotion_ready: section.promotion_ready,
   };
 }
 
