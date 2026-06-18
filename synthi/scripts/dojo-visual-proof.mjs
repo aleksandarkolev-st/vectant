@@ -166,12 +166,13 @@ async function captureRoute({ browser, port, route, viewport }) {
     await page.addStyleTag({ content: DEV_OVERLAY_CSS });
     await page.waitForSelector(route.selector, { timeout: 20_000 });
     await applyRouteInteraction(page, route.interaction);
-    const text = await page.locator(route.selector).innerText({ timeout: 10_000 });
-    const layoutMetrics = await collectRouteLayoutMetrics(page, route.selector);
     const requiredText = [
       ...route.requiredText,
       ...(route.interaction?.requiredText || []),
     ];
+    await waitForRequiredRouteText(page, route.selector, requiredText, 15_000);
+    const text = await page.locator(route.selector).innerText({ timeout: 10_000 });
+    const layoutMetrics = await collectRouteLayoutMetrics(page, route.selector);
     const checks = Object.fromEntries(
       requiredText.map((required) => [`text:${required}`, text.includes(required)])
     );
@@ -204,6 +205,23 @@ async function captureRoute({ browser, port, route, viewport }) {
     };
   } finally {
     await page.close();
+  }
+}
+
+async function waitForRequiredRouteText(page, selector, requiredText, timeoutMs) {
+  if (!requiredText.length) return;
+  try {
+    await page.waitForFunction(
+      ({ selector: targetSelector, required }) => {
+        const node = document.querySelector(targetSelector);
+        const text = node?.innerText || "";
+        return required.every((item) => text.includes(item));
+      },
+      { selector, required: requiredText },
+      { timeout: timeoutMs }
+    );
+  } catch {
+    // Keep the screenshot and explicit missing-text gates for diagnosis.
   }
 }
 
