@@ -3036,6 +3036,7 @@ describe("Dojo release gate artifact verifier", () => {
       vivarium_contract: {
         ...vivariumRuntimeEvidenceFixture().vivarium_contract,
         evil_twin_hardening_loop_required: false,
+        evil_twin_expanded_assumption_extraction_required: false,
         executable_checkride_required: false,
         ambiguous_document_names_required: false,
         document_tissue_specific_evidence_required: false,
@@ -3065,6 +3066,7 @@ describe("Dojo release gate artifact verifier", () => {
       "vivarium_runtime_coverage_incomplete",
       "vivarium_runtime_missing_capabilities:evil_twin_hardening_reduces_attack_success_rate",
       "vivarium_runtime_evil_twin_hardening_requirement_missing",
+      "vivarium_runtime_evil_twin_expanded_assumption_requirement_missing",
       "vivarium_runtime_checkride_requirement_missing",
       "vivarium_runtime_ambiguous_document_requirement_missing",
       "vivarium_runtime_document_tissue_specific_evidence_requirement_missing",
@@ -6640,6 +6642,7 @@ function vivariumRuntimeEvidenceFixture(overrides = {}) {
       critical_guardrail_failure_required: true,
       substrate_hook_passthrough_required: true,
       evil_twin_attack_measurement_required: true,
+      evil_twin_expanded_assumption_extraction_required: true,
       evil_twin_hardening_loop_required: true,
       self_check_executes_tests_required: true,
     },

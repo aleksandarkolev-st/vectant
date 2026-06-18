@@ -50,6 +50,99 @@ describe("Dojo Evil Twin runtime", () => {
     ]));
   });
 
+  it("extracts expanded attack assumptions for stale identity, stable order, policy, and document trust", async () => {
+    const scenarios = [
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "stale_entity", risk_tags: ["stale_data"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "network_latency", risk_tags: ["latency"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "permission_change", risk_tags: ["permission_change"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "reordered_rows", risk_tags: ["unstable_order"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "invalid_value", risk_tags: ["currency_mismatch", "invalid_value"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "ambiguous_document_name", risk_tags: ["ambiguous_file"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "prompt_injection", risk_tags: ["prompt_injection", "untrusted_document"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "approval_unavailable", risk_tags: ["approval_unavailable"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "destructive_adjacency", risk_tags: ["destructive_write"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "button_hidden_menu", risk_tags: ["ui_tissue"] })),
+    ];
+    const assumptions = extractDojoEvilTwinAssumptions(richGraphFixture(), scenarios);
+
+    expect(assumptions.map((assumption) => assumption.kind)).toEqual(expect.arrayContaining([
+      "entity_freshness",
+      "api_latency",
+      "role_permission",
+      "stable_table_order",
+      "currency_validity",
+      "file_identity",
+      "document_trust",
+      "approval_availability",
+      "destructive_adjacency",
+      "input_visibility",
+    ]));
+    expect(assumptions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "stable_table_order",
+        attack_mutation_kind: "reordered_rows",
+        node_ids: expect.arrayContaining(["observe", "locate", "action", "assertion"]),
+        evidence: expect.arrayContaining([
+          expect.stringContaining("table order can change"),
+        ]),
+      }),
+      expect.objectContaining({
+        kind: "document_trust",
+        attack_mutation_kind: "prompt_injection",
+        node_ids: expect.arrayContaining(["artifact", "action", "assertion"]),
+        evidence: expect.arrayContaining([
+          expect.stringContaining("document text can contain untrusted task instructions"),
+        ]),
+      }),
+      expect.objectContaining({
+        kind: "approval_availability",
+        attack_mutation_kind: "approval_unavailable",
+        node_ids: expect.arrayContaining(["permission", "human", "action"]),
+      }),
+    ]));
+  });
+
+  it("runs expanded attack assumptions through Vivarium scenario outcomes", async () => {
+    const scenarios = [
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "stale_entity", risk_tags: ["stale_data"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "reordered_rows", risk_tags: ["unstable_order"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "prompt_injection_unquarantined", risk_tags: ["prompt_injection", "untrusted_document"] })),
+      toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "approval_unavailable", risk_tags: ["approval_unavailable"] })),
+    ];
+
+    const report = await runDojoEvilTwin({
+      graph: richGraphFixture(),
+      scenarios,
+      now: "2026-06-11T00:00:00.000Z",
+    });
+
+    expect(report.attack_count).toBe(scenarios.length);
+    expect(report.assumptions.map((assumption) => assumption.kind)).toEqual(expect.arrayContaining([
+      "entity_freshness",
+      "stable_table_order",
+      "document_trust",
+      "approval_availability",
+    ]));
+    expect(report.attacks.map((attack) => attack.mutation_kind)).toEqual(expect.arrayContaining([
+      "stale_entity",
+      "reordered_rows",
+      "prompt_injection_unquarantined",
+      "approval_unavailable",
+    ]));
+    expect(report.attacks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        mutation_kind: "prompt_injection_unquarantined",
+        assumption_kind: "document_trust",
+        attack_succeeded: true,
+      }),
+      expect.objectContaining({
+        mutation_kind: "approval_unavailable",
+        assumption_kind: "approval_availability",
+        blocked_by: expect.arrayContaining([expect.any(String)]),
+      }),
+    ]));
+  });
+
   it("classifies auth-expiry attacks as caught when the graph blocks on auth preconditions", async () => {
     const scenarios = [
       toDojoScenarioDefinition(scenarioFixture({ mutation_kind: "auth_expiry", risk_tags: ["auth_expired"] })),
@@ -216,6 +309,40 @@ function graphFixture(input: { requireAuth?: boolean } = {}): DojoSkillGraph {
         case_law_refs: [],
         expiry_triggers: [],
       },
+    ],
+    edges: [],
+  };
+}
+
+function richGraphFixture(): DojoSkillGraph {
+  const baseNode = {
+    risk: "safe" as const,
+    preconditions: [],
+    postconditions: [],
+    guardrails: [],
+    assertions: [],
+    substrate_options: ["dom"],
+    evidence_policy: ["append_action_trace"],
+    case_law_refs: [],
+    expiry_triggers: [],
+  };
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-evil-rich",
+    skill_id: "skill-a",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "checkride",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      { ...baseNode, node_id: "input", kind: "Input", label: "Synthetic input" },
+      { ...baseNode, node_id: "observe", kind: "Observe", label: "Observe synthetic state" },
+      { ...baseNode, node_id: "locate", kind: "Locate", label: "Locate target" },
+      { ...baseNode, node_id: "permission", kind: "Permission", label: "Check permission" },
+      { ...baseNode, node_id: "human", kind: "Human", label: "Human approval" },
+      { ...baseNode, node_id: "artifact", kind: "Artifact", label: "Document artifact" },
+      { ...baseNode, node_id: "action", kind: "Action", label: "Synthetic action" },
+      { ...baseNode, node_id: "assertion", kind: "Assertion", label: "Synthetic assertion" },
     ],
     edges: [],
   };

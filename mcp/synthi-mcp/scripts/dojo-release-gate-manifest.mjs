@@ -1184,6 +1184,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_critical_guardrail_failure: true,
       require_substrate_hook_passthrough: true,
       require_evil_twin_attack_measurement: true,
+      require_evil_twin_expanded_assumption_extraction: true,
       require_evil_twin_hardening_loop: true,
       require_self_check_executes_tests: true,
       require_no_failed_tests: true,
@@ -2744,6 +2745,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_critical_guardrail_failure", "vivarium_runtime_missing_critical_guardrail_requirement"],
       ["require_substrate_hook_passthrough", "vivarium_runtime_missing_substrate_hook_requirement"],
       ["require_evil_twin_attack_measurement", "vivarium_runtime_missing_evil_twin_measurement_requirement"],
+      ["require_evil_twin_expanded_assumption_extraction", "vivarium_runtime_missing_evil_twin_expanded_assumption_requirement"],
       ["require_evil_twin_hardening_loop", "vivarium_runtime_missing_evil_twin_hardening_requirement"],
       ["require_self_check_executes_tests", "vivarium_runtime_missing_self_check_execution_requirement"],
     ]) {

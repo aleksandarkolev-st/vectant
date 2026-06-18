@@ -107,6 +107,8 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "checkride_runner_marks_unquarantined_prompt_injection_critical",
   "checkride_runner_passes_substrate_hooks",
   "evil_twin_measures_attack_success_from_observed_outcomes",
+  "evil_twin_extracts_expanded_attack_assumptions",
+  "evil_twin_runs_expanded_attack_assumptions",
   "evil_twin_catches_auth_expiry_attacks",
   "evil_twin_passes_substrate_hooks",
   "evil_twin_hardening_reduces_attack_success_rate",
@@ -280,6 +282,7 @@ export function buildDojoVivariumRuntimeEvidenceManifest({
       critical_guardrail_failure_required: true,
       substrate_hook_passthrough_required: true,
       evil_twin_attack_measurement_required: true,
+      evil_twin_expanded_assumption_extraction_required: true,
       evil_twin_hardening_loop_required: true,
       self_check_executes_tests_required: true,
     },
@@ -494,6 +497,10 @@ function capabilityMatchers(capability) {
       return ["executable checkride runner passes substrate executor hooks"];
     case "evil_twin_measures_attack_success_from_observed_outcomes":
       return ["evil twin runtime measures attack success", "observed vivarium outcomes"];
+    case "evil_twin_extracts_expanded_attack_assumptions":
+      return ["evil twin runtime extracts expanded attack assumptions", "document trust"];
+    case "evil_twin_runs_expanded_attack_assumptions":
+      return ["evil twin runtime runs expanded attack assumptions", "vivarium scenario outcomes"];
     case "evil_twin_catches_auth_expiry_attacks":
       return ["evil twin runtime classifies auth expiry attacks", "graph blocks on auth preconditions"];
     case "evil_twin_passes_substrate_hooks":

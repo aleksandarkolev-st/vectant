@@ -3584,6 +3584,7 @@ export function validateDojoVivariumRuntimeEvidenceForRelease(evidence) {
     ["critical_guardrail_failure_required", "vivarium_runtime_critical_guardrail_requirement_missing"],
     ["substrate_hook_passthrough_required", "vivarium_runtime_substrate_hook_requirement_missing"],
     ["evil_twin_attack_measurement_required", "vivarium_runtime_evil_twin_measurement_requirement_missing"],
+    ["evil_twin_expanded_assumption_extraction_required", "vivarium_runtime_evil_twin_expanded_assumption_requirement_missing"],
     ["evil_twin_hardening_loop_required", "vivarium_runtime_evil_twin_hardening_requirement_missing"],
     ["self_check_executes_tests_required", "vivarium_runtime_self_check_execution_requirement_missing"],
   ]) {
@@ -5469,6 +5470,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
       vivarium_contract: {
         ...vivariumRuntimeArtifacts.evidence.vivarium_contract,
         evil_twin_hardening_loop_required: false,
+        evil_twin_expanded_assumption_extraction_required: false,
         executable_checkride_required: false,
         policy_tissue_required: false,
         expanded_identity_tissue_required: false,
@@ -5492,6 +5494,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_coverage_incomplete"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_missing_capabilities:evil_twin_hardening_reduces_attack_success_rate"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_evil_twin_hardening_requirement_missing"));
+  assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_evil_twin_expanded_assumption_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_checkride_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_policy_tissue_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_expanded_identity_tissue_requirement_missing"));
@@ -8259,6 +8262,7 @@ async function writeVivariumRuntimeEvidenceForSelfCheck({
       critical_guardrail_failure_required: true,
       substrate_hook_passthrough_required: true,
       evil_twin_attack_measurement_required: true,
+      evil_twin_expanded_assumption_extraction_required: true,
       evil_twin_hardening_loop_required: true,
       self_check_executes_tests_required: true,
     },

@@ -6,10 +6,20 @@ import type { DojoScenarioBudget, DojoScenarioDefinition } from "./scenario_dsl.
 
 export type DojoEvilTwinAssumptionKind =
   | "entity_uniqueness"
+  | "entity_freshness"
   | "stable_success_signal"
   | "auth_continuity"
+  | "role_permission"
   | "api_atomicity"
-  | "input_visibility";
+  | "api_latency"
+  | "input_visibility"
+  | "stable_table_order"
+  | "currency_validity"
+  | "file_identity"
+  | "document_trust"
+  | "approval_availability"
+  | "policy_threshold"
+  | "destructive_adjacency";
 
 export interface DojoEvilTwinAssumption {
   assumption_id: string;
@@ -54,6 +64,122 @@ export interface DojoEvilTwinHardeningReport {
     source_suggestion: string;
   }>;
 }
+
+type DojoEvilTwinNodeSelector =
+  | "all"
+  | "action"
+  | "action_assertion"
+  | "input_action"
+  | "observe_locate_action"
+  | "artifact_action"
+  | "permission_action";
+
+interface DojoEvilTwinAssumptionRule {
+  kind: DojoEvilTwinAssumptionKind;
+  mutation_kinds: string[];
+  node_selector: DojoEvilTwinNodeSelector;
+  evidence_label: string;
+}
+
+const DOJO_EVIL_TWIN_ASSUMPTION_RULES: DojoEvilTwinAssumptionRule[] = [
+  {
+    kind: "entity_uniqueness",
+    mutation_kinds: ["duplicate_entity"],
+    node_selector: "observe_locate_action",
+    evidence_label: "entity uniqueness can be invalidated by duplicate candidates",
+  },
+  {
+    kind: "entity_freshness",
+    mutation_kinds: ["stale_entity"],
+    node_selector: "observe_locate_action",
+    evidence_label: "entity freshness can be invalidated by stale IDs or versions",
+  },
+  {
+    kind: "stable_success_signal",
+    mutation_kinds: ["fake_success", "misleading_toast"],
+    node_selector: "action_assertion",
+    evidence_label: "visual success signals can diverge from durable state",
+  },
+  {
+    kind: "api_atomicity",
+    mutation_kinds: ["partial_write", "downstream_failure"],
+    node_selector: "action_assertion",
+    evidence_label: "API writes may be partial or downstream-dependent",
+  },
+  {
+    kind: "api_latency",
+    mutation_kinds: ["network_latency"],
+    node_selector: "action_assertion",
+    evidence_label: "API responses may be delayed or time out",
+  },
+  {
+    kind: "auth_continuity",
+    mutation_kinds: ["auth_expiry"],
+    node_selector: "all",
+    evidence_label: "authentication can expire mid-flow",
+  },
+  {
+    kind: "role_permission",
+    mutation_kinds: ["permission_change", "missing_permission"],
+    node_selector: "permission_action",
+    evidence_label: "roles and permissions can change before execution",
+  },
+  {
+    kind: "input_visibility",
+    mutation_kinds: [
+      "input_omission",
+      "hidden_required_field",
+      "button_moved",
+      "button_hidden_menu",
+      "validation_below_fold",
+      "modal_appears",
+    ],
+    node_selector: "input_action",
+    evidence_label: "inputs and controls may move, hide, or become interrupted",
+  },
+  {
+    kind: "stable_table_order",
+    mutation_kinds: ["reordered_rows"],
+    node_selector: "observe_locate_action",
+    evidence_label: "table order can change while row identity remains stable",
+  },
+  {
+    kind: "currency_validity",
+    mutation_kinds: ["invalid_value"],
+    node_selector: "input_action",
+    evidence_label: "input values such as currency or amount may violate schema",
+  },
+  {
+    kind: "file_identity",
+    mutation_kinds: ["missing_document_field", "corrupted_document", "ambiguous_document_name"],
+    node_selector: "artifact_action",
+    evidence_label: "documents can be missing, corrupted, or ambiguously named",
+  },
+  {
+    kind: "document_trust",
+    mutation_kinds: ["prompt_injection", "prompt_injection_unquarantined"],
+    node_selector: "artifact_action",
+    evidence_label: "document text can contain untrusted task instructions",
+  },
+  {
+    kind: "approval_availability",
+    mutation_kinds: ["approval_unavailable"],
+    node_selector: "permission_action",
+    evidence_label: "required approvers may be unavailable",
+  },
+  {
+    kind: "policy_threshold",
+    mutation_kinds: ["threshold_breach"],
+    node_selector: "permission_action",
+    evidence_label: "policy thresholds may require approval or block execution",
+  },
+  {
+    kind: "destructive_adjacency",
+    mutation_kinds: ["destructive_adjacency"],
+    node_selector: "action",
+    evidence_label: "destructive controls can be adjacent to safe controls",
+  },
+];
 
 export async function runDojoEvilTwin(input: {
   graph: DojoSkillGraph;
@@ -133,52 +259,27 @@ export function extractDojoEvilTwinAssumptions(
   graph: DojoSkillGraph,
   scenarios: DojoScenarioDefinition[] = []
 ): DojoEvilTwinAssumption[] {
-  const nodeIds = graph.nodes.map((node) => node.node_id);
   const assumptions: DojoEvilTwinAssumption[] = [];
-  if (hasScenario(scenarios, "duplicate_entity")) {
-    assumptions.push({
-      assumption_id: `assumption_${graph.graph_id}_entity_uniqueness`,
-      kind: "entity_uniqueness",
-      node_ids: nodeIds,
-      evidence: ["Scenario catalog contains duplicate-entity mutation."],
-      attack_mutation_kind: "duplicate_entity",
-    });
-  }
-  if (hasScenario(scenarios, "fake_success")) {
-    assumptions.push({
-      assumption_id: `assumption_${graph.graph_id}_stable_success_signal`,
-      kind: "stable_success_signal",
-      node_ids: graph.nodes.filter((node) => node.kind === "Action" || node.kind === "Assertion").map((node) => node.node_id),
-      evidence: ["Scenario catalog contains fake-success mutation."],
-      attack_mutation_kind: "fake_success",
-    });
-  }
-  if (hasScenario(scenarios, "partial_write")) {
-    assumptions.push({
-      assumption_id: `assumption_${graph.graph_id}_api_atomicity`,
-      kind: "api_atomicity",
-      node_ids: graph.nodes.filter((node) => node.kind === "Action").map((node) => node.node_id),
-      evidence: ["Scenario catalog contains partial-write mutation."],
-      attack_mutation_kind: "partial_write",
-    });
-  }
-  if (hasScenario(scenarios, "auth_expiry") || hasScenario(scenarios, "permission_change")) {
-    assumptions.push({
-      assumption_id: `assumption_${graph.graph_id}_auth_continuity`,
-      kind: "auth_continuity",
-      node_ids: nodeIds,
-      evidence: ["Scenario catalog contains identity or permission mutation."],
-      attack_mutation_kind: hasScenario(scenarios, "auth_expiry") ? "auth_expiry" : "permission_change",
-    });
-  }
-  if (hasScenario(scenarios, "hidden_required_field") || hasScenario(scenarios, "input_omission")) {
-    assumptions.push({
-      assumption_id: `assumption_${graph.graph_id}_input_visibility`,
-      kind: "input_visibility",
-      node_ids: graph.nodes.filter((node) => node.kind === "Input" || node.kind === "Action").map((node) => node.node_id),
-      evidence: ["Scenario catalog contains hidden or omitted input mutation."],
-      attack_mutation_kind: hasScenario(scenarios, "hidden_required_field") ? "hidden_required_field" : "input_omission",
-    });
+  const seen = new Set<string>();
+  for (const rule of DOJO_EVIL_TWIN_ASSUMPTION_RULES) {
+    for (const scenario of scenarios) {
+      if (!rule.mutation_kinds.includes(scenario.mutation_kind)) continue;
+      const key = `${rule.kind}:${scenario.mutation_kind}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const selectedNodeIds = nodeIdsForAssumption(graph, rule.node_selector);
+      assumptions.push({
+        assumption_id: `assumption_${slugId(graph.graph_id)}_${rule.kind}_${slugId(scenario.mutation_kind)}`,
+        kind: rule.kind,
+        node_ids: selectedNodeIds.length > 0 ? selectedNodeIds : graph.nodes.map((node) => node.node_id),
+        evidence: [
+          `Scenario ${scenario.scenario_id} contains ${scenario.mutation_kind} mutation.`,
+          rule.evidence_label,
+          `Risk tags: ${scenario.provenance.risk_tags.length > 0 ? scenario.provenance.risk_tags.join(",") : "none"}.`,
+        ],
+        attack_mutation_kind: scenario.mutation_kind,
+      });
+    }
   }
   return assumptions;
 }
@@ -309,6 +410,20 @@ function applyHardeningGuardrails(
   };
 }
 
-function hasScenario(scenarios: DojoScenarioDefinition[], mutationKind: string): boolean {
-  return scenarios.some((scenario) => scenario.mutation_kind === mutationKind);
+function nodeIdsForAssumption(graph: DojoSkillGraph, selector: DojoEvilTwinNodeSelector): string[] {
+  const kindsBySelector: Record<Exclude<DojoEvilTwinNodeSelector, "all">, string[]> = {
+    action: ["Action"],
+    action_assertion: ["Action", "Assertion"],
+    input_action: ["Input", "Observe", "Locate", "Action"],
+    observe_locate_action: ["Observe", "Locate", "Action", "Assertion"],
+    artifact_action: ["Artifact", "Action", "Assertion"],
+    permission_action: ["Permission", "Human", "Action"],
+  };
+  if (selector === "all") return graph.nodes.map((node) => node.node_id);
+  const allowedKinds = new Set(kindsBySelector[selector]);
+  return graph.nodes.filter((node) => allowedKinds.has(node.kind)).map((node) => node.node_id);
+}
+
+function slugId(value: string): string {
+  return String(value || "unknown").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "unknown";
 }
