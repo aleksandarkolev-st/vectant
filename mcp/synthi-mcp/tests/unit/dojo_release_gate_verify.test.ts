@@ -1517,6 +1517,7 @@ describe("Dojo release gate artifact verifier", () => {
           legal_hold_blocks_disposal_required: false,
           external_storage_custody_receipts_required: false,
           proof_issue_claim_verification_required: false,
+          production_proof_issue_rejects_unverified_claims_required: false,
           proof_validation_rejects_self_attested_claims_required: false,
           durable_postgres_ledger_gate_id: "wrong_gate",
         },
@@ -1532,6 +1533,7 @@ describe("Dojo release gate artifact verifier", () => {
       "evidence_authority_legal_hold_requirement_missing",
       "evidence_authority_external_storage_custody_requirement_missing",
       "evidence_authority_proof_issue_requirement_missing",
+      "evidence_authority_production_proof_issue_requirement_missing",
       "evidence_authority_self_attested_rejection_requirement_missing",
       "evidence_authority_durable_postgres_gate_id_missing",
     ]));
@@ -6340,6 +6342,7 @@ function evidenceAuthorityEvidenceFixture(overrides = {}) {
       legal_hold_blocks_disposal_required: true,
       external_storage_custody_receipts_required: true,
       proof_issue_claim_verification_required: true,
+      production_proof_issue_rejects_unverified_claims_required: true,
       proof_validation_rejects_self_attested_claims_required: true,
       durable_postgres_ledger_gate_required: true,
       durable_postgres_ledger_gate_id: "dojo_postgres_control_plane_self_check",

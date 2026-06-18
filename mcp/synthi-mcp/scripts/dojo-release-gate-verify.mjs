@@ -1697,6 +1697,7 @@ export function validateDojoEvidenceAuthorityEvidenceForMilestone(evidence) {
     ["legal_hold_blocks_disposal_required", "evidence_authority_legal_hold_requirement_missing"],
     ["external_storage_custody_receipts_required", "evidence_authority_external_storage_custody_requirement_missing"],
     ["proof_issue_claim_verification_required", "evidence_authority_proof_issue_requirement_missing"],
+    ["production_proof_issue_rejects_unverified_claims_required", "evidence_authority_production_proof_issue_requirement_missing"],
     ["proof_validation_rejects_self_attested_claims_required", "evidence_authority_self_attested_rejection_requirement_missing"],
     ["durable_postgres_ledger_gate_required", "evidence_authority_durable_postgres_gate_requirement_missing"],
     ["self_check_executes_tests_required", "evidence_authority_self_check_execution_requirement_missing"],
@@ -5622,6 +5623,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
         legal_hold_blocks_disposal_required: false,
         external_storage_custody_receipts_required: false,
         proof_issue_claim_verification_required: false,
+        production_proof_issue_rejects_unverified_claims_required: false,
         proof_validation_rejects_self_attested_claims_required: false,
       },
     },
@@ -5635,6 +5637,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_legal_hold_requirement_missing"));
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_external_storage_custody_requirement_missing"));
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_proof_issue_requirement_missing"));
+  assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_production_proof_issue_requirement_missing"));
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_self_attested_rejection_requirement_missing"));
 
   const implementationStatusDir = path.join(outDir, "implementation-status");
@@ -7825,6 +7828,7 @@ async function writeEvidenceAuthorityEvidenceForSelfCheck({
       legal_hold_blocks_disposal_required: true,
       external_storage_custody_receipts_required: true,
       proof_issue_claim_verification_required: true,
+      production_proof_issue_rejects_unverified_claims_required: true,
       proof_validation_rejects_self_attested_claims_required: true,
       durable_postgres_ledger_gate_required: true,
       durable_postgres_ledger_gate_id: "dojo_postgres_control_plane_self_check",

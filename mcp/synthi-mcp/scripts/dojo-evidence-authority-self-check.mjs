@@ -45,6 +45,7 @@ export const DOJO_EVIDENCE_AUTHORITY_CAPABILITIES = [
   "evidence_retention_policy_legal_hold_and_artifact_disposal",
   "evidence_external_storage_custody_receipts",
   "proof_issuance_requires_verified_evidence_records",
+  "production_proof_issuance_rejects_unverified_claims",
   "proof_validation_rejects_self_attested_or_unreferenced_claims",
 ];
 
@@ -197,6 +198,7 @@ export function buildDojoEvidenceAuthorityEvidenceManifest({
       legal_hold_blocks_disposal_required: true,
       external_storage_custody_receipts_required: true,
       proof_issue_claim_verification_required: true,
+      production_proof_issue_rejects_unverified_claims_required: true,
       proof_validation_rejects_self_attested_claims_required: true,
       durable_postgres_ledger_gate_required: true,
       durable_postgres_ledger_gate_id: "dojo_postgres_control_plane_self_check",
@@ -350,6 +352,9 @@ const CAPABILITY_MATCHERS = {
     includes("blocks strict proof issuance when required evidence claims are missing"),
     includes("blocks strict proof issuance when supplied evidence record material is tampered"),
     includes("blocks strict proof issuance when backing evidence is stale"),
+  ),
+  production_proof_issuance_rejects_unverified_claims: anyOf(
+    includes("blocks production proof issuance", "ledger-backed evidence"),
   ),
   proof_validation_rejects_self_attested_or_unreferenced_claims: anyOf(
     includes("development-compatible proof construction", "blocks validation without ledger evidence"),
