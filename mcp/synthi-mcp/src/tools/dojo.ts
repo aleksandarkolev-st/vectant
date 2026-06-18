@@ -255,18 +255,85 @@ const dojoHostedRuntimeAuditStore: DojoAuditStore = {
   listAuditEvents: (filter) => dojoSkillRegistry.listAuditEvents(filter),
 };
 const dojoHostedRuntimeEvidenceWriter: DojoHostedRuntimeEvidenceWriter = {
-  appendRuntimeActionEvidence(input) {
-    const recordId = `dojo_runtime_action_evidence_${hashId(JSON.stringify({
+  async appendRuntimeActionEvidence(input) {
+    const enforcement = resolveDojoEnforcementConfig();
+    const evidenceLedgerRequired = enforcement.production_enforcement && enforcement.require_evidence_ledger;
+    const artifactPayload = JSON.stringify({
       tenant_id: input.tenant.tenant_id,
       workspace_id: input.tenant.workspace_id,
       session_id: input.session.session_id,
+      runtime_id: input.session.runtime_id,
       skill_id: input.session.skill_id,
       run_id: input.session.run_id,
       action_kind: input.action_kind,
+      url: input.url,
       url_origin: input.url_origin,
       created_at: input.created_at,
       details: input.details ?? {},
-    }))}`;
+      evidence_index: input.session.evidence_refs.length,
+    });
+    const artifactSha = sha256String(artifactPayload);
+    const recordId = `dojo_runtime_action_evidence_${hashId([
+      input.tenant.tenant_id,
+      input.tenant.workspace_id,
+      input.session.session_id,
+      input.session.run_id,
+      input.action_kind,
+      input.created_at,
+      String(input.session.evidence_refs.length),
+      artifactSha,
+    ].join(":"))}`;
+    if (evidenceLedgerRequired) {
+      const resolution = await resolveDojoEvidenceLedgerAppendStore({
+        tenant_id: input.tenant.tenant_id,
+        workspace_id: input.tenant.workspace_id,
+        tenant_context: input.tenant,
+        app_origin: input.session.workspace_origin,
+      });
+      if (!resolution.ok || !resolution.evidence_ledger) {
+        await resolution.close?.().catch(() => undefined);
+        throw new Error(`dojo_hosted_runtime_evidence_ledger_required:${resolution.blocked_by.join(",")}`);
+      }
+      try {
+        const redactionManifestSha = sha256String(JSON.stringify({
+          artifact_sha256: artifactSha,
+          redaction_policy: "digest_only",
+          raw_payload_stored: false,
+        }));
+        const record = await resolution.evidence_ledger.append({
+          record_id: recordId,
+          skill_id: input.session.skill_id,
+          run_id: input.session.run_id,
+          kind: "artifact",
+          artifact_uri: `dojo://hosted-runtime-action/${encodeURIComponent(input.session.session_id)}/${encodeURIComponent(input.action_kind)}`,
+          artifact_sha256: artifactSha,
+          redaction_manifest_sha256: redactionManifestSha,
+          claim_ids: [
+            "runtime_action_authorized",
+            "runtime_session_bound",
+            "workspace_verified",
+          ],
+          created_at: input.created_at,
+          created_by: input.tenant.actor_id,
+          retention_class: "standard",
+          source_refs: dedupeStrings([
+            `runtime_session:${input.session.session_id}`,
+            `runtime:${input.session.runtime_id}`,
+            `run:${input.session.run_id}`,
+            `skill:${input.session.skill_id}`,
+            `runtime_action:${input.action_kind}`,
+            `workspace_origin:${input.session.workspace_origin}`,
+            `url_origin:${input.url_origin}`,
+          ]),
+        });
+        return {
+          record_id: record.record_id,
+          evidence_ref: `evidence:${record.record_id}`,
+        };
+      } finally {
+        await resolution.close?.().catch(() => undefined);
+      }
+    }
     return {
       record_id: recordId,
       evidence_ref: `evidence:${recordId}`,
@@ -297,8 +364,11 @@ function dojoHostedRuntimeGatewayCacheKey(env: NodeJS.ProcessEnv): string {
   return JSON.stringify({
     production_enforcement: env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT ?? "",
     require_durable_store: env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE ?? "",
+    require_evidence_ledger: env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER ?? "",
     control_plane_store: env.SYNTHI_DOJO_CONTROL_PLANE_STORE ?? "",
     control_plane_postgres_url: env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL ?? "",
+    evidence_ledger_store: env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE ?? "",
+    evidence_ledger_postgres_url: env.SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL ?? "",
   });
 }
 

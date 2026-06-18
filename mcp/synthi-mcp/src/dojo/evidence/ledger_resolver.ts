@@ -82,20 +82,35 @@ export async function resolveDojoEvidenceLedgerRecords(
         blocked_by: verification.blocked_by,
       };
     }
-    if (input.ledger_checkpoint_hash && verification.ledger_head_hash !== input.ledger_checkpoint_hash) {
-      return {
-        ok: false,
-        store_kind: storeConfig.store_kind,
-        configured_env: storeConfig.configured_env,
-        records: [],
-        verification,
-        ledger_checkpoint_hash: verification.ledger_head_hash,
-        missing_record_ids: [],
-        blocked_by: ["evidence_ledger_checkpoint_mismatch"],
-      };
-    }
     const records = await store.listRecords();
-    const selected = records.filter((record) => requestedRecordIds.includes(record.record_id));
+    let checkpointRecordCount = records.length;
+    let checkpointHash = verification.ledger_head_hash;
+    if (input.ledger_checkpoint_hash) {
+      const checkpoint = await store.checkpointForHeadHash(input.ledger_checkpoint_hash);
+      const checkpointRecord = checkpoint && checkpoint.record_count > 0
+        ? records[checkpoint.record_count - 1]
+        : undefined;
+      if (
+        !checkpoint
+        || checkpoint.record_count > records.length
+        || checkpointRecord?.ledger_head_hash !== input.ledger_checkpoint_hash
+      ) {
+        return {
+          ok: false,
+          store_kind: storeConfig.store_kind,
+          configured_env: storeConfig.configured_env,
+          records: [],
+          verification,
+          ledger_checkpoint_hash: verification.ledger_head_hash,
+          missing_record_ids: [],
+          blocked_by: ["evidence_ledger_checkpoint_mismatch"],
+        };
+      }
+      checkpointRecordCount = checkpoint.record_count;
+      checkpointHash = checkpoint.ledger_head_hash;
+    }
+    const checkpointRecords = records.slice(0, checkpointRecordCount);
+    const selected = checkpointRecords.filter((record) => requestedRecordIds.includes(record.record_id));
     const selectedIds = new Set(selected.map((record) => record.record_id));
     const missing = requestedRecordIds.filter((recordId) => !selectedIds.has(recordId));
     if (missing.length > 0) {
@@ -105,7 +120,7 @@ export async function resolveDojoEvidenceLedgerRecords(
         configured_env: storeConfig.configured_env,
         records: selected,
         verification,
-        ledger_checkpoint_hash: verification.ledger_head_hash,
+        ledger_checkpoint_hash: checkpointHash,
         missing_record_ids: missing,
         blocked_by: missing.map((recordId) => `evidence_record_missing:${recordId}`),
       };
@@ -116,7 +131,7 @@ export async function resolveDojoEvidenceLedgerRecords(
       configured_env: storeConfig.configured_env,
       records: selected,
       verification,
-      ledger_checkpoint_hash: verification.ledger_head_hash,
+      ledger_checkpoint_hash: checkpointHash,
       missing_record_ids: [],
       blocked_by: [],
     };

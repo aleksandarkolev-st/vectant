@@ -183,6 +183,26 @@ export class PostgresDojoEvidenceLedgerStore {
     });
   }
 
+  async checkpointForHeadHash(headHash: string): Promise<DojoLedgerCheckpoint | null> {
+    const result = await this.queryable.query<CheckpointRow>(
+      `SELECT ledger_head_hash, record_count, created_at
+      FROM dojo_ledger_checkpoints
+      WHERE tenant_id = $1 AND workspace_id = $2 AND ledger_head_hash = $3
+      ORDER BY record_count DESC, created_at DESC, checkpoint_id DESC
+      LIMIT 1`,
+      [this.tenantId, this.workspaceId, headHash]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return buildDojoLedgerCheckpoint({
+      tenant_id: this.tenantId,
+      workspace_id: this.workspaceId,
+      ledger_head_hash: row.ledger_head_hash,
+      record_count: Number(row.record_count),
+      created_at: iso(row.created_at),
+    });
+  }
+
   async verifyRecordChain(checkedAt: string = new Date().toISOString()): Promise<DojoLedgerVerification> {
     if (!Number.isFinite(Date.parse(checkedAt))) {
       return {

@@ -74,6 +74,58 @@ describeWithPostgres("PostgresDojoEvidenceLedgerStore", () => {
     }));
   });
 
+  it("resolves evidence against historical checkpoints after later appends", async () => {
+    const store = new PostgresDojoEvidenceLedgerStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
+    const first = await store.append(evidenceInput("evidence_historical_a", skillId, "run_historical_a", "1".repeat(64), "2026-06-11T00:01:00.000Z"));
+    const second = await store.append(evidenceInput("evidence_historical_b", skillId, "run_historical_b", "2".repeat(64), "2026-06-11T00:02:00.000Z"));
+
+    await expect(resolveDojoEvidenceLedgerRecords({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      record_ids: ["evidence_historical_a"],
+      ledger_checkpoint_hash: first.record_hash,
+      checked_at: "2026-06-11T00:03:00.000Z",
+      env: {
+        SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "postgres",
+        SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL: postgresUrl,
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      store_kind: "postgres",
+      ledger_checkpoint_hash: first.record_hash,
+      missing_record_ids: [],
+      blocked_by: [],
+      records: [expect.objectContaining({ record_id: "evidence_historical_a" })],
+      verification: expect.objectContaining({
+        ok: true,
+        ledger_head_hash: second.record_hash,
+      }),
+    }));
+
+    await expect(resolveDojoEvidenceLedgerRecords({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      record_ids: ["evidence_historical_b"],
+      ledger_checkpoint_hash: first.record_hash,
+      checked_at: "2026-06-11T00:03:00.000Z",
+      env: {
+        SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "postgres",
+        SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL: postgresUrl,
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      store_kind: "postgres",
+      ledger_checkpoint_hash: first.record_hash,
+      missing_record_ids: ["evidence_historical_b"],
+      blocked_by: ["evidence_record_missing:evidence_historical_b"],
+      records: [],
+      verification: expect.objectContaining({
+        ok: true,
+        ledger_head_hash: second.record_hash,
+      }),
+    }));
+  });
+
   it("verifies records in append order when multiple records share the same creation timestamp", async () => {
     const store = new PostgresDojoEvidenceLedgerStore({ tenant_id: tenantId, workspace_id: workspaceId, queryable: pool });
     const createdAt = "2026-06-11T00:01:00.000Z";

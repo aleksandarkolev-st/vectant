@@ -14,7 +14,6 @@ import { PostgresDojoLicenseStore } from "../../src/dojo/store/postgres_license_
 import { PostgresDojoEvidenceLedgerStore } from "../../src/dojo/evidence/ledger_store.js";
 import { applyDojoPostgresMigrations } from "../../src/dojo/store/postgres_proof_store.js";
 import { PostgresDojoProofStore } from "../../src/dojo/store/postgres_proof_store.js";
-import { buildDojoEvidenceLedgerRecord } from "../../src/dojo/evidence/ledger_record.js";
 import { generateEd25519DojoProofKeyPair } from "../../src/dojo/proof/signing.js";
 import { PostgresDojoAuditStore } from "../../src/dojo/store/audit_store.js";
 import { ensureDojoTenantWorkspace } from "../../src/dojo/store/control_plane_resolver.js";
@@ -23,6 +22,7 @@ import { PostgresDojoGovernanceStore } from "../../src/dojo/store/postgres_gover
 import { PostgresDojoGraphRunStore } from "../../src/dojo/store/postgres_graph_run_store.js";
 import { PostgresDojoProofKeyRegistry } from "../../src/dojo/store/postgres_proof_key_registry.js";
 import { PostgresDojoSkillStore } from "../../src/dojo/store/postgres_skill_store.js";
+import { PostgresDojoHostedRuntimeSessionStore } from "../../src/dojo/runtime/postgres_hosted_runtime_store.js";
 import { dispatchBrowserTool } from "../../src/tools/browser.js";
 import { dispatchDojoTool } from "../../src/tools/dojo.js";
 
@@ -2470,8 +2470,11 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
     process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
     process.env.SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
     process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
     process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE = "postgres";
+    process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL = postgresUrl;
     process.env.SYNTHI_DOJO_PROOF_SIGNING_PROVIDER = "external-command";
     process.env.SYNTHI_DOJO_PROOF_SIGNING_KEY_ID = proofKeyPair.key_id;
     process.env.SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM = proofKeyPair.public_key_pem;
@@ -2489,10 +2492,18 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       actor_type: "human",
       roles: ["dojo:operator"],
     });
+    const publicationEvidence = await appendPublicationEvidenceForCurrentWorkflowForToolTest(pool, {
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      record_id: `publication_${createHash("sha256").update(`${tenantId}:${workspaceId}:postgres-proof-publish`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T00:00:00.000Z",
+      created_by: "postgres-proof-publisher",
+      source_ref: "publication:postgres-proof-setup",
+    });
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", {
       workspace_id: workspaceId,
       reason: "integration_postgres_proof_publish",
-      evidence_refs: ["evidence:integration-postgres-proof-publish"],
+      evidence_refs: [publicationEvidence.record.record_id],
       ...tenant,
     });
     expect(publish?.isError).toBeUndefined();
@@ -2501,15 +2512,19 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     };
     const skill = dojoSkillRegistry.get(published.skill.skill_id);
     expect(skill).toBeTruthy();
+    const proofEvidence = await appendProofEvidenceRecordForToolTest(pool, skill!, {
+      tenant_id: tenantId,
+      record_id: `proof_${createHash("sha256").update(`${tenantId}:${workspaceId}:${published.skill.skill_id}:issue`, "utf8").digest("hex").slice(0, 16)}`,
+      created_at: "2026-06-11T00:00:00.000Z",
+      created_by: "postgres-proof-agent",
+      source_ref: "proof:postgres-proof-issue",
+    });
 
     const issue = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: published.skill.skill_id,
       requested_action: "run_prefix_validation",
       context_claims: { workspace_verified: true },
-      evidence_ledger_records: evidenceLedgerRecordsForProof(skill!, {
-        record_id: `evidence-${published.skill.skill_id}-postgres-proof`,
-        tenant_id: tenantId,
-      }),
+      evidence_record_ids: [proofEvidence.record_id],
       require_verified_evidence: true,
       ...tenant,
       actor_id: "postgres-proof-agent",
@@ -2883,7 +2898,53 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
         graph_run_id: string;
         evidence_refs: string[];
       };
+      runtime_authorization: {
+        evidence_record_ids: string[];
+      };
     };
+    const runtimeAuthorizationEvidenceRefs = runContent.runtime_authorization.evidence_record_ids;
+    expect(runtimeAuthorizationEvidenceRefs).toEqual([
+      expect.stringMatching(/^evidence:dojo_runtime_action_evidence_[a-f0-9]{12}$/),
+    ]);
+    const runtimeAuthorizationRecordId = runtimeAuthorizationEvidenceRefs[0]!.replace(/^evidence:/, "");
+    const evidenceLedgerStore = new PostgresDojoEvidenceLedgerStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    const runtimeEvidenceRecords = await evidenceLedgerStore.listRecords();
+    expect(runtimeEvidenceRecords).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        record_id: runtimeAuthorizationRecordId,
+        skill_id: published.skill.skill_id,
+        run_id: "postgres-proof-run-1",
+        kind: "artifact",
+        claim_ids: expect.arrayContaining([
+          "runtime_action_authorized",
+          "runtime_session_bound",
+          "workspace_verified",
+        ]),
+        source_refs: expect.arrayContaining([
+          `runtime_session:${sessionContent.runtime_session.session_id}`,
+          "runtime_action:proof_gated_tool",
+          "workspace_origin:https://app.example.test",
+          "url_origin:https://app.example.test",
+        ]),
+      }),
+    ]));
+    const hostedRuntimeSessionStore = new PostgresDojoHostedRuntimeSessionStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(hostedRuntimeSessionStore.getSession({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      session_id: sessionContent.runtime_session.session_id,
+    })).resolves.toEqual(expect.objectContaining({
+      session_id: sessionContent.runtime_session.session_id,
+      evidence_refs: expect.arrayContaining(runtimeAuthorizationEvidenceRefs),
+    }));
     const graphRunStore = new PostgresDojoGraphRunStore({
       tenant_id: tenantId,
       workspace_id: workspaceId,
@@ -3194,14 +3255,17 @@ function productionTenantContextArgs(overrides: Record<string, unknown> = {}): R
   };
 }
 
-function evidenceLedgerRecordsForProof(
+async function appendProofEvidenceRecordForToolTest(
+  pool: Pool,
   skill: DojoSkill,
   options: {
     record_id: string;
     tenant_id: string;
     created_at?: string;
+    created_by: string;
+    source_ref: string;
   }
-): ReturnType<typeof buildDojoEvidenceLedgerRecord>[] {
+) {
   const createdAt = options.created_at ?? "2026-06-11T00:00:00.000Z";
   const claimIds = [...new Set([
     ...skill.permission_license.proof_requirements.required_evidence_claims,
@@ -3213,20 +3277,28 @@ function evidenceLedgerRecordsForProof(
     record_id: options.record_id,
     skill_id: skill.skill_id,
   });
-  return [
-    buildDojoEvidenceLedgerRecord({
-      record_id: options.record_id,
-      tenant_id: options.tenant_id,
-      workspace_id: skill.workspace_id,
-      skill_id: skill.skill_id,
-      run_id: `checkride-${skill.skill_id}`,
-      kind: "checkride",
-      artifact_uri: `memory://dojo/tests/${skill.skill_id}/checkride`,
-      artifact_sha256: createHash("sha256").update(artifactPayload, "utf8").digest("hex"),
-      claim_ids: claimIds,
-      created_at: createdAt,
-      created_by: "dojo-postgres-tool-control-plane-test",
-      retention_class: "ephemeral",
-    }),
-  ];
+  const artifactSha256 = createHash("sha256").update(artifactPayload, "utf8").digest("hex");
+  const redactionManifestSha256 = createHash("sha256").update(JSON.stringify({
+    artifact_sha256: artifactSha256,
+    redaction_policy: "metadata_only",
+  }), "utf8").digest("hex");
+  const ledgerStore = new PostgresDojoEvidenceLedgerStore({
+    tenant_id: options.tenant_id,
+    workspace_id: skill.workspace_id,
+    queryable: pool,
+  });
+  return ledgerStore.append({
+    record_id: options.record_id,
+    skill_id: skill.skill_id,
+    run_id: `checkride-${skill.skill_id}`,
+    kind: "checkride",
+    artifact_uri: `memory://dojo/tests/${skill.skill_id}/checkride`,
+    artifact_sha256: artifactSha256,
+    redaction_manifest_sha256: redactionManifestSha256,
+    claim_ids: claimIds,
+    created_at: createdAt,
+    created_by: options.created_by,
+    retention_class: "ephemeral",
+    source_refs: [options.source_ref],
+  });
 }

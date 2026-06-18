@@ -512,12 +512,14 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
     });
     expect(replayedApiTool?.isError).toBe(true);
     expect(replayedApiTool?.structuredContent).toEqual(expect.objectContaining({
-      error: "dojo_proof_evidence_ledger_resolution_failed",
+      error: "proof_capsule_replay_detected",
       ok: false,
-      proof_capsule_id: apiExecutionProof.capsule_id,
-      proof_not_consumed: true,
-      blocked_by: expect.arrayContaining(["evidence_ledger_checkpoint_mismatch"]),
-      error_codes: ["proof_evidence_claim_unverified"],
+      proof_consume: null,
+      proof_validation: expect.objectContaining({
+        blocked_by: expect.arrayContaining(["proof_capsule_replay_detected"]),
+      }),
+      blocked_by: expect.arrayContaining(["proof_capsule_replay_detected"]),
+      error_codes: ["proof_capsule_replay_detected"],
     }));
 
     const forgedCheckpointId = `forged_${sha256(`${tenantId}:${workspaceId}:${skillId}:checkpoint`).slice(0, 24)}`;
