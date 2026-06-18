@@ -167,8 +167,55 @@ export interface DojoSourceAffordancePrPlan {
 export interface DojoPackageReadiness {
   schema_version: "synthi.dojo.packageReadiness.v1";
   skill_id: string;
+  release_gate: DojoPackageReadinessReleaseGate;
   enterprise: Array<{ package: string; status: "ready" | "partial" | "blocked"; evidence: string[]; gaps: string[] }>;
   personal: Array<{ package: string; status: "ready" | "partial" | "blocked"; evidence: string[]; gaps: string[] }>;
+}
+
+export interface DojoPackageReadinessEvidenceSummary {
+  schema_version?: string;
+  generated_at?: string;
+  ok?: boolean;
+  errors?: unknown[];
+  package_name?: string | null;
+  package_version?: string | null;
+  package_private?: boolean;
+  required_package_scripts?: unknown[];
+  required_package_files_entries?: unknown[];
+  export_entry_paths?: unknown[];
+  script_referenced_paths?: unknown[];
+  validation?: {
+    ok?: boolean;
+    errors?: unknown[];
+  };
+  npm_pack?: {
+    exit_code?: number | null;
+    integrity_present?: boolean;
+    packed_file_count?: number | null;
+    unpacked_size?: number | null;
+  };
+}
+
+export interface DojoPackageReadinessReleaseGate {
+  gate_id: "dojo_package_readiness_self_check";
+  package_script: "proof:dojo:package-readiness:self-check";
+  evidence_schema_version: "synthi.dojo.packageReadinessEvidence.v1";
+  evidence_path: string | null;
+  status: "ready" | "partial" | "blocked";
+  checked_at: string | null;
+  package_name: string | null;
+  package_version: string | null;
+  package_private: boolean | null;
+  npm_pack_exit_code: number | null;
+  npm_pack_integrity_present: boolean | null;
+  packed_file_count: number | null;
+  unpacked_size: number | null;
+  export_entry_path_count: number | null;
+  release_harness_path_count: number | null;
+  required_script_count: number | null;
+  required_file_entry_count: number | null;
+  evidence: string[];
+  gaps: string[];
 }
 
 export interface DojoTimeMachineDebugReport {
@@ -238,7 +285,13 @@ export interface DojoOrganizationRegistry {
 export function buildDojoUniverseDossier(
   skill: DojoSkill,
   allSkills: DojoSkill[] = [skill],
-  options: { now?: string; question?: string; mutation_kind?: string } = {}
+  options: {
+    now?: string;
+    question?: string;
+    mutation_kind?: string;
+    package_readiness_evidence?: DojoPackageReadinessEvidenceSummary;
+    package_readiness_evidence_path?: string;
+  } = {}
 ): DojoUniverseDossier {
   const now = options.now ?? new Date().toISOString();
   return {
@@ -267,7 +320,10 @@ export function buildDojoUniverseDossier(
     metrics: buildDojoUniverseMetrics(allSkills, { now }),
     evidence_ledger: buildDojoEvidenceLedger(skill),
     source_affordance_pr_plan: buildDojoSourceAffordancePrPlan(skill),
-    package_readiness: buildDojoPackageReadiness(skill),
+    package_readiness: buildDojoPackageReadiness(skill, {
+      evidence: options.package_readiness_evidence,
+      evidence_path: options.package_readiness_evidence_path,
+    }),
     time_machine_debugger: runDojoTimeMachineDebugger(skill, {
       question: options.question,
       mutation_kind: options.mutation_kind,
@@ -699,13 +755,18 @@ export function buildDojoSourceAffordancePrPlan(skill: DojoSkill): DojoSourceAff
   };
 }
 
-export function buildDojoPackageReadiness(skill: DojoSkill): DojoPackageReadiness {
+export function buildDojoPackageReadiness(
+  skill: DojoSkill,
+  options: { evidence?: DojoPackageReadinessEvidenceSummary; evidence_path?: string } = {}
+): DojoPackageReadiness {
   const hasLicense = skill.permission_license.allowed_actions.length + skill.permission_license.gated_actions.length > 0;
   const hasHardening = skill.workspace_organoid.scenario_refs.length > 0 && skill.evil_twin.attacks.length > 0;
   const hasSourcePlan = buildDojoSourceAffordancePrPlan(skill).patch_count > 0;
+  const releaseGate = buildPackageReadinessReleaseGate(options);
   return {
     schema_version: "synthi.dojo.packageReadiness.v1",
     skill_id: skill.skill_id,
+    release_gate: releaseGate,
     enterprise: [
       packageRow("Dojo Builder", skill.skill_seed.input_schema.length >= 0 && skill.skill_cortex.nodes.length > 0, [
         skill.skill_seed.seed_id,
@@ -729,12 +790,112 @@ export function buildDojoPackageReadiness(skill: DojoSkill): DojoPackageReadines
         skill.assurance_case.assurance_case_id,
         skill.checkride.checkride_id,
       ]),
+      packageStatusRow("Dojo Package Readiness", releaseGate.status, releaseGate.evidence, releaseGate.gaps),
     ],
     personal: [
       packageRow("Personal Dojo", Boolean(skill.skill_card.title), [skill.skill_passport.passport_id]),
       packageRow("Personal Pro", Boolean(skill.skill_genome.genome_id && skill.antibodies.length >= 0), [skill.skill_genome.genome_id]),
       packageRow("Family or Team", skill.skill_genome.portable_to.length > 0, [skill.skill_genome.pattern_id]),
     ],
+  };
+}
+
+function buildPackageReadinessReleaseGate(
+  options: { evidence?: DojoPackageReadinessEvidenceSummary; evidence_path?: string }
+): DojoPackageReadinessReleaseGate {
+  const evidence = options.evidence;
+  const evidencePath = stringValue(options.evidence_path);
+  const schemaVersion = "synthi.dojo.packageReadinessEvidence.v1";
+  const baseEvidence = [
+    "release_gate:dojo_package_readiness_self_check",
+    "package_script:proof:dojo:package-readiness:self-check",
+  ];
+  if (!evidence) {
+    return {
+      gate_id: "dojo_package_readiness_self_check",
+      package_script: "proof:dojo:package-readiness:self-check",
+      evidence_schema_version: schemaVersion,
+      evidence_path: evidencePath,
+      status: "partial",
+      checked_at: null,
+      package_name: null,
+      package_version: null,
+      package_private: null,
+      npm_pack_exit_code: null,
+      npm_pack_integrity_present: null,
+      packed_file_count: null,
+      unpacked_size: null,
+      export_entry_path_count: null,
+      release_harness_path_count: null,
+      required_script_count: null,
+      required_file_entry_count: null,
+      evidence: evidencePath ? [...baseEvidence, `evidence:${evidencePath}`] : baseEvidence,
+      gaps: ["package_readiness_evidence_not_supplied"],
+    };
+  }
+
+  const validationErrors = stableUnique([
+    ...stringArray(evidence.errors),
+    ...stringArray(evidence.validation?.errors),
+  ]);
+  const schemaOk = evidence.schema_version === schemaVersion;
+  const validationOk = evidence.validation?.ok !== false;
+  const packExitCode = numberOrNull(evidence.npm_pack?.exit_code);
+  const packIntegrity = booleanOrNull(evidence.npm_pack?.integrity_present);
+  const ready = schemaOk
+    && evidence.ok === true
+    && validationOk
+    && validationErrors.length === 0
+    && packExitCode === 0
+    && packIntegrity === true
+    && evidence.package_private !== true;
+  const gaps = [
+    ...(schemaOk ? [] : [`package_readiness_schema_mismatch:${evidence.schema_version ?? "missing"}`]),
+    ...(evidence.ok === true ? [] : ["package_readiness_not_ok"]),
+    ...(validationOk ? [] : ["package_readiness_validation_not_ok"]),
+    ...(packExitCode === 0 ? [] : [`npm_pack_exit_code:${packExitCode ?? "missing"}`]),
+    ...(packIntegrity === true ? [] : ["npm_pack_integrity_missing"]),
+    ...(evidence.package_private === true ? ["package_private_true"] : []),
+    ...validationErrors,
+  ];
+
+  const packedFileCount = numberOrNull(evidence.npm_pack?.packed_file_count);
+  const exportEntryPathCount = arrayCount(evidence.export_entry_paths);
+  const releaseHarnessPathCount = arrayCount(evidence.script_referenced_paths);
+  const requiredScriptCount = arrayCount(evidence.required_package_scripts);
+  const requiredFileEntryCount = arrayCount(evidence.required_package_files_entries);
+  const detailEvidence = [
+    evidencePath ? `evidence:${evidencePath}` : "",
+    `schema:${schemaVersion}`,
+    stringValue(evidence.package_name) ? `package:${stringValue(evidence.package_name)}` : "",
+    stringValue(evidence.package_version) ? `version:${stringValue(evidence.package_version)}` : "",
+    packedFileCount === null ? "" : `packed_files:${packedFileCount}`,
+    exportEntryPathCount === null ? "" : `export_entry_paths:${exportEntryPathCount}`,
+    releaseHarnessPathCount === null ? "" : `release_harness_paths:${releaseHarnessPathCount}`,
+    requiredScriptCount === null ? "" : `required_scripts:${requiredScriptCount}`,
+    requiredFileEntryCount === null ? "" : `required_file_entries:${requiredFileEntryCount}`,
+  ].filter(Boolean);
+
+  return {
+    gate_id: "dojo_package_readiness_self_check",
+    package_script: "proof:dojo:package-readiness:self-check",
+    evidence_schema_version: schemaVersion,
+    evidence_path: evidencePath,
+    status: ready ? "ready" : "blocked",
+    checked_at: stringValue(evidence.generated_at),
+    package_name: stringValue(evidence.package_name),
+    package_version: stringValue(evidence.package_version),
+    package_private: booleanOrNull(evidence.package_private),
+    npm_pack_exit_code: packExitCode,
+    npm_pack_integrity_present: packIntegrity,
+    packed_file_count: packedFileCount,
+    unpacked_size: numberOrNull(evidence.npm_pack?.unpacked_size),
+    export_entry_path_count: exportEntryPathCount,
+    release_harness_path_count: releaseHarnessPathCount,
+    required_script_count: requiredScriptCount,
+    required_file_entry_count: requiredFileEntryCount,
+    evidence: [...baseEvidence, ...detailEvidence],
+    gaps,
   };
 }
 
@@ -802,6 +963,51 @@ function packageRow(
     evidence: evidence.filter(Boolean),
     gaps,
   };
+}
+
+function packageStatusRow(
+  name: string,
+  status: "ready" | "partial" | "blocked",
+  evidence: string[],
+  gaps: string[] = []
+): { package: string; status: "ready" | "partial" | "blocked"; evidence: string[]; gaps: string[] } {
+  return {
+    package: name,
+    status,
+    evidence: evidence.filter(Boolean),
+    gaps,
+  };
+}
+
+function stableUnique(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
+}
+
+function arrayCount(value: unknown): number | null {
+  return Array.isArray(value) ? value.length : null;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function booleanOrNull(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
 }
 
 function entrustmentDialFor(skill: DojoSkill): string {
