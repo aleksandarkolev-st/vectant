@@ -13,6 +13,8 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  DOJO_FULL_VISUAL_ROUTE_IDS,
+  DOJO_FULL_VISUAL_VIEWPORTS,
   runSelfCheck as runReleaseGateManifestSelfCheck,
   validateDojoReleaseGateManifest,
   validateDojoVisualProofReport,
@@ -6911,21 +6913,18 @@ function dockerEndpointFixture({
 }
 
 async function writeSelfCheckVisualReport({ outDir }) {
-  const screenshotPath = path.join(outDir, "visual-self-check.png");
   const imageBytes = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/luz3xgAAAABJRU5ErkJggg==",
     "base64",
   );
-  await writeFile(screenshotPath, imageBytes);
-  const report = {
-    schema_version: "synthi.dojo.visualProof.v1",
-    ok: true,
-    generated_at: new Date().toISOString(),
-    screenshots: [screenshotPath],
-    results: [
-      {
-        route_id: "visual-self-check",
-        viewport: "desktop",
+  const results = [];
+  for (const routeId of DOJO_FULL_VISUAL_ROUTE_IDS) {
+    for (const viewport of DOJO_FULL_VISUAL_VIEWPORTS) {
+      const screenshotPath = path.join(outDir, `${routeId}-${viewport}.png`);
+      await writeFile(screenshotPath, imageBytes);
+      results.push({
+        route_id: routeId,
+        viewport,
         ok: true,
         failed_visual_gates: [],
         screenshot_path: screenshotPath,
@@ -6941,8 +6940,17 @@ async function writeSelfCheckVisualReport({ outDir }) {
           horizontal_overflow_px: 0,
           selector_visible_area_px: 4096,
         },
-      },
-    ],
+      });
+    }
+  }
+  const report = {
+    schema_version: "synthi.dojo.visualProof.v1",
+    ok: true,
+    generated_at: new Date().toISOString(),
+    route_count: DOJO_FULL_VISUAL_ROUTE_IDS.length,
+    screenshot_count: results.length,
+    screenshots: results.map((result) => result.screenshot_path),
+    results,
   };
   const reportPath = path.join(outDir, "visual-proof.json");
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");

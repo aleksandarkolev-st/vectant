@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildDojoReleaseGateEvidenceManifest,
   buildDojoReleaseGateManifest,
+  DOJO_FULL_VISUAL_ROUTE_IDS,
+  DOJO_FULL_VISUAL_VIEWPORTS,
   DOJO_MCP_HOST_CONFORMANCE_REQUIREMENTS,
   DOJO_MILESTONE_GATE_IDS,
   DOJO_MINIMAL_PR_GATE_IDS,
@@ -440,6 +442,11 @@ describe("Dojo release gate manifest", () => {
         visual_report_requirements: expect.objectContaining({
           requires_pixel_metrics: true,
           requires_layout_metrics: true,
+          required_route_ids: DOJO_FULL_VISUAL_ROUTE_IDS,
+          required_viewports: DOJO_FULL_VISUAL_VIEWPORTS,
+          min_result_count: DOJO_FULL_VISUAL_ROUTE_IDS.length * DOJO_FULL_VISUAL_VIEWPORTS.length,
+          requires_all_required_route_viewports: true,
+          requires_unique_screenshot_paths: true,
           required_result_fields: expect.arrayContaining(["screenshot_sha256"]),
         }),
       }),
@@ -1058,6 +1065,28 @@ describe("Dojo release gate manifest", () => {
       "private_tool_host_conformance_package_script_missing_flags:private_tool_codex_host_conformance:--require-external-private-tool-store",
     ]));
 
+    const brokenFullVisual = JSON.parse(JSON.stringify(manifest));
+    const fullVisualGate = brokenFullVisual.gates.find((gate) => gate.id === "dojo_full_visual_proof");
+    fullVisualGate.visual_report_requirements.required_route_ids = fullVisualGate.visual_report_requirements.required_route_ids
+      .filter((routeId) => routeId !== "evidence");
+    fullVisualGate.visual_report_requirements.required_viewports = ["desktop"];
+    fullVisualGate.visual_report_requirements.requires_all_required_route_viewports = false;
+    fullVisualGate.visual_report_requirements.requires_unique_screenshot_paths = false;
+    fullVisualGate.visual_report_requirements.requires_top_level_screenshots_match_results = false;
+    fullVisualGate.visual_report_requirements.requires_screenshot_count_matches_results = false;
+    fullVisualGate.visual_report_requirements.requires_route_count_matches_required_routes = false;
+    fullVisualGate.visual_report_requirements.min_result_count = 1;
+    expect(validateDojoReleaseGateManifest(brokenFullVisual, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "full_visual_gate_missing_required_route:evidence",
+      "full_visual_gate_missing_required_viewport:mobile",
+      "full_visual_gate_missing_route_viewport_matrix_requirement",
+      "full_visual_gate_missing_unique_screenshot_requirement",
+      "full_visual_gate_missing_top_level_screenshot_count_requirement",
+      "full_visual_gate_missing_screenshot_count_requirement",
+      "full_visual_gate_missing_route_count_requirement",
+      "full_visual_gate_min_result_count_too_low:1",
+    ]));
+
     const brokenPostgres = JSON.parse(JSON.stringify(manifest));
     const postgresGate = brokenPostgres.gates.find((gate) => gate.id === "dojo_postgres_control_plane_self_check");
     const missingPostgresTestFile = DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES[0];
@@ -1633,36 +1662,12 @@ describe("Dojo release gate manifest", () => {
       packageScripts: PACKAGE_SCRIPTS,
     });
     const gate = manifest.gates.find((item) => item.id === "dojo_full_visual_proof");
-    const validReport = {
-      schema_version: "synthi.dojo.visualProof.v1",
-      ok: true,
-      results: [
-        {
-          route_id: "practice-world",
-          viewport: "mobile",
-          ok: true,
-          failed_visual_gates: [],
-          screenshot_path: "/tmp/practice-world-mobile.png",
-          bytes: 120_000,
-          image_metrics: {
-            pixel_metrics_verified: true,
-            unique_color_sample_count: 96,
-            background_diff_pixel_ratio: 0.41,
-            luma_stddev: 22,
-          },
-          layout_metrics: {
-            horizontal_overflow_px: 0,
-            selector_visible_area_px: 468_000,
-          },
-          screenshot_sha256: "0".repeat(64),
-        },
-      ],
-    };
+    const validReport = buildFullVisualReportFixture();
 
     expect(validateDojoVisualProofReport(validReport, { gate })).toEqual(expect.objectContaining({
       ok: true,
       errors: [],
-      result_count: 1,
+      result_count: DOJO_FULL_VISUAL_ROUTE_IDS.length * DOJO_FULL_VISUAL_VIEWPORTS.length,
     }));
 
     const rejectedReport = {
@@ -1676,15 +1681,64 @@ describe("Dojo release gate manifest", () => {
           image_metrics: { pixel_metrics_verified: false },
           layout_metrics: { horizontal_overflow_px: 125 },
         },
+        ...validReport.results.slice(2),
       ],
+      screenshots: validReport.screenshots.slice(0, -1),
+      screenshot_count: validReport.results.length - 1,
     };
 
     expect(validateDojoVisualProofReport(rejectedReport, { gate }).errors).toEqual(expect.arrayContaining([
       "visual_report_not_ok",
-      "visual_result_not_ok:practice-world",
-      "visual_result_failed_gates:practice-world:horizontal_overflow",
-      "visual_result_pixel_metrics_unverified:practice-world",
-      "visual_result_horizontal_overflow:practice-world:125",
+      "visual_report_result_count_below_minimum:19:20",
+      "visual_report_missing_required_route_viewport:dojo-shell:mobile",
+      "visual_result_not_ok:dojo-shell:desktop",
+      "visual_result_failed_gates:dojo-shell:desktop:horizontal_overflow",
+      "visual_result_pixel_metrics_unverified:dojo-shell:desktop",
+      "visual_result_horizontal_overflow:dojo-shell:desktop:125",
+    ]));
+
+    const missingRouteReport = buildFullVisualReportFixture({
+      omit: ({ routeId, viewport }) => routeId === "evidence" && viewport === "mobile",
+    });
+    expect(validateDojoVisualProofReport(missingRouteReport, { gate }).errors).toEqual(expect.arrayContaining([
+      "visual_report_result_count_below_minimum:19:20",
+      "visual_report_missing_required_route_viewport:evidence:mobile",
     ]));
   });
 });
+
+function buildFullVisualReportFixture({ omit = () => false } = {}) {
+  const results = [];
+  for (const routeId of DOJO_FULL_VISUAL_ROUTE_IDS) {
+    for (const viewport of DOJO_FULL_VISUAL_VIEWPORTS) {
+      if (omit({ routeId, viewport })) continue;
+      results.push({
+        route_id: routeId,
+        viewport,
+        ok: true,
+        failed_visual_gates: [],
+        screenshot_path: `/tmp/${routeId}-${viewport}.png`,
+        bytes: 120_000,
+        image_metrics: {
+          pixel_metrics_verified: true,
+          unique_color_sample_count: 96,
+          background_diff_pixel_ratio: 0.41,
+          luma_stddev: 22,
+        },
+        layout_metrics: {
+          horizontal_overflow_px: 0,
+          selector_visible_area_px: 468_000,
+        },
+        screenshot_sha256: "0".repeat(64),
+      });
+    }
+  }
+  return {
+    schema_version: "synthi.dojo.visualProof.v1",
+    ok: true,
+    route_count: DOJO_FULL_VISUAL_ROUTE_IDS.length,
+    screenshot_count: results.length,
+    screenshots: results.map((result) => result.screenshot_path),
+    results,
+  };
+}

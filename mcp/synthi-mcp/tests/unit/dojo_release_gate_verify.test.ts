@@ -8,6 +8,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildDojoReleaseGateEvidenceManifest,
   buildDojoReleaseGateManifest,
+  DOJO_FULL_VISUAL_ROUTE_IDS,
+  DOJO_FULL_VISUAL_VIEWPORTS,
 } from "../../scripts/dojo-release-gate-manifest.mjs";
 import {
   DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES,
@@ -3512,16 +3514,11 @@ describe("Dojo release gate artifact verifier", () => {
       generatedAt: "2026-06-11T00:00:00.000Z",
       packageScripts,
     });
-    const screenshotPath = path.join(dir, "visual-proof.png");
-    const imageBytes = Buffer.from("not-a-real-production-screenshot");
-    await writeFile(screenshotPath, imageBytes);
-    const reportPath = path.join(dir, "visual-proof.json");
-    const report = buildVisualReport({
-      screenshotPath,
-      bytes: imageBytes.length,
-      screenshotSha256: sha256(imageBytes),
+    const { reportPath } = await writeVisualReportFixture({
+      dir,
+      basename: "full-visual-proof",
+      schemaVersion: "synthi.dojo.visualProof.v1",
     });
-    await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
 
     expect(await verifyVisualProofArtifact({
       manifest,
@@ -3530,14 +3527,21 @@ describe("Dojo release gate artifact verifier", () => {
     })).toEqual(expect.objectContaining({
       ok: true,
       errors: [],
-      result_count: 1,
+      result_count: DOJO_FULL_VISUAL_ROUTE_IDS.length * DOJO_FULL_VISUAL_VIEWPORTS.length,
     }));
 
-    await writeFile(reportPath, JSON.stringify(buildVisualReport({
-      screenshotPath,
-      bytes: imageBytes.length + 1,
-      screenshotSha256: sha256(imageBytes),
-    }), null, 2), "utf8");
+    const report = JSON.parse(await readFile(reportPath, "utf8"));
+    const expectedScreenshotBytes = Number(report.results[0].bytes);
+    await writeFile(reportPath, JSON.stringify({
+      ...report,
+      results: [
+        {
+          ...report.results[0],
+          bytes: expectedScreenshotBytes + 1,
+        },
+        ...report.results.slice(1),
+      ],
+    }, null, 2), "utf8");
     const rejected = await verifyVisualProofArtifact({
       manifest,
       gateId: "dojo_full_visual_proof",
@@ -3545,14 +3549,19 @@ describe("Dojo release gate artifact verifier", () => {
     });
     expect(rejected.ok).toBe(false);
     expect(rejected.errors).toEqual(expect.arrayContaining([
-      "visual_result_screenshot_bytes_mismatch:visual-proof:33:32",
+      `visual_result_screenshot_bytes_mismatch:dojo-shell:${expectedScreenshotBytes + 1}:${expectedScreenshotBytes}`,
     ]));
 
-    await writeFile(reportPath, JSON.stringify(buildVisualReport({
-      screenshotPath,
-      bytes: imageBytes.length,
-      screenshotSha256: sha256("different-screenshot"),
-    }), null, 2), "utf8");
+    await writeFile(reportPath, JSON.stringify({
+      ...report,
+      results: [
+        {
+          ...report.results[0],
+          screenshot_sha256: sha256("different-screenshot"),
+        },
+        ...report.results.slice(1),
+      ],
+    }, null, 2), "utf8");
     const digestRejected = await verifyVisualProofArtifact({
       manifest,
       gateId: "dojo_full_visual_proof",
@@ -3560,7 +3569,7 @@ describe("Dojo release gate artifact verifier", () => {
     });
     expect(digestRejected.ok).toBe(false);
     expect(digestRejected.errors).toEqual(expect.arrayContaining([
-      expect.stringMatching(/^visual_result_screenshot_sha256_mismatch:visual-proof:/),
+      expect.stringMatching(/^visual_result_screenshot_sha256_mismatch:dojo-shell:/),
     ]));
   });
 });
@@ -3597,18 +3606,38 @@ async function writeConformancePair({ report, reportPath, evidencePath }) {
 }
 
 async function writeVisualReportFixture({ dir, basename, schemaVersion }) {
-  const screenshotPath = path.join(dir, `${basename}.png`);
-  const imageBytes = Buffer.from(`${basename}:visual-proof-fixture`);
-  await writeFile(screenshotPath, imageBytes);
+  const routeIds = schemaVersion === "synthi.dojo.visualProof.v1"
+    ? DOJO_FULL_VISUAL_ROUTE_IDS
+    : ["visual-proof"];
+  const viewports = schemaVersion === "synthi.dojo.visualProof.v1"
+    ? DOJO_FULL_VISUAL_VIEWPORTS
+    : ["desktop"];
+  const results = [];
+  for (const routeId of routeIds) {
+    for (const viewport of viewports) {
+      const screenshotPath = path.join(dir, `${basename}-${routeId}-${viewport}.png`);
+      const imageBytes = Buffer.from(`${basename}:${routeId}:${viewport}:visual-proof-fixture`);
+      await writeFile(screenshotPath, imageBytes);
+      results.push(buildVisualReportResult({
+        routeId,
+        viewport,
+        screenshotPath,
+        bytes: imageBytes.length,
+        screenshotSha256: sha256(imageBytes),
+      }));
+    }
+  }
   const reportPath = path.join(dir, `${basename}.json`);
-  await writeFile(reportPath, JSON.stringify(buildVisualReport({
-    screenshotPath,
-    bytes: imageBytes.length,
-    screenshotSha256: sha256(imageBytes),
-    schemaVersion,
-  }), null, 2), "utf8");
+  await writeFile(reportPath, JSON.stringify({
+    schema_version: schemaVersion,
+    ok: true,
+    route_count: routeIds.length,
+    screenshot_count: results.length,
+    screenshots: results.map((result) => result.screenshot_path),
+    results,
+  }, null, 2), "utf8");
   return {
-    screenshotPath,
+    screenshotPath: results[0]?.screenshot_path,
     reportPath,
   };
 }
@@ -7186,31 +7215,24 @@ function mcpHostDeploymentClaimsFixture() {
   };
 }
 
-function buildVisualReport({ screenshotPath, bytes, screenshotSha256, schemaVersion = "synthi.dojo.visualProof.v1" }) {
+function buildVisualReportResult({ routeId, viewport, screenshotPath, bytes, screenshotSha256 }) {
   return {
-    schema_version: schemaVersion,
+    route_id: routeId,
+    viewport,
     ok: true,
-    screenshots: [screenshotPath],
-    results: [
-      {
-        route_id: "visual-proof",
-        viewport: "desktop",
-        ok: true,
-        failed_visual_gates: [],
-        screenshot_path: screenshotPath,
-        screenshot_sha256: screenshotSha256,
-        bytes,
-        image_metrics: {
-          pixel_metrics_verified: true,
-          unique_color_sample_count: 64,
-          background_diff_pixel_ratio: 0.32,
-          luma_stddev: 24,
-        },
-        layout_metrics: {
-          horizontal_overflow_px: 0,
-          selector_visible_area_px: 120000,
-        },
-      },
-    ],
+    failed_visual_gates: [],
+    screenshot_path: screenshotPath,
+    screenshot_sha256: screenshotSha256,
+    bytes,
+    image_metrics: {
+      pixel_metrics_verified: true,
+      unique_color_sample_count: 64,
+      background_diff_pixel_ratio: 0.32,
+      luma_stddev: 24,
+    },
+    layout_metrics: {
+      horizontal_overflow_px: 0,
+      selector_visible_area_px: 120000,
+    },
   };
 }

@@ -181,6 +181,26 @@ export const DOJO_RELEASE_GATE_TIERS = [
   },
 ];
 
+export const DOJO_FULL_VISUAL_ROUTE_IDS = Object.freeze([
+  "dojo-shell",
+  "skill-cards",
+  "skill-passport",
+  "skill-cortex",
+  "practice-world",
+  "source-api",
+  "evidence",
+  "case-law",
+  "governance",
+  "time-machine",
+]);
+
+export const DOJO_FULL_VISUAL_VIEWPORTS = Object.freeze([
+  "desktop",
+  "mobile",
+]);
+
+export const DOJO_FULL_VISUAL_RESULT_COUNT = DOJO_FULL_VISUAL_ROUTE_IDS.length * DOJO_FULL_VISUAL_VIEWPORTS.length;
+
 export const DOJO_VISUAL_REPORT_REQUIREMENTS = Object.freeze({
   requires_report_ok: true,
   requires_result_ok: true,
@@ -199,6 +219,18 @@ export const DOJO_VISUAL_REPORT_REQUIREMENTS = Object.freeze({
     "layout_metrics.selector_visible_area_px",
     "screenshot_sha256",
   ],
+});
+
+export const DOJO_FULL_VISUAL_REPORT_REQUIREMENTS = Object.freeze({
+  ...DOJO_VISUAL_REPORT_REQUIREMENTS,
+  required_route_ids: [...DOJO_FULL_VISUAL_ROUTE_IDS],
+  required_viewports: [...DOJO_FULL_VISUAL_VIEWPORTS],
+  min_result_count: DOJO_FULL_VISUAL_RESULT_COUNT,
+  requires_all_required_route_viewports: true,
+  requires_unique_screenshot_paths: true,
+  requires_top_level_screenshots_match_results: true,
+  requires_screenshot_count_matches_results: true,
+  requires_route_count_matches_required_routes: true,
 });
 
 export const DOJO_LIVE_HOSTED_RUNTIME_REQUIREMENTS = Object.freeze({
@@ -573,7 +605,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     evidence_kind: "visual_report",
     report_schema_version: "synthi.dojo.visualProof.v1",
     default_report_path: "synthi/tmp/dojo-visual-proof/visual-proof.json",
-    visual_report_requirements: DOJO_VISUAL_REPORT_REQUIREMENTS,
+    visual_report_requirements: DOJO_FULL_VISUAL_REPORT_REQUIREMENTS,
   },
   {
     id: "dojo_ghost_mode_visual_proof",
@@ -1439,6 +1471,33 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!gate.default_report_path) errors.push(`visual_gate_missing_report_path:${gate.id}`);
     if (!gate.visual_report_requirements?.requires_pixel_metrics) errors.push(`visual_gate_missing_pixel_metrics:${gate.id}`);
     if (!gate.visual_report_requirements?.requires_layout_metrics) errors.push(`visual_gate_missing_layout_metrics:${gate.id}`);
+    if (gate.id === "dojo_full_visual_proof") {
+      const requirements = gate.visual_report_requirements || {};
+      for (const routeId of missingRequiredEntries(DOJO_FULL_VISUAL_ROUTE_IDS, requirements.required_route_ids)) {
+        errors.push(`full_visual_gate_missing_required_route:${routeId}`);
+      }
+      for (const viewport of missingRequiredEntries(DOJO_FULL_VISUAL_VIEWPORTS, requirements.required_viewports)) {
+        errors.push(`full_visual_gate_missing_required_viewport:${viewport}`);
+      }
+      if (requirements.requires_all_required_route_viewports !== true) {
+        errors.push("full_visual_gate_missing_route_viewport_matrix_requirement");
+      }
+      if (requirements.requires_unique_screenshot_paths !== true) {
+        errors.push("full_visual_gate_missing_unique_screenshot_requirement");
+      }
+      if (requirements.requires_top_level_screenshots_match_results !== true) {
+        errors.push("full_visual_gate_missing_top_level_screenshot_count_requirement");
+      }
+      if (requirements.requires_screenshot_count_matches_results !== true) {
+        errors.push("full_visual_gate_missing_screenshot_count_requirement");
+      }
+      if (requirements.requires_route_count_matches_required_routes !== true) {
+        errors.push("full_visual_gate_missing_route_count_requirement");
+      }
+      if (Number(requirements.min_result_count) < DOJO_FULL_VISUAL_RESULT_COUNT) {
+        errors.push(`full_visual_gate_min_result_count_too_low:${requirements.min_result_count ?? "missing"}`);
+      }
+    }
   }
   for (const gate of gates.filter((item) => item.tier === "T5")) {
     if (gate.evidence_kind !== "proof_artifact") errors.push(`live_hosted_gate_missing_artifact_contract:${gate.id}`);
@@ -2897,8 +2956,53 @@ export function validateDojoVisualProofReport(report, {
   if (results.length === 0) {
     errors.push("visual_report_missing_results");
   }
+  const requiredRouteIds = Array.isArray(requirements.required_route_ids)
+    ? requirements.required_route_ids.map(String).filter(Boolean)
+    : [];
+  const requiredViewports = Array.isArray(requirements.required_viewports)
+    ? requirements.required_viewports.map(String).filter(Boolean)
+    : [];
+  const minResultCount = Number(requirements.min_result_count);
+  if (Number.isFinite(minResultCount) && results.length < minResultCount) {
+    errors.push(`visual_report_result_count_below_minimum:${results.length}:${minResultCount}`);
+  }
+  if (requirements.requires_top_level_screenshots_match_results) {
+    if (!Array.isArray(report?.screenshots)) {
+      errors.push("visual_report_missing_top_level_screenshots");
+    } else if (report.screenshots.length !== results.length) {
+      errors.push(`visual_report_screenshot_list_count_mismatch:${report.screenshots.length}:${results.length}`);
+    }
+  }
+  if (requirements.requires_screenshot_count_matches_results && Number(report?.screenshot_count) !== results.length) {
+    errors.push(`visual_report_screenshot_count_mismatch:${report?.screenshot_count ?? "missing"}:${results.length}`);
+  }
+  if (
+    requirements.requires_route_count_matches_required_routes
+    && Number(report?.route_count) !== requiredRouteIds.length
+  ) {
+    errors.push(`visual_report_route_count_mismatch:${report?.route_count ?? "missing"}:${requiredRouteIds.length}`);
+  }
+  const observedRouteIds = new Set();
+  const observedViewports = new Set();
+  const observedRouteViewports = new Set();
+  const screenshotPathLabels = new Map();
   for (const [index, result] of results.entries()) {
-    const label = result.route_id || result.name || String(index);
+    const label = visualResultLabel(result, index);
+    const routeId = visualResultRouteId(result);
+    const viewport = visualResultViewport(result);
+    if (routeId) observedRouteIds.add(routeId);
+    if (viewport) observedViewports.add(viewport);
+    if (routeId && viewport) observedRouteViewports.add(`${routeId}\u0000${viewport}`);
+    if (requirements.requires_unique_screenshot_paths) {
+      const screenshotPath = String(result.screenshot_path || "").trim();
+      if (!screenshotPath) {
+        errors.push(`visual_result_missing_unique_screenshot_path:${label}`);
+      } else if (screenshotPathLabels.has(screenshotPath)) {
+        errors.push(`visual_result_duplicate_screenshot_path:${screenshotPathLabels.get(screenshotPath)}:${label}`);
+      } else {
+        screenshotPathLabels.set(screenshotPath, label);
+      }
+    }
     if (requirements.requires_result_ok && result.ok !== true) {
       errors.push(`visual_result_not_ok:${label}`);
     }
@@ -2922,6 +3026,21 @@ export function validateDojoVisualProofReport(report, {
       errors.push(`visual_result_layout_overflow_unmeasured:${label}`);
     } else if (overflow > requirements.max_horizontal_overflow_px) {
       errors.push(`visual_result_horizontal_overflow:${label}:${overflow}`);
+    }
+  }
+  for (const routeId of requiredRouteIds) {
+    if (!observedRouteIds.has(routeId)) errors.push(`visual_report_missing_required_route:${routeId}`);
+  }
+  for (const viewport of requiredViewports) {
+    if (!observedViewports.has(viewport)) errors.push(`visual_report_missing_required_viewport:${viewport}`);
+  }
+  if (requirements.requires_all_required_route_viewports) {
+    for (const routeId of requiredRouteIds) {
+      for (const viewport of requiredViewports) {
+        if (!observedRouteViewports.has(`${routeId}\u0000${viewport}`)) {
+          errors.push(`visual_report_missing_required_route_viewport:${routeId}:${viewport}`);
+        }
+      }
     }
   }
   return {
@@ -3041,6 +3160,28 @@ function valueAtPath(source, fieldPath) {
     if (current === undefined || current === null) return undefined;
     return current[key];
   }, source);
+}
+
+function visualResultLabel(result, index) {
+  const routeId = visualResultRouteId(result);
+  const viewport = visualResultViewport(result);
+  if (routeId && viewport) return `${routeId}:${viewport}`;
+  return routeId || viewport || String(index);
+}
+
+function visualResultRouteId(result) {
+  return String(result?.route_id || result?.name || "").trim();
+}
+
+function visualResultViewport(result) {
+  const explicit = result?.viewport_id || result?.viewport_name || result?.viewport_label;
+  if (explicit) return String(explicit).trim();
+  const viewport = result?.viewport;
+  if (typeof viewport === "string") return viewport.trim();
+  if (viewport && typeof viewport === "object") {
+    return String(viewport.name || viewport.id || viewport.label || "").trim();
+  }
+  return "";
 }
 
 function parseArgs(argv) {
