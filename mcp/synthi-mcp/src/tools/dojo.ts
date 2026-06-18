@@ -2985,6 +2985,8 @@ async function runApiBackedToolSkillBusPreflight(input: {
   proofCapsule: DojoProofCarryingSkillCapsule;
   proofValidation: { ok: boolean; blocked_by: string[] };
   licenseDecision: { ok: boolean; status: string; blocked_by: string[]; error_codes?: string[] };
+  dryRun?: boolean;
+  executeTool?: () => unknown | Promise<unknown>;
 }): Promise<DojoToolDispatchResult> {
   const skillBus = createInProcessDojoMcpSkillBus({
     listSkills: () => [input.skill],
@@ -3005,9 +3007,12 @@ async function runApiBackedToolSkillBusPreflight(input: {
       if (resolved_tool.kind !== "api_backed") {
         return blockDojoMcpSkillBusExecution(["dojo_mcp_tool_not_api_backed"]);
       }
+      if (input.dryRun === false && input.executeTool) {
+        return input.executeTool();
+      }
       return {
         ok: true,
-        preflight_only: true,
+        preflight_only: input.dryRun !== false,
         tool_name: resolved_tool.tool_name,
         tool_version: resolved_tool.tool_version,
         resolved_tool_kind: resolved_tool.kind,
@@ -3021,7 +3026,7 @@ async function runApiBackedToolSkillBusPreflight(input: {
     requested_action: input.apiTool.action,
     args: input.toolArgs,
     proof_capsule: input.proofCapsule,
-    dry_run: true,
+    dry_run: input.dryRun !== false,
   });
 }
 
@@ -3036,7 +3041,33 @@ function apiBackedToolSkillBusPreflightSummary(result: DojoToolDispatchResult | 
     tool_name: result.tool_name,
     resolution: result.resolution ? apiBackedToolSkillBusResolutionSummary(result.resolution) : null,
     validation: result.validation ?? null,
+    result: result.result ?? null,
   };
+}
+
+type ApiBackedToolExecutionPayload = {
+  proof_consume: DojoProofConsumeResult;
+  api_tool_execution: Awaited<ReturnType<typeof executeDojoApiBackedToolInvocation>> | null;
+  api_tool_execution_evidence: DojoApiToolExecutionEvidence[];
+};
+
+function apiBackedToolExecutionPayloadOpt(value: unknown): ApiBackedToolExecutionPayload | undefined {
+  const record = objectOpt(value);
+  if (!record) return undefined;
+  const proofConsume = objectOpt(record["proof_consume"]);
+  if (!proofConsume) return undefined;
+  return {
+    proof_consume: proofConsume as unknown as DojoProofConsumeResult,
+    api_tool_execution: (objectOpt(record["api_tool_execution"]) ?? null) as ApiBackedToolExecutionPayload["api_tool_execution"],
+    api_tool_execution_evidence: Array.isArray(record["api_tool_execution_evidence"])
+      ? record["api_tool_execution_evidence"] as DojoApiToolExecutionEvidence[]
+      : [],
+  };
+}
+
+function apiBackedToolExecutionPayloadFromDispatchValue(value: unknown): ApiBackedToolExecutionPayload | undefined {
+  return apiBackedToolExecutionPayloadOpt(value)
+    ?? apiBackedToolExecutionPayloadOpt(objectOpt(value)?.["result"]);
 }
 
 async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
@@ -3220,15 +3251,155 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         blocked_by: transport.blocked_by,
       });
     }
-    const proofConsume = durableProofRegistry.context.required
-      ? await durableProofRegistry.context.proof_store.markProofCapsuleUsed(proofCapsule.capsule_id, runId, now)
-      : markDojoProofExecution({
-        registry: dojoSkillRegistry,
-        proof_capsule: proofCapsule,
-        run_id: runId,
-        now,
+    const executeApiBackedTool = async (): Promise<ApiBackedToolExecutionPayload | ReturnType<typeof blockDojoMcpSkillBusExecution>> => {
+      const proofConsume = durableProofRegistry.context.required
+        ? await durableProofRegistry.context.proof_store.markProofCapsuleUsed(proofCapsule.capsule_id, runId, now)
+        : markDojoProofExecution({
+          registry: dojoSkillRegistry,
+          proof_capsule: proofCapsule,
+          run_id: runId,
+          now,
+        });
+      if (!proofConsume.ok) {
+        const blockedBy = dedupeStrings([...proofConsume.blocked_by, ...licenseDecision.blocked_by]);
+        return blockDojoMcpSkillBusExecution(
+          blockedBy,
+          {
+            ok: false,
+            status: "blocked",
+            blocked_by: blockedBy,
+            error_codes: normalizeDojoProofErrorCodes(blockedBy),
+          },
+          {
+            proof_consume: proofConsume,
+            api_tool_execution: null,
+            api_tool_execution_evidence: [],
+          } satisfies ApiBackedToolExecutionPayload
+        );
+      }
+
+      const evidenceRecords: DojoApiToolExecutionEvidence[] = [];
+      const execution = await executeDojoApiBackedToolInvocation({
+        tool: apiTool,
+        args: toolArgs,
+        license_context: licenseContext,
+        validate_proof: ({ proof_capsule }) => apiToolProofValidationForSkill(
+          skill.skill,
+          apiTool,
+          proof_capsule,
+          now,
+          licenseDecision.validation
+        ),
+        transport: transport.transport,
+        write_evidence: (evidence) => {
+          const record = cloneJson(evidence);
+          evidenceRecords.push(record);
+          return `evidence:api_tool_${hashId(JSON.stringify(record))}`;
+        },
       });
-    if (!proofConsume.ok) {
+      const payload: ApiBackedToolExecutionPayload = {
+        proof_consume: proofConsume,
+        api_tool_execution: execution,
+        api_tool_execution_evidence: evidenceRecords,
+      };
+      if (!execution.ok) {
+        return blockDojoMcpSkillBusExecution(
+          execution.blocked_by,
+          {
+            ok: false,
+            status: "blocked",
+            blocked_by: [...execution.blocked_by],
+            error_codes: normalizeDojoProofErrorCodes(execution.blocked_by),
+          },
+          payload
+        );
+      }
+      return payload;
+    };
+
+    const skillBusDispatch = skillBusResolution
+      ? await runApiBackedToolSkillBusPreflight({
+        skill: skill.skill,
+        tenant,
+        apiTool,
+        toolArgs,
+        proofCapsule,
+        proofValidation,
+        licenseDecision,
+        dryRun: false,
+        executeTool: executeApiBackedTool,
+      })
+      : null;
+    const directExecution = skillBusDispatch ? undefined : await executeApiBackedTool();
+    const executionPayload = skillBusDispatch
+      ? apiBackedToolExecutionPayloadFromDispatchValue(skillBusDispatch.result)
+      : apiBackedToolExecutionPayloadFromDispatchValue(directExecution);
+    if (skillBusDispatch && !skillBusDispatch.ok) {
+      const blockedBy = dedupeStrings([
+        ...skillBusDispatch.blocked_by,
+        ...(executionPayload?.api_tool_execution?.blocked_by ?? []),
+      ]);
+      return errorResponse(blockedBy[0] ?? "dojo_api_backed_tool_skill_bus_dispatch_blocked", {
+        ok: false,
+        error: blockedBy[0] ?? "dojo_api_backed_tool_skill_bus_dispatch_blocked",
+        skill_id: skill.skill.skill_id,
+        control_plane_source: skill.control_plane_source,
+        run_id: runId,
+        dry_run: false,
+        proof_key: validationOptions.proof_key ?? null,
+        tool_name: apiTool.tool_name,
+        tool_version: apiTool.tool_version,
+        mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(skillBusResolution),
+        mcp_skill_bus_preflight: apiBackedToolSkillBusPreflightSummary(skillBusPreflight),
+        mcp_skill_bus_dispatch: apiBackedToolSkillBusPreflightSummary(skillBusDispatch),
+        api_backed_mcp_tool: apiTool,
+        api_tool_invocation_validation: invocationValidation,
+        proof_validation: {
+          ok: false,
+          blocked_by: blockedBy,
+        },
+        license_kernel: {
+          ...licenseDecision,
+          ok: false,
+          status: "blocked",
+          proof_record: executionPayload?.proof_consume.record ?? licenseDecision.proof_record,
+          blocked_by: blockedBy,
+          error_codes: normalizeDojoProofErrorCodes(blockedBy),
+          validation: {
+            ...licenseDecision.validation,
+            ok: false,
+            status: "blocked",
+            error: blockedBy[0] ?? "dojo_api_backed_tool_skill_bus_dispatch_blocked",
+            blocked_by: blockedBy,
+            error_codes: normalizeDojoProofErrorCodes(blockedBy),
+          },
+        },
+        proof_consume: executionPayload?.proof_consume ?? null,
+        api_tool_execution: executionPayload?.api_tool_execution ?? null,
+        api_tool_execution_evidence: executionPayload?.api_tool_execution_evidence ?? [],
+        blocked_by: blockedBy,
+        error_codes: normalizeDojoProofErrorCodes(blockedBy),
+      });
+    }
+    if (!executionPayload) {
+      return errorResponse("dojo_api_backed_tool_execution_result_missing", {
+        ok: false,
+        error: "dojo_api_backed_tool_execution_result_missing",
+        skill_id: skill.skill.skill_id,
+        control_plane_source: skill.control_plane_source,
+        run_id: runId,
+        dry_run: false,
+        tool_name: apiTool.tool_name,
+        tool_version: apiTool.tool_version,
+        mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(skillBusResolution),
+        mcp_skill_bus_preflight: apiBackedToolSkillBusPreflightSummary(skillBusPreflight),
+        mcp_skill_bus_dispatch: apiBackedToolSkillBusPreflightSummary(skillBusDispatch),
+        blocked_by: ["api_tool_execution_result_missing"],
+        error_codes: ["api_tool_execution_result_missing"],
+      });
+    }
+    const { proof_consume: proofConsume, api_tool_execution: execution, api_tool_execution_evidence: evidenceRecords } = executionPayload;
+    if (!execution) {
       const blockedBy = dedupeStrings([...proofConsume.blocked_by, ...licenseDecision.blocked_by]);
       return errorResponse(blockedBy[0] ?? "dojo_api_backed_tool_proof_consume_blocked", {
         ok: false,
@@ -3238,6 +3409,9 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         run_id: runId,
         dry_run: false,
         api_backed_mcp_tool: apiTool,
+        mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(skillBusResolution),
+        mcp_skill_bus_preflight: apiBackedToolSkillBusPreflightSummary(skillBusPreflight),
+        mcp_skill_bus_dispatch: apiBackedToolSkillBusPreflightSummary(skillBusDispatch),
         api_tool_invocation_validation: invocationValidation,
         proof_validation: {
           ok: false,
@@ -3260,30 +3434,12 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
           },
         },
         proof_consume: proofConsume,
+        api_tool_execution: null,
+        api_tool_execution_evidence: [],
         blocked_by: blockedBy,
         error_codes: normalizeDojoProofErrorCodes(blockedBy),
       });
     }
-
-    const evidenceRecords: DojoApiToolExecutionEvidence[] = [];
-    const execution = await executeDojoApiBackedToolInvocation({
-      tool: apiTool,
-      args: toolArgs,
-      license_context: licenseContext,
-      validate_proof: ({ proof_capsule }) => apiToolProofValidationForSkill(
-        skill.skill,
-        apiTool,
-        proof_capsule,
-        now,
-        licenseDecision.validation
-      ),
-      transport: transport.transport,
-      write_evidence: (evidence) => {
-        const record = cloneJson(evidence);
-        evidenceRecords.push(record);
-        return `evidence:api_tool_${hashId(JSON.stringify(record))}`;
-      },
-    });
     return jsonResponse({
       skill_id: skill.skill.skill_id,
       control_plane_source: skill.control_plane_source,
@@ -3295,6 +3451,7 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
       tool_version: apiTool.tool_version,
       mcp_skill_bus_resolution: apiBackedToolSkillBusResolutionSummary(skillBusResolution),
       mcp_skill_bus_preflight: apiBackedToolSkillBusPreflightSummary(skillBusPreflight),
+      mcp_skill_bus_dispatch: apiBackedToolSkillBusPreflightSummary(skillBusDispatch),
       api_backed_mcp_tool: apiTool,
       api_tool_invocation_validation: invocationValidation,
       proof_validation: execution.proof_validation ?? proofValidation,

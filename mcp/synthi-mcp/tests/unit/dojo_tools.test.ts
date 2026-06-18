@@ -2166,7 +2166,7 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
-  it("runs a published API-backed MCP tool by tool name through skill-bus resolution", async () => {
+  it("runs a published API-backed MCP tool by tool name through skill-bus dispatch", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
     expect(publish?.isError).toBeUndefined();
@@ -2327,6 +2327,24 @@ describe("Agent Dojo MCP tools", () => {
         dry_run: true,
         blocked_by: [],
         validation: expect.objectContaining({ ok: true, status: "allowed" }),
+      }),
+      mcp_skill_bus_dispatch: expect.objectContaining({
+        ok: true,
+        status: "allowed",
+        dry_run: false,
+        blocked_by: [],
+        tool_name: "synthi_api_save_invoice",
+        validation: expect.objectContaining({ ok: true, status: "allowed" }),
+        resolution: expect.objectContaining({
+          resolved_tool: expect.objectContaining({ kind: "api_backed" }),
+        }),
+        result: expect.objectContaining({
+          proof_consume: expect.objectContaining({ ok: true, status: "used" }),
+          api_tool_execution: expect.objectContaining({
+            ok: true,
+            status: "executed",
+          }),
+        }),
       }),
       proof_consume: expect.objectContaining({ ok: true, status: "used" }),
       api_tool_execution: expect.objectContaining({

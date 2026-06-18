@@ -216,7 +216,7 @@ describe("Dojo implementation status registry", () => {
     );
   });
 
-  it("describes API-backed tool execution as skill-bus preflighted without claiming deployed host maturity", () => {
+  it("describes API-backed tool execution as skill-bus dispatched without claiming deployed host maturity", () => {
     expect(getDojoToolImplementationMetadata("synthi_dojo_prepare_api_backed_tool")).toEqual(
       expect.objectContaining({
         implementation_status: "executable",
@@ -236,7 +236,7 @@ describe("Dojo implementation status registry", () => {
         runtime_enforced: true,
         runtime_scope: "proof_gated_dispatch",
         production_runtime: false,
-        summary: expect.stringContaining("published API-backed skill-bus tool name"),
+        summary: expect.stringContaining("non-dry dispatch"),
         maturity_blockers: expect.arrayContaining(["deployed_mcp_host_conformance_required"]),
       })
     );

@@ -90,6 +90,7 @@ export interface DojoMcpSkillBusExecutionBlock {
   kind: "dojoMcpSkillBusExecutionBlock";
   blocked_by: string[];
   validation?: DojoSkillBusProofValidation;
+  result?: unknown;
 }
 
 export type DojoMcpSkillBusRateLimitScope =
@@ -183,12 +184,14 @@ export function createInMemoryDojoMcpSkillBusRateLimiter(options: {
 
 export function blockDojoMcpSkillBusExecution(
   blockedBy: string[],
-  validation?: DojoSkillBusProofValidation
+  validation?: DojoSkillBusProofValidation,
+  result?: unknown
 ): DojoMcpSkillBusExecutionBlock {
   return {
     kind: "dojoMcpSkillBusExecutionBlock",
     blocked_by: [...blockedBy],
     ...(validation ? { validation } : {}),
+    ...(typeof result === "undefined" ? {} : { result }),
   };
 }
 
@@ -439,6 +442,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
       return this.auditDispatch(input, {
         ...blockedDispatch(input, resolution, result.blocked_by, result.validation ?? validation),
         ...(proofConsume ? { proof_consume: proofConsume } : {}),
+        ...(typeof result.result === "undefined" ? {} : { result: result.result }),
       });
     }
     if (result === null || typeof result === "undefined") {
