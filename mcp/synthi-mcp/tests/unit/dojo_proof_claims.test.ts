@@ -24,6 +24,7 @@ describe("Dojo proof issuance evidence claims", () => {
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [record],
       require_verified_evidence: true,
+      tenant_id: "tenant-a",
       now: "2026-06-11T00:05:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
@@ -43,6 +44,32 @@ describe("Dojo proof issuance evidence claims", () => {
     );
   });
 
+  it("blocks strict proof issuance when tenant evidence scope is omitted", () => {
+    const skill = skillFixture();
+    const record = evidenceRecord("evidence-no-tenant-scope", skill.skill_id, proofEvidenceClaimIds(skill), "2026-06-11T00:00:00.000Z");
+
+    const error = captureProofIssueError(() => issueDojoProofCapsule(skill, "run_workflow", {
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: [record],
+      require_verified_evidence: true,
+      now: "2026-06-11T00:05:00.000Z",
+    }));
+
+    expect(error).toBeInstanceOf(DojoProofEvidenceClaimError);
+    expect(error).toEqual(expect.objectContaining({
+      code: "dojo_proof_evidence_claim_unverified",
+      failed_results: [
+        expect.objectContaining({
+          claim_id: "evidence_tenant_scope",
+          ok: false,
+          status: "failed",
+          evidence_record_ids: ["evidence-no-tenant-scope"],
+          blocked_by: ["evidence_tenant_scope_required"],
+        }),
+      ],
+    }));
+  });
+
   it("blocks strict proof issuance when required evidence claims are missing", () => {
     const skill = skillFixture();
     const [firstClaim] = skill.permission_license.proof_requirements.required_evidence_claims;
@@ -52,6 +79,7 @@ describe("Dojo proof issuance evidence claims", () => {
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [record],
       require_verified_evidence: true,
+      tenant_id: "tenant-a",
       now: "2026-06-11T00:05:00.000Z",
     })).toThrow(/dojo_proof_evidence_claim_unverified:/);
   });
@@ -69,6 +97,7 @@ describe("Dojo proof issuance evidence claims", () => {
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [record],
       require_verified_evidence: true,
+      tenant_id: "tenant-a",
       now: "2026-06-11T00:05:00.000Z",
     }));
 
@@ -100,6 +129,7 @@ describe("Dojo proof issuance evidence claims", () => {
       evidence_ledger_records: [record],
       ledger_checkpoint_hash: "f".repeat(64),
       require_verified_evidence: true,
+      tenant_id: "tenant-a",
       now: "2026-06-11T00:05:00.000Z",
     }));
 
@@ -135,6 +165,7 @@ describe("Dojo proof issuance evidence claims", () => {
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [tampered],
       require_verified_evidence: true,
+      tenant_id: "tenant-a",
       now: "2026-06-11T00:05:00.000Z",
     }));
 
@@ -162,6 +193,7 @@ describe("Dojo proof issuance evidence claims", () => {
       evidence_ledger_records: [record],
       evidence_max_age_ms: 60 * 1000,
       require_verified_evidence: true,
+      tenant_id: "tenant-a",
       now: "2026-06-11T00:00:00.000Z",
     })).toThrow(/dojo_proof_evidence_claim_unverified:/);
   });
@@ -179,6 +211,7 @@ describe("Dojo proof issuance evidence claims", () => {
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [record],
       require_verified_evidence: true,
+      tenant_id: "tenant-a",
       now: "2026-06-11T00:05:00.000Z",
     })).toThrow(/dojo_proof_evidence_claim_unverified:/);
   });
@@ -200,6 +233,7 @@ describe("Dojo proof issuance evidence claims", () => {
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [record],
       require_verified_evidence: true,
+      tenant_id: "tenant-a",
       now: "2026-06-11T00:05:00.000Z",
     }));
 
@@ -251,6 +285,7 @@ describe("Dojo proof issuance evidence claims", () => {
       [DOJO_REQUIRE_EVIDENCE_LEDGER_ENV]: "1",
     }, () => captureProofIssueError(() => issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
+      tenant_id: "tenant-a",
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     })));

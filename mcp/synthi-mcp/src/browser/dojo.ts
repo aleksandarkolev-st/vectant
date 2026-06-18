@@ -3431,6 +3431,18 @@ function evidenceClaimsForProofIssue(
       ledgerCheckpointHash: input.ledger_checkpoint_hash,
     };
   }
+  if (!input.tenant_id?.trim()) {
+    throw new DojoProofEvidenceClaimError([
+      {
+        claim_id: "evidence_tenant_scope",
+        ok: false,
+        status: "failed",
+        evidence_record_ids: records.map((record) => record.record_id),
+        checked_at: checkedAt,
+        blocked_by: ["evidence_tenant_scope_required"],
+      },
+    ]);
+  }
   const integrityFailures = evidenceRecordIntegrityFailures(records, checkedAt);
   if (integrityFailures.length > 0) {
     throw new DojoProofEvidenceClaimError(integrityFailures);
