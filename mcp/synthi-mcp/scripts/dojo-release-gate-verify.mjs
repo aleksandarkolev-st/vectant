@@ -3564,6 +3564,7 @@ export function validateDojoVivariumRuntimeEvidenceForRelease(evidence) {
     ["ambiguous_document_names_required", "vivarium_runtime_ambiguous_document_requirement_missing"],
     ["document_tissue_specific_evidence_required", "vivarium_runtime_document_tissue_specific_evidence_requirement_missing"],
     ["ui_tissue_mutations_required", "vivarium_runtime_ui_tissue_requirement_missing"],
+    ["ui_tissue_specific_evidence_required", "vivarium_runtime_ui_tissue_specific_evidence_requirement_missing"],
     ["policy_tissue_required", "vivarium_runtime_policy_tissue_requirement_missing"],
     ["expanded_identity_tissue_required", "vivarium_runtime_expanded_identity_tissue_requirement_missing"],
     ["invalid_value_data_tissue_required", "vivarium_runtime_invalid_value_data_tissue_requirement_missing"],
@@ -5470,6 +5471,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
         stale_missing_data_tissue_required: false,
         api_validation_latency_tissue_required: false,
         document_tissue_specific_evidence_required: false,
+        ui_tissue_specific_evidence_required: false,
       },
     },
   });
@@ -5487,6 +5489,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_stale_missing_data_tissue_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_api_validation_latency_tissue_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_document_tissue_specific_evidence_requirement_missing"));
+  assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_ui_tissue_specific_evidence_requirement_missing"));
 
   const checkrideLicenseDir = path.join(outDir, "checkride-license");
   await mkdir(checkrideLicenseDir, { recursive: true });
@@ -8221,6 +8224,7 @@ async function writeVivariumRuntimeEvidenceForSelfCheck({
       ambiguous_document_names_required: true,
       document_tissue_specific_evidence_required: true,
       ui_tissue_mutations_required: true,
+      ui_tissue_specific_evidence_required: true,
       policy_tissue_required: true,
       expanded_identity_tissue_required: true,
       invalid_value_data_tissue_required: true,
