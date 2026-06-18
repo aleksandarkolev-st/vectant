@@ -72,6 +72,11 @@ import {
   DOJO_MCP_SKILL_BUS_TEST_FILES,
 } from "../../scripts/dojo-mcp-skill-bus-self-check.mjs";
 import {
+  DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
+  DOJO_PACKAGE_READINESS_REQUIRED_METADATA_FIELDS,
+  DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
+} from "../../scripts/dojo-package-readiness-self-check.mjs";
+import {
   DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "../../scripts/dojo-governance-lifecycle-self-check.mjs";
@@ -162,6 +167,7 @@ const PACKAGE_SCRIPTS = {
     "proof:dojo:implementation-status:self-check": "node scripts/dojo-implementation-status-self-check.mjs",
     "proof:dojo:release-gates:runner:self-check": "node scripts/dojo-release-gate-runner.mjs --self-check",
     "proof:dojo:release-gates:verify:self-check": "node scripts/dojo-release-gate-verify.mjs --self-check",
+    "proof:dojo:package-readiness:self-check": "node scripts/dojo-package-readiness-self-check.mjs",
     "proof:dojo:case-law-runtime:self-check": "node scripts/dojo-case-law-runtime-self-check.mjs",
     "proof:dojo:hosted-runtime-gateway:self-check": "node scripts/dojo-hosted-runtime-gateway-self-check.mjs",
     "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
@@ -202,6 +208,8 @@ describe("Dojo release gate manifest", () => {
     expect(packageJson.scripts["chaos:dojo:preflight"]).toContain("tests/chaos/runner.mjs");
     expect(packageJson.scripts["chaos:dojo:live"]).toContain("tests/chaos/runner.mjs");
     expect(packageJson.scripts.soak).toContain("tests/soak/soak_loop.mjs");
+    expect(packageJson.scripts["proof:dojo:package-readiness:self-check"]).toContain("scripts/dojo-package-readiness-self-check.mjs");
+    expect(packageJson.files).toContain("scripts/dojo-package-readiness-self-check.mjs");
     expect(packageJson.files).toContain("tests/chaos");
     expect(packageJson.files).toContain("tests/soak");
   });
@@ -236,6 +244,7 @@ describe("Dojo release gate manifest", () => {
       ...DOJO_RELEASE_GATE_IDS,
       "dojo_chaos_performance_self_check",
       "dojo_soak_performance_self_check",
+      "dojo_package_readiness_self_check",
       "soak_performance",
     ]));
     expect(manifest.policy.every_pr_requires).toEqual(["T0", "T1"]);
@@ -271,6 +280,27 @@ describe("Dojo release gate manifest", () => {
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
+        }),
+      }),
+      expect.objectContaining({
+        id: "dojo_package_readiness_self_check",
+        tier: "T2",
+        package_script: "proof:dojo:package-readiness:self-check",
+        evidence_kind: "proof_artifact",
+        evidence_schema_version: "synthi.dojo.packageReadinessEvidence.v1",
+        default_evidence_path: "tmp/dojo-package-readiness/dojo-package-readiness.evidence.json",
+        artifact_requirements: expect.objectContaining({
+          require_npm_pack_dry_run: true,
+          require_package_metadata_fields: DOJO_PACKAGE_READINESS_REQUIRED_METADATA_FIELDS,
+          required_package_scripts: DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
+          required_package_files_entries: DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
+          require_public_package: true,
+          require_exports_present_in_pack: true,
+          require_release_harness_scripts_present_in_pack: true,
+          require_package_files_cover_script_paths: true,
+          require_pack_integrity: true,
+          require_stdout_stderr_digest_match: true,
+          require_pack_report_digest_match: true,
         }),
       }),
       expect.objectContaining({
@@ -2027,11 +2057,12 @@ describe("Dojo release gate manifest", () => {
       enterprise_release_gate_count: manifest.enterprise_release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
-      proof_artifact_gate_count: 33,
+      proof_artifact_gate_count: 34,
       proof_artifact_gate_ids: expect.arrayContaining([
         "dojo_implementation_status_self_check",
         "dojo_release_gate_runner_self_check",
         "dojo_release_gate_verifier_self_check",
+        "dojo_package_readiness_self_check",
         "dojo_self_check",
         "dojo_postgres_control_plane_self_check",
         "dojo_evidence_authority_self_check",

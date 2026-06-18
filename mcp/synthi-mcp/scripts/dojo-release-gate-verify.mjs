@@ -114,6 +114,11 @@ import {
   DOJO_MCP_SKILL_BUS_TEST_FILES,
 } from "./dojo-mcp-skill-bus-self-check.mjs";
 import {
+  DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
+  DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
+  validateDojoPackageReadinessEvidence,
+} from "./dojo-package-readiness-self-check.mjs";
+import {
   DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
   DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
 } from "./dojo-postgres-control-plane-self-check.mjs";
@@ -160,6 +165,7 @@ const DEFAULT_PRIVATE_TOOL_CODEX_HOST_CONFORMANCE_DIR = path.join(REPO_ROOT, "tm
 const DEFAULT_POSTGRES_CONTROL_PLANE_DIR = path.join(REPO_ROOT, "tmp", "dojo-postgres-control-plane");
 const DEFAULT_EVIDENCE_AUTHORITY_DIR = path.join(REPO_ROOT, "tmp", "dojo-evidence-authority");
 const DEFAULT_IMPLEMENTATION_STATUS_DIR = path.join(REPO_ROOT, "tmp", "dojo-implementation-status");
+const DEFAULT_PACKAGE_READINESS_DIR = path.join(REPO_ROOT, "tmp", "dojo-package-readiness");
 const DEFAULT_AFFORDANCE_CODEMOD_DIR = path.join(REPO_ROOT, "tmp", "dojo-affordance-codemod-self-check");
 const DEFAULT_SOURCE_DRIFT_DIR = path.join(REPO_ROOT, "tmp", "dojo-source-drift");
 const DEFAULT_AGENT_READY_UI_CONTRACT_DIR = path.join(REPO_ROOT, "tmp", "dojo-agent-ready-ui-contract");
@@ -413,6 +419,22 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       evidencePath,
       releaseCandidate: releasePromotion,
     }, () => verifyDojoImplementationStatusEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: releasePromotion,
+    })));
+  }
+
+  const packageReadinessResults = [];
+  if (releasePromotion || truthy(args["include-package-readiness"]) || args["package-readiness-evidence"]) {
+    const packageReadinessGate = findGate(manifest, "dojo_package_readiness_self_check") || {};
+    const evidencePath = resolveRepoPath(args["package-readiness-evidence"]
+      || packageReadinessGate.default_evidence_path
+      || path.join(DEFAULT_PACKAGE_READINESS_DIR, "dojo-package-readiness.evidence.json"));
+    packageReadinessResults.push(await verifyArtifactSection({
+      id: "dojo_package_readiness_self_check",
+      evidencePath,
+      releaseCandidate: releasePromotion,
+    }, () => verifyDojoPackageReadinessEvidenceArtifact({
       evidencePath,
       releaseCandidate: releasePromotion,
     })));
@@ -927,7 +949,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       })));
   }
 
-  const sections = [manifestResult, ...releaseGateRunnerResults, ...releaseGateVerifierResults, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...liveChaosResults, ...dojoSoakPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...releaseGateRunnerResults, ...releaseGateVerifierResults, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...packageReadinessResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...liveChaosResults, ...dojoSoakPerformanceResults, ...soakPerformanceResults];
   const releaseGateCoverage = getVerifiableReleaseGateCoverage({
     manifest,
     sections,
@@ -957,6 +979,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     postgres_control_plane: postgresControlPlaneResults.map(summarizeSection),
     evidence_authority: evidenceAuthorityResults.map(summarizeSection),
     implementation_status: implementationStatusResults.map(summarizeSection),
+    package_readiness: packageReadinessResults.map(summarizeSection),
     docker_integration: dockerIntegrationResults.map(summarizeSection),
     source_api: sourceApiResults.map(summarizeSection),
     generated_pr: generatedPrResults.map(summarizeSection),
@@ -1007,6 +1030,7 @@ export function buildDojoReleaseGateVerificationEvidenceManifest({ report, repor
     manifest_ok: Boolean(report?.manifest?.ok),
     release_gate_runner_section_count: Array.isArray(report?.release_gate_runner) ? report.release_gate_runner.length : 0,
     release_gate_verifier_section_count: Array.isArray(report?.release_gate_verifier) ? report.release_gate_verifier.length : 0,
+    package_readiness_section_count: Array.isArray(report?.package_readiness) ? report.package_readiness.length : 0,
     chaos_performance_section_count: Array.isArray(report?.chaos_performance) ? report.chaos_performance.length : 0,
     live_chaos_section_count: Array.isArray(report?.live_chaos) ? report.live_chaos.length : 0,
     dojo_soak_performance_section_count: Array.isArray(report?.dojo_soak_performance) ? report.dojo_soak_performance.length : 0,
@@ -1794,6 +1818,104 @@ export function validateDojoImplementationStatusEvidenceForRelease(evidence) {
     ok: errors.length === 0,
     errors,
   };
+}
+
+export async function verifyDojoPackageReadinessEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
+  const evidence = await readJsonFile(evidencePath);
+  const errors = validateDojoPackageReadinessEvidenceForRelease(evidence).errors;
+  errors.push(...await validateDojoPackageReadinessDigestArtifacts(evidence, evidencePath));
+  return {
+    id: "dojo_package_readiness_self_check",
+    ok: errors.length === 0,
+    errors,
+    evidence_path: evidencePath,
+    release_candidate: Boolean(releaseCandidate),
+    report_schema_version: evidence?.schema_version ?? null,
+    result_count: Number(evidence?.npm_pack?.packed_file_count || 0),
+    package_name: evidence?.package_name ?? null,
+    package_version: evidence?.package_version ?? null,
+  };
+}
+
+export function validateDojoPackageReadinessEvidenceForRelease(evidence) {
+  const base = validateDojoPackageReadinessEvidence(evidence);
+  const errors = [...base.errors];
+  const requiredScripts = Array.isArray(evidence?.required_package_scripts)
+    ? evidence.required_package_scripts.map(String)
+    : [];
+  const requiredFilesEntries = Array.isArray(evidence?.required_package_files_entries)
+    ? evidence.required_package_files_entries.map(String)
+    : [];
+  const exportEntryPaths = Array.isArray(evidence?.export_entry_paths)
+    ? evidence.export_entry_paths.map(String)
+    : [];
+  const scriptReferencedPaths = Array.isArray(evidence?.script_referenced_paths)
+    ? evidence.script_referenced_paths.map(String)
+    : [];
+  const requiredPackedPaths = Array.isArray(evidence?.required_packed_paths)
+    ? evidence.required_packed_paths.map(String)
+    : [];
+  const validation = evidence?.validation || {};
+  if (validation.ok !== true) errors.push("package_readiness_validation_not_ok");
+  for (const scriptName of DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES) {
+    if (!requiredScripts.includes(scriptName)) {
+      errors.push(`package_readiness_required_script_missing:${scriptName}`);
+    }
+  }
+  for (const entry of DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES) {
+    if (!requiredFilesEntries.includes(entry)) {
+      errors.push(`package_readiness_required_files_entry_missing:${entry}`);
+    }
+  }
+  if (exportEntryPaths.length === 0) errors.push("package_readiness_export_entry_paths_missing");
+  if (scriptReferencedPaths.length === 0) errors.push("package_readiness_script_referenced_paths_missing");
+  if (requiredPackedPaths.length === 0) errors.push("package_readiness_required_packed_paths_missing");
+  for (const [field, errorCode] of [
+    ["missing_metadata_fields", "package_readiness_missing_metadata_fields"],
+    ["missing_package_scripts", "package_readiness_missing_package_scripts"],
+    ["missing_package_files_entries", "package_readiness_missing_files_entries"],
+    ["missing_local_export_entry_paths", "package_readiness_missing_local_exports"],
+    ["missing_local_script_paths", "package_readiness_missing_local_scripts"],
+    ["missing_packed_paths", "package_readiness_missing_packed_paths"],
+    ["package_files_uncovered_script_paths", "package_readiness_uncovered_script_paths"],
+  ]) {
+    const values = Array.isArray(validation[field]) ? validation[field] : [];
+    if (values.length > 0) errors.push(`${errorCode}:${values.join(",")}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+  };
+}
+
+async function validateDojoPackageReadinessDigestArtifacts(evidence, evidencePath) {
+  const errors = [];
+  const npmPack = evidence?.npm_pack || {};
+  for (const item of [
+    { label: "pack_report", path: npmPack.report_path, sha256: npmPack.report_sha256 },
+    { label: "pack_stdout", path: npmPack.stdout_path, sha256: npmPack.stdout_sha256 },
+    { label: "pack_stderr", path: npmPack.stderr_path, sha256: npmPack.stderr_sha256 },
+  ]) {
+    const artifactPath = resolveEvidenceArtifactPath(item.path, evidencePath);
+    if (!artifactPath) {
+      errors.push(`package_readiness_${item.label}_path_missing`);
+      continue;
+    }
+    if (!String(item.sha256 || "").trim()) {
+      errors.push(`package_readiness_${item.label}_digest_missing`);
+      continue;
+    }
+    try {
+      const body = await readFile(artifactPath, "utf8");
+      const actual = sha256(body);
+      if (actual !== item.sha256) {
+        errors.push(`package_readiness_${item.label}_sha256_mismatch:${actual}:${item.sha256}`);
+      }
+    } catch (error) {
+      errors.push(`package_readiness_${item.label}_read_failed:${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return errors;
 }
 
 export async function verifyDojoDockerIntegrationEvidenceArtifact({ evidencePath, releaseCandidate = false }) {

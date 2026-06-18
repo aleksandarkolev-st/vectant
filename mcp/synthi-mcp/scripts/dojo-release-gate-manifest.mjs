@@ -89,6 +89,11 @@ import {
   DOJO_MCP_SKILL_BUS_TEST_FILES,
 } from "./dojo-mcp-skill-bus-self-check.mjs";
 import {
+  DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
+  DOJO_PACKAGE_READINESS_REQUIRED_METADATA_FIELDS,
+  DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
+} from "./dojo-package-readiness-self-check.mjs";
+import {
   DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES,
   DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES,
 } from "./dojo-postgres-control-plane-self-check.mjs";
@@ -425,6 +430,30 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_negative_controls: true,
       require_report_evidence_pair: true,
       require_json_report_digest_match: true,
+    },
+  },
+  {
+    id: "dojo_package_readiness_self_check",
+    tier: "T2",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:package-readiness:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:package-readiness:self-check",
+    required_for: ["milestone", "release"],
+    evidence_kind: "proof_artifact",
+    evidence_schema_version: "synthi.dojo.packageReadinessEvidence.v1",
+    default_evidence_path: "tmp/dojo-package-readiness/dojo-package-readiness.evidence.json",
+    artifact_requirements: {
+      require_npm_pack_dry_run: true,
+      require_package_metadata_fields: [...DOJO_PACKAGE_READINESS_REQUIRED_METADATA_FIELDS],
+      required_package_scripts: [...DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES],
+      required_package_files_entries: [...DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES],
+      require_public_package: true,
+      require_exports_present_in_pack: true,
+      require_release_harness_scripts_present_in_pack: true,
+      require_package_files_cover_script_paths: true,
+      require_pack_integrity: true,
+      require_stdout_stderr_digest_match: true,
+      require_pack_report_digest_match: true,
     },
   },
   {
@@ -1539,6 +1568,7 @@ export const DOJO_MILESTONE_GATE_IDS = [
   "dojo_implementation_status_self_check",
   "dojo_release_gate_runner_self_check",
   "dojo_release_gate_verifier_self_check",
+  "dojo_package_readiness_self_check",
   "mcp_integration_tests",
   "dojo_postgres_control_plane_self_check",
   "dojo_evidence_authority_self_check",
@@ -1876,6 +1906,52 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_json_report_digest_match", "release_gate_verifier_missing_json_report_digest_requirement"],
     ]) {
       if (!releaseGateVerifierGate.artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+  }
+  const packageReadinessGate = gates.find((gate) => gate.id === "dojo_package_readiness_self_check");
+  if (!packageReadinessGate) {
+    errors.push("package_readiness_gate_missing");
+  } else {
+    if (packageReadinessGate.tier !== "T2") errors.push("package_readiness_gate_wrong_tier");
+    if (packageReadinessGate.package_script !== "proof:dojo:package-readiness:self-check") {
+      errors.push("package_readiness_missing_package_script");
+    }
+    if (packageReadinessGate.evidence_schema_version !== "synthi.dojo.packageReadinessEvidence.v1") {
+      errors.push("package_readiness_missing_evidence_schema");
+    }
+    if (!packageReadinessGate.default_evidence_path) errors.push("package_readiness_missing_default_evidence_path");
+    for (const [requirement, errorCode] of [
+      ["require_npm_pack_dry_run", "package_readiness_missing_npm_pack_requirement"],
+      ["require_public_package", "package_readiness_missing_public_package_requirement"],
+      ["require_exports_present_in_pack", "package_readiness_missing_export_pack_requirement"],
+      ["require_release_harness_scripts_present_in_pack", "package_readiness_missing_harness_pack_requirement"],
+      ["require_package_files_cover_script_paths", "package_readiness_missing_files_coverage_requirement"],
+      ["require_pack_integrity", "package_readiness_missing_pack_integrity_requirement"],
+      ["require_stdout_stderr_digest_match", "package_readiness_missing_log_digest_requirement"],
+      ["require_pack_report_digest_match", "package_readiness_missing_pack_report_digest_requirement"],
+    ]) {
+      if (!packageReadinessGate.artifact_requirements?.[requirement]) errors.push(errorCode);
+    }
+    const missingMetadataFields = missingRequiredEntries(
+      DOJO_PACKAGE_READINESS_REQUIRED_METADATA_FIELDS,
+      packageReadinessGate.artifact_requirements?.require_package_metadata_fields,
+    );
+    if (missingMetadataFields.length > 0) {
+      errors.push(`package_readiness_missing_metadata_fields:${missingMetadataFields.join(",")}`);
+    }
+    const missingPackageScripts = missingRequiredEntries(
+      DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
+      packageReadinessGate.artifact_requirements?.required_package_scripts,
+    );
+    if (missingPackageScripts.length > 0) {
+      errors.push(`package_readiness_missing_required_scripts:${missingPackageScripts.join(",")}`);
+    }
+    const missingPackageFilesEntries = missingRequiredEntries(
+      DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
+      packageReadinessGate.artifact_requirements?.required_package_files_entries,
+    );
+    if (missingPackageFilesEntries.length > 0) {
+      errors.push(`package_readiness_missing_required_files_entries:${missingPackageFilesEntries.join(",")}`);
     }
   }
   const dojoSelfCheckGate = gates.find((gate) => gate.id === "dojo_self_check");
@@ -3638,6 +3714,7 @@ export async function runSelfCheck({ outDir }) {
   assert(manifest.milestone_gate_ids.includes("dojo_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_release_gate_runner_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_release_gate_verifier_self_check"));
+  assert(manifest.milestone_gate_ids.includes("dojo_package_readiness_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_postgres_control_plane_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_affordance_codemod_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_full_visual_proof"));
@@ -3645,6 +3722,7 @@ export async function runSelfCheck({ outDir }) {
   assert(manifest.release_gate_ids.includes("security_abuse_suite"));
   assert(manifest.release_gate_ids.includes("compliance_export_suite"));
   assert(manifest.release_gate_ids.includes("privacy_redaction_suite"));
+  assert(manifest.release_gate_ids.includes("dojo_package_readiness_self_check"));
   for (const gateId of manifest.release_gate_ids) {
     assert(manifest.enterprise_release_gate_ids.includes(gateId), `enterprise_release_missing_release_gate:${gateId}`);
   }

@@ -72,6 +72,13 @@ import {
   DOJO_MCP_SKILL_BUS_TEST_FILES,
 } from "../../scripts/dojo-mcp-skill-bus-self-check.mjs";
 import {
+  buildDojoPackageReadinessEvidenceManifest,
+  collectPackageEntryPaths,
+  collectScriptReferencedPackagePaths,
+  DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
+  DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
+} from "../../scripts/dojo-package-readiness-self-check.mjs";
+import {
   DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
   DOJO_GOVERNANCE_LIFECYCLE_TEST_FILES,
 } from "../../scripts/dojo-governance-lifecycle-self-check.mjs";
@@ -139,6 +146,7 @@ import {
   validateDojoApiToolCompilerEvidenceForRelease,
   validateDojoEvidenceAuthorityEvidenceForMilestone,
   validateDojoImplementationStatusEvidenceForRelease,
+  validateDojoPackageReadinessEvidenceForRelease,
   validateDojoSourceDriftEvidenceForRelease,
   validateDojoMcpHostConformanceSelfCheckReport,
   validateDojoMcpHostConformanceEvidenceForRelease,
@@ -183,6 +191,7 @@ import {
   verifyDojoApiToolCompilerEvidenceArtifact,
   verifyDojoEvidenceAuthorityEvidenceArtifact,
   verifyDojoImplementationStatusEvidenceArtifact,
+  verifyDojoPackageReadinessEvidenceArtifact,
   verifyDojoSourceDriftEvidenceArtifact,
   verifyDojoDockerIntegrationEvidenceArtifact,
   verifyDojoGeneratedPrEvidenceArtifact,
@@ -378,6 +387,84 @@ describe("Dojo release gate artifact verifier", () => {
       expect.stringMatching(new RegExp(`^live_chaos_stdout_${firstScenario}_sha256_mismatch:`)),
       expect.stringMatching(new RegExp(`^live_chaos_stdout_${firstScenario}_bytes_mismatch:`)),
     ]));
+  });
+
+  it("verifies package readiness evidence and rejects missing packed paths or tampered pack reports", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-package-readiness-verify-"));
+    const artifacts = await writePackageReadinessEvidenceFixture({ dir });
+    const evidence = JSON.parse(await readFile(artifacts.evidencePath, "utf8"));
+
+    expect(validateDojoPackageReadinessEvidenceForRelease(evidence)).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoPackageReadinessEvidenceArtifact({
+      evidencePath: artifacts.evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_package_readiness_self_check",
+      ok: true,
+      errors: [],
+      report_schema_version: "synthi.dojo.packageReadinessEvidence.v1",
+      result_count: evidence.npm_pack.packed_file_count,
+      release_candidate: true,
+    }));
+
+    const missingPackedArtifacts = await writePackageReadinessEvidenceFixture({
+      dir,
+      basename: "dojo-package-readiness-missing-packed",
+      omitPackedPath: "scripts/dojo-package-readiness-self-check.mjs",
+    });
+    const missingPacked = await verifyDojoPackageReadinessEvidenceArtifact({
+      evidencePath: missingPackedArtifacts.evidencePath,
+      releaseCandidate: true,
+    });
+    expect(missingPacked.ok).toBe(false);
+    expect(missingPacked.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("missing_packed_path:scripts/dojo-package-readiness-self-check.mjs"),
+    ]));
+
+    await writeFile(artifacts.packReportPath, JSON.stringify([{ tampered: true }], null, 2), "utf8");
+    const tampered = await verifyDojoPackageReadinessEvidenceArtifact({
+      evidencePath: artifacts.evidencePath,
+      releaseCandidate: true,
+    });
+    expect(tampered.ok).toBe(false);
+    expect(tampered.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^package_readiness_pack_report_sha256_mismatch:/),
+    ]));
+  });
+
+  it("can include package readiness in aggregate release-gate artifact verification", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-package-readiness-aggregate-"));
+    const packageScripts = await readPackageScripts();
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+    const packageArtifacts = await writePackageReadinessEvidenceFixture({ dir });
+
+    const result = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "include-package-readiness": true,
+        "package-readiness-evidence": packageArtifacts.evidencePath,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.package_readiness).toEqual([
+      expect.objectContaining({
+        id: "dojo_package_readiness_self_check",
+        ok: true,
+      }),
+    ]);
+    expect(result.attempted_release_gate_ids).toContain("dojo_package_readiness_self_check");
+    expect(result.verified_release_gate_ids).toContain("dojo_package_readiness_self_check");
   });
 
   it("can include a live chaos report in aggregate artifact verification", async () => {
@@ -2534,6 +2621,7 @@ describe("Dojo release gate artifact verifier", () => {
     const apiToolCompilerEvidencePath = await writeApiToolCompilerEvidenceFixture({ dir });
     const generatedPrEvidencePath = await writeGeneratedPrEvidenceFixture({ dir });
     const mcpSkillBusEvidencePath = await writeMcpSkillBusEvidenceFixture({ dir });
+    const packageReadiness = await writePackageReadinessEvidenceFixture({ dir });
     const conformanceSelfCheckReportPath = path.join(dir, "dojo-mcp-host-conformance-self-check.json");
     const conformanceSelfCheckEvidencePath = path.join(dir, "dojo-mcp-host-conformance-self-check.evidence.json");
     await writeConformancePair({
@@ -2609,6 +2697,7 @@ describe("Dojo release gate artifact verifier", () => {
     manifest.gates.find((gate) => gate.id === "dojo_postgres_control_plane_self_check").default_evidence_path = postgresEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_evidence_authority_self_check").default_evidence_path = evidenceAuthorityEvidencePath;
     manifest.gates.find((gate) => gate.id === "dojo_implementation_status_self_check").default_evidence_path = implementationStatusEvidencePath;
+    manifest.gates.find((gate) => gate.id === "dojo_package_readiness_self_check").default_evidence_path = packageReadiness.evidencePath;
     manifest.gates.find((gate) => gate.id === "docker_integration").default_evidence_path = dockerEvidencePath;
     const affordanceGate = manifest.gates.find((gate) => gate.id === "dojo_affordance_codemod_self_check");
     affordanceGate.default_report_path = affordanceCodemod.reportPath;
@@ -2685,6 +2774,7 @@ describe("Dojo release gate artifact verifier", () => {
         "mcp-host-conformance-evidence": conformanceEvidencePath,
         "evidence-authority-evidence": evidenceAuthorityEvidencePath,
         "implementation-status-evidence": implementationStatusEvidencePath,
+        "package-readiness-evidence": packageReadiness.evidencePath,
         "security-abuse-evidence": securityEvidencePath,
         "managed-key-signing-evidence": managedKeySigningEvidencePath,
         "public-proof-verification-evidence": publicProofVerificationEvidencePath,
@@ -2727,6 +2817,13 @@ describe("Dojo release gate artifact verifier", () => {
         id: "dojo_implementation_status_self_check",
         ok: true,
         evidence_path: implementationStatusEvidencePath,
+      }),
+    ]);
+    expect(verified.package_readiness).toEqual([
+      expect.objectContaining({
+        id: "dojo_package_readiness_self_check",
+        ok: true,
+        evidence_path: packageReadiness.evidencePath,
       }),
     ]);
     expect(verified.release_gate_runner).toEqual(expect.arrayContaining([
@@ -9077,6 +9174,77 @@ function soakEventsFixture() {
       ],
     },
   ];
+}
+
+async function writePackageReadinessEvidenceFixture({
+  dir,
+  basename = "dojo-package-readiness",
+  omitPackedPath,
+} = {}) {
+  const packageJsonPath = path.join(MCP_ROOT, "package.json");
+  const packageJsonText = await readFile(packageJsonPath, "utf8");
+  const packageJson = JSON.parse(packageJsonText);
+  const exportEntryPaths = collectPackageEntryPaths(packageJson);
+  const scriptReferencedPaths = collectScriptReferencedPackagePaths(
+    packageJson.scripts,
+    DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
+  );
+  const packedPaths = stableUnique([
+    "package.json",
+    "README.md",
+    ...exportEntryPaths,
+    ...scriptReferencedPaths,
+    ...DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
+  ]).filter((entry) => entry !== omitPackedPath);
+  const packReport = [{
+    filename: "synthi-inc-mcp-server-0.1.0.tgz",
+    integrity: "sha512-fixture",
+    unpackedSize: 123456,
+    files: packedPaths.map((filePath) => ({
+      path: filePath,
+      size: 1,
+      mode: 420,
+    })),
+  }];
+  const packReportText = `${JSON.stringify(packReport, null, 2)}\n`;
+  const stdout = `${JSON.stringify(packReport)}\n`;
+  const stderr = "";
+  const packReportPath = path.join(dir, `${basename}.pack.json`);
+  const stdoutPath = path.join(dir, `${basename}.pack.stdout.log`);
+  const stderrPath = path.join(dir, `${basename}.pack.stderr.log`);
+  await writeFile(packReportPath, packReportText, "utf8");
+  await writeFile(stdoutPath, stdout, "utf8");
+  await writeFile(stderrPath, stderr, "utf8");
+  const evidence = buildDojoPackageReadinessEvidenceManifest({
+    now: "2026-06-11T00:00:00.000Z",
+    packageJson,
+    packageJsonText,
+    packageJsonPath,
+    packResult: {
+      status: 0,
+      signal: null,
+    },
+    packReport,
+    packParseError: "",
+    packReportPath,
+    stdout,
+    stderr,
+    packStdoutPath: stdoutPath,
+    packStderrPath: stderrPath,
+  });
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    evidencePath,
+    packReportPath,
+    stdoutPath,
+    stderrPath,
+    evidence,
+  };
+}
+
+function stableUnique(values) {
+  return [...new Set(values.map(String).filter(Boolean))].sort();
 }
 
 async function readJson(filePath) {
