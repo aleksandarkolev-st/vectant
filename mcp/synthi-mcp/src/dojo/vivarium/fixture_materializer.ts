@@ -65,6 +65,17 @@ export interface DojoSyntheticPolicyBlockedAction {
   source: "threshold" | "permission" | "destructive_adjacency" | "approval";
 }
 
+export interface DojoSyntheticIdentityState {
+  role: string;
+  auth_expired: boolean;
+  permission_downgraded: boolean;
+  missing_permissions: string[];
+  expected_workspace_id: string;
+  current_workspace_id: string;
+  workspace_changed: boolean;
+  approver_unavailable: boolean;
+}
+
 export interface DojoMaterializedFixture {
   schema_version: "synthi.dojo.materializedFixture.v1";
   fixture_id: string;
@@ -106,11 +117,7 @@ export interface DojoMaterializedFixture {
     fake_success: boolean;
     validation_error: boolean;
   };
-  identity_state: {
-    role: string;
-    auth_expired: boolean;
-    permission_downgraded: boolean;
-  };
+  identity_state: DojoSyntheticIdentityState;
   document_state: {
     documents: DojoSyntheticDocumentRecord[];
     prompt_injection_present: boolean;
@@ -165,6 +172,7 @@ function fixtureFor(
   const thresholdBreaches = thresholdBreachesFor(definition);
   const documentState = documentStateFor(definition, seed);
   const uiState = uiStateFor(definition, seed, records, missingFields);
+  const identityState = identityStateFor(definition, seed);
   const policyState = policyStateFor(definition, seed, thresholdBreaches);
   return {
     schema_version: "synthi.dojo.materializedFixture.v1",
@@ -186,11 +194,7 @@ function fixtureFor(
       fake_success: definition.mutation_kind === "fake_success",
       validation_error: definition.mutation_kind === "validation_error",
     },
-    identity_state: {
-      role: definition.mutation_kind === "permission_change" ? "viewer" : "editor",
-      auth_expired: definition.mutation_kind === "auth_expiry",
-      permission_downgraded: definition.mutation_kind === "permission_change",
-    },
+    identity_state: identityState,
     document_state: documentState,
     reset_evidence: {
       reset_profile_id: definition.reset_profile.reset_profile_id,
@@ -238,6 +242,25 @@ function thresholdBreachesFor(definition: DojoScenarioDefinition): Array<{ field
   return [{ field: "amount", value: 501, threshold: 500 }];
 }
 
+function identityStateFor(definition: DojoScenarioDefinition, seed: string): DojoSyntheticIdentityState {
+  const expectedWorkspaceId = `synthetic_workspace_${shortHash(`${seed}:workspace:expected`)}`;
+  const workspaceChanged = definition.mutation_kind === "workspace_change";
+  return {
+    role: definition.mutation_kind === "permission_change" ? "viewer" : "editor",
+    auth_expired: definition.mutation_kind === "auth_expiry",
+    permission_downgraded: definition.mutation_kind === "permission_change",
+    missing_permissions: definition.mutation_kind === "missing_permission"
+      ? [`synthetic_permission_${shortHash(`${seed}:permission:submit`)}`]
+      : [],
+    expected_workspace_id: expectedWorkspaceId,
+    current_workspace_id: workspaceChanged
+      ? `synthetic_workspace_${shortHash(`${seed}:workspace:changed`)}`
+      : expectedWorkspaceId,
+    workspace_changed: workspaceChanged,
+    approver_unavailable: definition.mutation_kind === "approval_unavailable",
+  };
+}
+
 function policyStateFor(
   definition: DojoScenarioDefinition,
   seed: string,
@@ -272,6 +295,22 @@ function policyStateFor(
     blockedActions.push({
       action: "submit_synthetic_action",
       reason: "role_outside_licensed_context",
+      severity: "block",
+      source: "permission",
+    });
+  }
+  if (definition.mutation_kind === "missing_permission") {
+    blockedActions.push({
+      action: "submit_synthetic_action",
+      reason: "required_permission_missing",
+      severity: "block",
+      source: "permission",
+    });
+  }
+  if (definition.mutation_kind === "workspace_change") {
+    blockedActions.push({
+      action: "submit_synthetic_action",
+      reason: "workspace_context_changed",
       severity: "block",
       source: "permission",
     });

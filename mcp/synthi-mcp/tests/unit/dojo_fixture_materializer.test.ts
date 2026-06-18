@@ -95,11 +95,15 @@ describe("Dojo synthetic fixture materializer", () => {
     const fixture = materializeDojoSyntheticFixture(definition, { seed: "permission-change-seed" });
 
     expect(fixture.synthetic_data_only).toBe(true);
-    expect(fixture.identity_state).toEqual({
+    expect(fixture.identity_state).toEqual(expect.objectContaining({
       role: "viewer",
       auth_expired: false,
       permission_downgraded: true,
-    });
+      missing_permissions: [],
+      workspace_changed: false,
+      approver_unavailable: false,
+    }));
+    expect(fixture.identity_state.current_workspace_id).toBe(fixture.identity_state.expected_workspace_id);
     expect(definition.fixture_requirements.map((requirement) => requirement.kind)).toEqual([
       "fake_auth_session",
       "fake_approvals",
@@ -107,6 +111,48 @@ describe("Dojo synthetic fixture materializer", () => {
     expect(definition.mutation_scopes).toEqual(["identity", "policy"]);
     expect(definition.oracle.expected_outcome).toBe("block");
     expect(definition.oracle.observed_evidence_required).toContain("identity_policy_state");
+  });
+
+  it("materializes expanded identity tissue for auth expiry, missing permissions, and workspace changes", () => {
+    const expiredAuth = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "auth_expiry",
+      risk_tags: ["auth_expired"],
+    })), { seed: "identity-auth-expiry-seed" });
+    expect(expiredAuth.identity_state).toEqual(expect.objectContaining({
+      auth_expired: true,
+      role: "editor",
+      missing_permissions: [],
+      workspace_changed: false,
+    }));
+
+    const missingPermission = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "missing_permission",
+      risk_tags: ["missing_permission"],
+    })), { seed: "identity-permission-seed" });
+    expect(missingPermission.identity_state.missing_permissions).toHaveLength(1);
+    expect(missingPermission.identity_state.missing_permissions[0]).toMatch(/^synthetic_permission_[a-f0-9]{12}$/);
+    expect(missingPermission.policy_state.blocked_actions).toEqual([
+      expect.objectContaining({
+        action: "submit_synthetic_action",
+        reason: "required_permission_missing",
+        source: "permission",
+      }),
+    ]);
+
+    const workspaceChange = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "workspace_change",
+      risk_tags: ["workspace_changed"],
+    })), { seed: "identity-workspace-seed" });
+    expect(workspaceChange.identity_state.workspace_changed).toBe(true);
+    expect(workspaceChange.identity_state.current_workspace_id).not.toBe(workspaceChange.identity_state.expected_workspace_id);
+    expect(workspaceChange.identity_state.current_workspace_id).toMatch(/^synthetic_workspace_[a-f0-9]{12}$/);
+    expect(workspaceChange.policy_state.blocked_actions).toEqual([
+      expect.objectContaining({
+        action: "submit_synthetic_action",
+        reason: "workspace_context_changed",
+        source: "permission",
+      }),
+    ]);
   });
 
   it("materializes unquarantined prompt injection document fixtures as failed synthetic tissue", () => {
@@ -233,6 +279,7 @@ describe("Dojo synthetic fixture materializer", () => {
     })), { seed: "policy-approval-seed" });
 
     expect(approvalUnavailable.synthetic_data_only).toBe(true);
+    expect(approvalUnavailable.identity_state.approver_unavailable).toBe(true);
     expect(approvalUnavailable.policy_state.unavailable_approver).toBe(true);
     expect(approvalUnavailable.policy_state.approval_required).toBe(true);
     expect(approvalUnavailable.policy_state.blocked_actions).toEqual([

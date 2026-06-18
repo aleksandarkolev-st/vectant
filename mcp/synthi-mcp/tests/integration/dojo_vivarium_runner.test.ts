@@ -241,6 +241,43 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("emits expanded identity evidence when workspace context changes block execution", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "workspace_change",
+      layer: "risk",
+      risk_tags: ["workspace_changed"],
+    }));
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "identity-workspace-runner-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: workspaceGateGraphFixture(),
+      run_id: "scenario-run-workspace-change",
+    });
+
+    expect(materialized.fixture.identity_state.workspace_changed).toBe(true);
+    expect(materialized.fixture.identity_state.current_workspace_id).not.toBe(materialized.fixture.identity_state.expected_workspace_id);
+    expect(result).toEqual(expect.objectContaining({
+      status: "blocked",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining(["identity_policy_state"]),
+      graph_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["precondition_failed:workspace_changed == false"],
+      }),
+      oracle_result: expect.objectContaining({
+        status: "blocked",
+        expected_outcome: "block",
+        observed_evidence: expect.arrayContaining(["identity_policy_state"]),
+      }),
+    }));
+  });
+
   it("passes prompt injection scenarios only when document instructions are quarantined", async () => {
     const runner = new DojoVivariumRunner();
     const definition = toDojoScenarioDefinition(scenarioFixture({
@@ -677,6 +714,18 @@ function policyGateGraphFixture(): DojoSkillGraph {
       ? {
           ...node,
           preconditions: ["policy_blocked_action_count == 0"],
+        }
+      : node),
+  };
+}
+
+function workspaceGateGraphFixture(): DojoSkillGraph {
+  return {
+    ...graphFixture(),
+    nodes: graphFixture().nodes.map((node) => node.node_id === "action"
+      ? {
+          ...node,
+          preconditions: ["workspace_changed == false"],
         }
       : node),
   };

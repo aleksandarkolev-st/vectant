@@ -225,6 +225,8 @@ function fixtureKindsFor(mutationKind: string): DojoScenarioFixtureKind[] {
       return ["fake_api_server", "fake_validation_errors"];
     case "auth_expiry":
     case "permission_change":
+    case "missing_permission":
+    case "workspace_change":
       return ["fake_auth_session", "fake_approvals"];
     case "route_change":
       return ["synthetic_page_route"];
@@ -250,6 +252,8 @@ function mutationScopesFor(mutationKind: string): DojoScenarioMutationScope[] {
       return ["api", "data"];
     case "auth_expiry":
     case "permission_change":
+    case "missing_permission":
+    case "workspace_change":
       return ["identity", "policy"];
     case "threshold_breach":
       return ["policy", "data", "ui"];
@@ -288,6 +292,8 @@ function expectedOutcomeFor(scenario: DojoScenario): DojoScenarioExpectedOutcome
   if (scenario.risk_tags.some((tag) => (
     tag === "auth_expired"
     || tag === "permission_change"
+    || tag === "missing_permission"
+    || tag === "workspace_changed"
     || tag === "destructive_write"
     || tag === "approval_unavailable"
     || tag === "policy_threshold"
@@ -302,7 +308,14 @@ function observedEvidenceFor(
 ): string[] {
   const evidence = ["graph_run_result", "graph_node_evidence", "oracle_result"];
   if (expectedOutcome !== "pass" && scenario.risk_tags.includes("evidence_required")) evidence.push("durable_state_evidence");
-  if (scenario.mutation_kind === "auth_expiry" || scenario.mutation_kind === "permission_change") evidence.push("identity_policy_state");
+  if (
+    scenario.mutation_kind === "auth_expiry"
+    || scenario.mutation_kind === "permission_change"
+    || scenario.mutation_kind === "missing_permission"
+    || scenario.mutation_kind === "workspace_change"
+  ) {
+    evidence.push("identity_policy_state");
+  }
   if (
     scenario.mutation_kind === "threshold_breach"
     || scenario.mutation_kind === "destructive_adjacency"

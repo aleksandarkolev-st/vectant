@@ -100,6 +100,34 @@ describe("Dojo scenario DSL", () => {
     expect(validateDojoScenarioDefinition(approvalUnavailable).ok).toBe(true);
   });
 
+  it("classifies expanded identity tissue scenarios for permissions and workspace context", () => {
+    const missingPermission = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "missing_permission",
+      risk_tags: ["missing_permission"],
+    }));
+    expect(missingPermission.mutation_scopes).toEqual(["identity", "policy"]);
+    expect(missingPermission.fixture_requirements.map((fixture) => fixture.kind)).toEqual([
+      "fake_auth_session",
+      "fake_approvals",
+    ]);
+    expect(missingPermission.oracle.expected_outcome).toBe("block");
+    expect(missingPermission.oracle.observed_evidence_required).toContain("identity_policy_state");
+    expect(validateDojoScenarioDefinition(missingPermission).ok).toBe(true);
+
+    const workspaceChange = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "workspace_change",
+      risk_tags: ["workspace_changed"],
+    }));
+    expect(workspaceChange.mutation_scopes).toEqual(["identity", "policy"]);
+    expect(workspaceChange.fixture_requirements.map((fixture) => fixture.kind)).toEqual([
+      "fake_auth_session",
+      "fake_approvals",
+    ]);
+    expect(workspaceChange.oracle.expected_outcome).toBe("block");
+    expect(workspaceChange.oracle.observed_evidence_required).toContain("identity_policy_state");
+    expect(validateDojoScenarioDefinition(workspaceChange).ok).toBe(true);
+  });
+
   it("uses a tiered wall-clock budget that is stable under parallel integration load", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "fake_success",

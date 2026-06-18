@@ -407,6 +407,11 @@ function fixtureInputs(fixture: DojoMaterializedFixture): Record<string, unknown
     auth_valid: !fixture.identity_state.auth_expired,
     role: fixture.identity_state.role,
     permission_downgraded: fixture.identity_state.permission_downgraded,
+    missing_permission_count: fixture.identity_state.missing_permissions.length,
+    workspace_changed: fixture.identity_state.workspace_changed,
+    expected_workspace_id: fixture.identity_state.expected_workspace_id,
+    current_workspace_id: fixture.identity_state.current_workspace_id,
+    identity_approver_unavailable: fixture.identity_state.approver_unavailable,
     policy_approval_required: fixture.policy_state.approval_required,
     policy_unavailable_approver: fixture.policy_state.unavailable_approver,
     policy_blocked_action_count: fixture.policy_state.blocked_actions.length,
@@ -428,7 +433,13 @@ function observedEvidenceForRun(
 ): string[] {
   const observed = new Set<string>(["graph_run_result", "oracle_result", ...explicitEvidence]);
   if (graphResult.evidence_refs.length > 0 || graphEvents.length > 0) observed.add("graph_node_evidence");
-  if (materialized.fixture.identity_state.auth_expired || materialized.fixture.identity_state.permission_downgraded) {
+  if (
+    materialized.fixture.identity_state.auth_expired
+    || materialized.fixture.identity_state.permission_downgraded
+    || materialized.fixture.identity_state.missing_permissions.length > 0
+    || materialized.fixture.identity_state.workspace_changed
+    || materialized.fixture.identity_state.approver_unavailable
+  ) {
     observed.add("identity_policy_state");
   }
   if (
