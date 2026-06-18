@@ -225,6 +225,53 @@ function isThenable(value) {
   return typeof value?.then === 'function';
 }
 
+function collectProxyHeaders(request) {
+  const headers = {
+    'accept': request.headers.get('accept') || 'application/json',
+  };
+  const serverToken = process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN;
+  const browserToken = request.headers.get('x-synthi-workflow-token');
+  if (serverToken) {
+    headers['x-synthi-workflow-token'] = serverToken;
+  } else if (browserToken) {
+    headers['x-synthi-workflow-token'] = browserToken;
+  }
+
+  [
+    'x-synthi-runtime-scope',
+    'x-synthi-workspace-slug',
+    'x-synthi-runtime-kind',
+    'x-synthi-filesystem-user-id',
+    'x-synthi-actor-user-id',
+    'x-synthi-collab-session-id',
+  ].forEach((headerName) => {
+    const value = request.headers.get(headerName);
+    if (value) headers[headerName] = value;
+  });
+
+  return headers;
+}
+
+async function readStateFromUpstreamBridge(baseUrl, request) {
+  if (!baseUrl) return null;
+  const target = new URL('/browser-workflows/state', baseUrl);
+  try {
+    const headers = collectProxyHeaders(request);
+    const response = await fetch(target.href, {
+      method: 'GET',
+      headers,
+    });
+    const details = await upstreamErrorPayload(response);
+    const payload = details.payload || {};
+    return payload && typeof payload === 'object' && payload.state && typeof payload.state === 'object'
+      ? payload.state
+      : null;
+  } catch (err) {
+    console.warn('[Workflow Proxy] Failed to fetch fallback state', err);
+    return null;
+  }
+}
+
 function asStringArrayPath(rawPath) {
   if (Array.isArray(rawPath)) {
     return rawPath
@@ -418,7 +465,8 @@ async function proxyWorkflowBridge(request, routeContext) {
       );
     }
     const isStatePath = path === 'state' || path === 'state/';
-    if (!isStatePath) {
+    const isOpenExternalPath = path === 'open-external' || path === 'open-external/';
+    if (!isStatePath && !isOpenExternalPath) {
       const ensure = await ensureRuntimeBridge(runtimeContext);
       if (!ensure.ok) {
         return NextResponse.json(
@@ -437,6 +485,33 @@ async function proxyWorkflowBridge(request, routeContext) {
     try {
       ({ upstream, propagatedHeaders } = await forwardToBridge(upstreamUrl, request));
     } catch (err) {
+      let fallbackState;
+      if (isStatePath || path === 'tool' || path === 'tool/') {
+        fallbackState = await readStateFromUpstreamBridge(baseUrl, request);
+      }
+
+      if (fallbackState) {
+        return NextResponse.json(
+          {
+            error: 'workflow_bridge_unreachable',
+            status: 502,
+            detail: err instanceof Error ? err.message : String(err),
+            action: `${request.method || 'GET'}:${path}`,
+            path,
+            upstream_url: upstreamUrl.toString(),
+            headers: propagatedHeaders,
+            state: fallbackState,
+            ok: false,
+          },
+          {
+            status: 200,
+            headers: {
+              'cache-control': 'no-store',
+            },
+          },
+        );
+      }
+
       return NextResponse.json(
         {
           error: 'workflow_bridge_unreachable',
@@ -474,6 +549,7 @@ async function proxyWorkflowBridge(request, routeContext) {
       }
 
       const hasWorkflowState = merged.state && typeof merged.state === 'object';
+      const shouldFallbackState = path === 'tool' || path === 'tool/' || isStatePath;
       if ((isToolPath || isStatePath) && hasWorkflowState) {
         if (!Object.prototype.hasOwnProperty.call(merged, 'ok')) {
           merged.ok = false;
@@ -484,6 +560,25 @@ async function proxyWorkflowBridge(request, routeContext) {
             'cache-control': 'no-store',
           },
         });
+      }
+
+      if (shouldFallbackState) {
+        const fallbackState = await readStateFromUpstreamBridge(baseUrl, request);
+        if (fallbackState) {
+          return NextResponse.json({
+            ...merged,
+            ok: false,
+            state: {
+              ...(merged.state || {}),
+              ...fallbackState,
+            },
+          }, {
+            status: 200,
+            headers: {
+              'cache-control': 'no-store',
+            },
+          });
+        }
       }
 
       return NextResponse.json(merged, {
