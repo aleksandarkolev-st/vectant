@@ -147,6 +147,82 @@ describe("Dojo proof capsule service", () => {
     expect(store.listProofRecords()).toEqual([]);
   });
 
+  it("fails closed before proof issue, validation, or consume when tenant context is incomplete", async () => {
+    const skill = skillFixture();
+    const tenant = invalidTenantFixture(skill.workspace_id);
+    const service = createDojoProofCapsuleService({
+      proof_store: throwingProofStore({ save: true, get: true, consume: true }),
+    });
+
+    const issue = await service.issue({
+      tenant,
+      skill,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill, { tenant_id: "tenant-a" }),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    const validation = await service.validate({
+      tenant,
+      skill,
+      proof_capsule: {
+        capsule_id: "capsule-invalid-tenant",
+        skill_id: skill.skill_id,
+        issued_at: "2026-06-11T00:00:00.000Z",
+        expires_at: "2026-06-11T00:15:00.000Z",
+        requested_action: "run_workflow",
+        nonce: "nonce-invalid-tenant",
+        license_version: skill.permission_license.license_version,
+        key_id: "dojo-local-dev",
+        signature_algorithm: "hmac-sha256",
+        signature: "invalid",
+        context_claims: { workspace_verified: true },
+        evidence_claims: [],
+        evidence_record_ids: [],
+      },
+      requested_action: "run_workflow",
+    });
+    const consume = await service.consume({
+      tenant,
+      capsule_id: "capsule-invalid-tenant",
+      run_id: "run-invalid-tenant",
+      now: "2026-06-11T00:01:00.000Z",
+    });
+
+    expect(issue).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: [
+        "proof_tenant_required",
+        "proof_organization_required",
+        "proof_actor_required",
+        "proof_actor_type_required",
+        "proof_request_required",
+        "proof_correlation_required",
+      ],
+      validation: expect.objectContaining({
+        error_codes: ["proof_tenant_context_invalid"],
+      }),
+      evidence_claim_results: [],
+    }));
+    expect(issue).not.toHaveProperty("proof_capsule");
+    expect(issue).not.toHaveProperty("proof_record");
+    expect(validation).toEqual(expect.objectContaining({
+      ok: false,
+      proof_record: null,
+      blocked_by: issue.blocked_by,
+      validation: expect.objectContaining({
+        error_codes: ["proof_tenant_context_invalid"],
+      }),
+    }));
+    expect(consume).toEqual({
+      ok: false,
+      record: null,
+      status: "missing",
+      blocked_by: issue.blocked_by,
+    });
+  });
+
   it("fails closed when a persisted proof record is not scoped to the validation tenant", async () => {
     const skill = skillFixture();
     const tenant = tenantFixture(skill.workspace_id);
@@ -408,6 +484,18 @@ function tenantFixture(workspaceId: string): DojoTenantContext {
     roles: ["dojo.operator"],
     request_id: "request-a",
     correlation_id: "correlation-a",
+  };
+}
+
+function invalidTenantFixture(workspaceId: string): DojoTenantContext {
+  return {
+    ...tenantFixture(workspaceId),
+    tenant_id: "",
+    organization_id: "",
+    actor_id: "",
+    actor_type: "robot" as never,
+    request_id: "",
+    correlation_id: "",
   };
 }
 

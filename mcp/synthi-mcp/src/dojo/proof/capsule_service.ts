@@ -144,6 +144,16 @@ class DefaultDojoProofCapsuleService implements DojoProofCapsuleService {
 
   async issue(input: DojoProofCapsuleServiceIssueInput): Promise<DojoProofIssueResult> {
     const now = input.now ?? new Date().toISOString();
+    const tenantBlockedBy = proofTenantContextBlockedBy(input.tenant);
+    if (tenantBlockedBy.length > 0) {
+      return {
+        ok: false,
+        validation: blockedProofValidation(input.skill, tenantBlockedBy),
+        evidence_claim_results: [],
+        blocked_by: tenantBlockedBy,
+      };
+    }
+
     let capsule: DojoProofCarryingSkillCapsule;
     try {
       capsule = issueDojoProofCapsule(input.skill, input.requested_action, {
@@ -219,6 +229,18 @@ class DefaultDojoProofCapsuleService implements DojoProofCapsuleService {
 
   async validate(input: DojoProofCapsuleServiceValidateInput): Promise<DojoProofValidateResult> {
     const now = input.validation_options?.now ?? new Date().toISOString();
+    const tenantBlockedBy = proofTenantContextBlockedBy(input.tenant);
+    if (tenantBlockedBy.length > 0) {
+      const validation = blockedProofValidation(input.skill, tenantBlockedBy);
+      return {
+        ok: false,
+        validation,
+        proof_record: null,
+        dry_run: input.dry_run === true,
+        blocked_by: validation.blocked_by,
+      };
+    }
+
     const structuralValidation = validateDojoProofCapsule(
       input.skill,
       input.proof_capsule,
@@ -287,6 +309,16 @@ class DefaultDojoProofCapsuleService implements DojoProofCapsuleService {
   }
 
   async consume(input: DojoProofCapsuleServiceConsumeInput): Promise<DojoProofConsumeResult> {
+    const tenantBlockedBy = proofTenantContextBlockedBy(input.tenant);
+    if (tenantBlockedBy.length > 0) {
+      return {
+        ok: false,
+        record: null,
+        status: "missing",
+        blocked_by: tenantBlockedBy,
+      };
+    }
+
     if (!this.proofStore) {
       return {
         ok: false,
@@ -306,6 +338,18 @@ class DefaultDojoProofCapsuleService implements DojoProofCapsuleService {
       };
     }
   }
+}
+
+function proofTenantContextBlockedBy(tenant: DojoTenantContext): string[] {
+  const blockedBy: string[] = [];
+  if (!tenant?.tenant_id?.trim()) blockedBy.push("proof_tenant_required");
+  if (!tenant?.organization_id?.trim()) blockedBy.push("proof_organization_required");
+  if (!tenant?.workspace_id?.trim()) blockedBy.push("proof_workspace_required");
+  if (!tenant?.actor_id?.trim()) blockedBy.push("proof_actor_required");
+  if (!["human", "agent", "service"].includes(tenant?.actor_type)) blockedBy.push("proof_actor_type_required");
+  if (!tenant?.request_id?.trim()) blockedBy.push("proof_request_required");
+  if (!tenant?.correlation_id?.trim()) blockedBy.push("proof_correlation_required");
+  return blockedBy;
 }
 
 function proofRegistryBlockedBy(

@@ -5,6 +5,7 @@ export const DOJO_PROOF_ERROR_CODES = [
   "proof_capsule_revoked",
   "proof_capsule_replay_detected",
   "proof_capsule_registry_mismatch",
+  "proof_tenant_context_invalid",
   "proof_signature_invalid",
   "proof_key_unavailable",
   "proof_context_claim_unverified",
@@ -43,6 +44,17 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
   if (reason === "proof_capsule_revoked" || reason === "proof_key_revoked" || reason === "dojo_proof_key_revoked") return "proof_capsule_revoked";
   if (reason === "proof_capsule_replay_detected") return "proof_capsule_replay_detected";
   if (reason === "proof_capsule_not_issued_by_registry" || reason === "proof_capsule_not_issued") return "proof_capsule_not_issued";
+  if (
+    reason === "proof_tenant_required" ||
+    reason === "proof_organization_required" ||
+    reason === "proof_workspace_required" ||
+    reason === "proof_actor_required" ||
+    reason === "proof_actor_type_required" ||
+    reason === "proof_request_required" ||
+    reason === "proof_correlation_required"
+  ) {
+    return "proof_tenant_context_invalid";
+  }
   if (reason.startsWith("proof_record_")) return "proof_capsule_registry_mismatch";
   if (reason === "proof_capsule_signature_invalid" || reason === "proof_capsule_signature_algorithm_mismatch") return "proof_signature_invalid";
   if (reason.startsWith("proof_key_") || reason.startsWith("dojo_proof_key_")) {
@@ -203,6 +215,7 @@ export function dojoProofRefusalCategoryFor(code: DojoProofErrorCode): DojoProof
       return "license_scope_failed";
     case "workspace_mismatch":
     case "origin_mismatch":
+    case "proof_tenant_context_invalid":
     case "dojo_execution_policy_blocked":
       return "runtime_context_failed";
     case "approval_required":
