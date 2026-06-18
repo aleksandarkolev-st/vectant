@@ -71,6 +71,12 @@ describe("Dojo proof error taxonomy", () => {
     expect(normalizeDojoProofErrorCode("api_tool_auth_scope_missing")).toBe("action_not_licensed");
     expect(normalizeDojoProofErrorCode("api_tool_compiled_tool_required")).toBe("dojo_execution_policy_blocked");
     expect(normalizeDojoProofErrorCode("api_tool_transport_required")).toBe("dojo_execution_policy_blocked");
+    expect(normalizeDojoProofErrorCode("api_tool_mock_response_forbidden_in_production")).toBe("dojo_execution_policy_blocked");
+    expect(normalizeDojoProofErrorCode("api_tool_network_transport_required_in_production")).toBe("dojo_execution_policy_blocked");
+    expect(normalizeDojoProofErrorCode("api_tool_mock_response_or_network_transport_required")).toBe("dojo_execution_policy_blocked");
+    expect(normalizeDojoProofErrorCode("api_tool_base_url_required")).toBe("dojo_execution_policy_blocked");
+    expect(normalizeDojoProofErrorCode("api_tool_base_url_invalid")).toBe("dojo_execution_policy_blocked");
+    expect(normalizeDojoProofErrorCode("api_tool_base_url_origin_mismatch")).toBe("dojo_execution_policy_blocked");
     expect(normalizeDojoProofErrorCode("api_tool_evidence_writer_required")).toBe("dojo_execution_policy_blocked");
     expect(normalizeDojoProofErrorCode("api_tool_evidence_write_failed")).toBe("dojo_execution_policy_blocked");
     expect(normalizeDojoProofErrorCode("substrate_executor_required")).toBe("dojo_execution_policy_blocked");

@@ -3530,6 +3530,105 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("blocks production API-backed MCP tool execution with caller-supplied mock responses before consuming proof", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const publishedSkill = dojoSkillRegistry.get(skillId) as DojoSkill;
+
+    const prepared = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+      skill_id: publishedSkill.skill_id,
+      network_trace: {
+        method: "POST",
+        url: "https://app.example.test/api/invoices?workspace=workspace-a",
+        request_body: { client_id: "client-a", amount: 42 },
+        response_body: { invoice: { status: "saved" } },
+        source_ref: "trace:production-mock-response-block",
+      },
+      candidate_overrides: {
+        auth_scope: "invoice:write",
+        idempotency_key_location: "header",
+        rollback_strategy: "compensating_call",
+        postcondition: "invoice.status == 'saved'",
+        proof_claim_mapping: {
+          workspace_verified: "tenant.workspace_id",
+          checkride_passed: "dojo.checkride",
+        },
+        review_status: "approved",
+      },
+      requested_action: "run_workflow",
+      tool_name: "synthi_api_save_invoice",
+      auth_scopes: ["invoice:write"],
+      publish_to_skill: true,
+      reviewer_actor_id: "api-tool-reviewer",
+      reviewer_actor_type: "human",
+      review_reason: "Reviewed API-backed tool before production mock-response block coverage.",
+      review_evidence_refs: ["api-review:production-mock-response-block"],
+      reviewed_at: "2026-06-17T03:20:30.000Z",
+    });
+    expect(prepared?.isError).toBeUndefined();
+    const updatedSkill = dojoSkillRegistry.get(skillId) as DojoSkill;
+    const tenantContext = productionTenantContextArgs({
+      workspace_id: "workspace-a",
+      request_id: "req-api-backed-mock-production-block",
+      correlation_id: "corr-api-backed-mock-production-block",
+    });
+    const proofIssue = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      ...tenantContext,
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(updatedSkill, { tenant_id: "tenant-a" }),
+      require_verified_evidence: true,
+      substrate_claim: "api",
+      now: "2026-06-17T03:20:00.000Z",
+      expires_at: "2026-06-17T03:35:00.000Z",
+    });
+    expect(proofIssue?.isError).toBeUndefined();
+    const proofCapsule = (proofIssue?.structuredContent as {
+      proof_capsule: DojoProofCarryingSkillCapsule;
+    }).proof_capsule;
+
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    const blocked = await dispatchDojoTool("synthi_dojo_run_api_backed_tool", {
+      ...tenantContext,
+      tool_name: "synthi_api_save_invoice",
+      tool_version: "1.0.0",
+      tool_args: {
+        proof_capsule: proofCapsule,
+        request: { client_id: "client-a", amount: 42 },
+        query: { workspace: "workspace-a" },
+        idempotency_key: "idem-api-production-mock-block",
+      },
+      auth_scopes: ["invoice:write"],
+      dry_run: false,
+      run_id: "api-backed-production-mock-block",
+      now: "2026-06-17T03:21:00.000Z",
+      mock_response: {
+        status: 201,
+        body: { invoice: { status: "saved" } },
+      },
+    });
+
+    expect(blocked?.isError).toBe(true);
+    expect(blocked?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      error: "api_tool_mock_response_forbidden_in_production",
+      dry_run: false,
+      run_id: "api-backed-production-mock-block",
+      proof_consume: null,
+      api_tool_execution: null,
+      api_tool_execution_evidence: [],
+      blocked_by: ["api_tool_mock_response_forbidden_in_production"],
+      error_codes: ["dojo_execution_policy_blocked"],
+    }));
+    const proofRecord = dojoSkillRegistry.getProofRecord(proofCapsule.capsule_id);
+    expect(proofRecord).toEqual(expect.objectContaining({ status: "issued" }));
+    expect(proofRecord).not.toHaveProperty("used_at");
+    expect(proofRecord).not.toHaveProperty("first_used_at");
+  });
+
   it("runs a compiled API-backed MCP tool with proof validation, postcondition, and evidence", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());

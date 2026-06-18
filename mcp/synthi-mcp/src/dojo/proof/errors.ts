@@ -160,6 +160,12 @@ export function normalizeDojoProofErrorCode(reason: string): DojoProofErrorCode 
     reason === "api_tool_request_required" ||
     reason === "api_tool_compiled_tool_required" ||
     reason === "api_tool_transport_required" ||
+    reason === "api_tool_mock_response_forbidden_in_production" ||
+    reason === "api_tool_network_transport_required_in_production" ||
+    reason === "api_tool_mock_response_or_network_transport_required" ||
+    reason === "api_tool_base_url_required" ||
+    reason === "api_tool_base_url_invalid" ||
+    reason === "api_tool_base_url_origin_mismatch" ||
     reason === "api_tool_transport_failed" ||
     reason === "api_tool_evidence_writer_required" ||
     reason === "api_tool_evidence_write_failed" ||

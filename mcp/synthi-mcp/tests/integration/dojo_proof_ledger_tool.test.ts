@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { browserBroker } from "../../src/browser/broker.js";
+import { createServer, type Server } from "node:http";
 import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import { buildDojoSkill, dojoSkillRegistry } from "../../src/browser/dojo.js";
 import { InMemoryPrivateWorkflowToolStore, privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
@@ -48,6 +49,10 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
   });
 
   it("issues a production proof capsule from evidence record IDs resolved through Postgres", async () => {
+    const apiServer = await startApiToolHttpServer({
+      status: 201,
+      body: { invoice: { status: "saved" } },
+    });
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
     process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
     process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
@@ -56,7 +61,8 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
     process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE = "postgres";
     process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL = postgresUrl;
 
-    recordOpenDetailsWorkflow();
+    try {
+      recordOpenDetailsWorkflow(`${apiServer.origin}/settings`);
     const workflowArtifact = browserBroker.workflowArtifact();
     expect(workflowArtifact.ok).toBe(true);
     if (!workflowArtifact.ok) throw new Error(workflowArtifact.error);
@@ -72,6 +78,7 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       workflow_id: candidateSkill.workflow_id,
       skill_name: candidateSkill.name,
       skill_json: candidateSkill,
+      app_origin: candidateSkill.app_origin,
     });
     const publicationLedgerStore = new PostgresDojoEvidenceLedgerStore({
       tenant_id: tenantId,
@@ -128,6 +135,7 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       workflow_id: skill!.workflow_id,
       skill_name: skill!.name,
       skill_json: skill!,
+      app_origin: skill!.app_origin,
     });
 
     const requiredClaims = [...new Set([
@@ -231,7 +239,7 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       }),
       requested_action: "run_workflow",
       proof_capsule: issuedContent.proof_capsule,
-      tool_args: { workspace_id: workspaceId, url: "https://app.example.test/settings" },
+      tool_args: { workspace_id: workspaceId, url: `${apiServer.origin}/settings` },
       now: "2026-06-11T00:06:00.000Z",
     });
     expect(successfulValidation?.isError).toBeUndefined();
@@ -253,7 +261,7 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       skill_id: skillId,
       network_trace: {
         method: "POST",
-        url: "https://app.example.test/api/invoices?workspace=workspace-a",
+        url: `${apiServer.origin}/api/invoices?workspace=workspace-a`,
         request_body: { client_id: "client-a", amount: 42 },
         response_body: { invoice: { status: "saved" } },
         source_ref: "trace:postgres-proof-ledger-api-tool",
@@ -376,10 +384,8 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       dry_run: false,
       run_id: "api-run-postgres-output-evidence",
       now: "2026-06-11T00:06:30.000Z",
-      mock_response: {
-        status: 201,
-        body: { invoice: { status: "saved" } },
-      },
+      allow_network_transport: true,
+      api_base_url: apiServer.origin,
       ...tenantContext({
         actor_id: "integration-api-tool-runner",
         roles: ["agent"],
@@ -434,7 +440,7 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
             source_refs: expect.arrayContaining([
               `proof_capsule:${apiExecutionProof.capsule_id}`,
               "api_tool:synthi_api_save_invoice@1.0.0",
-              "transport:mock",
+              "transport:network",
             ]),
           }),
         ],
@@ -466,8 +472,18 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
         source_refs: expect.arrayContaining([
           `proof_capsule:${apiExecutionProof.capsule_id}`,
           "api_tool:synthi_api_save_invoice@1.0.0",
-          "transport:mock",
+          "transport:network",
         ]),
+      }),
+    ]);
+    expect(apiServer.requests).toEqual([
+      expect.objectContaining({
+        method: "POST",
+        url: "/api/invoices?workspace=workspace-a",
+        body: { client_id: "client-a", amount: 42 },
+        headers: expect.objectContaining({
+          "idempotency-key": "idem-postgres-proof-ledger-api-execute",
+        }),
       }),
     ]);
     await expect(ledgerStore.verifyRecordChain("2026-06-11T00:06:35.000Z")).resolves.toEqual(expect.objectContaining({
@@ -528,7 +544,7 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       }),
       requested_action: "run_workflow",
       proof_capsule: issuedContent.proof_capsule,
-      tool_args: { workspace_id: workspaceId, url: "https://app.example.test/settings" },
+      tool_args: { workspace_id: workspaceId, url: `${apiServer.origin}/settings` },
       now: "2026-06-11T00:07:00.000Z",
     });
     expect(rejectedValidation?.isError).toBe(true);
@@ -553,7 +569,7 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       requested_action: "run_workflow",
       proof_capsule: issuedContent.proof_capsule,
       run_id: `run_after_forged_checkpoint_${sha256(`${tenantId}:${workspaceId}:${skillId}`).slice(0, 12)}`,
-      tool_args: { workspace_id: workspaceId, url: "https://app.example.test/settings" },
+      tool_args: { workspace_id: workspaceId, url: `${apiServer.origin}/settings` },
       now: "2026-06-11T00:07:30.000Z",
     });
     expect(rejectedRun?.isError).toBe(true);
@@ -604,6 +620,9 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
       status: "issued",
       first_used_at: null,
     }));
+    } finally {
+      await apiServer.close();
+    }
   }, 30_000);
 
   function tenantContext(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -621,8 +640,8 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
   }
 });
 
-function recordOpenDetailsWorkflow(): void {
-  const url = "https://app.example.test/settings";
+function recordOpenDetailsWorkflow(url = "https://app.example.test/settings"): void {
+  const origin = new URL(url).origin;
   browserBroker.requestConsent(url);
   browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
   browserBroker.selectTab("tab-a");
@@ -631,7 +650,7 @@ function recordOpenDetailsWorkflow(): void {
   browserBroker.recordHumanAction({
     tab_id: "tab-a",
     url,
-    origin: "https://app.example.test",
+    origin,
     action: "click",
     element: { role: "button", name: "Open details", source_id: "details.open" },
     locator_candidates: [
@@ -650,6 +669,7 @@ async function seedSkillRow(
     workflow_id: string;
     skill_name: string;
     skill_json: unknown;
+    app_origin: string;
   }
 ): Promise<void> {
   await pool.query(
@@ -662,7 +682,7 @@ async function seedSkillRow(
     `INSERT INTO dojo_workspaces (tenant_id, workspace_id, organization_id, app_origin)
     VALUES ($1, $2, $3, $4)
     ON CONFLICT (tenant_id, workspace_id) DO NOTHING`,
-    [input.tenant_id, input.workspace_id, input.organization_id, "https://app.example.test"]
+    [input.tenant_id, input.workspace_id, input.organization_id, input.app_origin]
   );
   await pool.query(
     `INSERT INTO dojo_skills (tenant_id, workspace_id, skill_id, workflow_id, name, status, current_skill_version, skill_json)
@@ -696,6 +716,80 @@ function registerSourceToken(token: string): void {
     adapter: "integration-test",
     transformVersion: "integration_source_identity_v1",
     tokens: [{ token, file: filePath, tag: "button", line: 1, column: 1 }],
+  });
+}
+
+async function startApiToolHttpServer(response: {
+  status: number;
+  headers?: Record<string, string>;
+  body?: unknown;
+}): Promise<{
+  origin: string;
+  requests: Array<{
+    method: string;
+    url: string;
+    headers: Record<string, string | string[] | undefined>;
+    body: unknown;
+  }>;
+  close: () => Promise<void>;
+}> {
+  const requests: Array<{
+    method: string;
+    url: string;
+    headers: Record<string, string | string[] | undefined>;
+    body: unknown;
+  }> = [];
+  const server = createServer((request, reply) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    request.on("end", () => {
+      const rawBody = Buffer.concat(chunks).toString("utf8");
+      requests.push({
+        method: request.method ?? "GET",
+        url: request.url ?? "/",
+        headers: { ...request.headers },
+        body: parseJsonBody(rawBody),
+      });
+      reply.statusCode = response.status;
+      const headers = response.headers ?? {};
+      for (const [key, value] of Object.entries(headers)) reply.setHeader(key, value);
+      if (response.body !== undefined && !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
+        reply.setHeader("content-type", "application/json");
+      }
+      reply.end(response.body === undefined ? "" : JSON.stringify(response.body));
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await closeServer(server);
+    throw new Error("api_tool_test_server_address_unavailable");
+  }
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    requests,
+    close: () => closeServer(server),
+  };
+}
+
+function parseJsonBody(value: string): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function closeServer(server: Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
   });
 }
 

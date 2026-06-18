@@ -3806,14 +3806,19 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
       });
     }
 
-    const transport = apiToolTransportForArgs(a, skill.skill);
+    const transport = apiToolTransportForArgs(a, skill.skill, {
+      dry_run: false,
+      production_enforcement: resolveDojoEnforcementConfig().production_enforcement,
+    });
     if (!transport.ok) {
-      return errorResponse("dojo_api_backed_tool_transport_required", {
+      const error = transport.blocked_by[0] ?? "dojo_api_backed_tool_transport_required";
+      return errorResponse(error, {
         ok: false,
-        error: "dojo_api_backed_tool_transport_required",
+        error,
         skill_id: skill.skill.skill_id,
         tool_name: apiTool.tool_name,
         run_id: runId,
+        dry_run: false,
         evidence_ledger_validation: evidenceLedgerValidation,
         evidence_claim_results: evidenceClaimResults,
         proof_consume: null,
@@ -3821,6 +3826,7 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
         api_tool_execution_evidence: [],
         api_tool_execution_evidence_ledger: null,
         blocked_by: transport.blocked_by,
+        error_codes: normalizeDojoProofErrorCodes(transport.blocked_by),
       });
     }
     const executeApiBackedTool = async (): Promise<ApiBackedToolExecutionPayload | ReturnType<typeof blockDojoMcpSkillBusExecution>> => {
@@ -10938,9 +10944,16 @@ type ApiToolTransportResolution =
   }
   | { ok: false; blocked_by: string[] };
 
-function apiToolTransportForArgs(args: Record<string, unknown>, skill: DojoSkill): ApiToolTransportResolution {
+function apiToolTransportForArgs(
+  args: Record<string, unknown>,
+  skill: DojoSkill,
+  options: { dry_run: boolean; production_enforcement: boolean }
+): ApiToolTransportResolution {
   const mockResponse = apiToolMockResponseOpt(args["mock_response"]);
   if (mockResponse) {
+    if (options.production_enforcement && !options.dry_run) {
+      return { ok: false, blocked_by: ["api_tool_mock_response_forbidden_in_production"] };
+    }
     return {
       ok: true,
       mode: "mock",
@@ -10948,7 +10961,14 @@ function apiToolTransportForArgs(args: Record<string, unknown>, skill: DojoSkill
     };
   }
   if (!boolOpt(args["allow_network_transport"])) {
-    return { ok: false, blocked_by: ["api_tool_mock_response_or_network_transport_required"] };
+    return {
+      ok: false,
+      blocked_by: [
+        options.production_enforcement && !options.dry_run
+          ? "api_tool_network_transport_required_in_production"
+          : "api_tool_mock_response_or_network_transport_required",
+      ],
+    };
   }
   const baseUrlRaw = stringOpt(args["api_base_url"]);
   if (!baseUrlRaw) return { ok: false, blocked_by: ["api_tool_base_url_required"] };
