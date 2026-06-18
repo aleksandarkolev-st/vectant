@@ -74,6 +74,31 @@ describe("Dojo implementation status registry", () => {
     expect(manifest.reports).toEqual(reportStatuses);
   });
 
+  it("keeps the human status document synced with the registry and machine manifest", () => {
+    const doc = readFileSync(
+      new URL("../../../../docs/AGENT_DOJO_IMPLEMENTATION_STATUS.md", import.meta.url),
+      "utf8"
+    );
+    const docToolStatuses = parseStatusTable(doc, "Current Tool Classification");
+    const docReportStatuses = parseStatusTable(doc, "Current Report Classification");
+    const registryToolStatuses = Object.fromEntries(
+      Object.entries(DOJO_TOOL_IMPLEMENTATION_STATUS).map(([toolName, metadata]) => [
+        toolName,
+        metadata.implementation_status,
+      ])
+    );
+    const registryReportStatuses = Object.fromEntries(
+      Object.entries(DOJO_REPORT_IMPLEMENTATION_STATUS).map(([reportName, metadata]) => [
+        reportName,
+        metadata.implementation_status,
+      ])
+    );
+
+    expect(docToolStatuses).toEqual(registryToolStatuses);
+    expect(Object.keys(docToolStatuses).sort()).toEqual([...DOJO_TOOL_NAMES].sort());
+    expect(docReportStatuses).toEqual(registryReportStatuses);
+  });
+
   it("does not classify unknown tool names as executable", () => {
     expect(getDojoToolImplementationMetadata("synthi_dojo_future_runtime")).toEqual(
       expect.objectContaining({
@@ -304,3 +329,12 @@ describe("Dojo implementation status registry", () => {
     }
   });
 });
+
+function parseStatusTable(markdown: string, heading: string): Record<string, string> {
+  const sectionStart = markdown.indexOf(`## ${heading}`);
+  expect(sectionStart, `${heading} heading exists`).toBeGreaterThanOrEqual(0);
+  const nextSection = markdown.indexOf("\n## ", sectionStart + heading.length + 3);
+  const section = markdown.slice(sectionStart, nextSection === -1 ? markdown.length : nextSection);
+  const rows = [...section.matchAll(/^\| `([^`]+)` \| `([^`]+)` \|$/gm)];
+  return Object.fromEntries(rows.map(([, name, status]) => [name, status]));
+}

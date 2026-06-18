@@ -1703,6 +1703,7 @@ export function validateDojoImplementationStatusEvidenceForRelease(evidence) {
     ["stable_vocabulary_required", "implementation_status_vocabulary_requirement_missing"],
     ["every_tool_classified_required", "implementation_status_tool_classification_requirement_missing"],
     ["machine_manifest_sync_required", "implementation_status_manifest_sync_requirement_missing"],
+    ["human_status_doc_sync_required", "implementation_status_human_doc_sync_requirement_missing"],
     ["unknown_tool_fails_planned_required", "implementation_status_unknown_tool_requirement_missing"],
     ["production_runtime_claim_boundary_required", "implementation_status_production_boundary_requirement_missing"],
     ["runtime_scope_required_for_executable_required", "implementation_status_runtime_scope_requirement_missing"],
@@ -5132,6 +5133,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
         ...implementationStatusArtifacts.evidence.implementation_status_contract,
         production_runtime_claim_boundary_required: false,
         runtime_scope_required_for_executable_required: false,
+        human_status_doc_sync_required: false,
         self_check_executes_tests_required: false,
       },
     },
@@ -5143,6 +5145,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
   assert(rejectedImplementationStatus.errors.includes("implementation_status_missing_capabilities:no_mature_production_runtime_claims"));
   assert(rejectedImplementationStatus.errors.includes("implementation_status_production_boundary_requirement_missing"));
   assert(rejectedImplementationStatus.errors.includes("implementation_status_runtime_scope_requirement_missing"));
+  assert(rejectedImplementationStatus.errors.includes("implementation_status_human_doc_sync_requirement_missing"));
   assert(rejectedImplementationStatus.errors.includes("implementation_status_self_check_execution_requirement_missing"));
 
   const dockerDir = path.join(outDir, "docker-integration");
@@ -7337,6 +7340,7 @@ async function writeImplementationStatusEvidenceForSelfCheck({
       stable_vocabulary_required: true,
       every_tool_classified_required: true,
       machine_manifest_sync_required: true,
+      human_status_doc_sync_required: true,
       unknown_tool_fails_planned_required: true,
       production_runtime_claim_boundary_required: true,
       runtime_scope_required_for_executable_required: true,

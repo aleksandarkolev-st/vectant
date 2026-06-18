@@ -1141,6 +1141,7 @@ describe("Dojo release gate artifact verifier", () => {
           ...implementationStatusEvidenceFixture().implementation_status_contract,
           production_runtime_claim_boundary_required: false,
           runtime_scope_required_for_executable_required: false,
+          human_status_doc_sync_required: false,
           self_check_executes_tests_required: false,
         },
       }),
@@ -1153,6 +1154,7 @@ describe("Dojo release gate artifact verifier", () => {
       "implementation_status_missing_capabilities:no_mature_production_runtime_claims",
       "implementation_status_production_boundary_requirement_missing",
       "implementation_status_runtime_scope_requirement_missing",
+      "implementation_status_human_doc_sync_requirement_missing",
       "implementation_status_self_check_execution_requirement_missing",
     ]));
 
@@ -5478,6 +5480,7 @@ function implementationStatusEvidenceFixture(overrides = {}) {
       stable_vocabulary_required: true,
       every_tool_classified_required: true,
       machine_manifest_sync_required: true,
+      human_status_doc_sync_required: true,
       unknown_tool_fails_planned_required: true,
       production_runtime_claim_boundary_required: true,
       runtime_scope_required_for_executable_required: true,

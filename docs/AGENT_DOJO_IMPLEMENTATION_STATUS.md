@@ -59,7 +59,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - workflow contract to `DojoSkill`
 - executable Skill Cortex graph IR and graph runtime v1
 - materialized synthetic Vivarium fixtures and oracle-backed scenario runs
-- runtime-backed Wind Tunnel and checkride runner foundations
+- runtime-backed Wind Tunnel, Evil Twin, and checkride runner foundations
 - durable proof replay repository and append-only evidence ledger store modules
 - license and proof capsule issuance/validation with strict evidence-claim mode, Ed25519 signing support, external command signing, and managed-key-service signing with explicit key-custody metadata
 - proof-gated backing private workflow tool and raw workflow boundary checks
@@ -128,6 +128,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_generate_vivarium_scenarios` | `deterministic_projection` |
 | `synthi_dojo_run_vivarium_scenario` | `executable` |
 | `synthi_dojo_run_wind_tunnel` | `executable` |
+| `synthi_dojo_run_evil_twin` | `executable` |
 | `synthi_dojo_run_checkride` | `executable` |
 | `synthi_dojo_publish_skill` | `executable` |
 | `synthi_dojo_recertify_skill` | `executable` |
