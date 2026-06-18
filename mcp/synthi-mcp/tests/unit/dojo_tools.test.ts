@@ -78,9 +78,14 @@ describe("Agent Dojo core", () => {
     const seed = extractDojoSkillSeed(workflow.contract, { workspace_id: "workspace-a", now: "2026-06-11T00:00:00.000Z" });
     const scenarios = generateDojoVivariumScenarios(seed);
     const checkride = runDojoCheckride(seed, scenarios, workflow.contract, { now: "2026-06-11T00:00:00.000Z" });
-    const skill = buildDojoSkill(workflow.contract, { workspace_id: "workspace-a", now: "2026-06-11T00:00:00.000Z" });
+    const skill = buildDojoSkill(workflow.contract, {
+      workspace_id: "workspace-a",
+      tenant_id: "tenant-a",
+      now: "2026-06-11T00:00:00.000Z",
+    });
 
     expect(seed.schema_version).toBe("synthi.dojo.skillSeed.v1");
+    expect(skill.tenant_id).toBe("tenant-a");
     expect(seed.workspace_id).toBe("workspace-a");
     expect(seed.input_schema).toContainEqual(expect.objectContaining({ name: "client_name", required: true }));
     expect(scenarios).toHaveLength(21);
@@ -176,6 +181,9 @@ describe("Agent Dojo core", () => {
     const compatibilityEvidenceManifest = JSON.parse(artifacts.find((artifact) =>
       artifact.path === ".synthi/dojo/skills/save_invoice/evidence-manifest.json"
     )?.content ?? "null") as { schema_version?: string };
+    const exportedSkillArtifact = JSON.parse(artifacts.find((artifact) =>
+      artifact.path === ".synthi/dojo/skills/save_invoice/skill.json"
+    )?.content ?? "null") as { schema_version?: string; tenant_id?: string; workspace_id?: string };
     const governanceReport = JSON.parse(artifacts.find((artifact) =>
       artifact.path === ".synthi/dojo/skills/save_invoice/governance.report.json"
     )?.content ?? "null") as {
@@ -186,11 +194,18 @@ describe("Agent Dojo core", () => {
       artifact.path === ".synthi/dojo/evidence/save_invoice.redacted-evidence-manifest.json"
     )?.content ?? "null") as {
       schema_version?: string;
+      tenant_id?: string;
+      workspace_id?: string;
       artifact_count?: number;
       artifacts?: Array<{ redaction_manifest_sha256?: string; original_artifact_sha256?: string }>;
       excluded?: string[];
     };
     expect(compatibilityEvidenceManifest.schema_version).toBe("synthi.dojo.evidenceManifest.v1");
+    expect(exportedSkillArtifact).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.skill.v1",
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+    }));
     expect(governanceReport).toEqual(expect.objectContaining({
       schema_version: "synthi.dojo.governanceReport.v1",
       scheduled_jobs: expect.arrayContaining([
@@ -199,6 +214,8 @@ describe("Agent Dojo core", () => {
     }));
     expect(redactedEvidenceManifest).toEqual(expect.objectContaining({
       schema_version: "synthi.dojo.redactedEvidenceExport.v1",
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
       artifact_count: expect.any(Number),
       excluded: expect.arrayContaining(["raw_artifact_content", "secrets", "tokens"]),
     }));
@@ -206,6 +223,40 @@ describe("Agent Dojo core", () => {
       original_artifact_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       redaction_manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
     }));
+  });
+
+  it("uses deterministic local tenant scope for legacy skill evidence exports", () => {
+    const workflow = compileWorkflowContract([
+      event({
+        event_id: "open",
+        action: "click",
+        detail: { element: { role: "button", name: "Open details" } },
+        locator_candidates: [
+          { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
+        ],
+      }),
+    ]);
+    const skill = buildDojoSkill(workflow.contract, {
+      workspace_id: "workspace-legacy",
+      now: "2026-06-11T00:00:00.000Z",
+    });
+    const firstManifest = JSON.parse(exportDojoRepoArtifacts(skill).find((artifact) =>
+      artifact.path.endsWith(".redacted-evidence-manifest.json")
+    )?.content ?? "null") as { tenant_id?: string; workspace_id?: string };
+    const firstSkillArtifact = JSON.parse(exportDojoRepoArtifacts(skill).find((artifact) =>
+      artifact.path.endsWith("/skill.json")
+    )?.content ?? "null") as { tenant_id?: string; workspace_id?: string };
+    const secondManifest = JSON.parse(exportDojoRepoArtifacts(skill).find((artifact) =>
+      artifact.path.endsWith(".redacted-evidence-manifest.json")
+    )?.content ?? "null") as { tenant_id?: string; workspace_id?: string };
+
+    expect(skill.tenant_id).toBeUndefined();
+    expect(firstManifest.tenant_id).toMatch(/^local-tenant-[a-f0-9]{12}$/);
+    expect(firstManifest.tenant_id).not.toBe("legacy-local-tenant");
+    expect(firstManifest.workspace_id).toBe("workspace-legacy");
+    expect(firstSkillArtifact.tenant_id).toBe(firstManifest.tenant_id);
+    expect(firstSkillArtifact.workspace_id).toBe("workspace-legacy");
+    expect(secondManifest.tenant_id).toBe(firstManifest.tenant_id);
   });
 
   it("validates proof capsules against action scope, context claims, evidence claims, guardrails, and signature", () => {

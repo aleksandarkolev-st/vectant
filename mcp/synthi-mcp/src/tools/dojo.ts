@@ -5568,6 +5568,7 @@ async function dojoRunCheckrideTool(args: unknown): Promise<ToolResponse> {
   const checkride = runDojoCheckride(seed, scenarios, contract, { now });
   const previewSkill = buildDojoSkill(contract, {
     workspace_id: workspaceId,
+    tenant_id: workflow.tenant.tenant_id,
     now,
     private_tool_manifest: generatePrivateWorkflowToolManifest(contract),
   });
@@ -6108,6 +6109,7 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
   const backingToolPublication = backingPrivateToolPublicationPreflight(manifest, workflow.artifact);
   const candidateSkill = buildDojoSkill(contract, {
     workspace_id: workspaceId,
+    tenant_id: workflow.tenant.tenant_id,
     now,
     private_tool_manifest: manifest,
     ...(backingToolPublication.ok ? { published_tool_name: backingToolPublication.tool_name } : {}),
@@ -6256,6 +6258,7 @@ async function dojoRecertifySkillTool(args: unknown): Promise<ToolResponse> {
   const publishedToolName = existing?.published_tool_name;
   let recertified = buildDojoSkill(workflow.artifact.workflow.contract, {
     workspace_id: workspaceId,
+    tenant_id: tenant.tenant_id,
     now,
     private_tool_manifest: manifest,
     ...(publishedToolName ? { published_tool_name: publishedToolName } : {}),

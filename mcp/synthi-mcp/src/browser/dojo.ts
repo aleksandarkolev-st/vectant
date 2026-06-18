@@ -714,6 +714,7 @@ export interface DojoRetrainTrigger {
 
 export interface DojoSkill {
   schema_version: "synthi.dojo.skill.v1";
+  tenant_id?: string;
   skill_id: string;
   workspace_id: string;
   workflow_id: string;
@@ -847,8 +848,9 @@ export class DojoSkillRegistry {
     options: { tenant_id?: string; issued_by?: DojoAuditActor } = {}
   ): DojoProofCapsuleRecord {
     const skill = this.get(capsule.skill_id);
+    const tenantId = options.tenant_id ?? skill?.tenant_id;
     const record: DojoProofCapsuleRecord = {
-      ...(options.tenant_id ? { tenant_id: options.tenant_id } : {}),
+      ...(tenantId ? { tenant_id: tenantId } : {}),
       ...(skill?.workspace_id ? { workspace_id: skill.workspace_id } : {}),
       capsule_id: capsule.capsule_id,
       skill_id: capsule.skill_id,
@@ -1242,6 +1244,7 @@ export function buildDojoSkill(
   contract: WorkflowContractV7,
   options: {
     workspace_id?: string;
+    tenant_id?: string;
     now?: string;
     private_tool_manifest?: PrivateWorkflowToolManifestV7;
     published_tool_name?: string;
@@ -1303,6 +1306,7 @@ export function buildDojoSkill(
 
   return {
     schema_version: "synthi.dojo.skill.v1",
+    ...(options.tenant_id?.trim() ? { tenant_id: options.tenant_id.trim() } : {}),
     skill_id: skillId,
     workspace_id: seed.workspace_id,
     workflow_id: contract.workflowId,
@@ -2974,6 +2978,7 @@ function clampScore(value: number): number {
 function redactedSkillArtifact(skill: DojoSkill): Record<string, unknown> {
   return {
     schema_version: skill.schema_version,
+    tenant_id: evidenceExportTenantIdFor(skill),
     skill_id: skill.skill_id,
     workspace_id: skill.workspace_id,
     workflow_id: skill.workflow_id,
@@ -3270,7 +3275,7 @@ function redactedEvidenceExportManifestFor(skill: DojoSkill): DojoRedactedEviden
   const segment = skillPathSegment(skill);
   const artifactUri = (path: string): string => `dojo-artifact://${segment}/${path}`;
   return buildDojoRedactedEvidenceExportManifest({
-    tenant_id: "legacy-local-tenant",
+    tenant_id: evidenceExportTenantIdFor(skill),
     workspace_id: skill.workspace_id,
     generated_at: skill.generated_at,
     artifacts: [
@@ -3332,6 +3337,11 @@ function redactedEvidenceExportManifestFor(skill: DojoSkill): DojoRedactedEviden
       },
     ],
   });
+}
+
+function evidenceExportTenantIdFor(skill: DojoSkill): string {
+  const tenantId = skill.tenant_id?.trim();
+  return tenantId && tenantId.length > 0 ? tenantId : `local-tenant-${shortHash(skill.workspace_id)}`;
 }
 
 function playwrightSpecFor(skill: DojoSkill): string {

@@ -569,6 +569,20 @@ async function main() {
 
   const workspaceId = "dojo-proof-self-check";
   const url = "https://app.example.test/settings";
+  const selfCheckScopeHash = sha256Hex(`${workspaceId}:${RUN_ID}`).slice(0, 12);
+  const selfCheckTenant = {
+    tenant_id: `tenant-${selfCheckScopeHash}`,
+    organization_id: `org-${selfCheckScopeHash}`,
+    workspace_id: workspaceId,
+    actor_id: "dojo-proof-self-check",
+    actor_type: "service",
+    roles: ["agent", "dojo.operator", "dojo:proof:issue", "dojo:runtime:create"],
+  };
+  const selfCheckTenantArgs = (operation) => ({
+    ...selfCheckTenant,
+    request_id: `req-dojo-proof-self-check-${operation}-${selfCheckScopeHash}`,
+    correlation_id: `corr-dojo-proof-self-check-${operation}-${selfCheckScopeHash}`,
+  });
   sourceIdentityRegistry.register({
     workspaceId,
     filePath: "src/settings/DetailsButton.tsx",
@@ -588,11 +602,17 @@ async function main() {
     element: { role: "button", name: "Open details", text: "Open details", source_id: "details.open" },
   }));
 
-  const scenarios = structured(await dispatchDojoTool("synthi_dojo_generate_vivarium_scenarios", { workspace_id: workspaceId }));
+  const scenarios = structured(await dispatchDojoTool("synthi_dojo_generate_vivarium_scenarios", {
+    workspace_id: workspaceId,
+    ...selfCheckTenantArgs("scenarios"),
+  }));
   assertDojoScenarioSet(scenarios.organoid.scenarios, "vivarium");
   log("ok", "generated vivarium scenarios");
 
-  const checkride = structured(await dispatchDojoTool("synthi_dojo_run_checkride", { workspace_id: workspaceId }));
+  const checkride = structured(await dispatchDojoTool("synthi_dojo_run_checkride", {
+    workspace_id: workspaceId,
+    ...selfCheckTenantArgs("checkride"),
+  }));
   assert.equal(
     checkride.checkride.results.length,
     scenarios.organoid.scenarios.length,
@@ -607,6 +627,7 @@ async function main() {
     actor_id: "dojo-proof-self-check",
     actor_type: "service",
     evidence_refs: ["evidence:dojo-proof-self-check-publish"],
+    ...selfCheckTenantArgs("publish"),
   }));
   assert.equal(publish.skill.skill_id, "dojo_open_details", "published skill id should derive from workflow intent");
   assert.equal(
@@ -634,6 +655,7 @@ async function main() {
 
   const skill = dojoSkillRegistry.get(publish.skill.skill_id);
   assert(skill, "published skill should be registered");
+  assert.equal(skill.tenant_id, selfCheckTenant.tenant_id, "registered skill should retain tenant scope");
   assert.equal(
     skill.executable_entrustment?.schema_version,
     "synthi.dojo.executableEntrustmentSnapshot.v1",
@@ -657,7 +679,7 @@ async function main() {
   });
   const proofEvidenceRecord = buildDojoEvidenceLedgerRecord({
     record_id: `evidence-${publish.skill.skill_id}-self-check-proof`,
-    tenant_id: "local-tenant",
+    tenant_id: selfCheckTenant.tenant_id,
     workspace_id: skill.workspace_id,
     skill_id: skill.skill_id,
     run_id: checkride.checkride.checkride_id,
@@ -675,6 +697,7 @@ async function main() {
     context_claims: { workspace_verified: true, ...graphRuntimeClaims },
     evidence_ledger_records: [proofEvidenceRecord],
     require_verified_evidence: true,
+    ...selfCheckTenantArgs("proof-issue"),
   }));
   assert.equal(capsuleResponse.validation.ok, true, "issued proof capsule should validate");
   const validation = validateDojoProofCapsule(skill, capsuleResponse.proof_capsule, "run_workflow");
@@ -683,6 +706,7 @@ async function main() {
     skill_id: publish.skill.skill_id,
     requested_action: "run_workflow",
     proof_capsule: capsuleResponse.proof_capsule,
+    ...selfCheckTenantArgs("proof-validate"),
   }));
   assert.equal(kernelValidation.license_kernel.ok, true, "proof capsule should validate through license kernel");
   await writeFile(path.join(RUN_ROOT, "proof-capsule.json"), `${JSON.stringify(capsuleResponse.proof_capsule, null, 2)}\n`, "utf8");
@@ -693,6 +717,7 @@ async function main() {
     requested_action: "run_workflow",
     proof_capsule: capsuleResponse.proof_capsule,
     dry_run: true,
+    ...selfCheckTenantArgs("proof-dry-run"),
   }));
   assert.equal(dryRun.dry_run, true, "proof-gated dry run should not mutate");
   assert.equal(dryRun.validation.ok, true, "dry run should pass proof validation");
@@ -702,12 +727,8 @@ async function main() {
     SYNTHI_DOJO_PRODUCTION_ENFORCEMENT: "1",
   }, async () => {
     const productionTenant = {
-      tenant_id: "local-tenant",
-      organization_id: "local-org",
-      workspace_id: workspaceId,
-      actor_id: "dojo-proof-self-check",
-      actor_type: "service",
-      roles: ["agent", "dojo:proof:issue", "dojo:runtime:create"],
+      ...selfCheckTenant,
+      roles: [...new Set([...selfCheckTenant.roles, "dojo:proof:issue", "dojo:runtime:create"])],
     };
     const productionProof = structured(await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: publish.skill.skill_id,
