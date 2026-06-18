@@ -688,6 +688,7 @@ describe("Dojo release gate manifest", () => {
           require_managed_key_custody: true,
           require_public_verifier_material: true,
           require_release_managed_key_observation: true,
+          require_release_observation_artifact_digest_match: true,
           release_observation_schema_version: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
           required_release_observation_checks: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS,
           require_stdout_stderr_digest_match: true,
@@ -1022,6 +1023,7 @@ describe("Dojo release gate manifest", () => {
           durable_postgres_session_gate_id: "dojo_postgres_control_plane_self_check",
           require_malformed_record_rejection: true,
           require_release_runtime_observation: true,
+          require_release_observation_artifact_digest_match: true,
           required_release_observation_gate_ids: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS,
           require_self_check_executes_tests: true,
           require_stdout_stderr_digest_match: true,
@@ -1482,12 +1484,14 @@ describe("Dojo release gate manifest", () => {
       .filter((file) => file !== missingManagedKeySigningTestFile);
     managedKeySigningGate.release_artifact_requirements.require_managed_key_custody = false;
     managedKeySigningGate.release_artifact_requirements.require_release_managed_key_observation = false;
+    managedKeySigningGate.release_artifact_requirements.require_release_observation_artifact_digest_match = false;
     managedKeySigningGate.release_artifact_requirements.release_observation_schema_version = "broken";
     managedKeySigningGate.release_artifact_requirements.required_release_observation_checks = DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS.slice(1);
     managedKeySigningGate.requires_env = [];
     expect(validateDojoReleaseGateManifest(brokenManagedKeySigning, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "managed_key_signing_missing_custody_requirement",
       "managed_key_signing_missing_release_observation_requirement",
+      "managed_key_signing_missing_release_observation_artifact_digest_requirement",
       "managed_key_signing_missing_release_observation_schema",
       `managed_key_signing_missing_release_observation_checks:${DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS[0]}`,
       "managed_key_signing_missing_release_observation_env",
@@ -1722,6 +1726,7 @@ describe("Dojo release gate manifest", () => {
     hostedRuntimeGatewayGate.release_artifact_requirements.require_durable_postgres_session_gate = false;
     hostedRuntimeGatewayGate.release_artifact_requirements.durable_postgres_session_gate_id = "wrong_gate";
     hostedRuntimeGatewayGate.release_artifact_requirements.require_release_runtime_observation = false;
+    hostedRuntimeGatewayGate.release_artifact_requirements.require_release_observation_artifact_digest_match = false;
     hostedRuntimeGatewayGate.release_artifact_requirements.required_release_observation_gate_ids = DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS
       .filter((gateId) => gateId !== "workflow_e2e_hosted");
     hostedRuntimeGatewayGate.release_artifact_requirements.require_self_check_executes_tests = false;
@@ -1733,6 +1738,7 @@ describe("Dojo release gate manifest", () => {
       "hosted_runtime_gateway_missing_durable_postgres_gate_id",
       `hosted_runtime_gateway_missing_release_observation_env:${DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_ENV}`,
       "hosted_runtime_gateway_missing_release_observation_requirement",
+      "hosted_runtime_gateway_missing_release_observation_artifact_digest_requirement",
       "hosted_runtime_gateway_missing_release_observation_gate_ids:workflow_e2e_hosted",
       "hosted_runtime_gateway_missing_self_check_execution_requirement",
       "hosted_runtime_gateway_missing_required_capabilities:hosted_runtime_blocks_expired_and_revoked_sessions",

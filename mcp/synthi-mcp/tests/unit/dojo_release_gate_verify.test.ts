@@ -2954,6 +2954,53 @@ describe("Dojo release gate artifact verifier", () => {
       "managed_key_signing_release_observation_artifact_sha256_invalid:0",
     ]));
 
+    const missingManagedKeyArtifactPath = path.join(dir, "missing-managed-key-release-observation.json");
+    const missingManagedKeyArtifactEvidencePath = await writeManagedKeySigningEvidenceFixture({
+      dir,
+      basename: "missing-artifact-managed-key-signing",
+      evidence: managedKeySigningEvidenceFixture({
+        release_managed_key_observation: managedKeySigningReleaseObservationFixture({
+          artifact_refs: [{
+            kind: "managed_key_signing_conformance",
+            artifact_path: missingManagedKeyArtifactPath,
+            artifact_sha256: sha256("missing-managed-key-artifact"),
+          }],
+        }),
+      }),
+      writeReleaseObservationArtifacts: false,
+    });
+    const missingManagedKeyArtifact = await verifyDojoManagedKeySigningEvidenceArtifact({
+      evidencePath: missingManagedKeyArtifactEvidencePath,
+      releaseCandidate: true,
+    });
+    expect(missingManagedKeyArtifact.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("managed_key_signing_release_observation_artifact_missing:0:"),
+    ]));
+
+    const mismatchedManagedKeyArtifactPath = path.join(dir, "mismatched-managed-key-release-observation.json");
+    await writeFile(mismatchedManagedKeyArtifactPath, "actual-managed-key-artifact", "utf8");
+    const mismatchedManagedKeyArtifactEvidencePath = await writeManagedKeySigningEvidenceFixture({
+      dir,
+      basename: "mismatched-artifact-managed-key-signing",
+      evidence: managedKeySigningEvidenceFixture({
+        release_managed_key_observation: managedKeySigningReleaseObservationFixture({
+          artifact_refs: [{
+            kind: "managed_key_signing_conformance",
+            artifact_path: mismatchedManagedKeyArtifactPath,
+            artifact_sha256: sha256("declared-managed-key-artifact"),
+          }],
+        }),
+      }),
+      writeReleaseObservationArtifacts: false,
+    });
+    const mismatchedManagedKeyArtifact = await verifyDojoManagedKeySigningEvidenceArtifact({
+      evidencePath: mismatchedManagedKeyArtifactEvidencePath,
+      releaseCandidate: true,
+    });
+    expect(mismatchedManagedKeyArtifact.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^managed_key_signing_release_observation_artifact_sha256_mismatch:0:/),
+    ]));
+
     const driftedPath = await writeManagedKeySigningEvidenceFixture({
       dir,
       basename: "drifted-managed-key-signing",
@@ -3937,6 +3984,57 @@ describe("Dojo release gate artifact verifier", () => {
       "hosted_runtime_gateway_release_observation_check_missing:non_loopback_runtime_observed",
       "hosted_runtime_gateway_release_observation_gate_refs_missing:workflow_e2e_hosted",
       "hosted_runtime_gateway_release_observation_artifact_sha256_invalid:0",
+    ]));
+
+    const missingHostedRuntimeArtifactPath = path.join(dir, "missing-hosted-runtime-release-observation.json");
+    const missingHostedRuntimeArtifactEvidencePath = await writeHostedRuntimeGatewayEvidenceFixture({
+      dir,
+      basename: "missing-artifact-hosted-runtime-gateway",
+      evidence: hostedRuntimeGatewayEvidenceFixture({
+        release_runtime_observation: hostedRuntimeGatewayReleaseObservationFixture({
+          artifact_refs: hostedRuntimeGatewayReleaseObservationFixture().artifact_refs.map((ref, index) => index === 0
+            ? {
+              ...ref,
+              artifact_path: missingHostedRuntimeArtifactPath,
+              artifact_sha256: sha256("missing-hosted-runtime-artifact"),
+            }
+            : ref),
+        }),
+      }),
+      writeReleaseObservationArtifacts: false,
+    });
+    const missingHostedRuntimeArtifact = await verifyDojoHostedRuntimeGatewayEvidenceArtifact({
+      evidencePath: missingHostedRuntimeArtifactEvidencePath,
+      releaseCandidate: true,
+    });
+    expect(missingHostedRuntimeArtifact.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("hosted_runtime_gateway_release_observation_artifact_missing:0:"),
+    ]));
+
+    const mismatchedHostedRuntimeArtifactPath = path.join(dir, "mismatched-hosted-runtime-release-observation.json");
+    await writeFile(mismatchedHostedRuntimeArtifactPath, "actual-hosted-runtime-artifact", "utf8");
+    const mismatchedHostedRuntimeArtifactEvidencePath = await writeHostedRuntimeGatewayEvidenceFixture({
+      dir,
+      basename: "mismatched-artifact-hosted-runtime-gateway",
+      evidence: hostedRuntimeGatewayEvidenceFixture({
+        release_runtime_observation: hostedRuntimeGatewayReleaseObservationFixture({
+          artifact_refs: hostedRuntimeGatewayReleaseObservationFixture().artifact_refs.map((ref, index) => index === 0
+            ? {
+              ...ref,
+              artifact_path: mismatchedHostedRuntimeArtifactPath,
+              artifact_sha256: sha256("declared-hosted-runtime-artifact"),
+            }
+            : ref),
+        }),
+      }),
+      writeReleaseObservationArtifacts: false,
+    });
+    const mismatchedHostedRuntimeArtifact = await verifyDojoHostedRuntimeGatewayEvidenceArtifact({
+      evidencePath: mismatchedHostedRuntimeArtifactEvidencePath,
+      releaseCandidate: true,
+    });
+    expect(mismatchedHostedRuntimeArtifact.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^hosted_runtime_gateway_release_observation_artifact_sha256_mismatch:0:/),
     ]));
 
     const driftedPath = await writeHostedRuntimeGatewayEvidenceFixture({
@@ -6395,6 +6493,7 @@ async function writeManagedKeySigningEvidenceFixture({
   basename = "dojo-managed-key-signing",
   evidence,
   writeLogs = true,
+  writeReleaseObservationArtifacts = true,
 }) {
   const stdout = "managed key signing suite passed\n";
   const stderr = "";
@@ -6412,8 +6511,26 @@ async function writeManagedKeySigningEvidenceFixture({
     stderr_path: stderrPath,
     json_report_path: jsonReportPath,
   });
+  const keepExistingPath = (value, placeholder) => value && value !== placeholder && existsSync(value);
+  const withLogDefaults = {
+    ...body,
+    stdout_path: keepExistingPath(body.stdout_path, "stdout.log") ? body.stdout_path : stdoutPath,
+    stderr_path: keepExistingPath(body.stderr_path, "stderr.log") ? body.stderr_path : stderrPath,
+    json_report_path: keepExistingPath(body.json_report_path, "vitest.json") ? body.json_report_path : jsonReportPath,
+    json_report_sha256: body.json_report_sha256 && body.json_report_sha256 !== "json-report-sha256" ? body.json_report_sha256 : sha256(jsonReport),
+    json_report_bytes: Number.isFinite(Number(body.json_report_bytes)) && Number(body.json_report_bytes) >= 0
+      ? body.json_report_bytes
+      : Buffer.byteLength(jsonReport),
+  };
   const evidencePath = path.join(dir, `${basename}.evidence.json`);
-  await writeFile(evidencePath, JSON.stringify(body, null, 2), "utf8");
+  if (writeReleaseObservationArtifacts) {
+    await writeReleaseObservationArtifactFixtures({
+      evidence: withLogDefaults,
+      evidencePath,
+      observationField: "release_managed_key_observation",
+    });
+  }
+  await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
   return evidencePath;
 }
 
@@ -7650,6 +7767,7 @@ async function writeHostedRuntimeGatewayEvidenceFixture({
   basename = "dojo-hosted-runtime-gateway",
   evidence,
   writeLogs = true,
+  writeReleaseObservationArtifacts = true,
 }) {
   const stdout = "hosted runtime gateway suite passed\n";
   const stderr = "";
@@ -7679,8 +7797,45 @@ async function writeHostedRuntimeGatewayEvidenceFixture({
       : Buffer.byteLength(jsonReport),
   };
   const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  if (writeReleaseObservationArtifacts) {
+    await writeReleaseObservationArtifactFixtures({
+      evidence: withLogDefaults,
+      evidencePath,
+      observationField: "release_runtime_observation",
+    });
+  }
   await writeFile(evidencePath, JSON.stringify(withLogDefaults, null, 2), "utf8");
   return evidencePath;
+}
+
+async function writeReleaseObservationArtifactFixtures({
+  evidence,
+  evidencePath,
+  observationField,
+}) {
+  const observation = evidence?.[observationField];
+  const refs = Array.isArray(observation?.artifact_refs) ? observation.artifact_refs : [];
+  for (const [index, ref] of refs.entries()) {
+    if (typeof ref?.artifact_path !== "string" || ref.artifact_path.length === 0) continue;
+    if (typeof ref?.artifact_sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(ref.artifact_sha256)) continue;
+    const content = JSON.stringify({
+      schema_version: "synthi.dojo.releaseObservationArtifactFixture.v1",
+      observation_field: observationField,
+      index,
+      kind: ref.kind ?? null,
+      gate_id: ref.gate_id ?? null,
+    }, null, 2);
+    const artifactPath = resolveEvidenceArtifactPathForTest(ref.artifact_path, evidencePath);
+    await mkdir(path.dirname(artifactPath), { recursive: true });
+    await writeFile(artifactPath, content, "utf8");
+    ref.artifact_sha256 = sha256(content);
+  }
+}
+
+function resolveEvidenceArtifactPathForTest(value, evidencePath) {
+  const text = String(value || "").trim();
+  if (!text) return text;
+  return path.isAbsolute(text) ? text : path.resolve(path.dirname(evidencePath), text);
 }
 
 function hostedRuntimeGatewayEvidenceFixture(overrides = {}) {

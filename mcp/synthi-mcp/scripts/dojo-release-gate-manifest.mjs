@@ -941,6 +941,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_managed_key_custody: true,
       require_public_verifier_material: true,
       require_release_managed_key_observation: true,
+      require_release_observation_artifact_digest_match: true,
       release_observation_schema_version: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
       required_release_observation_checks: [...DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS],
       require_stdout_stderr_digest_match: true,
@@ -1317,6 +1318,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       durable_postgres_session_gate_id: "dojo_postgres_control_plane_self_check",
       require_malformed_record_rejection: true,
       require_release_runtime_observation: true,
+      require_release_observation_artifact_digest_match: true,
       required_release_observation_gate_ids: [...DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS],
       require_no_failed_tests: true,
       require_no_skipped_tests: true,
@@ -2404,6 +2406,9 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!managedKeySigningGate.release_artifact_requirements?.require_release_managed_key_observation) {
       errors.push("managed_key_signing_missing_release_observation_requirement");
     }
+    if (!managedKeySigningGate.release_artifact_requirements?.require_release_observation_artifact_digest_match) {
+      errors.push("managed_key_signing_missing_release_observation_artifact_digest_requirement");
+    }
     if (managedKeySigningGate.release_artifact_requirements?.release_observation_schema_version !== DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION) {
       errors.push("managed_key_signing_missing_release_observation_schema");
     }
@@ -3008,6 +3013,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       ["require_durable_postgres_session_gate", "hosted_runtime_gateway_missing_durable_postgres_gate_requirement"],
       ["require_malformed_record_rejection", "hosted_runtime_gateway_missing_malformed_record_requirement"],
       ["require_release_runtime_observation", "hosted_runtime_gateway_missing_release_observation_requirement"],
+      ["require_release_observation_artifact_digest_match", "hosted_runtime_gateway_missing_release_observation_artifact_digest_requirement"],
       ["require_self_check_executes_tests", "hosted_runtime_gateway_missing_self_check_execution_requirement"],
     ]) {
       if (!hostedRuntimeGatewayGate.release_artifact_requirements?.[requirement]) errors.push(errorCode);

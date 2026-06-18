@@ -2941,6 +2941,13 @@ export async function verifyDojoManagedKeySigningEvidenceArtifact({ evidencePath
   const evidence = await readJsonFile(evidencePath);
   const errors = validateDojoManagedKeySigningEvidenceForRelease(evidence, { releaseCandidate }).errors;
   errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  if (releaseCandidate) {
+    errors.push(...await validateReleaseObservationArtifactRefs({
+      observation: evidence?.release_managed_key_observation,
+      evidencePath,
+      prefix: "managed_key_signing_release_observation",
+    }));
+  }
   return {
     id: "dojo_managed_key_signing_self_check",
     ok: errors.length === 0,
@@ -4071,6 +4078,13 @@ export async function verifyDojoHostedRuntimeGatewayEvidenceArtifact({ evidenceP
   const evidence = await readJsonFile(evidencePath);
   const errors = validateDojoHostedRuntimeGatewayEvidenceForRelease(evidence, { releaseCandidate }).errors;
   errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
+  if (releaseCandidate) {
+    errors.push(...await validateReleaseObservationArtifactRefs({
+      observation: evidence?.release_runtime_observation,
+      evidencePath,
+      prefix: "hosted_runtime_gateway_release_observation",
+    }));
+  }
   return {
     id: "dojo_hosted_runtime_gateway_self_check",
     ok: errors.length === 0,
@@ -4866,6 +4880,32 @@ async function validateDigestReferencedLogArtifacts(evidence, evidencePath) {
     evidence,
     evidencePath,
   }));
+  return errors;
+}
+
+async function validateReleaseObservationArtifactRefs({
+  observation,
+  evidencePath,
+  prefix,
+}) {
+  const refs = Array.isArray(observation?.artifact_refs) ? observation.artifact_refs : [];
+  const errors = [];
+  for (const [index, ref] of refs.entries()) {
+    if (typeof ref?.artifact_path !== "string" || ref.artifact_path.length === 0) continue;
+    if (typeof ref?.artifact_sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(ref.artifact_sha256)) continue;
+    const resolved = resolveEvidenceArtifactPath(ref.artifact_path, evidencePath);
+    let bytes;
+    try {
+      bytes = await readFile(resolved);
+    } catch {
+      errors.push(`${prefix}_artifact_missing:${index}:${resolved}`);
+      continue;
+    }
+    const actualSha256 = sha256(bytes);
+    if (ref.artifact_sha256.toLowerCase() !== actualSha256) {
+      errors.push(`${prefix}_artifact_sha256_mismatch:${index}:${ref.artifact_sha256}:${actualSha256}`);
+    }
+  }
   return errors;
 }
 
@@ -7827,6 +7867,11 @@ async function writeManagedKeySigningEvidenceForSelfCheck({
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeReleaseObservationArtifactsForSelfCheck({
+    evidence,
+    evidencePath,
+    observationField: "release_managed_key_observation",
+  });
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
   return {
     evidence_path: evidencePath,
@@ -9257,11 +9302,40 @@ async function writeHostedRuntimeGatewayEvidenceForSelfCheck({
     ...overrides,
   };
   const evidencePath = path.join(outDir, `${basename}.evidence.json`);
+  await writeReleaseObservationArtifactsForSelfCheck({
+    evidence,
+    evidencePath,
+    observationField: "release_runtime_observation",
+  });
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
   return {
     evidence_path: evidencePath,
     evidence,
   };
+}
+
+async function writeReleaseObservationArtifactsForSelfCheck({
+  evidence,
+  evidencePath,
+  observationField,
+}) {
+  const observation = evidence?.[observationField];
+  const refs = Array.isArray(observation?.artifact_refs) ? observation.artifact_refs : [];
+  for (const [index, ref] of refs.entries()) {
+    if (typeof ref?.artifact_path !== "string" || ref.artifact_path.length === 0) continue;
+    if (typeof ref?.artifact_sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(ref.artifact_sha256)) continue;
+    const content = JSON.stringify({
+      schema_version: "synthi.dojo.releaseObservationArtifactFixture.v1",
+      observation_field: observationField,
+      index,
+      kind: ref.kind ?? null,
+      gate_id: ref.gate_id ?? null,
+    }, null, 2);
+    const artifactPath = resolveEvidenceArtifactPath(ref.artifact_path, evidencePath);
+    await mkdir(path.dirname(artifactPath), { recursive: true });
+    await writeFile(artifactPath, content, "utf8");
+    ref.artifact_sha256 = sha256(content);
+  }
 }
 
 function buildHostedRuntimeGatewayReleaseObservationForSelfCheck(overrides = {}) {
