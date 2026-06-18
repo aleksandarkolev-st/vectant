@@ -388,7 +388,7 @@ function graphFixture(): DojoSkillGraph {
         risk: "dangerous",
         action: "run_workflow",
         preconditions: ["workspace_verified == true"],
-        postconditions: ["submission_state == success"],
+        postconditions: ["assert_submission_state == true"],
         guardrails: [
           {
             guardrail_id: "guard_client_stable_id",
@@ -431,6 +431,7 @@ function apiGraphFixture(): DojoSkillGraph {
     nodes: [
       {
         ...base.nodes[0]!,
+        postconditions: [],
         assertions: [
           {
             assertion_id: "api_response.body.durable_success",

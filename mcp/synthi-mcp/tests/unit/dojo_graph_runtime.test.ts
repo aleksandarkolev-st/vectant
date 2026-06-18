@@ -207,7 +207,7 @@ describe("Dojo graph runtime", () => {
         substrate_status: "executed",
         substrate: "dom",
         substrate_evidence_refs: ["substrate:dom:action_submit"],
-        assertion_ids: ["assert_submission_state"],
+        assertion_ids: ["assert_submission_state", "postcondition:assert_submission_state == true"],
         evidence_policy: ["append_action_trace"],
       }),
     ]);
@@ -481,6 +481,49 @@ describe("Dojo graph runtime", () => {
           node_id: "action_submit",
           status: "blocked",
           blocked_by: ["graph_evidence_writer_required"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks executable postconditions from observed runtime context", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const baseGraph = graphFixture();
+    const graph = {
+      ...baseGraph,
+      nodes: baseGraph.nodes.map((node) => node.node_id === "action_submit"
+        ? { ...node, postconditions: ["submission_state == success"] }
+        : node),
+    };
+
+    await expect(runtime.execute({
+      graph,
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        submission_state: "draft",
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: expect.arrayContaining(["postcondition_failed:submission_state == success"]),
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: expect.arrayContaining(["postcondition_failed:submission_state == success"]),
+          assertion_results: expect.arrayContaining([
+            expect.objectContaining({
+              assertion_id: "postcondition:submission_state == success",
+              status: "failed",
+            }),
+          ]),
         }),
       ]),
     }));
@@ -1112,7 +1155,7 @@ function graphFixture(): DojoSkillGraph {
         risk: "dangerous",
         action: "run_workflow",
         preconditions: ["workspace_verified == true"],
-        postconditions: ["submission_state == success"],
+        postconditions: ["assert_submission_state == true"],
         guardrails: [
           {
             guardrail_id: "guard_client_stable_id",

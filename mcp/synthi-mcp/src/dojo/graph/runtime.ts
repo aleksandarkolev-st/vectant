@@ -25,6 +25,7 @@ import {
   type DojoGraphNodeHandler,
   type DojoGraphNodeRegistry,
 } from "./node_registry.js";
+import { isParseableDojoGuardrailPredicate } from "./guardrail_predicates.js";
 
 export type DojoGraphNodeRunStatus = "completed" | "blocked" | "skipped" | "paused";
 export type DojoGraphRunStatus = "completed" | "blocked" | "failed" | "paused";
@@ -486,10 +487,11 @@ export class DojoSkillGraphRuntime {
         };
       }
 
-      const assertionResults = evaluateDojoGraphAssertions(
-        node.assertions,
-        assertionContextForNode(inputs, nodeResults[nodeResults.length - 1])
-      );
+      const assertionContext = assertionContextForNode(inputs, nodeResults[nodeResults.length - 1]);
+      const assertionResults = [
+        ...evaluateDojoGraphAssertions(node.assertions, assertionContext),
+        ...evaluateDojoGraphPostconditions(node.postconditions, assertionContext),
+      ];
       const assertionBlockedBy = assertionResults.flatMap((assertion) => assertion.blocked_by);
       if (assertionBlockedBy.length > 0) {
         const rollbackDecision = decideDojoRollbackForAssertionFailure(node);
@@ -680,7 +682,10 @@ function assertionContextForNode(
   inputs: Record<string, unknown>,
   nodeResult: DojoGraphNodeRunResult | undefined
 ): Record<string, unknown> {
-  if (!nodeResult?.substrate_result) return inputs;
+  const flattenedAssertionResults = isRecord(inputs["assertion_results"])
+    ? { ...(inputs["assertion_results"] as Record<string, unknown>) }
+    : {};
+  if (!nodeResult?.substrate_result) return { ...inputs, ...flattenedAssertionResults };
   const substrateResult = nodeResult.substrate_result;
   const apiExecution = substrateResult.api_tool_execution;
   const apiResponse = apiExecution?.response
@@ -692,6 +697,7 @@ function assertionContextForNode(
     : undefined;
   return {
     ...inputs,
+    ...flattenedAssertionResults,
     substrate_executed: substrateResult.ok,
     substrate_status: substrateResult.status,
     substrate: substrateResult.substrate,
@@ -704,6 +710,65 @@ function assertionContextForNode(
       api_response: apiResponse,
     } : {}),
   };
+}
+
+function evaluateDojoGraphPostconditions(
+  postconditions: string[],
+  context: Record<string, unknown>
+): DojoAssertionRuntimeResult[] {
+  return postconditions.map((postcondition) => evaluateDojoGraphPostcondition(postcondition, context));
+}
+
+function evaluateDojoGraphPostcondition(
+  postcondition: string,
+  context: Record<string, unknown>
+): DojoAssertionRuntimeResult {
+  const normalized = postcondition.trim();
+  const assertionId = `postcondition:${normalized || "(empty)"}`;
+  if (!normalized || !isParseableDojoGuardrailPredicate(normalized)) {
+    return {
+      assertion_id: assertionId,
+      required: false,
+      status: "skipped",
+      ok: true,
+      blocked_by: [],
+    };
+  }
+
+  const result = evaluateDojoGuardrailPredicate(normalized, context);
+  if (result.ok) {
+    return {
+      assertion_id: assertionId,
+      required: true,
+      status: "passed",
+      ok: true,
+      blocked_by: [],
+      observed: postconditionObservation(result),
+    };
+  }
+
+  return {
+    assertion_id: assertionId,
+    required: true,
+    status: "failed",
+    ok: false,
+    blocked_by: [`postcondition_failed:${normalized}`],
+    observed: postconditionObservation(result),
+  };
+}
+
+function postconditionObservation(result: ReturnType<typeof evaluateDojoGuardrailPredicate>): Record<string, unknown> {
+  return {
+    predicate: result.predicate,
+    ...(result.operator ? { operator: result.operator } : {}),
+    ...(result.actual !== undefined ? { actual: result.actual } : {}),
+    ...(result.expected !== undefined ? { expected: result.expected } : {}),
+    ...(result.blocked_by.length > 0 ? { blocked_by: [...result.blocked_by] } : {}),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function emitGraphNodeEvidence(

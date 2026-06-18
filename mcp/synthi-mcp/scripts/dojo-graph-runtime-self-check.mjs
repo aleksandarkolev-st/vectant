@@ -60,6 +60,7 @@ export const DOJO_GRAPH_RUNTIME_CAPABILITIES = [
   "graph_runtime_requires_substrate_executor",
   "graph_runtime_blocks_substrate_executor_failure",
   "graph_runtime_requires_graph_evidence_writer",
+  "graph_runtime_evaluates_executable_postconditions",
   "graph_runtime_executes_explicit_proof_nodes",
   "graph_runtime_requires_proof_validator",
   "graph_runtime_rejects_self_attested_proof",
@@ -367,6 +368,8 @@ function capabilityMatchers(capability) {
       return ["blocks production action execution", "substrate executor throws"];
     case "graph_runtime_requires_graph_evidence_writer":
       return ["blocks production action execution", "without an explicit graph evidence writer"];
+    case "graph_runtime_evaluates_executable_postconditions":
+      return ["blocks executable postconditions", "observed runtime context"];
     case "graph_runtime_executes_explicit_proof_nodes":
       return ["blocks explicit production proof nodes", "before action execution"];
     case "graph_runtime_requires_proof_validator":
