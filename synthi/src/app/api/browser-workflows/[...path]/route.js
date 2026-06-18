@@ -272,6 +272,45 @@ async function readStateFromUpstreamBridge(baseUrl, request) {
   }
 }
 
+function workflowPanelErrorState(detail, code = 'workflow_bridge_error') {
+  const text = sanitizeErrorDetail(detail);
+  const message = text || 'Workflow panel state is temporarily unavailable.';
+  return {
+    bridge: {
+      status: 'error',
+      detail: message,
+      label: 'Workflow bridge unavailable',
+    },
+    runtime: {
+      status: 'notConfigured',
+      detail: message,
+      label: 'Runtime unavailable',
+      readiness: 'notConfigured',
+    },
+    observe: {
+      status: 'needsRuntime',
+      label: 'Runtime reconnect required',
+      detail: message,
+      lastScreenshotAt: null,
+      selectedTabId: null,
+      consent: null,
+    },
+    teach: {
+      state: 'idle',
+      label: 'Ready after reconnect',
+      detail: message,
+      tabId: null,
+    },
+    blockers: [
+      {
+        id: code,
+        label: 'Workflow bridge unavailable',
+        detail: message,
+      },
+    ],
+  };
+}
+
 function asStringArrayPath(rawPath) {
   if (Array.isArray(rawPath)) {
     return rawPath
@@ -465,8 +504,10 @@ async function proxyWorkflowBridge(request, routeContext) {
       );
     }
     const isStatePath = path === 'state' || path === 'state/';
+    const isToolPath = path === 'tool' || path === 'tool/';
     const isOpenExternalPath = path === 'open-external' || path === 'open-external/';
-    if (!isStatePath && !isOpenExternalPath) {
+    const isStatefulPath = isStatePath || isToolPath;
+    if (!isStatefulPath && !isOpenExternalPath) {
       const ensure = await ensureRuntimeBridge(runtimeContext);
       if (!ensure.ok) {
         return NextResponse.json(
@@ -486,7 +527,7 @@ async function proxyWorkflowBridge(request, routeContext) {
       ({ upstream, propagatedHeaders } = await forwardToBridge(upstreamUrl, request));
     } catch (err) {
       let fallbackState;
-      if (isStatePath || path === 'tool' || path === 'tool/') {
+      if (isStatefulPath) {
         fallbackState = await readStateFromUpstreamBridge(baseUrl, request);
       }
 
@@ -502,6 +543,31 @@ async function proxyWorkflowBridge(request, routeContext) {
             headers: propagatedHeaders,
             state: fallbackState,
             ok: false,
+          },
+          {
+            status: 200,
+            headers: {
+              'cache-control': 'no-store',
+            },
+          },
+        );
+      }
+
+      if (isStatefulPath) {
+        return NextResponse.json(
+          {
+            error: 'workflow_bridge_unreachable',
+            status: 502,
+            detail: err instanceof Error ? err.message : String(err),
+            action: `${request.method || 'GET'}:${path}`,
+            path,
+            upstream_url: upstreamUrl.toString(),
+            headers: propagatedHeaders,
+            ok: false,
+            state: workflowPanelErrorState(
+              `workflow_bridge_unreachable: ${err instanceof Error ? err.message : String(err)}`,
+              'workflow_bridge_unreachable',
+            ),
           },
           {
             status: 200,
@@ -536,7 +602,6 @@ async function proxyWorkflowBridge(request, routeContext) {
         ? details.payload
         : {};
       const isToolPath = path === 'tool' || path === 'tool/';
-      const isStatePath = path === 'state' || path === 'state/';
       const merged = {
         error: details.payload?.error || 'workflow_bridge_upstream_error',
         status: upstream.status,
@@ -579,6 +644,23 @@ async function proxyWorkflowBridge(request, routeContext) {
             },
           });
         }
+
+        return NextResponse.json(
+          {
+            ...merged,
+            ok: false,
+            state: workflowPanelErrorState(
+              `${merged.error}: ${merged.detail || 'workflow bridge returned a non-state response.'}`,
+              merged.error || 'workflow_bridge_upstream_error',
+            ),
+          },
+          {
+            status: 200,
+            headers: {
+              'cache-control': 'no-store',
+            },
+          },
+        );
       }
 
       return NextResponse.json(merged, {
