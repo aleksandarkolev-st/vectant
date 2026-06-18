@@ -49,6 +49,7 @@ export const DOJO_API_TOOL_COMPILER_CAPABILITIES = [
   "api_tool_public_surface_publishes_api_backed_manifest",
   "api_tool_public_surface_runs_compiled_tool",
   "api_tool_public_surface_runs_published_tool_name_via_skill_bus",
+  "api_tool_public_surface_blocks_unpublished_compiled_tool_in_production",
 ];
 
 const args = parseArgs(process.argv.slice(2));
@@ -303,6 +304,8 @@ function capabilityMatchers(capability) {
       return ["runs a compiled api backed mcp tool", "proof validation", "postcondition", "evidence"];
     case "api_tool_public_surface_runs_published_tool_name_via_skill_bus":
       return ["runs a published api backed mcp tool", "tool name", "skill bus dispatch"];
+    case "api_tool_public_surface_blocks_unpublished_compiled_tool_in_production":
+      return ["blocks direct compiled api backed tool execution", "production", "published through the skill bus"];
     default:
       return [normalizeText(capability)];
   }

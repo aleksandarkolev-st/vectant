@@ -2553,6 +2553,91 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("blocks direct compiled API-backed tool execution in production until it is published through the skill bus", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const publishedSkill = dojoSkillRegistry.get(skillId) as DojoSkill;
+    const proofIssue = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill),
+      require_verified_evidence: true,
+      substrate_claim: "api",
+      now: "2026-06-17T02:30:00.000Z",
+      expires_at: "2026-06-17T02:45:00.000Z",
+    });
+    expect(proofIssue?.isError).toBeUndefined();
+    const proofCapsule = (proofIssue?.structuredContent as {
+      proof_capsule: DojoProofCarryingSkillCapsule;
+    }).proof_capsule;
+    const prepared = await dispatchDojoTool("synthi_dojo_prepare_api_backed_tool", {
+      skill_id: publishedSkill.skill_id,
+      network_trace: {
+        method: "POST",
+        url: "https://app.example.test/api/invoices?workspace=workspace-a",
+        request_body: { client_id: "client-a", amount: 42 },
+        response_body: { invoice: { status: "saved" } },
+        source_ref: "trace:save-invoice-api",
+      },
+      candidate_overrides: {
+        auth_scope: "invoice:write",
+        idempotency_key_location: "header",
+        rollback_strategy: "compensating_call",
+        postcondition: "invoice.status == 'saved'",
+        proof_claim_mapping: {
+          checkride_passed: "dojo.checkride",
+          workspace_verified: "tenant.workspace_id",
+        },
+        review_status: "approved",
+      },
+      requested_action: "run_workflow",
+      tool_name: "synthi_api_save_invoice",
+      auth_scopes: ["invoice:write"],
+    });
+    expect(prepared?.isError).toBeUndefined();
+    const apiTool = (prepared?.structuredContent as { api_backed_mcp_tool: unknown }).api_backed_mcp_tool;
+
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    const blocked = await dispatchDojoTool("synthi_dojo_run_api_backed_tool", {
+      ...productionTenantContextArgs({
+        workspace_id: "workspace-a",
+        request_id: "req-api-backed-direct-production-block",
+        correlation_id: "corr-api-backed-direct-production-block",
+      }),
+      api_backed_mcp_tool: apiTool,
+      tool_args: {
+        proof_capsule: proofCapsule,
+        request: { client_id: "client-a", amount: 42 },
+        query: { workspace: "workspace-a" },
+        idempotency_key: "idem-api-production-direct-block",
+      },
+      auth_scopes: ["invoice:write"],
+      dry_run: false,
+      run_id: "api-backed-production-direct-block",
+      now: "2026-06-17T02:31:00.000Z",
+      mock_response: {
+        status: 201,
+        body: { invoice: { status: "saved" } },
+      },
+    });
+    expect(blocked?.isError).toBe(true);
+    expect(blocked?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      error: "dojo_api_backed_tool_skill_bus_publication_required",
+      dry_run: false,
+      run_id: "api-backed-production-direct-block",
+      required_path: expect.stringContaining("execute by tool_name through the MCP Skill Bus"),
+      blocked_by: ["api_backed_compiled_tool_requires_skill_bus_publication"],
+      error_codes: ["api_backed_compiled_tool_requires_skill_bus_publication"],
+    }));
+    expect(dojoSkillRegistry.getProofRecord(proofCapsule.capsule_id)).toEqual(expect.objectContaining({
+      status: "issued",
+    }));
+  });
+
   it("keeps API-backed tool preparation blocked until endpoint review gates pass", async () => {
     recordOpenDetailsWorkflowForDojoToolTest();
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());

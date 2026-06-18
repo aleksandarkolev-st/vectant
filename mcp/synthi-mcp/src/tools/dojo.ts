@@ -3103,6 +3103,22 @@ async function dojoRunApiBackedToolTool(args: unknown): Promise<ToolResponse> {
     ?? stringOpt(a["request_id"])
     ?? `dojo_api_run_${hashId(`${apiTool.tool_name}:${apiTool.tool_version}:${currentLicense.license_id}:${now}`)}`;
   const tenant = skill.tenant;
+  const enforcementConfig = resolveDojoEnforcementConfig();
+  if (enforcementConfig.production_enforcement && !dryRun && !skillBusResolution) {
+    return errorResponse("dojo_api_backed_tool_skill_bus_publication_required", {
+      ok: false,
+      error: "dojo_api_backed_tool_skill_bus_publication_required",
+      skill_id: skill.skill.skill_id,
+      control_plane_source: skill.control_plane_source,
+      run_id: runId,
+      dry_run: false,
+      tool_name: apiTool.tool_name,
+      tool_version: apiTool.tool_version,
+      required_path: "publish reviewed API-backed tool to the skill manifest and execute by tool_name through the MCP Skill Bus",
+      blocked_by: ["api_backed_compiled_tool_requires_skill_bus_publication"],
+      error_codes: ["api_backed_compiled_tool_requires_skill_bus_publication"],
+    });
+  }
   const proofCapsule = proofCapsuleOpt(toolArgs["proof_capsule"]);
   if (!proofCapsule) {
     return errorResponse("dojo_api_backed_tool_proof_capsule_required", {
