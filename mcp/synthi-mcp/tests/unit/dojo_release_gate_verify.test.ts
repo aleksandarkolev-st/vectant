@@ -232,6 +232,7 @@ import {
   buildDojoReleaseGateExecutionPlan,
   buildDojoReleaseGateRunEvidenceManifest,
   buildDojoReleaseGateRunReport,
+  runDojoReleaseGateRunner,
 } from "../../scripts/dojo-release-gate-runner.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -921,6 +922,77 @@ describe("Dojo release gate artifact verifier", () => {
       }),
     ]);
     expect(aggregate.attempted_release_gate_ids).not.toContain("release_gate_runner");
+  });
+
+  it("uses the runner-emitted manifest artifact when verifying runner evidence", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-gate-runner-manifest-"));
+    const packageScripts = await readPackageScripts();
+    const runnerManifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-18T00:00:00.000Z",
+      packageScripts,
+    });
+    const runner = await runDojoReleaseGateRunner({
+      scope: "minimal-pr",
+      gateIds: ["mcp_typecheck"],
+      dryRun: true,
+      execute: false,
+      outDir: path.join(dir, "runner"),
+      generatedAt: "2026-06-18T00:00:00.000Z",
+      env: {},
+      manifest: runnerManifest,
+    });
+
+    const alternateManifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest: alternateManifest, manifestPath, evidencePath });
+
+    const direct = await verifyDojoReleaseGateRunReportArtifact({
+      reportPath: runner.report_path,
+      evidencePath: runner.evidence_path,
+      manifest: alternateManifest,
+    });
+    expect(direct).toEqual(expect.objectContaining({
+      ok: true,
+      errors: [],
+      manifest_path: runner.manifest_path,
+      runner_scope: "minimal-pr",
+      dry_run: true,
+    }));
+
+    const aggregate = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "release-gate-run-report": runner.report_path,
+        "release-gate-run-evidence": runner.evidence_path,
+      },
+    });
+    expect(aggregate.ok).toBe(true);
+    expect(aggregate.release_gate_runner).toEqual([
+      expect.objectContaining({
+        id: "release_gate_runner",
+        ok: true,
+        manifest_path: runner.manifest_path,
+      }),
+    ]);
+
+    const evidence = JSON.parse(await readFile(runner.evidence_path, "utf8"));
+    evidence.manifest_sha256 = "0".repeat(64);
+    const tamperedEvidencePath = path.join(dir, "dojo-release-gate-runner-tampered-manifest.evidence.json");
+    await writeFile(tamperedEvidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+    const rejected = await verifyDojoReleaseGateRunReportArtifact({
+      reportPath: runner.report_path,
+      evidencePath: tamperedEvidencePath,
+      manifest: runnerManifest,
+    });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^runner_manifest_evidence_sha256_mismatch:/),
+    ]));
   });
 
   it("builds digest evidence for aggregate release-gate verification reports", async () => {

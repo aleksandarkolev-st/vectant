@@ -1102,13 +1102,22 @@ export async function verifyDojoReleaseGateRunReportArtifact({
   const report = runnerPair.artifact;
   const errors = [];
   errors.push(...(runnerPair.digest?.errors || []));
-  const gatesById = new Map((Array.isArray(manifest?.gates) ? manifest.gates : []).map((gate) => [gate.id, gate]));
+  const runnerManifestArtifact = runnerPair.evidence
+    ? await readRunnerManifestArtifactFromEvidence({
+      evidence: runnerPair.evidence,
+      evidencePath,
+      report,
+    })
+    : { manifest: null, manifestPath: null, errors: [] };
+  errors.push(...runnerManifestArtifact.errors);
+  const effectiveManifest = runnerManifestArtifact.manifest || manifest;
+  const gatesById = new Map((Array.isArray(effectiveManifest?.gates) ? effectiveManifest.gates : []).map((gate) => [gate.id, gate]));
   if (report?.schema_version !== "synthi.dojo.releaseGateRun.v1") {
     errors.push(`runner_schema_mismatch:${report?.schema_version || "missing"}`);
   }
   if (report?.ok !== true) errors.push("runner_report_not_ok");
   if (report?.manifest?.validation_ok !== true) errors.push("runner_manifest_validation_not_ok");
-  const expectedManifestSha256 = sha256(JSON.stringify(manifest || {}));
+  const expectedManifestSha256 = sha256(JSON.stringify(effectiveManifest || {}));
   if (report?.manifest?.sha256 !== expectedManifestSha256) {
     errors.push(`runner_manifest_sha256_mismatch:${report?.manifest?.sha256 || "missing"}:${expectedManifestSha256}`);
   }
@@ -1143,7 +1152,7 @@ export async function verifyDojoReleaseGateRunReportArtifact({
   if (requirePromotionReady) {
     if (report?.scope !== "release") errors.push(`runner_report_scope_not_release:${report?.scope || "missing"}`);
     if (report?.plan?.scope !== "release") errors.push(`runner_plan_scope_not_release:${report?.plan?.scope || "missing"}`);
-    const releaseGateIds = Array.isArray(manifest?.release_gate_ids) ? manifest.release_gate_ids.map(String) : [];
+    const releaseGateIds = Array.isArray(effectiveManifest?.release_gate_ids) ? effectiveManifest.release_gate_ids.map(String) : [];
     const missingReleaseGateIds = releaseGateIds.filter((gateId) => !selectedGateIds.includes(gateId));
     if (releaseGateIds.length === 0) errors.push("runner_manifest_release_gate_ids_missing");
     if (missingReleaseGateIds.length > 0) {
@@ -1153,8 +1162,8 @@ export async function verifyDojoReleaseGateRunReportArtifact({
   if (requireEnterpriseReady) {
     if (report?.scope !== "enterprise-release") errors.push(`runner_report_scope_not_enterprise_release:${report?.scope || "missing"}`);
     if (report?.plan?.scope !== "enterprise-release") errors.push(`runner_plan_scope_not_enterprise_release:${report?.plan?.scope || "missing"}`);
-    const enterpriseReleaseGateIds = Array.isArray(manifest?.enterprise_release_gate_ids)
-      ? manifest.enterprise_release_gate_ids.map(String)
+    const enterpriseReleaseGateIds = Array.isArray(effectiveManifest?.enterprise_release_gate_ids)
+      ? effectiveManifest.enterprise_release_gate_ids.map(String)
       : [];
     const missingEnterpriseReleaseGateIds = enterpriseReleaseGateIds.filter((gateId) => !selectedGateIds.includes(gateId));
     if (enterpriseReleaseGateIds.length === 0) errors.push("runner_manifest_enterprise_release_gate_ids_missing");
@@ -1184,6 +1193,7 @@ export async function verifyDojoReleaseGateRunReportArtifact({
     errors,
     artifact_path: reportPath,
     evidence_path: evidencePath,
+    manifest_path: runnerManifestArtifact.manifestPath || null,
     report_schema_version: report?.schema_version,
     result_count: results.length,
     release_candidate: Boolean(requirePromotionReady),
@@ -10658,6 +10668,52 @@ function validateRunnerEvidenceSummary({ evidence, report, results, errors }) {
   }
 }
 
+async function readRunnerManifestArtifactFromEvidence({ evidence, evidencePath, report }) {
+  const manifestPathValue = String(evidence?.manifest_path || "").trim();
+  if (!manifestPathValue) {
+    return {
+      manifest: null,
+      manifestPath: null,
+      errors: [],
+    };
+  }
+
+  const manifestPath = resolveEvidenceArtifactPath(manifestPathValue, evidencePath);
+  try {
+    const manifestText = await readFile(manifestPath, "utf8");
+    const manifest = JSON.parse(manifestText);
+    const artifactSha256 = sha256(manifestText);
+    const artifactBytes = Buffer.byteLength(manifestText);
+    const logicalSha256 = sha256(JSON.stringify(manifest || {}));
+    const errors = [];
+    if (evidence.manifest_artifact_sha256 !== artifactSha256) {
+      errors.push(`runner_manifest_artifact_sha256_mismatch:${evidence.manifest_artifact_sha256 || "missing"}:${artifactSha256}`);
+    }
+    if (Number(evidence.manifest_bytes) !== artifactBytes) {
+      errors.push(`runner_manifest_bytes_mismatch:${evidence.manifest_bytes}:${artifactBytes}`);
+    }
+    if (evidence.manifest_sha256 !== logicalSha256) {
+      errors.push(`runner_manifest_evidence_sha256_mismatch:${evidence.manifest_sha256 || "missing"}:${logicalSha256}`);
+    }
+    if (report?.manifest?.sha256 !== logicalSha256) {
+      errors.push(`runner_manifest_report_sha256_mismatch:${report?.manifest?.sha256 || "missing"}:${logicalSha256}`);
+    }
+    return {
+      manifest,
+      manifestPath,
+      errors,
+    };
+  } catch (error) {
+    return {
+      manifest: null,
+      manifestPath,
+      errors: [
+        `runner_manifest_artifact_read_failed:${error?.code || (error instanceof Error ? error.message : String(error))}`,
+      ],
+    };
+  }
+}
+
 async function validateRunnerProducedArtifacts({ result, gateId, errors }) {
   const expectedKinds = [
     ["report", result.expected_artifacts?.report_path],
@@ -10806,6 +10862,7 @@ function summarizeSection(section) {
     errors: section.errors,
     artifact_path: section.artifact_path,
     evidence_path: section.evidence_path,
+    manifest_path: section.manifest_path,
     visual_evidence_path: section.visual_evidence_path,
     visual_screenshot_path: section.visual_screenshot_path,
     report_schema_version: section.report_schema_version,

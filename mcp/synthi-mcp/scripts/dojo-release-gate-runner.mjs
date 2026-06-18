@@ -33,6 +33,7 @@ const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const RUNNER_SCHEMA_VERSION = "synthi.dojo.releaseGateRun.v1";
 const GATE_LOG_SCHEMA_VERSION = "synthi.dojo.releaseGateCommandLog.v1";
 const ARTIFACT_FRESHNESS_TOLERANCE_MS = 2000;
+const RUNNER_MANIFEST_FILENAME = "dojo-release-gate-runner-manifest.json";
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -118,6 +119,9 @@ export async function runDojoReleaseGateRunner({
     dryRun: dryRun || !execute,
     generatedAt,
   });
+  const manifestPath = path.join(outDir, RUNNER_MANIFEST_FILENAME);
+  const serializedManifest = serializeDojoReleaseGateRunnerManifest(manifest);
+  await writeFile(manifestPath, serializedManifest, "utf8");
   const reportPath = path.join(outDir, "dojo-release-gate-runner-report.json");
   const serializedReport = `${JSON.stringify(report, null, 2)}\n`;
   await writeFile(reportPath, serializedReport, "utf8");
@@ -125,12 +129,17 @@ export async function runDojoReleaseGateRunner({
     report,
     reportPath,
     serialized: serializedReport,
+    manifest,
+    manifestPath,
+    serializedManifest,
   });
   const evidencePath = path.join(outDir, "dojo-release-gate-runner.evidence.json");
   await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
   return {
+    manifest_path: manifestPath,
     report_path: reportPath,
     evidence_path: evidencePath,
+    manifest,
     report,
     evidence,
     plan,
@@ -365,14 +374,26 @@ function summarizeRunnerGateResultCoverage({ selectedGateIds, results }) {
   };
 }
 
-export function buildDojoReleaseGateRunEvidenceManifest({ report, reportPath, serialized }) {
+export function buildDojoReleaseGateRunEvidenceManifest({
+  report,
+  reportPath,
+  serialized,
+  manifest,
+  manifestPath,
+  serializedManifest,
+} = {}) {
   const body = typeof serialized === "string" ? serialized : JSON.stringify(report);
+  const manifestBody = typeof serializedManifest === "string"
+    ? serializedManifest
+    : manifest
+      ? serializeDojoReleaseGateRunnerManifest(manifest)
+      : null;
   const results = Array.isArray(report?.results) ? report.results : [];
   const producedArtifactCount = results.reduce((count, result) => (
     count + (Array.isArray(result.produced_artifacts) ? result.produced_artifacts.length : 0)
   ), 0);
   const commandLogDigestCount = results.filter((result) => result.stdout_sha256 && result.stderr_sha256).length;
-  return {
+  const evidence = {
     schema_version: "synthi.dojo.releaseGateRunEvidence.v1",
     generated_at: new Date().toISOString(),
     report_path: reportPath,
@@ -392,6 +413,17 @@ export function buildDojoReleaseGateRunEvidenceManifest({ report, reportPath, se
     produced_artifact_count: producedArtifactCount,
     command_log_digest_count: commandLogDigestCount,
   };
+  if (manifestPath && manifestBody) {
+    evidence.manifest_path = manifestPath;
+    evidence.manifest_sha256 = report?.manifest?.sha256 || sha256(JSON.stringify(manifest || {}));
+    evidence.manifest_artifact_sha256 = sha256(manifestBody);
+    evidence.manifest_bytes = Buffer.byteLength(manifestBody);
+  }
+  return evidence;
+}
+
+export function serializeDojoReleaseGateRunnerManifest(manifest) {
+  return `${JSON.stringify(manifest || {}, null, 2)}\n`;
 }
 
 async function runGateCommand({ gatePlan, outDir, env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS }) {
