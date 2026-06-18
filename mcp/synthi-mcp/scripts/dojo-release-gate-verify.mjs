@@ -1266,6 +1266,7 @@ export function validateDojoEvidenceAuthorityEvidenceForMilestone(evidence) {
     ["redacted_export_required", "evidence_authority_redacted_export_requirement_missing"],
     ["evidence_retention_policy_required", "evidence_authority_retention_policy_requirement_missing"],
     ["legal_hold_blocks_disposal_required", "evidence_authority_legal_hold_requirement_missing"],
+    ["external_storage_custody_receipts_required", "evidence_authority_external_storage_custody_requirement_missing"],
     ["proof_issue_claim_verification_required", "evidence_authority_proof_issue_requirement_missing"],
     ["proof_validation_rejects_self_attested_claims_required", "evidence_authority_self_attested_rejection_requirement_missing"],
     ["durable_postgres_ledger_gate_required", "evidence_authority_durable_postgres_gate_requirement_missing"],
@@ -4507,6 +4508,7 @@ async function runSelfCheck({ outDir }) {
         ...evidenceAuthorityArtifacts.evidence.evidence_authority,
         evidence_retention_policy_required: false,
         legal_hold_blocks_disposal_required: false,
+        external_storage_custody_receipts_required: false,
         proof_issue_claim_verification_required: false,
         proof_validation_rejects_self_attested_claims_required: false,
       },
@@ -4519,6 +4521,7 @@ async function runSelfCheck({ outDir }) {
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_missing_capabilities:proof_issuance_requires_verified_evidence_records"));
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_retention_policy_requirement_missing"));
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_legal_hold_requirement_missing"));
+  assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_external_storage_custody_requirement_missing"));
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_proof_issue_requirement_missing"));
   assert(rejectedEvidenceAuthority.errors.includes("evidence_authority_self_attested_rejection_requirement_missing"));
 
@@ -6550,6 +6553,7 @@ async function writeEvidenceAuthorityEvidenceForSelfCheck({
       redacted_export_required: true,
       evidence_retention_policy_required: true,
       legal_hold_blocks_disposal_required: true,
+      external_storage_custody_receipts_required: true,
       proof_issue_claim_verification_required: true,
       proof_validation_rejects_self_attested_claims_required: true,
       durable_postgres_ledger_gate_required: true,

@@ -31,6 +31,7 @@ export const DOJO_EVIDENCE_AUTHORITY_TEST_FILES = [
   "tests/unit/dojo_evidence_redaction.test.ts",
   "tests/unit/dojo_evidence_export.test.ts",
   "tests/unit/dojo_evidence_retention.test.ts",
+  "tests/unit/dojo_evidence_custody.test.ts",
   "tests/unit/dojo_proof_claims.test.ts",
 ];
 
@@ -42,6 +43,7 @@ export const DOJO_EVIDENCE_AUTHORITY_CAPABILITIES = [
   "evidence_redaction_manifest_tamper_detection",
   "evidence_export_redacts_and_requires_ledger_records",
   "evidence_retention_policy_legal_hold_and_artifact_disposal",
+  "evidence_external_storage_custody_receipts",
   "proof_issuance_requires_verified_evidence_records",
   "proof_validation_rejects_self_attested_or_unreferenced_claims",
 ];
@@ -193,6 +195,7 @@ export function buildDojoEvidenceAuthorityEvidenceManifest({
       redacted_export_required: true,
       evidence_retention_policy_required: true,
       legal_hold_blocks_disposal_required: true,
+      external_storage_custody_receipts_required: true,
       proof_issue_claim_verification_required: true,
       proof_validation_rejects_self_attested_claims_required: true,
       durable_postgres_ledger_gate_required: true,
@@ -335,6 +338,12 @@ const CAPABILITY_MATCHERS = {
     includes("uses redaction grace before purge grace"),
     includes("blocks deletion when legal hold is active"),
     includes("builds a scoped retention plan"),
+  ),
+  evidence_external_storage_custody_receipts: anyOf(
+    includes("provider-neutral custody receipts", "ledger records"),
+    includes("custody receipts are missing", "ledger records"),
+    includes("local-only artifact uris", "external custody"),
+    includes("tenant scope", "duplicate custody receipt ids"),
   ),
   proof_issuance_requires_verified_evidence_records: anyOf(
     includes("signs verified evidence record ids", "ledger checkpoint"),
