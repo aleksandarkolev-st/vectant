@@ -1549,6 +1549,76 @@ describe("Dojo governance service", () => {
     });
   });
 
+  it("fails closed when compliance archive tenant context or timestamp is invalid", () => {
+    const withCaseLaw = skillFixture({
+      skillId: "skill-archive-validation",
+      caseLaw: [{
+        case_id: "case-archive-validation",
+        title: "Archive validation guardrail",
+        date: "2026-06-11",
+        finding: "Compliance archives need complete tenant and timing context.",
+        impact: "Archive custody cannot be reconstructed without scoped context.",
+        rule_created: "archive_context_verified == true",
+        applies_to: ["archive_compliance_evidence"],
+        evidence_refs: ["evidence-case-archive-validation"],
+        status: "binding",
+        binding_scope: "workspace",
+        guardrail_id: "guard-archive-validation",
+      }],
+    });
+    const completePack = buildDojoComplianceEvidencePack({
+      skills: [withCaseLaw],
+      case_law_review_queue: [],
+      audit_exports: queryDojoAuditExports({
+        skills: [withCaseLaw],
+        case_law_review_queue: [],
+        generated_at: "2026-06-11T00:00:00.000Z",
+      }),
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+
+    const invalidScope = buildDojoComplianceEvidenceArchiveManifest({
+      tenant_context: {
+        ...tenantContextFixture(),
+        tenant_id: "",
+        organization_id: "",
+        workspace_id: "",
+        actor_id: "",
+        request_id: "",
+        correlation_id: "",
+      },
+      compliance_evidence_pack: completePack,
+      archived_at: "not-a-date",
+    });
+    const invalidActorType = buildDojoComplianceEvidenceArchiveManifest({
+      tenant_context: {
+        ...tenantContextFixture(),
+        actor_type: "robot" as never,
+      },
+      compliance_evidence_pack: completePack,
+      archived_at: "2026-06-11T01:00:00.000Z",
+    });
+
+    expect(invalidScope).toEqual({
+      ok: false,
+      blocked_by: [
+        "compliance_archive_tenant_required",
+        "compliance_archive_organization_required",
+        "compliance_archive_workspace_required",
+        "compliance_archive_actor_required",
+        "compliance_archive_request_required",
+        "compliance_archive_correlation_required",
+        "compliance_archive_timestamp_invalid",
+      ],
+      missing_artifacts: [],
+    });
+    expect(invalidActorType).toEqual({
+      ok: false,
+      blocked_by: ["compliance_archive_actor_type_required"],
+      missing_artifacts: [],
+    });
+  });
+
   it("adds executable entrustment provenance to compliance packs when runtime checkride snapshots exist", () => {
     const skill = skillFixture({
       skillId: "skill-executable-entrustment",

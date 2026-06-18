@@ -32,6 +32,7 @@ export const DOJO_COMPLIANCE_EXPORT_CAPABILITIES = [
   "tool_authorized_compliance_export",
   "compliance_pack_view_model",
   "control_plane_audit_export",
+  "compliance_archive_fail_closed",
   "executable_entrustment_compliance_artifact",
   "redacted_evidence_export",
   "redaction_fail_closed",
@@ -246,6 +247,8 @@ function complianceCapabilityMatchers(capability) {
       return ["compliance pack views", "compliance pack"];
     case "control_plane_audit_export":
       return ["control plane audit", "audit exports"];
+    case "compliance_archive_fail_closed":
+      return ["compliance archive tenant context or timestamp"];
     case "executable_entrustment_compliance_artifact":
       return ["executable entrustment provenance", "compliance packs"];
     case "redacted_evidence_export":

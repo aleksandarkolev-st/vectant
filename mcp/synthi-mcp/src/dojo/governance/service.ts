@@ -1609,6 +1609,15 @@ export function buildDojoComplianceEvidenceArchiveManifest(input: {
   compliance_evidence_pack: DojoGovernanceComplianceEvidencePack;
   archived_at: string;
 }): DojoGovernanceComplianceArchiveManifestResult {
+  const inputValidation = validateComplianceEvidenceArchiveInput(input);
+  if (inputValidation.length > 0) {
+    return {
+      ok: false,
+      blocked_by: inputValidation,
+      missing_artifacts: [],
+    };
+  }
+
   const missingArtifacts = uniqueStrings(input.compliance_evidence_pack.missing_artifacts);
   if (missingArtifacts.length > 0) {
     return {
@@ -1674,6 +1683,24 @@ export function buildDojoComplianceEvidenceArchiveManifest(input: {
       manifest_sha256: manifestSha256,
     },
   };
+}
+
+function validateComplianceEvidenceArchiveInput(input: {
+  tenant_context: DojoTenantContext;
+  archived_at: string;
+}): string[] {
+  const blockedBy: string[] = [];
+  if (!input.tenant_context?.tenant_id?.trim()) blockedBy.push("compliance_archive_tenant_required");
+  if (!input.tenant_context?.organization_id?.trim()) blockedBy.push("compliance_archive_organization_required");
+  if (!input.tenant_context?.workspace_id?.trim()) blockedBy.push("compliance_archive_workspace_required");
+  if (!input.tenant_context?.actor_id?.trim()) blockedBy.push("compliance_archive_actor_required");
+  if (!["human", "agent", "service"].includes(input.tenant_context?.actor_type)) {
+    blockedBy.push("compliance_archive_actor_type_required");
+  }
+  if (!input.tenant_context?.request_id?.trim()) blockedBy.push("compliance_archive_request_required");
+  if (!input.tenant_context?.correlation_id?.trim()) blockedBy.push("compliance_archive_correlation_required");
+  if (!isValidTimestamp(input.archived_at)) blockedBy.push("compliance_archive_timestamp_invalid");
+  return blockedBy;
 }
 
 function countAuditEventTypes(events: DojoAuditEventRecord[]): Record<string, number> {
