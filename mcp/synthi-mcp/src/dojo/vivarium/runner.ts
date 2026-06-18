@@ -426,6 +426,8 @@ function fixtureInputs(fixture: DojoMaterializedFixture): Record<string, unknown
     api_latency_ms: fixture.api_state.latency_ms,
     api_validation_error: fixture.api_state.validation_error,
     api_downstream_failure: fixture.api_state.downstream_failure,
+    api_duplicate_entity: fixture.api_state.duplicate_entity,
+    api_stale_entity: fixture.api_state.stale_entity,
     partial_write: fixture.api_state.partial_write,
     fake_success: fixture.api_state.fake_success,
     ui_label_changed: fixture.ui_state.label_changed,
@@ -596,18 +598,41 @@ function apiFaultBehaviorForScenario(materialized: DojoMaterializedScenario): Do
   if (materialized.fixture.api_state.validation_error) return "validation_error";
   if (materialized.fixture.api_state.latency_ms > 0) return "timeout";
   if (materialized.fixture.api_state.downstream_failure) return "downstream_failure";
+  if (materialized.fixture.api_state.duplicate_entity) return "duplicate_entity";
+  if (materialized.fixture.api_state.stale_entity) return "stale_entity";
   return "success";
 }
 
 function apiFaultPayload(materialized: DojoMaterializedScenario): Record<string, unknown> {
+  const duplicateDisplayName = duplicateDisplayNameForApiPayload(materialized.fixture);
+  const staleRecord = materialized.fixture.records.find((record) => record.stale);
   return {
     scenario_id: materialized.definition.scenario_id,
     mutation_kind: materialized.definition.mutation_kind,
     fixture_id: materialized.fixture.fixture_id,
     materialization_hash: materialized.fixture.materialization_hash,
     input_overrides: materialized.definition.input_overrides,
+    records: materialized.fixture.records.map((record) => ({
+      stable_id: record.stable_id,
+      display_name: record.display_name,
+      stale: record.stale === true,
+      version: record.version,
+    })),
     record_ids: materialized.fixture.records.map((record) => record.stable_id),
+    ...(duplicateDisplayName ? { display_name: duplicateDisplayName } : {}),
+    ...(staleRecord ? {
+      observed_version: typeof staleRecord.version === "number" ? staleRecord.version : 1,
+      current_version: typeof staleRecord.version === "number" ? staleRecord.version + 1 : 2,
+    } : {}),
   };
+}
+
+function duplicateDisplayNameForApiPayload(fixture: DojoMaterializedFixture): string | undefined {
+  const counts = new Map<string, number>();
+  for (const record of fixture.records) {
+    counts.set(record.display_name, (counts.get(record.display_name) ?? 0) + 1);
+  }
+  return [...counts.entries()].find(([, count]) => count > 1)?.[0];
 }
 
 function cloneDurableApiState(state: DojoApiFaultServerState["durable_state"]): DojoApiFaultServerState["durable_state"] {
@@ -631,6 +656,14 @@ function apiFaultObservedEvidence(apiFault: DojoApiFaultExecution | undefined): 
   if (apiFault.durable_state.validation_error) evidence.add("api_validation_error_state");
   if (apiFault.durable_state.fake_success) evidence.add("fake_success_visual_only");
   if (apiFault.durable_state.downstream_failed) evidence.add("api_downstream_failure_state");
+  if (apiFault.durable_state.duplicate_entity) {
+    evidence.add("api_duplicate_entity_conflict_state");
+    evidence.add("stable_entity_identity");
+  }
+  if (apiFault.durable_state.stale_entity) {
+    evidence.add("api_stale_entity_conflict_state");
+    evidence.add("stable_entity_identity");
+  }
   if (apiFault.behavior === "timeout") evidence.add("api_latency_timeout_state");
   return [...evidence].sort();
 }
@@ -684,6 +717,8 @@ function apiFaultSubstrateBlockedBy(execution: DojoApiFaultExecution): string[] 
   if (execution.behavior === "validation_error") return ["api_fault_validation_error"];
   if (execution.behavior === "timeout") return ["api_fault_timeout"];
   if (execution.behavior === "downstream_failure") return ["api_fault_downstream_failure"];
+  if (execution.behavior === "duplicate_entity") return ["api_fault_duplicate_entity"];
+  if (execution.behavior === "stale_entity") return ["api_fault_stale_entity"];
   if (execution.response_status >= 400) return [`api_fault_response_status:${execution.response_status}`];
   return [];
 }

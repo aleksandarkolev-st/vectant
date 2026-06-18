@@ -146,6 +146,8 @@ export interface DojoMaterializedFixture {
     fake_success: boolean;
     validation_error: boolean;
     downstream_failure: boolean;
+    duplicate_entity: boolean;
+    stale_entity: boolean;
   };
   identity_state: DojoSyntheticIdentityState;
   document_state: {
@@ -206,6 +208,7 @@ function fixtureFor(
   const uiState = uiStateFor(definition, seed, records, missingFields, routeState);
   const identityState = identityStateFor(definition, seed);
   const policyState = policyStateFor(definition, seed, thresholdBreaches);
+  const hasApiFaultServer = definition.fixture_requirements.some((fixture) => fixture.kind === "fake_api_server");
   return {
     schema_version: "synthi.dojo.materializedFixture.v1",
     fixture_id: `fixture_${definition.scenario_id}_${shortHash(seed)}`,
@@ -228,6 +231,8 @@ function fixtureFor(
       fake_success: definition.mutation_kind === "fake_success",
       validation_error: definition.mutation_kind === "validation_error",
       downstream_failure: definition.mutation_kind === "downstream_failure",
+      duplicate_entity: definition.mutation_kind === "duplicate_entity" && hasApiFaultServer,
+      stale_entity: definition.mutation_kind === "stale_entity" && hasApiFaultServer,
     },
     identity_state: identityState,
     document_state: documentState,

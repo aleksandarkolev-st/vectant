@@ -97,7 +97,7 @@ export function toDojoScenarioDefinition(
     expected_outcome_overrides?: Record<string, DojoScenarioExpectedOutcome>;
   } = {}
 ): DojoScenarioDefinition {
-  const mutationScopes = mutationScopesFor(scenario.mutation_kind);
+  const mutationScopes = mutationScopesFor(scenario);
   const expectedOutcome = input.expected_outcome_overrides?.[scenario.mutation_kind];
   return {
     schema_version: "synthi.dojo.scenarioDefinition.v1",
@@ -174,7 +174,7 @@ function fixtureRequirementsForScenario(
   scenario: DojoScenario,
   mutationScopes: DojoScenarioMutationScope[]
 ): DojoScenarioFixtureRequirement[] {
-  const kinds = fixtureKindsFor(scenario.mutation_kind);
+  const kinds = fixtureKindsFor(scenario);
   return kinds.map((kind, index) => ({
     fixture_id: `${scenario.scenario_id}_fixture_${index + 1}_${kind}`,
     kind,
@@ -185,7 +185,8 @@ function fixtureRequirementsForScenario(
   }));
 }
 
-function fixtureKindsFor(mutationKind: string): DojoScenarioFixtureKind[] {
+function fixtureKindsFor(scenario: DojoScenario): DojoScenarioFixtureKind[] {
+  const mutationKind = scenario.mutation_kind;
   switch (mutationKind) {
     case "baseline":
       return ["synthetic_dom_snapshot", "fake_database_state"];
@@ -204,6 +205,9 @@ function fixtureKindsFor(mutationKind: string): DojoScenarioFixtureKind[] {
       return ["fake_approvals", "synthetic_dom_snapshot"];
     case "duplicate_entity":
     case "stale_entity":
+      return isApiEntityConflictScenario(scenario)
+        ? ["fake_database_state", "synthetic_dom_snapshot", "fake_api_server"]
+        : ["fake_database_state", "synthetic_dom_snapshot"];
     case "reordered_rows":
       return ["fake_database_state", "synthetic_dom_snapshot"];
     case "label_change":
@@ -244,10 +248,12 @@ function fixtureKindsFor(mutationKind: string): DojoScenarioFixtureKind[] {
   }
 }
 
-function mutationScopesFor(mutationKind: string): DojoScenarioMutationScope[] {
+function mutationScopesFor(scenario: DojoScenario): DojoScenarioMutationScope[] {
+  const mutationKind = scenario.mutation_kind;
   switch (mutationKind) {
     case "duplicate_entity":
     case "stale_entity":
+      return isApiEntityConflictScenario(scenario) ? ["api", "data", "ui"] : ["data", "ui"];
     case "reordered_rows":
       return ["data", "ui"];
     case "network_latency":
@@ -279,6 +285,13 @@ function mutationScopesFor(mutationKind: string): DojoScenarioMutationScope[] {
     default:
       return isPromptInjectionDocumentMutation(mutationKind) ? ["document", "ui"] : ["ui"];
   }
+}
+
+function isApiEntityConflictScenario(scenario: DojoScenario): boolean {
+  return (
+    scenario.mutation_kind === "duplicate_entity"
+    || scenario.mutation_kind === "stale_entity"
+  ) && scenario.risk_tags.some((tag) => tag === "api_conflict" || tag === "api_entity_conflict");
 }
 
 function oracleForScenario(

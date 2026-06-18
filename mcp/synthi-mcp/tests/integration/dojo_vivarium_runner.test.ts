@@ -286,6 +286,115 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("executes duplicate entity conflicts through the API fault server", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "duplicate_entity",
+      layer: "risk",
+      risk_tags: ["ambiguous_entity_match", "api_conflict", "evidence_required"],
+    }), {
+      expected_outcome_overrides: { duplicate_entity: "block" },
+    });
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "api-duplicate-entity-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-api-duplicate-entity",
+    });
+
+    const duplicateDisplayName = materialized.fixture.records[0]?.display_name;
+    expect(materialized.fixture.api_state.duplicate_entity).toBe(true);
+    expect(materialized.fixture.records.map((record) => record.display_name)).toEqual([duplicateDisplayName, duplicateDisplayName]);
+    expect(result.api_fault).toEqual(expect.objectContaining({
+      behavior: "duplicate_entity",
+      response_status: 409,
+      durable_state: expect.objectContaining({
+        duplicate_entity: true,
+        records: expect.arrayContaining([
+          expect.objectContaining({ display_name: duplicateDisplayName, duplicate_candidate_index: 1 }),
+          expect.objectContaining({ display_name: duplicateDisplayName, duplicate_candidate_index: 2 }),
+        ]),
+      }),
+      evidence_refs: ["dojo-api-fault://scenario-run-api-duplicate-entity/duplicate_entity"],
+    }));
+    expect(result).toEqual(expect.objectContaining({
+      status: "blocked",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining([
+        "api_fault_server_executed",
+        "api_duplicate_entity_conflict_state",
+        "stable_entity_identity",
+      ]),
+      graph_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["api_fault_duplicate_entity"],
+      }),
+      oracle_result: expect.objectContaining({
+        status: "blocked",
+        expected_outcome: "block",
+      }),
+    }));
+  });
+
+  it("executes stale entity conflicts through the API fault server", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "stale_entity",
+      layer: "risk",
+      risk_tags: ["stale_data", "api_entity_conflict", "evidence_required"],
+    }), {
+      expected_outcome_overrides: { stale_entity: "block" },
+    });
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "api-stale-entity-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-api-stale-entity",
+    });
+
+    const staleRecord = materialized.fixture.records.find((record) => record.stale);
+    expect(staleRecord).toEqual(expect.objectContaining({ stale: true, version: 1 }));
+    expect(materialized.fixture.api_state.stale_entity).toBe(true);
+    expect(result.api_fault).toEqual(expect.objectContaining({
+      behavior: "stale_entity",
+      response_status: 409,
+      durable_state: expect.objectContaining({
+        stale_entity: true,
+        records: expect.arrayContaining([
+          expect.objectContaining({ stale: true, observed_version: 1, current_version: 2 }),
+        ]),
+      }),
+      evidence_refs: ["dojo-api-fault://scenario-run-api-stale-entity/stale_entity"],
+    }));
+    expect(result).toEqual(expect.objectContaining({
+      status: "blocked",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining([
+        "api_fault_server_executed",
+        "api_stale_entity_conflict_state",
+        "stable_entity_identity",
+      ]),
+      graph_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["api_fault_stale_entity"],
+      }),
+      oracle_result: expect.objectContaining({
+        status: "blocked",
+        expected_outcome: "block",
+      }),
+    }));
+  });
+
   it("does not execute API fault fixtures when graph preconditions block before the action", async () => {
     const runner = new DojoVivariumRunner();
     const definition = toDojoScenarioDefinition(scenarioFixture({

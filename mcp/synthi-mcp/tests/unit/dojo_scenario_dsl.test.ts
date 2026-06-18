@@ -36,6 +36,21 @@ describe("Dojo scenario DSL", () => {
     expect(validateDojoScenarioDefinition(definition)).toEqual({ ok: true, issues: [] });
   });
 
+  it("classifies API entity conflict scenarios with fake API server tissue", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "duplicate_entity",
+      risk_tags: ["ambiguous_entity_match", "api_conflict"],
+    }));
+
+    expect(definition.mutation_scopes).toEqual(["api", "data", "ui"]);
+    expect(definition.fixture_requirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "fake_database_state", synthetic_data_only: true, production_data_refs: [] }),
+      expect.objectContaining({ kind: "synthetic_dom_snapshot", synthetic_data_only: true, production_data_refs: [] }),
+      expect.objectContaining({ kind: "fake_api_server", synthetic_data_only: true, production_data_refs: [] }),
+    ]));
+    expect(validateDojoScenarioDefinition(definition)).toEqual({ ok: true, issues: [] });
+  });
+
   it("validates fake success scenario definitions with evidence oracle requirements", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "fake_success",

@@ -14,6 +14,8 @@ describe("Dojo synthetic fixture materializer", () => {
     expect(fixture.records).toHaveLength(2);
     expect(fixture.records[0]?.display_name).toBe(fixture.records[1]?.display_name);
     expect(fixture.records[0]?.stable_id).not.toBe(fixture.records[1]?.stable_id);
+    expect(fixture.api_state.duplicate_entity).toBe(false);
+    expect(fixture.api_state.stale_entity).toBe(false);
     expect(fixture.materialization_hash).toMatch(/^[a-f0-9]{64}$/);
   });
 
@@ -33,6 +35,8 @@ describe("Dojo synthetic fixture materializer", () => {
       risk_tags: ["stale_data"],
     })));
     expect(stale.records.some((record) => record.stale)).toBe(true);
+    expect(stale.api_state.stale_entity).toBe(false);
+    expect(stale.api_state.duplicate_entity).toBe(false);
 
     const missing = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "input_omission",
@@ -194,6 +198,22 @@ describe("Dojo synthetic fixture materializer", () => {
         source: "permission",
       }),
     ]);
+  });
+
+  it("materializes API entity conflict flags only when fake API tissue is required", () => {
+    const duplicate = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "duplicate_entity",
+      risk_tags: ["ambiguous_entity_match", "api_conflict"],
+    })), { seed: "duplicate-api-conflict-seed" });
+    expect(duplicate.api_state.duplicate_entity).toBe(true);
+    expect(duplicate.api_state.stale_entity).toBe(false);
+
+    const stale = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "stale_entity",
+      risk_tags: ["stale_data", "api_entity_conflict"],
+    })), { seed: "stale-api-conflict-seed" });
+    expect(stale.api_state.stale_entity).toBe(true);
+    expect(stale.api_state.duplicate_entity).toBe(false);
   });
 
   it("materializes unquarantined prompt injection document fixtures as failed synthetic tissue", () => {
