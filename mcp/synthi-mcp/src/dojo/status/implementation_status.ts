@@ -66,7 +66,7 @@ export const DOJO_TOOL_IMPLEMENTATION_STATUS: Record<string, DojoImplementationM
   synthi_dojo_get_universe_dossier: report("Returns a dossier assembled from lifecycle, governance, metrics, evidence, and source reports."),
   synthi_dojo_get_lifecycle: report("Returns lifecycle state projected from the current skill and proof records."),
   synthi_dojo_get_governance_report: governanceReport("Returns governance, approval, license-health, recertification, audit-export, and compliance view data."),
-  synthi_dojo_get_metrics: report("Returns generated registry and skill metrics from current in-process state."),
+  synthi_dojo_get_metrics: report("Returns registry and skill metrics from the authorized visible skill set, using the configured durable control-plane store when production aggregate reads are enabled."),
   synthi_dojo_capture_source_snapshot: sourceGeneration("Creates and verifies a signed release-scoped source snapshot from caller-supplied source tokens; persistence and drift application remain explicit follow-up operations."),
   synthi_dojo_detect_source_drift: sourceGeneration("Verifies signed source snapshots and reports drifted tokens, affected graph nodes, and license expiry triggers without applying them."),
   synthi_dojo_apply_source_drift_expiry: controlPlaneWrite(

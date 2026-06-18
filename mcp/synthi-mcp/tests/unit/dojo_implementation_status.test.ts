@@ -192,6 +192,22 @@ describe("Dojo implementation status registry", () => {
     );
   });
 
+  it("describes metrics as an authorized aggregate read without claiming runtime enforcement", () => {
+    expect(getDojoToolImplementationMetadata("synthi_dojo_get_metrics")).toEqual(
+      expect.objectContaining({
+        implementation_status: "report_only",
+        runtime_enforced: false,
+        runtime_scope: "report_only",
+        summary: expect.stringContaining("authorized visible skill set"),
+        maturity_blockers: expect.arrayContaining([
+          "read_only_report_surface",
+          "external_enterprise_control_plane_not_deployed",
+        ]),
+      })
+    );
+    expect(getDojoToolImplementationMetadata("synthi_dojo_get_metrics").summary).not.toContain("in-process state");
+  });
+
   it("describes case-law review as a durable audited control-plane write", () => {
     expect(getDojoToolImplementationMetadata("synthi_dojo_review_case_law")).toEqual(
       expect.objectContaining({
