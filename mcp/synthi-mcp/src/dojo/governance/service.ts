@@ -37,6 +37,8 @@ export type DojoGovernanceRbacAction =
   | "governance_view"
   | "source_snapshot_capture"
   | "source_drift_detection"
+  | "source_affordance_pr_prepare"
+  | "source_affordance_pr_branch"
   | "source_drift_expiry";
 
 export interface DojoGovernanceRbacPolicy {
@@ -72,6 +74,8 @@ export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPo
     governance_view: ["dojo:governance:view", "dojo:auditor"],
     source_snapshot_capture: ["dojo:source:capture", "source-registry"],
     source_drift_detection: ["dojo:source:review", "source-registry"],
+    source_affordance_pr_prepare: ["dojo:source:review", "source-registry"],
+    source_affordance_pr_branch: ["dojo:source:apply"],
     source_drift_expiry: ["dojo:source:apply"],
   },
 };
@@ -1224,6 +1228,14 @@ function normalizeGovernanceRbacPolicy(
       source_drift_detection: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.source_drift_detection,
         ...(policy.action_roles?.source_drift_detection ?? []),
+      ]),
+      source_affordance_pr_prepare: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.source_affordance_pr_prepare,
+        ...(policy.action_roles?.source_affordance_pr_prepare ?? []),
+      ]),
+      source_affordance_pr_branch: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.source_affordance_pr_branch,
+        ...(policy.action_roles?.source_affordance_pr_branch ?? []),
       ]),
       source_drift_expiry: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.source_drift_expiry,

@@ -1742,6 +1742,131 @@ describe("Agent Dojo MCP tools", () => {
     expect(modified?.source).toContain("assertDojoProof(");
   });
 
+  it("enforces RBAC for production source affordance PR tooling through the MCP tool", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const sourceFiles = [{
+      path: "src/details.open.tsx",
+      source: detailsOpenSourceForDojoToolTest(),
+    }];
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const blockedPrepare = await dispatchDojoTool("synthi_dojo_prepare_source_affordance_pr", {
+      skill_id: skillId,
+      source_files: sourceFiles,
+      ...productionTenantContextArgs({
+        actor_id: "source-affordance-viewer",
+        actor_type: "human",
+        roles: ["dojo:governance:view"],
+        request_id: "req-source-affordance-pr-prepare-blocked",
+        correlation_id: "corr-source-affordance-pr-prepare-blocked",
+      }),
+    });
+    expect(blockedPrepare?.isError).toBe(true);
+    expect(blockedPrepare?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      error: "dojo_source_affordance_pr_prepare_role_required",
+      skill_id: skillId,
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:source:review|source-registry"]),
+      rbac_authorization: expect.objectContaining({
+        action: "source_affordance_pr_prepare",
+        actor_id: "source-affordance-viewer",
+        required_roles: ["dojo:source:review", "source-registry"],
+        matched_roles: [],
+      }),
+    }));
+
+    const allowedPrepare = await dispatchDojoTool("synthi_dojo_prepare_source_affordance_pr", {
+      skill_id: skillId,
+      source_files: sourceFiles,
+      ...productionTenantContextArgs({
+        actor_id: "source-affordance-reviewer",
+        actor_type: "human",
+        roles: ["dojo:source:review"],
+        request_id: "req-source-affordance-pr-prepare-allowed",
+        correlation_id: "corr-source-affordance-pr-prepare-allowed",
+      }),
+    });
+    expect(allowedPrepare?.isError).toBeUndefined();
+    expect(allowedPrepare?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill_id: skillId,
+      ready_for_review: false,
+      promotion_blockers: expect.arrayContaining(["generated_pr_code_owner_unresolved:src/details.open.tsx"]),
+      rbac_authorization: expect.objectContaining({
+        action: "source_affordance_pr_prepare",
+        actor_id: "source-affordance-reviewer",
+        matched_roles: ["dojo:source:review"],
+      }),
+    }));
+
+    const blockedBranch = await dispatchDojoTool("synthi_dojo_create_source_affordance_pr_branch", {
+      skill_id: skillId,
+      source_files: sourceFiles,
+      repository_root: path.join(tmpdir(), "dojo-source-affordance-rbac-not-used"),
+      ...productionTenantContextArgs({
+        actor_id: "source-affordance-reviewer",
+        actor_type: "human",
+        roles: ["dojo:source:review"],
+        request_id: "req-source-affordance-pr-branch-blocked",
+        correlation_id: "corr-source-affordance-pr-branch-blocked",
+      }),
+    });
+    expect(blockedBranch?.isError).toBe(true);
+    expect(blockedBranch?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      error: "dojo_source_affordance_pr_branch_role_required",
+      skill_id: skillId,
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:source:apply"]),
+      rbac_authorization: expect.objectContaining({
+        action: "source_affordance_pr_branch",
+        actor_id: "source-affordance-reviewer",
+        required_roles: ["dojo:source:apply"],
+        matched_roles: [],
+      }),
+    }));
+
+    const repoRoot = await initializedDetailsOpenSourceRepoForDojoToolTest();
+    const allowedBranch = await dispatchDojoTool("synthi_dojo_create_source_affordance_pr_branch", {
+      skill_id: skillId,
+      source_files: sourceFiles,
+      repository_root: repoRoot,
+      dry_run: true,
+      ...productionTenantContextArgs({
+        actor_id: "source-affordance-applier",
+        actor_type: "human",
+        roles: ["dojo:source:apply"],
+        request_id: "req-source-affordance-pr-branch-allowed",
+        correlation_id: "corr-source-affordance-pr-branch-allowed",
+      }),
+    });
+    expect(allowedBranch?.isError).toBeUndefined();
+    expect(allowedBranch?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill_id: skillId,
+      branch_created: false,
+      ready_for_review: false,
+      promotion_blockers: expect.arrayContaining([
+        "generated_pr_code_owner_unresolved:src/details.open.tsx",
+        "generated_pr_git_branch:generated_pr_branch_apply_preflight:generated_pr_branch_plan_not_ready",
+      ]),
+      rbac_authorization: expect.objectContaining({
+        action: "source_affordance_pr_branch",
+        actor_id: "source-affordance-applier",
+        matched_roles: ["dojo:source:apply"],
+      }),
+      generated_pr_git_branch: expect.objectContaining({
+        dry_run: true,
+        ok: false,
+        issues: expect.arrayContaining([
+          expect.objectContaining({ issue_id: "generated_pr_branch_apply_preflight:generated_pr_branch_plan_not_ready" }),
+        ]),
+      }),
+    }));
+  });
+
   it("captures a signed release-scoped source snapshot without echoing the signing secret", async () => {
     const signingKey = "source-signing-secret-a";
     const captured = await dispatchDojoTool("synthi_dojo_capture_source_snapshot", {

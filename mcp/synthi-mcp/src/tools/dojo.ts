@@ -2704,6 +2704,23 @@ function dojoGetSourceAffordancePrPlanTool(args: unknown): ToolResponse {
 async function dojoPrepareSourceAffordancePrTool(args: unknown): Promise<ToolResponse> {
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_prepare_source_affordance_pr");
   if (!skill.ok) return skill.error;
+  const sourceAffordancePrepareRbacAuthorization = resolveDojoEnforcementConfig().production_enforcement
+    ? authorizeDojoGovernanceAction({
+      tenant_context: skill.tenant,
+      action: "source_affordance_pr_prepare",
+    })
+    : undefined;
+  if (sourceAffordancePrepareRbacAuthorization && !sourceAffordancePrepareRbacAuthorization.ok) {
+    return errorResponse("dojo_source_affordance_pr_prepare_role_required", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      workspace_id: skill.skill.workspace_id,
+      actor_id: skill.tenant.actor_id,
+      actor_type: skill.tenant.actor_type,
+      blocked_by: sourceAffordancePrepareRbacAuthorization.blocked_by,
+      rbac_authorization: sourceAffordancePrepareRbacAuthorization,
+    });
+  }
   const a = obj(args);
   const sourceFiles = sourcePatchInputFilesOpt(a["source_files"]);
   if (sourceFiles.length === 0) {
@@ -2739,12 +2756,30 @@ async function dojoPrepareSourceAffordancePrTool(args: unknown): Promise<ToolRes
       applyPrefix: "dry_run_apply",
       applyIssues: dryRunApply?.issues,
     }),
+    ...(sourceAffordancePrepareRbacAuthorization ? { rbac_authorization: sourceAffordancePrepareRbacAuthorization } : {}),
   });
 }
 
 async function dojoCreateSourceAffordancePrBranchTool(args: unknown): Promise<ToolResponse> {
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_create_source_affordance_pr_branch");
   if (!skill.ok) return skill.error;
+  const sourceAffordanceBranchRbacAuthorization = resolveDojoEnforcementConfig().production_enforcement
+    ? authorizeDojoGovernanceAction({
+      tenant_context: skill.tenant,
+      action: "source_affordance_pr_branch",
+    })
+    : undefined;
+  if (sourceAffordanceBranchRbacAuthorization && !sourceAffordanceBranchRbacAuthorization.ok) {
+    return errorResponse("dojo_source_affordance_pr_branch_role_required", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      workspace_id: skill.skill.workspace_id,
+      actor_id: skill.tenant.actor_id,
+      actor_type: skill.tenant.actor_type,
+      blocked_by: sourceAffordanceBranchRbacAuthorization.blocked_by,
+      rbac_authorization: sourceAffordanceBranchRbacAuthorization,
+    });
+  }
   const a = obj(args);
   const sourceFiles = sourcePatchInputFilesOpt(a["source_files"]);
   if (sourceFiles.length === 0) {
@@ -2791,6 +2826,7 @@ async function dojoCreateSourceAffordancePrBranchTool(args: unknown): Promise<To
       applyPrefix: "generated_pr_git_branch_apply",
       applyIssues: gitBranchResult.apply_result?.issues,
     }),
+    ...(sourceAffordanceBranchRbacAuthorization ? { rbac_authorization: sourceAffordanceBranchRbacAuthorization } : {}),
   });
 }
 
