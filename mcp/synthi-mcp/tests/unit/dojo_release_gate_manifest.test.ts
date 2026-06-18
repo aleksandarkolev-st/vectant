@@ -327,6 +327,10 @@ describe("Dojo release gate manifest", () => {
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
+        release_artifact_requirements: expect.objectContaining({
+          require_external_postgres_control_plane: true,
+          accepted_postgres_host_classes: ["remote_or_named"],
+        }),
         requires_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
       }),
       expect.objectContaining({
@@ -1182,9 +1186,13 @@ describe("Dojo release gate manifest", () => {
       .filter((capability) => capability !== "atomic_proof_consume");
     postgresGate.artifact_requirements.required_test_files = DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES
       .filter((file) => file !== missingPostgresTestFile);
+    postgresGate.release_artifact_requirements.require_external_postgres_control_plane = false;
+    postgresGate.release_artifact_requirements.accepted_postgres_host_classes = ["loopback"];
     expect(validateDojoReleaseGateManifest(brokenPostgres, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "postgres_control_plane_missing_required_capabilities:atomic_proof_consume",
       `postgres_control_plane_missing_required_test_files:${missingPostgresTestFile}`,
+      "postgres_control_plane_missing_external_release_requirement",
+      "postgres_control_plane_missing_remote_release_host_class",
     ]));
 
     const brokenImplementationStatus = JSON.parse(JSON.stringify(manifest));

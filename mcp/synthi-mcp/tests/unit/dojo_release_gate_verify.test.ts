@@ -144,6 +144,7 @@ import {
   validateDojoCaseLawRuntimeEvidenceForRelease,
   validateDojoManagedKeySigningEvidenceForRelease,
   validateDojoPublicProofVerificationEvidenceForRelease,
+  validateDojoPostgresControlPlaneEvidenceForRelease,
   validateDojoPostgresControlPlaneEvidenceForMilestone,
   validateDojoWorkflowPipelineE2EForRelease,
   validateDojoChaosPerformanceEvidenceForEnterprise,
@@ -687,6 +688,44 @@ describe("Dojo release gate artifact verifier", () => {
       ok: true,
       errors: [],
       evidence_path: evidencePath,
+    }));
+    expect(validateDojoPostgresControlPlaneEvidenceForRelease(evidence)).toEqual({
+      ok: false,
+      errors: ["postgres_control_plane_release_host_not_external:loopback"],
+    });
+    expect(await verifyDojoPostgresControlPlaneEvidenceArtifact({
+      evidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_postgres_control_plane_self_check",
+      ok: false,
+      errors: expect.arrayContaining(["postgres_control_plane_release_host_not_external:loopback"]),
+      release_candidate: true,
+    }));
+
+    const remoteEvidencePath = await writePostgresControlPlaneEvidenceFixture({
+      dir,
+      basename: "dojo-postgres-control-plane-release",
+      evidence: postgresControlPlaneEvidenceFixture({
+        postgres_connection: {
+          ...postgresControlPlaneEvidenceFixture().postgres_connection,
+          host_class: "remote_or_named",
+        },
+      }),
+    });
+    const remoteEvidence = await readJson(remoteEvidencePath);
+    expect(validateDojoPostgresControlPlaneEvidenceForRelease(remoteEvidence)).toEqual({
+      ok: true,
+      errors: [],
+    });
+    expect(await verifyDojoPostgresControlPlaneEvidenceArtifact({
+      evidencePath: remoteEvidencePath,
+      releaseCandidate: true,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_postgres_control_plane_self_check",
+      ok: true,
+      errors: [],
+      release_candidate: true,
     }));
 
     const rejectedPath = await writePostgresControlPlaneEvidenceFixture({
@@ -1930,7 +1969,15 @@ describe("Dojo release gate artifact verifier", () => {
   it("includes manifest-declared Dojo proof self-check artifacts in release candidate verification", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-candidate-self-check-"));
     const selfCheck = await writeProofSelfCheckFixture({ dir });
-    const postgresEvidencePath = await writePostgresControlPlaneEvidenceFixture({ dir });
+    const postgresEvidencePath = await writePostgresControlPlaneEvidenceFixture({
+      dir,
+      evidence: postgresControlPlaneEvidenceFixture({
+        postgres_connection: {
+          ...postgresControlPlaneEvidenceFixture().postgres_connection,
+          host_class: "remote_or_named",
+        },
+      }),
+    });
     const evidenceAuthorityEvidencePath = await writeEvidenceAuthorityEvidenceFixture({ dir });
     const implementationStatusEvidencePath = await writeImplementationStatusEvidenceFixture({ dir });
     const dockerEvidencePath = await writeDockerIntegrationEvidenceFixture({ dir });

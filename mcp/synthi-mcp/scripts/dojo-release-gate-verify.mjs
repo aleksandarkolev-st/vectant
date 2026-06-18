@@ -1310,6 +1310,9 @@ async function validateDojoProofSelfCheckVisualArtifacts({ summary, summaryPath 
 export async function verifyDojoPostgresControlPlaneEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
   const evidence = await readJsonFile(evidencePath);
   const errors = validateDojoPostgresControlPlaneEvidenceForMilestone(evidence).errors;
+  if (releaseCandidate) {
+    errors.push(...validateDojoPostgresControlPlaneEvidenceForRelease(evidence).errors);
+  }
   errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
   return {
     id: "dojo_postgres_control_plane_self_check",
@@ -1319,6 +1322,28 @@ export async function verifyDojoPostgresControlPlaneEvidenceArtifact({ evidenceP
     release_candidate: Boolean(releaseCandidate),
     report_schema_version: evidence?.schema_version ?? null,
     result_count: Number(evidence?.test_summary?.total_tests || 0),
+  };
+}
+
+export function validateDojoPostgresControlPlaneEvidenceForRelease(evidence) {
+  const errors = [];
+  const connection = evidence?.postgres_connection ?? {};
+  const protocol = String(connection.protocol || "");
+  if (connection.configured !== true) errors.push("postgres_control_plane_release_connection_missing");
+  if (connection.parseable !== true) errors.push("postgres_control_plane_release_connection_unparseable");
+  if (!["postgres", "postgresql"].includes(protocol)) {
+    errors.push(`postgres_control_plane_release_protocol_invalid:${protocol || "missing"}`);
+  }
+  if (connection.host_class !== "remote_or_named") {
+    errors.push(`postgres_control_plane_release_host_not_external:${connection.host_class || "missing"}`);
+  }
+  if (connection.database_configured !== true) errors.push("postgres_control_plane_release_database_missing");
+  if (connection.username_configured !== true) errors.push("postgres_control_plane_release_username_missing");
+  if (connection.password_configured !== true) errors.push("postgres_control_plane_release_password_missing");
+  if (connection.password_redacted !== true) errors.push("postgres_control_plane_release_password_not_redacted");
+  return {
+    ok: errors.length === 0,
+    errors,
   };
 }
 
@@ -4790,6 +4815,11 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
   });
   assert(rejectedPostgres.errors.includes("postgres_control_plane_capability_coverage_incomplete"));
   assert(rejectedPostgres.errors.includes("postgres_control_plane_missing_capabilities:atomic_proof_consume"));
+  const rejectedReleasePostgres = await verifyDojoPostgresControlPlaneEvidenceArtifact({
+    evidencePath: postgresArtifacts.evidence_path,
+    releaseCandidate: true,
+  });
+  assert(rejectedReleasePostgres.errors.includes("postgres_control_plane_release_host_not_external:loopback"));
 
   const evidenceAuthorityDir = path.join(outDir, "evidence-authority");
   await mkdir(evidenceAuthorityDir, { recursive: true });
@@ -5814,6 +5844,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
     rejected_controls: [
       summarizeSection(rejectedSelfCheck),
       summarizeSection(rejectedPostgres),
+      summarizeSection(rejectedReleasePostgres),
       summarizeSection(rejectedEvidenceAuthority),
       summarizeSection(rejectedImplementationStatus),
       summarizeSection(rejectedDocker),

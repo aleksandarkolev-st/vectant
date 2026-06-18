@@ -418,6 +418,10 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
     },
+    release_artifact_requirements: {
+      require_external_postgres_control_plane: true,
+      accepted_postgres_host_classes: ["remote_or_named"],
+    },
     requires_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
   },
   {
@@ -1783,6 +1787,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!postgresControlPlaneGate.artifact_requirements?.require_json_report_digest_match) {
       errors.push("postgres_control_plane_missing_json_report_digest_requirement");
+    }
+    if (postgresControlPlaneGate.release_artifact_requirements?.require_external_postgres_control_plane !== true) {
+      errors.push("postgres_control_plane_missing_external_release_requirement");
+    }
+    const acceptedPostgresHostClasses = postgresControlPlaneGate.release_artifact_requirements?.accepted_postgres_host_classes;
+    if (!Array.isArray(acceptedPostgresHostClasses) || !acceptedPostgresHostClasses.includes("remote_or_named")) {
+      errors.push("postgres_control_plane_missing_remote_release_host_class");
     }
     if (!Array.isArray(postgresControlPlaneGate.requires_env)
       || !postgresControlPlaneGate.requires_env.includes("SYNTHI_DOJO_POSTGRES_TEST_URL")) {
