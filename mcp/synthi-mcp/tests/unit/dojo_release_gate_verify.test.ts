@@ -1062,6 +1062,8 @@ describe("Dojo release gate artifact verifier", () => {
       missing_capabilities: ["mcp_skill_bus_consumes_proof_before_non_dry_dispatch"],
       mcp_skill_bus_contract: {
         ...mcpSkillBusEvidenceFixture().mcp_skill_bus_contract,
+        api_backed_tool_resolution_required: false,
+        api_backed_canonical_dispatch_context_required: false,
         proof_consume_required: false,
         tenant_boundary_required: false,
       },
@@ -1077,6 +1079,8 @@ describe("Dojo release gate artifact verifier", () => {
       "mcp_skill_bus_not_ok",
       "mcp_skill_bus_coverage_incomplete",
       "mcp_skill_bus_missing_capabilities:mcp_skill_bus_consumes_proof_before_non_dry_dispatch",
+      "mcp_skill_bus_api_backed_tool_resolution_requirement_missing",
+      "mcp_skill_bus_api_backed_dispatch_context_requirement_missing",
       "mcp_skill_bus_proof_consume_requirement_missing",
       "mcp_skill_bus_tenant_boundary_requirement_missing",
     ]));
@@ -4826,6 +4830,8 @@ function mcpSkillBusEvidenceFixture(overrides = {}) {
       manifest_tamper_rejection_required: true,
       manifest_production_readiness_required: true,
       version_pinning_required: true,
+      api_backed_tool_resolution_required: true,
+      api_backed_canonical_dispatch_context_required: true,
       ambiguous_tool_block_required: true,
       proof_validation_required: true,
       proof_consume_required: true,
