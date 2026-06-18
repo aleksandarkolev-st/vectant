@@ -3,7 +3,7 @@ import type { DojoProofCarryingSkillCapsule, DojoSkill } from "../../browser/doj
 import type { DojoApiBackedMcpTool } from "../api/api_tool_compiler.js";
 import type { DojoProofCapsuleService } from "../proof/capsule_service.js";
 import type { DojoAuditStore, DojoProofConsumeResult } from "../store/interfaces.js";
-import type { DojoTenantContext } from "./execution_policy_gate.js";
+import { validateDojoTenantContext, type DojoTenantContext } from "./execution_policy_gate.js";
 import {
   buildDojoMcpSkillManifest,
   dojoMcpManifestRequiresProof,
@@ -630,20 +630,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
 }
 
 export function validateDojoMcpTenantContext(tenant: DojoTenantContext | undefined): string[] {
-  const blockedBy: string[] = [];
-  if (!tenant?.tenant_id?.trim()) blockedBy.push("dojo_mcp_tenant_required");
-  if (!tenant?.organization_id?.trim()) blockedBy.push("dojo_mcp_organization_required");
-  if (!tenant?.workspace_id?.trim()) blockedBy.push("dojo_mcp_workspace_required");
-  if (!tenant?.actor_id?.trim()) blockedBy.push("dojo_mcp_actor_required");
-  if (tenant?.actor_type !== "human" && tenant?.actor_type !== "agent" && tenant?.actor_type !== "service") {
-    blockedBy.push("dojo_mcp_actor_type_invalid");
-  }
-  if (!Array.isArray(tenant?.roles) || tenant.roles.some((role) => typeof role !== "string" || !role.trim())) {
-    blockedBy.push("dojo_mcp_roles_invalid");
-  }
-  if (!tenant?.request_id?.trim()) blockedBy.push("dojo_mcp_request_required");
-  if (!tenant?.correlation_id?.trim()) blockedBy.push("dojo_mcp_correlation_required");
-  return blockedBy;
+  return validateDojoTenantContext(tenant, "dojo_mcp");
 }
 
 function proofServiceValidator(

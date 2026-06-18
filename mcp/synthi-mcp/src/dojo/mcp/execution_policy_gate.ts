@@ -62,6 +62,25 @@ export function createDojoExecutionPolicyGate(options: DojoExecutionPolicyGateOp
   return new InProcessDojoExecutionPolicyGate(options);
 }
 
+export function validateDojoTenantContext(tenant: DojoTenantContext | undefined, codePrefix: string): string[] {
+  const prefix = codePrefix.trim();
+  if (!prefix) throw new Error("dojo_tenant_context_code_prefix_required");
+  const blockedBy: string[] = [];
+  if (!tenant?.tenant_id?.trim()) blockedBy.push(`${prefix}_tenant_required`);
+  if (!tenant?.organization_id?.trim()) blockedBy.push(`${prefix}_organization_required`);
+  if (!tenant?.workspace_id?.trim()) blockedBy.push(`${prefix}_workspace_required`);
+  if (!tenant?.actor_id?.trim()) blockedBy.push(`${prefix}_actor_required`);
+  if (tenant?.actor_type !== "human" && tenant?.actor_type !== "agent" && tenant?.actor_type !== "service") {
+    blockedBy.push(`${prefix}_actor_type_invalid`);
+  }
+  if (!Array.isArray(tenant?.roles) || tenant.roles.some((role) => typeof role !== "string" || !role.trim())) {
+    blockedBy.push(`${prefix}_roles_invalid`);
+  }
+  if (!tenant?.request_id?.trim()) blockedBy.push(`${prefix}_request_required`);
+  if (!tenant?.correlation_id?.trim()) blockedBy.push(`${prefix}_correlation_required`);
+  return blockedBy;
+}
+
 class InProcessDojoExecutionPolicyGate implements DojoExecutionPolicyGate {
   private readonly env: NodeJS.ProcessEnv;
   private readonly resolvePublishedSkill: (input: DojoExecutionPolicyInput) => DojoPublishedSkillBinding | Promise<DojoPublishedSkillBinding>;
@@ -73,8 +92,13 @@ class InProcessDojoExecutionPolicyGate implements DojoExecutionPolicyGate {
 
   async evaluate(input: DojoExecutionPolicyInput): Promise<DojoExecutionPolicyDecision> {
     const enforcement = resolveDojoEnforcementConfig(this.env);
-    const binding = await this.resolvePublishedSkill(input);
     const mode = enforcement.production_enforcement ? "production" : "development";
+    const tenantBlockedBy = validateDojoTenantContext(input.tenant, "dojo_execution");
+    if (tenantBlockedBy.length > 0) {
+      return block(baseDecision(input, { status: "unknown" }, mode), tenantBlockedBy);
+    }
+
+    const binding = await this.resolvePublishedSkill(input);
     const base = baseDecision(input, binding, mode);
 
     if (enforcement.invalid_env.length > 0) {

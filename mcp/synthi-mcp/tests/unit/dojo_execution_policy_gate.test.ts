@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createDojoExecutionPolicyGate,
+  validateDojoTenantContext,
   type DojoExecutionPolicyInput,
   type DojoPublishedSkillBinding,
   type DojoTenantContext,
@@ -58,6 +59,42 @@ describe("Dojo execution policy gate", () => {
       blocked_by: ["direct_entrypoint_for_published_skill", "dojo_proof_capsule_required"],
       required_path: "synthi_dojo_run_with_proof_capsule",
     }));
+  });
+
+  it("fails closed before published skill lookup when tenant context is incomplete", async () => {
+    const resolverCalls: DojoExecutionPolicyInput[] = [];
+    const gate = createDojoExecutionPolicyGate({
+      env: productionEnv(),
+      resolvePublishedSkill: (request) => {
+        resolverCalls.push(request);
+        return publishedBinding();
+      },
+    });
+    const expectedBlockedBy = [
+      "dojo_execution_tenant_required",
+      "dojo_execution_organization_required",
+      "dojo_execution_actor_required",
+      "dojo_execution_actor_type_invalid",
+      "dojo_execution_roles_invalid",
+      "dojo_execution_request_required",
+      "dojo_execution_correlation_required",
+    ];
+
+    expect(validateDojoTenantContext(invalidTenant(), "dojo_execution")).toEqual(expectedBlockedBy);
+    await expect(gate.evaluate(input({
+      tenant: invalidTenant(),
+      entrypoint: "private_tool",
+      tool_name: "synthi_app_save_invoice",
+      proof_capsule_id: "proof_123",
+      validated_dojo_execution_context: true,
+    }))).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      enforcement_mode: "production",
+      blocked_by: expectedBlockedBy,
+      required_path: "synthi_dojo_run_with_proof_capsule",
+    }));
+    expect(resolverCalls).toEqual([]);
   });
 
   it("allows production private tool entrypoint only with validated Dojo dispatcher context and proof", async () => {
@@ -159,6 +196,19 @@ function tenant(): DojoTenantContext {
     roles: ["agent"],
     request_id: "req-a",
     correlation_id: "corr-a",
+  };
+}
+
+function invalidTenant(): DojoTenantContext {
+  return {
+    ...tenant(),
+    tenant_id: "",
+    organization_id: "",
+    actor_id: "",
+    actor_type: "robot" as never,
+    roles: ["agent", ""],
+    request_id: "",
+    correlation_id: "",
   };
 }
 
