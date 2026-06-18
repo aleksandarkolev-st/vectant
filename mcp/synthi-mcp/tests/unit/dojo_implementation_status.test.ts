@@ -167,6 +167,22 @@ describe("Dojo implementation status registry", () => {
     );
   });
 
+  it("describes case-law review as a durable audited control-plane write", () => {
+    expect(getDojoToolImplementationMetadata("synthi_dojo_review_case_law")).toEqual(
+      expect.objectContaining({
+        implementation_status: "executable",
+        runtime_enforced: false,
+        runtime_scope: "control_plane_write",
+        production_runtime: false,
+        summary: expect.stringContaining("writes durable Postgres audit events"),
+        maturity_blockers: [],
+      })
+    );
+    expect(getDojoToolImplementationMetadata("synthi_dojo_review_case_law").maturity_blockers).not.toContain(
+      "case_law_review_requires_durable_enterprise_audit_for_production"
+    );
+  });
+
   it("classifies current report artifacts without implying mature runtime backing", () => {
     expect(DOJO_REPORT_IMPLEMENTATION_STATUS.evidence_ledger).toEqual(
       expect.objectContaining({

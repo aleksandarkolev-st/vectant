@@ -75,6 +75,7 @@ export const DOJO_POSTGRES_CONTROL_PLANE_CAPABILITIES = [
   "tool_control_plane_permission_upgrade_review_rbac_path",
   "tool_control_plane_case_law_path",
   "tool_control_plane_case_law_review_rbac_path",
+  "tool_control_plane_case_law_review_audit_path",
   "ghost_shadow_evidence_repository",
   "tool_control_plane_ghost_mode_path",
   "tool_control_plane_vivarium_path",
@@ -431,10 +432,15 @@ function capabilityMatchers(capability) {
       "dojo tool postgres control plane wiring persists permission upgrade request and review through postgres after local reset and rejects unauthorized reviewers",
     ],
     tool_control_plane_case_law_path: [
-      "dojo tool postgres control plane wiring persists case law proposal and review through postgres after local reset",
+      "dojo tool postgres control plane wiring persists case law proposal and review",
+      "through postgres after local reset",
     ],
     tool_control_plane_case_law_review_rbac_path: [
-      "dojo tool postgres control plane wiring persists case law proposal and review through postgres after local reset and rejects unauthorized reviewers",
+      "dojo tool postgres control plane wiring persists case law proposal and review",
+      "rejects unauthorized reviewers",
+    ],
+    tool_control_plane_case_law_review_audit_path: [
+      "dojo tool postgres control plane wiring persists case law proposal and review with audit",
     ],
     ghost_shadow_evidence_repository: [
       "postgresdojoghostshadowevidencestore persists ghost mode shadow evidence by tenant scope and filters operational fields",

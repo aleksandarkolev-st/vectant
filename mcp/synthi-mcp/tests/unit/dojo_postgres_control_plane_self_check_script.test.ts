@@ -122,7 +122,7 @@ function postgresVitestReportFixture() {
       "Dojo tool Postgres control-plane wiring requires ledger-backed recertification evidence when production evidence ledger is enforced",
       "Dojo tool Postgres control-plane wiring persists permission upgrade request and review through Postgres after local reset and rejects unauthorized reviewers",
       "Dojo tool Postgres control-plane wiring requires ledger-backed permission upgrade review evidence and promotion claims when production evidence ledger is enforced",
-      "Dojo tool Postgres control-plane wiring persists case law proposal and review through Postgres after local reset and rejects unauthorized reviewers",
+      "Dojo tool Postgres control-plane wiring persists case law proposal and review with audit through Postgres after local reset and rejects unauthorized reviewers",
       "Dojo tool Postgres control-plane wiring records Ghost Mode shadow evidence through Postgres after local reset",
       "Dojo tool Postgres control-plane wiring persists Vivarium scenario runs through Postgres after local reset",
       "Dojo tool Postgres control-plane wiring persists Wind Tunnel scenario runs through Postgres after local reset",

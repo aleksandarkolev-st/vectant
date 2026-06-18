@@ -3979,6 +3979,19 @@ describe("Agent Dojo MCP tools", () => {
         expect.objectContaining({ case_id: recordedCaseId, status: "proposed" }),
       ]),
     }));
+    const reviewedCaseGenericActorOnly = await dispatchDojoTool("synthi_dojo_review_case_law", {
+      case_id: recordedCaseId,
+      skill_id: published.skill.skill_id,
+      decision: "approved",
+      actor_id: "case-reviewer-a",
+      actor_type: "human",
+      evidence_refs: ["evidence:case-approval"],
+      decided_at: "2026-06-11T00:04:45.000Z",
+    });
+    expect(reviewedCaseGenericActorOnly?.isError).toBe(true);
+    expect(reviewedCaseGenericActorOnly?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_case_law_reviewer_required",
+    }));
     const reviewedCaseMissingActorType = await dispatchDojoTool("synthi_dojo_review_case_law", {
       case_id: recordedCaseId,
       skill_id: published.skill.skill_id,

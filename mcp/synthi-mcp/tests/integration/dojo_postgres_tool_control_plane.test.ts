@@ -1661,7 +1661,7 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
     ]));
   });
 
-  it("persists case law proposal and review through Postgres after local reset and rejects unauthorized reviewers", async () => {
+  it("persists case law proposal and review with audit through Postgres after local reset and rejects unauthorized reviewers", async () => {
     const tenantId = `tenant_case_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace_case_${Math.random().toString(16).slice(2)}`;
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
@@ -1802,6 +1802,27 @@ describeWithPostgres("Dojo tool Postgres control-plane wiring", () => {
       status: "approved",
       reviewer: "postgres-case-reviewer",
     }));
+    const auditStore = new PostgresDojoAuditStore({
+      tenant_id: tenantId,
+      workspace_id: workspaceId,
+      queryable: pool,
+    });
+    await expect(auditStore.listAuditEvents({ entity_kind: "case_law", entity_id: caseId })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event_type: "case_law_proposed",
+        entity_id: caseId,
+        actor: { actor_id: "postgres-case-author", actor_type: "human" },
+        request_id: "req-postgres-case-record",
+        correlation_id: "corr-postgres-case-record",
+      }),
+      expect.objectContaining({
+        event_type: "case_law_approved",
+        entity_id: caseId,
+        actor: { actor_id: "postgres-case-reviewer", actor_type: "human" },
+        request_id: "req-postgres-case-review",
+        correlation_id: "corr-postgres-case-review",
+      }),
+    ]));
     const skillStore = new PostgresDojoSkillStore({
       tenant_id: tenantId,
       workspace_id: workspaceId,

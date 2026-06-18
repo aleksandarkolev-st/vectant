@@ -4432,9 +4432,9 @@ async function dojoReviewCaseLawTool(args: unknown): Promise<ToolResponse> {
   if (!decision) return errorResponse("dojo_case_law_decision_required", {
     allowed_decisions: ["approved", "deprecated"],
   });
-  const reviewerActorId = stringOpt(a["reviewer_actor_id"]) ?? stringOpt(a["actor_id"]);
+  const reviewerActorId = stringOpt(a["reviewer_actor_id"]);
   if (!reviewerActorId) return errorResponse("dojo_case_law_reviewer_required");
-  const reviewerActorType = actorTypeInputOpt(a["reviewer_actor_type"] ?? a["actor_type"]);
+  const reviewerActorType = actorTypeInputOpt(a["reviewer_actor_type"]);
   if (!reviewerActorType) return errorResponse("dojo_case_law_reviewer_actor_type_required");
   const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_review_case_law", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
