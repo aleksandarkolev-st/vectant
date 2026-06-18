@@ -153,6 +153,95 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("executes validation-error API tissue against the API fault server", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "validation_error",
+      layer: "risk",
+      risk_tags: ["app_validation"],
+    }), {
+      expected_outcome_overrides: { validation_error: "block" },
+    });
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "api-validation-error-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-api-validation-error",
+    });
+
+    expect(materialized.fixture.api_state.validation_error).toBe(true);
+    expect(result.api_fault).toEqual(expect.objectContaining({
+      behavior: "validation_error",
+      request_count: 1,
+      response_status: 422,
+      durable_state: expect.objectContaining({
+        committed: false,
+        validation_error: true,
+      }),
+    }));
+    expect(result.observed_evidence).toEqual(expect.arrayContaining([
+      "api_fault_server_executed",
+      "api_validation_error_state",
+    ]));
+    expect(result.graph_result).toEqual(expect.objectContaining({
+      status: "blocked",
+      blocked_by: ["api_fault_validation_error"],
+    }));
+    expect(result.oracle_result).toEqual(expect.objectContaining({
+      status: "blocked",
+      expected_outcome: "block",
+    }));
+  });
+
+  it("executes latency API tissue as a timeout through the API fault server", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "network_latency",
+      layer: "skill",
+      risk_tags: ["network_failure"],
+    }), {
+      expected_outcome_overrides: { network_latency: "block" },
+    });
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "api-latency-timeout-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-api-latency-timeout",
+    });
+
+    expect(materialized.fixture.api_state.latency_ms).toBeGreaterThan(0);
+    expect(result.api_fault).toEqual(expect.objectContaining({
+      behavior: "timeout",
+      request_count: 1,
+      response_status: 504,
+      durable_state: expect.objectContaining({
+        committed: false,
+      }),
+    }));
+    expect(result.observed_evidence).toEqual(expect.arrayContaining([
+      "api_fault_server_executed",
+      "api_latency_timeout_state",
+    ]));
+    expect(result.graph_result).toEqual(expect.objectContaining({
+      status: "blocked",
+      blocked_by: ["api_fault_timeout"],
+    }));
+    expect(result.oracle_result).toEqual(expect.objectContaining({
+      status: "blocked",
+      expected_outcome: "block",
+    }));
+  });
+
   it("does not execute API fault fixtures when graph preconditions block before the action", async () => {
     const runner = new DojoVivariumRunner();
     const definition = toDojoScenarioDefinition(scenarioFixture({

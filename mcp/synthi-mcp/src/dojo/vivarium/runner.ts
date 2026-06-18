@@ -423,6 +423,8 @@ function fixtureInputs(fixture: DojoMaterializedFixture): Record<string, unknown
     stale_entity_ids: fixture.records.filter((record) => record.stale).map((record) => record.stable_id),
     missing_field_count: fixture.missing_fields.length,
     missing_field_names: [...fixture.missing_fields],
+    api_latency_ms: fixture.api_state.latency_ms,
+    api_validation_error: fixture.api_state.validation_error,
     partial_write: fixture.api_state.partial_write,
     fake_success: fixture.api_state.fake_success,
     prompt_injection_present: fixture.document_state.prompt_injection_present,
@@ -558,6 +560,7 @@ function apiFaultObservedEvidence(apiFault: DojoApiFaultExecution | undefined): 
   if (apiFault.durable_state.validation_error) evidence.add("api_validation_error_state");
   if (apiFault.durable_state.fake_success) evidence.add("fake_success_visual_only");
   if (apiFault.durable_state.downstream_failed) evidence.add("api_downstream_failure_state");
+  if (apiFault.behavior === "timeout") evidence.add("api_latency_timeout_state");
   return [...evidence].sort();
 }
 
