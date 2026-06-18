@@ -441,6 +441,7 @@ describe("Dojo release gate manifest", () => {
           require_legal_hold_blocks_disposal: true,
           require_external_storage_custody_receipts: true,
           require_proof_issue_claim_verification: true,
+          require_production_proof_issue_rejects_unverified_claims: true,
           require_self_attested_claim_rejection: true,
           require_durable_postgres_ledger_gate: true,
           durable_postgres_ledger_gate_id: "dojo_postgres_control_plane_self_check",
@@ -1528,6 +1529,7 @@ describe("Dojo release gate manifest", () => {
     evidenceAuthorityGate.artifact_requirements.required_test_files = DOJO_EVIDENCE_AUTHORITY_TEST_FILES
       .filter((file) => file !== missingEvidenceAuthorityTestFile);
     evidenceAuthorityGate.artifact_requirements.require_proof_issue_claim_verification = false;
+    evidenceAuthorityGate.artifact_requirements.require_production_proof_issue_rejects_unverified_claims = false;
     evidenceAuthorityGate.artifact_requirements.require_self_attested_claim_rejection = false;
     evidenceAuthorityGate.artifact_requirements.require_evidence_retention_policy = false;
     evidenceAuthorityGate.artifact_requirements.require_legal_hold_blocks_disposal = false;
@@ -1539,6 +1541,7 @@ describe("Dojo release gate manifest", () => {
       "evidence_authority_missing_legal_hold_requirement",
       "evidence_authority_missing_external_storage_custody_requirement",
       "evidence_authority_missing_proof_issue_requirement",
+      "evidence_authority_missing_production_proof_issue_requirement",
       "evidence_authority_missing_self_attested_rejection_requirement",
       "evidence_authority_missing_durable_postgres_gate_id",
       "evidence_authority_missing_self_check_execution_requirement",
