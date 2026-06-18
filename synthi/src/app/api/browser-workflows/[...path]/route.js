@@ -311,6 +311,22 @@ function workflowPanelErrorState(detail, code = 'workflow_bridge_error') {
   };
 }
 
+function statefulWorkflowErrorResponse(payload, stateDetail, code, status = 200) {
+  return NextResponse.json(
+    {
+      ...payload,
+      ok: false,
+      state: workflowPanelErrorState(stateDetail, code),
+    },
+    {
+      status,
+      headers: {
+        'cache-control': 'no-store',
+      },
+    },
+  );
+}
+
 function asStringArrayPath(rawPath) {
   if (Array.isArray(rawPath)) {
     return rawPath
@@ -505,11 +521,23 @@ async function proxyWorkflowBridge(request, routeContext) {
     }
     const isStatePath = path === 'state' || path === 'state/';
     const isToolPath = path === 'tool' || path === 'tool/';
-    const isOpenExternalPath = path === 'open-external' || path === 'open-external/';
     const isStatefulPath = isStatePath || isToolPath;
-    if (!isStatefulPath && !isOpenExternalPath) {
+    if (!isStatePath) {
       const ensure = await ensureRuntimeBridge(runtimeContext);
       if (!ensure.ok) {
+        if (isToolPath) {
+          return statefulWorkflowErrorResponse(
+            {
+              error: 'workflow_runtime_unavailable',
+              status: ensure.status || 503,
+              detail: ensure.detail,
+              action: `${request.method || 'GET'}:${path}`,
+              path,
+            },
+            `workflow_runtime_unavailable: ${ensure.detail || 'runtime could not be prepared'}`,
+            'workflow_runtime_unavailable',
+          );
+        }
         return NextResponse.json(
           { error: 'workflow_runtime_unavailable', detail: ensure.detail },
           { status: ensure.status || 503 },
@@ -554,7 +582,7 @@ async function proxyWorkflowBridge(request, routeContext) {
       }
 
       if (isStatefulPath) {
-        return NextResponse.json(
+        return statefulWorkflowErrorResponse(
           {
             error: 'workflow_bridge_unreachable',
             status: 502,
@@ -563,18 +591,9 @@ async function proxyWorkflowBridge(request, routeContext) {
             path,
             upstream_url: upstreamUrl.toString(),
             headers: propagatedHeaders,
-            ok: false,
-            state: workflowPanelErrorState(
-              `workflow_bridge_unreachable: ${err instanceof Error ? err.message : String(err)}`,
-              'workflow_bridge_unreachable',
-            ),
           },
-          {
-            status: 200,
-            headers: {
-              'cache-control': 'no-store',
-            },
-          },
+          `workflow_bridge_unreachable: ${err instanceof Error ? err.message : String(err)}`,
+          'workflow_bridge_unreachable',
         );
       }
 
@@ -645,21 +664,12 @@ async function proxyWorkflowBridge(request, routeContext) {
           });
         }
 
-        return NextResponse.json(
+        return statefulWorkflowErrorResponse(
           {
             ...merged,
-            ok: false,
-            state: workflowPanelErrorState(
-              `${merged.error}: ${merged.detail || 'workflow bridge returned a non-state response.'}`,
-              merged.error || 'workflow_bridge_upstream_error',
-            ),
           },
-          {
-            status: 200,
-            headers: {
-              'cache-control': 'no-store',
-            },
-          },
+          `${merged.error}: ${merged.detail || 'workflow bridge returned a non-state response.'}`,
+          merged.error || 'workflow_bridge_upstream_error',
         );
       }
 
