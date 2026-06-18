@@ -845,20 +845,22 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const securityResults = [];
-  if (releasePromotion || args["security-abuse-evidence"]) {
+  const securityAbuseReleaseCandidate = releasePromotion || truthy(args["security-abuse-release-candidate"]);
+  if (securityAbuseReleaseCandidate || args["security-abuse-evidence"]) {
     const evidencePath = resolveRepoPath(args["security-abuse-evidence"] || path.join(DEFAULT_SECURITY_ABUSE_DIR, "dojo-security-abuse.evidence.json"));
     securityResults.push(await verifyArtifactSection({
       id: "security_abuse_suite",
       evidencePath,
-      releaseCandidate: releasePromotion,
+      releaseCandidate: securityAbuseReleaseCandidate,
     }, () => verifyDojoSecurityAbuseEvidenceArtifact({
       evidencePath,
-      releaseCandidate: releasePromotion,
+      releaseCandidate: securityAbuseReleaseCandidate,
     })));
   }
 
   const complianceExportResults = [];
-  if (releasePromotion || truthy(args["include-compliance-export"]) || args["compliance-export-evidence"]) {
+  const complianceExportReleaseCandidate = releasePromotion || truthy(args["compliance-export-release-candidate"]);
+  if (complianceExportReleaseCandidate || truthy(args["include-compliance-export"]) || args["compliance-export-evidence"]) {
     const complianceGate = findGate(manifest, "compliance_export_suite") || {};
     const evidencePath = resolveRepoPath(args["compliance-export-evidence"]
       || complianceGate.default_evidence_path
@@ -866,15 +868,16 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     complianceExportResults.push(await verifyArtifactSection({
       id: "compliance_export_suite",
       evidencePath,
-      releaseCandidate: releasePromotion,
+      releaseCandidate: complianceExportReleaseCandidate,
     }, () => verifyDojoComplianceExportEvidenceArtifact({
       evidencePath,
-      releaseCandidate: releasePromotion,
+      releaseCandidate: complianceExportReleaseCandidate,
     })));
   }
 
   const privacyRedactionResults = [];
-  if (releasePromotion || truthy(args["include-privacy-redaction"]) || args["privacy-redaction-evidence"]) {
+  const privacyRedactionReleaseCandidate = releasePromotion || truthy(args["privacy-redaction-release-candidate"]);
+  if (privacyRedactionReleaseCandidate || truthy(args["include-privacy-redaction"]) || args["privacy-redaction-evidence"]) {
     const privacyGate = findGate(manifest, "privacy_redaction_suite") || {};
     const evidencePath = resolveRepoPath(args["privacy-redaction-evidence"]
       || privacyGate.default_evidence_path
@@ -882,10 +885,10 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     privacyRedactionResults.push(await verifyArtifactSection({
       id: "privacy_redaction_suite",
       evidencePath,
-      releaseCandidate: releasePromotion,
+      releaseCandidate: privacyRedactionReleaseCandidate,
     }, () => verifyDojoPrivacyRedactionEvidenceArtifact({
       evidencePath,
-      releaseCandidate: releasePromotion,
+      releaseCandidate: privacyRedactionReleaseCandidate,
     })));
   }
 

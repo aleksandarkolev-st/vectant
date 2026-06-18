@@ -1140,6 +1140,13 @@ describe("Dojo release gate manifest", () => {
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
+          section_release_verifier: {
+            flag: "--security-abuse-release-candidate",
+            evidence_arg: "--security-abuse-evidence",
+            default_evidence_path: "tmp/dojo-security-abuse/dojo-security-abuse.evidence.json",
+            default_out_dir: "tmp/dojo-release-gate-verify-security-abuse-release-section",
+            command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --security-abuse-release-candidate --security-abuse-evidence tmp/dojo-security-abuse/dojo-security-abuse.evidence.json --out-dir tmp/dojo-release-gate-verify-security-abuse-release-section",
+          },
         }),
       }),
       expect.objectContaining({
@@ -1157,6 +1164,13 @@ describe("Dojo release gate manifest", () => {
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
+          section_release_verifier: {
+            flag: "--compliance-export-release-candidate",
+            evidence_arg: "--compliance-export-evidence",
+            default_evidence_path: "tmp/dojo-compliance-export/dojo-compliance-export.evidence.json",
+            default_out_dir: "tmp/dojo-release-gate-verify-compliance-export-release-section",
+            command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --compliance-export-release-candidate --compliance-export-evidence tmp/dojo-compliance-export/dojo-compliance-export.evidence.json --out-dir tmp/dojo-release-gate-verify-compliance-export-release-section",
+          },
         }),
       }),
       expect.objectContaining({
@@ -1174,6 +1188,13 @@ describe("Dojo release gate manifest", () => {
           require_no_skipped_tests: true,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
+          section_release_verifier: {
+            flag: "--privacy-redaction-release-candidate",
+            evidence_arg: "--privacy-redaction-evidence",
+            default_evidence_path: "tmp/dojo-privacy-redaction/dojo-privacy-redaction.evidence.json",
+            default_out_dir: "tmp/dojo-release-gate-verify-privacy-redaction-release-section",
+            command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --privacy-redaction-release-candidate --privacy-redaction-evidence tmp/dojo-privacy-redaction/dojo-privacy-redaction.evidence.json --out-dir tmp/dojo-release-gate-verify-privacy-redaction-release-section",
+          },
         }),
       }),
       expect.objectContaining({
@@ -1981,10 +2002,21 @@ describe("Dojo release gate manifest", () => {
     securityGate.release_artifact_requirements.required_test_files = DOJO_SECURITY_ABUSE_TEST_FILES
       .filter((file) => file !== missingSecurityTestFile);
     securityGate.release_artifact_requirements.require_no_skipped_tests = false;
+    securityGate.release_artifact_requirements.section_release_verifier = {
+      flag: "--wrong-security-flag",
+      evidence_arg: "--wrong-security-evidence",
+      default_evidence_path: "tmp/wrong-security-evidence.json",
+      command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs",
+    };
     expect(validateDojoReleaseGateManifest(brokenSecurity, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "security_abuse_missing_required_classes:fake_success_oracle",
       `security_abuse_missing_required_test_files:${missingSecurityTestFile}`,
       "security_abuse_missing_no_skipped_requirement",
+      "security_abuse_missing_section_release_verifier_flag",
+      "security_abuse_missing_section_release_verifier_evidence_arg",
+      "security_abuse_section_release_verifier_evidence_path_mismatch",
+      "security_abuse_missing_section_release_verifier_out_dir",
+      "security_abuse_missing_section_release_verifier_command",
     ]));
 
     const brokenCompliance = JSON.parse(JSON.stringify(manifest));
@@ -1994,9 +2026,20 @@ describe("Dojo release gate manifest", () => {
       .filter((capability) => capability !== "redacted_evidence_export");
     complianceGate.release_artifact_requirements.required_test_files = DOJO_COMPLIANCE_EXPORT_TEST_FILES
       .filter((file) => file !== missingComplianceTestFile);
+    complianceGate.release_artifact_requirements.section_release_verifier = {
+      flag: "--wrong-compliance-flag",
+      evidence_arg: "--wrong-compliance-evidence",
+      default_evidence_path: "tmp/wrong-compliance-evidence.json",
+      command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs",
+    };
     expect(validateDojoReleaseGateManifest(brokenCompliance, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "compliance_export_missing_required_capabilities:redacted_evidence_export",
       `compliance_export_missing_required_test_files:${missingComplianceTestFile}`,
+      "compliance_export_missing_section_release_verifier_flag",
+      "compliance_export_missing_section_release_verifier_evidence_arg",
+      "compliance_export_section_release_verifier_evidence_path_mismatch",
+      "compliance_export_missing_section_release_verifier_out_dir",
+      "compliance_export_missing_section_release_verifier_command",
     ]));
 
     const brokenPrivacy = JSON.parse(JSON.stringify(manifest));
@@ -2006,9 +2049,20 @@ describe("Dojo release gate manifest", () => {
       .filter((capability) => capability !== "browser_origin_privacy_boundary");
     privacyGate.release_artifact_requirements.required_test_files = DOJO_PRIVACY_REDACTION_TEST_FILES
       .filter((file) => file !== missingPrivacyTestFile);
+    privacyGate.release_artifact_requirements.section_release_verifier = {
+      flag: "--wrong-privacy-flag",
+      evidence_arg: "--wrong-privacy-evidence",
+      default_evidence_path: "tmp/wrong-privacy-evidence.json",
+      command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs",
+    };
     expect(validateDojoReleaseGateManifest(brokenPrivacy, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "privacy_redaction_missing_required_capabilities:browser_origin_privacy_boundary",
       `privacy_redaction_missing_required_test_files:${missingPrivacyTestFile}`,
+      "privacy_redaction_missing_section_release_verifier_flag",
+      "privacy_redaction_missing_section_release_verifier_evidence_arg",
+      "privacy_redaction_section_release_verifier_evidence_path_mismatch",
+      "privacy_redaction_missing_section_release_verifier_out_dir",
+      "privacy_redaction_missing_section_release_verifier_command",
     ]));
 
     const brokenChaos = JSON.parse(JSON.stringify(manifest));

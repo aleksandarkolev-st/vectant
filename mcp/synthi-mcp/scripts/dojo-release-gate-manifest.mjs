@@ -1451,6 +1451,13 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_budget_ok: true,
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
+      section_release_verifier: {
+        flag: "--security-abuse-release-candidate",
+        evidence_arg: "--security-abuse-evidence",
+        default_evidence_path: "tmp/dojo-security-abuse/dojo-security-abuse.evidence.json",
+        default_out_dir: "tmp/dojo-release-gate-verify-security-abuse-release-section",
+        command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --security-abuse-release-candidate --security-abuse-evidence tmp/dojo-security-abuse/dojo-security-abuse.evidence.json --out-dir tmp/dojo-release-gate-verify-security-abuse-release-section",
+      },
     },
   },
   {
@@ -1471,6 +1478,13 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
+      section_release_verifier: {
+        flag: "--compliance-export-release-candidate",
+        evidence_arg: "--compliance-export-evidence",
+        default_evidence_path: "tmp/dojo-compliance-export/dojo-compliance-export.evidence.json",
+        default_out_dir: "tmp/dojo-release-gate-verify-compliance-export-release-section",
+        command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --compliance-export-release-candidate --compliance-export-evidence tmp/dojo-compliance-export/dojo-compliance-export.evidence.json --out-dir tmp/dojo-release-gate-verify-compliance-export-release-section",
+      },
     },
   },
   {
@@ -1491,6 +1505,13 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_no_skipped_tests: true,
       require_stdout_stderr_digest_match: true,
       require_json_report_digest_match: true,
+      section_release_verifier: {
+        flag: "--privacy-redaction-release-candidate",
+        evidence_arg: "--privacy-redaction-evidence",
+        default_evidence_path: "tmp/dojo-privacy-redaction/dojo-privacy-redaction.evidence.json",
+        default_out_dir: "tmp/dojo-release-gate-verify-privacy-redaction-release-section",
+        command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --privacy-redaction-release-candidate --privacy-redaction-evidence tmp/dojo-privacy-redaction/dojo-privacy-redaction.evidence.json --out-dir tmp/dojo-release-gate-verify-privacy-redaction-release-section",
+      },
     },
   },
   {
@@ -2665,24 +2686,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (missingManagedKeyObservationProducerEnv.length > 0) {
       errors.push(`managed_key_signing_missing_release_observation_producer_env:${missingManagedKeyObservationProducerEnv.join(",")}`);
     }
-    const managedKeySectionVerifier = managedKeySigningGate.release_artifact_requirements?.section_release_verifier || {};
-    if (managedKeySectionVerifier.flag !== "--managed-key-signing-release-candidate") {
-      errors.push("managed_key_signing_missing_section_release_verifier_flag");
-    }
-    if (managedKeySectionVerifier.evidence_arg !== "--managed-key-signing-evidence") {
-      errors.push("managed_key_signing_missing_section_release_verifier_evidence_arg");
-    }
-    if (managedKeySectionVerifier.default_evidence_path !== managedKeySigningGate.default_evidence_path) {
-      errors.push("managed_key_signing_section_release_verifier_evidence_path_mismatch");
-    }
-    if (typeof managedKeySectionVerifier.default_out_dir !== "string" || managedKeySectionVerifier.default_out_dir.length === 0) {
-      errors.push("managed_key_signing_missing_section_release_verifier_out_dir");
-    }
-    if (typeof managedKeySectionVerifier.command !== "string"
-      || !managedKeySectionVerifier.command.includes("--managed-key-signing-release-candidate")
-      || !managedKeySectionVerifier.command.includes("--managed-key-signing-evidence")) {
-      errors.push("managed_key_signing_missing_section_release_verifier_command");
-    }
+    validateSectionReleaseVerifier({
+      errors,
+      gate: managedKeySigningGate,
+      prefix: "managed_key_signing",
+      flag: "--managed-key-signing-release-candidate",
+      evidenceArg: "--managed-key-signing-evidence",
+    });
     const requiredManagedKeySigningCapabilities = Array.isArray(managedKeySigningGate.release_artifact_requirements?.required_managed_key_signing_capabilities)
       ? managedKeySigningGate.release_artifact_requirements.required_managed_key_signing_capabilities
       : [];
@@ -3335,24 +3345,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (missingProducerInputs.length > 0) {
       errors.push(`hosted_runtime_gateway_missing_release_observation_producer_inputs:${missingProducerInputs.join(",")}`);
     }
-    const hostedRuntimeSectionVerifier = hostedRuntimeGatewayGate.release_artifact_requirements?.section_release_verifier || {};
-    if (hostedRuntimeSectionVerifier.flag !== "--hosted-runtime-gateway-release-candidate") {
-      errors.push("hosted_runtime_gateway_missing_section_release_verifier_flag");
-    }
-    if (hostedRuntimeSectionVerifier.evidence_arg !== "--hosted-runtime-gateway-evidence") {
-      errors.push("hosted_runtime_gateway_missing_section_release_verifier_evidence_arg");
-    }
-    if (hostedRuntimeSectionVerifier.default_evidence_path !== hostedRuntimeGatewayGate.default_evidence_path) {
-      errors.push("hosted_runtime_gateway_section_release_verifier_evidence_path_mismatch");
-    }
-    if (typeof hostedRuntimeSectionVerifier.default_out_dir !== "string" || hostedRuntimeSectionVerifier.default_out_dir.length === 0) {
-      errors.push("hosted_runtime_gateway_missing_section_release_verifier_out_dir");
-    }
-    if (typeof hostedRuntimeSectionVerifier.command !== "string"
-      || !hostedRuntimeSectionVerifier.command.includes("--hosted-runtime-gateway-release-candidate")
-      || !hostedRuntimeSectionVerifier.command.includes("--hosted-runtime-gateway-evidence")) {
-      errors.push("hosted_runtime_gateway_missing_section_release_verifier_command");
-    }
+    validateSectionReleaseVerifier({
+      errors,
+      gate: hostedRuntimeGatewayGate,
+      prefix: "hosted_runtime_gateway",
+      flag: "--hosted-runtime-gateway-release-candidate",
+      evidenceArg: "--hosted-runtime-gateway-evidence",
+    });
     if (!hostedRuntimeGatewayGate.release_artifact_requirements?.require_no_skipped_tests) {
       errors.push("hosted_runtime_gateway_missing_no_skipped_requirement");
     }
@@ -3395,6 +3394,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!securityAbuseGate.release_artifact_requirements?.require_json_report_digest_match) {
       errors.push("security_abuse_missing_json_report_digest_requirement");
     }
+    validateSectionReleaseVerifier({
+      errors,
+      gate: securityAbuseGate,
+      prefix: "security_abuse",
+      flag: "--security-abuse-release-candidate",
+      evidenceArg: "--security-abuse-evidence",
+    });
   }
   const complianceExportGate = gates.find((gate) => gate.id === "compliance_export_suite");
   if (complianceExportGate) {
@@ -3429,6 +3435,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!complianceExportGate.release_artifact_requirements?.require_json_report_digest_match) {
       errors.push("compliance_export_missing_json_report_digest_requirement");
     }
+    validateSectionReleaseVerifier({
+      errors,
+      gate: complianceExportGate,
+      prefix: "compliance_export",
+      flag: "--compliance-export-release-candidate",
+      evidenceArg: "--compliance-export-evidence",
+    });
   }
   const privacyRedactionGate = gates.find((gate) => gate.id === "privacy_redaction_suite");
   if (privacyRedactionGate) {
@@ -3463,6 +3476,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!privacyRedactionGate.release_artifact_requirements?.require_json_report_digest_match) {
       errors.push("privacy_redaction_missing_json_report_digest_requirement");
     }
+    validateSectionReleaseVerifier({
+      errors,
+      gate: privacyRedactionGate,
+      prefix: "privacy_redaction",
+      flag: "--privacy-redaction-release-candidate",
+      evidenceArg: "--privacy-redaction-evidence",
+    });
   }
   const chaosPerformanceGate = gates.find((gate) => gate.id === "dojo_chaos_performance_self_check");
   if (chaosPerformanceGate) {
@@ -3652,6 +3672,33 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     tier_count: tierIds.size,
     gate_count: gates.length,
   };
+}
+
+function validateSectionReleaseVerifier({
+  errors,
+  gate,
+  prefix,
+  flag,
+  evidenceArg,
+}) {
+  const sectionVerifier = gate.release_artifact_requirements?.section_release_verifier || {};
+  if (sectionVerifier.flag !== flag) {
+    errors.push(`${prefix}_missing_section_release_verifier_flag`);
+  }
+  if (sectionVerifier.evidence_arg !== evidenceArg) {
+    errors.push(`${prefix}_missing_section_release_verifier_evidence_arg`);
+  }
+  if (sectionVerifier.default_evidence_path !== gate.default_evidence_path) {
+    errors.push(`${prefix}_section_release_verifier_evidence_path_mismatch`);
+  }
+  if (typeof sectionVerifier.default_out_dir !== "string" || sectionVerifier.default_out_dir.length === 0) {
+    errors.push(`${prefix}_missing_section_release_verifier_out_dir`);
+  }
+  if (typeof sectionVerifier.command !== "string"
+    || !sectionVerifier.command.includes(flag)
+    || !sectionVerifier.command.includes(evidenceArg)) {
+    errors.push(`${prefix}_missing_section_release_verifier_command`);
+  }
 }
 
 function missingRequiredEntries(requiredEntries, declaredEntries) {
