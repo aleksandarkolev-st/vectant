@@ -3462,6 +3462,7 @@ function evidenceClaimsForProofIssue(
     tenant_id: input.tenant_id,
     workspace_id: skill.workspace_id,
     skill_id: skill.skill_id,
+    required_scope: ["tenant_id", "workspace_id", "skill_id"],
     checked_at: checkedAt,
     max_age_ms: input.evidence_max_age_ms,
   });

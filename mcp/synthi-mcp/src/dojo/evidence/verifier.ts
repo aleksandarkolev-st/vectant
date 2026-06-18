@@ -4,6 +4,15 @@ import type { DojoEvidenceClaimId, DojoEvidenceClaimResult } from "./claims.js";
 
 const DEFAULT_EVIDENCE_FRESH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+type DojoEvidenceClaimScope = {
+  tenant_id?: string;
+  workspace_id?: string;
+  skill_id?: string;
+  run_id?: string;
+};
+
+export type DojoEvidenceClaimScopeField = keyof DojoEvidenceClaimScope;
+
 export interface DojoEvidenceClaimVerifierInput {
   claim_ids: DojoEvidenceClaimId[];
   records: DojoEvidenceLedgerRecord[];
@@ -11,6 +20,7 @@ export interface DojoEvidenceClaimVerifierInput {
   workspace_id?: string;
   skill_id?: string;
   run_id?: string;
+  required_scope?: DojoEvidenceClaimScopeField[];
   checked_at?: string;
   max_age_ms?: number;
 }
@@ -30,6 +40,17 @@ export function resolveDojoEvidenceClaims(input: DojoEvidenceClaimVerifierInput)
   const maxAgeMs = input.max_age_ms;
   const uniqueClaims = [...new Set(input.claim_ids)];
   const scope = evidenceScopeFromInput(input);
+  const missingScope = missingRequiredEvidenceScopeFields(scope, input.required_scope ?? []);
+  if (missingScope.length > 0) {
+    return uniqueClaims.map((claimId) => ({
+      claim_id: claimId,
+      ok: false,
+      status: "failed",
+      evidence_record_ids: input.records.map((record) => record.record_id),
+      checked_at: checkedAt,
+      blocked_by: missingScope.map((field) => `evidence_claim_scope_required:${field}`),
+    }));
+  }
   return uniqueClaims.map((claimId) => resolveClaim({
     claim_id: claimId,
     records: input.records,
@@ -38,13 +59,6 @@ export function resolveDojoEvidenceClaims(input: DojoEvidenceClaimVerifierInput)
     max_age_ms: claimId === "evidence_fresh" ? maxAgeMs ?? DEFAULT_EVIDENCE_FRESH_MAX_AGE_MS : maxAgeMs,
   }));
 }
-
-type DojoEvidenceClaimScope = {
-  tenant_id?: string;
-  workspace_id?: string;
-  skill_id?: string;
-  run_id?: string;
-};
 
 function resolveClaim(input: {
   claim_id: DojoEvidenceClaimId;
@@ -166,15 +180,27 @@ function parseTimestamp(value: string): number | undefined {
 
 function evidenceScopeFromInput(input: DojoEvidenceClaimVerifierInput): DojoEvidenceClaimScope {
   return {
-    tenant_id: input.tenant_id,
-    workspace_id: input.workspace_id,
-    skill_id: input.skill_id,
-    run_id: input.run_id,
+    tenant_id: normalizeScopeValue(input.tenant_id),
+    workspace_id: normalizeScopeValue(input.workspace_id),
+    skill_id: normalizeScopeValue(input.skill_id),
+    run_id: normalizeScopeValue(input.run_id),
   };
 }
 
 function hasEvidenceScope(scope: DojoEvidenceClaimScope): boolean {
   return Boolean(scope.tenant_id || scope.workspace_id || scope.skill_id || scope.run_id);
+}
+
+function missingRequiredEvidenceScopeFields(
+  scope: DojoEvidenceClaimScope,
+  requiredScope: DojoEvidenceClaimScopeField[]
+): DojoEvidenceClaimScopeField[] {
+  return [...new Set(requiredScope)].filter((field) => !scope[field]);
+}
+
+function normalizeScopeValue(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function evidenceRecordMatchesScope(record: DojoEvidenceLedgerRecord, scope: DojoEvidenceClaimScope): boolean {

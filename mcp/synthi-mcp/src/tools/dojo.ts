@@ -7123,6 +7123,7 @@ async function validateProofCapsuleEvidenceAgainstLedgerIfRequired(input: {
       tenant_id: input.tenant.tenant_id,
       workspace_id: input.tenant.workspace_id,
       skill_id: input.skill.skill_id,
+      required_scope: ["tenant_id", "workspace_id", "skill_id"],
       checked_at: checkedAt,
       max_age_ms: input.evidence_max_age_ms,
     })
@@ -8859,6 +8860,7 @@ async function validateGovernanceEvidenceRefsAgainstLedgerIfRequired(input: {
       tenant_id: input.tenant.tenant_id,
       workspace_id: input.tenant.workspace_id,
       skill_id: input.skill.skill_id,
+      required_scope: ["tenant_id", "workspace_id", "skill_id"],
       checked_at: input.checked_at,
     })
     : undefined;

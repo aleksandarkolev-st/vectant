@@ -148,6 +148,43 @@ describe("Dojo evidence claim verifier", () => {
     ]);
   });
 
+  it("fails strict verification before matching records when required evidence scope is missing", () => {
+    expect(resolveDojoEvidenceClaims({
+      claim_ids: ["workspace_verified", "checkride_passed"],
+      records: [
+        evidenceRecord("record-a", ["workspace_verified", "checkride_passed"], "2026-06-11T00:00:00.000Z"),
+      ],
+      tenant_id: " ",
+      workspace_id: "workspace-a",
+      required_scope: ["tenant_id", "workspace_id", "skill_id"],
+      checked_at: "2026-06-11T00:05:00.000Z",
+      max_age_ms: 10 * 60 * 1000,
+    })).toEqual([
+      {
+        claim_id: "workspace_verified",
+        ok: false,
+        status: "failed",
+        evidence_record_ids: ["record-a"],
+        checked_at: "2026-06-11T00:05:00.000Z",
+        blocked_by: [
+          "evidence_claim_scope_required:tenant_id",
+          "evidence_claim_scope_required:skill_id",
+        ],
+      },
+      {
+        claim_id: "checkride_passed",
+        ok: false,
+        status: "failed",
+        evidence_record_ids: ["record-a"],
+        checked_at: "2026-06-11T00:05:00.000Z",
+        blocked_by: [
+          "evidence_claim_scope_required:tenant_id",
+          "evidence_claim_scope_required:skill_id",
+        ],
+      },
+    ]);
+  });
+
   it("fails claims backed only by records with the wrong evidence kind", () => {
     expect(resolveDojoEvidenceClaims({
       claim_ids: ["checkride_passed"],

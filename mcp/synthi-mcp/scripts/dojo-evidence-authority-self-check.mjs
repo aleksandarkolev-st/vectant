@@ -39,6 +39,7 @@ export const DOJO_EVIDENCE_AUTHORITY_CAPABILITIES = [
   "evidence_record_canonical_hash_chain",
   "evidence_record_signature_tamper_detection",
   "evidence_claim_verifier_fresh_missing_stale_scope_kind",
+  "evidence_claim_verifier_requires_strict_scope",
   "evidence_ledger_resolver_fails_closed",
   "evidence_redaction_manifest_tamper_detection",
   "evidence_export_redacts_and_requires_ledger_records",
@@ -190,6 +191,7 @@ export function buildDojoEvidenceAuthorityEvidenceManifest({
       tamper_detection_required: true,
       claim_freshness_required: true,
       claim_scope_required: true,
+      strict_claim_scope_required: true,
       claim_kind_required: true,
       ledger_resolver_fail_closed_required: true,
       redaction_manifest_required: true,
@@ -318,6 +320,9 @@ const CAPABILITY_MATCHERS = {
     includes("returns stale when evidence is older"),
     includes("outside the requested evidence scope"),
     includes("wrong evidence kind"),
+  ),
+  evidence_claim_verifier_requires_strict_scope: anyOf(
+    includes("fails strict verification", "required evidence scope is missing"),
   ),
   evidence_ledger_resolver_fails_closed: anyOf(
     includes("fails closed when record ids are missing"),
