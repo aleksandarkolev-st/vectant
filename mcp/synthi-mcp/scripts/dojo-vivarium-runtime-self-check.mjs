@@ -67,6 +67,8 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "vivarium_runner_executes_baseline_through_fixtures_graph_oracle",
   "vivarium_runner_classifies_fake_success_from_state",
   "vivarium_runner_executes_partial_write_faults",
+  "vivarium_runner_executes_validation_error_api_tissue",
+  "vivarium_runner_executes_latency_timeout_api_tissue",
   "vivarium_runner_emits_policy_tissue_evidence",
   "vivarium_runner_emits_expanded_identity_evidence",
   "vivarium_runner_emits_invalid_value_evidence",
@@ -242,6 +244,7 @@ export function buildDojoVivariumRuntimeEvidenceManifest({
       expanded_identity_tissue_required: true,
       invalid_value_data_tissue_required: true,
       stale_missing_data_tissue_required: true,
+      api_validation_latency_tissue_required: true,
       deterministic_reset_required: true,
       budget_enforcement_required: true,
       targeted_graph_execution_required: true,
@@ -385,6 +388,10 @@ function capabilityMatchers(capability) {
       return ["vivarium runner classifies fake success", "observed fixture state"];
     case "vivarium_runner_executes_partial_write_faults":
       return ["vivarium runner executes partial write scenarios", "api fault server"];
+    case "vivarium_runner_executes_validation_error_api_tissue":
+      return ["vivarium runner executes validation error api tissue", "api fault server"];
+    case "vivarium_runner_executes_latency_timeout_api_tissue":
+      return ["vivarium runner executes latency api tissue", "timeout through the api fault server"];
     case "vivarium_runner_emits_policy_tissue_evidence":
       return ["vivarium runner emits policy tissue evidence", "policy fixtures block scenario execution"];
     case "vivarium_runner_emits_expanded_identity_evidence":

@@ -3567,6 +3567,7 @@ export function validateDojoVivariumRuntimeEvidenceForRelease(evidence) {
     ["expanded_identity_tissue_required", "vivarium_runtime_expanded_identity_tissue_requirement_missing"],
     ["invalid_value_data_tissue_required", "vivarium_runtime_invalid_value_data_tissue_requirement_missing"],
     ["stale_missing_data_tissue_required", "vivarium_runtime_stale_missing_data_tissue_requirement_missing"],
+    ["api_validation_latency_tissue_required", "vivarium_runtime_api_validation_latency_tissue_requirement_missing"],
     ["deterministic_reset_required", "vivarium_runtime_reset_requirement_missing"],
     ["budget_enforcement_required", "vivarium_runtime_budget_requirement_missing"],
     ["targeted_graph_execution_required", "vivarium_runtime_targeted_graph_requirement_missing"],
@@ -5466,6 +5467,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
         expanded_identity_tissue_required: false,
         invalid_value_data_tissue_required: false,
         stale_missing_data_tissue_required: false,
+        api_validation_latency_tissue_required: false,
       },
     },
   });
@@ -5481,6 +5483,7 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_expanded_identity_tissue_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_invalid_value_data_tissue_requirement_missing"));
   assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_stale_missing_data_tissue_requirement_missing"));
+  assert(rejectedVivariumRuntime.errors.includes("vivarium_runtime_api_validation_latency_tissue_requirement_missing"));
 
   const checkrideLicenseDir = path.join(outDir, "checkride-license");
   await mkdir(checkrideLicenseDir, { recursive: true });
@@ -8218,6 +8221,7 @@ async function writeVivariumRuntimeEvidenceForSelfCheck({
       expanded_identity_tissue_required: true,
       invalid_value_data_tissue_required: true,
       stale_missing_data_tissue_required: true,
+      api_validation_latency_tissue_required: true,
       deterministic_reset_required: true,
       budget_enforcement_required: true,
       targeted_graph_execution_required: true,
