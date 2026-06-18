@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -314,10 +315,14 @@ describe("Dojo release gate artifact verifier", () => {
       generatedAt: "2026-06-11T00:00:00.000Z",
       packageScripts,
     });
+    const releaseGateIds = releaseManifest.release_gate_ids;
     const artifacts = await writeReleaseGateRunnerFixture({
       dir,
       manifest: releaseManifest,
       packageScripts,
+      scope: "release",
+      gateIds: releaseGateIds,
+      writeExpectedArtifacts: true,
     });
 
     expect(await verifyDojoReleaseGateRunReportArtifact({
@@ -330,8 +335,9 @@ describe("Dojo release gate artifact verifier", () => {
       ok: true,
       errors: [],
       report_schema_version: "synthi.dojo.releaseGateRun.v1",
-      result_count: 1,
+      result_count: releaseGateIds.length,
       promotion_ready: true,
+      runner_scope: "release",
     }));
 
     const originalReportText = await readFile(artifacts.reportPath, "utf8");
@@ -366,6 +372,8 @@ describe("Dojo release gate artifact verifier", () => {
       basename: "dojo-release-gate-runner-dry-run",
       manifest: releaseManifest,
       packageScripts,
+      scope: "release",
+      gateIds: releaseGateIds,
       dryRun: true,
     });
     const dryRunRejected = await verifyDojoReleaseGateRunReportArtifact({
@@ -379,7 +387,7 @@ describe("Dojo release gate artifact verifier", () => {
       "runner_report_dry_run",
       "runner_report_not_complete",
       "runner_report_not_promotion_ready",
-      "runner_planned_gates_present:1",
+      `runner_planned_gates_present:${releaseGateIds.length}`,
       "runner_result_planned:mcp_typecheck",
     ]));
   });
@@ -398,6 +406,9 @@ describe("Dojo release gate artifact verifier", () => {
       dir,
       manifest: releaseManifest,
       packageScripts,
+      scope: "release",
+      gateIds: releaseManifest.release_gate_ids,
+      writeExpectedArtifacts: true,
     });
 
     const aggregate = await verifyDojoReleaseGateArtifactsFromArgs({
@@ -415,8 +426,9 @@ describe("Dojo release gate artifact verifier", () => {
       expect.objectContaining({
         id: "release_gate_runner",
         ok: true,
-        result_count: 1,
+        result_count: releaseManifest.release_gate_ids.length,
         promotion_ready: true,
+        runner_scope: "release",
       }),
     ]);
     expect(aggregate.attempted_release_gate_ids).not.toContain("release_gate_runner");
@@ -438,7 +450,8 @@ describe("Dojo release gate artifact verifier", () => {
       basename: "dojo-release-gate-runner-produced-artifact",
       manifest: manifestWithTempEvidence,
       packageScripts,
-      gateId: "dojo_implementation_status_self_check",
+      scope: "release",
+      gateIds: manifestWithTempEvidence.release_gate_ids,
       writeExpectedArtifacts: true,
     });
 
@@ -450,7 +463,7 @@ describe("Dojo release gate artifact verifier", () => {
     })).toEqual(expect.objectContaining({
       ok: true,
       errors: [],
-      result_count: 1,
+      result_count: manifestWithTempEvidence.release_gate_ids.length,
     }));
 
     await writeFile(evidencePath, JSON.stringify({ ok: false, tampered: true }), "utf8");
@@ -1879,6 +1892,8 @@ describe("Dojo release gate artifact verifier", () => {
     const workflowSummaryPath = path.join(dir, "missing-workflow-summary.json");
     const stdioTranscriptPath = path.join(dir, "missing-stdio-acceptance.json");
     const codexTranscriptPath = path.join(dir, "missing-codex-acceptance.json");
+    const releaseGateRunnerReportPath = path.join(dir, "missing-release-gate-runner.json");
+    const releaseGateRunnerEvidencePath = path.join(dir, "missing-release-gate-runner.evidence.json");
     manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path = workflowSummaryPath;
     manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path = stdioTranscriptPath;
     manifest.gates.find((gate) => gate.id === "private_tool_codex_acceptance").default_report_path = codexTranscriptPath;
@@ -1891,11 +1906,14 @@ describe("Dojo release gate artifact verifier", () => {
         "release-candidate": "1",
         manifest: manifestPath,
         evidence: evidencePath,
+        "release-gate-run-report": releaseGateRunnerReportPath,
+        "release-gate-run-evidence": releaseGateRunnerEvidencePath,
       },
     });
 
     expect(verified.ok).toBe(false);
     expect(verified.errors).toEqual(expect.arrayContaining([
+      `release_gate_runner:artifact_missing:${releaseGateRunnerReportPath}`,
       `workflow_e2e_hosted:artifact_missing:${workflowSummaryPath}`,
       `private_tool_stdio_acceptance:artifact_missing:${stdioTranscriptPath}`,
       `private_tool_codex_acceptance:artifact_missing:${codexTranscriptPath}`,
@@ -1914,6 +1932,15 @@ describe("Dojo release gate artifact verifier", () => {
       "workflow_e2e_hosted",
       "private_tool_stdio_acceptance",
       "private_tool_codex_acceptance",
+    ]));
+    expect(verified.release_gate_runner).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "release_gate_runner",
+        ok: false,
+        artifact_path: releaseGateRunnerReportPath,
+        evidence_path: releaseGateRunnerEvidencePath,
+        errors: [`artifact_missing:${releaseGateRunnerReportPath}`],
+      }),
     ]));
     expect(verified.live_hosted_runtime).toEqual([
       expect.objectContaining({
@@ -2114,6 +2141,15 @@ describe("Dojo release gate artifact verifier", () => {
     });
     expect(releaseGateVerifierGate.default_report_path).toBe(releaseGateVerifier.reportPath);
     expect(releaseGateVerifierGate.default_evidence_path).toBe(releaseGateVerifier.evidencePath);
+    const releaseRun = await writeReleaseGateRunnerFixture({
+      dir,
+      basename: "dojo-release-gate-runner-release",
+      manifest,
+      packageScripts,
+      scope: "release",
+      gateIds: manifest.release_gate_ids,
+      writeExpectedArtifacts: true,
+    });
     const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
     const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
     await writeManifestPair({ manifest, manifestPath, evidencePath });
@@ -2123,6 +2159,8 @@ describe("Dojo release gate artifact verifier", () => {
         "release-candidate": "1",
         manifest: manifestPath,
         evidence: evidencePath,
+        "release-gate-run-report": releaseRun.reportPath,
+        "release-gate-run-evidence": releaseRun.evidencePath,
         "mcp-host-conformance-report": conformanceReportPath,
         "mcp-host-conformance-evidence": conformanceEvidencePath,
         "evidence-authority-evidence": evidenceAuthorityEvidencePath,
@@ -2172,6 +2210,14 @@ describe("Dojo release gate artifact verifier", () => {
       }),
     ]);
     expect(verified.release_gate_runner).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "release_gate_runner",
+        ok: true,
+        artifact_path: releaseRun.reportPath,
+        evidence_path: releaseRun.evidencePath,
+        runner_scope: "release",
+        promotion_ready: true,
+      }),
       expect.objectContaining({
         id: "dojo_release_gate_runner_self_check",
         ok: true,
@@ -3995,91 +4041,106 @@ async function writeReleaseGateRunnerFixture({
   manifest,
   packageScripts,
   gateId = "mcp_typecheck",
+  gateIds,
+  scope = "minimal-pr",
   dryRun = false,
   writeExpectedArtifacts = false,
 }) {
+  const selectedGateIds = Array.isArray(gateIds) && gateIds.length > 0 ? gateIds : [gateId];
   const plan = buildDojoReleaseGateExecutionPlan({
     manifest,
-    scope: "minimal-pr",
-    gateIds: [gateId],
+    scope,
+    gateIds: selectedGateIds,
     env: {},
   });
-  const gatePlan = plan.gates[0];
   const validation = validateDojoReleaseGateManifest(manifest, { packageScripts });
   const logsDir = path.join(dir, `${basename}-logs`);
   await mkdir(logsDir, { recursive: true });
   const stdout = "typecheck ok\n";
   const stderr = "";
-  const stdoutPath = path.join(logsDir, `${gateId}.stdout.log`);
-  const stderrPath = path.join(logsDir, `${gateId}.stderr.log`);
-  await writeFile(stdoutPath, stdout, "utf8");
-  await writeFile(stderrPath, stderr, "utf8");
-  const producedArtifacts = [];
-  if (writeExpectedArtifacts) {
-    for (const [kind, artifactPath] of [
-      ["report", gatePlan.expected_artifacts.report_path],
-      ["evidence", gatePlan.expected_artifacts.evidence_path],
-      ["events", gatePlan.expected_artifacts.events_path],
-    ]) {
-      if (!artifactPath) continue;
-      const artifactBody = JSON.stringify({
-        ok: true,
-        kind,
-        gate_id: gateId,
-        generated_at: "2026-06-11T00:00:00.000Z",
-      });
-      await mkdir(path.dirname(artifactPath), { recursive: true });
-      await writeFile(artifactPath, artifactBody, "utf8");
-      producedArtifacts.push({
-        kind,
-        path: artifactPath,
-        exists: true,
-        required: true,
-        bytes: Buffer.byteLength(artifactBody),
-        sha256: sha256(artifactBody),
-      });
+  const writtenLogPaths = [];
+
+  const results = [];
+  for (const gatePlan of plan.gates) {
+    const currentGateId = gatePlan.gate_id;
+    const stdoutPath = path.join(logsDir, `${currentGateId}.stdout.log`);
+    const stderrPath = path.join(logsDir, `${currentGateId}.stderr.log`);
+    await writeFile(stdoutPath, stdout, "utf8");
+    await writeFile(stderrPath, stderr, "utf8");
+    writtenLogPaths.push({ stdoutPath, stderrPath });
+    const producedArtifacts = [];
+    if (writeExpectedArtifacts) {
+      for (const [kind, artifactPath] of [
+        ["report", gatePlan.expected_artifacts.report_path],
+        ["evidence", gatePlan.expected_artifacts.evidence_path],
+        ["events", gatePlan.expected_artifacts.events_path],
+      ]) {
+        if (!artifactPath) continue;
+        const artifactBody = JSON.stringify({
+          ok: true,
+          kind,
+          gate_id: currentGateId,
+          generated_at: "2026-06-11T00:00:00.000Z",
+        });
+        const outputPath = path.isAbsolute(artifactPath) ? artifactPath : path.join(REPO_ROOT, artifactPath);
+        await mkdir(path.dirname(outputPath), { recursive: true });
+        if (!existsSync(outputPath)) {
+          await writeFile(outputPath, artifactBody, "utf8");
+        }
+        const artifactBytes = await readFile(outputPath);
+        producedArtifacts.push({
+          kind,
+          path: artifactPath,
+          exists: true,
+          required: true,
+          bytes: artifactBytes.length,
+          sha256: sha256(artifactBytes),
+        });
+      }
     }
+    results.push(dryRun
+      ? {
+        gate_id: currentGateId,
+        tier: gatePlan.tier,
+        status: "planned",
+        executed: false,
+        command: gatePlan.execution_spec.canonical_command,
+        expected_artifacts: gatePlan.expected_artifacts,
+        requires_env: gatePlan.requires_env,
+        missing_env: gatePlan.missing_env,
+      }
+      : {
+        schema_version: "synthi.dojo.releaseGateCommandLog.v1",
+        gate_id: currentGateId,
+        tier: gatePlan.tier,
+        status: "passed",
+        executed: true,
+        started_at: "2026-06-11T00:00:00.000Z",
+        duration_ms: 12,
+        command: gatePlan.execution_spec.canonical_command,
+        exit_code: 0,
+        signal: null,
+        timed_out: false,
+        failure_reason: null,
+        stdout_path: stdoutPath,
+        stderr_path: stderrPath,
+        stdout_bytes: Buffer.byteLength(stdout),
+        stderr_bytes: Buffer.byteLength(stderr),
+        stdout_sha256: sha256(stdout),
+        stderr_sha256: sha256(stderr),
+        expected_artifacts: gatePlan.expected_artifacts,
+        produced_artifacts: producedArtifacts,
+        missing_expected_artifacts: [],
+      });
   }
-  const results = dryRun
-    ? [{
-      gate_id: gateId,
-      tier: gatePlan.tier,
-      status: "planned",
-      executed: false,
-      command: gatePlan.execution_spec.canonical_command,
-      expected_artifacts: gatePlan.expected_artifacts,
-      requires_env: gatePlan.requires_env,
-      missing_env: gatePlan.missing_env,
-    }]
-    : [{
-      schema_version: "synthi.dojo.releaseGateCommandLog.v1",
-      gate_id: gateId,
-      tier: gatePlan.tier,
-      status: "passed",
-      executed: true,
-      started_at: "2026-06-11T00:00:00.000Z",
-      duration_ms: 12,
-      command: gatePlan.execution_spec.canonical_command,
-      exit_code: 0,
-      signal: null,
-      timed_out: false,
-      failure_reason: null,
-      stdout_path: stdoutPath,
-      stderr_path: stderrPath,
-      stdout_bytes: Buffer.byteLength(stdout),
-      stderr_bytes: Buffer.byteLength(stderr),
-      stdout_sha256: sha256(stdout),
-      stderr_sha256: sha256(stderr),
-      expected_artifacts: gatePlan.expected_artifacts,
-      produced_artifacts: producedArtifacts,
-      missing_expected_artifacts: [],
-    }];
+
+  const firstLogPath = writtenLogPaths[0] || {};
   const report = buildDojoReleaseGateRunReport({
     manifest,
     manifestValidation: validation,
     plan,
     results,
-    scope: "minimal-pr",
+    scope,
     dryRun,
     generatedAt: "2026-06-11T00:00:00.000Z",
   });
@@ -4096,8 +4157,8 @@ async function writeReleaseGateRunnerFixture({
   return {
     reportPath,
     evidencePath,
-    stdoutPath,
-    stderrPath,
+    stdoutPath: firstLogPath.stdoutPath,
+    stderrPath: firstLogPath.stderrPath,
     report,
     evidence,
   };

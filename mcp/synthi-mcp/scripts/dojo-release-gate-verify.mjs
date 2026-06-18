@@ -211,12 +211,12 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   const manifest = manifestResult.manifest || { gates: [], release_gate_ids: [] };
 
   const releaseGateRunnerResults = [];
-  if (truthy(args["include-release-gate-runner-default"]) || args["release-gate-run-report"]) {
+  if (releaseCandidate || truthy(args["include-release-gate-runner-default"]) || args["release-gate-run-report"]) {
     const reportPath = resolveRepoPath(args["release-gate-run-report"]
       || path.join(DEFAULT_RELEASE_GATE_RUNNER_DIR, "dojo-release-gate-runner-report.json"));
     const runnerEvidencePath = args["release-gate-run-evidence"]
       ? resolveRepoPath(args["release-gate-run-evidence"])
-      : truthy(args["include-release-gate-runner-default"])
+      : releaseCandidate || truthy(args["include-release-gate-runner-default"])
         ? resolveRepoPath(path.join(DEFAULT_RELEASE_GATE_RUNNER_DIR, "dojo-release-gate-runner.evidence.json"))
         : undefined;
     releaseGateRunnerResults.push(await verifyArtifactSection({
@@ -1008,6 +1008,14 @@ export async function verifyDojoReleaseGateRunReportArtifact({
     validateRunnerEvidenceSummary({ evidence: runnerPair.evidence, report, results, errors });
   }
   if (requirePromotionReady) {
+    if (report?.scope !== "release") errors.push(`runner_report_scope_not_release:${report?.scope || "missing"}`);
+    if (report?.plan?.scope !== "release") errors.push(`runner_plan_scope_not_release:${report?.plan?.scope || "missing"}`);
+    const releaseGateIds = Array.isArray(manifest?.release_gate_ids) ? manifest.release_gate_ids.map(String) : [];
+    const missingReleaseGateIds = releaseGateIds.filter((gateId) => !selectedGateIds.includes(gateId));
+    if (releaseGateIds.length === 0) errors.push("runner_manifest_release_gate_ids_missing");
+    if (missingReleaseGateIds.length > 0) {
+      errors.push(`runner_release_gate_ids_missing:${missingReleaseGateIds.join(",")}`);
+    }
     if (report?.dry_run === true) errors.push("runner_report_dry_run");
     if (report?.complete !== true) errors.push("runner_report_not_complete");
     if (report?.promotion_ready !== true) errors.push("runner_report_not_promotion_ready");
