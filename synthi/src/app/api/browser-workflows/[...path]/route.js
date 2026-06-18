@@ -461,6 +461,7 @@ async function proxyWorkflowBridge(request, routeContext) {
         ? details.payload
         : {};
       const isToolPath = path === 'tool' || path === 'tool/';
+      const isStatePath = path === 'state' || path === 'state/';
       const merged = {
         error: details.payload?.error || 'workflow_bridge_upstream_error',
         status: upstream.status,
@@ -473,7 +474,7 @@ async function proxyWorkflowBridge(request, routeContext) {
       }
 
       const hasWorkflowState = merged.state && typeof merged.state === 'object';
-      if (isToolPath && hasWorkflowState) {
+      if ((isToolPath || isStatePath) && hasWorkflowState) {
         if (!Object.prototype.hasOwnProperty.call(merged, 'ok')) {
           merged.ok = false;
         }
