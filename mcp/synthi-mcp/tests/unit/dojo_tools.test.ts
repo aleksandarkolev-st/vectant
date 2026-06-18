@@ -220,17 +220,20 @@ describe("Agent Dojo core", () => {
       }),
     ]);
     const skill = buildDojoSkill(workflow.contract, { workspace_id: "workspace-a", now: "2026-06-11T00:00:00.000Z" });
+    const proofTenantId = "local-tenant";
     const derivedWorkspaceClaim = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: {},
-      evidence_ledger_records: evidenceLedgerRecordsForProof(skill),
+      evidence_ledger_records: evidenceLedgerRecordsForProof(skill, { tenant_id: proofTenantId }),
       require_verified_evidence: true,
+      tenant_id: proofTenantId,
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
     const valid = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: { workspace_verified: true },
-      evidence_ledger_records: evidenceLedgerRecordsForProof(skill),
+      evidence_ledger_records: evidenceLedgerRecordsForProof(skill, { tenant_id: proofTenantId }),
       require_verified_evidence: true,
+      tenant_id: proofTenantId,
       now: "2026-06-11T00:00:00.000Z",
       expires_at: "2026-06-11T00:15:00.000Z",
     });
