@@ -49,6 +49,9 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
 
   it("issues a production proof capsule from evidence record IDs resolved through Postgres", async () => {
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    process.env.SYNTHI_DOJO_REQUIRE_DURABLE_STORE = "1";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_STORE = "postgres";
+    process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = postgresUrl;
     process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
     process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_STORE = "postgres";
     process.env.SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL = postgresUrl;
@@ -207,6 +210,117 @@ describeWithPostgres("Dojo proof issuance from Postgres evidence ledger", () => 
         ok: true,
         blocked_by: [],
       }),
+    }));
+
+    const issuedContent = response?.structuredContent as {
+      proof_capsule: {
+        capsule_id: string;
+        skill_id: string;
+        evidence_record_ids: string[];
+        ledger_checkpoint_hash: string;
+      };
+    };
+    const successfulValidation = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
+      skill_id: skillId,
+      ...tenantContext({
+        actor_id: "integration-proof-validator",
+        roles: ["agent"],
+        request_id: "req-postgres-proof-validate-before-forge",
+        correlation_id: "corr-postgres-proof-validate-before-forge",
+      }),
+      requested_action: "run_workflow",
+      proof_capsule: issuedContent.proof_capsule,
+      tool_args: { workspace_id: workspaceId, url: "https://app.example.test/settings" },
+      now: "2026-06-11T00:06:00.000Z",
+    });
+    expect(successfulValidation?.isError).toBeUndefined();
+    expect(successfulValidation?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      evidence_ledger_validation: expect.objectContaining({
+        evidence_record_ids: [evidenceRecord.record_id],
+        ledger_checkpoint_hash: evidenceRecord.ledger_head_hash,
+        evidence_claim_results: expect.arrayContaining([
+          expect.objectContaining({ ok: true, status: "verified" }),
+        ]),
+      }),
+      evidence_claim_results: expect.arrayContaining([
+        expect.objectContaining({ ok: true, status: "verified" }),
+      ]),
+    }));
+
+    const forgedCheckpointId = `forged_${sha256(`${tenantId}:${workspaceId}:${skillId}:checkpoint`).slice(0, 24)}`;
+    await pool.query(
+      `INSERT INTO dojo_ledger_checkpoints (tenant_id, workspace_id, checkpoint_id, ledger_head_hash, record_count, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6::timestamptz)`,
+      [
+        tenantId,
+        workspaceId,
+        forgedCheckpointId,
+        "f".repeat(64),
+        999_999,
+        "2026-06-11T00:06:30.000Z",
+      ]
+    );
+
+    const rejectedValidation = await dispatchDojoTool("synthi_dojo_validate_proof_capsule", {
+      skill_id: skillId,
+      ...tenantContext({
+        actor_id: "integration-proof-validator",
+        roles: ["agent"],
+        request_id: "req-postgres-proof-validate-after-forge",
+        correlation_id: "corr-postgres-proof-validate-after-forge",
+      }),
+      requested_action: "run_workflow",
+      proof_capsule: issuedContent.proof_capsule,
+      tool_args: { workspace_id: workspaceId, url: "https://app.example.test/settings" },
+      now: "2026-06-11T00:07:00.000Z",
+    });
+    expect(rejectedValidation?.isError).toBe(true);
+    expect(rejectedValidation?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_evidence_ledger_resolution_failed",
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule_id: issuedContent.proof_capsule.capsule_id,
+      proof_not_consumed: true,
+      blocked_by: expect.arrayContaining(["evidence_checkpoint_record_count_mismatch"]),
+      error_codes: ["proof_evidence_claim_unverified"],
+    }));
+
+    const rejectedRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      ...tenantContext({
+        actor_id: "integration-proof-runner",
+        roles: ["agent"],
+        request_id: "req-postgres-proof-run-after-forge",
+        correlation_id: "corr-postgres-proof-run-after-forge",
+      }),
+      requested_action: "run_workflow",
+      proof_capsule: issuedContent.proof_capsule,
+      run_id: `run_after_forged_checkpoint_${sha256(`${tenantId}:${workspaceId}:${skillId}`).slice(0, 12)}`,
+      tool_args: { workspace_id: workspaceId, url: "https://app.example.test/settings" },
+      now: "2026-06-11T00:07:30.000Z",
+    });
+    expect(rejectedRun?.isError).toBe(true);
+    expect(rejectedRun?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_proof_evidence_ledger_resolution_failed",
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule_id: issuedContent.proof_capsule.capsule_id,
+      proof_not_consumed: true,
+      blocked_by: expect.arrayContaining(["evidence_checkpoint_record_count_mismatch"]),
+      error_codes: ["proof_evidence_claim_unverified"],
+    }));
+
+    const proofRecordAfterRejectedRun = await pool.query<{ status: string; first_used_at: Date | null }>(
+      `SELECT status, first_used_at
+      FROM dojo_proof_records
+      WHERE tenant_id = $1 AND workspace_id = $2 AND capsule_id = $3`,
+      [tenantId, workspaceId, issuedContent.proof_capsule.capsule_id]
+    );
+    expect(proofRecordAfterRejectedRun.rows).toHaveLength(1);
+    expect(proofRecordAfterRejectedRun.rows[0]).toEqual(expect.objectContaining({
+      status: "issued",
+      first_used_at: null,
     }));
   });
 

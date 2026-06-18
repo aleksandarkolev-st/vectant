@@ -6725,6 +6725,148 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   }
 }
 
+async function validateProofCapsuleEvidenceAgainstLedgerIfRequired(input: {
+  operation: string;
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  capsule: DojoProofCarryingSkillCapsule;
+  requested_action: string;
+  checked_at?: string;
+  evidence_max_age_ms?: number;
+}): Promise<
+  | {
+    ok: true;
+    evidence_ledger_resolution?: Record<string, unknown>;
+    evidence_claim_results: DojoEvidenceClaimResult[];
+  }
+  | { ok: false; error: ToolResponse }
+> {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (!enforcement.production_enforcement || !enforcement.require_evidence_ledger) {
+    return { ok: true, evidence_claim_results: [] };
+  }
+
+  const checkedAt = input.checked_at ?? new Date().toISOString();
+  const evidenceRecordIds = [...new Set(
+    (Array.isArray(input.capsule.evidence_record_ids) ? input.capsule.evidence_record_ids : [])
+      .map((recordId) => recordId.trim())
+      .filter(Boolean)
+  )];
+  const resolved = await resolveDojoEvidenceLedgerRecords({
+    tenant_id: input.tenant.tenant_id,
+    workspace_id: input.tenant.workspace_id,
+    record_ids: evidenceRecordIds,
+    ledger_checkpoint_hash: input.capsule.ledger_checkpoint_hash,
+    checked_at: checkedAt,
+  });
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_proof_evidence_ledger_resolution_failed", {
+        ok: false,
+        operation: input.operation,
+        skill_id: input.skill.skill_id,
+        requested_action: input.requested_action,
+        proof_capsule_id: input.capsule.capsule_id,
+        evidence_record_ids: evidenceRecordIds,
+        missing_evidence_record_ids: resolved.missing_record_ids,
+        ledger_checkpoint_hash: resolved.ledger_checkpoint_hash,
+        expected_ledger_checkpoint_hash: input.capsule.ledger_checkpoint_hash ?? null,
+        evidence_ledger_store_kind: resolved.store_kind,
+        evidence_ledger_configured_env: resolved.configured_env,
+        blocked_by: resolved.blocked_by,
+        error_codes: ["proof_evidence_claim_unverified"],
+        verification: resolved.verification,
+        proof_not_consumed: true,
+      }),
+    };
+  }
+
+  const mismatchedRecords = resolved.records.filter((record) => record.skill_id !== input.skill.skill_id);
+  if (mismatchedRecords.length > 0) {
+    const blockedBy = mismatchedRecords.map((record) => `proof_evidence_skill_mismatch:${record.record_id}`);
+    return {
+      ok: false,
+      error: errorResponse("dojo_proof_evidence_ledger_scope_mismatch", {
+        ok: false,
+        operation: input.operation,
+        skill_id: input.skill.skill_id,
+        requested_action: input.requested_action,
+        proof_capsule_id: input.capsule.capsule_id,
+        workspace_id: input.skill.workspace_id,
+        evidence_record_ids: evidenceRecordIds,
+        mismatched_evidence_record_ids: mismatchedRecords.map((record) => record.record_id),
+        mismatched_skill_ids: [...new Set(mismatchedRecords.map((record) => record.skill_id))],
+        ledger_checkpoint_hash: resolved.ledger_checkpoint_hash,
+        evidence_ledger_store_kind: resolved.store_kind,
+        blocked_by: blockedBy,
+        error_codes: ["proof_evidence_claim_unverified"],
+        proof_not_consumed: true,
+      }),
+    };
+  }
+
+  const capsuleEvidenceClaims = (Array.isArray(input.capsule.evidence_claims) ? input.capsule.evidence_claims : [])
+    .map((claim) => claim.claim.trim())
+    .filter(Boolean);
+  const requiredClaims = [...new Set([
+    ...input.skill.permission_license.proof_requirements.required_evidence_claims,
+    ...input.skill.permission_license.proof_requirements.required_context_claims,
+    ...capsuleEvidenceClaims,
+  ])] as DojoEvidenceClaimId[];
+  const evidenceClaimResults = requiredClaims.length > 0
+    ? resolveDojoEvidenceClaims({
+      claim_ids: requiredClaims,
+      records: resolved.records,
+      tenant_id: input.tenant.tenant_id,
+      workspace_id: input.tenant.workspace_id,
+      skill_id: input.skill.skill_id,
+      checked_at: checkedAt,
+      max_age_ms: input.evidence_max_age_ms,
+    })
+    : [];
+  const failedEvidenceClaims = evidenceClaimResults.filter((result) => !result.ok);
+  if (failedEvidenceClaims.length > 0) {
+    const blockedBy = [...new Set(failedEvidenceClaims.flatMap((result) => result.blocked_by))].sort();
+    return {
+      ok: false,
+      error: errorResponse("dojo_proof_evidence_claim_revalidation_failed", {
+        ok: false,
+        operation: input.operation,
+        skill_id: input.skill.skill_id,
+        requested_action: input.requested_action,
+        proof_capsule_id: input.capsule.capsule_id,
+        evidence_record_ids: resolved.records.map((record) => record.record_id),
+        required_evidence_claims: requiredClaims,
+        failed_evidence_claims: failedEvidenceClaims.map((result) => result.claim_id),
+        failed_evidence_claim_results: failedEvidenceClaims,
+        evidence_claim_results: evidenceClaimResults,
+        ledger_checkpoint_hash: resolved.ledger_checkpoint_hash,
+        expected_ledger_checkpoint_hash: input.capsule.ledger_checkpoint_hash ?? null,
+        evidence_ledger_store_kind: resolved.store_kind,
+        blocked_by: blockedBy,
+        error_codes: ["proof_evidence_claim_unverified"],
+        verification: resolved.verification,
+        proof_not_consumed: true,
+      }),
+    };
+  }
+
+  return {
+    ok: true,
+    evidence_claim_results: evidenceClaimResults,
+    evidence_ledger_resolution: {
+      store_kind: resolved.store_kind,
+      evidence_record_ids: resolved.records.map((record) => record.record_id),
+      record_count: resolved.records.length,
+      ledger_checkpoint_hash: resolved.ledger_checkpoint_hash,
+      required_evidence_claims: requiredClaims,
+      evidence_claim_results: evidenceClaimResults,
+      verification: resolved.verification,
+    },
+  };
+}
+
 async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   const a = obj(args);
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_validate_proof_capsule");
@@ -6766,6 +6908,16 @@ async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse
     if (!validationOptions.ok) return validationOptions.error;
     const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, objectOpt(a["tool_args"]) ?? {});
     const enforcement = resolveDojoEnforcementConfig();
+    const proofEvidenceValidation = await validateProofCapsuleEvidenceAgainstLedgerIfRequired({
+      operation: "synthi_dojo_validate_proof_capsule",
+      tenant,
+      skill: skill.skill,
+      capsule,
+      requested_action: requestedAction,
+      checked_at: now,
+      evidence_max_age_ms: numberOpt(a["evidence_max_age_ms"]),
+    });
+    if (!proofEvidenceValidation.ok) return proofEvidenceValidation.error;
     const decision = evaluateDojoLicenseKernel({
       skill: skill.skill,
       registry: dojoSkillRegistry,
@@ -6777,6 +6929,7 @@ async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse
       tool_args: licenseToolArgs,
       dry_run: true,
       now,
+      evidence_claim_results: proofEvidenceValidation.evidence_claim_results,
       require_verified_approval_evidence: enforcement.production_enforcement,
       proof_validation_options: validationOptions.options,
     });
@@ -6795,6 +6948,8 @@ async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse
       control_plane_source: durableProofRegistry.context.required ? durableProofRegistry.context.source : "compatibility_registry",
       proof_key: validationOptions.proof_key ?? null,
       proof_record: proofRecord,
+      evidence_ledger_validation: proofEvidenceValidation.evidence_ledger_resolution ?? null,
+      evidence_claim_results: proofEvidenceValidation.evidence_claim_results,
       license_kernel: licenseKernel,
     });
   } finally {
@@ -7036,6 +7191,16 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
     });
     if (!validationOptions.ok) return validationOptions.error;
     const licenseToolArgs = dojoLicenseKernelToolArgsFromArgs(a, tenant, toolArgs);
+    const proofEvidenceValidation = await validateProofCapsuleEvidenceAgainstLedgerIfRequired({
+      operation: "synthi_dojo_run_with_proof_capsule",
+      tenant,
+      skill: skill.skill,
+      capsule,
+      requested_action: requestedAction,
+      checked_at: now,
+      evidence_max_age_ms: numberOpt(a["evidence_max_age_ms"]),
+    });
+    if (!proofEvidenceValidation.ok) return proofEvidenceValidation.error;
     let decision: ReturnType<typeof evaluateDojoLicenseKernel> | undefined;
     let proofConsume: DojoProofConsumeResult | undefined;
     const localSkillBusSkills = dojoSkillRegistry.list();
@@ -7058,6 +7223,7 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
           tool_args: licenseToolArgs,
           dry_run: dryRun,
           now,
+          evidence_claim_results: proofEvidenceValidation.evidence_claim_results,
           require_verified_approval_evidence: resolveDojoEnforcementConfig().production_enforcement,
           proof_validation_options: validationOptions.options,
         });
@@ -7133,6 +7299,8 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
         requested_action: requestedAction,
         validation: licenseDecision.validation,
         license_kernel: licenseDecision,
+        evidence_ledger_validation: proofEvidenceValidation.evidence_ledger_resolution ?? null,
+        evidence_claim_results: proofEvidenceValidation.evidence_claim_results,
         skill_bus: skillBusPreflight,
         refusal: refusalFor(skill.skill, licenseDecision.blocked_by.length > 0 ? licenseDecision.blocked_by : skillBusPreflight.blocked_by),
       });
@@ -7159,6 +7327,8 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
         proof_key: validationOptions.proof_key ?? null,
         validation: licenseDecision.validation,
         license_kernel: licenseDecision,
+        evidence_ledger_validation: proofEvidenceValidation.evidence_ledger_resolution ?? null,
+        evidence_claim_results: proofEvidenceValidation.evidence_claim_results,
         skill_bus: skillBusPreflight,
         graph_validation: dryRunGraphRuntimePreflight.graph_validation,
         graph_runtime_preflight: dryRunGraphRuntimePreflight.graph_runtime_preflight,
@@ -7242,6 +7412,8 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
           error_codes: validation.error_codes,
           proof_record: proofConsume?.record ?? licenseDecision.proof_record ?? null,
         },
+        evidence_ledger_validation: proofEvidenceValidation.evidence_ledger_resolution ?? null,
+        evidence_claim_results: proofEvidenceValidation.evidence_claim_results,
         proof_consume: proofConsume ?? null,
         skill_bus: skillBusExecution,
         runtime_authorization: runtimeAuthorization.decision ?? null,
@@ -7276,6 +7448,8 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       proof_key: validationOptions.proof_key ?? null,
       validation: licenseDecision.validation,
       license_kernel: executionLicenseDecision,
+      evidence_ledger_validation: proofEvidenceValidation.evidence_ledger_resolution ?? null,
+      evidence_claim_results: proofEvidenceValidation.evidence_claim_results,
       skill_bus: skillBusExecution,
       runtime_authorization: runtimeAuthorization.decision ?? null,
       graph_validation: graphRuntimePreflight.graph_validation,
