@@ -74,6 +74,12 @@ import {
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "./dojo-hosted-runtime-gateway-self-check.mjs";
 import {
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_COMMAND,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_DEFAULT_PATH,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_INPUTS,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_PACKAGE_SCRIPT,
+} from "./dojo-hosted-runtime-gateway-release-observation.mjs";
+import {
   DOJO_IMPLEMENTATION_STATUS_CAPABILITIES,
   DOJO_IMPLEMENTATION_STATUS_TEST_FILES,
 } from "./dojo-implementation-status-self-check.mjs";
@@ -1398,6 +1404,13 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       release_observation_max_age_ms: DOJO_RELEASE_OBSERVATION_MAX_AGE_MS,
       release_observation_future_tolerance_ms: DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
       required_release_observation_gate_ids: [...DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS],
+      release_observation_producer: {
+        package_script: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_PACKAGE_SCRIPT,
+        command: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_COMMAND,
+        default_observation_path: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_DEFAULT_PATH,
+        required_inputs: Object.fromEntries(Object.entries(DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_INPUTS)
+          .map(([gateId, input]) => [gateId, { ...input }])),
+      },
       section_release_verifier: {
         flag: "--hosted-runtime-gateway-release-candidate",
         evidence_arg: "--hosted-runtime-gateway-evidence",
@@ -3270,6 +3283,28 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     );
     if (missingHostedRuntimeObservationGateIds.length > 0) {
       errors.push(`hosted_runtime_gateway_missing_release_observation_gate_ids:${missingHostedRuntimeObservationGateIds.join(",")}`);
+    }
+    const hostedRuntimeObservationProducer = hostedRuntimeGatewayGate.release_artifact_requirements?.release_observation_producer || {};
+    if (hostedRuntimeObservationProducer.package_script !== DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_PACKAGE_SCRIPT) {
+      errors.push("hosted_runtime_gateway_missing_release_observation_producer_script");
+    }
+    if (hostedRuntimeObservationProducer.command !== DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_COMMAND) {
+      errors.push("hosted_runtime_gateway_missing_release_observation_producer_command");
+    }
+    if (hostedRuntimeObservationProducer.default_observation_path !== DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_DEFAULT_PATH) {
+      errors.push("hosted_runtime_gateway_missing_release_observation_producer_path");
+    }
+    const producerInputs = hostedRuntimeObservationProducer.required_inputs && typeof hostedRuntimeObservationProducer.required_inputs === "object"
+      ? hostedRuntimeObservationProducer.required_inputs
+      : {};
+    const missingProducerInputs = Object.entries(DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_INPUTS)
+      .filter(([gateId, input]) => producerInputs[gateId]?.arg !== input.arg
+        || producerInputs[gateId]?.default_path !== input.default_path
+        || (input.evidence_arg && producerInputs[gateId]?.evidence_arg !== input.evidence_arg)
+        || (input.default_evidence_path && producerInputs[gateId]?.default_evidence_path !== input.default_evidence_path))
+      .map(([gateId]) => gateId);
+    if (missingProducerInputs.length > 0) {
+      errors.push(`hosted_runtime_gateway_missing_release_observation_producer_inputs:${missingProducerInputs.join(",")}`);
     }
     const hostedRuntimeSectionVerifier = hostedRuntimeGatewayGate.release_artifact_requirements?.section_release_verifier || {};
     if (hostedRuntimeSectionVerifier.flag !== "--hosted-runtime-gateway-release-candidate") {

@@ -100,6 +100,12 @@ import {
   DOJO_HOSTED_RUNTIME_GATEWAY_TEST_FILES,
 } from "../../scripts/dojo-hosted-runtime-gateway-self-check.mjs";
 import {
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_COMMAND,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_DEFAULT_PATH,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_INPUTS,
+  DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_PACKAGE_SCRIPT,
+} from "../../scripts/dojo-hosted-runtime-gateway-release-observation.mjs";
+import {
   DOJO_IMPLEMENTATION_STATUS_CAPABILITIES,
   DOJO_IMPLEMENTATION_STATUS_TEST_FILES,
 } from "../../scripts/dojo-implementation-status-self-check.mjs";
@@ -1096,6 +1102,12 @@ describe("Dojo release gate manifest", () => {
           release_observation_max_age_ms: DOJO_RELEASE_OBSERVATION_MAX_AGE_MS,
           release_observation_future_tolerance_ms: DOJO_RELEASE_OBSERVATION_FUTURE_TOLERANCE_MS,
           required_release_observation_gate_ids: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS,
+          release_observation_producer: {
+            package_script: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_PACKAGE_SCRIPT,
+            command: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_COMMAND,
+            default_observation_path: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_DEFAULT_PATH,
+            required_inputs: DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_INPUTS,
+          },
           section_release_verifier: {
             flag: "--hosted-runtime-gateway-release-candidate",
             evidence_arg: "--hosted-runtime-gateway-evidence",
@@ -1873,6 +1885,17 @@ describe("Dojo release gate manifest", () => {
     hostedRuntimeGatewayGate.release_artifact_requirements.release_observation_future_tolerance_ms = -1;
     hostedRuntimeGatewayGate.release_artifact_requirements.required_release_observation_gate_ids = DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_GATE_IDS
       .filter((gateId) => gateId !== "workflow_e2e_hosted");
+    hostedRuntimeGatewayGate.release_artifact_requirements.release_observation_producer = {
+      package_script: "wrong:hosted-runtime:observe",
+      command: "node wrong-hosted-runtime-producer.mjs",
+      default_observation_path: "tmp/wrong-hosted-runtime-observation.json",
+      required_inputs: {
+        workflow_e2e_hosted: {
+          arg: "wrong-workflow-summary",
+          default_path: "tmp/wrong-workflow.json",
+        },
+      },
+    };
     hostedRuntimeGatewayGate.release_artifact_requirements.section_release_verifier = {
       flag: "--wrong-hosted-runtime-flag",
       evidence_arg: "--wrong-hosted-runtime-evidence",
@@ -1892,6 +1915,10 @@ describe("Dojo release gate manifest", () => {
       "hosted_runtime_gateway_missing_release_observation_freshness_requirement",
       "hosted_runtime_gateway_missing_release_observation_future_tolerance_requirement",
       "hosted_runtime_gateway_missing_release_observation_gate_ids:workflow_e2e_hosted",
+      "hosted_runtime_gateway_missing_release_observation_producer_script",
+      "hosted_runtime_gateway_missing_release_observation_producer_command",
+      "hosted_runtime_gateway_missing_release_observation_producer_path",
+      "hosted_runtime_gateway_missing_release_observation_producer_inputs:workflow_e2e_hosted,private_tool_stdio_acceptance,private_tool_codex_acceptance,dojo_mcp_host_conformance,private_tool_stdio_host_conformance,private_tool_codex_host_conformance",
       "hosted_runtime_gateway_missing_section_release_verifier_flag",
       "hosted_runtime_gateway_missing_section_release_verifier_evidence_arg",
       "hosted_runtime_gateway_section_release_verifier_evidence_path_mismatch",
