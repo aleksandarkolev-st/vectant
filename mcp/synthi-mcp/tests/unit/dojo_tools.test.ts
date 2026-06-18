@@ -719,6 +719,72 @@ describe("Agent Dojo MCP tools", () => {
     }));
   });
 
+  it("enforces RBAC for production case-law recording through the MCP tool", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const originalCaseCount = dojoSkillRegistry.get(skillId)?.case_law.length ?? 0;
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const blockedRecord = await dispatchDojoTool("synthi_dojo_record_case_law", {
+      skill_id: skillId,
+      finding: "An unauthorized actor tried to propose a precedent.",
+      rule: "Only case-law authors may propose binding precedent.",
+      applies_to: ["workflow_execution"],
+      evidence_refs: ["evidence:case-law-rbac-blocked"],
+      ...productionTenantContextArgs({
+        actor_id: "case-law-viewer",
+        actor_type: "human",
+        roles: ["dojo:governance:view"],
+        request_id: "req-case-law-record-rbac-blocked",
+        correlation_id: "corr-case-law-record-rbac-blocked",
+      }),
+    });
+    expect(blockedRecord?.isError).toBe(true);
+    expect(blockedRecord?.structuredContent).toEqual(expect.objectContaining({
+      ok: false,
+      error: "dojo_case_law_record_role_required",
+      skill_id: skillId,
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:case-law:record"]),
+      rbac_authorization: expect.objectContaining({
+        action: "case_law_record",
+        actor_id: "case-law-viewer",
+        required_roles: ["dojo:case-law:record"],
+        matched_roles: [],
+      }),
+    }));
+    expect(dojoSkillRegistry.get(skillId)?.case_law.length).toBe(originalCaseCount);
+
+    const allowedRecord = await dispatchDojoTool("synthi_dojo_record_case_law", {
+      skill_id: skillId,
+      finding: "A reviewed failure requires a stable workspace boundary.",
+      rule: "Require verified workspace context before workflow execution.",
+      applies_to: ["workflow_execution"],
+      evidence_refs: ["evidence:case-law-rbac-allowed"],
+      ...productionTenantContextArgs({
+        actor_id: "case-law-author",
+        actor_type: "human",
+        roles: ["dojo:case-law:record"],
+        request_id: "req-case-law-record-rbac-allowed",
+        correlation_id: "corr-case-law-record-rbac-allowed",
+      }),
+    });
+    expect(allowedRecord?.isError).toBeUndefined();
+    expect(allowedRecord?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      skill_id: skillId,
+      case_law_record: expect.objectContaining({ status: "proposed" }),
+      guardrail_binding_status: "review_required",
+      rbac_authorization: expect.objectContaining({
+        action: "case_law_record",
+        actor_id: "case-law-author",
+        matched_roles: ["dojo:case-law:record"],
+      }),
+    }));
+    expect(dojoSkillRegistry.get(skillId)?.case_law.length).toBe(originalCaseCount + 1);
+  });
+
   it("requires tenant authorization for production skill operations and exports", async () => {
     const { visibleSkillId, hiddenSkill } = await publishTwoWorkspaceSkillsForDojoToolTest();
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";

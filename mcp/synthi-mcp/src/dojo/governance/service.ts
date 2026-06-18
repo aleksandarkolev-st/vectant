@@ -31,6 +31,7 @@ export type DojoCaseLawReviewDecision = "approved" | "deprecated";
 export type DojoGovernanceRbacAction =
   | "permission_upgrade_review"
   | "case_law_review"
+  | "case_law_record"
   | "license_revocation"
   | "license_recertification"
   | "compliance_export"
@@ -69,6 +70,7 @@ export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPo
   action_roles: {
     permission_upgrade_review: ["dojo:approval:review", "dojo:license:review"],
     case_law_review: ["dojo:case-law:review"],
+    case_law_record: ["dojo:case-law:record"],
     license_revocation: ["dojo:license:revoke"],
     license_recertification: ["dojo:license:recertify"],
     compliance_export: ["dojo:compliance:export", "dojo:auditor"],
@@ -1206,6 +1208,10 @@ function normalizeGovernanceRbacPolicy(
       case_law_review: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.case_law_review,
         ...(policy.action_roles?.case_law_review ?? []),
+      ]),
+      case_law_record: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.case_law_record,
+        ...(policy.action_roles?.case_law_record ?? []),
       ]),
       license_revocation: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.license_revocation,

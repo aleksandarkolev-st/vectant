@@ -29,6 +29,7 @@ export const DOJO_CASE_LAW_RUNTIME_TEST_FILES = [
   "tests/unit/dojo_case_law_refusal.test.ts",
   "tests/unit/dojo_antibody_matcher.test.ts",
   "tests/integration/dojo_case_law_guardrail_runtime.test.ts",
+  "tests/unit/dojo_tools.test.ts",
 ];
 
 export const DOJO_CASE_LAW_RUNTIME_CAPABILITIES = [
@@ -40,6 +41,7 @@ export const DOJO_CASE_LAW_RUNTIME_CAPABILITIES = [
   "case_law_registry_allows_approval_only_from_proposed",
   "case_law_registry_blocks_overturned_superseded_synthesis",
   "case_law_registry_preserves_explicit_predicates",
+  "case_law_record_enforces_rbac_before_proposal",
   "guardrail_runtime_ignores_proposed_case_law",
   "guardrail_runtime_synthesizes_stable_identity",
   "guardrail_runtime_binds_and_blocks_graph_actions",
@@ -192,6 +194,7 @@ export function buildDojoCaseLawRuntimeEvidenceManifest({
     case_law_contract: {
       case_law_registry_required: true,
       reviewed_evidence_required: true,
+      case_law_record_rbac_required: true,
       proposed_cases_nonbinding_required: true,
       approved_binding_scope_required: true,
       deprecated_cases_excluded_required: true,
@@ -323,6 +326,7 @@ const CAPABILITY_MATCHERS = {
   case_law_registry_allows_approval_only_from_proposed: includes("allows each case-law approval", "proposed state"),
   case_law_registry_blocks_overturned_superseded_synthesis: includes("does not synthesize guardrails", "overturned", "superseded"),
   case_law_registry_preserves_explicit_predicates: includes("preserves explicit reviewed guardrail predicates"),
+  case_law_record_enforces_rbac_before_proposal: includes("enforces rbac", "production case-law recording", "mcp tool"),
   guardrail_runtime_ignores_proposed_case_law: includes("does not synthesize guardrails", "proposed case law"),
   guardrail_runtime_synthesizes_stable_identity: includes("synthesizes a stable identity guardrail"),
   guardrail_runtime_binds_and_blocks_graph_actions: includes("binds approved case-law guardrails", "blocks runtime execution"),

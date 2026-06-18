@@ -5864,6 +5864,23 @@ async function dojoRevokeLicenseTool(args: unknown): Promise<ToolResponse> {
 async function dojoRecordCaseLawTool(args: unknown): Promise<ToolResponse> {
   const skill = await requiredAuthorizedSkillForProductionRead(args, "synthi_dojo_record_case_law");
   if (!skill.ok) return skill.error;
+  const caseLawRecordRbacAuthorization = resolveDojoEnforcementConfig().production_enforcement
+    ? authorizeDojoGovernanceAction({
+      tenant_context: skill.tenant,
+      action: "case_law_record",
+    })
+    : undefined;
+  if (caseLawRecordRbacAuthorization && !caseLawRecordRbacAuthorization.ok) {
+    return errorResponse("dojo_case_law_record_role_required", {
+      ok: false,
+      skill_id: skill.skill.skill_id,
+      workspace_id: skill.skill.workspace_id,
+      actor_id: skill.tenant.actor_id,
+      actor_type: skill.tenant.actor_type,
+      blocked_by: caseLawRecordRbacAuthorization.blocked_by,
+      rbac_authorization: caseLawRecordRbacAuthorization,
+    });
+  }
   const a = obj(args);
   const finding = stringOpt(a["finding"]);
   const rule = stringOpt(a["rule"]);
@@ -5970,6 +5987,7 @@ async function dojoRecordCaseLawTool(args: unknown): Promise<ToolResponse> {
     guardrail_proposal: guardrailProposal,
     antibody_proposal: antibodyProposal,
     guardrail_binding_status: "review_required",
+    ...(caseLawRecordRbacAuthorization ? { rbac_authorization: caseLawRecordRbacAuthorization } : {}),
     governance_report: buildDojoGovernanceReport(saved),
   });
 }
