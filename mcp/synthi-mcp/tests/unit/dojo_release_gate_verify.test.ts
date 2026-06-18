@@ -184,6 +184,7 @@ import {
   verifyDojoReleaseGateArtifactsFromArgs,
   verifyDojoReleaseGateManifestArtifacts,
   verifyDojoReleaseGateRunReportArtifact,
+  verifyDojoReleaseGateVerifierSelfCheckArtifact,
   verifyDojoPrivacyRedactionEvidenceArtifact,
   verifyDojoSecurityAbuseEvidenceArtifact,
   verifyDojoSoakPerformanceArtifacts,
@@ -262,6 +263,46 @@ describe("Dojo release gate artifact verifier", () => {
     expect(evidence.rejected_control_count).toBe(result.report.rejected_controls.length);
     expect(rebuiltEvidence.report_sha256).toBe(evidence.report_sha256);
     expect(rebuiltEvidence.verified_section_ids).toEqual(evidence.verified_section_ids);
+  });
+
+  it("verifies verifier self-check evidence and rejects missing negative controls", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-gate-verifier-artifact-"));
+    const result = await runDojoReleaseGateVerifierSelfCheck({ outDir: dir });
+
+    expect(await verifyDojoReleaseGateVerifierSelfCheckArtifact({
+      reportPath: result.report_path,
+      evidencePath: result.evidence_path,
+    })).toEqual(expect.objectContaining({
+      id: "dojo_release_gate_verifier_self_check",
+      ok: true,
+      errors: [],
+      artifact_path: result.report_path,
+      evidence_path: result.evidence_path,
+    }));
+
+    const tamperedReport = {
+      ...result.report,
+      rejected_controls: [],
+    };
+    const tamperedReportPath = path.join(dir, "dojo-release-gate-verifier-no-negative-controls.json");
+    const tamperedReportText = `${JSON.stringify(tamperedReport, null, 2)}\n`;
+    const tamperedEvidencePath = path.join(dir, "dojo-release-gate-verifier-no-negative-controls.evidence.json");
+    const tamperedEvidence = buildDojoReleaseGateVerifierSelfCheckEvidenceManifest({
+      report: tamperedReport,
+      reportPath: tamperedReportPath,
+      serialized: tamperedReportText,
+    });
+    await writeFile(tamperedReportPath, tamperedReportText, "utf8");
+    await writeFile(tamperedEvidencePath, `${JSON.stringify(tamperedEvidence, null, 2)}\n`, "utf8");
+
+    const rejected = await verifyDojoReleaseGateVerifierSelfCheckArtifact({
+      reportPath: tamperedReportPath,
+      evidencePath: tamperedEvidencePath,
+    });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.errors).toEqual(expect.arrayContaining([
+      "verifier_self_check_missing_negative_controls",
+    ]));
   });
 
   it("verifies release-gate runner reports and rejects dry-run or tampered log proof for promotion", async () => {
@@ -1964,6 +2005,9 @@ describe("Dojo release gate artifact verifier", () => {
     const releaseGateRunnerGate = manifest.gates.find((gate) => gate.id === "dojo_release_gate_runner_self_check");
     releaseGateRunnerGate.default_report_path = path.join(dir, "dojo-release-gate-runner-self-check.json");
     releaseGateRunnerGate.default_evidence_path = path.join(dir, "dojo-release-gate-runner-self-check.evidence.json");
+    const releaseGateVerifierGate = manifest.gates.find((gate) => gate.id === "dojo_release_gate_verifier_self_check");
+    releaseGateVerifierGate.default_report_path = path.join(dir, "dojo-release-gate-verifier-self-check.json");
+    releaseGateVerifierGate.default_evidence_path = path.join(dir, "dojo-release-gate-verifier-self-check.evidence.json");
     const selfCheckGate = manifest.gates.find((gate) => gate.id === "dojo_self_check");
     selfCheckGate.default_report_path = selfCheck.summaryPath;
     selfCheckGate.default_evidence_path = selfCheck.productionEvidencePath;
@@ -2016,6 +2060,12 @@ describe("Dojo release gate artifact verifier", () => {
     });
     expect(releaseGateRunnerGate.default_report_path).toBe(releaseGateRunner.reportPath);
     expect(releaseGateRunnerGate.default_evidence_path).toBe(releaseGateRunner.evidencePath);
+    const releaseGateVerifier = await writeReleaseGateVerifierFixture({
+      dir,
+      basename: "dojo-release-gate-verifier-self-check",
+    });
+    expect(releaseGateVerifierGate.default_report_path).toBe(releaseGateVerifier.reportPath);
+    expect(releaseGateVerifierGate.default_evidence_path).toBe(releaseGateVerifier.evidencePath);
     const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
     const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
     await writeManifestPair({ manifest, manifestPath, evidencePath });
@@ -2081,6 +2131,14 @@ describe("Dojo release gate artifact verifier", () => {
         evidence_path: releaseGateRunner.evidencePath,
       }),
     ]));
+    expect(verified.release_gate_verifier).toEqual([
+      expect.objectContaining({
+        id: "dojo_release_gate_verifier_self_check",
+        ok: true,
+        artifact_path: releaseGateVerifier.reportPath,
+        evidence_path: releaseGateVerifier.evidencePath,
+      }),
+    ]);
     expect(verified.evidence_authority).toEqual([
       expect.objectContaining({
         id: "dojo_evidence_authority_self_check",
@@ -3924,6 +3982,42 @@ async function writeReleaseGateRunnerFixture({
     evidencePath,
     stdoutPath,
     stderrPath,
+    report,
+    evidence,
+  };
+}
+
+async function writeReleaseGateVerifierFixture({
+  dir,
+  basename = "dojo-release-gate-verifier-self-check",
+  verifiedSections = [
+    { id: "release_gate_manifest", ok: true, errors: [] },
+    { id: "dojo_release_gate_runner_self_check", ok: true, errors: [] },
+  ],
+  rejectedControls = [
+    { id: "rejected_dojo_self_check", ok: false, errors: ["dojo_self_check_production_proof_not_consumed"] },
+  ],
+} = {}) {
+  const report = {
+    schema_version: "synthi.dojo.releaseGateVerifierSelfCheck.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    verified_sections: verifiedSections,
+    rejected_controls: rejectedControls,
+  };
+  const reportPath = path.join(dir, `${basename}.json`);
+  const serializedReport = `${JSON.stringify(report, null, 2)}\n`;
+  await writeFile(reportPath, serializedReport, "utf8");
+  const evidence = buildDojoReleaseGateVerifierSelfCheckEvidenceManifest({
+    report,
+    reportPath,
+    serialized: serializedReport,
+  });
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+  return {
+    reportPath,
+    evidencePath,
     report,
     evidence,
   };

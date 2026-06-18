@@ -369,6 +369,26 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
   },
   {
+    id: "dojo_release_gate_verifier_self_check",
+    tier: "T2",
+    working_directory: "mcp/synthi-mcp",
+    package_script: "proof:dojo:release-gates:verify:self-check",
+    command: "npm --prefix mcp/synthi-mcp run proof:dojo:release-gates:verify:self-check",
+    required_for: ["milestone", "release"],
+    evidence_kind: "proof_artifact",
+    report_schema_version: "synthi.dojo.releaseGateVerifierSelfCheck.v1",
+    evidence_schema_version: "synthi.dojo.releaseGateVerifierSelfCheckEvidence.v1",
+    default_report_path: "tmp/dojo-release-gate-verify/dojo-release-gate-verifier-self-check.json",
+    default_evidence_path: "tmp/dojo-release-gate-verify/dojo-release-gate-verifier-self-check.evidence.json",
+    artifact_requirements: {
+      require_manifest_verification: true,
+      require_release_gate_runner_self_check_verification: true,
+      require_negative_controls: true,
+      require_report_evidence_pair: true,
+      require_json_report_digest_match: true,
+    },
+  },
+  {
     id: "mcp_integration_tests",
     tier: "T2",
     working_directory: "mcp/synthi-mcp",
@@ -1386,6 +1406,7 @@ export const DOJO_MILESTONE_GATE_IDS = [
   ...DOJO_MINIMAL_PR_GATE_IDS,
   "dojo_implementation_status_self_check",
   "dojo_release_gate_runner_self_check",
+  "dojo_release_gate_verifier_self_check",
   "mcp_integration_tests",
   "dojo_postgres_control_plane_self_check",
   "dojo_evidence_authority_self_check",
@@ -1668,6 +1689,29 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     );
     if (missingRunnerScopes.length > 0) {
       errors.push(`release_gate_runner_missing_scope_plans:${missingRunnerScopes.join(",")}`);
+    }
+  }
+  const releaseGateVerifierGate = gates.find((gate) => gate.id === "dojo_release_gate_verifier_self_check");
+  if (releaseGateVerifierGate) {
+    if (releaseGateVerifierGate.package_script !== "proof:dojo:release-gates:verify:self-check") {
+      errors.push("release_gate_verifier_missing_package_script");
+    }
+    if (releaseGateVerifierGate.report_schema_version !== "synthi.dojo.releaseGateVerifierSelfCheck.v1") {
+      errors.push("release_gate_verifier_missing_report_schema");
+    }
+    if (releaseGateVerifierGate.evidence_schema_version !== "synthi.dojo.releaseGateVerifierSelfCheckEvidence.v1") {
+      errors.push("release_gate_verifier_missing_evidence_schema");
+    }
+    if (!releaseGateVerifierGate.default_report_path) errors.push("release_gate_verifier_missing_default_report_path");
+    if (!releaseGateVerifierGate.default_evidence_path) errors.push("release_gate_verifier_missing_default_evidence_path");
+    for (const [requirement, errorCode] of [
+      ["require_manifest_verification", "release_gate_verifier_missing_manifest_verification_requirement"],
+      ["require_release_gate_runner_self_check_verification", "release_gate_verifier_missing_runner_self_check_requirement"],
+      ["require_negative_controls", "release_gate_verifier_missing_negative_controls_requirement"],
+      ["require_report_evidence_pair", "release_gate_verifier_missing_report_evidence_pair_requirement"],
+      ["require_json_report_digest_match", "release_gate_verifier_missing_json_report_digest_requirement"],
+    ]) {
+      if (!releaseGateVerifierGate.artifact_requirements?.[requirement]) errors.push(errorCode);
     }
   }
   const dojoSelfCheckGate = gates.find((gate) => gate.id === "dojo_self_check");
@@ -3218,6 +3262,7 @@ export async function runSelfCheck({ outDir }) {
   assert(manifest.minimal_pr_gate_ids.length > 0);
   assert(manifest.milestone_gate_ids.includes("dojo_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_release_gate_runner_self_check"));
+  assert(manifest.milestone_gate_ids.includes("dojo_release_gate_verifier_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_postgres_control_plane_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_affordance_codemod_self_check"));
   assert(manifest.milestone_gate_ids.includes("dojo_full_visual_proof"));

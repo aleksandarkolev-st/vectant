@@ -258,6 +258,31 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       requirePromotionReady: false,
     })));
   }
+  const releaseGateVerifierResults = [];
+  const shouldVerifyReleaseGateVerifierSelfCheck = releaseCandidate
+    || truthy(args["include-release-gate-verifier-self-check-default"])
+    || args["release-gate-verifier-self-check-report"]
+    || args["release-gate-verifier-self-check-evidence"];
+  if (shouldVerifyReleaseGateVerifierSelfCheck) {
+    const verifierGate = findGate(manifest, "dojo_release_gate_verifier_self_check") || {};
+    const reportPath = resolveRepoPath(args["release-gate-verifier-self-check-report"]
+      || verifierGate.default_report_path
+      || path.join(DEFAULT_VERIFY_DIR, "dojo-release-gate-verifier-self-check.json"));
+    const verifierEvidencePath = args["release-gate-verifier-self-check-evidence"]
+      ? resolveRepoPath(args["release-gate-verifier-self-check-evidence"])
+      : verifierGate.default_evidence_path
+        ? resolveRepoPath(verifierGate.default_evidence_path)
+        : resolveRepoPath(path.join(DEFAULT_VERIFY_DIR, "dojo-release-gate-verifier-self-check.evidence.json"));
+    releaseGateVerifierResults.push(await verifyArtifactSection({
+      id: "dojo_release_gate_verifier_self_check",
+      artifactPath: reportPath,
+      evidencePath: verifierEvidencePath,
+      releaseCandidate,
+    }, () => verifyDojoReleaseGateVerifierSelfCheckArtifact({
+      reportPath,
+      evidencePath: verifierEvidencePath,
+    })));
+  }
 
   const proofSelfCheckResults = [];
   const shouldVerifyDojoSelfCheck = releaseCandidate
@@ -839,7 +864,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     })));
   }
 
-  const sections = [manifestResult, ...releaseGateRunnerResults, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...dockerIntegrationResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
+  const sections = [manifestResult, ...releaseGateRunnerResults, ...releaseGateVerifierResults, ...proofSelfCheckResults, ...visualResults, ...postgresControlPlaneResults, ...evidenceAuthorityResults, ...implementationStatusResults, ...sourceApiResults, ...generatedPrResults, ...mcpSkillBusResults, ...dockerIntegrationResults, ...liveHostedRuntimeResults, ...conformanceSelfCheckResults, ...conformanceResults, ...managedKeySigningResults, ...publicProofVerificationResults, ...governanceLifecycleResults, ...graphRuntimeResults, ...ghostModeEvidenceResults, ...skillPassportResults, ...timeMachineDebuggerResults, ...vivariumRuntimeResults, ...checkrideLicenseResults, ...caseLawRuntimeResults, ...hostedRuntimeGatewayResults, ...securityResults, ...complianceExportResults, ...privacyRedactionResults, ...chaosPerformanceResults, ...soakPerformanceResults];
   const releaseGateCoverage = getVerifiableReleaseGateCoverage({
     manifest,
     sections,
@@ -861,6 +886,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     missing_verifiable_release_gate_ids: releaseGateCoverage.missing_verifiable_release_gate_ids,
     manifest: summarizeSection(manifestResult),
     release_gate_runner: releaseGateRunnerResults.map(summarizeSection),
+    release_gate_verifier: releaseGateVerifierResults.map(summarizeSection),
     dojo_self_check: proofSelfCheckResults.map(summarizeSection),
     visual_reports: visualResults.map(summarizeSection),
     postgres_control_plane: postgresControlPlaneResults.map(summarizeSection),
@@ -1009,6 +1035,70 @@ export async function verifyDojoReleaseGateRunReportArtifact({
     dry_run: Boolean(report?.dry_run),
     complete: Boolean(report?.complete),
     promotion_ready: Boolean(report?.promotion_ready),
+  };
+}
+
+export async function verifyDojoReleaseGateVerifierSelfCheckArtifact({ reportPath, evidencePath }) {
+  const verifierPair = await readDigestCheckedJsonPair({
+    id: "dojo_release_gate_verifier_self_check",
+    artifactPath: reportPath,
+    evidencePath,
+    evidenceSchema: "synthi.dojo.releaseGateVerifierSelfCheckEvidence.v1",
+    digestField: "report_sha256",
+    bytesField: "report_bytes",
+    pathField: "report_path",
+  });
+  const report = verifierPair.artifact;
+  const evidence = verifierPair.evidence;
+  const errors = [...(verifierPair.digest?.errors || [])];
+  if (report?.schema_version !== "synthi.dojo.releaseGateVerifierSelfCheck.v1") {
+    errors.push(`verifier_self_check_schema_mismatch:${report?.schema_version || "missing"}`);
+  }
+  if (report?.ok !== true) errors.push("verifier_self_check_not_ok");
+  const verifiedSections = Array.isArray(report?.verified_sections) ? report.verified_sections : [];
+  const rejectedControls = Array.isArray(report?.rejected_controls) ? report.rejected_controls : [];
+  if (evidence?.ok !== report?.ok) {
+    errors.push(`verifier_self_check_evidence_ok_mismatch:${evidence?.ok}:${report?.ok}`);
+  }
+  if (Number(evidence?.verified_section_count) !== verifiedSections.length) {
+    errors.push(`verifier_self_check_section_count_mismatch:${evidence?.verified_section_count}:${verifiedSections.length}`);
+  }
+  if (Number(evidence?.rejected_control_count) !== rejectedControls.length) {
+    errors.push(`verifier_self_check_rejected_count_mismatch:${evidence?.rejected_control_count}:${rejectedControls.length}`);
+  }
+  const evidenceVerifiedIds = new Set(Array.isArray(evidence?.verified_section_ids) ? evidence.verified_section_ids : []);
+  const sectionOk = (id) => verifiedSections.some((section) => section?.id === id && section.ok === true);
+  for (const id of ["release_gate_manifest", "dojo_release_gate_runner_self_check"]) {
+    const section = verifiedSections.find((item) => item?.id === id);
+    if (!section) errors.push(`verifier_self_check_missing_verified_section:${id}`);
+    else if (section.ok !== true) errors.push(`verifier_self_check_section_not_ok:${id}`);
+    if (!evidenceVerifiedIds.has(id)) errors.push(`verifier_self_check_evidence_missing_verified_section:${id}`);
+  }
+  if (verifiedSections.some((section) => section?.ok !== true)) {
+    errors.push("verifier_self_check_verified_section_failed");
+  }
+  if (rejectedControls.length === 0) errors.push("verifier_self_check_missing_negative_controls");
+  if (rejectedControls.some((section) => section?.ok === true)) {
+    errors.push("verifier_self_check_negative_control_passed");
+  }
+  if (evidence?.manifest_verified !== sectionOk("release_gate_manifest")) {
+    errors.push("verifier_self_check_manifest_flag_mismatch");
+  }
+  if (evidence?.release_gate_runner_self_check_verified !== sectionOk("dojo_release_gate_runner_self_check")) {
+    errors.push("verifier_self_check_runner_flag_mismatch");
+  }
+  if (evidence?.negative_controls_present !== (rejectedControls.length > 0)) {
+    errors.push("verifier_self_check_negative_control_flag_mismatch");
+  }
+  return {
+    id: "dojo_release_gate_verifier_self_check",
+    ok: errors.length === 0,
+    errors,
+    artifact_path: reportPath,
+    evidence_path: evidencePath,
+    report_schema_version: report?.schema_version,
+    verified_section_count: verifiedSections.length,
+    rejected_control_count: rejectedControls.length,
   };
 }
 
