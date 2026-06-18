@@ -10203,6 +10203,10 @@ async function validateRunnerGateResult({
   }
   const validStatuses = new Set(["planned", "skipped", "passed", "failed"]);
   if (!validStatuses.has(result.status)) errors.push(`runner_result_unknown_status:${gateId}:${result.status}`);
+  const invalidEnv = Array.isArray(result.invalid_env) ? result.invalid_env : [];
+  if (invalidEnv.length > 0) {
+    errors.push(`runner_result_invalid_env:${gateId}:${invalidEnv.map((item) => String(item?.name || item?.variable || "unknown")).join(",")}`);
+  }
   if (result.status === "passed") {
     if (result.executed !== true) errors.push(`runner_passed_gate_not_executed:${gateId}`);
     if (result.exit_code !== 0) errors.push(`runner_passed_gate_exit_nonzero:${gateId}:${result.exit_code}`);

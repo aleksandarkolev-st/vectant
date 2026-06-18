@@ -385,6 +385,40 @@ describe("Dojo release gate artifact verifier", () => {
       `runner_duplicate_result_gate:${releaseGateIds[0]}`,
     ]));
 
+    const invalidEnvReport = JSON.parse(await readFile(artifacts.reportPath, "utf8"));
+    invalidEnvReport.results[0] = {
+      ...invalidEnvReport.results[0],
+      invalid_env: [{
+        name: "SOAK_DURATION_MIN",
+        value: "10",
+        rule: "number_min",
+        min: 60,
+      }],
+    };
+    invalidEnvReport.complete = true;
+    invalidEnvReport.promotion_ready = true;
+    invalidEnvReport.ok = true;
+    invalidEnvReport.errors = [];
+    const invalidEnvReportPath = path.join(dir, "dojo-release-gate-runner-forged-invalid-env.json");
+    const invalidEnvEvidencePath = path.join(dir, "dojo-release-gate-runner-forged-invalid-env.evidence.json");
+    const invalidEnvSerialized = `${JSON.stringify(invalidEnvReport, null, 2)}\n`;
+    await writeFile(invalidEnvReportPath, invalidEnvSerialized, "utf8");
+    await writeFile(invalidEnvEvidencePath, `${JSON.stringify(buildDojoReleaseGateRunEvidenceManifest({
+      report: invalidEnvReport,
+      reportPath: invalidEnvReportPath,
+      serialized: invalidEnvSerialized,
+    }), null, 2)}\n`, "utf8");
+    const invalidEnvRejected = await verifyDojoReleaseGateRunReportArtifact({
+      reportPath: invalidEnvReportPath,
+      evidencePath: invalidEnvEvidencePath,
+      manifest: releaseManifest,
+      requirePromotionReady: true,
+    });
+    expect(invalidEnvRejected.ok).toBe(false);
+    expect(invalidEnvRejected.errors).toEqual(expect.arrayContaining([
+      "runner_result_invalid_env:mcp_typecheck:SOAK_DURATION_MIN",
+    ]));
+
     const enterpriseArtifacts = await writeReleaseGateRunnerFixture({
       dir,
       basename: "dojo-release-gate-runner-enterprise",
