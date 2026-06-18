@@ -1305,6 +1305,7 @@ describe("Dojo release gate manifest", () => {
     governanceLifecycleGate.release_artifact_requirements.require_rbac = false;
     governanceLifecycleGate.release_artifact_requirements.require_store_rbac = false;
     governanceLifecycleGate.release_artifact_requirements.require_compliance_pack = false;
+    governanceLifecycleGate.release_artifact_requirements.require_compliance_archive_manifest = false;
     governanceLifecycleGate.release_artifact_requirements.require_scheduled_jobs = false;
     governanceLifecycleGate.release_artifact_requirements.require_self_check_executes_tests = false;
     expect(validateDojoReleaseGateManifest(brokenGovernanceLifecycle, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
@@ -1312,6 +1313,7 @@ describe("Dojo release gate manifest", () => {
       "governance_lifecycle_missing_rbac_requirement",
       "governance_lifecycle_missing_store_rbac_requirement",
       "governance_lifecycle_missing_compliance_pack_requirement",
+      "governance_lifecycle_missing_compliance_archive_manifest_requirement",
       "governance_lifecycle_missing_scheduled_jobs_requirement",
       "governance_lifecycle_missing_self_check_execution_requirement",
       "governance_lifecycle_missing_required_capabilities:governance_revokes_license_to_blocked_scope_with_audit",
