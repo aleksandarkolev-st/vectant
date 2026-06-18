@@ -269,6 +269,71 @@ describe("Dojo proof capsule service", () => {
     }));
   });
 
+  it("fails closed when a persisted proof record is missing tenant scope", async () => {
+    const skill = skillFixture();
+    const tenant = tenantFixture(skill.workspace_id);
+    const store = new InMemoryDojoSkillStore();
+    const service = createDojoProofCapsuleService({ proof_store: store });
+
+    const issued = await service.issue({
+      tenant,
+      skill,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill, { tenant_id: tenant.tenant_id }),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(issued.ok).toBe(true);
+    const proofRecord = store.getProofRecord(issued.proof_capsule!.capsule_id);
+    expect(proofRecord).toBeTruthy();
+    const { tenant_id, workspace_id, ...unscopedProofRecord } = proofRecord!;
+    expect(tenant_id).toBe(tenant.tenant_id);
+    expect(workspace_id).toBe(tenant.workspace_id);
+    store.saveProofRecord(unscopedProofRecord);
+
+    const validation = await service.validate({
+      tenant,
+      skill,
+      proof_capsule: issued.proof_capsule!,
+      requested_action: "run_workflow",
+      dry_run: true,
+      validation_options: { now: "2026-06-11T00:01:00.000Z" },
+    });
+    const consume = await service.consume({
+      tenant,
+      capsule_id: issued.proof_capsule!.capsule_id,
+      run_id: "run-unscoped",
+      now: "2026-06-11T00:02:00.000Z",
+    });
+
+    expect(validation).toEqual(expect.objectContaining({
+      ok: false,
+      blocked_by: expect.arrayContaining([
+        "proof_record_tenant_missing",
+        "proof_record_workspace_missing",
+      ]),
+      validation: expect.objectContaining({
+        error_codes: ["proof_capsule_registry_mismatch"],
+      }),
+    }));
+    expect(consume).toEqual(expect.objectContaining({
+      ok: false,
+      status: "missing",
+      blocked_by: [
+        "proof_record_tenant_missing",
+        "proof_record_workspace_missing",
+      ],
+      record: expect.objectContaining({
+        capsule_id: issued.proof_capsule!.capsule_id,
+        status: "issued",
+      }),
+    }));
+    expect(store.getProofRecord(issued.proof_capsule!.capsule_id)).toEqual(expect.objectContaining({
+      status: "issued",
+    }));
+  });
+
   it("fails closed when consumption is requested without a proof store", async () => {
     const service = createDojoProofCapsuleService();
 
@@ -401,15 +466,41 @@ describe("Dojo proof capsule service", () => {
   });
 
   it("fails closed when the proof store cannot atomically consume a capsule", async () => {
+    const skill = skillFixture();
+    const tenant = tenantFixture(skill.workspace_id);
+    const backing = new InMemoryDojoSkillStore();
     const service = createDojoProofCapsuleService({
-      proof_store: throwingProofStore({ consume: true }),
+      proof_store: {
+        saveProofRecord(record) {
+          return backing.saveProofRecord(record);
+        },
+        getProofRecord(capsuleId) {
+          return backing.getProofRecord(capsuleId);
+        },
+        markProofCapsuleValidated(capsuleId, now) {
+          return backing.markProofCapsuleValidated(capsuleId, now);
+        },
+        markProofCapsuleUsed() {
+          throw new Error("store_unavailable");
+        },
+      },
     });
+    const issued = await service.issue({
+      tenant,
+      skill,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true },
+      ...verifiedProofEvidenceInput(skill, { tenant_id: tenant.tenant_id }),
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(issued.ok).toBe(true);
 
     const result = await service.consume({
-      tenant: tenantFixture("workspace-a"),
-      capsule_id: "capsule-a",
+      tenant,
+      capsule_id: issued.proof_capsule!.capsule_id,
       run_id: "run-a",
-      now: "2026-06-11T00:00:00.000Z",
+      now: "2026-06-11T00:01:00.000Z",
     });
 
     expect(result).toEqual({

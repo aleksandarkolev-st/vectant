@@ -327,6 +327,34 @@ class DefaultDojoProofCapsuleService implements DojoProofCapsuleService {
         blocked_by: ["proof_capsule_store_missing"],
       };
     }
+    let record: DojoProofCapsuleRecord | null = null;
+    try {
+      record = await this.proofStore.getProofRecord(input.capsule_id);
+    } catch {
+      return {
+        ok: false,
+        record: null,
+        status: "missing",
+        blocked_by: ["proof_record_lookup_failed"],
+      };
+    }
+    if (!record) {
+      return {
+        ok: false,
+        record: null,
+        status: "missing",
+        blocked_by: ["proof_capsule_not_issued_by_registry"],
+      };
+    }
+    const scopeBlockedBy = proofRecordTenantScopeBlockedBy(record, input.tenant);
+    if (scopeBlockedBy.length > 0) {
+      return {
+        ok: false,
+        record,
+        status: "missing",
+        blocked_by: scopeBlockedBy,
+      };
+    }
     try {
       return await this.proofStore.markProofCapsuleUsed(input.capsule_id, input.run_id, input.now);
     } catch {
@@ -364,11 +392,9 @@ function proofRegistryBlockedBy(
   }
 ): string[] {
   if (!record) return ["proof_capsule_not_issued"];
-  const blockedBy: string[] = [];
+  const blockedBy: string[] = proofRecordTenantScopeBlockedBy(record, expected.tenant);
   if (record.status === "revoked") blockedBy.push("proof_capsule_revoked");
   if (record.status === "used") blockedBy.push("proof_capsule_replay_detected");
-  if (record.tenant_id && record.tenant_id !== expected.tenant.tenant_id) blockedBy.push("proof_record_tenant_mismatch");
-  if (record.workspace_id && record.workspace_id !== expected.tenant.workspace_id) blockedBy.push("proof_record_workspace_mismatch");
   if (record.skill_id !== capsule.skill_id) blockedBy.push("proof_record_skill_mismatch");
   if (record.license_id && record.license_id !== expected.skill.permission_license.license_id) {
     blockedBy.push("proof_record_license_mismatch");
@@ -390,6 +416,21 @@ function proofRegistryBlockedBy(
   }
   if (record.evidence_record_ids && !sameStringSet(record.evidence_record_ids, capsule.evidence_record_ids)) {
     blockedBy.push("proof_record_evidence_mismatch");
+  }
+  return blockedBy;
+}
+
+function proofRecordTenantScopeBlockedBy(record: DojoProofCapsuleRecord, tenant: DojoTenantContext): string[] {
+  const blockedBy: string[] = [];
+  if (!record.tenant_id?.trim()) {
+    blockedBy.push("proof_record_tenant_missing");
+  } else if (record.tenant_id !== tenant.tenant_id) {
+    blockedBy.push("proof_record_tenant_mismatch");
+  }
+  if (!record.workspace_id?.trim()) {
+    blockedBy.push("proof_record_workspace_missing");
+  } else if (record.workspace_id !== tenant.workspace_id) {
+    blockedBy.push("proof_record_workspace_mismatch");
   }
   return blockedBy;
 }
