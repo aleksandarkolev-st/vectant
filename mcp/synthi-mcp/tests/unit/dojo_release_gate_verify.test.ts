@@ -3048,6 +3048,7 @@ describe("Dojo release gate artifact verifier", () => {
         invalid_value_data_tissue_required: false,
         stale_missing_data_tissue_required: false,
         api_validation_latency_tissue_required: false,
+        api_downstream_failure_tissue_required: false,
       },
     });
     const incompletePath = await writeVivariumRuntimeEvidenceFixture({
@@ -3074,6 +3075,7 @@ describe("Dojo release gate artifact verifier", () => {
       "vivarium_runtime_invalid_value_data_tissue_requirement_missing",
       "vivarium_runtime_stale_missing_data_tissue_requirement_missing",
       "vivarium_runtime_api_validation_latency_tissue_requirement_missing",
+      "vivarium_runtime_api_downstream_failure_tissue_requirement_missing",
     ]));
 
     const missingExecutionPath = await writeVivariumRuntimeEvidenceFixture({
@@ -6610,6 +6612,7 @@ function vivariumRuntimeEvidenceFixture(overrides = {}) {
       api_fault_server_required: true,
       fake_success_state_detection_required: true,
       partial_write_detection_required: true,
+      api_downstream_failure_tissue_required: true,
       prompt_injection_quarantine_required: true,
       ambiguous_document_names_required: true,
       document_tissue_specific_evidence_required: true,
