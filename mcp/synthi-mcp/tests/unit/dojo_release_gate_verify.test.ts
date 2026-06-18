@@ -617,6 +617,56 @@ describe("Dojo release gate artifact verifier", () => {
     ]);
   });
 
+  it("verifies live chaos and full soak artifacts as enterprise sections without complete enterprise promotion", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-enterprise-live-soak-section-"));
+    const packageScripts = await readPackageScripts();
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      packageScripts,
+    });
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+    const liveChaosReportPath = await writeLiveChaosRunnerReportFixture({ dir });
+    const soakArtifacts = await writeSoakFixture({
+      dir,
+      basename: "enterprise-section-soak",
+      summary: soakSummaryFixture({ duration_s: 3600 }),
+    });
+
+    const result = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "live-chaos-enterprise-release": true,
+        "live-chaos-report": liveChaosReportPath,
+        "soak-performance-enterprise-release": true,
+        "soak-summary": soakArtifacts.summaryPath,
+        "soak-events": soakArtifacts.eventsPath,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.enterprise_release).not.toBe(true);
+    expect(result.release_candidate).not.toBe(true);
+    expect(result.live_chaos).toEqual([
+      expect.objectContaining({
+        id: "dojo_live_chaos",
+        ok: true,
+        enterprise_release: true,
+        result_count: DOJO_LIVE_CHAOS_SCENARIOS.length,
+      }),
+    ]);
+    expect(result.soak_performance).toEqual([
+      expect.objectContaining({
+        id: "soak_performance",
+        ok: true,
+        enterprise_release: true,
+        result_count: soakArtifacts.events.length,
+      }),
+    ]);
+  });
+
   it("can include a live chaos report in aggregate artifact verification", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-live-chaos-aggregate-"));
     const packageScripts = await readPackageScripts();

@@ -1237,6 +1237,13 @@ describe("Dojo release gate manifest", () => {
           require_live_scenarios_included: true,
           require_all_live_scenarios_passed: true,
           require_command_digest_evidence: true,
+          section_enterprise_verifier: {
+            flag: "--live-chaos-enterprise-release",
+            report_arg: "--live-chaos-report",
+            default_report_path: "tmp/dojo-chaos-runner/live-chaos-runner.report.json",
+            default_out_dir: "tmp/dojo-release-gate-verify-live-chaos-enterprise-section",
+            command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --live-chaos-enterprise-release --live-chaos-report tmp/dojo-chaos-runner/live-chaos-runner.report.json --out-dir tmp/dojo-release-gate-verify-live-chaos-enterprise-section",
+          },
         }),
       }),
       expect.objectContaining({
@@ -1294,6 +1301,15 @@ describe("Dojo release gate manifest", () => {
           require_tool_latency_metrics: true,
           require_memory_growth_metrics: true,
           require_post_detach_leak_counters: true,
+          section_enterprise_verifier: {
+            flag: "--soak-performance-enterprise-release",
+            summary_arg: "--soak-summary",
+            events_arg: "--soak-events",
+            default_summary_path: "mcp/synthi-mcp/.soak/soak-summary.json",
+            default_events_path: "mcp/synthi-mcp/.soak/soak-events.ndjson",
+            default_out_dir: "tmp/dojo-release-gate-verify-soak-performance-enterprise-section",
+            command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --soak-performance-enterprise-release --soak-summary mcp/synthi-mcp/.soak/soak-summary.json --soak-events mcp/synthi-mcp/.soak/soak-events.ndjson --out-dir tmp/dojo-release-gate-verify-soak-performance-enterprise-section",
+          },
         }),
       }),
     ]));
@@ -2121,6 +2137,12 @@ describe("Dojo release gate manifest", () => {
     liveChaosGate.enterprise_artifact_requirements.require_live_scenarios_included = false;
     liveChaosGate.enterprise_artifact_requirements.require_all_live_scenarios_passed = false;
     liveChaosGate.enterprise_artifact_requirements.require_command_digest_evidence = false;
+    liveChaosGate.enterprise_artifact_requirements.section_enterprise_verifier = {
+      flag: "--wrong-live-chaos-enterprise-flag",
+      report_arg: "--wrong-live-chaos-report",
+      default_report_path: "tmp/wrong-live-chaos-report.json",
+      command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs",
+    };
     expect(validateDojoReleaseGateManifest(brokenLiveChaos, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "live_chaos_missing_enterprise_release_requirement",
       "live_chaos_missing_default_report_path",
@@ -2130,6 +2152,11 @@ describe("Dojo release gate manifest", () => {
       "live_chaos_missing_included_requirement",
       "live_chaos_missing_all_passed_requirement",
       "live_chaos_missing_command_digest_requirement",
+      "live_chaos_missing_section_enterprise_verifier_flag",
+      "live_chaos_missing_section_enterprise_verifier_report_arg",
+      "live_chaos_section_enterprise_verifier_report_path_mismatch",
+      "live_chaos_missing_section_enterprise_verifier_out_dir",
+      "live_chaos_missing_section_enterprise_verifier_command",
     ]));
 
     const brokenDojoSoak = JSON.parse(JSON.stringify(manifest));
@@ -2177,6 +2204,14 @@ describe("Dojo release gate manifest", () => {
     soakGate.enterprise_artifact_requirements.require_duration_env_min_minutes = 10;
     soakGate.enterprise_artifact_requirements.require_zero_errors = false;
     soakGate.enterprise_artifact_requirements.require_tool_latency_metrics = false;
+    soakGate.enterprise_artifact_requirements.section_enterprise_verifier = {
+      flag: "--wrong-soak-enterprise-flag",
+      summary_arg: "--wrong-soak-summary",
+      events_arg: "--wrong-soak-events",
+      default_summary_path: "tmp/wrong-soak-summary.json",
+      default_events_path: "tmp/wrong-soak-events.ndjson",
+      command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs",
+    };
     expect(validateDojoReleaseGateManifest(brokenSoak, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "soak_performance_missing_required_env:SOAK_DURATION_MIN",
       "soak_performance_duration_env_value_requirement_not_numeric",
@@ -2186,6 +2221,13 @@ describe("Dojo release gate manifest", () => {
       "soak_performance_duration_env_min_too_low",
       "soak_performance_missing_zero_error_requirement",
       "soak_performance_missing_tool_latency_requirement",
+      "soak_performance_missing_section_enterprise_verifier_flag",
+      "soak_performance_missing_section_enterprise_verifier_summary_arg",
+      "soak_performance_missing_section_enterprise_verifier_events_arg",
+      "soak_performance_section_enterprise_verifier_summary_path_mismatch",
+      "soak_performance_section_enterprise_verifier_events_path_mismatch",
+      "soak_performance_missing_section_enterprise_verifier_out_dir",
+      "soak_performance_missing_section_enterprise_verifier_command",
     ]));
   });
 

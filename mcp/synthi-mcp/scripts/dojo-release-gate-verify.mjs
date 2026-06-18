@@ -907,7 +907,8 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const liveChaosResults = [];
-  if (enterpriseRelease || truthy(args["include-live-chaos"]) || args["live-chaos-report"]) {
+  const liveChaosEnterpriseRelease = enterpriseRelease || truthy(args["live-chaos-enterprise-release"]);
+  if (liveChaosEnterpriseRelease || truthy(args["include-live-chaos"]) || args["live-chaos-report"]) {
     const liveChaosGate = findGate(manifest, "dojo_live_chaos") || {};
     const reportPath = resolveRepoPath(args["live-chaos-report"]
       || liveChaosGate.default_report_path
@@ -915,10 +916,10 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     liveChaosResults.push(await verifyArtifactSection({
       id: "dojo_live_chaos",
       artifactPath: reportPath,
-      enterpriseRelease,
+      enterpriseRelease: liveChaosEnterpriseRelease,
     }, () => verifyDojoLiveChaosReportArtifact({
       reportPath,
-      enterpriseRelease,
+      enterpriseRelease: liveChaosEnterpriseRelease,
     })));
   }
 
@@ -940,18 +941,19 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const soakPerformanceResults = [];
-  if (enterpriseRelease || args["soak-summary"]) {
+  const soakPerformanceEnterpriseRelease = enterpriseRelease || truthy(args["soak-performance-enterprise-release"]);
+  if (soakPerformanceEnterpriseRelease || args["soak-summary"]) {
     const summaryPath = resolveRepoPath(args["soak-summary"] || path.join(DEFAULT_SOAK_DIR, "soak-summary.json"));
     const eventsPath = resolveRepoPath(args["soak-events"] || path.join(DEFAULT_SOAK_DIR, "soak-events.ndjson"));
     soakPerformanceResults.push(await verifyArtifactSection({
       id: "soak_performance",
       artifactPath: summaryPath,
       evidencePath: eventsPath,
-      enterpriseRelease,
+      enterpriseRelease: soakPerformanceEnterpriseRelease,
     }, () => verifyDojoSoakPerformanceArtifacts({
       summaryPath,
       eventsPath,
-      enterpriseRelease,
+      enterpriseRelease: soakPerformanceEnterpriseRelease,
       minDurationSeconds: parseOptionalNumber(args["min-soak-duration-s"]),
       })));
   }
