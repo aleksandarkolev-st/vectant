@@ -365,8 +365,9 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     default_evidence_path: "tmp/dojo-release-gate-runner/dojo-release-gate-runner.evidence.json",
     artifact_requirements: {
       require_manifest_validation: true,
-      require_scope_plans: ["minimal-pr", "milestone"],
+      require_scope_plans: ["minimal-pr", "milestone", "enterprise-release"],
       require_no_live_or_nightly_in_minimal_plan: true,
+      require_enterprise_release_scope_includes_release_and_t8: true,
       require_skips_missing_env_gates: true,
       require_fake_execution_promotion_ready: true,
       require_report_evidence_pair: true,
@@ -1483,6 +1484,13 @@ export const DOJO_RELEASE_GATE_IDS = [
   "privacy_redaction_suite",
 ];
 
+export const DOJO_ENTERPRISE_RELEASE_GATE_IDS = [
+  ...DOJO_RELEASE_GATE_IDS,
+  ...DOJO_RELEASE_GATE_COMMANDS
+    .filter((gate) => gate.required_for?.includes("enterprise_release"))
+    .map((gate) => gate.id),
+];
+
 const args = parseArgs(process.argv.slice(2));
 
 if (isDirectRun()) {
@@ -1530,12 +1538,14 @@ export function buildDojoReleaseGateManifest({
     minimal_pr_gate_ids: [...DOJO_MINIMAL_PR_GATE_IDS],
     milestone_gate_ids: [...DOJO_MILESTONE_GATE_IDS],
     release_gate_ids: [...DOJO_RELEASE_GATE_IDS],
+    enterprise_release_gate_ids: [...DOJO_ENTERPRISE_RELEASE_GATE_IDS],
     gates: commands,
     policy: {
       every_pr_requires: ["T0", "T1"],
       milestone_exit_requires: ["T0", "T1", "T2", "T3", "T4"],
       release_candidate_requires: ["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7"],
-      nightly_enterprise_requires: ["T8"],
+      enterprise_release_requires: ["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8"],
+      nightly_requires: ["T8"],
       first_merge_standard:
         "First foundation PRs require T0, T1, and focused touched-surface tests; live, deployed, chaos, and soak gates wait for release scope.",
     },
@@ -1550,7 +1560,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
   }
   const gates = Array.isArray(manifest?.gates) ? manifest.gates : [];
   const gateIds = new Set(gates.map((gate) => gate.id));
-  for (const groupName of ["minimal_pr_gate_ids", "milestone_gate_ids", "release_gate_ids"]) {
+  for (const groupName of ["minimal_pr_gate_ids", "milestone_gate_ids", "release_gate_ids", "enterprise_release_gate_ids"]) {
     for (const id of manifest?.[groupName] || []) {
       if (!gateIds.has(id)) errors.push(`unknown_${groupName}:${id}`);
     }
@@ -1569,6 +1579,27 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
   const releaseTiers = new Set((manifest?.release_gate_ids || []).map((id) => gates.find((gate) => gate.id === id)?.tier));
   for (const required of ["T5", "T6", "T7"]) {
     if (!releaseTiers.has(required)) errors.push(`release_missing_${required}`);
+  }
+  const enterpriseReleaseGateIds = Array.isArray(manifest?.enterprise_release_gate_ids)
+    ? manifest.enterprise_release_gate_ids.map(String)
+    : [];
+  const missingEnterpriseReleaseIds = (manifest?.release_gate_ids || [])
+    .filter((id) => !enterpriseReleaseGateIds.includes(id));
+  if (enterpriseReleaseGateIds.length === 0) errors.push("enterprise_release_gate_ids_missing");
+  if (missingEnterpriseReleaseIds.length > 0) {
+    errors.push(`enterprise_release_missing_release_gate_ids:${missingEnterpriseReleaseIds.join(",")}`);
+  }
+  const enterpriseRequiredIds = gates
+    .filter((gate) => gate.required_for?.includes("enterprise_release"))
+    .map((gate) => gate.id);
+  const missingEnterpriseRequiredIds = enterpriseRequiredIds
+    .filter((id) => !enterpriseReleaseGateIds.includes(id));
+  if (missingEnterpriseRequiredIds.length > 0) {
+    errors.push(`enterprise_release_missing_required_gate_ids:${missingEnterpriseRequiredIds.join(",")}`);
+  }
+  const enterpriseReleaseTiers = new Set(enterpriseReleaseGateIds.map((id) => gates.find((gate) => gate.id === id)?.tier));
+  for (const required of ["T5", "T6", "T7", "T8"]) {
+    if (!enterpriseReleaseTiers.has(required)) errors.push(`enterprise_release_missing_${required}`);
   }
   for (const gate of gates.filter((item) => item.tier === "T4")) {
     if (gate.evidence_kind !== "visual_report") errors.push(`visual_gate_missing_report_contract:${gate.id}`);
@@ -1711,6 +1742,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     for (const [requirement, errorCode] of [
       ["require_manifest_validation", "release_gate_runner_missing_manifest_validation_requirement"],
       ["require_no_live_or_nightly_in_minimal_plan", "release_gate_runner_missing_minimal_scope_boundary_requirement"],
+      ["require_enterprise_release_scope_includes_release_and_t8", "release_gate_runner_missing_enterprise_scope_requirement"],
       ["require_skips_missing_env_gates", "release_gate_runner_missing_missing_env_skip_requirement"],
       ["require_fake_execution_promotion_ready", "release_gate_runner_missing_fake_execution_requirement"],
       ["require_report_evidence_pair", "release_gate_runner_missing_report_evidence_pair_requirement"],
@@ -1720,7 +1752,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       if (!releaseGateRunnerGate.artifact_requirements?.[requirement]) errors.push(errorCode);
     }
     const missingRunnerScopes = missingRequiredEntries(
-      ["minimal-pr", "milestone"],
+      ["minimal-pr", "milestone", "enterprise-release"],
       releaseGateRunnerGate.artifact_requirements?.require_scope_plans,
     );
     if (missingRunnerScopes.length > 0) {
@@ -3328,6 +3360,7 @@ export function buildDojoReleaseGateEvidenceManifest({ manifest, manifestPath, s
     minimal_pr_gate_count: Array.isArray(manifest?.minimal_pr_gate_ids) ? manifest.minimal_pr_gate_ids.length : 0,
     milestone_gate_count: Array.isArray(manifest?.milestone_gate_ids) ? manifest.milestone_gate_ids.length : 0,
     release_gate_count: Array.isArray(manifest?.release_gate_ids) ? manifest.release_gate_ids.length : 0,
+    enterprise_release_gate_count: Array.isArray(manifest?.enterprise_release_gate_ids) ? manifest.enterprise_release_gate_ids.length : 0,
     visual_report_gate_count: visualGates.length,
     visual_report_gate_ids: visualGates.map((gate) => gate.id),
     proof_artifact_gate_count: proofArtifactGates.length,
@@ -3375,6 +3408,11 @@ export async function runSelfCheck({ outDir }) {
   assert(manifest.release_gate_ids.includes("security_abuse_suite"));
   assert(manifest.release_gate_ids.includes("compliance_export_suite"));
   assert(manifest.release_gate_ids.includes("privacy_redaction_suite"));
+  for (const gateId of manifest.release_gate_ids) {
+    assert(manifest.enterprise_release_gate_ids.includes(gateId), `enterprise_release_missing_release_gate:${gateId}`);
+  }
+  assert(manifest.enterprise_release_gate_ids.includes("dojo_chaos_performance_self_check"));
+  assert(manifest.enterprise_release_gate_ids.includes("soak_performance"));
   assert(manifest.gates.some((gate) => gate.id === "dojo_chaos_performance_self_check" && gate.tier === "T8"));
   assert(manifest.gates.some((gate) => gate.tier === "T8"));
   return writeDojoReleaseGateArtifacts({ outDir, manifest });

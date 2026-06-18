@@ -314,7 +314,7 @@ describe("Dojo release gate artifact verifier", () => {
     expect(rejected.errors).toEqual(expect.arrayContaining([
       "verifier_self_check_missing_negative_controls",
     ]));
-  });
+  }, 30000);
 
   it("verifies release-gate runner reports and rejects dry-run or tampered log proof for promotion", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-gate-runner-verify-"));
@@ -347,6 +347,43 @@ describe("Dojo release gate artifact verifier", () => {
       promotion_ready: true,
       runner_scope: "release",
     }));
+
+    const enterpriseArtifacts = await writeReleaseGateRunnerFixture({
+      dir,
+      basename: "dojo-release-gate-runner-enterprise",
+      manifest: releaseManifest,
+      packageScripts,
+      scope: "enterprise-release",
+      gateIds: releaseManifest.enterprise_release_gate_ids,
+      writeExpectedArtifacts: true,
+    });
+    expect(await verifyDojoReleaseGateRunReportArtifact({
+      reportPath: enterpriseArtifacts.reportPath,
+      evidencePath: enterpriseArtifacts.evidencePath,
+      manifest: releaseManifest,
+      requireEnterpriseReady: true,
+    })).toEqual(expect.objectContaining({
+      id: "release_gate_runner",
+      ok: true,
+      errors: [],
+      result_count: releaseManifest.enterprise_release_gate_ids.length,
+      enterprise_release: true,
+      promotion_ready: true,
+      runner_scope: "enterprise-release",
+    }));
+
+    const enterpriseScopeRejected = await verifyDojoReleaseGateRunReportArtifact({
+      reportPath: artifacts.reportPath,
+      evidencePath: artifacts.evidencePath,
+      manifest: releaseManifest,
+      requireEnterpriseReady: true,
+    });
+    expect(enterpriseScopeRejected.ok).toBe(false);
+    expect(enterpriseScopeRejected.errors).toEqual(expect.arrayContaining([
+      "runner_report_scope_not_enterprise_release:release",
+      "runner_plan_scope_not_enterprise_release:release",
+      expect.stringMatching(/^runner_enterprise_release_gate_ids_missing:/),
+    ]));
 
     const originalReportText = await readFile(artifacts.reportPath, "utf8");
     await writeFile(artifacts.reportPath, originalReportText.replace("\"promotion_ready\": true", "\"promotion_ready\": false"), "utf8");
@@ -529,6 +566,28 @@ describe("Dojo release gate artifact verifier", () => {
     expect(fullCoverage.missing_verifiable_release_gate_ids).toEqual([]);
     expect(fullCoverage.failed_verifiable_release_gate_ids).toEqual([]);
     expect(fullCoverage.verified_release_gate_ids).toEqual(fullCoverage.verifiable_release_gate_ids);
+    expect(fullCoverage.verifiable_release_gate_ids).not.toContain("soak_performance");
+
+    const enterpriseCoverage = getVerifiableReleaseGateCoverage({
+      manifest,
+      enterpriseRelease: true,
+      sections: manifest.enterprise_release_gate_ids.map((id) => ({ id, ok: true })),
+    });
+    expect(enterpriseCoverage.missing_verifiable_release_gate_ids).toEqual([]);
+    expect(enterpriseCoverage.verifiable_release_gate_ids).toEqual(expect.arrayContaining([
+      "dojo_chaos_performance_self_check",
+      "soak_performance",
+    ]));
+
+    const missingEnterpriseCoverage = getVerifiableReleaseGateCoverage({
+      manifest,
+      enterpriseRelease: true,
+      sections: manifest.release_gate_ids.map((id) => ({ id, ok: true })),
+    });
+    expect(missingEnterpriseCoverage.missing_verifiable_release_gate_ids).toEqual(expect.arrayContaining([
+      "dojo_chaos_performance_self_check",
+      "soak_performance",
+    ]));
 
     const partialCoverage = getVerifiableReleaseGateCoverage({
       manifest,

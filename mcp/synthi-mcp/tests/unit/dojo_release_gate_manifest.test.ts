@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildDojoReleaseGateEvidenceManifest,
   buildDojoReleaseGateManifest,
+  DOJO_ENTERPRISE_RELEASE_GATE_IDS,
   DOJO_FULL_VISUAL_ROUTE_IDS,
   DOJO_FULL_VISUAL_VIEWPORTS,
   DOJO_GHOST_MODE_VISUAL_ROUTE_IDS,
@@ -208,7 +209,15 @@ describe("Dojo release gate manifest", () => {
     expect(manifest.minimal_pr_gate_ids).toEqual(DOJO_MINIMAL_PR_GATE_IDS);
     expect(manifest.milestone_gate_ids).toEqual(DOJO_MILESTONE_GATE_IDS);
     expect(manifest.release_gate_ids).toEqual(DOJO_RELEASE_GATE_IDS);
+    expect(manifest.enterprise_release_gate_ids).toEqual(DOJO_ENTERPRISE_RELEASE_GATE_IDS);
+    expect(manifest.enterprise_release_gate_ids).toEqual(expect.arrayContaining([
+      ...DOJO_RELEASE_GATE_IDS,
+      "dojo_chaos_performance_self_check",
+      "soak_performance",
+    ]));
     expect(manifest.policy.every_pr_requires).toEqual(["T0", "T1"]);
+    expect(manifest.policy.enterprise_release_requires).toEqual(["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8"]);
+    expect(manifest.policy.nightly_requires).toEqual(["T8"]);
     expect(manifest.gates).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: "dojo_implementation_status_self_check",
@@ -252,8 +261,9 @@ describe("Dojo release gate manifest", () => {
         default_evidence_path: "tmp/dojo-release-gate-runner/dojo-release-gate-runner.evidence.json",
         artifact_requirements: expect.objectContaining({
           require_manifest_validation: true,
-          require_scope_plans: ["minimal-pr", "milestone"],
+          require_scope_plans: ["minimal-pr", "milestone", "enterprise-release"],
           require_no_live_or_nightly_in_minimal_plan: true,
+          require_enterprise_release_scope_includes_release_and_t8: true,
           require_skips_missing_env_gates: true,
           require_fake_execution_promotion_ready: true,
           require_report_evidence_pair: true,
@@ -1116,6 +1126,15 @@ describe("Dojo release gate manifest", () => {
       tier_count: 9,
     }));
 
+    const brokenEnterpriseRelease = JSON.parse(JSON.stringify(manifest));
+    brokenEnterpriseRelease.enterprise_release_gate_ids = brokenEnterpriseRelease.enterprise_release_gate_ids
+      .filter((id) => !["workflow_e2e_hosted", "dojo_chaos_performance_self_check", "soak_performance"].includes(id));
+    expect(validateDojoReleaseGateManifest(brokenEnterpriseRelease, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "enterprise_release_missing_release_gate_ids:workflow_e2e_hosted",
+      "enterprise_release_missing_required_gate_ids:dojo_chaos_performance_self_check,soak_performance",
+      "enterprise_release_missing_T8",
+    ]));
+
     const broken = buildDojoReleaseGateManifest({
       packageScripts: {
         ...PACKAGE_SCRIPTS,
@@ -1234,6 +1253,7 @@ describe("Dojo release gate manifest", () => {
     releaseGateRunnerGate.artifact_requirements.require_scope_plans = ["minimal-pr"];
     releaseGateRunnerGate.artifact_requirements.require_manifest_validation = false;
     releaseGateRunnerGate.artifact_requirements.require_no_live_or_nightly_in_minimal_plan = false;
+    releaseGateRunnerGate.artifact_requirements.require_enterprise_release_scope_includes_release_and_t8 = false;
     releaseGateRunnerGate.artifact_requirements.require_skips_missing_env_gates = false;
     releaseGateRunnerGate.artifact_requirements.require_fake_execution_promotion_ready = false;
     releaseGateRunnerGate.artifact_requirements.require_report_evidence_pair = false;
@@ -1246,12 +1266,13 @@ describe("Dojo release gate manifest", () => {
       "release_gate_runner_missing_default_evidence_path",
       "release_gate_runner_missing_manifest_validation_requirement",
       "release_gate_runner_missing_minimal_scope_boundary_requirement",
+      "release_gate_runner_missing_enterprise_scope_requirement",
       "release_gate_runner_missing_missing_env_skip_requirement",
       "release_gate_runner_missing_fake_execution_requirement",
       "release_gate_runner_missing_report_evidence_pair_requirement",
       "release_gate_runner_missing_log_digest_requirement",
       "release_gate_runner_missing_json_report_digest_requirement",
-      "release_gate_runner_missing_scope_plans:milestone",
+      "release_gate_runner_missing_scope_plans:milestone,enterprise-release",
     ]));
 
     const brokenReleaseGateVerifier = JSON.parse(JSON.stringify(manifest));
@@ -1814,6 +1835,12 @@ describe("Dojo release gate manifest", () => {
       "compliance_export_suite",
       "privacy_redaction_suite",
     ]));
+    expect(manifest.release_gate_ids).not.toContain("soak_performance");
+    expect(manifest.enterprise_release_gate_ids).toEqual(expect.arrayContaining([
+      ...manifest.release_gate_ids,
+      "dojo_chaos_performance_self_check",
+      "soak_performance",
+    ]));
   });
 
   it("builds digest evidence for the emitted manifest", () => {
@@ -1838,6 +1865,7 @@ describe("Dojo release gate manifest", () => {
       minimal_pr_gate_count: manifest.minimal_pr_gate_ids.length,
       milestone_gate_count: manifest.milestone_gate_ids.length,
       release_gate_count: manifest.release_gate_ids.length,
+      enterprise_release_gate_count: manifest.enterprise_release_gate_ids.length,
       visual_report_gate_count: 2,
       visual_report_gate_ids: ["dojo_full_visual_proof", "dojo_ghost_mode_visual_proof"],
       proof_artifact_gate_count: 33,

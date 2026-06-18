@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildDojoReleaseGateManifest,
+  DOJO_ENTERPRISE_RELEASE_GATE_IDS,
   DOJO_MILESTONE_GATE_IDS,
   DOJO_MINIMAL_PR_GATE_IDS,
   validateDojoReleaseGateManifest,
@@ -44,10 +45,13 @@ describe("Dojo release gate runner", () => {
     expect(selectDojoReleaseGateIds(releaseManifest, { scope: "minimal-pr" })).toEqual(DOJO_MINIMAL_PR_GATE_IDS);
     expect(selectDojoReleaseGateIds(releaseManifest, { scope: "milestone" })).toEqual(DOJO_MILESTONE_GATE_IDS);
     expect(selectDojoReleaseGateIds(releaseManifest, { scope: "release" })).toEqual(releaseManifest.release_gate_ids);
+    expect(selectDojoReleaseGateIds(releaseManifest, { scope: "enterprise-release" })).toEqual(releaseManifest.enterprise_release_gate_ids);
+    expect(selectDojoReleaseGateIds(releaseManifest, { scope: "enterprise" })).toEqual(DOJO_ENTERPRISE_RELEASE_GATE_IDS);
     expect(selectDojoReleaseGateIds(releaseManifest, { scope: "nightly" })).toEqual(expect.arrayContaining([
       "dojo_chaos_performance_self_check",
       "soak_performance",
     ]));
+    expect(selectDojoReleaseGateIds(releaseManifest, { scope: "nightly" })).not.toContain("workflow_e2e_hosted");
   });
 
   it("keeps live, deployed, security, and soak gates out of the minimal execution plan", () => {
@@ -63,6 +67,27 @@ describe("Dojo release gate runner", () => {
     expect(plan.selected_gate_ids).not.toContain("dojo_mcp_host_conformance");
     expect(plan.selected_gate_ids).not.toContain("security_abuse_suite");
     expect(plan.selected_gate_ids).not.toContain("soak_performance");
+  });
+
+  it("keeps enterprise release as release plus enterprise T8 gates", () => {
+    const releaseManifest = manifest();
+    const plan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "enterprise-release",
+      env: {},
+    });
+
+    expect(plan.scope).toBe("enterprise-release");
+    expect(plan.selected_gate_ids).toEqual(releaseManifest.enterprise_release_gate_ids);
+    expect(plan.selected_gate_ids).toEqual(expect.arrayContaining([
+      ...releaseManifest.release_gate_ids,
+      "dojo_chaos_performance_self_check",
+      "soak_performance",
+    ]));
+    const tiers = new Set(plan.gates.map((gate) => gate.tier));
+    for (const tier of ["T5", "T6", "T7", "T8"]) {
+      expect(tiers.has(tier)).toBe(true);
+    }
   });
 
   it("represents missing environment requirements as explicit skipped gates by default", () => {

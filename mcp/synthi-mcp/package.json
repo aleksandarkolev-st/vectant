@@ -278,6 +278,7 @@
     "proof:dojo:vivarium-runtime:self-check": "node scripts/dojo-vivarium-runtime-self-check.mjs --from-json ../../tmp/dojo-vivarium-runtime/dojo-vivarium-runtime.vitest.json --run-tests",
     "proof:dojo:release-gates:self-check": "node scripts/dojo-release-gate-manifest.mjs --self-check",
     "proof:dojo:release-gates:run": "node scripts/dojo-release-gate-runner.mjs",
+    "proof:dojo:release-gates:enterprise": "node scripts/dojo-release-gate-runner.mjs --scope enterprise-release --execute --fail-on-missing-env --continue-on-failure",
     "proof:dojo:release-gates:runner:self-check": "node scripts/dojo-release-gate-runner.mjs --self-check",
     "proof:dojo:release-gates:verify": "node scripts/dojo-release-gate-verify.mjs",
     "proof:dojo:release-gates:verify:self-check": "node scripts/dojo-release-gate-verify.mjs --self-check",

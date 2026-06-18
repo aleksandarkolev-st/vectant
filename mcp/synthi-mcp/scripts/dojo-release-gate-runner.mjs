@@ -15,6 +15,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   buildDojoReleaseGateManifest,
+  DOJO_ENTERPRISE_RELEASE_GATE_IDS,
   DOJO_MILESTONE_GATE_IDS,
   DOJO_MINIMAL_PR_GATE_IDS,
   DOJO_RELEASE_GATE_COMMANDS,
@@ -191,6 +192,7 @@ export function selectDojoReleaseGateIds(manifest, { scope = "minimal-pr" } = {}
   if (normalized === "minimal-pr") return [...(manifest?.minimal_pr_gate_ids || DOJO_MINIMAL_PR_GATE_IDS)];
   if (normalized === "milestone") return [...(manifest?.milestone_gate_ids || DOJO_MILESTONE_GATE_IDS)];
   if (normalized === "release") return [...(manifest?.release_gate_ids || DOJO_RELEASE_GATE_IDS)];
+  if (normalized === "enterprise-release") return [...(manifest?.enterprise_release_gate_ids || DOJO_ENTERPRISE_RELEASE_GATE_IDS)];
   if (normalized === "nightly") {
     return (manifest?.gates || [])
       .filter((gate) => gate.required_for?.includes("nightly") || gate.tier === "T8")
@@ -602,6 +604,18 @@ async function runSelfCheck({ outDir }) {
   });
   assert(milestonePlan.gates.some((gate) => gate.gate_id === "dojo_postgres_control_plane_self_check" && gate.status === "skipped"));
 
+  const enterpriseReleasePlan = buildDojoReleaseGateExecutionPlan({
+    manifest,
+    scope: "enterprise-release",
+    env: {},
+  });
+  assert.equal(enterpriseReleasePlan.scope, "enterprise-release");
+  assert.deepEqual(enterpriseReleasePlan.selected_gate_ids, manifest.enterprise_release_gate_ids);
+  for (const gateId of manifest.release_gate_ids) {
+    assert(enterpriseReleasePlan.selected_gate_ids.includes(gateId), `enterprise_release_missing_release_gate:${gateId}`);
+  }
+  assert(enterpriseReleasePlan.gates.some((gate) => gate.tier === "T8" && gate.gate_id === "soak_performance"));
+
   const fakeOutDir = path.join(outDir, "self-check-fake-run");
   const fakePlan = buildDojoReleaseGateExecutionPlan({
     manifest,
@@ -726,7 +740,8 @@ function normalizeScope(scope) {
   if (["pr", "minimal", "minimal-pr"].includes(normalized)) return "minimal-pr";
   if (["milestone", "milestone-exit"].includes(normalized)) return "milestone";
   if (["release", "release-candidate"].includes(normalized)) return "release";
-  if (["nightly", "enterprise", "enterprise-release"].includes(normalized)) return "nightly";
+  if (["enterprise", "enterprise-release"].includes(normalized)) return "enterprise-release";
+  if (["nightly"].includes(normalized)) return "nightly";
   return normalized;
 }
 

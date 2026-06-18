@@ -203,7 +203,9 @@ async function main() {
 
 export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {}) {
   const releaseCandidate = truthy(args["release-candidate"]);
+  const enterpriseRelease = truthy(args["enterprise-release"]);
   const requireCompleteReleaseGateCoverage = releaseCandidate
+    || enterpriseRelease
     || truthy(args["require-complete-release-gate-coverage"])
     || truthy(args["strict-release-gate-coverage"]);
   const manifestPath = resolveRepoPath(args.manifest || args["manifest-path"] || path.join(DEFAULT_RELEASE_GATE_DIR, "dojo-release-gate-manifest.json"));
@@ -216,12 +218,12 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   const manifest = manifestResult.manifest || { gates: [], release_gate_ids: [] };
 
   const releaseGateRunnerResults = [];
-  if (releaseCandidate || truthy(args["include-release-gate-runner-default"]) || args["release-gate-run-report"]) {
+  if (releaseCandidate || enterpriseRelease || truthy(args["include-release-gate-runner-default"]) || args["release-gate-run-report"]) {
     const reportPath = resolveRepoPath(args["release-gate-run-report"]
       || path.join(DEFAULT_RELEASE_GATE_RUNNER_DIR, "dojo-release-gate-runner-report.json"));
     const runnerEvidencePath = args["release-gate-run-evidence"]
       ? resolveRepoPath(args["release-gate-run-evidence"])
-      : releaseCandidate || truthy(args["include-release-gate-runner-default"])
+      : releaseCandidate || enterpriseRelease || truthy(args["include-release-gate-runner-default"])
         ? resolveRepoPath(path.join(DEFAULT_RELEASE_GATE_RUNNER_DIR, "dojo-release-gate-runner.evidence.json"))
         : undefined;
     releaseGateRunnerResults.push(await verifyArtifactSection({
@@ -229,15 +231,18 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       artifactPath: reportPath,
       evidencePath: runnerEvidencePath,
       releaseCandidate,
+      enterpriseRelease,
     }, () => verifyDojoReleaseGateRunReportArtifact({
       id: "release_gate_runner",
       reportPath,
       evidencePath: runnerEvidencePath,
       manifest,
       requirePromotionReady: releaseCandidate || truthy(args["require-release-gate-runner-promotion-ready"]),
+      requireEnterpriseReady: enterpriseRelease || truthy(args["require-release-gate-runner-enterprise-ready"]),
     })));
   }
   const shouldVerifyReleaseGateRunnerSelfCheck = releaseCandidate
+    || enterpriseRelease
     || truthy(args["include-release-gate-runner-self-check-default"])
     || args["release-gate-runner-self-check-report"]
     || args["release-gate-runner-self-check-evidence"];
@@ -256,6 +261,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
       artifactPath: reportPath,
       evidencePath: runnerEvidencePath,
       releaseCandidate,
+      enterpriseRelease,
     }, () => verifyDojoReleaseGateRunReportArtifact({
       id: "dojo_release_gate_runner_self_check",
       reportPath,
@@ -841,31 +847,31 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   }
 
   const chaosPerformanceResults = [];
-  if (truthy(args["enterprise-release"]) || truthy(args["include-chaos-performance"]) || args["chaos-performance-evidence"]) {
+  if (enterpriseRelease || truthy(args["include-chaos-performance"]) || args["chaos-performance-evidence"]) {
     const evidencePath = resolveRepoPath(args["chaos-performance-evidence"] || path.join(DEFAULT_CHAOS_PERFORMANCE_DIR, "dojo-chaos-performance.evidence.json"));
     chaosPerformanceResults.push(await verifyArtifactSection({
-      id: "chaos_performance_suite",
+      id: "dojo_chaos_performance_self_check",
       evidencePath,
-      enterpriseRelease: truthy(args["enterprise-release"]),
+      enterpriseRelease,
     }, () => verifyDojoChaosPerformanceEvidenceArtifact({
       evidencePath,
-      enterpriseRelease: truthy(args["enterprise-release"]),
+      enterpriseRelease,
     })));
   }
 
   const soakPerformanceResults = [];
-  if (truthy(args["enterprise-release"]) || args["soak-summary"]) {
+  if (enterpriseRelease || args["soak-summary"]) {
     const summaryPath = resolveRepoPath(args["soak-summary"] || path.join(DEFAULT_SOAK_DIR, "soak-summary.json"));
     const eventsPath = resolveRepoPath(args["soak-events"] || path.join(DEFAULT_SOAK_DIR, "soak-events.ndjson"));
     soakPerformanceResults.push(await verifyArtifactSection({
       id: "soak_performance",
       artifactPath: summaryPath,
       evidencePath: eventsPath,
-      enterpriseRelease: truthy(args["enterprise-release"]),
+      enterpriseRelease,
     }, () => verifyDojoSoakPerformanceArtifacts({
       summaryPath,
       eventsPath,
-      enterpriseRelease: truthy(args["enterprise-release"]),
+      enterpriseRelease,
       minDurationSeconds: parseOptionalNumber(args["min-soak-duration-s"]),
     })));
   }
@@ -874,6 +880,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   const releaseGateCoverage = getVerifiableReleaseGateCoverage({
     manifest,
     sections,
+    enterpriseRelease,
   });
   const errors = sections.flatMap((section) => section.errors.map((error) => `${section.id}:${error}`));
   if (requireCompleteReleaseGateCoverage && releaseGateCoverage.missing_verifiable_release_gate_ids.length > 0) {
@@ -884,6 +891,7 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
     generated_at: new Date().toISOString(),
     ok: errors.length === 0,
     errors,
+    enterprise_release: enterpriseRelease,
     complete_release_gate_coverage_required: requireCompleteReleaseGateCoverage,
     verifiable_release_gate_ids: releaseGateCoverage.verifiable_release_gate_ids,
     attempted_release_gate_ids: releaseGateCoverage.attempted_release_gate_ids,
@@ -943,6 +951,9 @@ export async function verifyDojoReleaseGateManifestArtifacts({ manifestPath, evi
   }
   if (evidence.tier_count !== manifest.tiers?.length) errors.push("evidence_tier_count_mismatch");
   if (evidence.gate_count !== manifest.gates?.length) errors.push("evidence_gate_count_mismatch");
+  if (evidence.enterprise_release_gate_count !== manifest.enterprise_release_gate_ids?.length) {
+    errors.push("evidence_enterprise_release_gate_count_mismatch");
+  }
   return {
     id: "release_gate_manifest",
     ok: errors.length === 0,
@@ -960,6 +971,7 @@ export async function verifyDojoReleaseGateRunReportArtifact({
   evidencePath,
   manifest,
   requirePromotionReady = false,
+  requireEnterpriseReady = false,
 } = {}) {
   const runnerPair = evidencePath
     ? await readDigestCheckedJsonPair({
@@ -1021,6 +1033,20 @@ export async function verifyDojoReleaseGateRunReportArtifact({
     if (missingReleaseGateIds.length > 0) {
       errors.push(`runner_release_gate_ids_missing:${missingReleaseGateIds.join(",")}`);
     }
+  }
+  if (requireEnterpriseReady) {
+    if (report?.scope !== "enterprise-release") errors.push(`runner_report_scope_not_enterprise_release:${report?.scope || "missing"}`);
+    if (report?.plan?.scope !== "enterprise-release") errors.push(`runner_plan_scope_not_enterprise_release:${report?.plan?.scope || "missing"}`);
+    const enterpriseReleaseGateIds = Array.isArray(manifest?.enterprise_release_gate_ids)
+      ? manifest.enterprise_release_gate_ids.map(String)
+      : [];
+    const missingEnterpriseReleaseGateIds = enterpriseReleaseGateIds.filter((gateId) => !selectedGateIds.includes(gateId));
+    if (enterpriseReleaseGateIds.length === 0) errors.push("runner_manifest_enterprise_release_gate_ids_missing");
+    if (missingEnterpriseReleaseGateIds.length > 0) {
+      errors.push(`runner_enterprise_release_gate_ids_missing:${missingEnterpriseReleaseGateIds.join(",")}`);
+    }
+  }
+  if (requirePromotionReady || requireEnterpriseReady) {
     if (report?.dry_run === true) errors.push("runner_report_dry_run");
     if (report?.complete !== true) errors.push("runner_report_not_complete");
     if (report?.promotion_ready !== true) errors.push("runner_report_not_promotion_ready");
@@ -1032,7 +1058,7 @@ export async function verifyDojoReleaseGateRunReportArtifact({
     await validateRunnerGateResult({
       result,
       gatesById,
-      requirePromotionReady,
+      requirePromotionReady: requirePromotionReady || requireEnterpriseReady,
       errors,
     });
   }
@@ -1045,6 +1071,7 @@ export async function verifyDojoReleaseGateRunReportArtifact({
     report_schema_version: report?.schema_version,
     result_count: results.length,
     release_candidate: Boolean(requirePromotionReady),
+    enterprise_release: Boolean(requireEnterpriseReady),
     runner_scope: report?.scope,
     dry_run: Boolean(report?.dry_run),
     complete: Boolean(report?.complete),
@@ -9876,9 +9903,14 @@ function summarizeSection(section) {
   };
 }
 
-export function getVerifiableReleaseGateCoverage({ manifest, sections }) {
+export function getVerifiableReleaseGateCoverage({ manifest, sections, enterpriseRelease = false }) {
   const gatesById = new Map((Array.isArray(manifest?.gates) ? manifest.gates : []).map((gate) => [gate.id, gate]));
-  const verifiableReleaseGateIds = (Array.isArray(manifest?.release_gate_ids) ? manifest.release_gate_ids : [])
+  const coverageGateIds = enterpriseRelease && Array.isArray(manifest?.enterprise_release_gate_ids)
+    ? manifest.enterprise_release_gate_ids
+    : Array.isArray(manifest?.release_gate_ids)
+      ? manifest.release_gate_ids
+      : [];
+  const verifiableReleaseGateIds = coverageGateIds
     .filter((gateId) => {
       const gate = gatesById.get(gateId);
       if (!gate) return false;
