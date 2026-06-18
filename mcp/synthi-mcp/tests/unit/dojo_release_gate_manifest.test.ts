@@ -197,6 +197,13 @@ describe("Dojo release gate manifest", () => {
     expect(scriptFiles).toEqual(DOJO_POSTGRES_CONTROL_PLANE_TEST_FILES);
   });
 
+  it("publishes the chaos harness used by live release-gate scripts", () => {
+    const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
+    expect(packageJson.scripts["chaos:dojo:preflight"]).toContain("tests/chaos/runner.mjs");
+    expect(packageJson.scripts["chaos:dojo:live"]).toContain("tests/chaos/runner.mjs");
+    expect(packageJson.files).toContain("tests/chaos");
+  });
+
   it("defines the complete T0 through T8 tier matrix", () => {
     expect(DOJO_RELEASE_GATE_TIERS.map((tier) => tier.id)).toEqual([
       "T0",
