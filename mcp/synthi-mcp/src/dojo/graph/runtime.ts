@@ -176,9 +176,57 @@ export class DojoSkillGraphRuntime {
     const evidenceRefs: string[] = [];
     const skippedNodes = new Map<string, string[]>();
     const resumeCompletedNodeIds = new Set(input.resume_state?.completed_node_ids ?? []);
+    const executionNodes = executionNodesForGraph(graph);
+    const resumeContext = resumeContextForGraph(input.resume_state, executionNodes);
     try {
-      for (const node of executionNodesForGraph(graph)) {
+      for (const node of executionNodes) {
+      const handler = nodeRegistry.get(node.kind);
+      if (!handler) {
+        const missingHandlerResult: DojoGraphNodeRunResult = {
+          node_id: node.node_id,
+          kind: node.kind,
+          status: "blocked",
+          blocked_by: [`node_handler_missing:${node.kind}`],
+          assertion_results: [],
+          rollback_decision: noRollbackRequired(),
+        };
+        nodeResults.push(missingHandlerResult);
+        evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, missingHandlerResult));
+        return {
+          ok: false,
+          status: "blocked",
+          mode,
+          run_id: runId,
+          node_results: nodeResults,
+          blocked_by: missingHandlerResult.blocked_by,
+          evidence_refs: evidenceRefs,
+        };
+      }
+
       if (resumeCompletedNodeIds.has(node.node_id)) {
+        const resumeBlockedBy = resumeBlockedByForCompletedNode(node, handler, mode, resumeContext);
+        if (resumeBlockedBy.length > 0) {
+          const blockedResumeResult: DojoGraphNodeRunResult = {
+            node_id: node.node_id,
+            kind: node.kind,
+            status: "blocked",
+            blocked_by: resumeBlockedBy,
+            assertion_results: [],
+            rollback_decision: noRollbackRequired(),
+          };
+          nodeResults.push(blockedResumeResult);
+          evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, blockedResumeResult));
+          return {
+            ok: false,
+            status: "blocked",
+            mode,
+            run_id: runId,
+            node_results: nodeResults,
+            blocked_by: resumeBlockedBy,
+            evidence_refs: evidenceRefs,
+          };
+        }
+
         const skippedResult: DojoGraphNodeRunResult = {
           node_id: node.node_id,
           kind: node.kind,
@@ -207,29 +255,6 @@ export class DojoSkillGraphRuntime {
         nodeResults.push(skippedResult);
         evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, skippedResult));
         continue;
-      }
-
-      const handler = nodeRegistry.get(node.kind);
-      if (!handler) {
-        const missingHandlerResult: DojoGraphNodeRunResult = {
-          node_id: node.node_id,
-          kind: node.kind,
-          status: "blocked",
-          blocked_by: [`node_handler_missing:${node.kind}`],
-          assertion_results: [],
-          rollback_decision: noRollbackRequired(),
-        };
-        nodeResults.push(missingHandlerResult);
-        evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, missingHandlerResult));
-        return {
-          ok: false,
-          status: "blocked",
-          mode,
-          run_id: runId,
-          node_results: nodeResults,
-          blocked_by: missingHandlerResult.blocked_by,
-          evidence_refs: evidenceRefs,
-        };
       }
 
       const blockedBy = blockedByForNode(node, handler, mode, inputs, input.expiry_state);
@@ -585,6 +610,70 @@ function executionNodesForGraph(graph: DojoSkillGraph): DojoGraphNode[] {
     if (!visited.has(node.node_id)) ordered.push(node);
   }
   return ordered;
+}
+
+interface DojoGraphResumeContext {
+  paused_node_id?: string;
+  paused_node_known: boolean;
+  paused_node_index?: number;
+  execution_index_by_node_id: Map<string, number>;
+}
+
+function resumeContextForGraph(
+  resumeState: DojoGraphResumeState | undefined,
+  executionNodes: DojoGraphNode[]
+): DojoGraphResumeContext {
+  const executionIndexByNodeId = new Map(executionNodes.map((node, index) => [node.node_id, index]));
+  const pausedNodeId = resumeState?.paused_node_id;
+  const pausedNodeIndex = pausedNodeId ? executionIndexByNodeId.get(pausedNodeId) : undefined;
+  return {
+    paused_node_id: pausedNodeId,
+    paused_node_known: pausedNodeId ? pausedNodeIndex !== undefined : false,
+    paused_node_index: pausedNodeIndex,
+    execution_index_by_node_id: executionIndexByNodeId,
+  };
+}
+
+function resumeBlockedByForCompletedNode(
+  node: DojoGraphNode,
+  handler: DojoGraphNodeHandler,
+  mode: DojoGraphMode,
+  resumeContext: DojoGraphResumeContext
+): string[] {
+  if (mode !== "production") return [];
+
+  const blockedBy: string[] = [];
+  if (!resumeContext.paused_node_id || !resumeContext.paused_node_known) {
+    blockedBy.push("resume_paused_node_unknown");
+  } else {
+    const nodeIndex = resumeContext.execution_index_by_node_id.get(node.node_id);
+    if (nodeIndex === undefined || resumeContext.paused_node_index === undefined || nodeIndex >= resumeContext.paused_node_index) {
+      blockedBy.push(`resume_completed_node_not_before_pause:${node.node_id}`);
+    }
+  }
+
+  if (nodeHasResumeSensitiveObligations(node, handler)) {
+    blockedBy.push(`resume_completed_node_untrusted:${node.node_id}`);
+  }
+
+  return uniqueStrings(blockedBy);
+}
+
+function nodeHasResumeSensitiveObligations(node: DojoGraphNode, handler: DojoGraphNodeHandler): boolean {
+  return handler.executes_substrate
+    || handler.validates_proof_in_production
+    || handler.requires_human_decision
+    || handler.executes_rollback
+    || handler.evaluates_branch
+    || handler.evaluates_retry_policy
+    || handler.evaluates_case_law_binding
+    || node.proof?.required === true
+    || node.guardrails.length > 0
+    || node.assertions.length > 0
+    || node.postconditions.length > 0
+    || node.evidence_policy.length > 0
+    || node.case_law_refs.length > 0
+    || node.expiry_triggers.length > 0;
 }
 
 function assertionContextForNode(

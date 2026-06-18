@@ -935,6 +935,66 @@ describe("Dojo graph runtime", () => {
     }));
   });
 
+  it("does not trust production resume state for proof or action node completion", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    let proofValidations = 0;
+    let substrateExecutions = 0;
+
+    const result = await runtime.execute({
+      graph: graphFixture(),
+      run_id: "graph-run-malicious-resume",
+      resume_state: {
+        paused_node_id: "action_submit",
+        decision_key: "operator_approval",
+        completed_node_ids: ["trigger", "action_submit"],
+      },
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: () => {
+        proofValidations += 1;
+        return { ok: true, blocked_by: [] };
+      },
+      substrate_executor: {
+        execute: async () => {
+          substrateExecutions += 1;
+          return { ok: true, status: "executed", substrate: "dom", evidence_refs: ["substrate:should-not-run"] };
+        },
+      },
+      evidence_writer: graphEvidenceWriter,
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: [
+        "resume_completed_node_not_before_pause:action_submit",
+        "resume_completed_node_untrusted:action_submit",
+      ],
+      node_results: [
+        expect.objectContaining({
+          node_id: "trigger",
+          status: "skipped",
+          control_flow: { skipped_by: ["resume_already_completed"] },
+        }),
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: [
+            "resume_completed_node_not_before_pause:action_submit",
+            "resume_completed_node_untrusted:action_submit",
+          ],
+        }),
+      ],
+    }));
+    expect(proofValidations).toBe(0);
+    expect(substrateExecutions).toBe(0);
+  });
+
   it("blocks when a human decision is denied", async () => {
     const runtime = new DojoSkillGraphRuntime();
 

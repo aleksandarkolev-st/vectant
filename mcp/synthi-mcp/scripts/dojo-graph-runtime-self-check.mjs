@@ -77,6 +77,7 @@ export const DOJO_GRAPH_RUNTIME_CAPABILITIES = [
   "graph_runtime_blocks_unavailable_rollback_without_human_review",
   "graph_runtime_pauses_for_human_decisions",
   "graph_runtime_resumes_after_human_approval",
+  "graph_runtime_rejects_untrusted_resume_completion",
   "graph_runtime_blocks_human_denial",
   "graph_runtime_blocks_invalid_graphs",
   "graph_runtime_blocks_unreachable_actions",
@@ -400,6 +401,8 @@ function capabilityMatchers(capability) {
       return ["pauses at a human node", "approval is missing"];
     case "graph_runtime_resumes_after_human_approval":
       return ["resumes after human approval"];
+    case "graph_runtime_rejects_untrusted_resume_completion":
+      return ["does not trust production resume state", "proof or action node completion"];
     case "graph_runtime_blocks_human_denial":
       return ["blocks when a human decision is denied"];
     case "graph_runtime_blocks_invalid_graphs":
