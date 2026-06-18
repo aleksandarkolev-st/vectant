@@ -19,6 +19,12 @@ import {
   type DojoSubstrateExecutionResult,
   type DojoSubstrateExecutor,
 } from "./substrate_executor.js";
+import {
+  createDefaultDojoGraphNodeRegistry,
+  validateDojoGraphNodeRegistryForGraph,
+  type DojoGraphNodeHandler,
+  type DojoGraphNodeRegistry,
+} from "./node_registry.js";
 
 export type DojoGraphNodeRunStatus = "completed" | "blocked" | "skipped" | "paused";
 export type DojoGraphRunStatus = "completed" | "blocked" | "failed" | "paused";
@@ -121,6 +127,7 @@ export interface DojoSkillGraphRuntimeInput {
   allow_self_attested_proof?: boolean;
   preflight_only?: boolean;
   substrate_executor?: DojoSubstrateExecutor;
+  node_registry?: DojoGraphNodeRegistry;
   evidence_writer?: DojoGraphEvidenceWriter;
   now?: string;
 }
@@ -143,6 +150,22 @@ export class DojoSkillGraphRuntime {
         run_id: runId,
         node_results: [],
         blocked_by: validation.issues.filter((issue) => issue.severity === "error").map((issue) => issue.issue_id),
+        evidence_refs: [],
+      };
+    }
+    const nodeRegistry = input.node_registry ?? createDefaultDojoGraphNodeRegistry();
+    const registryValidation = validateDojoGraphNodeRegistryForGraph(graph, nodeRegistry);
+    if (!registryValidation.ok) {
+      return {
+        ok: false,
+        status: "blocked",
+        mode,
+        run_id: runId,
+        node_results: [],
+        blocked_by: [
+          ...registryValidation.missing_handlers.map((kind) => `node_handler_missing:${kind}`),
+          ...registryValidation.duplicate_handlers.map((kind) => `node_handler_duplicate:${kind}`),
+        ],
         evidence_refs: [],
       };
     }
@@ -186,9 +209,32 @@ export class DojoSkillGraphRuntime {
         continue;
       }
 
-      const blockedBy = blockedByForNode(node, mode, inputs, input.expiry_state);
+      const handler = nodeRegistry.get(node.kind);
+      if (!handler) {
+        const missingHandlerResult: DojoGraphNodeRunResult = {
+          node_id: node.node_id,
+          kind: node.kind,
+          status: "blocked",
+          blocked_by: [`node_handler_missing:${node.kind}`],
+          assertion_results: [],
+          rollback_decision: noRollbackRequired(),
+        };
+        nodeResults.push(missingHandlerResult);
+        evidenceRefs.push(await emitGraphNodeEvidence(input, graph, runId, node, missingHandlerResult));
+        return {
+          ok: false,
+          status: "blocked",
+          mode,
+          run_id: runId,
+          node_results: nodeResults,
+          blocked_by: missingHandlerResult.blocked_by,
+          evidence_refs: evidenceRefs,
+        };
+      }
+
+      const blockedBy = blockedByForNode(node, handler, mode, inputs, input.expiry_state);
       const proofBlockedBy = blockedBy.length === 0
-        ? await proofBlockedByForNode(node, mode, graph, input, inputs)
+        ? await proofBlockedByForNode(node, handler, mode, graph, input, inputs)
         : [];
       blockedBy.push(...proofBlockedBy);
       const result: DojoGraphNodeRunResult = {
@@ -213,7 +259,7 @@ export class DojoSkillGraphRuntime {
         };
       }
 
-      if (input.preflight_only === true && (node.kind === "Action" || node.kind === "Assertion")) {
+      if (input.preflight_only === true && handler.preflight_skips_execution) {
         const preflightResult: DojoGraphNodeRunResult = {
           ...result,
           status: "skipped",
@@ -224,7 +270,7 @@ export class DojoSkillGraphRuntime {
         continue;
       }
 
-      if (node.kind === "Human") {
+      if (handler.requires_human_decision) {
         const humanDecision = humanDecisionForNode(node, input.human_decisions);
         if (humanDecision.status === "paused") {
           const pausedResult: DojoGraphNodeRunResult = {
@@ -269,7 +315,7 @@ export class DojoSkillGraphRuntime {
         }
       }
 
-      if (node.kind === "Rollback") {
+      if (handler.executes_rollback) {
         const rollbackDecision = decideDojoRollbackNodeExecution(node);
         const rollbackBlockedBy = rollbackDecision.status === "rollback_available"
           ? []
@@ -297,7 +343,7 @@ export class DojoSkillGraphRuntime {
         }
       }
 
-      if (node.kind === "Action") {
+      if (handler.executes_substrate) {
         const actionSubstrateExecutor = substrateExecutor;
         const actionPreflightBlockedBy = productionActionEvidenceBlockedBy(node, mode, input);
         if (actionPreflightBlockedBy.length > 0) {
@@ -382,7 +428,7 @@ export class DojoSkillGraphRuntime {
         };
       }
 
-      if (node.kind === "Branch") {
+      if (handler.evaluates_branch) {
         const branchDecision = decideBranch(node, graph, inputs);
         if (!branchDecision.ok) {
           const branchResult: DojoGraphNodeRunResult = {
@@ -642,6 +688,7 @@ function createGraphRunId(graph: DojoSkillGraph): string {
 
 function blockedByForNode(
   node: DojoGraphNode,
+  handler: DojoGraphNodeHandler,
   mode: DojoGraphMode,
   inputs: Record<string, unknown>,
   expiryState?: DojoGraphExpiryState
@@ -649,10 +696,10 @@ function blockedByForNode(
   const expiryBlockedBy = expiryBlockedByForNode(node, expiryState);
   if (expiryBlockedBy.length > 0) return expiryBlockedBy;
 
-  const retryBlockedBy = retryBlockedByForNode(node, inputs);
+  const retryBlockedBy = handler.evaluates_retry_policy ? retryBlockedByForNode(node, inputs) : [];
   if (retryBlockedBy.length > 0) return retryBlockedBy;
 
-  const caseLawBlockedBy = caseLawBlockedByForNode(node, inputs);
+  const caseLawBlockedBy = handler.evaluates_case_law_binding ? caseLawBlockedByForNode(node, inputs) : [];
   if (caseLawBlockedBy.length > 0) return caseLawBlockedBy;
 
   const blockedBy = node.preconditions
@@ -903,12 +950,13 @@ function reachableNodeIds(startNodeId: string, adjacency: Map<string, string[]>)
 
 async function proofBlockedByForNode(
   node: DojoGraphNode,
+  handler: DojoGraphNodeHandler,
   mode: DojoGraphMode,
   graph: DojoSkillGraph,
   input: DojoSkillGraphRuntimeInput,
   inputs: Record<string, unknown>
 ): Promise<string[]> {
-  if (!nodeRequiresProductionProofValidation(node, mode)) return [];
+  if (!nodeRequiresProductionProofValidation(node, handler, mode)) return [];
   if (input.allow_self_attested_proof === true && inputs["proof_capsule_valid"] === true) {
     return ["proof_self_attestation_not_allowed_in_production"];
   }
@@ -930,10 +978,14 @@ async function proofBlockedByForNode(
   return [];
 }
 
-function nodeRequiresProductionProofValidation(node: DojoGraphNode, mode: DojoGraphMode): boolean {
+function nodeRequiresProductionProofValidation(
+  node: DojoGraphNode,
+  handler: DojoGraphNodeHandler,
+  mode: DojoGraphMode
+): boolean {
   if (mode !== "production") return false;
   if (node.proof?.required !== true) return false;
-  return node.kind === "Action" || node.kind === "Proof";
+  return handler.validates_proof_in_production;
 }
 
 export function evaluateStaticCondition(condition: string, inputs: Record<string, unknown>): boolean {

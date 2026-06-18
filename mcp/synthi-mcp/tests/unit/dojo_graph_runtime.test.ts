@@ -4,10 +4,52 @@ import {
   evaluateStaticCondition,
   type DojoGraphEvidenceEvent,
 } from "../../src/dojo/graph/runtime.js";
+import {
+  createDefaultDojoGraphNodeRegistry,
+  createDojoGraphNodeRegistry,
+  DOJO_GRAPH_NODE_KINDS,
+  validateDojoGraphNodeRegistryForGraph,
+} from "../../src/dojo/graph/node_registry.js";
 import { createFakeDojoSubstrateExecutor } from "../../src/dojo/graph/substrate_executor.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
 
 describe("Dojo graph runtime", () => {
+  it("validates node handler registry coverage and blocks missing runtime handlers", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const defaultRegistry = createDefaultDojoGraphNodeRegistry();
+    const graph = graphFixture();
+
+    expect(defaultRegistry.list().map((handler) => handler.kind).sort()).toEqual([...DOJO_GRAPH_NODE_KINDS].sort());
+    expect(validateDojoGraphNodeRegistryForGraph(graph, defaultRegistry)).toEqual({
+      ok: true,
+      missing_handlers: [],
+      duplicate_handlers: [],
+    });
+
+    const missingActionRegistry = createDojoGraphNodeRegistry(
+      defaultRegistry.list().filter((handler) => handler.kind !== "Action")
+    );
+    await expect(runtime.execute({
+      graph,
+      node_registry: missingActionRegistry,
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["node_handler_missing:Action"],
+      node_results: [],
+    }));
+  });
+
   it("executes a valid production graph when proof and preconditions are satisfied", async () => {
     const runtime = new DojoSkillGraphRuntime();
 

@@ -47,6 +47,7 @@ export const DOJO_GRAPH_RUNTIME_CAPABILITIES = [
   "graph_compiler_preserves_source_api_bindings",
   "graph_compiler_adapts_repo_artifacts",
   "graph_runtime_executes_production_with_valid_proof",
+  "graph_runtime_validates_node_handler_registry",
   "graph_runtime_preflights_without_action_execution",
   "graph_runtime_executes_edge_order",
   "graph_runtime_emits_evidence_events",
@@ -339,6 +340,8 @@ function capabilityMatchers(capability) {
       return ["adapts existing repo graph artifacts"];
     case "graph_runtime_executes_production_with_valid_proof":
       return ["executes a valid production graph", "proof and preconditions"];
+    case "graph_runtime_validates_node_handler_registry":
+      return ["validates node handler registry", "blocks missing runtime handlers"];
     case "graph_runtime_preflights_without_action_execution":
       return ["preflights production graph proof and guardrails", "without action execution"];
     case "graph_runtime_executes_edge_order":
