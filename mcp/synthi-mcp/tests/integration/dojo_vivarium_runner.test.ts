@@ -242,6 +242,50 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("executes downstream-failure API tissue through the API fault server", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "downstream_failure",
+      layer: "risk",
+      risk_tags: ["network_failure"],
+    }));
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "api-downstream-failure-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: graphFixture(),
+      run_id: "scenario-run-api-downstream-failure",
+    });
+
+    expect(materialized.fixture.api_state.downstream_failure).toBe(true);
+    expect(result.api_fault).toEqual(expect.objectContaining({
+      behavior: "downstream_failure",
+      request_count: 1,
+      response_status: 503,
+      durable_state: expect.objectContaining({
+        committed: false,
+        downstream_failed: true,
+      }),
+    }));
+    expect(result.observed_evidence).toEqual(expect.arrayContaining([
+      "api_fault_server_executed",
+      "api_downstream_failure_state",
+    ]));
+    expect(result.graph_result).toEqual(expect.objectContaining({
+      status: "blocked",
+      blocked_by: ["api_fault_downstream_failure"],
+    }));
+    expect(result.oracle_result).toEqual(expect.objectContaining({
+      status: "blocked",
+      expected_outcome: "block",
+      observed_evidence: expect.arrayContaining(["api_downstream_failure_state"]),
+    }));
+  });
+
   it("does not execute API fault fixtures when graph preconditions block before the action", async () => {
     const runner = new DojoVivariumRunner();
     const definition = toDojoScenarioDefinition(scenarioFixture({

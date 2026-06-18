@@ -56,6 +56,23 @@ describe("Dojo scenario DSL", () => {
     expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
   });
 
+  it("classifies downstream failure scenarios as API fault tissue", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "downstream_failure",
+      risk_tags: ["network_failure"],
+      layer: "risk",
+    }));
+
+    expect(definition.mutation_scopes).toEqual(["api", "data"]);
+    expect(definition.fixture_requirements.map((fixture) => fixture.kind)).toEqual(["fake_api_server"]);
+    expect(definition.oracle).toEqual(expect.objectContaining({
+      kind: "expected_block",
+      expected_outcome: "block",
+      observed_evidence_required: expect.arrayContaining(["api_downstream_failure_state"]),
+    }));
+    expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
+  });
+
   it("classifies invalid value scenarios as data validation tissue", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "invalid_value",

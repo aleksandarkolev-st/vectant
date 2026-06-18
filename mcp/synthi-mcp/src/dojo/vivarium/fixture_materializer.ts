@@ -145,6 +145,7 @@ export interface DojoMaterializedFixture {
     partial_write: boolean;
     fake_success: boolean;
     validation_error: boolean;
+    downstream_failure: boolean;
   };
   identity_state: DojoSyntheticIdentityState;
   document_state: {
@@ -226,6 +227,7 @@ function fixtureFor(
       partial_write: definition.mutation_kind === "partial_write",
       fake_success: definition.mutation_kind === "fake_success",
       validation_error: definition.mutation_kind === "validation_error",
+      downstream_failure: definition.mutation_kind === "downstream_failure",
     },
     identity_state: identityState,
     document_state: documentState,

@@ -222,6 +222,8 @@ function fixtureKindsFor(mutationKind: string): DojoScenarioFixtureKind[] {
       return ["synthetic_dom_snapshot", "fake_approvals"];
     case "network_latency":
       return ["fake_api_server", "fake_latency"];
+    case "downstream_failure":
+      return ["fake_api_server"];
     case "fake_success":
       return ["synthetic_dom_snapshot", "fake_api_server", "fake_database_state"];
     case "validation_error":
@@ -251,6 +253,7 @@ function mutationScopesFor(mutationKind: string): DojoScenarioMutationScope[] {
     case "network_latency":
     case "fake_success":
     case "validation_error":
+    case "downstream_failure":
     case "partial_write":
       return ["api", "data"];
     case "auth_expiry":
@@ -303,6 +306,7 @@ function expectedOutcomeFor(scenario: DojoScenario): DojoScenarioExpectedOutcome
     || tag === "invalid_value"
     || tag === "policy_threshold"
   ))) return "block";
+  if (scenario.mutation_kind === "downstream_failure") return "block";
   if (scenario.risk_tags.some((tag) => tag === "fake_success" || tag === "partial_failure")) return "fail";
   return "pass";
 }
@@ -343,6 +347,9 @@ function observedEvidenceFor(
   }
   if (scenario.mutation_kind === "route_change") {
     evidence.push("route_tissue_state", "synthetic_page_route_state");
+  }
+  if (scenario.mutation_kind === "downstream_failure") {
+    evidence.push("api_downstream_failure_state");
   }
   return evidence;
 }

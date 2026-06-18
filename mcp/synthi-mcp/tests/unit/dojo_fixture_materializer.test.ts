@@ -454,6 +454,26 @@ describe("Dojo synthetic fixture materializer", () => {
     expect(second).toEqual(fixture);
   });
 
+  it("materializes downstream API failures as synthetic API fault tissue", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "downstream_failure",
+      risk_tags: ["network_failure"],
+    }));
+    const fixture = materializeDojoSyntheticFixture(definition, { seed: "downstream-failure-seed" });
+    const second = materializeDojoSyntheticFixture(definition, { seed: "downstream-failure-seed" });
+
+    expect(fixture.synthetic_data_only).toBe(true);
+    expect(fixture.api_state).toEqual(expect.objectContaining({
+      downstream_failure: true,
+      fake_success: false,
+      partial_write: false,
+      validation_error: false,
+    }));
+    expect(definition.fixture_requirements.map((requirement) => requirement.kind)).toEqual(["fake_api_server"]);
+    expect(definition.oracle.observed_evidence_required).toContain("api_downstream_failure_state");
+    expect(second).toEqual(fixture);
+  });
+
   it("is deterministic for the same scenario and seed", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "duplicate_entity",

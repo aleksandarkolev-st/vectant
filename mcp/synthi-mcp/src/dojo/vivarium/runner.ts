@@ -425,6 +425,7 @@ function fixtureInputs(fixture: DojoMaterializedFixture): Record<string, unknown
     missing_field_names: [...fixture.missing_fields],
     api_latency_ms: fixture.api_state.latency_ms,
     api_validation_error: fixture.api_state.validation_error,
+    api_downstream_failure: fixture.api_state.downstream_failure,
     partial_write: fixture.api_state.partial_write,
     fake_success: fixture.api_state.fake_success,
     ui_label_changed: fixture.ui_state.label_changed,
@@ -594,7 +595,7 @@ function apiFaultBehaviorForScenario(materialized: DojoMaterializedScenario): Do
   if (materialized.fixture.api_state.partial_write) return "partial_write";
   if (materialized.fixture.api_state.validation_error) return "validation_error";
   if (materialized.fixture.api_state.latency_ms > 0) return "timeout";
-  if (materialized.definition.mutation_kind === "downstream_failure") return "downstream_failure";
+  if (materialized.fixture.api_state.downstream_failure) return "downstream_failure";
   return "success";
 }
 
