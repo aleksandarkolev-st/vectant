@@ -476,7 +476,7 @@ async function forwardToBridge(upstreamUrl, request) {
   return { upstream, propagatedHeaders };
 }
 
-async function proxyWorkflowBridge(request, routeContext) {
+export async function proxyWorkflowBridge(request, routeContext) {
   try {
     let authorized;
     try {
