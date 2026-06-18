@@ -210,12 +210,19 @@ export async function verifyDojoReleaseGateArtifactsFromArgs({ args = {} } = {})
   if (truthy(args["include-release-gate-runner-default"]) || args["release-gate-run-report"]) {
     const reportPath = resolveRepoPath(args["release-gate-run-report"]
       || path.join(DEFAULT_RELEASE_GATE_RUNNER_DIR, "dojo-release-gate-runner-report.json"));
+    const runnerEvidencePath = args["release-gate-run-evidence"]
+      ? resolveRepoPath(args["release-gate-run-evidence"])
+      : truthy(args["include-release-gate-runner-default"])
+        ? resolveRepoPath(path.join(DEFAULT_RELEASE_GATE_RUNNER_DIR, "dojo-release-gate-runner.evidence.json"))
+        : undefined;
     releaseGateRunnerResults.push(await verifyArtifactSection({
       id: "release_gate_runner",
       artifactPath: reportPath,
+      evidencePath: runnerEvidencePath,
       releaseCandidate,
     }, () => verifyDojoReleaseGateRunReportArtifact({
       reportPath,
+      evidencePath: runnerEvidencePath,
       manifest,
       requirePromotionReady: releaseCandidate || truthy(args["require-release-gate-runner-promotion-ready"]),
     })));
@@ -886,11 +893,24 @@ export async function verifyDojoReleaseGateManifestArtifacts({ manifestPath, evi
 
 export async function verifyDojoReleaseGateRunReportArtifact({
   reportPath,
+  evidencePath,
   manifest,
   requirePromotionReady = false,
 } = {}) {
-  const report = await readJsonFile(reportPath);
+  const runnerPair = evidencePath
+    ? await readDigestCheckedJsonPair({
+      id: "release_gate_runner",
+      artifactPath: reportPath,
+      evidencePath,
+      evidenceSchema: "synthi.dojo.releaseGateRunEvidence.v1",
+      digestField: "report_sha256",
+      bytesField: "report_bytes",
+      pathField: "report_path",
+    })
+    : { artifact: await readJsonFile(reportPath), evidence: null, digest: { errors: [] } };
+  const report = runnerPair.artifact;
   const errors = [];
+  errors.push(...(runnerPair.digest?.errors || []));
   const gatesById = new Map((Array.isArray(manifest?.gates) ? manifest.gates : []).map((gate) => [gate.id, gate]));
   if (report?.schema_version !== "synthi.dojo.releaseGateRun.v1") {
     errors.push(`runner_schema_mismatch:${report?.schema_version || "missing"}`);
@@ -925,6 +945,9 @@ export async function verifyDojoReleaseGateRunReportArtifact({
   if (report?.counts?.selected !== selectedGateIds.length) {
     errors.push(`runner_selected_count_mismatch:${report?.counts?.selected}:${selectedGateIds.length}`);
   }
+  if (runnerPair.evidence) {
+    validateRunnerEvidenceSummary({ evidence: runnerPair.evidence, report, results, errors });
+  }
   if (requirePromotionReady) {
     if (report?.dry_run === true) errors.push("runner_report_dry_run");
     if (report?.complete !== true) errors.push("runner_report_not_complete");
@@ -946,6 +969,7 @@ export async function verifyDojoReleaseGateRunReportArtifact({
     ok: errors.length === 0,
     errors,
     artifact_path: reportPath,
+    evidence_path: evidencePath,
     report_schema_version: report?.schema_version,
     result_count: results.length,
     release_candidate: Boolean(requirePromotionReady),
@@ -9080,6 +9104,33 @@ async function validateRunnerGateResult({
   if (result.status === "planned" && !result.executed && requirePromotionReady) errors.push(`runner_result_planned:${gateId}`);
   if (result.status !== "planned" && result.command !== result.command?.trim()) {
     errors.push(`runner_result_command_untrimmed:${gateId}`);
+  }
+}
+
+function validateRunnerEvidenceSummary({ evidence, report, results, errors }) {
+  const producedArtifactCount = results.reduce((count, result) => (
+    count + (Array.isArray(result.produced_artifacts) ? result.produced_artifacts.length : 0)
+  ), 0);
+  const commandLogDigestCount = results.filter((result) => result.stdout_sha256 && result.stderr_sha256).length;
+  const expected = {
+    run_id: report?.run_id,
+    scope: report?.scope,
+    dry_run: Boolean(report?.dry_run),
+    ok: Boolean(report?.ok),
+    complete: Boolean(report?.complete),
+    promotion_ready: Boolean(report?.promotion_ready),
+    selected_gate_count: report?.counts?.selected || 0,
+    executed_gate_count: report?.counts?.executed || 0,
+    passed_gate_count: report?.counts?.passed || 0,
+    failed_gate_count: report?.counts?.failed || 0,
+    skipped_gate_count: report?.counts?.skipped || 0,
+    produced_artifact_count: producedArtifactCount,
+    command_log_digest_count: commandLogDigestCount,
+  };
+  for (const [field, expectedValue] of Object.entries(expected)) {
+    if (evidence?.[field] !== expectedValue) {
+      errors.push(`runner_evidence_summary_mismatch:${field}:${evidence?.[field]}:${expectedValue}`);
+    }
   }
 }
 

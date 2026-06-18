@@ -45,7 +45,7 @@ async function main() {
   const outDir = path.resolve(String(args["out-dir"] || DEFAULT_OUT_DIR));
   if (truthy(args["self-check"])) {
     const result = await runSelfCheck({ outDir });
-    console.log(`[ok] Dojo release gate runner self-check passed - report=${result.report_path}`);
+    console.log(`[ok] Dojo release gate runner self-check passed - report=${result.report_path} evidence=${result.evidence_path}`);
     return;
   }
 
@@ -66,7 +66,7 @@ async function main() {
   if (!result.report.ok) {
     throw new Error(`dojo_release_gate_runner_failed:${result.report.errors.join(";")}`);
   }
-  console.log(`[ok] Dojo release gate ${dryRun ? "plan" : "run"} written - report=${result.report_path}`);
+  console.log(`[ok] Dojo release gate ${dryRun ? "plan" : "run"} written - report=${result.report_path} evidence=${result.evidence_path}`);
   if (!result.report.promotion_ready) {
     console.log(`[info] promotion_ready=false complete=${result.report.complete} skipped=${result.report.counts.skipped} failed=${result.report.counts.failed}`);
   }
@@ -117,10 +117,20 @@ export async function runDojoReleaseGateRunner({
     generatedAt,
   });
   const reportPath = path.join(outDir, "dojo-release-gate-runner-report.json");
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  const serializedReport = `${JSON.stringify(report, null, 2)}\n`;
+  await writeFile(reportPath, serializedReport, "utf8");
+  const evidence = buildDojoReleaseGateRunEvidenceManifest({
+    report,
+    reportPath,
+    serialized: serializedReport,
+  });
+  const evidencePath = path.join(outDir, "dojo-release-gate-runner.evidence.json");
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
   return {
     report_path: reportPath,
+    evidence_path: evidencePath,
     report,
+    evidence,
     plan,
     results,
   };
@@ -305,6 +315,35 @@ export function buildDojoReleaseGateRunReport({
     },
     counts,
     results,
+  };
+}
+
+export function buildDojoReleaseGateRunEvidenceManifest({ report, reportPath, serialized }) {
+  const body = typeof serialized === "string" ? serialized : JSON.stringify(report);
+  const results = Array.isArray(report?.results) ? report.results : [];
+  const producedArtifactCount = results.reduce((count, result) => (
+    count + (Array.isArray(result.produced_artifacts) ? result.produced_artifacts.length : 0)
+  ), 0);
+  const commandLogDigestCount = results.filter((result) => result.stdout_sha256 && result.stderr_sha256).length;
+  return {
+    schema_version: "synthi.dojo.releaseGateRunEvidence.v1",
+    generated_at: new Date().toISOString(),
+    report_path: reportPath,
+    report_sha256: sha256(body),
+    report_bytes: Buffer.byteLength(body),
+    run_id: report?.run_id,
+    scope: report?.scope,
+    dry_run: Boolean(report?.dry_run),
+    ok: Boolean(report?.ok),
+    complete: Boolean(report?.complete),
+    promotion_ready: Boolean(report?.promotion_ready),
+    selected_gate_count: report?.counts?.selected || 0,
+    executed_gate_count: report?.counts?.executed || 0,
+    passed_gate_count: report?.counts?.passed || 0,
+    failed_gate_count: report?.counts?.failed || 0,
+    skipped_gate_count: report?.counts?.skipped || 0,
+    produced_artifact_count: producedArtifactCount,
+    command_log_digest_count: commandLogDigestCount,
   };
 }
 

@@ -192,6 +192,7 @@ import {
 } from "../../scripts/dojo-release-gate-verify.mjs";
 import {
   buildDojoReleaseGateExecutionPlan,
+  buildDojoReleaseGateRunEvidenceManifest,
   buildDojoReleaseGateRunReport,
 } from "../../scripts/dojo-release-gate-runner.mjs";
 
@@ -245,6 +246,7 @@ describe("Dojo release gate artifact verifier", () => {
 
     expect(await verifyDojoReleaseGateRunReportArtifact({
       reportPath: artifacts.reportPath,
+      evidencePath: artifacts.evidencePath,
       manifest: releaseManifest,
       requirePromotionReady: true,
     })).toEqual(expect.objectContaining({
@@ -256,9 +258,24 @@ describe("Dojo release gate artifact verifier", () => {
       promotion_ready: true,
     }));
 
+    const originalReportText = await readFile(artifacts.reportPath, "utf8");
+    await writeFile(artifacts.reportPath, originalReportText.replace("\"promotion_ready\": true", "\"promotion_ready\": false"), "utf8");
+    const reportDigestRejected = await verifyDojoReleaseGateRunReportArtifact({
+      reportPath: artifacts.reportPath,
+      evidencePath: artifacts.evidencePath,
+      manifest: releaseManifest,
+      requirePromotionReady: true,
+    });
+    expect(reportDigestRejected.ok).toBe(false);
+    expect(reportDigestRejected.errors).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^report_sha256_mismatch:/),
+    ]));
+    await writeFile(artifacts.reportPath, originalReportText, "utf8");
+
     await writeFile(artifacts.stdoutPath, "tampered stdout\n", "utf8");
     const tampered = await verifyDojoReleaseGateRunReportArtifact({
       reportPath: artifacts.reportPath,
+      evidencePath: artifacts.evidencePath,
       manifest: releaseManifest,
       requirePromotionReady: true,
     });
@@ -277,6 +294,7 @@ describe("Dojo release gate artifact verifier", () => {
     });
     const dryRunRejected = await verifyDojoReleaseGateRunReportArtifact({
       reportPath: dryRunArtifacts.reportPath,
+      evidencePath: dryRunArtifacts.evidencePath,
       manifest: releaseManifest,
       requirePromotionReady: true,
     });
@@ -311,6 +329,7 @@ describe("Dojo release gate artifact verifier", () => {
         manifest: manifestPath,
         evidence: evidencePath,
         "release-gate-run-report": runner.reportPath,
+        "release-gate-run-evidence": runner.evidencePath,
         "require-release-gate-runner-promotion-ready": "1",
       },
     });
@@ -349,6 +368,7 @@ describe("Dojo release gate artifact verifier", () => {
 
     expect(await verifyDojoReleaseGateRunReportArtifact({
       reportPath: runner.reportPath,
+      evidencePath: runner.evidencePath,
       manifest: manifestWithTempEvidence,
       requirePromotionReady: true,
     })).toEqual(expect.objectContaining({
@@ -360,6 +380,7 @@ describe("Dojo release gate artifact verifier", () => {
     await writeFile(evidencePath, JSON.stringify({ ok: false, tampered: true }), "utf8");
     const rejected = await verifyDojoReleaseGateRunReportArtifact({
       reportPath: runner.reportPath,
+      evidencePath: runner.evidencePath,
       manifest: manifestWithTempEvidence,
       requirePromotionReady: true,
     });
@@ -3837,12 +3858,22 @@ async function writeReleaseGateRunnerFixture({
     generatedAt: "2026-06-11T00:00:00.000Z",
   });
   const reportPath = path.join(dir, `${basename}.json`);
-  await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
+  const serializedReport = `${JSON.stringify(report, null, 2)}\n`;
+  await writeFile(reportPath, serializedReport, "utf8");
+  const evidence = buildDojoReleaseGateRunEvidenceManifest({
+    report,
+    reportPath,
+    serialized: serializedReport,
+  });
+  const evidencePath = path.join(dir, `${basename}.evidence.json`);
+  await writeFile(evidencePath, JSON.stringify(evidence, null, 2), "utf8");
   return {
     reportPath,
+    evidencePath,
     stdoutPath,
     stderrPath,
     report,
+    evidence,
   };
 }
 

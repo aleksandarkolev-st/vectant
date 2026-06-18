@@ -191,6 +191,7 @@ describe("Dojo release gate runner", () => {
       env: {},
     });
     const report = JSON.parse(await readFile(result.report_path, "utf8"));
+    const evidence = JSON.parse(await readFile(result.evidence_path, "utf8"));
 
     expect(report.schema_version).toBe("synthi.dojo.releaseGateRun.v1");
     expect(report.dry_run).toBe(true);
@@ -199,6 +200,15 @@ describe("Dojo release gate runner", () => {
     expect(report.promotion_ready).toBe(false);
     expect(report.plan.selected_gate_ids).toEqual(DOJO_MINIMAL_PR_GATE_IDS);
     expect(report.results.every((gate) => gate.status === "planned")).toBe(true);
+    expect(evidence).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.releaseGateRunEvidence.v1",
+      report_path: result.report_path,
+      report_sha256: createHash("sha256").update(await readFile(result.report_path, "utf8")).digest("hex"),
+      dry_run: true,
+      complete: false,
+      promotion_ready: false,
+      selected_gate_count: DOJO_MINIMAL_PR_GATE_IDS.length,
+    }));
   });
 
   it("can bind a runner report to a supplied manifest artifact", async () => {
