@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /*
  * Run the focused Agent Dojo managed-key proof-signing gate and emit a
- * digest-backed evidence manifest. This proves the production signing contract
- * is covered by executable tests without requiring a live cloud KMS endpoint.
+ * digest-backed evidence manifest. Local execution proves the production
+ * signing contract. Release-candidate evidence must also attach an observed
+ * managed-key service signing artifact through the release observation input.
  */
 
 import assert from "node:assert/strict";
@@ -37,6 +38,24 @@ export const DOJO_MANAGED_KEY_SIGNING_CAPABILITIES = [
   "production_readiness_rejects_local_signing_material",
   "external_signing_requirement_rejects_local_custody",
   "public_verifier_accepts_ed25519_key_material",
+];
+
+export const DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION = "synthi.dojo.managedKeySigningReleaseObservation.v1";
+
+export const DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_ENV = "SYNTHI_DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PATH";
+
+export const DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS = [
+  "managed_key_service_observed",
+  "managed_key_uri_observed",
+  "managed_key_custody_observed",
+  "signature_verified_with_public_key",
+  "public_key_material_observed",
+  "signer_config_redacted",
+  "no_private_key_material_exported",
+  "signer_outage_fail_closed_observed",
+  "uri_mismatch_rejected_observed",
+  "local_custody_rejected_observed",
+  "release_artifact_digest_observed",
 ];
 
 const args = parseArgs(process.argv.slice(2));
@@ -106,6 +125,11 @@ export async function runDojoManagedKeySigningSelfCheck({
   const jsonReportError = existsSync(jsonReportPath) ? undefined : `json_report_missing:${jsonReportPath}`;
   const jsonReportText = jsonReportError ? "" : await readFile(jsonReportPath, "utf8");
   const jsonReport = jsonReportError ? null : JSON.parse(jsonReportText);
+  const releaseObservationPath = args["release-observation"] || process.env[DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_ENV];
+  const releaseObservation = await loadDojoManagedKeySigningReleaseObservation({
+    observationPath: releaseObservationPath,
+    now,
+  });
   const durationMs = performance.now() - startedAt;
   const testExecution = {
     command: process.execPath,
@@ -141,6 +165,7 @@ export async function runDojoManagedKeySigningSelfCheck({
     timeoutMs,
     testExecution,
     error: result.error?.message ?? jsonResult.error?.message ?? jsonReportError,
+    releaseObservation,
   });
   const evidencePath = path.join(outputDir, "dojo-managed-key-signing.evidence.json");
   await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
@@ -175,6 +200,7 @@ export function buildDojoManagedKeySigningEvidenceManifest({
   timeoutMs = 120000,
   testExecution,
   error,
+  releaseObservation,
 }) {
   const testSummary = summarizeVitestJsonReport(jsonReport);
   const capabilityCoverage = buildManagedKeySigningCapabilityCoverage({
@@ -213,7 +239,9 @@ export function buildDojoManagedKeySigningEvidenceManifest({
       required_response_fields: ["schema_version", "algorithm", "key_id", "key_uri", "key_custody", "signature"],
       production_private_key_material_allowed: false,
       public_verifier_material_required: true,
+      release_managed_key_observation_required: releaseObservation?.release_ready === true,
     },
+    release_managed_key_observation: normalizeDojoManagedKeySigningReleaseObservation(releaseObservation, { now }),
     test_files: [...testFiles],
     test_file_count: testFiles.length,
     reported_test_file_count: testSummary.reported_test_file_count,
@@ -232,6 +260,94 @@ export function buildDojoManagedKeySigningEvidenceManifest({
     stderr_bytes: Buffer.byteLength(stderr),
     ...(error ? { error } : {}),
   };
+}
+
+export async function loadDojoManagedKeySigningReleaseObservation({ observationPath, now = new Date().toISOString() } = {}) {
+  if (!observationPath) {
+    return buildDojoManagedKeySigningSelfCheckObservation({ now });
+  }
+  const resolvedPath = path.resolve(String(observationPath));
+  const parsed = JSON.parse(await readFile(resolvedPath, "utf8"));
+  return normalizeDojoManagedKeySigningReleaseObservation(extractManagedKeySigningReleaseObservation(parsed), {
+    now,
+    observationPath: resolvedPath,
+  });
+}
+
+export function buildDojoManagedKeySigningSelfCheckObservation({ now = new Date().toISOString() } = {}) {
+  return {
+    schema_version: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
+    source: "unit_self_check",
+    scope: "self_check",
+    observed_at: now,
+    observed: false,
+    release_ready: false,
+    provider: "managed-key-service",
+    algorithm: "ed25519",
+    key_id: "",
+    key_uri: "",
+    key_custody: "managed",
+    signature_verified: false,
+    public_key_sha256: "",
+    signed_payload_sha256: "",
+    signature_sha256: "",
+    checks: Object.fromEntries(DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS.map((check) => [check, false])),
+    redacted_config: {
+      command_redacted: true,
+      args_redacted: true,
+      env_redacted: true,
+      private_key_material_present: false,
+      secret_values_present: false,
+    },
+    artifact_refs: [],
+    reason: "focused managed-key signing unit self-check does not observe a live managed signing service",
+  };
+}
+
+export function normalizeDojoManagedKeySigningReleaseObservation(observation, { now = new Date().toISOString(), observationPath } = {}) {
+  const source = observation && typeof observation === "object" ? observation : {};
+  const checks = source.checks && typeof source.checks === "object" ? source.checks : {};
+  const redactedConfig = source.redacted_config && typeof source.redacted_config === "object" ? source.redacted_config : {};
+  return {
+    schema_version: source.schema_version || DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
+    source: String(source.source || "unknown"),
+    scope: String(source.scope || "unknown"),
+    observed_at: String(source.observed_at || now),
+    observed: source.observed === true,
+    release_ready: source.release_ready === true,
+    provider: String(source.provider || ""),
+    algorithm: String(source.algorithm || ""),
+    key_id: String(source.key_id || ""),
+    key_uri: String(source.key_uri || ""),
+    key_custody: String(source.key_custody || ""),
+    signature_verified: source.signature_verified === true,
+    public_key_sha256: String(source.public_key_sha256 || ""),
+    signed_payload_sha256: String(source.signed_payload_sha256 || ""),
+    signature_sha256: String(source.signature_sha256 || ""),
+    checks: Object.fromEntries(DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS.map((check) => [check, checks[check] === true])),
+    redacted_config: {
+      command_redacted: redactedConfig.command_redacted === true,
+      args_redacted: redactedConfig.args_redacted === true,
+      env_redacted: redactedConfig.env_redacted === true,
+      private_key_material_present: redactedConfig.private_key_material_present === true,
+      secret_values_present: redactedConfig.secret_values_present === true,
+    },
+    artifact_refs: Array.isArray(source.artifact_refs)
+      ? source.artifact_refs.map((ref) => ({
+        kind: String(ref?.kind || "artifact"),
+        artifact_path: String(ref?.artifact_path || ""),
+        artifact_sha256: String(ref?.artifact_sha256 || ""),
+      }))
+      : [],
+    ...(observationPath ? { observation_path: observationPath } : {}),
+    ...(source.reason ? { reason: String(source.reason) } : {}),
+  };
+}
+
+function extractManagedKeySigningReleaseObservation(parsed) {
+  if (parsed?.schema_version === DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION) return parsed;
+  if (parsed?.release_managed_key_observation) return parsed.release_managed_key_observation;
+  return parsed;
 }
 
 export function buildManagedKeySigningCapabilityCoverage({ capabilities, jsonReport }) {

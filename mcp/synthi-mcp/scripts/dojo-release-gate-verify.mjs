@@ -95,6 +95,8 @@ import {
 } from "./dojo-implementation-status-self-check.mjs";
 import {
   DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "./dojo-managed-key-signing-self-check.mjs";
 import {
@@ -2875,7 +2877,7 @@ export function validateDojoMcpHostConformanceEvidenceForRelease(evidence, repor
 
 export async function verifyDojoManagedKeySigningEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
   const evidence = await readJsonFile(evidencePath);
-  const errors = validateDojoManagedKeySigningEvidenceForRelease(evidence).errors;
+  const errors = validateDojoManagedKeySigningEvidenceForRelease(evidence, { releaseCandidate }).errors;
   errors.push(...await validateDigestReferencedLogArtifacts(evidence, evidencePath));
   return {
     id: "dojo_managed_key_signing_self_check",
@@ -2884,10 +2886,12 @@ export async function verifyDojoManagedKeySigningEvidenceArtifact({ evidencePath
     evidence_path: evidencePath,
     release_candidate: Boolean(releaseCandidate),
     report_schema_version: evidence?.schema_version ?? null,
+    release_observation_scope: evidence?.release_managed_key_observation?.scope ?? null,
+    release_observation_ready: evidence?.release_managed_key_observation?.release_ready === true,
   };
 }
 
-export function validateDojoManagedKeySigningEvidenceForRelease(evidence) {
+export function validateDojoManagedKeySigningEvidenceForRelease(evidence, { releaseCandidate = false } = {}) {
   const errors = [];
   const configuredCapabilities = Array.isArray(evidence?.configured_capabilities)
     ? evidence.configured_capabilities.map(String)
@@ -2948,6 +2952,9 @@ export function validateDojoManagedKeySigningEvidenceForRelease(evidence) {
   if (signingContract.public_verifier_material_required !== true) {
     errors.push("managed_key_signing_public_verifier_requirement_missing");
   }
+  if (releaseCandidate && signingContract.release_managed_key_observation_required !== true) {
+    errors.push("managed_key_signing_release_observation_requirement_missing");
+  }
   const requiredResponseFields = new Set(Array.isArray(signingContract.required_response_fields)
     ? signingContract.required_response_fields.map(String)
     : []);
@@ -2965,10 +2972,89 @@ export function validateDojoManagedKeySigningEvidenceForRelease(evidence) {
   if (Number(evidence?.reported_test_file_count || 0) !== Number(evidence?.test_file_count || 0)) {
     errors.push(`managed_key_signing_reported_file_count_mismatch:${evidence?.reported_test_file_count}:${evidence?.test_file_count}`);
   }
+  if (releaseCandidate) {
+    errors.push(...validateDojoManagedKeySigningReleaseObservation(evidence?.release_managed_key_observation));
+  }
   return {
     ok: errors.length === 0,
     errors,
   };
+}
+
+export function validateDojoManagedKeySigningReleaseObservation(observation) {
+  const errors = [];
+  if (!observation || typeof observation !== "object") {
+    return ["managed_key_signing_release_observation_missing"];
+  }
+  if (observation.schema_version !== DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION) {
+    errors.push(`managed_key_signing_release_observation_schema_mismatch:${observation.schema_version || "missing"}`);
+  }
+  if (observation.observed !== true) errors.push("managed_key_signing_release_observation_not_observed");
+  if (observation.release_ready !== true) errors.push("managed_key_signing_release_observation_not_ready");
+  if (observation.scope !== "release") {
+    errors.push(`managed_key_signing_release_observation_scope_invalid:${observation.scope || "missing"}`);
+  }
+  if (observation.source === "unit_self_check") {
+    errors.push("managed_key_signing_release_observation_self_check_only");
+  }
+  if (observation.provider !== "managed-key-service") {
+    errors.push(`managed_key_signing_release_observation_provider_mismatch:${observation.provider || "missing"}`);
+  }
+  if (observation.algorithm !== "ed25519") {
+    errors.push(`managed_key_signing_release_observation_algorithm_mismatch:${observation.algorithm || "missing"}`);
+  }
+  if (typeof observation.key_id !== "string" || observation.key_id.length === 0) {
+    errors.push("managed_key_signing_release_observation_key_id_missing");
+  }
+  if (typeof observation.key_uri !== "string" || observation.key_uri.length === 0) {
+    errors.push("managed_key_signing_release_observation_key_uri_missing");
+  }
+  if (observation.key_custody !== "managed") {
+    errors.push(`managed_key_signing_release_observation_custody_mismatch:${observation.key_custody || "missing"}`);
+  }
+  if (observation.signature_verified !== true) {
+    errors.push("managed_key_signing_release_observation_signature_unverified");
+  }
+  for (const [field, errorCode] of [
+    ["public_key_sha256", "managed_key_signing_release_observation_public_key_sha_invalid"],
+    ["signed_payload_sha256", "managed_key_signing_release_observation_payload_sha_invalid"],
+    ["signature_sha256", "managed_key_signing_release_observation_signature_sha_invalid"],
+  ]) {
+    if (typeof observation[field] !== "string" || !/^[a-f0-9]{64}$/i.test(observation[field])) {
+      errors.push(errorCode);
+    }
+  }
+  const checks = observation.checks && typeof observation.checks === "object" ? observation.checks : {};
+  for (const check of DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS) {
+    if (checks[check] !== true) {
+      errors.push(`managed_key_signing_release_observation_check_missing:${check}`);
+    }
+  }
+  const redactedConfig = observation.redacted_config && typeof observation.redacted_config === "object"
+    ? observation.redacted_config
+    : {};
+  for (const field of ["command_redacted", "args_redacted", "env_redacted"]) {
+    if (redactedConfig[field] !== true) {
+      errors.push(`managed_key_signing_release_observation_config_not_redacted:${field}`);
+    }
+  }
+  if (redactedConfig.private_key_material_present !== false) {
+    errors.push("managed_key_signing_release_observation_private_key_material_present");
+  }
+  if (redactedConfig.secret_values_present !== false) {
+    errors.push("managed_key_signing_release_observation_secret_values_present");
+  }
+  const refs = Array.isArray(observation.artifact_refs) ? observation.artifact_refs : [];
+  if (refs.length === 0) errors.push("managed_key_signing_release_observation_artifacts_missing");
+  refs.forEach((ref, index) => {
+    if (typeof ref?.artifact_path !== "string" || ref.artifact_path.length === 0) {
+      errors.push(`managed_key_signing_release_observation_artifact_path_missing:${index}`);
+    }
+    if (typeof ref?.artifact_sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(ref.artifact_sha256)) {
+      errors.push(`managed_key_signing_release_observation_artifact_sha256_invalid:${index}`);
+    }
+  });
+  return errors;
 }
 
 export async function verifyDojoPublicProofVerificationEvidenceArtifact({ evidencePath, releaseCandidate = false }) {
@@ -7628,7 +7714,9 @@ async function writeManagedKeySigningEvidenceForSelfCheck({
       required_response_fields: ["schema_version", "algorithm", "key_id", "key_uri", "key_custody", "signature"],
       production_private_key_material_allowed: false,
       public_verifier_material_required: true,
+      release_managed_key_observation_required: true,
     },
+    release_managed_key_observation: buildManagedKeySigningReleaseObservationForSelfCheck(),
     test_files: [...DOJO_MANAGED_KEY_SIGNING_TEST_FILES],
     test_file_count: DOJO_MANAGED_KEY_SIGNING_TEST_FILES.length,
     reported_test_file_count: DOJO_MANAGED_KEY_SIGNING_TEST_FILES.length,
@@ -9126,6 +9214,42 @@ function buildHostedRuntimeGatewayReleaseObservationForSelfCheck(overrides = {})
       artifact_sha256: sha256(`hosted-runtime-release-observation:${gateId}`),
       kind: index === 0 ? "summary" : "evidence",
     })),
+    ...overrides,
+  };
+}
+
+function buildManagedKeySigningReleaseObservationForSelfCheck(overrides = {}) {
+  return {
+    schema_version: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
+    source: "release_gate_verifier_self_check",
+    scope: "release",
+    observed_at: "2026-06-11T00:00:00.000Z",
+    observed: true,
+    release_ready: true,
+    provider: "managed-key-service",
+    algorithm: "ed25519",
+    key_id: "managed-ed-key-release",
+    key_uri: "kms://tenant-a/proof/managed-ed-key-release",
+    key_custody: "managed",
+    signature_verified: true,
+    public_key_sha256: sha256("managed-ed-key-release-public-key"),
+    signed_payload_sha256: sha256("managed-ed-key-release-payload"),
+    signature_sha256: sha256("managed-ed-key-release-signature"),
+    checks: Object.fromEntries(DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS.map((check) => [check, true])),
+    redacted_config: {
+      command_redacted: true,
+      args_redacted: true,
+      env_redacted: true,
+      private_key_material_present: false,
+      secret_values_present: false,
+    },
+    artifact_refs: [
+      {
+        kind: "managed_key_signing_conformance",
+        artifact_path: "tmp/dojo-managed-key-signing-live/managed-key-signing-release-observation.json",
+        artifact_sha256: sha256("managed-key-signing-release-observation"),
+      },
+    ],
     ...overrides,
   };
 }

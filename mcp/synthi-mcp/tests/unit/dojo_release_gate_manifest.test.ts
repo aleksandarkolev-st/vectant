@@ -91,6 +91,9 @@ import {
 } from "../../scripts/dojo-vivarium-runtime-self-check.mjs";
 import {
   DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_ENV,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "../../scripts/dojo-managed-key-signing-self-check.mjs";
 import {
@@ -673,9 +676,13 @@ describe("Dojo release gate manifest", () => {
           require_managed_key_service_provider: true,
           require_managed_key_custody: true,
           require_public_verifier_material: true,
+          require_release_managed_key_observation: true,
+          release_observation_schema_version: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
+          required_release_observation_checks: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS,
           require_stdout_stderr_digest_match: true,
           require_json_report_digest_match: true,
         }),
+        requires_env: [DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_ENV],
       }),
       expect.objectContaining({
         id: "dojo_public_proof_verification_self_check",
@@ -1450,8 +1457,16 @@ describe("Dojo release gate manifest", () => {
     managedKeySigningGate.release_artifact_requirements.required_test_files = DOJO_MANAGED_KEY_SIGNING_TEST_FILES
       .filter((file) => file !== missingManagedKeySigningTestFile);
     managedKeySigningGate.release_artifact_requirements.require_managed_key_custody = false;
+    managedKeySigningGate.release_artifact_requirements.require_release_managed_key_observation = false;
+    managedKeySigningGate.release_artifact_requirements.release_observation_schema_version = "broken";
+    managedKeySigningGate.release_artifact_requirements.required_release_observation_checks = DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS.slice(1);
+    managedKeySigningGate.requires_env = [];
     expect(validateDojoReleaseGateManifest(brokenManagedKeySigning, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "managed_key_signing_missing_custody_requirement",
+      "managed_key_signing_missing_release_observation_requirement",
+      "managed_key_signing_missing_release_observation_schema",
+      `managed_key_signing_missing_release_observation_checks:${DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS[0]}`,
+      "managed_key_signing_missing_release_observation_env",
       "managed_key_signing_missing_required_capabilities:managed_key_service_rejects_local_custody_metadata",
       `managed_key_signing_missing_required_test_files:${missingManagedKeySigningTestFile}`,
     ]));

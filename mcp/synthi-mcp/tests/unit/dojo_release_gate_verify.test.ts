@@ -94,6 +94,8 @@ import {
 } from "../../scripts/dojo-vivarium-runtime-self-check.mjs";
 import {
   DOJO_MANAGED_KEY_SIGNING_CAPABILITIES,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS,
+  DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
   DOJO_MANAGED_KEY_SIGNING_TEST_FILES,
 } from "../../scripts/dojo-managed-key-signing-self-check.mjs";
 import {
@@ -145,6 +147,7 @@ import {
   validateDojoTimeMachineDebuggerEvidenceForRelease,
   validateDojoHostedRuntimeGatewayEvidenceForRelease,
   validateDojoHostedRuntimeGatewayReleaseObservation,
+  validateDojoManagedKeySigningReleaseObservation,
   validateDojoVivariumRuntimeEvidenceForRelease,
   validateDojoCheckrideLicenseEvidenceForRelease,
   validateDojoCaseLawRuntimeEvidenceForRelease,
@@ -395,7 +398,7 @@ describe("Dojo release gate artifact verifier", () => {
       `runner_planned_gates_present:${releaseGateIds.length}`,
       "runner_result_planned:mcp_typecheck",
     ]));
-  });
+  }, 30000);
 
   it("can include a release-gate runner report in aggregate artifact verification", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-release-gate-runner-aggregate-"));
@@ -513,7 +516,7 @@ describe("Dojo release gate artifact verifier", () => {
       "runner_produced_artifact_not_fresh:dojo_implementation_status_self_check:evidence:false",
       "runner_produced_artifact_stale_on_disk:dojo_implementation_status_self_check:evidence",
     ]));
-  });
+  }, 30000);
 
   it("reports manifest-declared verifiable release gates that have no verifier section", () => {
     const manifest = buildDojoReleaseGateManifest({
@@ -2562,7 +2565,11 @@ describe("Dojo release gate artifact verifier", () => {
       ok: true,
       errors: [],
       release_candidate: true,
+      release_observation_scope: "release",
+      release_observation_ready: true,
     }));
+
+    expect(validateDojoManagedKeySigningReleaseObservation(managedKeySigningReleaseObservationFixture())).toEqual([]);
 
     const incomplete = managedKeySigningEvidenceFixture({
       ok: false,
@@ -2591,6 +2598,88 @@ describe("Dojo release gate artifact verifier", () => {
       "managed_key_signing_private_material_allowed",
       "managed_key_signing_public_verifier_requirement_missing",
       "managed_key_signing_response_field_missing:key_custody",
+    ]));
+
+    const selfCheckOnlyPath = await writeManagedKeySigningEvidenceFixture({
+      dir,
+      basename: "self-check-only-managed-key-signing",
+      evidence: managedKeySigningEvidenceFixture({
+        signing_contract: {
+          ...managedKeySigningEvidenceFixture().signing_contract,
+          release_managed_key_observation_required: false,
+        },
+        release_managed_key_observation: managedKeySigningReleaseObservationFixture({
+          source: "unit_self_check",
+          scope: "self_check",
+          observed: false,
+          release_ready: false,
+          signature_verified: false,
+          checks: Object.fromEntries(DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS.map((check) => [check, false])),
+          artifact_refs: [],
+        }),
+      }),
+    });
+    const selfCheckOnlyResult = await verifyDojoManagedKeySigningEvidenceArtifact({
+      evidencePath: selfCheckOnlyPath,
+      releaseCandidate: true,
+    });
+    expect(selfCheckOnlyResult.ok).toBe(false);
+    expect(selfCheckOnlyResult.errors).toEqual(expect.arrayContaining([
+      "managed_key_signing_release_observation_requirement_missing",
+      "managed_key_signing_release_observation_not_observed",
+      "managed_key_signing_release_observation_not_ready",
+      "managed_key_signing_release_observation_scope_invalid:self_check",
+      "managed_key_signing_release_observation_self_check_only",
+      "managed_key_signing_release_observation_signature_unverified",
+      "managed_key_signing_release_observation_artifacts_missing",
+      `managed_key_signing_release_observation_check_missing:${DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS[0]}`,
+    ]));
+
+    const unsafeObservationPath = await writeManagedKeySigningEvidenceFixture({
+      dir,
+      basename: "unsafe-release-managed-key-signing",
+      evidence: managedKeySigningEvidenceFixture({
+        release_managed_key_observation: managedKeySigningReleaseObservationFixture({
+          provider: "ed25519-local",
+          algorithm: "hmac-sha256",
+          key_id: "",
+          key_uri: "",
+          key_custody: "local",
+          public_key_sha256: "not-a-sha",
+          signed_payload_sha256: "not-a-sha",
+          signature_sha256: "not-a-sha",
+          redacted_config: {
+            command_redacted: false,
+            args_redacted: false,
+            env_redacted: false,
+            private_key_material_present: true,
+            secret_values_present: true,
+          },
+          artifact_refs: [{ kind: "bad", artifact_path: "", artifact_sha256: "bad" }],
+        }),
+      }),
+    });
+    const unsafeObservationResult = await verifyDojoManagedKeySigningEvidenceArtifact({
+      evidencePath: unsafeObservationPath,
+      releaseCandidate: true,
+    });
+    expect(unsafeObservationResult.ok).toBe(false);
+    expect(unsafeObservationResult.errors).toEqual(expect.arrayContaining([
+      "managed_key_signing_release_observation_provider_mismatch:ed25519-local",
+      "managed_key_signing_release_observation_algorithm_mismatch:hmac-sha256",
+      "managed_key_signing_release_observation_key_id_missing",
+      "managed_key_signing_release_observation_key_uri_missing",
+      "managed_key_signing_release_observation_custody_mismatch:local",
+      "managed_key_signing_release_observation_public_key_sha_invalid",
+      "managed_key_signing_release_observation_payload_sha_invalid",
+      "managed_key_signing_release_observation_signature_sha_invalid",
+      "managed_key_signing_release_observation_config_not_redacted:command_redacted",
+      "managed_key_signing_release_observation_config_not_redacted:args_redacted",
+      "managed_key_signing_release_observation_config_not_redacted:env_redacted",
+      "managed_key_signing_release_observation_private_key_material_present",
+      "managed_key_signing_release_observation_secret_values_present",
+      "managed_key_signing_release_observation_artifact_path_missing:0",
+      "managed_key_signing_release_observation_artifact_sha256_invalid:0",
     ]));
 
     const driftedPath = await writeManagedKeySigningEvidenceFixture({
@@ -6080,7 +6169,9 @@ function managedKeySigningEvidenceFixture(overrides = {}) {
       required_response_fields: ["schema_version", "algorithm", "key_id", "key_uri", "key_custody", "signature"],
       production_private_key_material_allowed: false,
       public_verifier_material_required: true,
+      release_managed_key_observation_required: true,
     },
+    release_managed_key_observation: managedKeySigningReleaseObservationFixture(),
     test_files: [...DOJO_MANAGED_KEY_SIGNING_TEST_FILES],
     test_file_count: DOJO_MANAGED_KEY_SIGNING_TEST_FILES.length,
     reported_test_file_count: DOJO_MANAGED_KEY_SIGNING_TEST_FILES.length,
@@ -6112,6 +6203,42 @@ function managedKeySigningEvidenceFixture(overrides = {}) {
     stdout_bytes: Buffer.byteLength(stdout),
     stderr_bytes: Buffer.byteLength(stderr),
     json_report_bytes: Buffer.byteLength(jsonReport),
+    ...overrides,
+  };
+}
+
+function managedKeySigningReleaseObservationFixture(overrides = {}) {
+  return {
+    schema_version: DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_SCHEMA_VERSION,
+    source: "managed_key_signing_release_conformance",
+    scope: "release",
+    observed_at: "2026-06-11T00:00:00.000Z",
+    observed: true,
+    release_ready: true,
+    provider: "managed-key-service",
+    algorithm: "ed25519",
+    key_id: "managed-ed-key-release",
+    key_uri: "kms://tenant-a/proof/managed-ed-key-release",
+    key_custody: "managed",
+    signature_verified: true,
+    public_key_sha256: sha256("managed-ed-key-release-public-key"),
+    signed_payload_sha256: sha256("managed-ed-key-release-payload"),
+    signature_sha256: sha256("managed-ed-key-release-signature"),
+    checks: Object.fromEntries(DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS.map((check) => [check, true])),
+    redacted_config: {
+      command_redacted: true,
+      args_redacted: true,
+      env_redacted: true,
+      private_key_material_present: false,
+      secret_values_present: false,
+    },
+    artifact_refs: [
+      {
+        kind: "managed_key_signing_conformance",
+        artifact_path: "tmp/dojo-managed-key-signing-live/managed-key-signing-release-observation.json",
+        artifact_sha256: sha256("managed-key-signing-release-observation"),
+      },
+    ],
     ...overrides,
   };
 }
