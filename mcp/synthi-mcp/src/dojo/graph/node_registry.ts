@@ -1,4 +1,6 @@
-import type { DojoGraphNodeKind, DojoSkillGraph } from "./types.js";
+import { DOJO_GRAPH_NODE_KINDS, type DojoGraphNodeKind, type DojoSkillGraph } from "./types.js";
+
+export { DOJO_GRAPH_NODE_KINDS } from "./types.js";
 
 export type DojoGraphNodeRuntimePhase =
   | "control"
@@ -32,29 +34,6 @@ export interface DojoGraphNodeRegistryValidation {
   missing_handlers: DojoGraphNodeKind[];
   duplicate_handlers: DojoGraphNodeKind[];
 }
-
-export const DOJO_GRAPH_NODE_KINDS: DojoGraphNodeKind[] = [
-  "Trigger",
-  "Input",
-  "Observe",
-  "Locate",
-  "Action",
-  "Assertion",
-  "Branch",
-  "Permission",
-  "Guardrail",
-  "Retry",
-  "Artifact",
-  "Subskill",
-  "Human",
-  "Rollback",
-  "Memory",
-  "Adversary",
-  "Checkride",
-  "Proof",
-  "CaseLaw",
-  "Expiry",
-];
 
 const DEFAULT_DOJO_GRAPH_NODE_HANDLERS: DojoGraphNodeHandler[] = [
   handler("Trigger", "control", "Starts a graph run from a demonstrated or scheduled trigger."),

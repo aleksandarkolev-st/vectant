@@ -1,26 +1,29 @@
 import { isParseableDojoGuardrailPredicate } from "./guardrail_predicates.js";
 
-export type DojoGraphNodeKind =
-  | "Trigger"
-  | "Input"
-  | "Observe"
-  | "Locate"
-  | "Action"
-  | "Assertion"
-  | "Branch"
-  | "Permission"
-  | "Guardrail"
-  | "Retry"
-  | "Artifact"
-  | "Subskill"
-  | "Human"
-  | "Rollback"
-  | "Memory"
-  | "Adversary"
-  | "Checkride"
-  | "Proof"
-  | "CaseLaw"
-  | "Expiry";
+export const DOJO_GRAPH_NODE_KINDS = [
+  "Trigger",
+  "Input",
+  "Observe",
+  "Locate",
+  "Action",
+  "Assertion",
+  "Branch",
+  "Permission",
+  "Guardrail",
+  "Retry",
+  "Artifact",
+  "Subskill",
+  "Human",
+  "Rollback",
+  "Memory",
+  "Adversary",
+  "Checkride",
+  "Proof",
+  "CaseLaw",
+  "Expiry",
+] as const;
+
+export type DojoGraphNodeKind = (typeof DOJO_GRAPH_NODE_KINDS)[number];
 
 export type DojoGraphNodeRisk = "safe" | "mutation" | "dangerous";
 export type DojoGraphMode = "practice" | "checkride" | "shadow" | "production";
@@ -127,6 +130,10 @@ export function validateDojoSkillGraph(graph: DojoSkillGraph): DojoGraphValidati
   for (const node of graph.nodes) {
     if (!node.node_id.trim()) {
       issues.push(errorIssue("node_id_required", "Graph node is missing node_id."));
+      continue;
+    }
+    if (!isKnownDojoGraphNodeKind(node.kind)) {
+      issues.push(errorIssue("node_kind_invalid", `Graph node ${node.node_id} has unknown kind: ${String(node.kind)}.`, node.node_id));
       continue;
     }
     if (nodeIds.has(node.node_id)) {
@@ -296,6 +303,10 @@ function unreachableNodeIds(graph: DojoSkillGraph, nodeIds: Set<string>): string
     .map((node) => node.node_id)
     .filter((nodeId) => !reachable.has(nodeId))
     .sort();
+}
+
+export function isKnownDojoGraphNodeKind(value: unknown): value is DojoGraphNodeKind {
+  return typeof value === "string" && (DOJO_GRAPH_NODE_KINDS as readonly string[]).includes(value);
 }
 
 function errorIssue(

@@ -36,6 +36,22 @@ describe("Dojo Skill Graph IR", () => {
     ]));
   });
 
+  it("rejects graph nodes with unknown runtime node kinds", () => {
+    const graph = minimalGraph();
+    graph.nodes = graph.nodes.map((node) =>
+      node.node_id === "action_submit" ? { ...node, kind: "UnknownRuntimeKind" } : node
+    ) as DojoSkillGraph["nodes"];
+
+    const validation = validateDojoSkillGraph(graph);
+    expect(validation.ok).toBe(false);
+    expect(validation.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issue_id: "node_kind_invalid",
+        node_id: "action_submit",
+      }),
+    ]));
+  });
+
   it("rejects production proof requirements without required claims", () => {
     const graph = minimalGraph();
     graph.nodes = graph.nodes.map((node) =>
