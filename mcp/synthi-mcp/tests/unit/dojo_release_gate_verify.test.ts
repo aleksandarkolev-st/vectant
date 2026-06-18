@@ -3037,6 +3037,7 @@ describe("Dojo release gate artifact verifier", () => {
         ...vivariumRuntimeEvidenceFixture().vivarium_contract,
         evil_twin_hardening_loop_required: false,
         executable_checkride_required: false,
+        ui_tissue_mutations_required: false,
       },
     });
     const incompletePath = await writeVivariumRuntimeEvidenceFixture({
@@ -3052,6 +3053,7 @@ describe("Dojo release gate artifact verifier", () => {
       "vivarium_runtime_missing_capabilities:evil_twin_hardening_reduces_attack_success_rate",
       "vivarium_runtime_evil_twin_hardening_requirement_missing",
       "vivarium_runtime_checkride_requirement_missing",
+      "vivarium_runtime_ui_tissue_requirement_missing",
     ]));
 
     const missingExecutionPath = await writeVivariumRuntimeEvidenceFixture({
@@ -6589,6 +6591,7 @@ function vivariumRuntimeEvidenceFixture(overrides = {}) {
       fake_success_state_detection_required: true,
       partial_write_detection_required: true,
       prompt_injection_quarantine_required: true,
+      ui_tissue_mutations_required: true,
       deterministic_reset_required: true,
       budget_enforcement_required: true,
       targeted_graph_execution_required: true,
