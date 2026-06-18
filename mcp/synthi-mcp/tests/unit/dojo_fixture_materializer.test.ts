@@ -126,6 +126,31 @@ describe("Dojo synthetic fixture materializer", () => {
     expect(corruptedDocument.document_state.documents[0]?.corrupted).toBe(true);
   });
 
+  it("materializes ambiguous document names with distinct synthetic document IDs", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "ambiguous_document_name",
+      risk_tags: ["document_validation"],
+    }));
+    const fixture = materializeDojoSyntheticFixture(definition, { seed: "ambiguous-document-seed" });
+    const second = materializeDojoSyntheticFixture(definition, { seed: "ambiguous-document-seed" });
+    const fileNames = new Set(fixture.document_state.documents.map((document) => document.file_name));
+    const documentIds = new Set(fixture.document_state.documents.map((document) => document.document_id));
+
+    expect(fixture.synthetic_data_only).toBe(true);
+    expect(fixture.document_state.documents).toHaveLength(2);
+    expect(fileNames.size).toBe(1);
+    expect(documentIds.size).toBe(2);
+    expect(fixture.document_state.ambiguous_file_name_groups).toEqual([
+      {
+        file_name: fixture.document_state.documents[0]?.file_name,
+        document_ids: [...documentIds].sort(),
+      },
+    ]);
+    expect(definition.fixture_requirements.some((fixtureRequirement) => fixtureRequirement.kind === "fake_documents")).toBe(true);
+    expect(definition.oracle.observed_evidence_required).toContain("document_tissue_state");
+    expect(second).toEqual(fixture);
+  });
+
   it("materializes UI tissue mutations for layout, labels, validation, and destructive adjacency", () => {
     const labelChange = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "label_change",

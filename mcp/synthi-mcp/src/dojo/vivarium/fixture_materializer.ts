@@ -20,6 +20,7 @@ export interface DojoSyntheticDocumentRecord {
   instruction_quarantined: boolean;
   missing_fields: string[];
   corrupted: boolean;
+  ambiguous_file_group?: string;
 }
 
 export type DojoSyntheticUiControlRole = "button" | "input" | "table" | "modal" | "validation";
@@ -93,6 +94,7 @@ export interface DojoMaterializedFixture {
     prompt_injection_present: boolean;
     instruction_quarantined: boolean;
     corrupted_document_count: number;
+    ambiguous_file_name_groups: Array<{ file_name: string; document_ids: string[] }>;
     missing_fields: string[];
   };
   reset_evidence: {
@@ -218,11 +220,13 @@ function documentStateFor(
 ): DojoMaterializedFixture["document_state"] {
   const baseDocuments = baseDocumentsFor(seed);
   const documents = mutateDocumentsForScenario(baseDocuments, definition, seed);
+  const ambiguousFileNameGroups = ambiguousFileNameGroupsFor(documents);
   return {
     documents,
     prompt_injection_present: documents.some((document) => document.prompt_injection_present),
     instruction_quarantined: documents.every((document) => !document.prompt_injection_present || document.instruction_quarantined),
     corrupted_document_count: documents.filter((document) => document.corrupted).length,
+    ambiguous_file_name_groups: ambiguousFileNameGroups,
     missing_fields: [...new Set(documents.flatMap((document) => document.missing_fields))],
   };
 }
@@ -461,9 +465,58 @@ function mutateDocumentsForScenario(
         synthetic_text: `Synthetic corrupted payload ${shortHash(`${seed}:corrupted`).slice(0, 8)}`,
         corrupted: true,
       } : document);
+    case "ambiguous_document_name":
+      return ambiguousDocumentNameSetFor(documents, seed);
     default:
       return documents;
   }
+}
+
+function ambiguousDocumentNameSetFor(
+  documents: DojoSyntheticDocumentRecord[],
+  seed: string
+): DojoSyntheticDocumentRecord[] {
+  const firstDocument = documents[0] ?? baseDocumentsFor(seed)[0]!;
+  const group = `ambiguous_${shortHash(`${seed}:ambiguous-document-group`)}`;
+  return [
+    {
+      ...firstDocument,
+      ambiguous_file_group: group,
+    },
+    {
+      document_id: `synthetic_doc_${shortHash(`${seed}:ambiguous-document`)}`,
+      file_name: firstDocument.file_name,
+      kind: "contract",
+      synthetic_text: [
+        `Synthetic contract ${shortHash(`${seed}:ambiguous:text`).slice(0, 8)}`,
+        "Counterparty: Synthetic Supplies",
+        "Amount: 42.00",
+        "Currency: EUR",
+      ].join("\n"),
+      prompt_injection_present: false,
+      instruction_quarantined: false,
+      missing_fields: [],
+      corrupted: false,
+      ambiguous_file_group: group,
+    },
+  ];
+}
+
+function ambiguousFileNameGroupsFor(
+  documents: DojoSyntheticDocumentRecord[]
+): Array<{ file_name: string; document_ids: string[] }> {
+  const byFileName = new Map<string, string[]>();
+  for (const document of documents) {
+    const documentIds = byFileName.get(document.file_name) ?? [];
+    documentIds.push(document.document_id);
+    byFileName.set(document.file_name, documentIds);
+  }
+  return [...byFileName.entries()]
+    .filter(([, documentIds]) => documentIds.length > 1)
+    .map(([fileName, documentIds]) => ({
+      file_name: fileName,
+      document_ids: [...documentIds].sort(),
+    }));
 }
 
 function promptInjectionDocumentFor(

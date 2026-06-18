@@ -56,6 +56,21 @@ describe("Dojo scenario DSL", () => {
     expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
   });
 
+  it("classifies ambiguous document-name scenarios as synthetic document tissue", () => {
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "ambiguous_document_name",
+      risk_tags: ["document_validation"],
+    }));
+
+    expect(definition.mutation_scopes).toEqual(["document", "ui"]);
+    expect(definition.fixture_requirements.map((fixture) => fixture.kind)).toEqual([
+      "fake_documents",
+      "synthetic_dom_snapshot",
+    ]);
+    expect(definition.oracle.observed_evidence_required).toContain("document_tissue_state");
+    expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
+  });
+
   it("uses a tiered wall-clock budget that is stable under parallel integration load", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "fake_success",
