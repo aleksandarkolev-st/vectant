@@ -394,7 +394,7 @@ function ledgerReport(summary: string): DojoImplementationMetadata {
     simulation_backing: "none",
     summary,
     maturity_blockers: [
-      "external_storage_custody_not_proven_in_release_gate",
+      "external_storage_provider_not_configured_for_deployed_release",
     ],
   };
 }

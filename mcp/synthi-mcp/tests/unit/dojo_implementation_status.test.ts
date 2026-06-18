@@ -191,7 +191,7 @@ describe("Dojo implementation status registry", () => {
       "retention_and_legal_hold_operations_are_limited"
     );
     expect(DOJO_REPORT_IMPLEMENTATION_STATUS.evidence_ledger.maturity_blockers).toContain(
-      "external_storage_custody_not_proven_in_release_gate"
+      "external_storage_provider_not_configured_for_deployed_release"
     );
   });
 
@@ -221,6 +221,7 @@ describe("Dojo implementation status registry", () => {
       "no_authoritative_evidence_ledger",
       "source_drift_expiry_still_requires_recertification_to_relicense",
       "retention_and_legal_hold_operations_are_limited",
+      "external_storage_custody_not_proven_in_release_gate",
     ];
     const allMetadata = [
       ...Object.values(DOJO_TOOL_IMPLEMENTATION_STATUS),
