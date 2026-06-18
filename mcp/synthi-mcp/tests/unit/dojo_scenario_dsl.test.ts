@@ -71,6 +71,35 @@ describe("Dojo scenario DSL", () => {
     expect(validateDojoScenarioDefinition(definition).ok).toBe(true);
   });
 
+  it("classifies policy tissue scenarios with thresholds and unavailable approvals", () => {
+    const threshold = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "threshold_breach",
+      risk_tags: ["policy_threshold"],
+    }));
+    expect(threshold.mutation_scopes).toEqual(["policy", "data", "ui"]);
+    expect(threshold.fixture_requirements.map((fixture) => fixture.kind)).toEqual([
+      "fake_database_state",
+      "fake_approvals",
+      "synthetic_dom_snapshot",
+    ]);
+    expect(threshold.oracle.expected_outcome).toBe("block");
+    expect(threshold.oracle.observed_evidence_required).toContain("policy_tissue_state");
+    expect(validateDojoScenarioDefinition(threshold).ok).toBe(true);
+
+    const approvalUnavailable = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "approval_unavailable",
+      risk_tags: ["approval_unavailable"],
+    }));
+    expect(approvalUnavailable.mutation_scopes).toEqual(["policy", "ui"]);
+    expect(approvalUnavailable.fixture_requirements.map((fixture) => fixture.kind)).toEqual([
+      "fake_approvals",
+      "synthetic_dom_snapshot",
+    ]);
+    expect(approvalUnavailable.oracle.expected_outcome).toBe("block");
+    expect(approvalUnavailable.oracle.observed_evidence_required).toContain("policy_tissue_state");
+    expect(validateDojoScenarioDefinition(approvalUnavailable).ok).toBe(true);
+  });
+
   it("uses a tiered wall-clock budget that is stable under parallel integration load", () => {
     const definition = toDojoScenarioDefinition(scenarioFixture({
       mutation_kind: "fake_success",

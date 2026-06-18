@@ -49,6 +49,22 @@ export interface DojoSyntheticUiValidationMessage {
   location: "inline" | "below_fold" | "modal";
 }
 
+export interface DojoSyntheticPolicyThreshold {
+  policy_id: string;
+  field: string;
+  operator: "<=" | "<" | ">=" | ">" | "==";
+  limit: number;
+  observed_value: number;
+  action: string;
+}
+
+export interface DojoSyntheticPolicyBlockedAction {
+  action: string;
+  reason: string;
+  severity: "review" | "block";
+  source: "threshold" | "permission" | "destructive_adjacency" | "approval";
+}
+
 export interface DojoMaterializedFixture {
   schema_version: "synthi.dojo.materializedFixture.v1";
   fixture_id: string;
@@ -61,6 +77,12 @@ export interface DojoMaterializedFixture {
   records: DojoSyntheticEntityRecord[];
   missing_fields: string[];
   threshold_breaches: Array<{ field: string; value: number; threshold: number }>;
+  policy_state: {
+    thresholds: DojoSyntheticPolicyThreshold[];
+    blocked_actions: DojoSyntheticPolicyBlockedAction[];
+    approval_required: boolean;
+    unavailable_approver: boolean;
+  };
   ui_state: {
     labels: string[];
     hidden_fields: string[];
@@ -143,6 +165,7 @@ function fixtureFor(
   const thresholdBreaches = thresholdBreachesFor(definition);
   const documentState = documentStateFor(definition, seed);
   const uiState = uiStateFor(definition, seed, records, missingFields);
+  const policyState = policyStateFor(definition, seed, thresholdBreaches);
   return {
     schema_version: "synthi.dojo.materializedFixture.v1",
     fixture_id: `fixture_${definition.scenario_id}_${shortHash(seed)}`,
@@ -155,6 +178,7 @@ function fixtureFor(
     records,
     missing_fields: missingFields,
     threshold_breaches: thresholdBreaches,
+    policy_state: policyState,
     ui_state: uiState,
     api_state: {
       latency_ms: definition.mutation_kind === "network_latency" ? Math.min(definition.budget.max_estimated_ms, 750) : 0,
@@ -212,6 +236,60 @@ function missingFieldsFor(definition: DojoScenarioDefinition): string[] {
 function thresholdBreachesFor(definition: DojoScenarioDefinition): Array<{ field: string; value: number; threshold: number }> {
   if (definition.mutation_kind !== "threshold_breach") return [];
   return [{ field: "amount", value: 501, threshold: 500 }];
+}
+
+function policyStateFor(
+  definition: DojoScenarioDefinition,
+  seed: string,
+  thresholdBreaches: Array<{ field: string; value: number; threshold: number }>
+): DojoMaterializedFixture["policy_state"] {
+  const thresholdPolicies = thresholdBreaches.map((breach) => ({
+    policy_id: `synthetic_policy_${shortHash(`${seed}:threshold:${breach.field}`)}`,
+    field: breach.field,
+    operator: "<=" as const,
+    limit: breach.threshold,
+    observed_value: breach.value,
+    action: "submit_synthetic_action",
+  }));
+  const blockedActions: DojoSyntheticPolicyBlockedAction[] = [];
+  for (const threshold of thresholdPolicies) {
+    blockedActions.push({
+      action: threshold.action,
+      reason: `${threshold.field}_threshold_exceeded`,
+      severity: "review",
+      source: "threshold",
+    });
+  }
+  if (definition.mutation_kind === "destructive_adjacency") {
+    blockedActions.push({
+      action: "delete_synthetic_record",
+      reason: "destructive_action_adjacent_to_safe_action",
+      severity: "block",
+      source: "destructive_adjacency",
+    });
+  }
+  if (definition.mutation_kind === "permission_change") {
+    blockedActions.push({
+      action: "submit_synthetic_action",
+      reason: "role_outside_licensed_context",
+      severity: "block",
+      source: "permission",
+    });
+  }
+  if (definition.mutation_kind === "approval_unavailable") {
+    blockedActions.push({
+      action: "submit_synthetic_action",
+      reason: "required_approver_unavailable",
+      severity: "block",
+      source: "approval",
+    });
+  }
+  return {
+    thresholds: thresholdPolicies,
+    blocked_actions: blockedActions,
+    approval_required: thresholdPolicies.length > 0 || definition.mutation_kind === "approval_unavailable",
+    unavailable_approver: definition.mutation_kind === "approval_unavailable",
+  };
 }
 
 function documentStateFor(

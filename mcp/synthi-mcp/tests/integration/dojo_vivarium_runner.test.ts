@@ -193,6 +193,54 @@ describe("Dojo Vivarium runner", () => {
     }));
   });
 
+  it("emits policy tissue evidence when policy fixtures block scenario execution", async () => {
+    const runner = new DojoVivariumRunner();
+    const definition = toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "threshold_breach",
+      layer: "risk",
+      risk_tags: ["policy_threshold"],
+    }));
+    const materialized = runner.materialize({
+      skill_id: "skill-a",
+      scenario: definition,
+      seed: "policy-threshold-seed",
+    });
+
+    const result = await runner.run({
+      materialized,
+      graph: policyGateGraphFixture(),
+      run_id: "scenario-run-policy-threshold",
+    });
+
+    expect(materialized.fixture.policy_state.thresholds).toEqual([
+      expect.objectContaining({
+        field: "amount",
+        limit: 500,
+        observed_value: 501,
+      }),
+    ]);
+    expect(materialized.fixture.policy_state.blocked_actions).toEqual([
+      expect.objectContaining({
+        source: "threshold",
+        reason: "amount_threshold_exceeded",
+      }),
+    ]);
+    expect(result).toEqual(expect.objectContaining({
+      status: "blocked",
+      expectation_met: true,
+      observed_evidence: expect.arrayContaining(["policy_tissue_state"]),
+      graph_result: expect.objectContaining({
+        status: "blocked",
+        blocked_by: ["precondition_failed:policy_blocked_action_count == 0"],
+      }),
+      oracle_result: expect.objectContaining({
+        status: "blocked",
+        expected_outcome: "block",
+        observed_evidence: expect.arrayContaining(["policy_tissue_state"]),
+      }),
+    }));
+  });
+
   it("passes prompt injection scenarios only when document instructions are quarantined", async () => {
     const runner = new DojoVivariumRunner();
     const definition = toDojoScenarioDefinition(scenarioFixture({
@@ -617,6 +665,18 @@ function actionPreconditionGraphFixture(): DojoSkillGraph {
       ? {
           ...node,
           preconditions: ["action_ready == true"],
+        }
+      : node),
+  };
+}
+
+function policyGateGraphFixture(): DojoSkillGraph {
+  return {
+    ...graphFixture(),
+    nodes: graphFixture().nodes.map((node) => node.node_id === "action"
+      ? {
+          ...node,
+          preconditions: ["policy_blocked_action_count == 0"],
         }
       : node),
   };

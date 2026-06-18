@@ -48,6 +48,24 @@ describe("Dojo synthetic fixture materializer", () => {
       risk_tags: ["policy_threshold"],
     })));
     expect(threshold.threshold_breaches).toEqual([{ field: "amount", value: 501, threshold: 500 }]);
+    expect(threshold.policy_state.thresholds).toEqual([
+      expect.objectContaining({
+        field: "amount",
+        operator: "<=",
+        limit: 500,
+        observed_value: 501,
+        action: "submit_synthetic_action",
+      }),
+    ]);
+    expect(threshold.policy_state.blocked_actions).toEqual([
+      expect.objectContaining({
+        action: "submit_synthetic_action",
+        reason: "amount_threshold_exceeded",
+        severity: "review",
+        source: "threshold",
+      }),
+    ]);
+    expect(threshold.policy_state.approval_required).toBe(true);
   });
 
   it("materializes prompt injection document fixtures as quarantined synthetic tissue", () => {
@@ -198,6 +216,34 @@ describe("Dojo synthetic fixture materializer", () => {
         visible: true,
       }),
     ]));
+    expect(destructiveAdjacency.policy_state.blocked_actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "delete_synthetic_record",
+        reason: "destructive_action_adjacent_to_safe_action",
+        severity: "block",
+        source: "destructive_adjacency",
+      }),
+    ]));
+  });
+
+  it("materializes policy approval blockers without production policy data", () => {
+    const approvalUnavailable = materializeDojoSyntheticFixture(toDojoScenarioDefinition(scenarioFixture({
+      mutation_kind: "approval_unavailable",
+      risk_tags: ["approval_unavailable"],
+    })), { seed: "policy-approval-seed" });
+
+    expect(approvalUnavailable.synthetic_data_only).toBe(true);
+    expect(approvalUnavailable.policy_state.unavailable_approver).toBe(true);
+    expect(approvalUnavailable.policy_state.approval_required).toBe(true);
+    expect(approvalUnavailable.policy_state.blocked_actions).toEqual([
+      expect.objectContaining({
+        action: "submit_synthetic_action",
+        reason: "required_approver_unavailable",
+        severity: "block",
+        source: "approval",
+      }),
+    ]);
+    expect(approvalUnavailable.materialization_hash).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("materializes adaptive UI tissue for menu-hidden controls, mobile viewport, motion, hydration, feature flags, and modal interruption", () => {

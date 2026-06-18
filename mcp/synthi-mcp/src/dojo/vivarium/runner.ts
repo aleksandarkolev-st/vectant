@@ -407,6 +407,10 @@ function fixtureInputs(fixture: DojoMaterializedFixture): Record<string, unknown
     auth_valid: !fixture.identity_state.auth_expired,
     role: fixture.identity_state.role,
     permission_downgraded: fixture.identity_state.permission_downgraded,
+    policy_approval_required: fixture.policy_state.approval_required,
+    policy_unavailable_approver: fixture.policy_state.unavailable_approver,
+    policy_blocked_action_count: fixture.policy_state.blocked_actions.length,
+    policy_threshold_count: fixture.policy_state.thresholds.length,
     duplicate_display_name_count: duplicateDisplayNameCount(fixture),
     partial_write: fixture.api_state.partial_write,
     fake_success: fixture.api_state.fake_success,
@@ -427,11 +431,23 @@ function observedEvidenceForRun(
   if (materialized.fixture.identity_state.auth_expired || materialized.fixture.identity_state.permission_downgraded) {
     observed.add("identity_policy_state");
   }
+  if (
+    materialized.fixture.policy_state.thresholds.length > 0
+    || materialized.fixture.policy_state.blocked_actions.length > 0
+    || materialized.fixture.policy_state.approval_required
+    || materialized.fixture.policy_state.unavailable_approver
+  ) {
+    observed.add("policy_tissue_state");
+  }
   if (materialized.fixture.api_state.partial_write) observed.add("partial_write_state");
   if (materialized.fixture.document_state.prompt_injection_present && materialized.fixture.document_state.instruction_quarantined) {
     observed.add("document_instruction_quarantine");
   }
-  if (materialized.fixture.document_state.corrupted_document_count > 0 || materialized.fixture.document_state.missing_fields.length > 0) {
+  if (
+    materialized.fixture.document_state.corrupted_document_count > 0
+    || materialized.fixture.document_state.missing_fields.length > 0
+    || materialized.fixture.document_state.ambiguous_file_name_groups.length > 0
+  ) {
     observed.add("document_tissue_state");
   }
   return [...observed].sort();
