@@ -34,6 +34,7 @@ export const DOJO_API_TOOL_COMPILER_CAPABILITIES = [
   "api_candidate_infers_network_trace",
   "api_candidate_blocks_unreviewed_mutation",
   "api_candidate_requires_mutation_safety_fields",
+  "api_candidate_requires_strict_response_schema",
   "api_tool_compiles_proof_gated_strict_contract",
   "api_tool_validates_proof_license_idempotency_and_payload",
   "api_tool_requires_api_substrate_proof_claim",
@@ -278,6 +279,8 @@ function capabilityMatchers(capability) {
       return ["does not promote mutation candidates", "without idempotency"];
     case "api_candidate_requires_mutation_safety_fields":
       return ["allows approved mutation candidates", "required safety fields"];
+    case "api_candidate_requires_strict_response_schema":
+      return ["does not promote approved candidates", "permissive response schemas"];
     case "api_tool_compiles_proof_gated_strict_contract":
       return ["compiles an approved mutation endpoint", "proof gated strict"];
     case "api_tool_validates_proof_license_idempotency_and_payload":

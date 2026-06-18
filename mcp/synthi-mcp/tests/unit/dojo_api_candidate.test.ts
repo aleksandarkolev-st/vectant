@@ -227,6 +227,31 @@ describe("Dojo API endpoint candidate contract", () => {
     }));
   });
 
+  it("does not promote approved candidates with permissive response schemas", () => {
+    const candidate = {
+      ...inferDojoApiEndpointCandidateFromTrace({
+        method: "GET",
+        url: "/api/invoices/invoice-a",
+        response_body: { invoice_id: "invoice-a", status: "saved" },
+      }),
+      response_schema: {
+        type: "object",
+        properties: {
+          invoice_id: { type: "string" },
+          status: { type: "string" },
+        },
+      },
+      review_status: "approved" as const,
+    };
+
+    expect(reviewDojoApiEndpointCandidate(candidate)).toEqual(expect.objectContaining({
+      ok_to_promote: false,
+      issues: expect.arrayContaining([
+        expect.objectContaining({ issue_id: "api_candidate_response_schema_strict_required" }),
+      ]),
+    }));
+  });
+
   it("does not require mutation safety fields for approved read candidates", () => {
     const candidate = {
       ...inferDojoApiEndpointCandidateFromTrace({

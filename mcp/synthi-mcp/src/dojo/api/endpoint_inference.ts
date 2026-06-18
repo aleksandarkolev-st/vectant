@@ -52,6 +52,7 @@ export function reviewDojoApiEndpointCandidate(candidate: DojoApiEndpointCandida
   const issues: DojoApiCandidateReviewIssue[] = [];
   if (!candidate.path.trim()) issues.push(errorIssue("api_candidate_path_required", "API candidate requires a path."));
   issues.push(...strictSchemaIssues("request", candidate.request_schema));
+  issues.push(...strictSchemaIssues("response", candidate.response_schema));
   if (candidate.query_schema) issues.push(...strictSchemaIssues("query", candidate.query_schema));
   if (candidate.review_status !== "approved") {
     issues.push(errorIssue("api_candidate_review_approval_required", "API candidate requires explicit approval before promotion."));
@@ -72,7 +73,7 @@ export function reviewDojoApiEndpointCandidate(candidate: DojoApiEndpointCandida
 }
 
 function strictSchemaIssues(
-  field: "request" | "query",
+  field: "request" | "query" | "response",
   schema: Record<string, unknown>,
   path: string = field
 ): DojoApiCandidateReviewIssue[] {
