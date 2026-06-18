@@ -461,7 +461,7 @@ describe("Agent Dojo MCP tools", () => {
     }));
 
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
-      ...productionTenantContextArgs({
+      ...productionSkillPublisherContextArgs({
         actor_id: "unit-publisher",
         actor_type: "human",
         request_id: "req-production-publish-workflow",
@@ -1426,8 +1426,33 @@ describe("Agent Dojo MCP tools", () => {
     process.env.SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER = "1";
 
     recordOpenDetailsWorkflowForDojoToolTest();
-    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
+    const blockedPublish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
       ...productionTenantContextArgs({
+        actor_id: "unit-publisher",
+        actor_type: "human",
+        roles: ["agent"],
+        request_id: "req-production-proof-publish-rbac-blocked",
+        correlation_id: "corr-production-proof-publish-rbac-blocked",
+      }),
+    }));
+    expect(blockedPublish?.isError).toBe(true);
+    expect(blockedPublish?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_skill_publication_role_required",
+      ok: false,
+      workflow_id: expect.any(String),
+      workspace_id: "workspace-a",
+      blocked_by: expect.arrayContaining(["governance_role_required:dojo:skill:publish"]),
+      rbac_authorization: expect.objectContaining({
+        action: "skill_publication",
+        actor_id: "unit-publisher",
+        required_roles: ["dojo:skill:publish"],
+        matched_roles: [],
+      }),
+    }));
+    expect(dojoSkillRegistry.list()).toHaveLength(0);
+
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
+      ...productionSkillPublisherContextArgs({
         actor_id: "unit-publisher",
         actor_type: "human",
         request_id: "req-production-proof-publish",
@@ -5505,7 +5530,7 @@ describe("Agent Dojo MCP tools", () => {
     delete process.env.SYNTHI_DOJO_STORE_SCOPE;
 
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
-      ...productionTenantContextArgs({
+      ...productionSkillPublisherContextArgs({
         actor_id: "durable-publisher",
         actor_type: "human",
         request_id: "req-production-durable-publish",
@@ -5540,7 +5565,7 @@ describe("Agent Dojo MCP tools", () => {
     process.env.SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL = "postgres://synthi:password@127.0.0.1:1/synthi?connect_timeout=1";
 
     const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest({
-      ...productionTenantContextArgs({
+      ...productionSkillPublisherContextArgs({
         actor_id: "durable-publisher",
         actor_type: "human",
         request_id: "req-production-durable-publish-failure",
@@ -6031,6 +6056,13 @@ function productionTenantContextArgs(overrides: Record<string, unknown> = {}): R
     correlation_id: "corr-production-a",
     ...overrides,
   };
+}
+
+function productionSkillPublisherContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return productionTenantContextArgs({
+    ...overrides,
+    roles: mergeRoleOverrides(["agent", "dojo:skill:publish"], overrides["roles"]),
+  });
 }
 
 function productionProofIssuerContextArgs(overrides: Record<string, unknown> = {}): Record<string, unknown> {

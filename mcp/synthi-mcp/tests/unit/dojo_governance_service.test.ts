@@ -137,6 +137,15 @@ describe("Dojo governance service", () => {
     }));
 
     expect(authorizeDojoGovernanceAction({
+      action: "skill_publication",
+      tenant_context: tenantContextFixture({ roles: ["dojo:skill:publish"] }),
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      matched_roles: ["dojo:skill:publish"],
+      blocked_by: [],
+    }));
+
+    expect(authorizeDojoGovernanceAction({
       action: "source_drift_expiry",
       tenant_context: tenantContextFixture({ roles: ["dojo:source:apply"] }),
     })).toEqual(expect.objectContaining({

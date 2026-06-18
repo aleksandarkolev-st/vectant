@@ -29,6 +29,7 @@ export type DojoGovernanceActionStatus = "applied" | "rejected";
 export type DojoPermissionUpgradeDecision = "approved" | "denied";
 export type DojoCaseLawReviewDecision = "approved" | "deprecated";
 export type DojoGovernanceRbacAction =
+  | "skill_publication"
   | "permission_upgrade_review"
   | "case_law_review"
   | "case_law_record"
@@ -70,6 +71,7 @@ export interface DojoGovernanceRbacDecision {
 export const DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY: DojoGovernanceNormalizedRbacPolicy = {
   administrator_roles: ["admin", "dojo:admin", "dojo:operator"],
   action_roles: {
+    skill_publication: ["dojo:skill:publish"],
     permission_upgrade_review: ["dojo:approval:review", "dojo:license:review"],
     case_law_review: ["dojo:case-law:review"],
     case_law_record: ["dojo:case-law:record"],
@@ -1205,6 +1207,10 @@ function normalizeGovernanceRbacPolicy(
       ...(policy.administrator_roles ?? []),
     ]),
     action_roles: {
+      skill_publication: uniqueStrings([
+        ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.skill_publication,
+        ...(policy.action_roles?.skill_publication ?? []),
+      ]),
       permission_upgrade_review: uniqueStrings([
         ...DEFAULT_DOJO_GOVERNANCE_RBAC_POLICY.action_roles.permission_upgrade_review,
         ...(policy.action_roles?.permission_upgrade_review ?? []),

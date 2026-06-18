@@ -5427,6 +5427,24 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
   if (!actorType) return errorResponse("dojo_skill_publication_actor_type_required");
   const evidenceRefs = stringArrayOpt(a["evidence_refs"]);
   if (evidenceRefs.length === 0) return errorResponse("dojo_skill_publication_evidence_required");
+  const enforcement = resolveDojoEnforcementConfig();
+  const skillPublicationRbacAuthorization = enforcement.production_enforcement
+    ? authorizeDojoGovernanceAction({
+      tenant_context: workflow.tenant,
+      action: "skill_publication",
+    })
+    : undefined;
+  if (skillPublicationRbacAuthorization && !skillPublicationRbacAuthorization.ok) {
+    return errorResponse("dojo_skill_publication_role_required", {
+      ok: false,
+      workflow_id: workflow.artifact.workflow_id,
+      workspace_id: workspaceId,
+      actor_id: workflow.tenant.actor_id,
+      actor_type: workflow.tenant.actor_type,
+      blocked_by: skillPublicationRbacAuthorization.blocked_by,
+      rbac_authorization: skillPublicationRbacAuthorization,
+    });
+  }
   const controlPlaneWrite = requireDojoDurableControlPlaneWrite("synthi_dojo_publish_skill", { postgres_wired: true });
   if (!controlPlaneWrite.ok) return controlPlaneWrite.error;
   const now = stringOpt(a["now"]) ?? new Date().toISOString();
@@ -5510,6 +5528,7 @@ async function dojoPublishSkillTool(args: unknown): Promise<ToolResponse> {
       readiness_decision: publicationCheckride.publication_checkride.readiness_decision,
       evidence_policy: publicationCheckride.publication_checkride.evidence_policy,
       evidence_ledger_validation: publicationEvidenceLedger.evidence_ledger_resolution ?? null,
+      ...(skillPublicationRbacAuthorization ? { rbac_authorization: skillPublicationRbacAuthorization } : {}),
       audit_event: auditEvent,
       control_plane_persistence: controlPlanePersistence.persistence ?? {
         ok: true,
