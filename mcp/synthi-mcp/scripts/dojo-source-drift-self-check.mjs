@@ -45,6 +45,7 @@ export const DOJO_SOURCE_DRIFT_CAPABILITIES = [
   "source_drift_expires_stable_token_content_change",
   "source_drift_reports_added_risky_affordances",
   "source_drift_rejects_unverified_snapshots",
+  "source_drift_rejects_cross_scope_snapshots",
   "source_drift_detection_enforces_rbac",
   "source_drift_applies_license_store_expiry",
   "source_drift_returns_recertification_handoff",
@@ -195,6 +196,7 @@ export function buildDojoSourceDriftEvidenceManifest({
       added_risky_affordance_review_required: true,
       unrelated_token_no_expiry_required: true,
       tamper_rejection_required: true,
+      tenant_workspace_boundary_required: true,
       license_store_expiry_application_required: true,
       recertification_handoff_required: true,
       self_check_executes_tests_required: true,
@@ -292,6 +294,8 @@ function capabilityMatchers(capability) {
       return ["reports newly added risky affordances", "review"];
     case "source_drift_rejects_unverified_snapshots":
       return ["rejects drift reports", "unverifiable source snapshots"];
+    case "source_drift_rejects_cross_scope_snapshots":
+      return ["rejects source drift", "tenant or workspace boundaries"];
     case "source_drift_detection_enforces_rbac":
       return ["enforces rbac", "production source drift detection"];
     case "source_drift_applies_license_store_expiry":

@@ -193,6 +193,32 @@ describe("Dojo source drift expiry", () => {
     })).toThrow(/dojo_source_drift_previous_snapshot_unverified/);
   });
 
+  it("rejects source drift across tenant or workspace boundaries", () => {
+    const previous = snapshotFixture("2026.06.11", [
+      { token_id: "save-button", route: "/invoices", component: "InvoiceForm", action: "saveInvoice", source_locator: "src/InvoiceForm.jsx:42", risk: "mutation" },
+    ]);
+    const otherTenant = snapshotFixture("2026.06.12", [
+      { token_id: "save-button", route: "/invoices", component: "InvoiceForm", action: "saveInvoice", source_locator: "src/InvoiceForm.jsx:99", risk: "mutation" },
+    ], { tenant_id: "tenant-b" });
+    const otherWorkspace = snapshotFixture("2026.06.12", [
+      { token_id: "save-button", route: "/invoices", component: "InvoiceForm", action: "saveInvoice", source_locator: "src/InvoiceForm.jsx:99", risk: "mutation" },
+    ], { workspace_id: "workspace-b" });
+
+    expect(() => detectDojoSourceDrift({
+      previous_snapshot: previous,
+      next_snapshot: otherTenant,
+      node_bindings: [{ node_id: "action_submit", source_token_ids: ["save-button"] }],
+      source_snapshot_signing_keys_by_id: sourceSigningKeys(),
+    })).toThrow(/dojo_source_drift_tenant_mismatch/);
+
+    expect(() => detectDojoSourceDrift({
+      previous_snapshot: previous,
+      next_snapshot: otherWorkspace,
+      node_bindings: [{ node_id: "action_submit", source_token_ids: ["save-button"] }],
+      source_snapshot_signing_keys_by_id: sourceSigningKeys(),
+    })).toThrow(/dojo_source_drift_workspace_mismatch/);
+  });
+
   it("applies source drift expiry triggers through the license store", async () => {
     const report = reportFixture([
       triggerFixture({ trigger_id: "trigger-a", license_id: "license-a", node_id: "action_submit", source_token_id: "save-button" }),
@@ -409,10 +435,14 @@ describe("Dojo source drift expiry", () => {
   });
 });
 
-function snapshotFixture(appVersion: string, sourceTokens: Parameters<typeof buildDojoSourceSnapshot>[0]["source_tokens"]) {
+function snapshotFixture(
+  appVersion: string,
+  sourceTokens: Parameters<typeof buildDojoSourceSnapshot>[0]["source_tokens"],
+  overrides: Partial<Pick<Parameters<typeof buildDojoSourceSnapshot>[0], "tenant_id" | "workspace_id">> = {}
+) {
   return buildDojoSourceSnapshot({
-    tenant_id: "tenant-a",
-    workspace_id: "workspace-a",
+    tenant_id: overrides.tenant_id ?? "tenant-a",
+    workspace_id: overrides.workspace_id ?? "workspace-a",
     app_origin: "https://app.example.test",
     app_version: appVersion,
     commit_sha: `commit-${appVersion}`,

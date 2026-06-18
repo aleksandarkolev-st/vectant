@@ -164,6 +164,12 @@ export function detectDojoSourceDrift(input: {
 }): DojoSourceDriftReport {
   assertVerifiedSnapshot("previous", input.previous_snapshot, input.source_snapshot_signing_keys_by_id);
   assertVerifiedSnapshot("next", input.next_snapshot, input.source_snapshot_signing_keys_by_id);
+  if (input.previous_snapshot.tenant_id !== input.next_snapshot.tenant_id) {
+    throw new Error("dojo_source_drift_tenant_mismatch");
+  }
+  if (input.previous_snapshot.workspace_id !== input.next_snapshot.workspace_id) {
+    throw new Error("dojo_source_drift_workspace_mismatch");
+  }
   if (input.previous_snapshot.app_origin !== input.next_snapshot.app_origin) {
     throw new Error("dojo_source_drift_app_origin_mismatch");
   }
