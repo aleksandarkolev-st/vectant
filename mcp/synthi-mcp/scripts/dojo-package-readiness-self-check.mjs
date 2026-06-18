@@ -158,8 +158,9 @@ export function buildDojoPackageReadinessEvidenceManifest({
     : [];
   const packedFileSet = new Set(packedFiles);
 
+  const requiredScriptNames = deriveDojoPackageReadinessRequiredScriptNames(packageJson);
   const entryPaths = collectPackageEntryPaths(packageJson);
-  const scriptReferencedPaths = collectScriptReferencedPackagePaths(scripts, DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES);
+  const scriptReferencedPaths = collectScriptReferencedPackagePaths(scripts, requiredScriptNames);
   const requiredPackedPaths = stableUnique([
     "package.json",
     ...entryPaths,
@@ -169,7 +170,7 @@ export function buildDojoPackageReadinessEvidenceManifest({
 
   const missingMetadataFields = DOJO_PACKAGE_READINESS_REQUIRED_METADATA_FIELDS
     .filter((field) => isMissingMetadataValue(packageJson?.[field]));
-  const missingScripts = DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES
+  const missingScripts = requiredScriptNames
     .filter((scriptName) => typeof scripts[scriptName] !== "string" || !scripts[scriptName].trim());
   const missingFilesEntries = DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES
     .filter((entry) => !packageFilesEntryCovers(filesField, entry));
@@ -222,7 +223,7 @@ export function buildDojoPackageReadinessEvidenceManifest({
     package_version: packageJson?.version || null,
     package_private: Boolean(packageJson?.private),
     required_metadata_fields: [...DOJO_PACKAGE_READINESS_REQUIRED_METADATA_FIELDS],
-    required_package_scripts: [...DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES],
+    required_package_scripts: requiredScriptNames,
     required_package_files_entries: [...DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES],
     package_files_entries: filesField,
     export_entry_paths: entryPaths,
@@ -249,6 +250,18 @@ export function buildDojoPackageReadinessEvidenceManifest({
       packed_files_sha256: sha256(JSON.stringify(packedFiles)),
     },
   };
+}
+
+export function deriveDojoPackageReadinessRequiredScriptNames(packageJsonOrScripts) {
+  const scripts = packageJsonOrScripts?.scripts && typeof packageJsonOrScripts.scripts === "object"
+    ? packageJsonOrScripts.scripts
+    : packageJsonOrScripts && typeof packageJsonOrScripts === "object"
+      ? packageJsonOrScripts
+      : {};
+  return stableUnique([
+    ...DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
+    ...Object.keys(scripts).filter(isDojoReleaseHarnessScriptName),
+  ]);
 }
 
 export function validateDojoPackageReadinessEvidence(evidence) {
@@ -309,6 +322,16 @@ export function collectScriptReferencedPackagePaths(scripts, scriptNames) {
     paths.push(...extractPackagePathsFromScript(command));
   }
   return stableUnique(paths);
+}
+
+export function isDojoReleaseHarnessScriptName(scriptName) {
+  const name = String(scriptName || "");
+  return name === "build"
+    || name === "typecheck"
+    || name === "soak"
+    || name.startsWith("proof:dojo")
+    || name.startsWith("live:dojo")
+    || name.startsWith("chaos:dojo");
 }
 
 export function extractPackagePathsFromScript(command) {

@@ -4,9 +4,11 @@ import {
   buildDojoPackageReadinessEvidenceManifest,
   collectPackageEntryPaths,
   collectScriptReferencedPackagePaths,
+  deriveDojoPackageReadinessRequiredScriptNames,
   DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
   DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
   extractPackagePathsFromScript,
+  isDojoReleaseHarnessScriptName,
   validateDojoPackageReadinessEvidence,
 } from "../../scripts/dojo-package-readiness-self-check.mjs";
 
@@ -54,7 +56,8 @@ function packageFixture(overrides = {}) {
 
 function buildEvidence({ packageJson = packageFixture(), packedFiles, packStatus = 0 } = {}) {
   const requiredEntries = collectPackageEntryPaths(packageJson);
-  const scriptEntries = collectScriptReferencedPackagePaths(packageJson.scripts, DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES);
+  const requiredScriptNames = deriveDojoPackageReadinessRequiredScriptNames(packageJson);
+  const scriptEntries = collectScriptReferencedPackagePaths(packageJson.scripts, requiredScriptNames);
   const files = (packedFiles || [
     "package.json",
     "README.md",
@@ -114,12 +117,43 @@ describe("Dojo package readiness self-check", () => {
     ]);
   });
 
+  it("derives Dojo release harness scripts from package metadata", () => {
+    const packageJson = packageFixture({
+      scripts: {
+        ...packageFixture().scripts,
+        "proof:dojo:privacy-redaction:self-check": "node scripts/dojo-privacy-redaction-self-check.mjs",
+        "proof:dojo:release-gates:verify": "node scripts/dojo-release-gate-verify.mjs --release-candidate",
+        "chaos:dojo:live:list": "node tests/chaos/runner.mjs --list",
+        "unrelated:dev": "node scripts/dev-only.mjs",
+      },
+    });
+
+    expect(isDojoReleaseHarnessScriptName("proof:dojo:privacy-redaction:self-check")).toBe(true);
+    expect(isDojoReleaseHarnessScriptName("unrelated:dev")).toBe(false);
+    expect(deriveDojoPackageReadinessRequiredScriptNames(packageJson)).toEqual(expect.arrayContaining([
+      ...DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
+      "proof:dojo:privacy-redaction:self-check",
+      "proof:dojo:release-gates:verify",
+      "chaos:dojo:live:list",
+    ]));
+    expect(deriveDojoPackageReadinessRequiredScriptNames(packageJson)).not.toContain("unrelated:dev");
+    expect(collectScriptReferencedPackagePaths(
+      packageJson.scripts,
+      deriveDojoPackageReadinessRequiredScriptNames(packageJson)
+    )).toEqual(expect.arrayContaining([
+      "scripts/dojo-privacy-redaction-self-check.mjs",
+      "scripts/dojo-release-gate-verify.mjs",
+      "tests/chaos/runner.mjs",
+    ]));
+  });
+
   it("accepts an evidence manifest when package exports and release harnesses are packed", () => {
     const evidence = buildEvidence();
 
     expect(evidence.ok).toBe(true);
     expect(validateDojoPackageReadinessEvidence(evidence)).toEqual({ ok: true, errors: [] });
-    expect(evidence.required_package_scripts).toEqual(DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES);
+    expect(evidence.required_package_scripts).toEqual(deriveDojoPackageReadinessRequiredScriptNames(packageFixture()));
+    expect(evidence.required_package_scripts).toEqual(expect.arrayContaining(DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES));
   });
 
   it("fails closed when a required packed path is missing", () => {

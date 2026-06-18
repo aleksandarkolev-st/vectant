@@ -75,8 +75,8 @@ import {
   buildDojoPackageReadinessEvidenceManifest,
   collectPackageEntryPaths,
   collectScriptReferencedPackagePaths,
+  deriveDojoPackageReadinessRequiredScriptNames,
   DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
-  DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
 } from "../../scripts/dojo-package-readiness-self-check.mjs";
 import {
   DOJO_GOVERNANCE_LIFECYCLE_CAPABILITIES,
@@ -9185,9 +9185,10 @@ async function writePackageReadinessEvidenceFixture({
   const packageJsonText = await readFile(packageJsonPath, "utf8");
   const packageJson = JSON.parse(packageJsonText);
   const exportEntryPaths = collectPackageEntryPaths(packageJson);
+  const requiredScriptNames = deriveDojoPackageReadinessRequiredScriptNames(packageJson);
   const scriptReferencedPaths = collectScriptReferencedPackagePaths(
     packageJson.scripts,
-    DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
+    requiredScriptNames,
   );
   const packedPaths = stableUnique([
     "package.json",
