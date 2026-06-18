@@ -68,6 +68,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - non-mutating Ghost Mode shadow evidence records with control-plane audit events
 - source/API contract, linter, candidate, substrate, React codemod, and API-backed skill-bus tool foundations
 - dedicated Dojo product UX surfaces and governance view models
+- tenant-scoped governance scheduled-job runner with dry-run semantics, typed handlers, RBAC, and audit persistence for supported non-dry transitions
 - repo artifact export
 - compact UI status surface plus dedicated Dojo routes
 
@@ -123,6 +124,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 | `synthi_dojo_request_permission_upgrade` | `executable` |
 | `synthi_dojo_review_permission_upgrade` | `executable` |
 | `synthi_dojo_review_case_law` | `executable` |
+| `synthi_dojo_run_scheduled_governance_jobs` | `executable` |
 | `synthi_dojo_generate_vivarium_scenarios` | `deterministic_projection` |
 | `synthi_dojo_run_vivarium_scenario` | `executable` |
 | `synthi_dojo_run_wind_tunnel` | `executable` |
