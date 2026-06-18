@@ -27,6 +27,7 @@ import {
   buildDojoUniverseDossier,
   buildDojoUniverseMetrics,
   runDojoTimeMachineDebugger,
+  type DojoPackageReadinessEvidenceSummary,
   type DojoTimeMachineDebugReport,
 } from "../browser/dojo_universe.js";
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
@@ -1265,6 +1266,16 @@ export const DOJO_TOOLS = [
         ...DOJO_SKILL_SCOPED_INPUT_PROPERTIES,
         question: { type: "string" },
         mutation_kind: { type: "string" },
+        package_readiness_evidence: {
+          type: "object",
+          description:
+            "Optional parsed synthi.dojo.packageReadinessEvidence.v1 artifact produced by proof:dojo:package-readiness:self-check. The tool summarizes this object but does not read local artifact paths.",
+        },
+        package_readiness_evidence_path: {
+          type: "string",
+          description:
+            "Optional evidence artifact label/path to display with package_readiness_evidence. This is not read from disk.",
+        },
       },
       required: [],
     },
@@ -2425,6 +2436,8 @@ async function dojoGetUniverseDossierTool(args: unknown): Promise<ToolResponse> 
     universe_dossier: buildDojoUniverseDossier(skill.skill, visibleSkills.skills, {
       question: stringOpt(a["question"]),
       mutation_kind: stringOpt(a["mutation_kind"]),
+      package_readiness_evidence: objectOpt(a["package_readiness_evidence"]) as DojoPackageReadinessEvidenceSummary | undefined,
+      package_readiness_evidence_path: stringOpt(a["package_readiness_evidence_path"]),
     }),
   });
 }

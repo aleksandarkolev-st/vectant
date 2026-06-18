@@ -4555,6 +4555,43 @@ describe("Agent Dojo MCP tools", () => {
         }),
       }),
     }));
+    const universeWithPackageReadiness = await dispatchDojoTool("synthi_dojo_get_universe_dossier", {
+      skill_id: published.skill.skill_id,
+      package_readiness_evidence_path: "tmp/dojo-package-readiness/dojo-package-readiness.evidence.json",
+      package_readiness_evidence: packageReadinessEvidenceForDojoToolTest({
+        export_entry_paths: ["dist/index.js", "dist/index.d.ts"],
+        script_referenced_paths: [
+          "scripts/dojo-package-readiness-self-check.mjs",
+          "scripts/dojo-release-gate-verify.mjs",
+        ],
+        npm_pack: {
+          exit_code: 0,
+          integrity_present: true,
+          packed_file_count: 512,
+          unpacked_size: 4096,
+        },
+      }),
+    });
+    expect(universeWithPackageReadiness?.structuredContent).toEqual(expect.objectContaining({
+      universe_dossier: expect.objectContaining({
+        package_readiness: expect.objectContaining({
+          release_gate: expect.objectContaining({
+            status: "ready",
+            evidence_path: "tmp/dojo-package-readiness/dojo-package-readiness.evidence.json",
+            packed_file_count: 512,
+            export_entry_path_count: 2,
+            release_harness_path_count: 2,
+            gaps: [],
+          }),
+          enterprise: expect.arrayContaining([
+            expect.objectContaining({
+              package: "Dojo Package Readiness",
+              status: "ready",
+            }),
+          ]),
+        }),
+      }),
+    }));
     const sourcePlan = await dispatchDojoTool("synthi_dojo_get_source_affordance_pr_plan", { skill_id: published.skill.skill_id });
     expect(sourcePlan?.structuredContent).toEqual(expect.objectContaining({
       source_affordance_pr_plan: expect.objectContaining({
@@ -6783,6 +6820,33 @@ function evidenceLedgerRecordsForProof(
       retention_class: "ephemeral",
     }),
   ];
+}
+
+function packageReadinessEvidenceForDojoToolTest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    schema_version: "synthi.dojo.packageReadinessEvidence.v1",
+    generated_at: "2026-06-11T00:00:00.000Z",
+    ok: true,
+    errors: [],
+    package_name: "@synthi-inc/mcp-server",
+    package_version: "0.1.0",
+    package_private: false,
+    required_package_scripts: ["build", "typecheck", "proof:dojo:package-readiness:self-check"],
+    required_package_files_entries: ["dist", "scripts/dojo-package-readiness-self-check.mjs"],
+    export_entry_paths: ["dist/index.js"],
+    script_referenced_paths: ["scripts/dojo-package-readiness-self-check.mjs"],
+    validation: {
+      ok: true,
+      errors: [],
+    },
+    npm_pack: {
+      exit_code: 0,
+      integrity_present: true,
+      packed_file_count: 1,
+      unpacked_size: 1024,
+    },
+    ...overrides,
+  };
 }
 
 function event(overrides: Partial<BrowserTraceEvent>): BrowserTraceEvent {
