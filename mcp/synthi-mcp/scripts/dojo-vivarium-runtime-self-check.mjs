@@ -36,6 +36,7 @@ export const DOJO_VIVARIUM_RUNTIME_TEST_FILES = [
 export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "scenario_dsl_validates_duplicate_entity",
   "scenario_dsl_validates_fake_success_oracle",
+  "scenario_dsl_classifies_invalid_value_data_tissue",
   "scenario_dsl_classifies_policy_tissue_scenarios",
   "scenario_dsl_classifies_expanded_identity_tissue_scenarios",
   "scenario_dsl_rejects_missing_oracle_or_fixtures",
@@ -43,6 +44,7 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "fixture_materializer_creates_duplicate_stable_ids",
   "fixture_materializer_rejects_production_data_refs",
   "fixture_materializer_materializes_stale_missing_threshold_states",
+  "fixture_materializer_materializes_invalid_value_data_tissue",
   "fixture_materializer_materializes_policy_tissue",
   "fixture_materializer_materializes_expanded_identity_tissue",
   "fixture_materializer_quarantines_prompt_injection_documents",
@@ -67,6 +69,7 @@ export const DOJO_VIVARIUM_RUNTIME_CAPABILITIES = [
   "vivarium_runner_executes_partial_write_faults",
   "vivarium_runner_emits_policy_tissue_evidence",
   "vivarium_runner_emits_expanded_identity_evidence",
+  "vivarium_runner_emits_invalid_value_evidence",
   "vivarium_runner_requires_prompt_injection_quarantine",
   "vivarium_runner_uses_deterministic_run_clock",
   "vivarium_runner_blocks_exhausted_budget",
@@ -235,6 +238,7 @@ export function buildDojoVivariumRuntimeEvidenceManifest({
       ui_tissue_mutations_required: true,
       policy_tissue_required: true,
       expanded_identity_tissue_required: true,
+      invalid_value_data_tissue_required: true,
       deterministic_reset_required: true,
       budget_enforcement_required: true,
       targeted_graph_execution_required: true,
@@ -316,6 +320,8 @@ function capabilityMatchers(capability) {
       return ["scenario dsl validates duplicate entity scenario definitions", "deterministic fixtures"];
     case "scenario_dsl_validates_fake_success_oracle":
       return ["scenario dsl validates fake success scenario definitions", "evidence oracle"];
+    case "scenario_dsl_classifies_invalid_value_data_tissue":
+      return ["scenario dsl classifies invalid value scenarios", "data validation tissue"];
     case "scenario_dsl_classifies_policy_tissue_scenarios":
       return ["scenario dsl classifies policy tissue scenarios", "thresholds and unavailable approvals"];
     case "scenario_dsl_classifies_expanded_identity_tissue_scenarios":
@@ -330,6 +336,8 @@ function capabilityMatchers(capability) {
       return ["synthetic fixture materializer rejects production data references"];
     case "fixture_materializer_materializes_stale_missing_threshold_states":
       return ["materializes stale entity missing field and threshold breach fixture states"];
+    case "fixture_materializer_materializes_invalid_value_data_tissue":
+      return ["synthetic fixture materializer materializes invalid data values", "without production data"];
     case "fixture_materializer_materializes_policy_tissue":
       return ["synthetic fixture materializer materializes policy approval blockers", "without production policy data"];
     case "fixture_materializer_materializes_expanded_identity_tissue":
@@ -378,6 +386,8 @@ function capabilityMatchers(capability) {
       return ["vivarium runner emits policy tissue evidence", "policy fixtures block scenario execution"];
     case "vivarium_runner_emits_expanded_identity_evidence":
       return ["vivarium runner emits expanded identity evidence", "workspace context changes block execution"];
+    case "vivarium_runner_emits_invalid_value_evidence":
+      return ["vivarium runner emits invalid value evidence", "invalid data blocks execution"];
     case "vivarium_runner_requires_prompt_injection_quarantine":
       return ["vivarium runner passes prompt injection scenarios", "document instructions are quarantined"];
     case "vivarium_runner_uses_deterministic_run_clock":
