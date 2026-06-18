@@ -2145,6 +2145,172 @@ describe("Dojo release gate artifact verifier", () => {
     ]);
   });
 
+  it("treats enterprise release verification as release promotion plus enterprise T8 gates", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-enterprise-release-promotion-missing-artifacts-"));
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+    });
+    const setGateDefaults = (gateId, { report = false, evidence = false } = {}) => {
+      const gate = manifest.gates.find((item) => item.id === gateId);
+      if (!gate) throw new Error(`missing test gate:${gateId}`);
+      if (report) gate.default_report_path = path.join(dir, `${gateId}.report.json`);
+      if (evidence) gate.default_evidence_path = path.join(dir, `${gateId}.evidence.json`);
+      return gate;
+    };
+    setGateDefaults("dojo_release_gate_verifier_self_check", { report: true, evidence: true });
+    setGateDefaults("workflow_e2e_hosted", { report: true });
+    setGateDefaults("private_tool_stdio_acceptance", { report: true });
+    setGateDefaults("private_tool_codex_acceptance", { report: true });
+    setGateDefaults("dojo_managed_key_signing_self_check", { evidence: true });
+    setGateDefaults("dojo_graph_runtime_self_check", { evidence: true });
+    const releaseGateRunnerReportPath = path.join(dir, "missing-enterprise-release-runner.json");
+    const releaseGateRunnerEvidencePath = path.join(dir, "missing-enterprise-release-runner.evidence.json");
+    const chaosEvidencePath = path.join(dir, "missing-chaos-performance.evidence.json");
+    const soakSummaryPath = path.join(dir, "missing-soak-summary.json");
+    const soakEventsPath = path.join(dir, "missing-soak-events.ndjson");
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+
+    const verified = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        "enterprise-release": "1",
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "release-gate-run-report": releaseGateRunnerReportPath,
+        "release-gate-run-evidence": releaseGateRunnerEvidencePath,
+        "chaos-performance-evidence": chaosEvidencePath,
+        "soak-summary": soakSummaryPath,
+        "soak-events": soakEventsPath,
+      },
+    });
+
+    expect(verified.ok).toBe(false);
+    expect(verified.enterprise_release).toBe(true);
+    expect(verified.complete_release_gate_coverage_required).toBe(true);
+    expect(verified.errors).toEqual(expect.arrayContaining([
+      `release_gate_runner:artifact_missing:${releaseGateRunnerReportPath}`,
+      `dojo_release_gate_verifier_self_check:artifact_missing:${manifest.gates.find((gate) => gate.id === "dojo_release_gate_verifier_self_check").default_report_path}`,
+      `workflow_e2e_hosted:artifact_missing:${manifest.gates.find((gate) => gate.id === "workflow_e2e_hosted").default_report_path}`,
+      `private_tool_stdio_acceptance:artifact_missing:${manifest.gates.find((gate) => gate.id === "private_tool_stdio_acceptance").default_report_path}`,
+      `private_tool_codex_acceptance:artifact_missing:${manifest.gates.find((gate) => gate.id === "private_tool_codex_acceptance").default_report_path}`,
+      `dojo_managed_key_signing_self_check:evidence_missing:${manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path}`,
+      `dojo_graph_runtime_self_check:evidence_missing:${manifest.gates.find((gate) => gate.id === "dojo_graph_runtime_self_check").default_evidence_path}`,
+      `dojo_chaos_performance_self_check:evidence_missing:${chaosEvidencePath}`,
+      `soak_performance:artifact_missing:${soakSummaryPath}`,
+    ]));
+    expect(verified.attempted_release_gate_ids).toEqual(expect.arrayContaining([
+      "dojo_release_gate_verifier_self_check",
+      "workflow_e2e_hosted",
+      "private_tool_stdio_acceptance",
+      "private_tool_codex_acceptance",
+      "dojo_managed_key_signing_self_check",
+      "dojo_graph_runtime_self_check",
+      "dojo_chaos_performance_self_check",
+      "soak_performance",
+    ]));
+    expect(verified.failed_verifiable_release_gate_ids).toEqual(expect.arrayContaining([
+      "dojo_release_gate_verifier_self_check",
+      "workflow_e2e_hosted",
+      "private_tool_stdio_acceptance",
+      "private_tool_codex_acceptance",
+      "dojo_managed_key_signing_self_check",
+      "dojo_graph_runtime_self_check",
+      "dojo_chaos_performance_self_check",
+      "soak_performance",
+    ]));
+    expect(verified.release_gate_verifier).toEqual([
+      expect.objectContaining({
+        id: "dojo_release_gate_verifier_self_check",
+        ok: false,
+        release_candidate: true,
+      }),
+    ]);
+    expect(verified.managed_key_signing).toEqual([
+      expect.objectContaining({
+        id: "dojo_managed_key_signing_self_check",
+        ok: false,
+        release_candidate: true,
+      }),
+    ]);
+    expect(verified.chaos_performance).toEqual([
+      expect.objectContaining({
+        id: "dojo_chaos_performance_self_check",
+        ok: false,
+        enterprise_release: true,
+      }),
+    ]);
+    expect(verified.soak_performance).toEqual([
+      expect.objectContaining({
+        id: "soak_performance",
+        ok: false,
+        enterprise_release: true,
+      }),
+    ]);
+  });
+
+  it("applies release-candidate managed-key signing custody rules during enterprise aggregate verification", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-enterprise-release-managed-key-strictness-"));
+    const selfCheckOnlyPath = await writeManagedKeySigningEvidenceFixture({
+      dir,
+      basename: "self-check-only-managed-key-signing",
+      evidence: managedKeySigningEvidenceFixture({
+        signing_contract: {
+          ...managedKeySigningEvidenceFixture().signing_contract,
+          release_managed_key_observation_required: false,
+        },
+        release_managed_key_observation: managedKeySigningReleaseObservationFixture({
+          source: "unit_self_check",
+          scope: "self_check",
+          observed: false,
+          release_ready: false,
+          signature_verified: false,
+          checks: Object.fromEntries(DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_CHECKS.map((check) => [check, false])),
+          artifact_refs: [],
+        }),
+      }),
+    });
+    const manifest = buildDojoReleaseGateManifest({
+      generatedAt: "2026-06-11T00:00:00.000Z",
+    });
+    manifest.gates.find((gate) => gate.id === "dojo_managed_key_signing_self_check").default_evidence_path = selfCheckOnlyPath;
+    const manifestPath = path.join(dir, "dojo-release-gate-manifest.json");
+    const evidencePath = path.join(dir, "dojo-release-gate-manifest.evidence.json");
+    await writeManifestPair({ manifest, manifestPath, evidencePath });
+
+    const verified = await verifyDojoReleaseGateArtifactsFromArgs({
+      args: {
+        "enterprise-release": "1",
+        manifest: manifestPath,
+        evidence: evidencePath,
+        "managed-key-signing-evidence": selfCheckOnlyPath,
+      },
+    });
+
+    expect(verified.ok).toBe(false);
+    expect(verified.enterprise_release).toBe(true);
+    expect(verified.managed_key_signing).toEqual([
+      expect.objectContaining({
+        id: "dojo_managed_key_signing_self_check",
+        ok: false,
+        release_candidate: true,
+        errors: expect.arrayContaining([
+          "managed_key_signing_release_observation_requirement_missing",
+          "managed_key_signing_release_observation_not_observed",
+          "managed_key_signing_release_observation_not_ready",
+          "managed_key_signing_release_observation_scope_invalid:self_check",
+          "managed_key_signing_release_observation_self_check_only",
+          "managed_key_signing_release_observation_signature_unverified",
+          "managed_key_signing_release_observation_artifacts_missing",
+        ]),
+      }),
+    ]);
+    expect(verified.errors).toEqual(expect.arrayContaining([
+      "dojo_managed_key_signing_self_check:managed_key_signing_release_observation_requirement_missing",
+      "dojo_managed_key_signing_self_check:managed_key_signing_release_observation_scope_invalid:self_check",
+    ]));
+  });
+
   it("can require complete release-gate artifact coverage outside release-candidate mode", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-strict-release-gate-coverage-"));
     const manifest = buildDojoReleaseGateManifest({
