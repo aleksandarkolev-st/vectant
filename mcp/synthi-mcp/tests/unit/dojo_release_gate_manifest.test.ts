@@ -876,6 +876,7 @@ describe("Dojo release gate manifest", () => {
           require_ui_tissue_mutations: true,
           require_ui_tissue_specific_evidence: true,
           require_misleading_toast_tissue: true,
+          require_route_tissue: true,
           require_policy_tissue: true,
           require_expanded_identity_tissue: true,
           require_invalid_value_data_tissue: true,
@@ -1570,6 +1571,7 @@ describe("Dojo release gate manifest", () => {
     vivariumRuntimeGate.release_artifact_requirements.require_ui_tissue_mutations = false;
     vivariumRuntimeGate.release_artifact_requirements.require_ui_tissue_specific_evidence = false;
     vivariumRuntimeGate.release_artifact_requirements.require_misleading_toast_tissue = false;
+    vivariumRuntimeGate.release_artifact_requirements.require_route_tissue = false;
     vivariumRuntimeGate.release_artifact_requirements.require_policy_tissue = false;
     vivariumRuntimeGate.release_artifact_requirements.require_expanded_identity_tissue = false;
     vivariumRuntimeGate.release_artifact_requirements.require_invalid_value_data_tissue = false;
@@ -1584,6 +1586,7 @@ describe("Dojo release gate manifest", () => {
       "vivarium_runtime_missing_ui_tissue_requirement",
       "vivarium_runtime_missing_ui_tissue_specific_evidence_requirement",
       "vivarium_runtime_missing_misleading_toast_tissue_requirement",
+      "vivarium_runtime_missing_route_tissue_requirement",
       "vivarium_runtime_missing_policy_tissue_requirement",
       "vivarium_runtime_missing_expanded_identity_tissue_requirement",
       "vivarium_runtime_missing_invalid_value_data_tissue_requirement",
