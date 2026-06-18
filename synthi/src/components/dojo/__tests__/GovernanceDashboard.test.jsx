@@ -2,8 +2,13 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import GovernanceDashboard from '../GovernanceDashboard';
-import { createEmptyDojoSummary, normalizeDojoWorkspaceSummary } from '@/services/dojoClient';
-import { USER_ID_KEY } from '@/services/userIdentity';
+import {
+  createEmptyDojoSummary,
+  DOJO_ORGANIZATION_ID_KEY,
+  DOJO_TENANT_ID_KEY,
+  normalizeDojoWorkspaceSummary,
+} from '@/services/dojoClient';
+import { USER_ID_KEY, USER_ROLES_KEY } from '@/services/userIdentity';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -417,6 +422,13 @@ describe('GovernanceDashboard', () => {
 
     try {
       localStorage.setItem(USER_ID_KEY, 'governance-operator');
+      localStorage.setItem(USER_ROLES_KEY, JSON.stringify([
+        'dojo:approval:review',
+        'dojo:case-law:review',
+        'dojo:license:revoke',
+      ]));
+      localStorage.setItem(DOJO_TENANT_ID_KEY, 'tenant-a');
+      localStorage.setItem(DOJO_ORGANIZATION_ID_KEY, 'org-a');
       const view = renderDashboard({
         workspaceSlug: 'workspace-a',
         initialSummary: summary,
@@ -430,13 +442,19 @@ describe('GovernanceDashboard', () => {
       expect(recertifyCall?.[0]).toContain('/browser-workflows/tool');
       expect(JSON.parse(recertifyCall?.[1]?.body || '{}')).toEqual({
         tool: 'synthi_dojo_recertify_skill',
-        arguments: {
-          skill_id: 'skill-stale',
-          reason: 'source_drift',
+        arguments: expect.objectContaining({
+          tenant_id: 'tenant-a',
+          organization_id: 'org-a',
+          workspace_id: 'workspace-a',
           actor_id: 'governance-operator',
           actor_type: 'human',
+          roles: ['dojo:approval:review', 'dojo:case-law:review', 'dojo:license:revoke'],
+          request_id: expect.stringMatching(/^dojo_ui_skill-stale_/),
+          correlation_id: expect.stringContaining(':ui'),
+          skill_id: 'skill-stale',
+          reason: 'source_drift',
           evidence_refs: ['evidence-drift-001'],
-        },
+        }),
       });
       expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Skill recertified: Stale approval skill');
 
@@ -446,9 +464,15 @@ describe('GovernanceDashboard', () => {
       const complianceCall = global.fetch.mock.calls.at(-1);
       expect(JSON.parse(complianceCall?.[1]?.body || '{}')).toEqual({
         tool: 'synthi_dojo_export_compliance_pack',
-        arguments: {
+        arguments: expect.objectContaining({
+          tenant_id: 'tenant-a',
+          organization_id: 'org-a',
+          workspace_id: 'workspace-a',
+          actor_id: 'governance-operator',
+          actor_type: 'human',
+          roles: ['dojo:approval:review', 'dojo:case-law:review', 'dojo:license:revoke'],
           skill_id: 'skill-save-invoice',
-        },
+        }),
       });
       expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Compliance pack exported');
 
@@ -459,13 +483,20 @@ describe('GovernanceDashboard', () => {
       expect(approveCall?.[0]).toContain('/browser-workflows/tool');
       expect(JSON.parse(approveCall?.[1]?.body || '{}')).toEqual({
         tool: 'synthi_dojo_review_permission_upgrade',
-        arguments: {
+        arguments: expect.objectContaining({
+          tenant_id: 'tenant-a',
+          organization_id: 'org-a',
+          workspace_id: 'workspace-a',
+          actor_id: 'governance-operator',
+          actor_type: 'human',
+          roles: ['dojo:approval:review', 'dojo:case-law:review', 'dojo:license:revoke'],
           request_id: 'upgrade-001',
+          correlation_id: 'upgrade-001:ui',
           decision: 'approved',
           reviewer_actor_id: 'governance-operator',
           reviewer_actor_type: 'human',
           evidence_refs: ['evidence-upgrade-review-001'],
-        },
+        }),
       });
       expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Permission approved: send_invoice');
 
@@ -475,14 +506,22 @@ describe('GovernanceDashboard', () => {
       const caseLawCall = global.fetch.mock.calls.at(-1);
       expect(JSON.parse(caseLawCall?.[1]?.body || '{}')).toEqual({
         tool: 'synthi_dojo_review_case_law',
-        arguments: {
+        arguments: expect.objectContaining({
+          tenant_id: 'tenant-a',
+          organization_id: 'org-a',
+          workspace_id: 'workspace-a',
+          actor_id: 'governance-operator',
+          actor_type: 'human',
+          roles: ['dojo:approval:review', 'dojo:case-law:review', 'dojo:license:revoke'],
+          request_id: expect.stringMatching(/^dojo_ui_CASE-001_/),
+          correlation_id: expect.stringContaining(':ui'),
           case_id: 'CASE-001',
           decision: 'approved',
           skill_id: 'skill-save-invoice',
           reviewer_actor_id: 'governance-operator',
           reviewer_actor_type: 'human',
           evidence_refs: ['evidence-case-review-001'],
-        },
+        }),
       });
       expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('Case law approved: Duplicate client guardrail');
 
@@ -497,17 +536,26 @@ describe('GovernanceDashboard', () => {
       const revokeCall = global.fetch.mock.calls.at(-1);
       expect(JSON.parse(revokeCall?.[1]?.body || '{}')).toEqual({
         tool: 'synthi_dojo_revoke_license',
-        arguments: {
-          skill_id: 'skill-save-invoice',
-          reason: 'license revoked after governance review',
+        arguments: expect.objectContaining({
+          tenant_id: 'tenant-a',
+          organization_id: 'org-a',
+          workspace_id: 'workspace-a',
           actor_id: 'governance-operator',
           actor_type: 'human',
+          roles: ['dojo:approval:review', 'dojo:case-law:review', 'dojo:license:revoke'],
+          request_id: expect.stringMatching(/^dojo_ui_skill-save-invoice_/),
+          correlation_id: expect.stringContaining(':ui'),
+          skill_id: 'skill-save-invoice',
+          reason: 'license revoked after governance review',
           evidence_refs: ['evidence-license-health-001'],
-        },
+        }),
       });
       expect(view.querySelector('[data-testid="governance-action-status"]')?.textContent).toContain('License revoked: Save invoice');
     } finally {
       localStorage.removeItem(USER_ID_KEY);
+      localStorage.removeItem(USER_ROLES_KEY);
+      localStorage.removeItem(DOJO_TENANT_ID_KEY);
+      localStorage.removeItem(DOJO_ORGANIZATION_ID_KEY);
       global.fetch = originalFetch;
     }
   });

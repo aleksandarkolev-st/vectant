@@ -3,6 +3,9 @@
 import { callAgentWorkflowTool, getAgentWorkflowState } from './agentWorkflowClient';
 import { getCurrentUser } from './userIdentity';
 
+export const DOJO_TENANT_ID_KEY = 'synthi.dojo.tenantId';
+export const DOJO_ORGANIZATION_ID_KEY = 'synthi.dojo.organizationId';
+
 export function createEmptyDojoSummary(workspaceSlug = '') {
   return {
     workspaceSlug,
@@ -389,6 +392,75 @@ function governanceReviewEvidenceRefs(item, explicitEvidenceRefs = []) {
     ...compactStrings(item?.reviewEvidenceRefs || item?.review_evidence_refs),
     ...compactStrings(item?.auditEventRefs || item?.audit_event_refs),
   ])];
+}
+
+function localStorageString(key) {
+  if (typeof window === 'undefined') return '';
+  return String(window.localStorage?.getItem(key) || '').trim();
+}
+
+function generatedDojoRequestId(prefix, subject = '') {
+  const cleanSubject = String(subject || '').trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}_${cleanSubject ? `${cleanSubject}_` : ''}${crypto.randomUUID()}`;
+  }
+  return `${prefix}_${cleanSubject ? `${cleanSubject}_` : ''}${Date.now().toString(36)}`;
+}
+
+function resolveDojoTenantContextArgs({
+  workspaceSlug = '',
+  actor,
+  tenantContext,
+  requestId,
+  correlationId,
+  subject = '',
+} = {}) {
+  const currentUser = getCurrentUser();
+  const roles = compactStrings(
+    tenantContext?.roles
+      || tenantContext?.role_names
+      || currentUser?.roles
+  );
+  const tenantId = String(
+    tenantContext?.tenant_id
+      || tenantContext?.tenantId
+      || localStorageString(DOJO_TENANT_ID_KEY)
+  ).trim();
+  const organizationId = String(
+    tenantContext?.organization_id
+      || tenantContext?.organizationId
+      || localStorageString(DOJO_ORGANIZATION_ID_KEY)
+  ).trim();
+  const workspaceId = String(
+    tenantContext?.workspace_id
+      || tenantContext?.workspaceId
+      || workspaceSlug
+  ).trim();
+  const actorId = String(actor?.actorId || tenantContext?.actor_id || tenantContext?.actorId || currentUser?.id || '').trim();
+  const actorType = String(actor?.actorType || tenantContext?.actor_type || tenantContext?.actorType || 'human').trim();
+  if (!tenantId || !organizationId || !workspaceId || !actorId || !roles.length) return {};
+  const resolvedRequestId = String(
+    requestId
+      || tenantContext?.request_id
+      || tenantContext?.requestId
+      || generatedDojoRequestId('dojo_ui', subject)
+  ).trim();
+  const resolvedCorrelationId = String(
+    correlationId
+      || tenantContext?.correlation_id
+      || tenantContext?.correlationId
+      || `${resolvedRequestId}:ui`
+  ).trim();
+  return {
+    tenant_id: tenantId,
+    organization_id: organizationId,
+    workspace_id: workspaceId,
+    actor_id: actorId,
+    actor_type: actorType,
+    roles,
+    request_id: resolvedRequestId,
+    correlation_id: resolvedCorrelationId,
+  };
 }
 
 function normalizeCaseLawRefs(values) {
@@ -1313,6 +1385,7 @@ export async function reviewDojoPermissionUpgrade({
   evidenceRefs = [],
   reviewerActorId,
   reviewerActorType = 'human',
+  tenantContext,
   signal,
   url,
   token,
@@ -1324,12 +1397,20 @@ export async function reviewDojoPermissionUpgrade({
   if (!reviewer.actorId) throw new Error('dojo_governance_actor_required');
   const resolvedEvidenceRefs = governanceReviewEvidenceRefs(item, evidenceRefs);
   if (!resolvedEvidenceRefs.length) throw new Error('dojo_permission_upgrade_review_evidence_required');
+  const tenantArgs = resolveDojoTenantContextArgs({
+    workspaceSlug,
+    actor: reviewer,
+    tenantContext,
+    requestId,
+    subject: requestId,
+  });
   const body = await callAgentWorkflowTool({
     url,
     token,
     signal,
     tool: 'synthi_dojo_review_permission_upgrade',
     arguments: {
+      ...tenantArgs,
       request_id: requestId,
       decision,
       reviewer_actor_id: reviewer.actorId,
@@ -1355,6 +1436,7 @@ export async function reviewDojoCaseLaw({
   evidenceRefs = [],
   reviewerActorId,
   reviewerActorType = 'human',
+  tenantContext,
   signal,
   url,
   token,
@@ -1366,12 +1448,19 @@ export async function reviewDojoCaseLaw({
   if (!reviewer.actorId) throw new Error('dojo_governance_actor_required');
   const resolvedEvidenceRefs = governanceReviewEvidenceRefs(item, evidenceRefs);
   if (!resolvedEvidenceRefs.length) throw new Error('dojo_case_law_review_evidence_required');
+  const tenantArgs = resolveDojoTenantContextArgs({
+    workspaceSlug,
+    actor: reviewer,
+    tenantContext,
+    subject: caseId,
+  });
   const body = await callAgentWorkflowTool({
     url,
     token,
     signal,
     tool: 'synthi_dojo_review_case_law',
     arguments: {
+      ...tenantArgs,
       case_id: caseId,
       decision,
       ...(item?.skillId || item?.skill_id ? { skill_id: item.skillId || item.skill_id } : {}),
@@ -1398,6 +1487,7 @@ export async function recertifyDojoSkill({
   evidenceRefs,
   actorId,
   actorType = 'human',
+  tenantContext,
   signal,
   url,
   token,
@@ -1410,12 +1500,19 @@ export async function recertifyDojoSkill({
     ? compactStrings(evidenceRefs)
     : compactStrings(item?.evidenceRefs || item?.evidence_refs);
   const resolvedReason = reason || item?.reason || item?.trigger || '';
+  const tenantArgs = resolveDojoTenantContextArgs({
+    workspaceSlug,
+    actor,
+    tenantContext,
+    subject: skillId,
+  });
   const body = await callAgentWorkflowTool({
     url,
     token,
     signal,
     tool: 'synthi_dojo_recertify_skill',
     arguments: {
+      ...tenantArgs,
       skill_id: skillId,
       ...(item?.workflowId || item?.workflow_id ? { workflow_id: item.workflowId || item.workflow_id } : {}),
       ...(resolvedReason ? { reason: resolvedReason } : {}),
@@ -1436,16 +1533,25 @@ export async function recertifyDojoSkill({
 export async function exportDojoCompliancePack({
   skillId = '',
   workspaceSlug = '',
+  tenantContext,
   signal,
   url,
   token,
 } = {}) {
+  const actor = resolveGovernanceActor();
+  const tenantArgs = resolveDojoTenantContextArgs({
+    workspaceSlug,
+    actor,
+    tenantContext,
+    subject: skillId || workspaceSlug,
+  });
   const body = await callAgentWorkflowTool({
     url,
     token,
     signal,
     tool: 'synthi_dojo_export_compliance_pack',
     arguments: {
+      ...tenantArgs,
       ...(skillId ? { skill_id: skillId } : {}),
     },
   });
@@ -1466,6 +1572,7 @@ export async function revokeDojoLicense({
   evidenceRefs = [],
   actorId,
   actorType = 'human',
+  tenantContext,
   signal,
   url,
   token,
@@ -1478,12 +1585,19 @@ export async function revokeDojoLicense({
   if (!actor.actorId) throw new Error('dojo_governance_actor_required');
   const resolvedEvidenceRefs = governanceReviewEvidenceRefs(item, evidenceRefs);
   if (!resolvedEvidenceRefs.length) throw new Error('dojo_license_revocation_evidence_required');
+  const tenantArgs = resolveDojoTenantContextArgs({
+    workspaceSlug,
+    actor,
+    tenantContext,
+    subject: skillId,
+  });
   const body = await callAgentWorkflowTool({
     url,
     token,
     signal,
     tool: 'synthi_dojo_revoke_license',
     arguments: {
+      ...tenantArgs,
       skill_id: skillId,
       reason: resolvedReason,
       actor_id: actor.actorId,
