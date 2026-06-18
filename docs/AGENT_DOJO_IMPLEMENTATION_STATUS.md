@@ -69,6 +69,7 @@ Agent Dojo currently implements a repo-local proof-gated competency system with 
 - source/API contract, linter, candidate, substrate, React codemod, and API-backed skill-bus tool foundations
 - dedicated Dojo product UX surfaces and governance view models
 - tenant-scoped governance scheduled-job runner with dry-run semantics, typed handlers, RBAC, and audit persistence for supported non-dry transitions
+- package-readiness release gate that runs `npm pack --dry-run`, verifies packed exports and release harness files, and emits digest-backed evidence
 - repo artifact export
 - compact UI status surface plus dedicated Dojo routes
 
@@ -78,7 +79,7 @@ It does not yet prove the full mature Vivarium Cortex universe in production:
 - no externally deployed tenant-aware control plane proven against a production database
 - no live non-loopback MCP host conformance proof in the current validation bundle
 - no broad arbitrary-app source/API promotion guarantee
-- no complete chaos, soak, performance, privacy, and compliance release gate bundle
+- no complete externally executed chaos, soak, performance, privacy, and compliance release bundle proven against deployed production infrastructure
 - some UI surfaces are read-only governance/inspection views rather than full operator workflows
 
 ## Current Tool Classification
@@ -171,7 +172,7 @@ Safe current claim:
 Agent Dojo implements a repo-local proof-gated competency system with executable graph
 runtime foundations, materialized synthetic Vivarium scenarios, evidence/proof/ledger
 foundations, scoped licenses, repo exports, source/API scaffolding, API-backed skill-bus
-tool execution foundations, governance views, and MCP tool exposure.
+tool execution foundations, governance views, package-readiness release proof, and MCP tool exposure.
 ```
 
 Unsafe current claim:
@@ -179,5 +180,5 @@ Unsafe current claim:
 ```text
 Agent Dojo has completed production deployment proof for non-loopback hosted MCP,
 managed KMS/HSM signing deployment, broad arbitrary-app source/API graduation, complete governance
-operator workflows, and chaos/soak/performance/compliance release gates.
+operator workflows, and externally executed chaos/soak/performance/compliance release gates against production infrastructure.
 ```
