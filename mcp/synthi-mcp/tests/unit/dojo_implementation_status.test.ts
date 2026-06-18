@@ -187,6 +187,12 @@ describe("Dojo implementation status registry", () => {
         maturity_blockers: expect.not.arrayContaining(["source_drift_expiry_still_requires_recertification_to_relicense"]),
       })
     );
+    expect(DOJO_REPORT_IMPLEMENTATION_STATUS.evidence_ledger.maturity_blockers).not.toContain(
+      "retention_and_legal_hold_operations_are_limited"
+    );
+    expect(DOJO_REPORT_IMPLEMENTATION_STATUS.evidence_ledger.maturity_blockers).toContain(
+      "external_storage_custody_not_proven_in_release_gate"
+    );
   });
 
   it("classifies current report artifacts without implying mature runtime backing", () => {
@@ -214,6 +220,7 @@ describe("Dojo implementation status registry", () => {
       "no_durable_control_plane",
       "no_authoritative_evidence_ledger",
       "source_drift_expiry_still_requires_recertification_to_relicense",
+      "retention_and_legal_hold_operations_are_limited",
     ];
     const allMetadata = [
       ...Object.values(DOJO_TOOL_IMPLEMENTATION_STATUS),

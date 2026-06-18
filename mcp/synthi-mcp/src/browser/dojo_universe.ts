@@ -17,6 +17,16 @@ import {
   buildDojoGeneratedPrMetadata,
   type DojoGeneratedPrMetadata,
 } from "../dojo/source/pr_generator.js";
+import {
+  buildDojoEvidenceRetentionPlan,
+  type DojoEvidenceRetentionPlan,
+} from "../dojo/evidence/retention.js";
+import type {
+  DojoEvidenceLedgerRecord,
+  DojoEvidenceRetentionClass,
+} from "../dojo/evidence/types.js";
+
+const LOCAL_EVIDENCE_LEDGER_TENANT_ID = "legacy-local-tenant";
 
 export interface DojoLifecycleReport {
   schema_version: "synthi.dojo.lifecycleReport.v1";
@@ -104,7 +114,10 @@ export interface DojoEvidenceLedger {
     evidence_refs_only: boolean;
     screenshots_redacted_by_default: boolean;
     recertify_after_days: number;
+    append_only_records_preserved: boolean;
+    legal_hold_blocks_artifact_disposal: boolean;
   };
+  retention_plan: DojoEvidenceRetentionPlan;
   records: Array<{
     record_id: string;
     kind: "trace" | "scenario" | "checkride" | "case_law" | "guardrail" | "license" | "proof" | "artifact";
@@ -112,6 +125,9 @@ export interface DojoEvidenceLedger {
     redaction: "none" | "metadata_only" | "redacted";
     hash: string;
     previous_hash: string | null;
+    retention_class: DojoEvidenceRetentionClass;
+    legal_hold: boolean;
+    created_at: string;
   }>;
   head_hash: string;
 }
@@ -480,6 +496,7 @@ export function buildDojoEvidenceLedger(skill: DojoSkill): DojoEvidenceLedger {
   const records = refs.map((item, index) => {
     const recordId = `evidence_${String(index + 1).padStart(3, "0")}_${hash(`${skill.skill_id}:${item.kind}:${item.ref}`)}`;
     const digest = hash(JSON.stringify({ recordId, item, previous }));
+    const retentionClass = retentionClassForEvidenceKind(item.kind);
     const record = {
       record_id: recordId,
       kind: item.kind,
@@ -487,10 +504,37 @@ export function buildDojoEvidenceLedger(skill: DojoSkill): DojoEvidenceLedger {
       redaction: item.kind === "artifact" || item.kind === "trace" ? "metadata_only" as const : "redacted" as const,
       hash: digest,
       previous_hash: previous,
+      retention_class: retentionClass,
+      legal_hold: retentionClass === "legal_hold",
+      created_at: skill.generated_at,
     };
     previous = digest;
     return record;
   });
+  const tenantId = tenantIdForEvidenceLedgerReport(skill);
+  const retentionRecords = records.map((record): DojoEvidenceLedgerRecord => ({
+    schema_version: "synthi.dojo.evidenceRecord.v1",
+    record_id: record.record_id,
+    tenant_id: tenantId,
+    workspace_id: skill.workspace_id,
+    skill_id: skill.skill_id,
+    run_id: skill.workflow_id,
+    kind: record.kind,
+    artifact_uri: record.ref,
+    artifact_sha256: record.hash,
+    redaction_manifest_sha256: null,
+    claim_ids: evidenceClaimIdsForEvidenceKind(record.kind, skill),
+    previous_hash: record.previous_hash ?? "0".repeat(64),
+    record_hash: record.hash,
+    ledger_head_hash: record.hash,
+    signer_key_id: null,
+    signature: null,
+    created_at: record.created_at,
+    created_by: "dojo-evidence-ledger-report",
+    retention_class: record.retention_class,
+    legal_hold: record.legal_hold,
+    source_refs: [record.ref],
+  }));
   return {
     schema_version: "synthi.dojo.evidenceLedger.v1",
     ledger_id: `ledger_${hash(`${skill.skill_id}:${records.at(-1)?.hash ?? "empty"}`)}`,
@@ -506,10 +550,39 @@ export function buildDojoEvidenceLedger(skill: DojoSkill): DojoEvidenceLedger {
       evidence_refs_only: true,
       screenshots_redacted_by_default: skill.evidence_policy.screenshot_redaction !== "never",
       recertify_after_days: skill.permission_license.expiry_policy.recertify_after_days,
+      append_only_records_preserved: true,
+      legal_hold_blocks_artifact_disposal: true,
     },
+    retention_plan: buildDojoEvidenceRetentionPlan({
+      tenant_id: tenantId,
+      workspace_id: skill.workspace_id,
+      records: retentionRecords,
+      now: skill.generated_at,
+    }),
     records,
     head_hash: records.at(-1)?.hash ?? hash("empty"),
   };
+}
+
+function tenantIdForEvidenceLedgerReport(skill: DojoSkill): string {
+  const licenseWithTenant = skill.permission_license as DojoSkill["permission_license"] & { tenant_id?: string };
+  return licenseWithTenant.tenant_id?.trim() || LOCAL_EVIDENCE_LEDGER_TENANT_ID;
+}
+
+function retentionClassForEvidenceKind(kind: DojoEvidenceLedger["records"][number]["kind"]): DojoEvidenceRetentionClass {
+  if (kind === "trace" || kind === "scenario") return "ephemeral";
+  if (kind === "checkride" || kind === "license" || kind === "proof") return "regulated";
+  return "standard";
+}
+
+function evidenceClaimIdsForEvidenceKind(
+  kind: DojoEvidenceLedger["records"][number]["kind"],
+  skill: DojoSkill
+): string[] {
+  if (kind === "checkride") return ["checkride_passed"];
+  if (kind === "guardrail") return ["guardrails_active"];
+  if (kind === "license" || kind === "proof") return [...skill.permission_license.proof_requirements.required_evidence_claims];
+  return [];
 }
 
 export function buildDojoSourceAffordancePrPlan(skill: DojoSkill): DojoSourceAffordancePrPlan {

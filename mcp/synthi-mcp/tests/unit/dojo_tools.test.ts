@@ -3379,7 +3379,23 @@ describe("Agent Dojo MCP tools", () => {
       runtime_enforced: false,
       universe_dossier: expect.objectContaining({
         lifecycle: expect.objectContaining({ schema_version: "synthi.dojo.lifecycleReport.v1" }),
-        evidence_ledger: expect.objectContaining({ schema_version: "synthi.dojo.evidenceLedger.v1" }),
+        evidence_ledger: expect.objectContaining({
+          schema_version: "synthi.dojo.evidenceLedger.v1",
+          retention_policy: expect.objectContaining({
+            append_only_records_preserved: true,
+            legal_hold_blocks_artifact_disposal: true,
+          }),
+          retention_plan: expect.objectContaining({
+            schema_version: "synthi.dojo.evidenceRetentionPlan.v1",
+            record_count: expect.any(Number),
+            decisions: expect.arrayContaining([
+              expect.objectContaining({
+                ledger_record_action: "preserve_append_only_record",
+                artifact_action: expect.stringMatching(/^(retain|redact|purge)$/),
+              }),
+            ]),
+          }),
+        }),
       }),
     }));
     const sourcePlan = await dispatchDojoTool("synthi_dojo_get_source_affordance_pr_plan", { skill_id: published.skill.skill_id });

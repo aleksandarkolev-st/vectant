@@ -394,7 +394,6 @@ function ledgerReport(summary: string): DojoImplementationMetadata {
     simulation_backing: "none",
     summary,
     maturity_blockers: [
-      "retention_and_legal_hold_operations_are_limited",
       "external_storage_custody_not_proven_in_release_gate",
     ],
   };
