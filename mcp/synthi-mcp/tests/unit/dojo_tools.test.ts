@@ -1482,6 +1482,69 @@ describe("Agent Dojo MCP tools", () => {
       }),
     }));
 
+    const archived = await dispatchDojoTool("synthi_dojo_run_scheduled_governance_jobs", {
+      job_kinds: ["archive_compliance_evidence"],
+      dry_run: false,
+      now: "2026-06-11T00:05:30.000Z",
+      ...productionScheduledJobRunnerContextArgs({
+        actor_id: "workspace-a-scheduler",
+        actor_type: "service",
+        request_id: "req-scheduled-governance-archive",
+        correlation_id: "corr-scheduled-governance-archive",
+      }),
+    });
+    expect(archived?.isError).toBeUndefined();
+    expect(archived?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      dry_run: false,
+      selected_job_count: 1,
+      selected_job_kinds: ["archive_compliance_evidence"],
+      scheduled_job_run: expect.objectContaining({
+        attempted_count: 1,
+        applied_count: 1,
+        blocked_count: 0,
+        results: [
+          expect.objectContaining({
+            kind: "archive_compliance_evidence",
+            status: "applied",
+            evidence_refs: expect.arrayContaining([
+              expect.stringMatching(/^compliance_archive:compliance_archive_[a-f0-9]{16}$/),
+            ]),
+            details: expect.objectContaining({
+              archive_manifest: expect.objectContaining({
+                schema_version: "synthi.dojo.complianceEvidenceArchive.v1",
+                archive_id: expect.stringMatching(/^compliance_archive_[a-f0-9]{16}$/),
+                tenant_id: "tenant-a",
+                workspace_id: "workspace-a",
+                artifact_count: expect.any(Number),
+                manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+              }),
+              archive_manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            }),
+            audit_event: expect.objectContaining({
+              event_type: "governance_scheduled_job_completed",
+              actor: { actor_id: "workspace-a-scheduler", actor_type: "service" },
+            }),
+          }),
+        ],
+      }),
+      scheduled_job_audit_persistence: expect.objectContaining({
+        persisted_count: 1,
+        blocked_count: 0,
+        results: [
+          expect.objectContaining({
+            status: "persisted",
+            audit_event: expect.objectContaining({
+              event_type: "governance_scheduled_job_completed",
+              request_id: "req-scheduled-governance-archive",
+              correlation_id: "corr-scheduled-governance-archive",
+              entity_kind: "governance_scheduled_job",
+            }),
+          }),
+        ],
+      }),
+    }));
+
     const governance = await dispatchDojoTool("synthi_dojo_get_governance_report", {
       skill_id: visibleSkillId,
       ...productionTenantContextArgs({

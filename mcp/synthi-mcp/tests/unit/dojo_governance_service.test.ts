@@ -19,6 +19,7 @@ import type {
 import {
   authorizeDojoGovernanceAction,
   buildDojoGovernanceServiceView,
+  buildDojoComplianceEvidenceArchiveManifest,
   buildDojoComplianceEvidencePack,
   decideDojoCaseLawReview,
   decideDojoPermissionUpgradeRequest,
@@ -1464,6 +1465,88 @@ describe("Dojo governance service", () => {
         evidence_refs: ["evidence-case-approved"],
       }),
     ]));
+  });
+
+  it("builds tenant-scoped compliance archive manifests for complete packs", () => {
+    const withCaseLaw = skillFixture({
+      skillId: "skill-archive-ready",
+      caseLaw: [{
+        case_id: "case-archive-approved",
+        title: "Approved archive guardrail",
+        date: "2026-06-11",
+        finding: "Archived governance packs must include case law evidence.",
+        impact: "Compliance export would be incomplete without the binding case.",
+        rule_created: "case_law_registry_complete == true",
+        applies_to: ["run_workflow"],
+        evidence_refs: ["evidence-case-archive"],
+        status: "binding",
+        binding_scope: "workspace",
+        guardrail_id: "guard-archive-approved",
+      }],
+    });
+    const auditExports = queryDojoAuditExports({
+      skills: [withCaseLaw],
+      case_law_review_queue: [],
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+    const completePack = buildDojoComplianceEvidencePack({
+      skills: [withCaseLaw],
+      case_law_review_queue: [],
+      audit_exports: auditExports,
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+    const archivedAt = "2026-06-11T01:00:00.000Z";
+    const archive = buildDojoComplianceEvidenceArchiveManifest({
+      tenant_context: tenantContextFixture({ actorId: "archive-runner", roles: ["dojo:governance:schedule"] }),
+      compliance_evidence_pack: completePack,
+      archived_at: archivedAt,
+    });
+    const archiveAgain = buildDojoComplianceEvidenceArchiveManifest({
+      tenant_context: tenantContextFixture({ actorId: "archive-runner", roles: ["dojo:governance:schedule"] }),
+      compliance_evidence_pack: completePack,
+      archived_at: archivedAt,
+    });
+
+    expect(archive).toEqual(expect.objectContaining({ ok: true }));
+    expect(archiveAgain).toEqual(archive);
+    if (!archive.ok) throw new Error("expected archive manifest");
+    expect(archive.manifest).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.complianceEvidenceArchive.v1",
+      archive_id: expect.stringMatching(/^compliance_archive_[a-f0-9]{16}$/),
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      pack_id: completePack.pack_id,
+      pack_generated_at: completePack.generated_at,
+      archived_at: archivedAt,
+      retention_class: "standard",
+      artifact_count: completePack.artifacts.length,
+      manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      evidence_refs: expect.arrayContaining(["evidence-case-archive"]),
+    }));
+    expect(archive.manifest.artifacts.map((artifact) => artifact.artifact_id)).toEqual(
+      [...archive.manifest.artifacts.map((artifact) => artifact.artifact_id)].sort()
+    );
+
+    const missingPack = buildDojoComplianceEvidencePack({
+      skills: [skillFixture({ skillId: "skill-archive-missing" })],
+      case_law_review_queue: [],
+      audit_exports: queryDojoAuditExports({
+        skills: [skillFixture({ skillId: "skill-archive-missing" })],
+        case_law_review_queue: [],
+        generated_at: "2026-06-11T00:00:00.000Z",
+      }),
+      generated_at: "2026-06-11T00:00:00.000Z",
+    });
+    const blockedArchive = buildDojoComplianceEvidenceArchiveManifest({
+      tenant_context: tenantContextFixture(),
+      compliance_evidence_pack: missingPack,
+      archived_at: archivedAt,
+    });
+    expect(blockedArchive).toEqual({
+      ok: false,
+      blocked_by: ["compliance_artifact_missing:case_law_registry"],
+      missing_artifacts: ["case_law_registry"],
+    });
   });
 
   it("adds executable entrustment provenance to compliance packs when runtime checkride snapshots exist", () => {

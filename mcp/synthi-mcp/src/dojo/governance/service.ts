@@ -284,6 +284,40 @@ export interface DojoGovernanceComplianceEvidencePack {
   retention_class: "standard" | "regulated" | "legal_hold";
 }
 
+export interface DojoGovernanceComplianceArchiveArtifact {
+  artifact_id: string;
+  title: string;
+  digest: string;
+  evidence_refs: string[];
+}
+
+export interface DojoGovernanceComplianceArchiveManifest {
+  schema_version: "synthi.dojo.complianceEvidenceArchive.v1";
+  archive_id: string;
+  tenant_id: string;
+  organization_id: string;
+  workspace_id: string;
+  pack_id: string;
+  pack_generated_at: string;
+  archived_at: string;
+  retention_class: DojoGovernanceComplianceEvidencePack["retention_class"];
+  artifact_count: number;
+  artifacts: DojoGovernanceComplianceArchiveArtifact[];
+  evidence_refs: string[];
+  manifest_sha256: string;
+}
+
+export type DojoGovernanceComplianceArchiveManifestResult =
+  | {
+    ok: true;
+    manifest: DojoGovernanceComplianceArchiveManifest;
+  }
+  | {
+    ok: false;
+    blocked_by: string[];
+    missing_artifacts: string[];
+  };
+
 export interface DojoGovernanceScheduledJobItem {
   job_id: string;
   kind: DojoGovernanceScheduledJobKind;
@@ -1567,6 +1601,78 @@ export function buildDojoComplianceEvidencePack(input: {
     artifacts,
     missing_artifacts: artifacts.filter((item) => item.status === "missing").map((item) => item.artifact_id),
     retention_class: artifacts.some((item) => item.status === "available") ? "standard" : "regulated",
+  };
+}
+
+export function buildDojoComplianceEvidenceArchiveManifest(input: {
+  tenant_context: DojoTenantContext;
+  compliance_evidence_pack: DojoGovernanceComplianceEvidencePack;
+  archived_at: string;
+}): DojoGovernanceComplianceArchiveManifestResult {
+  const missingArtifacts = uniqueStrings(input.compliance_evidence_pack.missing_artifacts);
+  if (missingArtifacts.length > 0) {
+    return {
+      ok: false,
+      blocked_by: missingArtifacts.map((artifactId) => `compliance_artifact_missing:${artifactId}`),
+      missing_artifacts: missingArtifacts,
+    };
+  }
+
+  const availableArtifacts = input.compliance_evidence_pack.artifacts
+    .filter((artifact) => artifact.status === "available")
+    .map((artifact) => ({
+      artifact_id: artifact.artifact_id,
+      title: artifact.title,
+      digest: artifact.digest,
+      evidence_refs: uniqueStrings(artifact.evidence_refs),
+    }))
+    .sort((left, right) => left.artifact_id.localeCompare(right.artifact_id));
+
+  if (availableArtifacts.length === 0) {
+    return {
+      ok: false,
+      blocked_by: ["compliance_archive_empty_pack"],
+      missing_artifacts: [],
+    };
+  }
+
+  const evidenceRefs = uniqueStrings(availableArtifacts.flatMap((artifact) => artifact.evidence_refs)).sort();
+  const archiveIdDigest = createHash("sha256")
+    .update(JSON.stringify([
+      input.tenant_context.tenant_id,
+      input.tenant_context.workspace_id,
+      input.compliance_evidence_pack.pack_id,
+      input.compliance_evidence_pack.generated_at,
+      input.archived_at,
+      availableArtifacts.map((artifact) => [artifact.artifact_id, artifact.digest]),
+    ]), "utf8")
+    .digest("hex")
+    .slice(0, 16);
+  const archiveId = `compliance_archive_${archiveIdDigest}`;
+  const manifestWithoutDigest = {
+    schema_version: "synthi.dojo.complianceEvidenceArchive.v1" as const,
+    archive_id: archiveId,
+    tenant_id: input.tenant_context.tenant_id,
+    organization_id: input.tenant_context.organization_id,
+    workspace_id: input.tenant_context.workspace_id,
+    pack_id: input.compliance_evidence_pack.pack_id,
+    pack_generated_at: input.compliance_evidence_pack.generated_at,
+    archived_at: input.archived_at,
+    retention_class: input.compliance_evidence_pack.retention_class,
+    artifact_count: availableArtifacts.length,
+    artifacts: availableArtifacts,
+    evidence_refs: evidenceRefs,
+  };
+  const manifestSha256 = createHash("sha256")
+    .update(JSON.stringify(manifestWithoutDigest), "utf8")
+    .digest("hex");
+
+  return {
+    ok: true,
+    manifest: {
+      ...manifestWithoutDigest,
+      manifest_sha256: manifestSha256,
+    },
   };
 }
 

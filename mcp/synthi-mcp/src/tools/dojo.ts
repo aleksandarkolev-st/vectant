@@ -50,6 +50,7 @@ import { decideDojoSkillReadiness } from "../dojo/checkride/readiness.js";
 import { runDojoExecutableCheckride, type DojoExecutableCheckrideReport } from "../dojo/checkride/runner.js";
 import {
   authorizeDojoGovernanceAction,
+  buildDojoComplianceEvidenceArchiveManifest,
   buildDojoGovernanceServiceView,
   decideDojoCaseLawReview,
   decideDojoPermissionUpgradeRequest,
@@ -5007,6 +5008,8 @@ async function dojoRunScheduledGovernanceJobsTool(args: unknown): Promise<ToolRe
         run,
         audit_store: resolution?.ok ? resolution.audit_store : dojoHostedRuntimeAuditStore,
         tenant_context: tenant,
+        request_id: tenant.request_id,
+        correlation_id: tenant.correlation_id,
       });
 
     return jsonResponse({
@@ -8539,15 +8542,32 @@ function buildScheduledGovernanceJobHandlersForTool(input: {
     },
     archive_compliance_evidence: ({ job }) => {
       if (input.dry_run) return dryRun(job.kind, job.next_step);
+      const archiveManifest = buildDojoComplianceEvidenceArchiveManifest({
+        tenant_context: input.tenant,
+        compliance_evidence_pack: input.governance_service.compliance_evidence_pack,
+        archived_at: input.now,
+      });
+      if (!archiveManifest.ok) {
+        return {
+          ok: false,
+          blocked_by: archiveManifest.blocked_by,
+          details: {
+            pack_id: input.governance_service.compliance_evidence_pack.pack_id,
+            retention_class: input.governance_service.compliance_evidence_pack.retention_class,
+            artifact_count: input.governance_service.compliance_evidence_pack.artifacts.length,
+            missing_artifacts: archiveManifest.missing_artifacts,
+          },
+        };
+      }
       return {
-        ok: false,
-        blocked_by: ["scheduled_job_compliance_archive_store_required"],
+        ok: true,
+        evidence_refs: [
+          `compliance_archive:${archiveManifest.manifest.archive_id}`,
+          ...archiveManifest.manifest.evidence_refs,
+        ],
         details: {
-          pack_id: input.governance_service.compliance_evidence_pack.pack_id,
-          retention_class: input.governance_service.compliance_evidence_pack.retention_class,
-          artifact_count: input.governance_service.compliance_evidence_pack.artifacts.length,
-          missing_artifacts: input.governance_service.compliance_evidence_pack.missing_artifacts,
-          required_capability: "compliance_evidence_archive_store",
+          archive_manifest: archiveManifest.manifest,
+          archive_manifest_sha256: archiveManifest.manifest.manifest_sha256,
         },
       };
     },
