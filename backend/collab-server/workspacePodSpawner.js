@@ -357,7 +357,16 @@ function runtimeSharedVolumes() {
 function stableTemplateAnnotations(annotations = {}) {
   const stable = { ...annotations };
   delete stable['synthi/lastActive'];
+  delete stable['synthi/runtimeKind'];
   return stable;
+}
+
+function reconciledTemplateAnnotations(annotations = {}) {
+  return {
+    ...stableTemplateAnnotations(annotations),
+    'synthi/lastActive': null,
+    'synthi/runtimeKind': null,
+  };
 }
 
 function runtimeDeploymentReconcilePatch(sessionId, userId, metadata = {}, labels = {}, annotations = {}) {
@@ -375,7 +384,7 @@ function runtimeDeploymentReconcilePatch(sessionId, userId, metadata = {}, label
       template: {
         metadata: {
           labels,
-          annotations: stableTemplateAnnotations(annotations),
+          annotations: reconciledTemplateAnnotations(annotations),
         },
         spec: {
           containers: workflowContainers,
@@ -890,7 +899,7 @@ async function ensurePod(sessionId, userId, metadata = {}) {
       template: {
         metadata: {
           labels,
-          annotations,
+          annotations: stableTemplateAnnotations(annotations),
         },
         spec: {
           terminationGracePeriodSeconds: 15,
