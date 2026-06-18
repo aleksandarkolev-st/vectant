@@ -208,6 +208,7 @@
     "scripts/dojo-vivarium-runtime-self-check.mjs",
     "scripts/dojo-mcp-host-conformance.mjs",
     "tests/chaos",
+    "tests/soak",
     "scripts/gpu-hmr-validation-matrix-ledger.mjs",
     "scripts/gpu-hmr-webgpu-preflight.mjs",
     "scripts/gpu-hmr-webgpu-runtime-visual-proof.mjs",
