@@ -245,13 +245,14 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     if (!toolName) return blockedResolution("not_found", ["dojo_mcp_tool_name_required"]);
     const skills = await this.listSkills();
     const matches = skills.filter((item) => skillPublishesToolName(item, toolName));
-    if (matches.length > 1) {
+    const visibleMatches = matches.filter((item) => this.isVisibleSkill(item, input.tenant));
+    if (visibleMatches.length > 1) {
       return blockedResolution("blocked", ["dojo_mcp_tool_ambiguous"], {
         tool_name: toolName,
         tool_version: input.tool_version,
       });
     }
-    const skill = matches[0];
+    const skill = visibleMatches[0] ?? matches[0];
     if (!skill) return blockedResolution("not_found", ["dojo_mcp_tool_not_found"], { tool_name: toolName });
     const resolvedTool = resolvePublishedTool(skill, toolName);
     if (!resolvedTool) {

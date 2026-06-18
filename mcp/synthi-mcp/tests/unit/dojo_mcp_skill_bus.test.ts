@@ -230,6 +230,24 @@ describe("Dojo MCP skill bus", () => {
     }));
   });
 
+  it("resolves tenant-visible tools without cross-workspace duplicate interference", async () => {
+    const workspaceA = skillFixture("workspace-a", "Open details");
+    const workspaceB = skillFixture("workspace-b", "Open details");
+    const bus = createInProcessDojoMcpSkillBus({ listSkills: () => [workspaceB, workspaceA], env: manifestEnv() });
+
+    expect(workspaceB.published_tool_name).toBe(workspaceA.published_tool_name);
+    await expect(bus.resolveTool({
+      tenant: tenant("workspace-a"),
+      tool_name: workspaceA.published_tool_name!,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "resolved",
+      skill_id: workspaceA.skill_id,
+      workflow_id: workspaceA.workflow_id,
+      tool_name: workspaceA.published_tool_name,
+    }));
+  });
+
   it("dispatches only after proof validation and keeps dry runs side-effect free", async () => {
     const skill = skillFixture("workspace-a", "Open details");
     const proof = issueDojoProofCapsule(skill, "run_workflow", {
