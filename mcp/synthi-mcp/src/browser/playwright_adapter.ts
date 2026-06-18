@@ -3792,14 +3792,11 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
       window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ &&
       window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ === bindingName &&
       window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ === bridgeUrl &&
-      window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ === bridgeToken;
+      window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ === bridgeToken &&
+      document.getElementById('synthi-workflow-toolbox-host');
     if (installedForCurrentRuntime) return;
     const existingHost = document.getElementById('synthi-workflow-toolbox-host');
     if (existingHost) existingHost.remove();
-    window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ = true;
-    window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ = bindingName;
-    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ = bridgeUrl;
-    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ = bridgeToken;
 
     function shouldRender() {
       if (!window[bindingName] && !bridgeUrl) return false;
@@ -3821,6 +3818,10 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
     host.style.zIndex = '2147483647';
     host.style.pointerEvents = 'auto';
     document.documentElement.appendChild(host);
+    window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ = true;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ = bindingName;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ = bridgeUrl;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ = bridgeToken;
 
     const root = host.attachShadow({ mode: 'open' });
     root.innerHTML = [
