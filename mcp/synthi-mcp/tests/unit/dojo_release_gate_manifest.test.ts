@@ -74,6 +74,7 @@ import {
 import {
   DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
   DOJO_PACKAGE_READINESS_REQUIRED_METADATA_FIELDS,
+  DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS,
   DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
 } from "../../scripts/dojo-package-readiness-self-check.mjs";
 import {
@@ -292,6 +293,7 @@ describe("Dojo release gate manifest", () => {
         artifact_requirements: expect.objectContaining({
           require_npm_pack_dry_run: true,
           require_package_metadata_fields: DOJO_PACKAGE_READINESS_REQUIRED_METADATA_FIELDS,
+          required_package_script_selectors: DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS,
           required_package_scripts: DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
           required_package_files_entries: DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
           require_public_package: true,
@@ -1858,6 +1860,14 @@ describe("Dojo release gate manifest", () => {
       "hosted_runtime_gateway_missing_self_check_execution_requirement",
       "hosted_runtime_gateway_missing_required_capabilities:hosted_runtime_blocks_expired_and_revoked_sessions",
       `hosted_runtime_gateway_missing_required_test_files:${missingHostedRuntimeTestFile}`,
+    ]));
+
+    const brokenPackageReadiness = JSON.parse(JSON.stringify(manifest));
+    const packageReadinessGate = brokenPackageReadiness.gates.find((gate) => gate.id === "dojo_package_readiness_self_check");
+    packageReadinessGate.artifact_requirements.required_package_script_selectors = DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS
+      .filter((selector) => selector !== "proof:dojo*");
+    expect(validateDojoReleaseGateManifest(brokenPackageReadiness, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "package_readiness_missing_required_script_selectors:proof:dojo*",
     ]));
 
     const brokenSecurity = JSON.parse(JSON.stringify(manifest));

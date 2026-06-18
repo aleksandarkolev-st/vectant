@@ -36,6 +36,15 @@ export const DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES = [
   "soak",
 ];
 
+export const DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS = [
+  "build",
+  "typecheck",
+  "soak",
+  "proof:dojo*",
+  "live:dojo*",
+  "chaos:dojo*",
+];
+
 export const DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES = [
   "dist",
   "scripts/dojo-package-readiness-self-check.mjs",
@@ -223,6 +232,7 @@ export function buildDojoPackageReadinessEvidenceManifest({
     package_version: packageJson?.version || null,
     package_private: Boolean(packageJson?.private),
     required_metadata_fields: [...DOJO_PACKAGE_READINESS_REQUIRED_METADATA_FIELDS],
+    required_package_script_selectors: [...DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS],
     required_package_scripts: requiredScriptNames,
     required_package_files_entries: [...DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES],
     package_files_entries: filesField,
@@ -282,6 +292,11 @@ export function validateDojoPackageReadinessEvidence(evidence) {
       errors.push(`package_readiness_required_script_not_declared:${scriptName}`);
     }
   }
+  for (const selector of DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS) {
+    if (!arrayIncludesString(evidence?.required_package_script_selectors, selector)) {
+      errors.push(`package_readiness_required_script_selector_not_declared:${selector}`);
+    }
+  }
   for (const entry of DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES) {
     if (!arrayIncludesString(evidence?.required_package_files_entries, entry)) {
       errors.push(`package_readiness_required_files_entry_not_declared:${entry}`);
@@ -326,12 +341,11 @@ export function collectScriptReferencedPackagePaths(scripts, scriptNames) {
 
 export function isDojoReleaseHarnessScriptName(scriptName) {
   const name = String(scriptName || "");
-  return name === "build"
-    || name === "typecheck"
-    || name === "soak"
-    || name.startsWith("proof:dojo")
-    || name.startsWith("live:dojo")
-    || name.startsWith("chaos:dojo");
+  return DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS.some((selector) => (
+    selector.endsWith("*")
+      ? name.startsWith(selector.slice(0, -1))
+      : name === selector
+  ));
 }
 
 export function extractPackagePathsFromScript(command) {

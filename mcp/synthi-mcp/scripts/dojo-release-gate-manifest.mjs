@@ -91,6 +91,7 @@ import {
 import {
   DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
   DOJO_PACKAGE_READINESS_REQUIRED_METADATA_FIELDS,
+  DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS,
   DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
 } from "./dojo-package-readiness-self-check.mjs";
 import {
@@ -445,6 +446,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     artifact_requirements: {
       require_npm_pack_dry_run: true,
       require_package_metadata_fields: [...DOJO_PACKAGE_READINESS_REQUIRED_METADATA_FIELDS],
+      required_package_script_selectors: [...DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS],
       required_package_scripts: [...DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES],
       required_package_files_entries: [...DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES],
       require_public_package: true,
@@ -1945,6 +1947,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     );
     if (missingPackageScripts.length > 0) {
       errors.push(`package_readiness_missing_required_scripts:${missingPackageScripts.join(",")}`);
+    }
+    const missingPackageScriptSelectors = missingRequiredEntries(
+      DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS,
+      packageReadinessGate.artifact_requirements?.required_package_script_selectors,
+    );
+    if (missingPackageScriptSelectors.length > 0) {
+      errors.push(`package_readiness_missing_required_script_selectors:${missingPackageScriptSelectors.join(",")}`);
     }
     const missingPackageFilesEntries = missingRequiredEntries(
       DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,

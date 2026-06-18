@@ -6,6 +6,7 @@ import {
   collectScriptReferencedPackagePaths,
   deriveDojoPackageReadinessRequiredScriptNames,
   DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
+  DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS,
   DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES,
   extractPackagePathsFromScript,
   isDojoReleaseHarnessScriptName,
@@ -152,6 +153,7 @@ describe("Dojo package readiness self-check", () => {
 
     expect(evidence.ok).toBe(true);
     expect(validateDojoPackageReadinessEvidence(evidence)).toEqual({ ok: true, errors: [] });
+    expect(evidence.required_package_script_selectors).toEqual(DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS);
     expect(evidence.required_package_scripts).toEqual(deriveDojoPackageReadinessRequiredScriptNames(packageFixture()));
     expect(evidence.required_package_scripts).toEqual(expect.arrayContaining(DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES));
   });
