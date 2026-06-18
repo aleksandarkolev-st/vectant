@@ -60,7 +60,7 @@ Each result includes:
 - stdout/stderr digests
 - evidence coverage entries
 
-## Future Live Chaos
+## Opt-In Live Chaos
 
 Live chaos hooks now exist, but they are never part of the default preflight.
 The runner selects deterministic preflight scenarios by default. To list live
