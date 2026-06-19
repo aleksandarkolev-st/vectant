@@ -69,7 +69,7 @@ export async function POST(request) {
                     memberships: {
                         create: {
                             userId: user.id,
-                            role: 'owner',
+                            role: 'owner', // workspace creator is the owner (Plan 1a R1-9)
                         },
                     },
                 },

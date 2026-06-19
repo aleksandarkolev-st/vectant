@@ -242,6 +242,12 @@
 }
 .vx-tab-new:hover { color: var(--text-primary); background: color-mix(in srgb, var(--bg-elevated) 50%, transparent); }
 
+/* ── Stream layout: composer is a centered hero on an empty chat, then
+   FLIP-glides to the docked bottom on first send (JS sets the transform). ── */
+.vx-stream { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.vx-stream.is-empty { justify-content: center; }
+.vx-hero { flex: 0 0 auto; }
+
 /* ── Rail + Stream: collapsible rail overlay drawer ─────────────────── */
 .vx-rail-toggle {
   display: inline-flex; align-items: center; justify-content: center;
@@ -315,10 +321,15 @@
 
 /* ── Reduced motion: the shader renders a single static frame; here we
    just disable the CSS pulse/bloom/entrance so nothing loops. ───────── */
+/* The single living orb on the current answer — pops in when it re-anchors. */
+.vx-msg-orb { animation: vx-orb-pop 360ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes vx-orb-pop { 0% { transform: scale(0.4); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+
 @media (prefers-reduced-motion: reduce) {
   .vx-orb[data-state="answering"] .vx-orb-pulse,
   .vx-orb[data-state="applied"],
   .vx-msg-mark--live,
+  .vx-msg-orb,
   .vx-rcard-mark--live,
   .vx-step.active .vx-step-dot,
   .vx-caret,

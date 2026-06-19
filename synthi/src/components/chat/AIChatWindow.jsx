@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Send, X, ChevronDown, ChevronRight, FileCode, Paperclip, Link, Unlink, PanelLeft } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
@@ -24,7 +24,7 @@ import { ThinkingDots } from './ThinkingDots';
 import CommandApprovalCard from './CommandApprovalCard';
 import MultiverseCard from './MultiverseCard';
 import VectantOrb from './VectantOrb';
-import ChatEmptyState from './ChatEmptyState';
+import ChatEmptyState, { SuggestionChips } from './ChatEmptyState';
 import DiagnosticsDrawer from './DiagnosticsDrawer';
 import ReasoningCard from './ReasoningCard';
 import ChatRail from './ChatRail';
@@ -790,7 +790,7 @@ const AIChatWindow = ({
         : 'fixed top-10 right-3 bottom-11 w-[420px] flex flex-col min-h-0 z-40 rounded-xl overflow-hidden';
 
     const containerStyle = docked ? undefined : {
-        background: 'var(--bg-panel)',
+        background: 'var(--bg-app)',
         border: '1px solid color-mix(in srgb, var(--brand-stop-3) 22%, transparent)',
         boxShadow:
             '0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 14%, transparent), ' +
@@ -841,6 +841,35 @@ const AIChatWindow = ({
         return () => ro.disconnect();
     }, []);
 
+    // Empty chat → composer sits centered (hero); first send docks it.
+    const isEmpty = timeline.length === 0 && !streamingMessage && !showThinking;
+
+    // FLIP: glide the composer from its hero (centered) position down to the
+    // docked bottom on the empty→active transition. Pure transform, eased.
+    const composerRef = useRef(null);
+    const flipRef = useRef({ rect: null, wasEmpty: null });
+    useLayoutEffect(() => {
+        const el = composerRef.current;
+        const prev = flipRef.current;
+        if (el && prev.rect && prev.wasEmpty === true && !isEmpty) {
+            const now = el.getBoundingClientRect();
+            const dy = prev.rect.top - now.top;
+            const reduce = typeof window !== 'undefined' && window.matchMedia
+                && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            if (!reduce && Math.abs(dy) > 4) {
+                el.style.transition = 'none';
+                el.style.transform = `translateY(${dy}px)`;
+                requestAnimationFrame(() => {
+                    el.style.transition = 'transform 520ms cubic-bezier(0.22, 1, 0.36, 1)';
+                    el.style.transform = 'translateY(0)';
+                });
+                const onEnd = () => { el.style.transition = ''; el.style.transform = ''; el.removeEventListener('transitionend', onEnd); };
+                el.addEventListener('transitionend', onEnd);
+            }
+        }
+        flipRef.current = { rect: el ? el.getBoundingClientRect() : null, wasEmpty: isEmpty };
+    }, [isEmpty]);
+
     // Orb identity state — derived from existing chat signals.
     const orbState = progressStatus === 'Failed'
         ? 'error'
@@ -849,6 +878,16 @@ const AIChatWindow = ({
             : (showThinking || isThinking)
                 ? 'thinking'
                 : 'idle';
+
+    // S4 — single living orb: it anchors to the current answer. While working
+    // it's the streaming/thinking turn; otherwise it's the last assistant
+    // message. Every other answer uses a cheap static mark, so only one live
+    // WebGL orb (plus the header orb) ever exists at once.
+    let lastAssistantId = null;
+    for (let i = timeline.length - 1; i >= 0; i--) {
+        if (timeline[i]?.role === 'assistant') { lastAssistantId = timeline[i].id; break; }
+    }
+    const orbLiveOnLast = !streamingMessage && !showThinking;
 
     return (
         <div
@@ -975,18 +1014,23 @@ const AIChatWindow = ({
 
             </div>
 
-            {/* Messages Area */}
+            {/* Stream: messages + composer. On an empty chat the composer sits
+                centered (hero) and FLIP-glides to the docked bottom on first send. */}
+            <div className={`vx-stream ${isEmpty ? 'is-empty' : ''}`}>
+            {isEmpty ? (
+                <div className="vx-hero">
+                    <ChatEmptyState
+                        paused={!isVisible}
+                        showChips={false}
+                        onPick={(s) => { setInputValue(s); chatInputRef.current?.focus(); }}
+                    />
+                </div>
+            ) : (
             <ScrollArea ref={scrollRef} className="flex-1 px-3 py-3 min-h-0 min-w-0 relative overflow-hidden" style={{ background: 'var(--bg-app)' }}>
                 {/* Subtle ambient glow */}
                 <div className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-[200px] h-[120px] rounded-full blur-[60px] z-0" style={{ background: 'color-mix(in srgb, var(--accent-primary) 4%, transparent)' }}></div>
                 <div className="space-y-3 min-w-0 relative z-10">
-                    {timeline.length === 0 ? (
-                        <ChatEmptyState
-                            paused={!isVisible}
-                            onPick={(s) => { setInputValue(s); chatInputRef.current?.focus(); }}
-                        />
-                    ) : (
-                        timeline.map((msg) => {
+                    {timeline.map((msg) => {
                             // ── Command Approval Card ────────────────────────
                             if (msg.role === 'command-approval') {
                                 return (
@@ -1353,7 +1397,9 @@ const AIChatWindow = ({
                             return (
                                 <div key={msg.id} className="vx-msg vx-msg-ai">
                                     <div className="vx-msg-head">
-                                        <span className="vx-msg-mark" aria-hidden="true" />
+                                        {orbLiveOnLast && msg.id === lastAssistantId
+                                            ? <VectantOrb state="idle" size={16} paused={!isVisible} className="vx-msg-orb" />
+                                            : <span className="vx-msg-mark" aria-hidden="true" />}
                                         <span className="vx-msg-role">Vectant</span>
                                     </div>
                                     <div className="vx-msg-body ai-chat-message text-sm min-w-0 overflow-hidden" style={{ color: 'var(--text-primary)' }}>
@@ -1361,12 +1407,11 @@ const AIChatWindow = ({
                                     </div>
                                 </div>
                             );
-                        })
-                    )}
+                        })}
                     {streamingMessage ? (
                         <div className="vx-msg vx-msg-ai">
                             <div className="vx-msg-head">
-                                <span className="vx-msg-mark vx-msg-mark--live" aria-hidden="true" />
+                                <VectantOrb state="answering" size={16} paused={!isVisible} className="vx-msg-orb" />
                                 <span className="vx-msg-role">Vectant</span>
                             </div>
                             <div
@@ -1382,7 +1427,7 @@ const AIChatWindow = ({
                     {showThinking && (
                         <div className={`vx-msg vx-msg-ai transition-opacity duration-200 ${isThinking ? 'opacity-100' : 'opacity-0'}`}>
                             <div className="vx-msg-head">
-                                <span className="vx-msg-mark vx-msg-mark--live" aria-hidden="true" />
+                                <VectantOrb state="thinking" size={16} paused={!isVisible} className="vx-msg-orb" />
                                 <span className="vx-msg-role">Vectant</span>
                             </div>
                             <div className="vx-msg-body">
@@ -1392,9 +1437,10 @@ const AIChatWindow = ({
                     )}
                 </div>
             </ScrollArea>
+            )}
 
-            {/* Input Area */}
-            <div className="px-3.5 py-2.5" style={{ background: 'var(--bg-app)', borderTop: '1px solid var(--border-subtle)' }}>
+            {/* Input Area (composer) — docked at bottom; centered hero when empty */}
+            <div ref={composerRef} className="vx-composer-dock px-3.5 py-2.5" style={{ background: 'var(--bg-app)', borderTop: isEmpty ? 'none' : '1px solid var(--border-subtle)' }}>
                 <input
                     ref={fileInputRef}
                     type="file"
@@ -1406,15 +1452,9 @@ const AIChatWindow = ({
                     }}
                 />
                 {(() => {
+                    // The active-file context control now lives as a small toggle in
+                    // the toolbar (next to the model), so it's no longer a big chip here.
                     const chips = [];
-                    if (activeFile && (activeFile.name || activeFile.path)) {
-                        chips.push({
-                            id: 'context-file',
-                            name: activeFile.name || activeFile.path?.split('/').pop() || 'File',
-                            size: null,
-                            isContext: true,
-                        });
-                    }
                     attachments.forEach((att) => chips.push({ ...att, isContext: false }));
 
                     if (!chips.length) return null;
@@ -1702,6 +1742,26 @@ const AIChatWindow = ({
                                     )}
                                 </PopoverContent>
                             </Popover>
+                            {/* Small active-file context toggle — sits next to the model
+                                instead of a big chip above the composer. */}
+                            {activeFile && (() => {
+                                const fmeta = buildLanguageMeta(activeFile.name || activeFile.path || '');
+                                const fname = activeFile.name || activeFile.path?.split('/').pop() || 'file';
+                                return (
+                                    <button
+                                        type="button"
+                                        onClick={() => setContextFileAttached((prev) => !prev)}
+                                        className="ml-1 inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10px] font-medium transition-colors max-w-[110px] min-w-0"
+                                        style={contextFileAttached
+                                            ? { color: 'var(--accent-secondary)', background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-primary) 22%, transparent)' }
+                                            : { color: 'var(--text-muted)', background: 'transparent', border: '1px solid var(--border-medium)' }}
+                                        title={contextFileAttached ? `${fname} included as context — click to exclude` : `Include ${fname} as context`}
+                                    >
+                                        <FileCode className="w-3 h-3 flex-shrink-0" strokeWidth={2} style={{ color: contextFileAttached ? 'var(--accent-secondary)' : fmeta.color }} />
+                                        <span className="truncate">{fname}</span>
+                                    </button>
+                                );
+                            })()}
                             <div className='inline-flex items-center gap-0.5 absolute right-1.5'>
                                 {controller ? (
                                     <Button
@@ -1746,6 +1806,12 @@ const AIChatWindow = ({
                         </div>
                     </div>
                 </div>
+            </div>
+            {isEmpty && (
+                <div className="vx-hero-chips px-3.5 pb-4">
+                    <SuggestionChips onPick={(s) => { setInputValue(s); chatInputRef.current?.focus(); }} />
+                </div>
+            )}
             </div>
         </div>
     );

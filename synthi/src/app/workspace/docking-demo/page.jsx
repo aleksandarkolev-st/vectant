@@ -7,16 +7,16 @@
  * without the full workspace overhead. Access at /workspace/docking-demo.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Provider, useDispatch, useSelector } from 'react-redux';
 import { store } from '@/redux/store';
 import { DockingProvider } from '@/components/docking-wm/components/DockingProvider';
 import { DockingContainer } from '@/components/docking-wm/components/DockingContainer';
 import { LayoutPresetPicker } from '@/components/docking-wm/components/LayoutPresetPicker';
 import { LayoutDebugOverlay } from '@/components/docking-wm/components/LayoutDebugOverlay';
-import { registerPanel } from '@/components/docking-wm/state/panel-registry';
+import { registerPanel } from '@/components/docking-wm/state/panel-registry-core';
 import { setLayout, selectLayout } from '@/components/docking-wm/state/layout-slice';
-import { createLayoutFromPreset, LAYOUT_PRESETS } from '@/components/docking-wm/panels/layout-presets';
+import { createLayoutFromPreset } from '@/components/docking-wm/panels/layout-presets';
 import '@/components/docking-wm/styles/docking.css';
 
 // ── Mock panels for demo ──
@@ -99,6 +99,14 @@ function DemoInner() {
 }
 
 export default function DockingDemoPage() {
+  // Browser-only playground: the docking UI touches window/ResizeObserver during
+  // render, which breaks `next build` static prerender of /workspace/docking-demo.
+  // Render client-side only — server render (build SSG + on-demand SSR) yields null,
+  // then the demo mounts after hydration (matching null → no hydration mismatch).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
+
   return (
     <Provider store={store}>
       <DemoInner />

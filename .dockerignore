@@ -1,0 +1,34 @@
+# Root build context — used by the npm-workspace Docker images (synthi +
+# mcp/synthi-mcp), which build from the repo ROOT (they need package-lock.json +
+# packages/mcp-hub). This file REPLACES the per-package .dockerignore for those
+# root-context builds, so it must keep the context lean.
+#
+# Sibling services (backend/*, ai-backend/*) build from their OWN contexts and
+# are unaffected by this file.
+
+# Dependencies + build outputs (reinstalled/rebuilt inside the image)
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+
+# VCS + tooling. NOTE: .claude/worktrees holds a full repo copy — must exclude.
+.git
+.claude
+.vscode
+
+# Sibling services have their own build contexts; not needed by the workspace images
+backend
+ai-backend
+docs
+
+# Logs, local env overrides, test artifacts, snapshots, markdown
+**/*.log
+**/.live-test-logs
+**/.live-test-artifacts
+**/.snapshots
+**/.env.local
+**/.env.*.local
+**/*.md

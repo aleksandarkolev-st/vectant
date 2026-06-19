@@ -1,0 +1,13 @@
+# Trivy ignore list for the vectant-runtime image (CRITICAL-vuln gate, Slice 1).
+# Every entry MUST carry a justification + a revisit condition. Keep this minimal.
+
+# CVE-2026-33186 — google.golang.org/grpc v1.78.0 is vendored into the BASE
+# docker:dind-rootless containerd binaries (containerd, ctr, containerd-shim-runc-v2).
+# Fixed in grpc 1.79.3, but no docker:dind-rootless base built against it is published
+# yet, so it cannot be patched from our Dockerfile. containerd's gRPC API is a LOCAL
+# unix socket (/run/containerd/containerd.sock) reachable only by the in-pod dockerd;
+# it is never network-exposed, and under Sysbox the pod is isolated — exploitation
+# would require prior in-pod RCE (at which point the pod is already compromised).
+# REVISIT: drop this line and bump the base digest once a dind-rootless image with
+# containerd built against grpc >= 1.79.3 ships.
+CVE-2026-33186

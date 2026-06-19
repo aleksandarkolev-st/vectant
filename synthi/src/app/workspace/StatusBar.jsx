@@ -11,6 +11,7 @@ import { getMonacoLanguage } from '@/utils/languageMapper';
 import { useCollabStatus } from '@/hooks/useCollabStatus';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
+import { useViewport } from '@/hooks/useViewport';
 import { getCurrentUser } from '@/services/userIdentity';
 import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw, GripVertical, X, Minimize2, Maximize2, Boxes } from 'lucide-react';
 import { HealingIndicator } from '@/components/healing/HealingIndicator';
@@ -27,6 +28,8 @@ import {
 import {
   STATUS_ISLAND_OFFSET_KEY,
   STATUS_ISLAND_DOCK_PRESETS,
+  STATUS_ISLAND_MOBILE_SCOPE,
+  STATUS_ISLAND_SHARED_SCOPE,
   STATUS_ISLAND_MENU_PRESETS,
   deleteStatusIslandSavedPreset,
   doesPresetMatchState,
@@ -67,6 +70,24 @@ function clampWithinBounds(value, min, max) {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return value;
   if (min > max) return (min + max) / 2;
   return Math.min(Math.max(value, min), max);
+}
+
+function readStoredStatusIslandOffset(storageKey) {
+  if (typeof window === 'undefined' || !storageKey) return null;
+
+  try {
+    const saved = window.localStorage?.getItem(storageKey);
+    if (!saved) return null;
+
+    const parsed = JSON.parse(saved);
+    if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') {
+      return { x: parsed.x, y: parsed.y };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 /**
@@ -160,6 +181,7 @@ function StatusBarInner({
   // mount or a re-expansion from the collapsed logo state. We expose
   // isEntering as a derived value from the phase machine below so the
   // CSS classes stay coordinated with the phase transitions.
+  const viewport = useViewport();
   const [isEntering, setIsEntering] = useState(true);
   const rootRef = useRef(null);
   const statusIslandShellRef = useRef(null);
@@ -175,10 +197,18 @@ function StatusBarInner({
   // localStorage so the position survives reloads. A 5-px drag threshold
   // (DRAG_THRESHOLD_PX) prevents a missed click or right-press from
   // accidentally moving the island.
+  const preferenceScope = viewport.isMobile
+    ? STATUS_ISLAND_MOBILE_SCOPE
+    : STATUS_ISLAND_SHARED_SCOPE;
+  const activeOffsetStorageKey = viewport.isMobile
+    ? `${STATUS_ISLAND_OFFSET_KEY}:mobile`
+    : STATUS_ISLAND_OFFSET_KEY;
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const offsetRef = useRef(offset);
   offsetRef.current = offset;
   const [isDragging, setIsDragging] = useState(false);
+  const skipNextLogoActivateRef = useRef(false);
+  const skipNextOffsetClampRef = useRef(false);
   const [isCompact, setIsCompact] = useState(false);
   const [isPositionLocked, setIsPositionLocked] = useState(false);
   const [dockPreset, setDockPreset] = useState('center');
@@ -243,27 +273,18 @@ function StatusBarInner({
   }, [isRunning]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const saved = window.localStorage?.getItem(STATUS_ISLAND_OFFSET_KEY);
-      if (!saved) return;
-      const parsed = JSON.parse(saved);
-      if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') {
-        setOffset({ x: parsed.x, y: parsed.y });
-      }
-    } catch {
-      // Ignore malformed JSON or storage access failures.
-    }
-  }, []);
+    skipNextOffsetClampRef.current = true;
+    setOffset(readStoredStatusIslandOffset(activeOffsetStorageKey) || { x: 0, y: 0 });
+  }, [activeOffsetStorageKey]);
 
   const persistOffset = useCallback((next) => {
     if (typeof window === 'undefined') return;
     try {
-      window.localStorage?.setItem(STATUS_ISLAND_OFFSET_KEY, JSON.stringify(next));
+      window.localStorage?.setItem(activeOffsetStorageKey, JSON.stringify(next));
     } catch {
       // Storage is best-effort; the in-memory offset still works.
     }
-  }, []);
+  }, [activeOffsetStorageKey]);
 
   const defaultCenterX = viewportSize.width / 2;
   const defaultCenterY = viewportSize.height - STATUS_ISLAND_DEFAULT_BOTTOM_PX - (STATUS_ISLAND_PILL_HEIGHT_PX / 2);
@@ -290,6 +311,10 @@ function StatusBarInner({
 
   useEffect(() => {
     if (!viewportSize.width || !viewportSize.height) return;
+    if (skipNextOffsetClampRef.current) {
+      skipNextOffsetClampRef.current = false;
+      return;
+    }
     const clampedOffset = clampOffsetToViewport(offsetRef.current);
     if (clampedOffset.x === offsetRef.current.x && clampedOffset.y === offsetRef.current.y) return;
     setOffset(clampedOffset);
@@ -301,20 +326,20 @@ function StatusBarInner({
       const next = typeof valueOrUpdater === 'function'
         ? Boolean(valueOrUpdater(prev))
         : Boolean(valueOrUpdater);
-      persistStatusIslandPositionLocked(next);
+      persistStatusIslandPositionLocked(next, preferenceScope);
       return next;
     });
-  }, []);
+  }, [preferenceScope]);
 
   const setDockPresetAndPersist = useCallback((valueOrUpdater) => {
     setDockPreset((prev) => {
       const next = typeof valueOrUpdater === 'function'
         ? valueOrUpdater(prev)
         : valueOrUpdater;
-      const resolved = persistStatusIslandDockPreset(next);
+      const resolved = persistStatusIslandDockPreset(next, preferenceScope);
       return resolved;
     });
-  }, []);
+  }, [preferenceScope]);
 
   const computeDockedOffset = useCallback((preset) => {
     const targetCenterX = (() => {
@@ -370,26 +395,46 @@ function StatusBarInner({
     setOffset({ x: 0, y: 0 });
     if (typeof window !== 'undefined') {
       try {
-        window.localStorage?.removeItem(STATUS_ISLAND_OFFSET_KEY);
+        window.localStorage?.removeItem(activeOffsetStorageKey);
       } catch {
         // Ignore — the in-memory reset already happened.
       }
     }
     setDockPresetAndPersist('center');
-  }, [setDockPresetAndPersist]);
+  }, [activeOffsetStorageKey, setDockPresetAndPersist]);
 
-  const startIslandDrag = useCallback((event, button) => {
+  const startIslandDrag = useCallback((event, {
+    button = 0,
+    preventDefaultOnStart = true,
+    stopPropagationOnStart = true,
+    suppressLogoActivation = false,
+  } = {}) => {
     if (isPositionLocked) return;
-    if (event.button !== button) return;
-    event.preventDefault();
-    event.stopPropagation();
+    if (typeof event.button === 'number' && event.button !== button) return;
+    if (event.pointerType !== 'mouse' && !event.isPrimary) return;
+    if (preventDefaultOnStart && event.cancelable) {
+      event.preventDefault();
+    }
+    if (stopPropagationOnStart) {
+      event.stopPropagation();
+    }
 
     const startX = event.clientX;
     const startY = event.clientY;
+    const pointerId = event.pointerId;
+    const captureTarget = event.currentTarget && typeof event.currentTarget.setPointerCapture === 'function'
+      ? event.currentTarget
+      : null;
     const startOffset = clampOffsetToViewport(offsetRef.current);
     let promoted = false;
     let pendingOffset = startOffset;
     let contextMenuBlocked = false;
+
+    try {
+      captureTarget?.setPointerCapture(pointerId);
+    } catch {
+      // Ignore pointer-capture failures; global listeners still track drag.
+    }
 
     const suppressContextMenu = (contextEvent) => {
       contextEvent.preventDefault();
@@ -399,7 +444,21 @@ function StatusBarInner({
       }
     };
 
-    const handleMouseMove = (moveEvent) => {
+    const releasePointerCapture = () => {
+      if (!captureTarget || typeof captureTarget.releasePointerCapture !== 'function') return;
+
+      try {
+        if (typeof captureTarget.hasPointerCapture !== 'function' || captureTarget.hasPointerCapture(pointerId)) {
+          captureTarget.releasePointerCapture(pointerId);
+        }
+      } catch {
+        // Ignore release failures.
+      }
+    };
+
+    const handlePointerMove = (moveEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+
       const dx = moveEvent.clientX - startX;
       const dy = moveEvent.clientY - startY;
       if (!promoted) {
@@ -414,13 +473,18 @@ function StatusBarInner({
         contextMenuBlocked = true;
         setDockPresetAndPersist('free');
       }
+      if (moveEvent.cancelable) {
+        moveEvent.preventDefault();
+      }
       pendingOffset = clampOffsetToViewport({ x: startOffset.x + dx, y: startOffset.y + dy });
       setOffset(pendingOffset);
     };
 
-    const handleMouseUp = () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
+    const finishDrag = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp, true);
+      window.removeEventListener('pointercancel', handlePointerCancel, true);
+      releasePointerCapture();
       if (contextMenuBlocked) {
         window.setTimeout(() => {
           document.removeEventListener('contextmenu', suppressContextMenu, true);
@@ -431,20 +495,68 @@ function StatusBarInner({
       if (promoted) {
         setIsDragging(false);
         persistOffset(pendingOffset);
+        if (suppressLogoActivation) {
+          skipNextLogoActivateRef.current = true;
+        }
       }
     };
 
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
+    const handlePointerUp = (upEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      finishDrag();
+    };
+
+    const handlePointerCancel = (cancelEvent) => {
+      if (cancelEvent.pointerId !== pointerId) return;
+      finishDrag();
+    };
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: false });
+    window.addEventListener('pointerup', handlePointerUp, true);
+    window.addEventListener('pointercancel', handlePointerCancel, true);
   }, [clampOffsetToViewport, isPositionLocked, persistOffset, setDockPresetAndPersist]);
 
-  const handleDragMouseDown = useCallback((event) => {
-    startIslandDrag(event, 0);
+  const handleDragPointerDown = useCallback((event) => {
+    startIslandDrag(event, { button: 0 });
   }, [startIslandDrag]);
 
-  const handleLogoRightMouseDown = useCallback((event) => {
-    startIslandDrag(event, 2);
-  }, [startIslandDrag]);
+  // ── Logo / expanded phase machine ───────────────────────────────────
+  // phase: 'logo'       → Vectant logo visible, pill hidden
+  //        'expanding'  → V fading, brackets sliding out, pill unfurling
+  //        'expanded'   → pill visible (steady state)
+  //        'collapsing' → reverse of expanding
+  //
+  // Lifecycle:
+  //   First mount → 'expanded' (so the user sees the existing entrance
+  //                 animation). After FIRST_MOUNT_LINGER_MS the island
+  //                 auto-collapses to 'logo'.
+  //   Hover (with HOVER_EXPAND_DELAY_MS debounce) or click on logo →
+  //                 'expanding' → 'expanded'.
+  //   Mouse-leave while 'expanded' → AUTO_COLLAPSE_MS countdown →
+  //                 'collapsing' → 'logo'. Re-enter cancels the timer.
+  //   Close (X) button → immediate 'collapsing' → 'logo'.
+  const [phase, setPhase] = useState('expanded');
+  // hasCollapsedOnce gates the rendering of the logo brackets — they
+  // only appear after the first collapse, so the initial entrance is
+  // unchanged from what the user already loves.
+  const [hasCollapsedOnce, setHasCollapsedOnce] = useState(false);
+  const phaseTimerRef = useRef(null);
+
+  const handleLogoPointerDown = useCallback((event) => {
+    if (phase !== 'logo') return;
+
+    const shouldUsePrimaryDrag = viewport.isMobile && event.button === 0;
+    const shouldUseSecondaryDrag = event.button === 2;
+
+    if (!shouldUsePrimaryDrag && !shouldUseSecondaryDrag) return;
+
+    startIslandDrag(event, {
+      button: shouldUseSecondaryDrag ? 2 : 0,
+      preventDefaultOnStart: shouldUseSecondaryDrag,
+      stopPropagationOnStart: shouldUseSecondaryDrag,
+      suppressLogoActivation: shouldUsePrimaryDrag,
+    });
+  }, [phase, startIslandDrag, viewport.isMobile]);
 
   const handleDragDoubleClick = useCallback((event) => {
     event.preventDefault();
@@ -470,28 +582,6 @@ function StatusBarInner({
       : 0,
     y: collapsedCenter.y,
   };
-
-  // ── Logo / expanded phase machine ───────────────────────────────────
-  // phase: 'logo'       → Vectant logo visible, pill hidden
-  //        'expanding'  → V fading, brackets sliding out, pill unfurling
-  //        'expanded'   → pill visible (steady state)
-  //        'collapsing' → reverse of expanding
-  //
-  // Lifecycle:
-  //   First mount → 'expanded' (so the user sees the existing entrance
-  //                 animation). After FIRST_MOUNT_LINGER_MS the island
-  //                 auto-collapses to 'logo'.
-  //   Hover (with HOVER_EXPAND_DELAY_MS debounce) or click on logo →
-  //                 'expanding' → 'expanded'.
-  //   Mouse-leave while 'expanded' → AUTO_COLLAPSE_MS countdown →
-  //                 'collapsing' → 'logo'. Re-enter cancels the timer.
-  //   Close (X) button → immediate 'collapsing' → 'logo'.
-  const [phase, setPhase] = useState('expanded');
-  // hasCollapsedOnce gates the rendering of the logo brackets — they
-  // only appear after the first collapse, so the initial entrance is
-  // unchanged from what the user already loves.
-  const [hasCollapsedOnce, setHasCollapsedOnce] = useState(false);
-  const phaseTimerRef = useRef(null);
 
   // Clear any pending phase transition timer.
   const clearPhaseTimer = useCallback(() => {
@@ -540,6 +630,15 @@ function StatusBarInner({
     }, EXPAND_ANIM_MS);
   }, [phase, clearPhaseTimer]);
 
+  const handleLogoActivate = useCallback(() => {
+    if (skipNextLogoActivateRef.current) {
+      skipNextLogoActivateRef.current = false;
+      return;
+    }
+
+    triggerExpand();
+  }, [triggerExpand]);
+
   // Trigger a collapse. Click-only — triggered exclusively by the
   // close (X) button. No mouse-leave timer.
   const triggerCollapse = useCallback(() => {
@@ -576,9 +675,9 @@ function StatusBarInner({
       setSavedPresets(Array.isArray(preferences?.savedPresets) ? preferences.savedPresets : []);
     };
 
-    applyStoredPreferences(readStatusIslandPreferences());
-    return subscribeStatusIslandPreferences(applyStoredPreferences);
-  }, []);
+    applyStoredPreferences(readStatusIslandPreferences(preferenceScope));
+    return subscribeStatusIslandPreferences(applyStoredPreferences, preferenceScope);
+  }, [preferenceScope]);
 
   const currentPresetState = {
     isCompact,
@@ -781,7 +880,7 @@ function StatusBarInner({
         isDragging ? 'is-dragging' : '',
         hasOffset ? 'status-island-drag-handle--moved' : '',
       ].filter(Boolean).join(' ')}
-      onMouseDown={handleDragMouseDown}
+      onPointerDown={handleDragPointerDown}
       onDoubleClick={handleDragDoubleClick}
       title={hasOffset ? 'Drag to move • double-click to reset' : 'Drag to move'}
       aria-label="Drag to reposition the status island"
@@ -826,7 +925,7 @@ function StatusBarInner({
           transition: positionerTransition,
         }}
       >
-        <div className="status-island-pill-wrapper relative mx-auto w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))]">
+        <div className={`status-island-pill-wrapper relative mx-auto w-auto ${viewport.isMobile ? 'min-w-0' : 'min-w-[640px]'} max-w-[min(1100px,_calc(100vw-32px))]`}>
           {/* Stage — owns the entrance scaleX. Wraps halo + pill + the
               two brackets so they morph together. The stage is inline-
               block (sizes to the pill's outer box), so positioning the
@@ -886,8 +985,8 @@ function StatusBarInner({
                   state={logoState}
                   phase={phase}
                   pendingCount={healingPending}
-                  onActivate={triggerExpand}
-                  onSecondaryDragStart={handleLogoRightMouseDown}
+                  onActivate={handleLogoActivate}
+                  onPointerDragStart={handleLogoPointerDown}
                   isCompact={isCompact}
                   onSetCompact={setCompactMode}
                   isPositionLocked={isPositionLocked}
@@ -906,6 +1005,7 @@ function StatusBarInner({
                   onResetPosition={resetOffset}
                   onOpenFullSettings={openFullSettings}
                   isDragging={isDragging}
+                  isMobileView={viewport.isMobile}
                 />
               </div>
             )}

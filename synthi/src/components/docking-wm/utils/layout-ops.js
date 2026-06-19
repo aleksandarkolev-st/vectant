@@ -27,6 +27,7 @@ import {
   findFirstTabGroup,
 } from "./layout-query";
 import { nodeId } from "./id-generator";
+import { matchesPanelInstance, shouldDeduplicatePanel } from './panel-dedupe';
 
 // ─── Immutable helpers ──────────────────────────────────
 
@@ -403,16 +404,12 @@ export function floatTab(state, tabId, rect) {
   // Guard: never float a non-closable tab (e.g. editor)
   if (tab && tab.closable === false) return state;
 
-  // ── Dedup guard: if a floating window for the same panelType exists, bring it to front ──
-  if (tab) {
+  // ── Dedup guard: singleton panels reuse the existing float instead of duplicating it ──
+  if (tab && shouldDeduplicatePanel(tab.panelType)) {
     for (const fw of Object.values(state.floating || {})) {
       if (fw.tabId === tabId) continue; // same tab re-float is fine
       const existingTab = state.tabs[fw.tabId];
-      if (existingTab && existingTab.panelType === tab.panelType) {
-        // For extension-view, also match on containerId
-        if (tab.panelType === "extension-view") {
-          if (existingTab.data?.containerId !== tab.data?.containerId) continue;
-        }
+      if (matchesPanelInstance(tab.panelType, tab.data, existingTab)) {
         return bringFloatToFront(state, fw.id);
       }
     }

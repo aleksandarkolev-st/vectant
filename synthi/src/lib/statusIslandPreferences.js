@@ -3,6 +3,8 @@ export const STATUS_ISLAND_COMPACT_KEY = 'synthi:status-island-compact';
 export const STATUS_ISLAND_POSITION_LOCK_KEY = 'synthi:status-island-position-locked';
 export const STATUS_ISLAND_DOCK_KEY = 'synthi:status-island-dock';
 export const STATUS_ISLAND_SAVED_PRESETS_KEY = 'synthi:status-island-saved-presets';
+export const STATUS_ISLAND_SHARED_SCOPE = 'shared';
+export const STATUS_ISLAND_MOBILE_SCOPE = 'mobile';
 
 const STATUS_ISLAND_SETTINGS_EVENT = 'synthi:status-island-preferences-change';
 
@@ -34,6 +36,30 @@ export const STATUS_ISLAND_MENU_PRESETS = {
     dockPreset: 'right',
   },
 };
+
+function getStatusIslandScopedKey(baseKey, scope = STATUS_ISLAND_SHARED_SCOPE) {
+  return scope === STATUS_ISLAND_MOBILE_SCOPE
+    ? `${baseKey}:mobile`
+    : baseKey;
+}
+
+function readStatusIslandOffset(scope = STATUS_ISLAND_SHARED_SCOPE) {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const saved = window.localStorage?.getItem(getStatusIslandScopedKey(STATUS_ISLAND_OFFSET_KEY, scope));
+    if (!saved) return null;
+
+    const parsed = JSON.parse(saved);
+    if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') {
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
 
 function emitStatusIslandPreferencesChanged() {
   if (typeof window === 'undefined') return;
@@ -91,20 +117,20 @@ export function persistStatusIslandCompact(next) {
   return resolved;
 }
 
-export function readStatusIslandPositionLocked() {
+export function readStatusIslandPositionLocked(scope = STATUS_ISLAND_SHARED_SCOPE) {
   if (typeof window === 'undefined') return false;
   try {
-    return window.localStorage?.getItem(STATUS_ISLAND_POSITION_LOCK_KEY) === '1';
+    return window.localStorage?.getItem(getStatusIslandScopedKey(STATUS_ISLAND_POSITION_LOCK_KEY, scope)) === '1';
   } catch {
     return false;
   }
 }
 
-export function persistStatusIslandPositionLocked(next) {
+export function persistStatusIslandPositionLocked(next, scope = STATUS_ISLAND_SHARED_SCOPE) {
   const resolved = Boolean(next);
   if (typeof window !== 'undefined') {
     try {
-      window.localStorage?.setItem(STATUS_ISLAND_POSITION_LOCK_KEY, resolved ? '1' : '0');
+      window.localStorage?.setItem(getStatusIslandScopedKey(STATUS_ISLAND_POSITION_LOCK_KEY, scope), resolved ? '1' : '0');
     } catch {
       // Ignore storage failures; in-memory state can still update.
     }
@@ -113,21 +139,18 @@ export function persistStatusIslandPositionLocked(next) {
   return resolved;
 }
 
-export function readStatusIslandDockPreset() {
+export function readStatusIslandDockPreset(scope = STATUS_ISLAND_SHARED_SCOPE) {
   if (typeof window === 'undefined') return 'center';
 
   try {
-    const saved = window.localStorage?.getItem(STATUS_ISLAND_DOCK_KEY);
+    const saved = window.localStorage?.getItem(getStatusIslandScopedKey(STATUS_ISLAND_DOCK_KEY, scope));
     if (STATUS_ISLAND_DOCK_PRESETS.includes(saved)) {
       return saved;
     }
 
-    const savedOffset = window.localStorage?.getItem(STATUS_ISLAND_OFFSET_KEY);
-    if (savedOffset) {
-      const parsedOffset = JSON.parse(savedOffset);
-      if (parsedOffset?.x || parsedOffset?.y) {
-        return 'free';
-      }
+    const parsedOffset = readStatusIslandOffset(scope);
+    if (parsedOffset?.x || parsedOffset?.y) {
+      return 'free';
     }
 
     return 'center';
@@ -136,11 +159,11 @@ export function readStatusIslandDockPreset() {
   }
 }
 
-export function persistStatusIslandDockPreset(next) {
+export function persistStatusIslandDockPreset(next, scope = STATUS_ISLAND_SHARED_SCOPE) {
   const resolved = STATUS_ISLAND_DOCK_PRESETS.includes(next) ? next : 'free';
   if (typeof window !== 'undefined') {
     try {
-      window.localStorage?.setItem(STATUS_ISLAND_DOCK_KEY, resolved);
+      window.localStorage?.setItem(getStatusIslandScopedKey(STATUS_ISLAND_DOCK_KEY, scope), resolved);
     } catch {
       // Ignore storage failures; in-memory state can still update.
     }
@@ -149,7 +172,7 @@ export function persistStatusIslandDockPreset(next) {
   return resolved;
 }
 
-export function applyStatusIslandPreferenceState(state) {
+export function applyStatusIslandPreferenceState(state, scope = STATUS_ISLAND_SHARED_SCOPE) {
   const resolved = {
     isCompact: Boolean(state?.isCompact),
     isPositionLocked: Boolean(state?.isPositionLocked),
@@ -159,8 +182,8 @@ export function applyStatusIslandPreferenceState(state) {
   if (typeof window !== 'undefined') {
     try {
       window.localStorage?.setItem(STATUS_ISLAND_COMPACT_KEY, resolved.isCompact ? '1' : '0');
-      window.localStorage?.setItem(STATUS_ISLAND_POSITION_LOCK_KEY, resolved.isPositionLocked ? '1' : '0');
-      window.localStorage?.setItem(STATUS_ISLAND_DOCK_KEY, resolved.dockPreset);
+      window.localStorage?.setItem(getStatusIslandScopedKey(STATUS_ISLAND_POSITION_LOCK_KEY, scope), resolved.isPositionLocked ? '1' : '0');
+      window.localStorage?.setItem(getStatusIslandScopedKey(STATUS_ISLAND_DOCK_KEY, scope), resolved.dockPreset);
     } catch {
       // Ignore storage failures; in-memory state can still update.
     }
@@ -205,27 +228,27 @@ export function persistStatusIslandSavedPresets(next) {
   return normalized;
 }
 
-export function readStatusIslandPreferences() {
+export function readStatusIslandPreferences(scope = STATUS_ISLAND_SHARED_SCOPE) {
   return {
     isCompact: readStatusIslandCompact(),
-    isPositionLocked: readStatusIslandPositionLocked(),
-    dockPreset: readStatusIslandDockPreset(),
+    isPositionLocked: readStatusIslandPositionLocked(scope),
+    dockPreset: readStatusIslandDockPreset(scope),
     savedPresets: readStatusIslandSavedPresets(),
   };
 }
 
-export function subscribeStatusIslandPreferences(callback) {
+export function subscribeStatusIslandPreferences(callback, scope = STATUS_ISLAND_SHARED_SCOPE) {
   if (typeof window === 'undefined') return () => {};
 
   const relevantKeys = new Set([
     STATUS_ISLAND_COMPACT_KEY,
-    STATUS_ISLAND_POSITION_LOCK_KEY,
-    STATUS_ISLAND_DOCK_KEY,
+    getStatusIslandScopedKey(STATUS_ISLAND_POSITION_LOCK_KEY, scope),
+    getStatusIslandScopedKey(STATUS_ISLAND_DOCK_KEY, scope),
     STATUS_ISLAND_SAVED_PRESETS_KEY,
   ]);
 
   const notify = () => {
-    callback(readStatusIslandPreferences());
+    callback(readStatusIslandPreferences(scope));
   };
 
   const handleStorage = (event) => {

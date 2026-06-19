@@ -110,7 +110,9 @@ steps:
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=synthi/Dockerfile
-      - --context=dir:///workspace/synthi
+      # Root context: synthi is an npm workspace that depends on packages/mcp-hub,
+      # so the frontend image builds from the repo root (matches docker-compose).
+      - --context=dir:///workspace
       - --destination=${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}
       - --build-arg=NEXT_PUBLIC_COLLAB_SERVER_URL=${_NEXT_PUBLIC_COLLAB_SERVER_URL}
       - --build-arg=NEXT_PUBLIC_YSWEET_URL=${_NEXT_PUBLIC_YSWEET_URL}
@@ -203,6 +205,49 @@ steps:
       - --cache=true
       - --cache-ttl=168h
 
+  # ── 9. Per-workspace runtime image (rootful dind under Sysbox) ──────────
+  # ROOTFUL build (RUNTIME_USER=root, daemon at /var/run/docker.sock): under Sysbox
+  # the daemon runs unprivileged-but-rootful — Sysbox supplies the userns isolation.
+  # The rootless default of this Dockerfile is the LOCAL hybrid image (built separately,
+  # not in CI); it crash-loops under Sysbox (rootlesskit can't nest a userns).
+  # Pulled at runtime by spawnRuntimePod() only when RUNTIME_BACKEND=sysbox-pod.
+  - id: build-runtime-image
+    waitFor: ['reject-mutable-images']
+    name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
+    args:
+      - --dockerfile=backend/runtime-image/Dockerfile
+      - --context=dir:///workspace/backend/runtime-image
+      - --destination=${_REGISTRY}/vectant-runtime:${_IMAGE_TAG}
+      - --build-arg=RUNTIME_BASE=docker:dind@sha256:ad68e89b675740867a3bb96488a93fea9209ad36c6305bfba2664912d6dcf11a
+      - --build-arg=RUNTIME_USER=root
+      - --build-arg=RUNTIME_HOME=/root
+      - --build-arg=DOCKER_SOCK=/var/run/docker.sock
+      - --cache=true
+      - --cache-ttl=168h
+
+  # ── 10. Vulnerability gate — runtime image (untrusted user-code surface) ────
+  # The per-workspace runtime runs UNTRUSTED user code, so it MUST pass a CRITICAL
+  # CVE gate before a deploy can safely enable RUNTIME_BACKEND=sysbox-pod. Mirrors
+  # the validated local gate (lessons #28): trivy, CRITICAL-only, honoring the
+  # committed waiver file backend/runtime-image/.trivyignore (the base-bundled grpc
+  # CVE-2026-33186 — local in-pod containerd socket, not network-exposed). trivy
+  # authenticates to Artifact Registry via the ambient Cloud Build service account
+  # (artifactregistry.reader). Exit 1 on any non-waived CRITICAL fails the build,
+  # blocking deploy. First-party images aren't the untrusted surface; add more scan
+  # targets here for a full-fleet gate. (Fallback if AR keychain auth is ever
+  # fiddly: `gcloud artifacts docker images scan` via the pinned gcloud builder.)
+  - id: vulnerability-scan-runtime
+    waitFor: ['build-runtime-image']
+    name: aquasec/trivy:0.71.0@sha256:016eae51fdcf989332a5404af7e8f625cd5d95d7c0907a221d080a996f556500
+    args:
+      - image
+      - --severity=CRITICAL
+      - --exit-code=1
+      - --ignorefile=backend/runtime-image/.trivyignore
+      - --no-progress
+      - --timeout=10m
+      - ${_REGISTRY}/vectant-runtime:${_IMAGE_TAG}
+
   # ═══════════════════════════════════════════════════════════════════════════
   # DEPLOY — Rolling update on GKE
   # ═══════════════════════════════════════════════════════════════════════════
@@ -225,6 +270,8 @@ steps:
       - build-worker
       - build-prisma-migrate
       - build-browser-workflow-bridge
+      - build-runtime-image
+      - vulnerability-scan-runtime
 
   - id: deploy-to-gke
     name: gcr.io/cloud-builders/kubectl:latest@sha256:0001d965b1fd2d41ef80cb94cc7dfb39d65adbb8ab3855370524b424d897c078

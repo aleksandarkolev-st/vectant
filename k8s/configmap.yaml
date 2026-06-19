@@ -97,6 +97,21 @@ data:
   SYNTHI_ISOLATION_MODEL: "single_worker"
   # Worker container image (used by the dynamic spawner in collab-server).
   WORKER_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-worker:build-tag-required"
+  # Per-workspace Sysbox runtime image (ROOTFUL dind — Sysbox supplies the userns
+  # isolation, so a normal rootful daemon runs unprivileged). Read by spawnRuntimePod()
+  # ONLY when RUNTIME_BACKEND=sysbox-pod — inert otherwise. Built by cloudbuild's
+  # `build-runtime-image` step (rootful --build-args); the `build-tag-required`
+  # placeholder is sed-replaced with the build tag at deploy, like WORKER_IMAGE.
+  # NOTE: the rootful build hasn't been produced/validated yet — the live Slice-2
+  # proof used stock docker:27-dind; the first CI run builds the real toolchain image.
+  # TODO: add a trivy CRITICAL gate to CI before enabling the backend in prod.
+  RUNTIME_POD_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/vectant-runtime:build-tag-required"
+  # Slice 4 preview routing: SYNTHI_PREVIEW_TARGET_TEMPLATE is already set ABOVE and
+  # targets the WORKER pod's preview sidecar ({runtimeId} -> rt-<hash>). When
+  # RUNTIME_BACKEND=sysbox-pod is enabled, change that template to target the RUNTIME
+  # pod's Service (rt-<hash>-rt) instead:
+  #   "http://{runtimeId}-rt.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"
+  # (One template per deploy; worker-vs-runtime preview coexistence is a follow-up.)
   # Schedule dynamically spawned workspace pods onto the autoscaled workspace pool.
   WORKSPACE_NODE_SELECTOR_KEY: "cloud.google.com/gke-nodepool"
   WORKSPACE_NODE_SELECTOR_VALUE: "workspace-pool"

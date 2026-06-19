@@ -52,8 +52,10 @@ services:
 
   frontend:
     build:
-      context: ./synthi
-      dockerfile: Dockerfile
+      # npm-workspace build: root context so synthi can resolve the
+      # @synthi/mcp-hub workspace package (see synthi/Dockerfile).
+      context: .
+      dockerfile: synthi/Dockerfile
       args:
         NEXT_PUBLIC_COLLAB_SERVER_URL: "http://localhost:1234"
         NEXT_PUBLIC_YSWEET_URL: "http://localhost:8180"
@@ -92,6 +94,13 @@ services:
       NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
       NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
       NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS: "${NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS:-}"
+      # Server-side (API routes) reach the collab-server by its compose hostname,
+      # not localhost. Without this, program manifest discovery / install / launch
+      # / publish fall back to localhost:1234 inside this container and fail.
+      COLLAB_SERVER_URL: "http://collab-server:1234"
+      # Match collab-server's gate so the default marketplace seed ships the
+      # Dev Container as a real `container` program (not managed commands).
+      ENABLE_CONTAINER_RUNTIME: "1"
     depends_on:
       postgres:
         condition: service_healthy
@@ -130,8 +139,33 @@ services:
       CLOUD_SQL_INSTANCE: "" # Not used in local dev
       # Dev specific
       GCS_SYNC_ON_FLUSH: "false"
+      # Native Docker (hybrid Phase 1): run `container`-type programs in a
+      # per-workspace rootless-Docker runtime container. Requires the host
+      # docker socket mount below so collab-server can manage those containers.
+      ENABLE_CONTAINER_RUNTIME: "1"
+      RUNTIME_IMAGE: "vectant-runtime:local"
+      # Workspace-prep (auto dependency install) and the local worker spawner
+      # default WORKER_IMAGE to `synthi-worker:local`, which doesn't exist in this
+      # dev stack — compose builds the worker as `synthi-ide-worker:latest`. Point
+      # them at the real local tag so prep doesn't try to pull from Docker Hub
+      # (which 404s: "pull access denied for synthi-worker").
+      WORKER_IMAGE: "synthi-ide-worker:latest"
+      # collab-server runs as a container here, so the per-workspace runtime
+      # container must reach repo files via the SHARED collab-data named volume
+      # (a host-path bind would resolve on the host and be empty). Value is the
+      # compose-project-prefixed volume name.
+      WORKSPACE_DATA_VOLUME: "synthi-ide_collab-data"
     volumes:
       - collab-data:/data
+      # Used ONLY by collab-server to manage per-workspace runtime containers.
+      # Never mounted into a runtime container or exposed to program env.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # collab-server runs as the non-root `synthi` user, but the bind-mounted
+    # docker socket is owned by root:root (mode 660), so dockerode would get
+    # EACCES. Grant the socket's group. On Docker Desktop the socket is gid 0;
+    # on a native Linux host set DOCKER_SOCKET_GID to the host `docker` group.
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
     depends_on:
       redis:
         condition: service_healthy
@@ -176,12 +210,15 @@ services:
     volumes:
       - collab-data:/data
     environment:
-      SYNTHI_AI_MODEL: "gemini-3-flash-preview-preview"
+      SYNTHI_AI_MODEL: "gemini-3.1-flash-lite-preview"
       SYNTHI_GEMINI_MODEL: "${SYNTHI_GEMINI_MODEL:-}"
       SYNTHI_AI_ENGINE_WORKERS: "${SYNTHI_AI_ENGINE_WORKERS:-1}"
       AI_ENGINE_AUTH_DISABLED: "${AI_ENGINE_AUTH_DISABLED:-true}"
-      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      # GEMINI_API_KEY / GOOGLE_API_KEY are supplied via the env_file (.env.local)
+      # above. Do NOT redeclare them here as "${VAR:-}" — an empty interpolated
+      # value in `environment:` overrides the env_file and silently strips the
+      # key, which makes the embedder raise "Embedding API key is not configured"
+      # and every /code-intel/* call 500.
       OPENAI_API_KEY: "dummy"
       # Tell resolve_workspace_path() where to find slug-rooted repos.
       # The collab-data named volume is shared with collab-server (which
