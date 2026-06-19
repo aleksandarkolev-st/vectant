@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -33,6 +33,7 @@ function parseArgs(argv) {
     expectedExternalSecret: [],
     expectedExternalSecretBinding: [],
     expectedDeployment: [],
+    expectedDeploymentK8sDir: [],
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -82,6 +83,8 @@ function parseArgs(argv) {
       out.expectedExternalSecretBinding.push(parseExternalSecretBinding(takeValue()));
     } else if (arg === "--expected-deployment") {
       out.expectedDeployment.push(takeValue());
+    } else if (arg === "--expected-deployments-from-k8s-dir") {
+      out.expectedDeploymentK8sDir.push(path.resolve(takeValue()));
     } else if (arg === "--help" || arg === "-h") {
       out.help = true;
     } else {
@@ -142,6 +145,10 @@ Options:
                                    Secret, target key, and Secret Manager remote
                                    secret binding. Repeatable.
   --expected-deployment <name>     Expected Kubernetes deployment. Repeatable.
+  --expected-deployments-from-k8s-dir <path>
+                                   Recursively derive expected Kubernetes
+                                   Deployment names from YAML manifests in a
+                                   directory. Repeatable.
 
 The script never creates, updates, patches, applies, deletes, or deploys cloud
 resources. Without --execute it writes the planned read-only inventory commands.`);
@@ -160,14 +167,15 @@ function resolveConfig(raw) {
   const expectedK8sSecrets = raw.expectedK8sSecret.length > 0 ? raw.expectedK8sSecret : [
     "synthi-secrets",
   ];
-  const expectedDeployments = raw.expectedDeployment.length > 0 ? raw.expectedDeployment : [
-    "frontend",
-    "collab-server",
-    "signaling-server",
-    "ai-gateway",
-    "ai-engine",
-    "worker",
-  ];
+  const manifestDeploymentSources = raw.expectedDeploymentK8sDir.map((dirPath) => ({
+    type: "k8s_dir",
+    path: dirPath,
+    deployments: deploymentNamesFromKubernetesManifestDir(dirPath),
+  }));
+  const expectedDeployments = uniqueStrings([
+    ...raw.expectedDeployment,
+    ...manifestDeploymentSources.flatMap((source) => source.deployments),
+  ]);
 
   return {
     execute: raw.execute,
@@ -188,7 +196,108 @@ function resolveConfig(raw) {
     expectedExternalSecrets: raw.expectedExternalSecret,
     expectedExternalSecretBindings: raw.expectedExternalSecretBinding,
     expectedDeployments,
+    expectedDeploymentSources: manifestDeploymentSources,
   };
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function deploymentNamesFromKubernetesManifestDir(dirPath) {
+  const absoluteDir = path.resolve(dirPath);
+  if (!existsSync(absoluteDir) || !statSync(absoluteDir).isDirectory()) {
+    throw new Error(`--expected-deployments-from-k8s-dir must point at an existing directory: ${dirPath}`);
+  }
+  const deploymentNames = [];
+  for (const filePath of kubernetesManifestFilesIn(absoluteDir)) {
+    const text = readFileSync(filePath, "utf8");
+    deploymentNames.push(...deploymentNamesFromKubernetesManifestText(text));
+  }
+  return uniqueStrings(deploymentNames).sort((left, right) => left.localeCompare(right));
+}
+
+function kubernetesManifestFilesIn(dirPath) {
+  const result = [];
+  const entries = readdirSync(dirPath, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    const entryPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      result.push(...kubernetesManifestFilesIn(entryPath));
+    } else if (entry.isFile() && /\.(ya?ml)$/i.test(entry.name)) {
+      result.push(entryPath);
+    }
+  }
+  return result;
+}
+
+function deploymentNamesFromKubernetesManifestText(text) {
+  return text
+    .split(/^---\s*$/m)
+    .map(kubernetesDocumentIdentity)
+    .filter((identity) => identity.kind === "Deployment" && identity.name)
+    .map((identity) => identity.name);
+}
+
+function kubernetesDocumentIdentity(documentText) {
+  const lines = String(documentText || "").split(/\r?\n/);
+  let kind = "";
+  let name = "";
+  let inMetadata = false;
+  let metadataIndent = -1;
+
+  for (const rawLine of lines) {
+    const line = stripYamlComment(rawLine).replace(/\s+$/, "");
+    if (!line.trim()) {
+      continue;
+    }
+    const indent = line.match(/^\s*/)?.[0].length || 0;
+    if (indent === 0) {
+      inMetadata = false;
+      metadataIndent = -1;
+      const topLevel = line.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
+      if (!topLevel) {
+        continue;
+      }
+      const [, key, rawValue] = topLevel;
+      if (key === "kind") {
+        kind = parseYamlScalar(rawValue);
+      } else if (key === "metadata") {
+        inMetadata = true;
+        metadataIndent = indent;
+      }
+      continue;
+    }
+    if (inMetadata && indent > metadataIndent) {
+      const metadataField = line.match(/^\s+([A-Za-z0-9_.-]+):\s*(.*)$/);
+      if (metadataField?.[1] === "name") {
+        name = parseYamlScalar(metadataField[2]);
+      }
+    }
+  }
+
+  return { kind, name };
+}
+
+function stripYamlComment(line) {
+  let quote = "";
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if ((char === "'" || char === '"') && line[index - 1] !== "\\") {
+      quote = quote === char ? "" : quote || char;
+    }
+    if (!quote && char === "#" && (index === 0 || /\s/.test(line[index - 1]))) {
+      return line.slice(0, index);
+    }
+  }
+  return line;
+}
+
+function parseYamlScalar(value) {
+  const text = String(value || "").trim();
+  const quoted = text.match(/^(['"])(.*)\1$/);
+  return quoted ? quoted[2] : text;
 }
 
 function parseExternalSecretBinding(value) {
@@ -802,6 +911,7 @@ function redactConfig(config) {
     expectedExternalSecrets: config.expectedExternalSecrets,
     expectedExternalSecretBindings: config.expectedExternalSecretBindings,
     expectedDeployments: config.expectedDeployments,
+    expectedDeploymentSources: config.expectedDeploymentSources,
   };
 }
 
@@ -885,6 +995,8 @@ export {
   evaluate,
   externalSecretBindingId,
   externalSecretInventoryFrom,
+  deploymentNamesFromKubernetesManifestDir,
+  deploymentNamesFromKubernetesManifestText,
   parseArgs,
   parseExternalSecretBinding,
   resolveConfig,

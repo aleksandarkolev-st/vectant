@@ -1,8 +1,12 @@
 // @ts-nocheck
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildReport,
+  deploymentNamesFromKubernetesManifestDir,
+  deploymentNamesFromKubernetesManifestText,
   evaluate,
   externalSecretBindingId,
   externalSecretInventoryFrom,
@@ -97,6 +101,75 @@ function releaseExternalSecret() {
 }
 
 describe("Dojo GCP release inventory", () => {
+  it("derives expected deployment names from Kubernetes manifest text", () => {
+    const names = deploymentNamesFromKubernetesManifestText(`
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-api
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: runtime-api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "runtime-worker"
+`);
+
+    expect(names).toEqual(["runtime-api", "runtime-worker"]);
+  });
+
+  it("derives expected deployment names from Kubernetes manifest directories without fixed service names", () => {
+    const fixtureRoot = path.join(tmpdir(), `dojo-k8s-fixture-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    try {
+      mkdirSync(path.join(fixtureRoot, "nested"), { recursive: true });
+      writeFileSync(path.join(fixtureRoot, "runtime.yaml"), `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-api
+`, "utf8");
+      writeFileSync(path.join(fixtureRoot, "nested", "worker.yml"), `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-worker
+`, "utf8");
+      writeFileSync(path.join(fixtureRoot, "nested", "service.yaml"), `
+apiVersion: v1
+kind: Service
+metadata:
+  name: runtime-worker
+`, "utf8");
+
+      const config = resolveConfig(parseArgs([
+        `--expected-deployments-from-k8s-dir=${fixtureRoot}`,
+        "--expected-deployment=runtime-scheduler",
+      ]));
+
+      expect(deploymentNamesFromKubernetesManifestDir(fixtureRoot)).toEqual(["runtime-api", "runtime-worker"]);
+      expect(config.expectedDeployments).toEqual(["runtime-scheduler", "runtime-api", "runtime-worker"]);
+      expect(config.expectedDeploymentSources).toEqual([{
+        type: "k8s_dir",
+        path: path.resolve(fixtureRoot),
+        deployments: ["runtime-api", "runtime-worker"],
+      }]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects missing expected deployment manifest directories", () => {
+    const missingDir = path.join(tmpdir(), `dojo-missing-k8s-fixture-${Date.now()}`);
+
+    expect(() => resolveConfig(parseArgs([
+      `--expected-deployments-from-k8s-dir=${missingDir}`,
+    ]))).toThrow(/existing directory/);
+  });
+
   it("parses secret manager, Kubernetes Secret, and ExternalSecret expectations separately", () => {
     const raw = parseArgs([
       "--expected-k8s-secret=synthi-secrets",
