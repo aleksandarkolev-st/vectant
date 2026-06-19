@@ -106,6 +106,66 @@ gcloud config set compute/region $env:REGION
 gcloud config set compute/zone $env:ZONE
 ```
 
+### Read-Only Hosted Inventory
+
+Before creating or changing any Google Cloud resource, run a read-only
+inventory against the authenticated project. This verifies what is already
+implemented in production and writes redacted evidence that can be compared with
+the remaining release blockers.
+
+First validate the inventory script without Google Cloud access:
+
+```powershell
+npm --prefix mcp/synthi-mcp run proof:dojo:gcp-release-inventory:self-check
+```
+
+Then generate a command plan without touching Google Cloud:
+
+```powershell
+node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
+  --project=$env:PROJECT_ID `
+  --region=$env:REGION `
+  --zone=$env:ZONE `
+  --cluster=$env:CLUSTER `
+  --namespace=$env:K8S_NAMESPACE `
+  --artifact-repository=$env:AR_REPO `
+  --gcs-bucket=$env:GCS_BUCKET `
+  --cloud-sql-instance=$env:CLOUD_SQL_INSTANCE `
+  --redis-instance=$env:REDIS_INSTANCE `
+  --domain=$env:DOMAIN `
+  --out-dir=tmp/dojo-gcp-release-inventory
+```
+
+After confirming the plan contains only read/list/describe/get commands, run the
+actual read-only inventory:
+
+```powershell
+node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
+  --execute `
+  --project=$env:PROJECT_ID `
+  --region=$env:REGION `
+  --zone=$env:ZONE `
+  --cluster=$env:CLUSTER `
+  --namespace=$env:K8S_NAMESPACE `
+  --artifact-repository=$env:AR_REPO `
+  --gcs-bucket=$env:GCS_BUCKET `
+  --cloud-sql-instance=$env:CLOUD_SQL_INSTANCE `
+  --redis-instance=$env:REDIS_INSTANCE `
+  --domain=$env:DOMAIN `
+  --out-dir=tmp/dojo-gcp-release-inventory
+```
+
+Expected output:
+
+```text
+tmp/dojo-gcp-release-inventory/dojo-gcp-release-inventory.json
+tmp/dojo-gcp-release-inventory/dojo-gcp-release-inventory.evidence.json
+```
+
+The inventory script intentionally does not print or fetch secret values. It
+records secret names, Kubernetes deployment names, endpoint inventory, enabled
+APIs, store resources, and command digests only.
+
 ### Enable Required APIs
 
 ```powershell
@@ -563,17 +623,19 @@ The conformance run must prove:
 
 Run this sequence for a release candidate:
 
-1. Build and deploy with Cloud Build.
-2. Verify Kubernetes rollouts and external HTTPS endpoints.
-3. Verify External Secrets synced from Secret Manager.
-4. Run database migrations against Cloud SQL.
-5. Run local static/type/unit gates from a clean checkout.
-6. Run managed-key signing observation.
-7. Run hosted browser workflow E2E against the hosted runtime.
-8. Run private tool acceptance against the deployed MCP host.
-9. Run deployed MCP host conformance.
-10. Run live chaos and soak gates using GKE-safe commands.
-11. Run the release gate verifier over the produced evidence.
+1. Run the read-only hosted inventory and compare it with the expected
+   production resources.
+2. Build and deploy with Cloud Build only after explicit deployment approval.
+3. Verify Kubernetes rollouts and external HTTPS endpoints.
+4. Verify External Secrets synced from Secret Manager.
+5. Run database migrations against Cloud SQL.
+6. Run local static/type/unit gates from a clean checkout.
+7. Run managed-key signing observation.
+8. Run hosted browser workflow E2E against the hosted runtime.
+9. Run private tool acceptance against the deployed MCP host.
+10. Run deployed MCP host conformance.
+11. Run live chaos and soak gates using GKE-safe commands.
+12. Run the release gate verifier over the produced evidence.
 
 Suggested evidence directory layout:
 
