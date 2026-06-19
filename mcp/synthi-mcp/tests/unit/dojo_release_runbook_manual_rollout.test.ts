@@ -15,4 +15,16 @@ describe("Dojo release runbook manual rollout", () => {
     expect(runbook).toContain("kubectl apply -f tmp/base-render.release.yaml");
     expect(runbook).toContain("kubectl apply -f tmp/dojo-release-gate-render.release.yaml");
   });
+
+  it("keeps live chaos examples parameterized for release environments", () => {
+    const runbook = readFileSync("../../docs/AGENT_DOJO_RELEASE_GATE_RUNBOOK.md", "utf8");
+
+    expect(runbook).toContain("$env:DOJO_CHAOS_POSTGRES_FAULT_COMMAND_JSON");
+    expect(runbook).toContain("managed-service-safe fault injection");
+    expect(runbook).toContain("deployment/<redis-deployment>");
+    expect(runbook).toContain("Local or beta clusters");
+    expect(runbook).not.toContain("\"-n\",\"synthi\"");
+    expect(runbook).not.toContain("deployment/redis");
+    expect(runbook).not.toContain("deployment/postgres");
+  });
 });

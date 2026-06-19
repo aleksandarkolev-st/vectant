@@ -929,24 +929,44 @@ tmp/dojo-release/<yyyy-mm-dd>-<git-sha>/
 
 ### GKE Live Chaos Command Examples
 
-The live chaos script expects command JSON values. Verify Kubernetes object
-names before setting these. The examples below use label selectors and rollout
-restarts so they are repeatable in GKE.
+The live chaos script expects command JSON values. Keep these commands
+environment-specific and reviewed before execution. For mature Google Cloud
+release gates, prefer managed-service-safe fault injection: network policy
+windows, application-level dependency fault toggles, or a dedicated test
+dependency endpoint. Do not restart Cloud SQL or Memorystore directly as a
+release gate.
 
 ```powershell
-$env:SYNTHI_CHAOS_WORKER_KILL_COMMAND_JSON = '["kubectl","delete","pod","-n","synthi","-l","app=worker","--ignore-not-found=true"]'
-$env:SYNTHI_CHAOS_REDIS_RESTART_COMMAND_JSON = '["kubectl","rollout","restart","deployment/redis","-n","synthi"]'
-$env:SYNTHI_CHAOS_POSTGRES_RESTART_PROOF_COMMAND_JSON = '["kubectl","rollout","restart","deployment/postgres","-n","synthi"]'
-$env:SYNTHI_CHAOS_BROWSER_CRASH_COMMAND_JSON = '["kubectl","delete","pod","-n","synthi","-l","app=hosted-browser","--ignore-not-found=true"]'
-$env:SYNTHI_CHAOS_EVIDENCE_STORE_UNAVAILABLE_COMMAND_JSON = '["kubectl","scale","deployment/evidence-store","-n","synthi","--replicas=0"]'
-$env:SYNTHI_CHAOS_PROOF_SIGNING_OUTAGE_COMMAND_JSON = '["kubectl","scale","deployment/dojo-proof-signer","-n","synthi","--replicas=0"]'
-$env:SYNTHI_CHAOS_SIGNALING_PARTITION_COMMAND_JSON = '["kubectl","rollout","restart","deployment/signaling-server","-n","synthi"]'
+$env:SYNTHI_CHAOS_WORKER_KILL_COMMAND_JSON = $env:DOJO_CHAOS_WORKER_KILL_COMMAND_JSON
+$env:SYNTHI_CHAOS_REDIS_RESTART_COMMAND_JSON = $env:DOJO_CHAOS_REDIS_FAULT_COMMAND_JSON
+$env:SYNTHI_CHAOS_POSTGRES_RESTART_PROOF_COMMAND_JSON = $env:DOJO_CHAOS_POSTGRES_FAULT_COMMAND_JSON
+$env:SYNTHI_CHAOS_BROWSER_CRASH_COMMAND_JSON = $env:DOJO_CHAOS_BROWSER_FAULT_COMMAND_JSON
+$env:SYNTHI_CHAOS_EVIDENCE_STORE_UNAVAILABLE_COMMAND_JSON = $env:DOJO_CHAOS_EVIDENCE_STORE_FAULT_COMMAND_JSON
+$env:SYNTHI_CHAOS_PROOF_SIGNING_OUTAGE_COMMAND_JSON = $env:DOJO_CHAOS_PROOF_SIGNING_FAULT_COMMAND_JSON
+$env:SYNTHI_CHAOS_SIGNALING_PARTITION_COMMAND_JSON = $env:DOJO_CHAOS_SIGNALING_FAULT_COMMAND_JSON
 ```
 
-If production uses Cloud SQL and Memorystore rather than in-cluster deployments,
-do not restart managed services directly. Instead, use a controlled network
-policy or application-level fault injection window that blocks the app from
-reaching the dependency, then remove the block and verify recovery.
+Example managed-service-safe patterns:
+
+```powershell
+# Apply a pre-reviewed NetworkPolicy manifest that temporarily blocks app egress
+# to the Postgres endpoint, then remove it in the recovery step.
+$env:DOJO_CHAOS_POSTGRES_FAULT_COMMAND_JSON = "[`"kubectl`",`"apply`",`"-n`",`"$env:K8S_NAMESPACE`",`"-f`",`"<reviewed-postgres-egress-block-manifest.yaml>`"]"
+
+# Toggle an application-level dependency fault switch exposed only in the
+# release-candidate environment.
+$env:DOJO_CHAOS_REDIS_FAULT_COMMAND_JSON = '["curl","-fsS","-X","POST","https://<release-admin-host>/dojo/faults/redis/unavailable"]'
+```
+
+Local or beta clusters that still run Redis/Postgres inside Kubernetes can use
+rollout restarts as a lower-fidelity rehearsal only. Do not use these as mature
+Google Cloud release proof when the production path is backed by managed
+services:
+
+```powershell
+$env:DOJO_CHAOS_REDIS_FAULT_COMMAND_JSON = "[`"kubectl`",`"rollout`",`"restart`",`"deployment/<redis-deployment>`",`"-n`",`"$env:K8S_NAMESPACE`"]"
+$env:DOJO_CHAOS_POSTGRES_FAULT_COMMAND_JSON = "[`"kubectl`",`"rollout`",`"restart`",`"deployment/<postgres-deployment>`",`"-n`",`"$env:K8S_NAMESPACE`"]"
+```
 
 Run:
 
