@@ -839,9 +839,10 @@ Configure the release gate to use the deployed HTTP MCP host from the Dojo
 release overlay. The host is built from `mcp/synthi-mcp/Dockerfile.http`,
 deployed as `Deployment/dojo-mcp-host`, exposed through the existing GKE
 Ingress at `/dojo/mcp`, protected by IAP at the GKE backend, and token-gated by
-`SYNTHI_DOJO_MCP_BEARER_TOKEN` from Secret Manager. Do not point this gate at
-the stdio MCP server, the browser workflow bridge, a local tunnel, or a
-loopback endpoint.
+`SYNTHI_DOJO_MCP_BEARER_TOKEN` from Secret Manager. Because IAP uses the HTTP
+`Authorization` header, the release overlay sends the Dojo application bearer
+token through `X-Synthi-Dojo-Mcp-Token`. Do not point this gate at the stdio MCP
+server, the browser workflow bridge, a local tunnel, or a loopback endpoint.
 
 Before running conformance, verify the rendered and deployed host shape:
 
@@ -855,13 +856,26 @@ kubectl -n $env:K8S_NAMESPACE get ingress synthi-ingress
 
 ```powershell
 $env:SYNTHI_DOJO_MCP_HOST_URL = "https://$env:DOMAIN/dojo/mcp"
+$env:SYNTHI_DOJO_MCP_BEARER_HEADER = "X-Synthi-Dojo-Mcp-Token"
 $env:SYNTHI_DOJO_MCP_BEARER_TOKEN = "<short-lived-release-token>"
+$env:SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN = "<iap-id-token-for-release-client>"
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE = "1"
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING = "1"
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED = "1"
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE = "1"
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING = "1"
 ```
+
+For IAP-protected hosts, generate `SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN` for the
+release IAP OAuth client ID, for example:
+
+```powershell
+$env:SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN = gcloud auth print-identity-token --audiences="<iap-oauth-client-id>" --include-email
+```
+
+For a non-IAP host, omit `SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN` and either omit
+`SYNTHI_DOJO_MCP_BEARER_HEADER` or set it to the app header configured on that
+host.
 
 Run:
 
@@ -1032,7 +1046,7 @@ fixture-only artifacts.
 | `workflow_e2e_hosted` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `FRONTEND_URL`, `COLLAB_URL`, `SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP=1` | Hosted browser workflow path runs outside local CDP and exports fresh MCP evidence. |
 | `private_tool_stdio_acceptance` | `SYNTHI_HOSTED_BROWSER_CDP_URL` | Strict stdio MCP client can execute proof-gated private tool flow against hosted runtime. |
 | `private_tool_codex_acceptance` | `SYNTHI_HOSTED_BROWSER_CDP_URL` | Codex-style client can execute proof-gated private tool flow without local browser leakage. |
-| `dojo_mcp_host_conformance` | `SYNTHI_DOJO_MCP_HOST_URL`, `SYNTHI_DOJO_MCP_BEARER_TOKEN`, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE`, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING`, `SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED`, `SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE`, `SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING` | Non-loopback MCP host lists and dispatches only governed competencies. |
+| `dojo_mcp_host_conformance` | `SYNTHI_DOJO_MCP_HOST_URL`, `SYNTHI_DOJO_MCP_BEARER_HEADER`, `SYNTHI_DOJO_MCP_BEARER_TOKEN`, `SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN` for IAP-protected hosts, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE`, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING`, `SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED`, `SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE`, `SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING` | Non-loopback MCP host lists and dispatches only governed competencies. |
 | `private_tool_stdio_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD` | Deployed private tool host path works with external store, independently expected store custody, and strict schema. |
 | `private_tool_codex_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD` | Deployed Codex private tool path works through the same explicit MCP wrapper, expected store custody, and without shell-only shortcuts. |
 | `dojo_managed_key_signing_self_check` | `SYNTHI_DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PATH` from the managed-key observation script | Proof signing is backed by a configured managed signing service and public verifier material. |
@@ -1135,7 +1149,9 @@ npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex
 
 ```powershell
 $env:SYNTHI_DOJO_MCP_HOST_URL="https://$env:DOMAIN/dojo/mcp"
+$env:SYNTHI_DOJO_MCP_BEARER_HEADER='X-Synthi-Dojo-Mcp-Token'
 $env:SYNTHI_DOJO_MCP_BEARER_TOKEN='<short-lived-release-token>'
+$env:SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN='<iap-id-token-for-release-client>'
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE='1'
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING='1'
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED='1'

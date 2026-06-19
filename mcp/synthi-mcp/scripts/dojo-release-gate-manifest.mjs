@@ -896,6 +896,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
     requires_env: [
       "SYNTHI_DOJO_MCP_HOST_URL",
+      "SYNTHI_DOJO_MCP_BEARER_HEADER",
       "SYNTHI_DOJO_MCP_BEARER_TOKEN",
       "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE",
       "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
@@ -909,6 +910,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
         type: "non_loopback_url",
         allowed_protocols: ["http", "https", "ws", "wss"],
       },
+      { env: "SYNTHI_DOJO_MCP_BEARER_HEADER", type: "http_header_name" },
       { env: "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE", type: "boolean_true" },
       { env: "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING", type: "boolean_true" },
       { env: "SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED", type: "boolean_true" },
@@ -2735,6 +2737,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     for (const requiredEnv of [
       "SYNTHI_DOJO_MCP_HOST_URL",
+      "SYNTHI_DOJO_MCP_BEARER_HEADER",
       "SYNTHI_DOJO_MCP_BEARER_TOKEN",
       "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE",
       "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
@@ -2745,6 +2748,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       if (!Array.isArray(mcpHostConformanceGate.requires_env) || !mcpHostConformanceGate.requires_env.includes(requiredEnv)) {
         errors.push(`mcp_host_conformance_missing_env:${requiredEnv}`);
       }
+    }
+    const mcpHostBearerHeaderRule = (mcpHostConformanceGate.env_value_requirements || [])
+      .find((requirement) => requirement?.env === "SYNTHI_DOJO_MCP_BEARER_HEADER");
+    if (!mcpHostBearerHeaderRule) {
+      errors.push("mcp_host_conformance_missing_bearer_header_env_value_requirement");
+    } else if (mcpHostBearerHeaderRule.type !== "http_header_name") {
+      errors.push("mcp_host_conformance_bearer_header_env_value_requirement_not_http_header_name");
     }
     const missingScriptFlags = missingRequiredPackageScriptTokens(packageScripts, mcpHostConformanceGate, [
       "--out-dir",

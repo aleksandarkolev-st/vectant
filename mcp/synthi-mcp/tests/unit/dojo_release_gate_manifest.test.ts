@@ -648,12 +648,19 @@ describe("Dojo release gate manifest", () => {
         release_artifact_requirements: DOJO_MCP_HOST_CONFORMANCE_REQUIREMENTS,
         requires_env: expect.arrayContaining([
           "SYNTHI_DOJO_MCP_HOST_URL",
+          "SYNTHI_DOJO_MCP_BEARER_HEADER",
           "SYNTHI_DOJO_MCP_BEARER_TOKEN",
           "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE",
           "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
           "SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED",
           "SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE",
           "SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING",
+        ]),
+        env_value_requirements: expect.arrayContaining([
+          expect.objectContaining({
+            env: "SYNTHI_DOJO_MCP_BEARER_HEADER",
+            type: "http_header_name",
+          }),
         ]),
       }),
       expect.objectContaining({
@@ -1715,7 +1722,10 @@ describe("Dojo release gate manifest", () => {
     mcpHostGate.release_artifact_requirements.require_external_proof_signing = false;
     mcpHostGate.release_artifact_requirements.require_no_local_cdp = false;
     mcpHostGate.requires_env = mcpHostGate.requires_env
-      .filter((envName) => envName !== "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING");
+      .filter((envName) => envName !== "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING"
+        && envName !== "SYNTHI_DOJO_MCP_BEARER_HEADER");
+    mcpHostGate.env_value_requirements = mcpHostGate.env_value_requirements
+      .filter((requirement) => requirement.env !== "SYNTHI_DOJO_MCP_BEARER_HEADER");
     expect(validateDojoReleaseGateManifest(brokenMcpHostConformance, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "mcp_host_conformance_self_check_missing_private_network_rejection",
       "mcp_host_conformance_self_check_missing_link_local_rejection",
@@ -1723,7 +1733,9 @@ describe("Dojo release gate manifest", () => {
       "mcp_host_conformance_missing_revocation_requirement",
       "mcp_host_conformance_missing_external_signing_requirement",
       "mcp_host_conformance_missing_no_local_cdp_requirement",
+      "mcp_host_conformance_missing_env:SYNTHI_DOJO_MCP_BEARER_HEADER",
       "mcp_host_conformance_missing_env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
+      "mcp_host_conformance_missing_bearer_header_env_value_requirement",
       "mcp_host_conformance_default_report_path_conflicts_self_check",
       "mcp_host_conformance_default_evidence_path_conflicts_self_check",
     ]));

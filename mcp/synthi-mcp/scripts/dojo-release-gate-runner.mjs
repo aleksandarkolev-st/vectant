@@ -837,6 +837,10 @@ function invalidRequiredEnv(gate, env = process.env) {
       if (normalizedDisallowedValues.includes(normalizedCandidate)) {
         invalid.push({ env: key, value: candidate, reason: `disallowed_value:${candidate}` });
       }
+    } else if (type === "http_header_name") {
+      if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(String(value))) {
+        invalid.push({ env: key, value: String(value), reason: "invalid_http_header_name" });
+      }
     } else if (type === "url" || type === "non_loopback_url") {
       const parsed = parseEnvUrl(value);
       if (!parsed.ok) {

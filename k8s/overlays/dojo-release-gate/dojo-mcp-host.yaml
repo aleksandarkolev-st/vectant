@@ -65,6 +65,8 @@ spec:
               value: "/dojo/mcp"
             - name: SYNTHI_MCP_HTTP_HEALTH_PATH
               value: "/healthz"
+            - name: SYNTHI_MCP_HTTP_BEARER_HEADER
+              value: "X-Synthi-Dojo-Mcp-Token"
             - name: SYNTHI_VISION_BACKEND
               value: "agent_side"
           readinessProbe:

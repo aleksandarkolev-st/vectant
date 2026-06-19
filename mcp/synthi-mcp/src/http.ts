@@ -38,6 +38,7 @@ type HttpMcpConfig = {
   healthPath: string;
   maxBodyBytes: number;
   bearerToken: string;
+  bearerHeader: string;
   defaultSessionId?: string;
   defaultSignalingUrl: string;
 };
@@ -97,6 +98,14 @@ function normalizePath(value: string | undefined, fallback: string): string {
   return raw.startsWith("/") ? raw : `/${raw}`;
 }
 
+function normalizeHeaderName(value: string | undefined, fallback: string): string {
+  const raw = (value?.trim() || fallback).toLowerCase();
+  if (!/^[!#$%&'*+\-.^_`|~0-9a-z]+$/.test(raw)) {
+    throw new Error(`synthi_mcp_http_bearer_header_invalid:${value || ""}`);
+  }
+  return raw;
+}
+
 function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase();
   return normalized === "localhost"
@@ -130,6 +139,10 @@ function resolveConfig(args: Record<string, string | boolean>, env = process.env
       ?? env["SYNTHI_MCP_HTTP_BEARER_TOKEN"]
       ?? env["SYNTHI_DOJO_MCP_BEARER_TOKEN"]
       ?? "",
+    bearerHeader: normalizeHeaderName(
+      stringArg(args, "bearer-header") ?? env["SYNTHI_MCP_HTTP_BEARER_HEADER"],
+      "authorization",
+    ),
     ...(defaultSessionId !== undefined ? { defaultSessionId } : {}),
     defaultSignalingUrl,
   };
@@ -149,9 +162,9 @@ function sendJson(res: ServerResponse, statusCode: number, value: unknown): void
   res.end(body);
 }
 
-function isAuthorized(req: IncomingMessage, bearerToken: string): boolean {
+function isAuthorized(req: IncomingMessage, bearerToken: string, bearerHeader: string): boolean {
   if (!bearerToken) return true;
-  const header = req.headers.authorization || "";
+  const header = req.headers[bearerHeader] || "";
   const value = Array.isArray(header) ? header[0] ?? "" : header;
   const prefix = "Bearer ";
   if (!value.startsWith(prefix)) return false;
@@ -255,6 +268,7 @@ async function main(): Promise<void> {
           name: "synthi-mcp-http",
           path: config.path,
           auth_required: Boolean(config.bearerToken),
+          auth_header: config.bearerToken ? config.bearerHeader : null,
         });
         return;
       }
@@ -268,7 +282,7 @@ async function main(): Promise<void> {
         return;
       }
 
-      if (!isAuthorized(req, config.bearerToken)) {
+      if (!isAuthorized(req, config.bearerToken, config.bearerHeader)) {
         res.setHeader("www-authenticate", "Bearer");
         sendJson(res, 401, {
           jsonrpc: "2.0",
@@ -332,11 +346,11 @@ async function main(): Promise<void> {
 
   await new Promise<void>((resolve, reject) => {
     httpServer.once("error", reject);
-    httpServer.listen(config.port, config.host, () => {
+      httpServer.listen(config.port, config.host, () => {
       httpServer.off("error", reject);
       process.stderr.write(
         `synthi-mcp http: http://${config.host}:${config.port}${config.path}`
-        + `${config.bearerToken ? " (token-gated)" : " (no auth - local only)"}\n`
+        + `${config.bearerToken ? ` (token-gated via ${config.bearerHeader})` : " (no auth - local only)"}\n`
       );
       resolve();
     });

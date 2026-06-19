@@ -285,6 +285,7 @@ describe("Dojo release gate runner", () => {
       gateIds: ["dojo_mcp_host_conformance"],
       env: {
         SYNTHI_DOJO_MCP_HOST_URL: "https://mcp.example.com",
+        SYNTHI_DOJO_MCP_BEARER_HEADER: "X-Synthi-Dojo-Mcp-Token",
         SYNTHI_DOJO_MCP_BEARER_TOKEN: "release-token",
         SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE: "1",
         SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING: "false",
@@ -306,6 +307,7 @@ describe("Dojo release gate runner", () => {
       gateIds: ["dojo_mcp_host_conformance"],
       env: {
         SYNTHI_DOJO_MCP_HOST_URL: "http://localhost:3333",
+        SYNTHI_DOJO_MCP_BEARER_HEADER: "X-Synthi-Dojo-Mcp-Token",
         SYNTHI_DOJO_MCP_BEARER_TOKEN: "release-token",
         SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE: "1",
         SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING: "1",
@@ -323,6 +325,34 @@ describe("Dojo release gate runner", () => {
         expect.objectContaining({
           env: "SYNTHI_DOJO_MCP_HOST_URL",
           reason: "loopback_or_local_bind_url",
+        }),
+      ],
+    }));
+
+    const invalidHeaderPlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "release",
+      gateIds: ["dojo_mcp_host_conformance"],
+      env: {
+        SYNTHI_DOJO_MCP_HOST_URL: "https://mcp.example.com",
+        SYNTHI_DOJO_MCP_BEARER_HEADER: "not a header",
+        SYNTHI_DOJO_MCP_BEARER_TOKEN: "release-token",
+        SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING: "1",
+      },
+    });
+
+    expect(invalidHeaderPlan.gates[0]).toEqual(expect.objectContaining({
+      status: "skipped",
+      skip_reason: "invalid_required_env",
+      missing_env: [],
+      invalid_env: [
+        expect.objectContaining({
+          env: "SYNTHI_DOJO_MCP_BEARER_HEADER",
+          reason: "invalid_http_header_name",
         }),
       ],
     }));
