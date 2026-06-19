@@ -21,8 +21,9 @@ const FORCE_MIN_HEIGHT = 560;
 const FORCE_PADDING = 58;
 const FORCE_ITERATIONS = 220;
 const STARFIELD_BASE_COUNT = 220;
-const STARFIELD_MAX_COUNT = 460;
-const STAR_LINK_LIMIT = 720;
+const STARFIELD_MAX_COUNT = 620;
+const STAR_LINK_LIMIT = 960;
+const SEMANTIC_PATH_STAR_COUNT = 4;
 const OPERATIONAL_STAR_LIMIT_PER_NODE = 12;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const IMPORTANT_NODE_KINDS = new Set(['Proof', 'Guardrail', 'CaseLaw', 'Adversary', 'Expiry']);
@@ -204,7 +205,7 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
       style={{
         borderColor: 'var(--border-subtle)',
         background:
-          'radial-gradient(circle at 22% 18%, color-mix(in srgb, var(--accent-primary) 13%, transparent), transparent 30%), radial-gradient(circle at 76% 68%, color-mix(in srgb, var(--text-primary) 8%, transparent), transparent 34%), radial-gradient(circle at 50% 48%, rgba(15, 23, 42, 0.18), transparent 52%), color-mix(in srgb, var(--bg-app) 88%, transparent)',
+          'radial-gradient(circle at 12% 14%, rgba(30, 41, 59, 0.2), transparent 26%), radial-gradient(circle at 88% 74%, rgba(15, 23, 42, 0.2), transparent 30%), radial-gradient(circle at 64% 18%, rgba(8, 13, 24, 0.34), transparent 36%), color-mix(in srgb, var(--bg-app) 92%, transparent)',
       }}
       data-testid="skill-cortex-graph"
     >
@@ -228,8 +229,8 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
               50% { opacity: 0.86; }
             }
             @keyframes cortex-particle-pulse {
-              0%, 100% { transform: scale(1); opacity: 0.82; }
-              50% { transform: scale(1.35); opacity: 1; }
+              0%, 100% { transform: scale(1); opacity: 0.84; }
+              50% { transform: scale(1.14); opacity: 0.96; }
             }
             .cortex-active-edge {
               animation: cortex-active-path 2.2s cubic-bezier(0.16, 1, 0.3, 1) infinite;
@@ -246,22 +247,6 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
               }
             }
           `}</style>
-          <defs>
-            <radialGradient id="cortex-field-fade" cx="50%" cy="50%" r="62%">
-              <stop offset="0%" stopColor="rgba(148, 163, 184, 0.13)" />
-              <stop offset="62%" stopColor="rgba(148, 163, 184, 0.035)" />
-              <stop offset="100%" stopColor="rgba(148, 163, 184, 0)" />
-            </radialGradient>
-          </defs>
-          <ellipse
-            cx={layout.width / 2}
-            cy={layout.height / 2}
-            rx={layout.width * 0.52}
-            ry={layout.height * 0.48}
-            fill="url(#cortex-field-fade)"
-            opacity="0.78"
-            pointerEvents="none"
-          />
           <g pointerEvents="none" aria-hidden="true">
             {(layout.starLinks || []).map((link) => (
               <line
@@ -301,32 +286,27 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
                   y2={link.y2}
                   stroke={link.color}
                   strokeWidth={selectedParent ? 0.95 : 0.72}
-                  strokeOpacity={selectedParent ? 0.34 : 0.16}
+                  strokeOpacity={selectedParent ? 0.13 : 0.055}
                   strokeLinecap="round"
                 />
               );
             })}
           </g>
-          {(graph.edges || []).map((edge) => {
-            const from = layout.positions.get(edge.from);
-            const to = layout.positions.get(edge.to);
-            if (!from || !to) return null;
-            const sourceTone = nodeTone(graph.nodes.find((node) => node.id === edge.from) || {});
-            const targetTone = nodeTone(graph.nodes.find((node) => node.id === edge.to) || {});
-            const isActive = edge.from === activeNodeId || edge.to === activeNodeId;
+          {(layout.semanticSegments || []).map((segment) => {
+            const isActive = segment.fromNodeId === activeNodeId || segment.toNodeId === activeNodeId;
             return (
               <line
-                key={edge.id}
+                key={segment.id}
                 className={isActive ? 'cortex-active-edge' : undefined}
-                x1={from.x}
-                y1={from.y}
-                x2={to.x}
-                y2={to.y}
-                stroke={isActive ? targetTone.color : 'rgba(148, 163, 184, 0.52)'}
-                strokeWidth={isActive ? 1.15 : 1}
-                strokeOpacity={isActive ? 0.68 : 0.17}
+                x1={segment.x1}
+                y1={segment.y1}
+                x2={segment.x2}
+                y2={segment.y2}
+                stroke={isActive ? segment.activeColor : segment.color}
+                strokeWidth={isActive ? 0.98 : 0.72}
+                strokeOpacity={isActive ? 0.42 : segment.opacity}
                 strokeLinecap="round"
-                style={{ filter: isActive ? `drop-shadow(0 0 6px ${sourceTone.color})` : 'none' }}
+                style={{ filter: isActive ? `drop-shadow(0 0 4px ${segment.activeColor})` : 'none' }}
               />
             );
           })}
@@ -350,8 +330,8 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
                   cy={star.y}
                   r={star.r + (selectedParent || hovered ? 7 : 4)}
                   fill={tone.color}
-                  opacity={selectedParent || hovered ? 0.12 : 0.055}
-                  style={{ filter: `blur(${selectedParent || hovered ? 7 : 4}px)` }}
+                  opacity={selectedParent || hovered ? 0.085 : 0.04}
+                  style={{ filter: `blur(${selectedParent || hovered ? 6 : 4}px)` }}
                   pointerEvents="none"
                 />
                 <circle
@@ -367,8 +347,8 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
                   cy={star.y}
                   r={star.r}
                   fill={tone.color}
-                  opacity={selectedParent || hovered ? 0.98 : 0.72}
-                  style={{ filter: `drop-shadow(0 0 ${selectedParent || hovered ? 9 : 5}px ${tone.color})` }}
+                  opacity={selectedParent || hovered ? 0.84 : 0.56}
+                  style={{ filter: `drop-shadow(0 0 ${selectedParent || hovered ? 7 : 4}px ${tone.color})` }}
                   pointerEvents="none"
                 />
                 {hovered ? (
@@ -440,7 +420,7 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
                   cy={position.y + 1.6 * depth}
                   r={radius + 5 + depth}
                   fill={tone.color}
-                  opacity={selected || hovered ? 0.18 : connected ? 0.11 : 0.055}
+                  opacity={selected || hovered ? 0.12 : connected ? 0.085 : 0.045}
                   style={{ filter: `blur(${Math.max(3, radius)}px)` }}
                 />
                 <circle
@@ -458,10 +438,10 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
                   cy={position.y}
                   r={radius}
                   fill={tone.color}
-                  opacity={connected ? 1 : 0.78}
+                  opacity={selected || hovered ? 0.88 : connected ? 0.92 : 0.74}
                   className={selected || hovered ? 'cortex-active-node' : undefined}
                   style={{
-                    filter: `drop-shadow(0 0 ${selected || hovered ? 13 : 8}px ${tone.color})`,
+                    filter: `drop-shadow(0 0 ${selected || hovered ? 9 : 6}px ${tone.color})`,
                   }}
                 />
                 {selected || hovered ? (
@@ -469,18 +449,18 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
                     <circle
                       cx={position.x}
                       cy={position.y}
-                      r={radius + 16}
+                      r={radius + 10}
                       fill={tone.color}
-                      opacity="0.08"
-                      style={{ filter: `blur(${radius + 2}px)` }}
+                      opacity="0.045"
+                      style={{ filter: `blur(${radius + 1}px)` }}
                     />
                     <circle
                       cx={position.x}
                       cy={position.y}
-                      r={radius + 6}
+                      r={radius + 4}
                       fill="none"
                       stroke={tone.color}
-                      strokeOpacity="0.58"
+                      strokeOpacity="0.44"
                       strokeWidth="1"
                     />
                   </>
@@ -540,6 +520,7 @@ function computeGraphLayout(graph) {
       positions: new Map(),
       stars: [],
       starLinks: [],
+      semanticSegments: [],
       operationalStars: [],
       operationalLinks: [],
     };
@@ -649,6 +630,7 @@ function computeGraphLayout(graph) {
   }
 
   const constellation = buildConstellationField({ graph, nodes, positions, width, height });
+  const semanticSegments = buildSemanticPathSegments({ graph, nodes, edges, positions, stars: constellation.stars });
   const operations = buildOperationalStars({ graph, nodes, positions, width, height });
   return {
     positions,
@@ -656,9 +638,89 @@ function computeGraphLayout(graph) {
     height,
     stars: constellation.stars,
     starLinks: constellation.starLinks,
+    semanticSegments,
     operationalStars: operations.stars,
     operationalLinks: operations.links,
   };
+}
+
+function buildSemanticPathSegments({ graph, nodes, edges, positions, stars }) {
+  const segments = [];
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const random = createSeededRandom(`${graph?.graphId || 'skill-cortex'}::semantic-paths`);
+
+  for (const edge of edges) {
+    const from = positions.get(edge.from);
+    const to = positions.get(edge.to);
+    if (!from || !to) continue;
+    const targetTone = nodeTone(nodeById.get(edge.to) || {});
+    const sourceTone = nodeTone(nodeById.get(edge.from) || {});
+    const waypoints = selectPathStars({ from, to, stars, random });
+    const points = [from, ...waypoints, to];
+    for (let index = 0; index < points.length - 1; index += 1) {
+      const a = points[index];
+      const b = points[index + 1];
+      segments.push({
+        id: `${edge.id || `${edge.from}-${edge.to}`}-segment-${index}`,
+        fromNodeId: edge.from,
+        toNodeId: edge.to,
+        x1: a.x,
+        y1: a.y,
+        x2: b.x,
+        y2: b.y,
+        color: index % 2 === 0 ? sourceTone.color : 'rgba(148, 163, 184, 0.54)',
+        activeColor: targetTone.color,
+        opacity: Math.max(0.08, 0.2 - pointDistance(a, b) / 620),
+      });
+    }
+  }
+
+  return segments;
+}
+
+function selectPathStars({ from, to, stars, random }) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const lengthSquared = Math.max(1, dx * dx + dy * dy);
+  const length = Math.sqrt(lengthSquared);
+  const candidates = stars
+    .map((star) => {
+      const t = ((star.x - from.x) * dx + (star.y - from.y) * dy) / lengthSquared;
+      if (t <= 0.08 || t >= 0.92) return null;
+      const projected = { x: from.x + dx * t, y: from.y + dy * t };
+      const perpendicular = pointDistance(star, projected);
+      if (perpendicular > Math.max(72, Math.min(132, length * 0.22))) return null;
+      return {
+        ...star,
+        t,
+        score: perpendicular + Math.abs(0.5 - t) * 16 + random() * 12,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.score - b.score);
+
+  const selected = [];
+  for (const candidate of candidates) {
+    if (selected.length >= SEMANTIC_PATH_STAR_COUNT) break;
+    if (selected.every((star) => Math.abs(star.t - candidate.t) > 0.12 && pointDistance(star, candidate) > 38)) {
+      selected.push(candidate);
+    }
+  }
+
+  const fallbackTargets = [0.22, 0.4, 0.6, 0.78];
+  for (const target of fallbackTargets) {
+    if (selected.length >= SEMANTIC_PATH_STAR_COUNT) break;
+    const ideal = { x: from.x + dx * target, y: from.y + dy * target };
+    const fallback = stars
+      .map((star) => ({ ...star, t: target, score: pointDistance(star, ideal) + random() * 8 }))
+      .filter((star) => selected.every((existing) => pointDistance(existing, star) > 34))
+      .sort((a, b) => a.score - b.score)[0];
+    if (fallback) selected.push(fallback);
+  }
+
+  return selected
+    .sort((a, b) => a.t - b.t)
+    .map((star) => ({ x: star.x, y: star.y }));
 }
 
 function buildOperationalStars({ graph, nodes, positions, width, height }) {
@@ -741,12 +803,12 @@ function deriveNodeOperations(node) {
 }
 
 function operationStarRadius(operation, node) {
-  if (operation.type === 'dangerous_action') return 4.7;
-  if (operation.type === 'action') return 4.2;
-  if (operation.type === 'guardrail' || operation.type === 'proof') return 3.8;
-  if (operation.type === 'assertion') return 3.55;
-  if (operation.type === 'evidence' || operation.type === 'output') return node.kind === 'Action' ? 3.35 : 3;
-  return 2.8;
+  if (operation.type === 'dangerous_action') return 3.95;
+  if (operation.type === 'action') return 3.65;
+  if (operation.type === 'guardrail' || operation.type === 'proof') return 3.35;
+  if (operation.type === 'assertion') return 3.05;
+  if (operation.type === 'evidence' || operation.type === 'output') return node.kind === 'Action' ? 2.85 : 2.6;
+  return 2.45;
 }
 
 function buildConstellationField({ graph, nodes, positions, width, height }) {
@@ -756,7 +818,7 @@ function buildConstellationField({ graph, nodes, positions, width, height }) {
     (graph?.edges || []).map((edge) => `${edge.from}>${edge.to}`).join('|'),
   ].join('::');
   const random = createSeededRandom(seedText);
-  const targetCount = Math.round(clamp((width * height) / 1850 + nodes.length * 18, STARFIELD_BASE_COUNT, STARFIELD_MAX_COUNT));
+  const targetCount = Math.round(clamp((width * height) / 1450 + nodes.length * 24, STARFIELD_BASE_COUNT, STARFIELD_MAX_COUNT));
   const stars = [];
 
   const addStar = ({ x, y, r, opacity, color, clusterId = '' }) => {
@@ -793,15 +855,35 @@ function buildConstellationField({ graph, nodes, positions, width, height }) {
     }
   }
 
+  const edgeClusterCount = Math.min(10, Math.max(5, Math.ceil(nodes.length * 0.9)));
+  for (let clusterIndex = 0; clusterIndex < edgeClusterCount && stars.length < targetCount; clusterIndex += 1) {
+    const anchor = edgeClusterAnchor(random, width, height, clusterIndex);
+    const clusterSize = 14 + Math.floor(random() * 14);
+    const clusterSeed = stableNodeSeed(`${seedText}:edge-cluster:${clusterIndex}`);
+    for (let index = 0; index < clusterSize && stars.length < targetCount; index += 1) {
+      const angle = clusterSeed + index * GOLDEN_ANGLE + random() * 0.44;
+      const radius = 6 + Math.pow(random(), 0.62) * (56 + random() * 48);
+      addStar({
+        x: anchor.x + Math.cos(angle) * radius * (0.78 + random() * 0.58),
+        y: anchor.y + Math.sin(angle) * radius * (0.72 + random() * 0.52),
+        r: 0.34 + Math.pow(random(), 2.4) * 1.02,
+        opacity: 0.14 + random() * 0.38,
+        color: starColor(random),
+        clusterId: `edge-${clusterIndex}`,
+      });
+    }
+  }
+
   while (stars.length < targetCount) {
     const band = random();
     const distance = Math.pow(random(), 0.78);
     const angle = random() * Math.PI * 2;
     const driftX = Math.cos(angle) * distance * width * (0.18 + band * 0.16);
     const driftY = Math.sin(angle) * distance * height * (0.16 + band * 0.18);
+    const edgeBiased = random() < 0.42;
     addStar({
-      x: centerWeightedRandom(random, width) + driftX,
-      y: centerWeightedRandom(random, height) + driftY,
+      x: (edgeBiased ? edgeWeightedRandom(random, width) : centerWeightedRandom(random, width)) + driftX,
+      y: (edgeBiased ? edgeWeightedRandom(random, height) : centerWeightedRandom(random, height)) + driftY,
       r: 0.38 + Math.pow(random(), 2.1) * 1.08,
       opacity: 0.18 + random() * 0.48,
       color: starColor(random),
@@ -879,6 +961,22 @@ function centerWeightedRandom(random, size) {
   const first = random();
   const second = random();
   return (first + second) * 0.5 * size;
+}
+
+function edgeWeightedRandom(random, size) {
+  const edge = random() < 0.5 ? 0 : size;
+  const inward = Math.pow(random(), 2.2) * size * 0.34;
+  return edge === 0 ? inward : size - inward;
+}
+
+function edgeClusterAnchor(random, width, height, index) {
+  const side = index % 4;
+  const marginX = width * (0.06 + random() * 0.08);
+  const marginY = height * (0.06 + random() * 0.08);
+  if (side === 0) return { x: marginX, y: height * (0.18 + random() * 0.64) };
+  if (side === 1) return { x: width * (0.18 + random() * 0.64), y: marginY };
+  if (side === 2) return { x: width - marginX, y: height * (0.18 + random() * 0.64) };
+  return { x: width * (0.18 + random() * 0.64), y: height - marginY };
 }
 
 function pointDistance(a, b) {
@@ -995,10 +1093,10 @@ function sanitizeId(value = '') {
 
 function nodeRadius(node) {
   const signalCount = nodeSignalCount(node);
-  if (node.risk === 'dangerous') return 8;
-  if (node.kind === 'Proof') return 7;
-  if (node.kind === 'Action' || node.risk === 'mutation') return 6.5;
-  if (IMPORTANT_NODE_KINDS.has(node.kind)) return 6;
+  if (node.risk === 'dangerous') return 7.2;
+  if (node.kind === 'Proof') return 6.7;
+  if (node.kind === 'Action' || node.risk === 'mutation') return 6.1;
+  if (IMPORTANT_NODE_KINDS.has(node.kind)) return 5.8;
   return Math.min(5.8, Math.max(3, 3 + Math.log2(signalCount) * 0.85));
 }
 
