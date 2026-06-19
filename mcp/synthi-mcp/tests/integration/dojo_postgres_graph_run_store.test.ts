@@ -72,6 +72,7 @@ describeWithPostgres("PostgresDojoGraphRunStore", () => {
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
+        submission_state: "success",
         assertion_results: { assert_submission_state: true },
       },
       evidence_writer: (event) => `ledger://${event.run_id}/${event.node_id}`,
@@ -111,6 +112,7 @@ describeWithPostgres("PostgresDojoGraphRunStore", () => {
       base_inputs: {
         workspace_verified: true,
         client_id_verified: true,
+        submission_state: "success",
         assertion_results: { assert_submission_state: true },
       },
       observed_evidence_by_scenario: {
