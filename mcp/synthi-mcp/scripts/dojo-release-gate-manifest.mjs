@@ -806,6 +806,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
     requires_env: [
       "SYNTHI_HOSTED_BROWSER_CDP_URL",
+      "FRONTEND_URL",
+      "COLLAB_URL",
       "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP",
     ],
     env_value_requirements: [
@@ -813,6 +815,16 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
         env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
         type: "non_loopback_url",
         allowed_protocols: ["ws", "wss", "http", "https"],
+      },
+      {
+        env: "FRONTEND_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["http", "https"],
+      },
+      {
+        env: "COLLAB_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["http", "https"],
       },
       { env: "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP", type: "boolean_true" },
     ],
@@ -2618,6 +2630,34 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       if (!Array.isArray(dockerIntegrationGate.requires_env) || !dockerIntegrationGate.requires_env.includes(requiredEnv)) {
         errors.push(`docker_integration_missing_env:${requiredEnv}`);
       }
+    }
+  }
+  const workflowHostedGate = gates.find((gate) => gate.id === "workflow_e2e_hosted");
+  if (workflowHostedGate) {
+    for (const requiredEnv of [
+      "SYNTHI_HOSTED_BROWSER_CDP_URL",
+      "FRONTEND_URL",
+      "COLLAB_URL",
+      "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP",
+    ]) {
+      if (!Array.isArray(workflowHostedGate.requires_env) || !workflowHostedGate.requires_env.includes(requiredEnv)) {
+        errors.push(`workflow_e2e_hosted_missing_env:${requiredEnv}`);
+      }
+    }
+    for (const requiredUrlEnv of [
+      "SYNTHI_HOSTED_BROWSER_CDP_URL",
+      "FRONTEND_URL",
+      "COLLAB_URL",
+    ]) {
+      const rule = (workflowHostedGate.env_value_requirements || []).find((item) => item?.env === requiredUrlEnv);
+      if (!rule || rule.type !== "non_loopback_url") {
+        errors.push(`workflow_e2e_hosted_missing_non_loopback_url_requirement:${requiredUrlEnv}`);
+      }
+    }
+    const freshMcpRule = (workflowHostedGate.env_value_requirements || [])
+      .find((item) => item?.env === "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP");
+    if (!freshMcpRule || freshMcpRule.type !== "boolean_true") {
+      errors.push("workflow_e2e_hosted_missing_fresh_mcp_env_requirement");
     }
   }
   const mcpHostConformanceGate = gates.find((gate) => gate.id === "dojo_mcp_host_conformance");

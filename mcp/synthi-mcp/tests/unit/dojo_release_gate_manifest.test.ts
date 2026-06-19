@@ -568,6 +568,36 @@ describe("Dojo release gate manifest", () => {
         ]),
       }),
       expect.objectContaining({
+        id: "workflow_e2e_hosted",
+        tier: "T5",
+        package_script: "live:browser:workflow-pipeline",
+        report_schema_version: "synthi.dojo.workflowPipelineE2E.v1",
+        requires_env: expect.arrayContaining([
+          "SYNTHI_HOSTED_BROWSER_CDP_URL",
+          "FRONTEND_URL",
+          "COLLAB_URL",
+          "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP",
+        ]),
+        env_value_requirements: expect.arrayContaining([
+          expect.objectContaining({
+            env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+            type: "non_loopback_url",
+          }),
+          expect.objectContaining({
+            env: "FRONTEND_URL",
+            type: "non_loopback_url",
+          }),
+          expect.objectContaining({
+            env: "COLLAB_URL",
+            type: "non_loopback_url",
+          }),
+          expect.objectContaining({
+            env: "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP",
+            type: "boolean_true",
+          }),
+        ]),
+      }),
+      expect.objectContaining({
         id: "dojo_full_visual_proof",
         tier: "T4",
         evidence_kind: "visual_report",
@@ -1371,6 +1401,19 @@ describe("Dojo release gate manifest", () => {
       errors: [],
       tier_count: 9,
     }));
+
+    const brokenWorkflowHosted = JSON.parse(JSON.stringify(manifest));
+    const workflowHostedGate = brokenWorkflowHosted.gates.find((gate) => gate.id === "workflow_e2e_hosted");
+    workflowHostedGate.requires_env = workflowHostedGate.requires_env
+      .filter((envName) => envName !== "FRONTEND_URL" && envName !== "COLLAB_URL");
+    workflowHostedGate.env_value_requirements = workflowHostedGate.env_value_requirements
+      .filter((rule) => rule.env !== "FRONTEND_URL" && rule.env !== "COLLAB_URL");
+    expect(validateDojoReleaseGateManifest(brokenWorkflowHosted, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "workflow_e2e_hosted_missing_env:FRONTEND_URL",
+      "workflow_e2e_hosted_missing_env:COLLAB_URL",
+      "workflow_e2e_hosted_missing_non_loopback_url_requirement:FRONTEND_URL",
+      "workflow_e2e_hosted_missing_non_loopback_url_requirement:COLLAB_URL",
+    ]));
 
     const brokenEnterpriseRelease = JSON.parse(JSON.stringify(manifest));
     brokenEnterpriseRelease.enterprise_release_gate_ids = brokenEnterpriseRelease.enterprise_release_gate_ids
