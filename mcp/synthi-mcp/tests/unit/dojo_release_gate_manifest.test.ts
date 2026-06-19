@@ -644,6 +644,9 @@ describe("Dojo release gate manifest", () => {
           "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
           "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
           "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
         ]),
       }),
       expect.objectContaining({
@@ -1655,9 +1658,13 @@ describe("Dojo release gate manifest", () => {
       .find((gate) => gate.id === "private_tool_stdio_host_conformance");
     privateHostGate.release_artifact_requirements.require_no_local_attach = false;
     privateHostGate.release_artifact_requirements.require_private_tool_call = false;
+    privateHostGate.requires_env = privateHostGate.requires_env
+      .filter((envName) => envName !== "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON"
+        && envName !== "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD");
     expect(validateDojoReleaseGateManifest(brokenPrivateToolHostConformance, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "private_tool_host_conformance_missing_no_local_attach:private_tool_stdio_host_conformance",
       "private_tool_host_conformance_missing_private_tool_call:private_tool_stdio_host_conformance",
+      "private_tool_stdio_host_conformance_missing_custom_mcp_command_env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON,SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
     ]));
 
     const brokenGeneratedPr = JSON.parse(JSON.stringify(manifest));
