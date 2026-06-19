@@ -143,19 +143,21 @@ function buildBlockerReport(inventoryReport, sourcePath = "", options = {}) {
   const checks = inventoryReport.evaluation.checks || [];
   const commandResults = new Map((inventoryReport.inventory.commandResults || []).map((item) => [item.id, item]));
 
-  const blockers = [];
-  const warnings = [];
+  const blockerItems = [];
+  const warningItems = [];
   for (const check of checks) {
     const classified = classifyReleaseCheck(check, commandResults, { advisory });
     if (!classified) {
       continue;
     }
     if (classified.kind === "blocker") {
-      blockers.push(classified.item);
+      blockerItems.push(classified.item);
     } else {
-      warnings.push(classified.item);
+      warningItems.push(classified.item);
     }
   }
+  const blockers = dedupeReleaseItems(blockerItems);
+  const warnings = dedupeReleaseItems(warningItems);
 
   const promotedWarningBlockers = blockers.filter((item) => item.promoted_from_warning === true);
 
@@ -186,6 +188,23 @@ function buildBlockerReport(inventoryReport, sourcePath = "", options = {}) {
     warnings: sortByCategory(warnings),
     next_actions: nextActions,
   };
+}
+
+function dedupeReleaseItems(items) {
+  const byId = new Map();
+  for (const item of items) {
+    const key = `${item.severity}:${item.id}`;
+    const existing = byId.get(key);
+    if (!existing) {
+      byId.set(key, {
+        ...item,
+        occurrence_count: item.occurrence_count || 1,
+      });
+      continue;
+    }
+    existing.occurrence_count += item.occurrence_count || 1;
+  }
+  return [...byId.values()];
 }
 
 function classifyReleaseCheck(check, commandResults, options = {}) {
@@ -530,6 +549,9 @@ function renderMarkdown(report) {
       lines.push(`- Summary: ${blocker.summary}`);
       if (blocker.promoted_from_warning) {
         lines.push("- Promoted from warning: yes");
+      }
+      if (blocker.occurrence_count > 1) {
+        lines.push(`- Repeated check occurrences: ${blocker.occurrence_count}`);
       }
       if (blocker.evidence.command_exit_code !== null) {
         lines.push(`- Command exit code: ${blocker.evidence.command_exit_code}`);

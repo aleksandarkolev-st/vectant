@@ -122,6 +122,35 @@ describe("Dojo GCP release blocker summarizer", () => {
     ]);
   });
 
+  it("deduplicates repeated release blockers while preserving occurrence counts", () => {
+    const report = buildBlockerReport(inventoryReportWithChecks([
+      warningCheck("externalsecret_binding_external_secret:release-secrets", {
+        expectedName: "release-secrets",
+        reason: "k8s_external_secrets_command_failed",
+      }),
+      warningCheck("externalsecret_binding_external_secret:release-secrets", {
+        expectedName: "release-secrets",
+        reason: "k8s_external_secrets_command_failed",
+      }),
+      warningCheck("externalsecret_binding:release-secrets:runtime-secrets:DATABASE_URL=release-database-url", {
+        expectedName: "release-secrets:runtime-secrets:DATABASE_URL=release-database-url",
+        reason: "k8s_external_secrets_command_failed",
+      }),
+    ]));
+
+    expect(report.release_ready).toBe(false);
+    expect(report.blocker_count).toBe(2);
+    expect(report.promoted_warning_blocker_count).toBe(2);
+    expect(report.blockers.find((item) => item.id === "externalsecret_binding_external_secret:release-secrets")).toEqual(expect.objectContaining({
+      occurrence_count: 2,
+      category: "secret_inventory",
+    }));
+    expect(report.next_actions.find((action) => action.category === "secret_inventory")?.blocker_ids).toEqual([
+      "externalsecret_binding_external_secret:release-secrets",
+      "externalsecret_binding:release-secrets:runtime-secrets:DATABASE_URL=release-database-url",
+    ]);
+  });
+
   it("categorizes kubectl and gcloud availability checks as release evidence categories", () => {
     expect(categoryForCheck({ id: "kubectl_available", detail: {} })).toBe("kubernetes_context");
     expect(categoryForCheck({ id: "gcloud_available", detail: {} })).toBe("inventory_access");
