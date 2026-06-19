@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
@@ -9,6 +10,8 @@ import {
   categoryForCheck,
   parseArgs,
 } from "../../scripts/dojo-gcp-release-blockers.mjs";
+
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 function inventoryReportWithChecks(checks) {
   return {
@@ -157,6 +160,36 @@ describe("Dojo GCP release blocker summarizer", () => {
     expect(categoryForCheck({ id: "externalsecret_binding:synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url", detail: {} })).toBe("secret_inventory");
   });
 
+  it("distinguishes unconfigured expected cloud resource names from missing cloud resources", () => {
+    const report = buildBlockerReport(inventoryReportWithChecks([
+      hardFailedCheck("cloud_sql_instance", {
+        reason: "no_expected_name_provided",
+      }),
+      hardFailedCheck("redis_instance", {
+        expectedName: "release-redis",
+        observedCount: 0,
+      }),
+    ]));
+
+    expect(report.release_ready).toBe(false);
+    expect(report.blocker_count).toBe(2);
+    expect(report.blockers.find((item) => item.id === "cloud_sql_instance")).toEqual(expect.objectContaining({
+      category: "cloud_resource",
+      summary: "Expected Google Cloud resource name is not configured: cloud_sql_instance",
+      remediation: expect.arrayContaining([
+        expect.stringContaining("Set the expected Google Cloud resource name"),
+      ]),
+      verification: expect.arrayContaining([
+        expect.stringContaining("no longer reported as not_configured"),
+      ]),
+    }));
+    expect(report.blockers.find((item) => item.id === "redis_instance")).toEqual(expect.objectContaining({
+      category: "cloud_resource",
+      summary: "Required Google Cloud resource could not be verified: release-redis",
+    }));
+    expect(report.next_actions.find((item) => item.category === "cloud_resource")?.action).toContain("Configure expected Google Cloud resource name");
+  });
+
   it("exits nonzero for strict warning blockers and zero for advisory warning-only reports", () => {
     const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "dojo-gcp-blockers-test-"));
     const inventoryPath = path.join(tmpRoot, "inventory.json");
@@ -167,13 +200,13 @@ describe("Dojo GCP release blocker summarizer", () => {
       }),
     ]), null, 2)}\n`, "utf8");
 
-    const script = path.resolve("scripts", "dojo-gcp-release-blockers.mjs");
+    const script = path.join(packageRoot, "scripts", "dojo-gcp-release-blockers.mjs");
     const strictOut = path.join(tmpRoot, "strict");
     const strict = spawnSync(process.execPath, [
       script,
       "--inventory-report", inventoryPath,
       "--out-dir", strictOut,
-    ], { cwd: process.cwd(), encoding: "utf8" });
+    ], { cwd: packageRoot, encoding: "utf8" });
     expect(strict.status).toBe(1);
     expect(readFileSync(path.join(strictOut, "dojo-gcp-release-blockers.json"), "utf8")).toContain("\"promoted_warning_blocker_count\": 1");
 
@@ -183,13 +216,13 @@ describe("Dojo GCP release blocker summarizer", () => {
       "--advisory",
       "--inventory-report", inventoryPath,
       "--out-dir", advisoryOut,
-    ], { cwd: process.cwd(), encoding: "utf8" });
+    ], { cwd: packageRoot, encoding: "utf8" });
     expect(advisory.status).toBe(0);
     expect(readFileSync(path.join(advisoryOut, "dojo-gcp-release-blockers.json"), "utf8")).toContain("\"mode\": \"advisory\"");
   });
 
   it("keeps the advisory package script available for discovery-only reports", () => {
-    const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
+    const packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"));
 
     expect(packageJson.scripts["proof:dojo:gcp-release-blockers"]).toBe("node scripts/dojo-gcp-release-blockers.mjs");
     expect(packageJson.scripts["proof:dojo:gcp-release-blockers:advisory"]).toBe("node scripts/dojo-gcp-release-blockers.mjs --advisory");

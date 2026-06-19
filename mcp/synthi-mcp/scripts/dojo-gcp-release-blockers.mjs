@@ -339,6 +339,9 @@ function summaryForCheck(check, category) {
     return `Kubernetes inventory is unavailable for ${check.id}`;
   }
   if (category === "cloud_resource") {
+    if (check.detail?.reason === "no_expected_name_provided") {
+      return `Expected Google Cloud resource name is not configured: ${check.id}`;
+    }
     return `Required Google Cloud resource could not be verified: ${check.detail?.expectedName || check.id}`;
   }
   if (category === "read_only_plan") {
@@ -389,6 +392,13 @@ function remediationForCheck(check, category) {
     ];
   }
   if (category === "cloud_resource") {
+    if (check.detail?.reason === "no_expected_name_provided") {
+      return [
+        "Set the expected Google Cloud resource name before judging whether the resource exists.",
+        "Use the inventory flag or environment variable for the resource, such as --cloud-sql-instance/CLOUD_SQL_INSTANCE, --redis-instance/REDIS_INSTANCE, --gcs-bucket/GCS_BUCKET, --cluster/GKE_CLUSTER, or --artifact-repository/AR_REPO.",
+        "Rerun inventory after the expected name is configured; provisioning still requires separate operator approval.",
+      ];
+    }
     return [
       "Create, select, or grant read access to the named Google Cloud resource in the configured project and region.",
       "Rerun inventory before using that resource as release evidence.",
@@ -426,6 +436,12 @@ function verificationForCheck(check, category) {
     ];
   }
   if (category === "cloud_resource") {
+    if (check.detail?.reason === "no_expected_name_provided") {
+      return [
+        `Rerun inventory and confirm ${check.id} is no longer reported as not_configured.`,
+        "Then confirm the named resource check passes against observed inventory.",
+      ];
+    }
     return [
       `Rerun inventory and confirm ${check.id} passes with observedCount greater than zero.`,
     ];
@@ -483,6 +499,10 @@ function nextActionText(category, items) {
     return `Restore read access for ${items.length} inventory dataset(s) before judging dependent resources.`;
   }
   if (category === "cloud_resource") {
+    const missingNames = items.filter((item) => item.detail?.reason === "no_expected_name_provided");
+    if (missingNames.length > 0) {
+      return `Configure expected Google Cloud resource name(s) for ${missingNames.map((item) => item.id).join(", ")} before deciding whether provisioning is required.`;
+    }
     return `Provision or grant read access to ${items.length} expected Google Cloud resource check(s).`;
   }
   if (category === "read_only_plan") {
