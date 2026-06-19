@@ -631,6 +631,7 @@ describe("Dojo release gate manifest", () => {
         release_artifact_requirements: expect.objectContaining({
           require_non_loopback_runtime: true,
           require_external_private_tool_store: true,
+          require_external_private_tool_store_location_policy: true,
           require_no_local_attach: true,
           require_private_tool_call: true,
           require_custom_mcp_command: true,
@@ -654,6 +655,7 @@ describe("Dojo release gate manifest", () => {
         release_artifact_requirements: expect.objectContaining({
           require_non_loopback_runtime: true,
           require_external_private_tool_store: true,
+          require_external_private_tool_store_location_policy: true,
           require_no_local_attach: true,
           require_private_tool_call: true,
           require_agent_mcp_only: true,

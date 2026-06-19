@@ -28,6 +28,9 @@ import {
   runDojoReleaseGateRunner,
 } from "./dojo-release-gate-runner.mjs";
 import {
+  privateToolStoreLocationConformance,
+} from "./private-tool-acceptance-conformance.mjs";
+import {
   DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES,
   DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES,
 } from "./dojo-agent-ready-ui-contract-self-check.mjs";
@@ -5104,6 +5107,16 @@ function validateDeployedPrivateToolHostConformance(transcript, {
   if (conformance.external_private_tool_store !== true || transcript?.private_tool_store?.external !== true) {
     errors.push(`${errorPrefix}_external_store_missing`);
   }
+  if (conformance.external_private_tool_store_location_ok !== true) {
+    errors.push(`${errorPrefix}_external_store_location_policy_missing`);
+  }
+  const storeLocation = privateToolStoreLocationConformance({
+    file: transcript?.private_tool_store?.file,
+    requireExternalStore: true,
+  });
+  if (!storeLocation.ok) {
+    errors.push(`${errorPrefix}_external_store_location_invalid:${storeLocation.location_class}:${storeLocation.reasons.join("|")}`);
+  }
   if (classifyUrlHost(transcript?.target_url) !== "remote") {
     errors.push(`${errorPrefix}_target_not_remote:${classifyUrlHost(transcript?.target_url)}`);
   }
@@ -6879,10 +6892,13 @@ function deployedPrivateToolHostTranscriptOverrides(overrides = {}) {
       runtime_host_class: "remote",
       require_external_private_tool_store: true,
       external_private_tool_store: true,
+      external_private_tool_store_location_ok: true,
+      external_private_tool_store_location_class: "remote_uri",
+      external_private_tool_store_location_reasons: ["remote_uri_scheme:gs"],
     },
     private_tool_store: {
       external: true,
-      file: "redacted-external-private-tools.enc.json",
+      file: "gs://release-private-tool-store/private-tools.enc.json",
       scope: "external-self-check",
     },
   };

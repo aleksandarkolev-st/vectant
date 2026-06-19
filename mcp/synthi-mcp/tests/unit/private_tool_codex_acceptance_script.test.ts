@@ -1,4 +1,5 @@
 // @ts-nocheck
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -13,6 +14,7 @@ import {
   findPageWithText,
   parseBooleanFlag,
   parseJsonObjectArgument,
+  privateToolStoreLocationConformance,
   privateToolStoreConformance,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
@@ -112,6 +114,22 @@ describe("private-tool Codex acceptance harness", () => {
       scope: "workspace-scope",
       external: true,
     });
+    expect(resolvePrivateToolStoreSpec({
+      args: {
+        "private-tool-store-file": "gs://release-private-tool-store/private-tools.enc.json",
+        "private-tool-store-key": "external-key",
+        "private-tool-store-scope": "workspace-scope",
+      },
+      env: {},
+      defaultFile: "/tmp/default-private-tools.enc.json",
+      defaultKey: "default-key",
+      defaultScope: "default-scope",
+    })).toEqual({
+      file: "gs://release-private-tool-store/private-tools.enc.json",
+      key: "external-key",
+      scope: "workspace-scope",
+      external: true,
+    });
     expect(parseJsonObjectArgument("{\"run_mode\":\"prefixOnly\",\"confirm_mutation\":false}", "tool_args")).toEqual({
       run_mode: "prefixOnly",
       confirm_mutation: false,
@@ -127,11 +145,11 @@ describe("private-tool Codex acceptance harness", () => {
         external: false,
       },
       requireExternalStore: true,
-    })).toEqual({
+    })).toEqual(expect.objectContaining({
       ok: false,
       require_external_private_tool_store: true,
       external_private_tool_store: false,
-    });
+    }));
     expect(privateToolStoreConformance({
       storeSpec: {
         file: path.resolve("/srv/synthi/private-tools.enc.json"),
@@ -140,11 +158,49 @@ describe("private-tool Codex acceptance harness", () => {
         external: true,
       },
       requireExternalStore: true,
-    })).toEqual({
+    })).toEqual(expect.objectContaining({
       ok: true,
       require_external_private_tool_store: true,
       external_private_tool_store: true,
-    });
+      external_private_tool_store_location_ok: true,
+    }));
+  });
+
+  it("does not let local paths satisfy deployed Codex external-store conformance", () => {
+    const roots = {
+      repoRoot: path.resolve("/workspace/repo"),
+      packageRoot: path.resolve("/workspace/repo/mcp/synthi-mcp"),
+      cwd: path.resolve("/workspace/repo/mcp/synthi-mcp"),
+      tmpDir: path.resolve(os.tmpdir()),
+      homeDir: path.resolve(os.homedir()),
+    };
+    const repoLocal = path.join(roots.repoRoot, "tmp", "private-tools.enc.json");
+
+    expect(privateToolStoreConformance({
+      storeSpec: {
+        file: repoLocal,
+        key: "external-key",
+        scope: "workspace-scope",
+        external: true,
+      },
+      requireExternalStore: true,
+      ...roots,
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      require_external_private_tool_store: true,
+      external_private_tool_store: true,
+      external_private_tool_store_location_ok: false,
+      external_private_tool_store_location_class: "local_disallowed_root",
+    }));
+
+    expect(privateToolStoreLocationConformance({
+      file: "gs://release-private-tool-store/private-tools.enc.json",
+      requireExternalStore: true,
+      ...roots,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      location_class: "remote_uri",
+    }));
   });
 
   it("prompts Codex to call the discovered private workflow tool instead of replaying manually", () => {

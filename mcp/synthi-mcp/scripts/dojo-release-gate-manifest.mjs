@@ -322,6 +322,7 @@ export const DOJO_LIVE_HOSTED_RUNTIME_REQUIREMENTS = Object.freeze({
 export const DOJO_DEPLOYED_PRIVATE_TOOL_HOST_REQUIREMENTS = Object.freeze({
   ...DOJO_LIVE_HOSTED_RUNTIME_REQUIREMENTS,
   require_external_private_tool_store: true,
+  require_external_private_tool_store_location_policy: true,
   require_no_local_attach: true,
   require_private_tool_call: true,
 });
@@ -2632,6 +2633,9 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!gate.release_artifact_requirements?.require_external_private_tool_store) {
       errors.push(`private_tool_host_conformance_missing_external_store:${gate.id}`);
+    }
+    if (!gate.release_artifact_requirements?.require_external_private_tool_store_location_policy) {
+      errors.push(`private_tool_host_conformance_missing_external_store_location_policy:${gate.id}`);
     }
     if (!gate.release_artifact_requirements?.require_visual_proof) {
       errors.push(`private_tool_host_conformance_missing_visual_proof:${gate.id}`);

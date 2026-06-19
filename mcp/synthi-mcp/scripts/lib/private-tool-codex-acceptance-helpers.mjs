@@ -3,6 +3,7 @@ import { hostedRuntimePolicyEnv } from "../private-tool-acceptance-conformance.m
 export {
   parseBooleanFlag,
   parseJsonObjectArgument,
+  privateToolStoreLocationConformance,
   privateToolStoreConformance,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,

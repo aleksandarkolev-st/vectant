@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 export {
   parseBooleanFlag,
   parseJsonObjectArgument,
+  privateToolStoreLocationConformance,
   privateToolStoreConformance,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,

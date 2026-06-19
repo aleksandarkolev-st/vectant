@@ -1,4 +1,5 @@
 // @ts-nocheck
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -6,6 +7,7 @@ import {
   mcpCommandConformance,
   parseBooleanFlag,
   parseJsonObjectArgument,
+  privateToolStoreLocationConformance,
   privateToolStoreConformance,
   resolveMcpServerCommandSpec,
   resolvePrivateToolStoreSpec,
@@ -172,11 +174,13 @@ describe("private-tool stdio acceptance harness", () => {
         external: false,
       },
       requireExternalStore: false,
-    })).toEqual({
+    })).toEqual(expect.objectContaining({
       ok: true,
       require_external_private_tool_store: false,
       external_private_tool_store: false,
-    });
+      external_private_tool_store_location_ok: true,
+      external_private_tool_store_location_class: "not_required",
+    }));
     expect(privateToolStoreConformance({
       storeSpec: {
         file: "/tmp/default-private-tools.enc.json",
@@ -185,11 +189,11 @@ describe("private-tool stdio acceptance harness", () => {
         external: false,
       },
       requireExternalStore: true,
-    })).toEqual({
+    })).toEqual(expect.objectContaining({
       ok: false,
       require_external_private_tool_store: true,
       external_private_tool_store: false,
-    });
+    }));
     expect(privateToolStoreConformance({
       storeSpec: {
       file: path.resolve("/srv/synthi/private-tools.enc.json"),
@@ -198,11 +202,61 @@ describe("private-tool stdio acceptance harness", () => {
         external: true,
       },
       requireExternalStore: true,
-    })).toEqual({
+    })).toEqual(expect.objectContaining({
       ok: true,
       require_external_private_tool_store: true,
       external_private_tool_store: true,
-    });
+      external_private_tool_store_location_ok: true,
+    }));
+  });
+
+  it("does not count repo-local, home, or temp files as external release stores", () => {
+    const roots = {
+      repoRoot: path.resolve("/workspace/repo"),
+      packageRoot: path.resolve("/workspace/repo/mcp/synthi-mcp"),
+      cwd: path.resolve("/workspace/repo/mcp/synthi-mcp"),
+      tmpDir: path.resolve(os.tmpdir()),
+      homeDir: path.resolve(os.homedir()),
+    };
+
+    for (const file of [
+      path.join(roots.repoRoot, "tmp", "private-tools.enc.json"),
+      path.join(roots.cwd, "tmp", "private-tools.enc.json"),
+      path.join(roots.packageRoot, "tmp", "private-tools.enc.json"),
+      path.join(roots.tmpDir, "private-tools.enc.json"),
+      path.join(roots.homeDir, ".synthi", "private-tools.enc.json"),
+    ]) {
+      expect(privateToolStoreConformance({
+        storeSpec: {
+          file,
+          key: "external-key",
+          scope: "workspace-scope",
+          external: true,
+        },
+        requireExternalStore: true,
+        ...roots,
+      })).toEqual(expect.objectContaining({
+        ok: false,
+        require_external_private_tool_store: true,
+        external_private_tool_store: true,
+        external_private_tool_store_location_ok: false,
+        external_private_tool_store_location_class: "local_disallowed_root",
+      }));
+    }
+
+    expect(privateToolStoreLocationConformance({
+      file: path.join(roots.tmpDir, "approved-mounted-store", "private-tools.enc.json"),
+      requireExternalStore: true,
+      ...roots,
+      env: {
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXTERNAL_STORE_ALLOWED_ROOTS_JSON: JSON.stringify([
+          path.join(roots.tmpDir, "approved-mounted-store"),
+        ]),
+      },
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      location_class: "allowed_external_root",
+    }));
   });
 
   it("selects private workflow tools deterministically", () => {

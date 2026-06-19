@@ -1126,6 +1126,12 @@ npm --prefix mcp/synthi-mcp run live:dojo:mcp-host-conformance
 
 - Hosted CDP endpoint is non-loopback.
 - Private workflow tool store is external and encrypted.
+- The external store file is not under the repo checkout, OS temp directory, or
+  user home directory. Use a network path, mounted release secret volume, or a
+  durable release-controlled path. If the store is mounted under a nonstandard
+  approved root, set
+  `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXTERNAL_STORE_ALLOWED_ROOTS_JSON` to a JSON
+  array of allowed root paths before running the host-conformance gates.
 - Store key is provided through release secret management.
 - Tool scope is explicit and tenant/workspace bounded.
 - Acceptance target URL is the deployed target app, not a local fixture.

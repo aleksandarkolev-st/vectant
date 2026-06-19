@@ -156,6 +156,9 @@ async function main() {
       runtime_host_class: runtimeConformance.runtime_host_class,
       require_external_private_tool_store: privateToolStoreConformance.require_external_private_tool_store,
       external_private_tool_store: privateToolStoreConformance.external_private_tool_store,
+      external_private_tool_store_location_ok: privateToolStoreConformance.external_private_tool_store_location_ok,
+      external_private_tool_store_location_class: privateToolStoreConformance.external_private_tool_store_location_class,
+      external_private_tool_store_location_reasons: privateToolStoreConformance.external_private_tool_store_location_reasons,
     },
     private_tool_store: {
       external: privateToolStore.external,

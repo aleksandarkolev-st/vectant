@@ -2585,6 +2585,32 @@ describe("Dojo release gate artifact verifier", () => {
       "private_tool_stdio_host_custom_mcp_command_missing",
       "private_tool_stdio_host_target_not_remote:loopback",
     ]));
+
+    const forgedLocalStore = privateToolStdioAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      conformance: {
+        require_custom_mcp_command: true,
+        custom_mcp_command: true,
+        external_private_tool_store_location_ok: true,
+      },
+      private_tool_store: {
+        external: true,
+        file: path.join(tmpdir(), "private-tools.enc.json"),
+      },
+    }));
+    expect(validateDojoPrivateToolStdioHostConformanceForRelease(forgedLocalStore).errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("private_tool_stdio_host_external_store_location_invalid:local_disallowed_root"),
+    ]));
+
+    const missingLocationPolicy = privateToolCodexAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      conformance: {
+        external_private_tool_store_location_ok: undefined,
+        external_private_tool_store_location_class: undefined,
+        external_private_tool_store_location_reasons: undefined,
+      },
+    }));
+    expect(validateDojoPrivateToolCodexHostConformanceForRelease(missingLocationPolicy).errors).toEqual(expect.arrayContaining([
+      "private_tool_codex_host_external_store_location_policy_missing",
+    ]));
   });
 
   it("reports missing release-candidate artifacts as structured gate failures", async () => {
@@ -6148,10 +6174,13 @@ function deployedPrivateToolHostFixtureOverrides(overrides = {}) {
       runtime_host_class: "remote",
       require_external_private_tool_store: true,
       external_private_tool_store: true,
+      external_private_tool_store_location_ok: true,
+      external_private_tool_store_location_class: "remote_uri",
+      external_private_tool_store_location_reasons: ["remote_uri_scheme:gs"],
     },
     private_tool_store: {
       external: true,
-      file: "redacted-external-private-tools.enc.json",
+      file: "gs://release-private-tool-store/private-tools.enc.json",
       scope: "external-acceptance-fixture",
     },
   };
