@@ -75,6 +75,7 @@ import {
   buildDojoPackageReadinessEvidenceManifest,
   collectPackageEntryPaths,
   collectScriptReferencedPackagePaths,
+  collectScriptTransitivePackagePaths,
   deriveDojoPackageReadinessRequiredScriptNames,
   DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
 } from "../../scripts/dojo-package-readiness-self-check.mjs";
@@ -9705,7 +9706,7 @@ async function writePackageReadinessEvidenceFixture({
   const packageJson = JSON.parse(packageJsonText);
   const exportEntryPaths = collectPackageEntryPaths(packageJson);
   const requiredScriptNames = deriveDojoPackageReadinessRequiredScriptNames(packageJson);
-  const scriptReferencedPaths = collectScriptReferencedPackagePaths(
+  const scriptReferencedPaths = collectScriptTransitivePackagePaths(
     packageJson.scripts,
     requiredScriptNames,
   );

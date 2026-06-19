@@ -11,7 +11,7 @@ import {
   analyzeScreenshotVisualEvidence,
   collectRouteLayoutMetrics,
   evaluateVisualProofCapture,
-} from "../../../synthi/scripts/dojo-visual-proof-utils.mjs";
+} from "./lib/dojo-visual-proof-utils.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
