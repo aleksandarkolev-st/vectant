@@ -1053,8 +1053,8 @@ fixture-only artifacts.
 | `private_tool_stdio_acceptance` | `SYNTHI_HOSTED_BROWSER_CDP_URL` | Strict stdio MCP client can execute proof-gated private tool flow against hosted runtime. |
 | `private_tool_codex_acceptance` | `SYNTHI_HOSTED_BROWSER_CDP_URL` | Codex-style client can execute proof-gated private tool flow without local browser leakage. |
 | `dojo_mcp_host_conformance` | `SYNTHI_DOJO_MCP_HOST_URL`, optional `SYNTHI_DOJO_MCP_BEARER_TOKEN`, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE`, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING`, `SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED`, `SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE`, `SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING` | Non-loopback MCP host lists and dispatches only governed competencies. |
-| `private_tool_stdio_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD` | Deployed private tool host path works with external store and strict schema. |
-| `private_tool_codex_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD` | Deployed Codex private tool path works through the same explicit MCP wrapper and without shell-only shortcuts. |
+| `private_tool_stdio_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD` | Deployed private tool host path works with external store, independently expected store custody, and strict schema. |
+| `private_tool_codex_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD` | Deployed Codex private tool path works through the same explicit MCP wrapper, expected store custody, and without shell-only shortcuts. |
 | `dojo_managed_key_signing_self_check` | `SYNTHI_DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PATH` from the managed-key observation script | Proof signing is backed by a configured managed signing service and public verifier material. |
 | `dojo_live_chaos` | `SYNTHI_CHAOS_ENABLE_LIVE=1`, `SYNTHI_CHAOS_BROWSER_CRASH_COMMAND_JSON`, `SYNTHI_CHAOS_EVIDENCE_STORE_UNAVAILABLE_COMMAND_JSON`, `SYNTHI_CHAOS_POSTGRES_RESTART_PROOF_COMMAND_JSON`, `SYNTHI_CHAOS_PROOF_SIGNING_OUTAGE_COMMAND_JSON`, `SYNTHI_CHAOS_REDIS_RESTART_COMMAND_JSON`, `SYNTHI_CHAOS_SIGNALING_PARTITION_COMMAND_JSON`, `SYNTHI_CHAOS_WORKER_KILL_COMMAND_JSON` | Real worker, Redis, Postgres, browser, evidence-store, and proof-signing failure modes fail closed. |
 | `soak_performance` | `SYNTHI_SESSION_ID`, `SOAK_DURATION_MIN>=60` | Long-running live session stays within latency, memory, leak, false-allow, and false-block budgets. |
@@ -1199,15 +1199,27 @@ npm --prefix mcp/synthi-mcp run live:dojo:mcp-host-conformance
   array of allowed root paths before running the host-conformance gates.
 - Store key is provided through release secret management.
 - Tool scope is explicit and tenant/workspace bounded.
+- Expected store custody is supplied independently as:
+  - SHA-256 fingerprint of the exact release private-tool store key.
+  - Expected tenant/workspace/app-release store scope.
 - Acceptance target URL is the deployed target app, not a local fixture.
 
 **Commands:**
 
 ```powershell
 $env:SYNTHI_HOSTED_BROWSER_CDP_URL='wss://<hosted-runtime>/devtools/browser/<session>'
-$env:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE='\\<external-store>\private-tools.enc.json'
-$env:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY='<release-secret-key>'
+$env:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE='gs://<release-private-tool-store>/private-tools.enc.json'
+$privateToolStoreKey = gcloud secrets versions access latest --secret='<private-tool-store-key-secret>'
+$env:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY=$privateToolStoreKey
 $env:SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE='<tenant>/<workspace>/<app-release>'
+$env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE=$env:SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE
+$env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256=(
+  [Convert]::ToHexString(
+    [Security.Cryptography.SHA256]::HashData(
+      [Text.Encoding]::UTF8.GetBytes($privateToolStoreKey)
+    )
+  ).ToLowerInvariant()
+)
 $env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL='https://<target-app-origin>'
 $env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND='<deployed-mcp-wrapper-command>'
 $env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON=('["--connect","https://' + $env:DOMAIN + '/dojo/mcp"]')
@@ -1216,9 +1228,18 @@ npm --prefix mcp/synthi-mcp run live:browser:private-tool-host-conformance
 npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex-host-conformance
 ```
 
+Do not echo or commit `$privateToolStoreKey`. The verifier only needs
+`SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256`; the
+runtime harness still receives the key through release secret management so it
+can decrypt the external store.
+
 **Expected evidence:**
 
 - External private tool store is used.
+- `private_tool_store.key_sha256` matches
+  `expected_private_tool_store.key_sha256`.
+- `private_tool_store.scope` matches
+  `expected_private_tool_store.scope`.
 - Runtime URL is non-loopback.
 - Strict stdio and Codex-style clients both execute the proof path.
 - Raw backing tool path is blocked outside Dojo dispatcher context.
@@ -1227,6 +1248,9 @@ npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex-host-conformance
 
 - Store file is local temp output.
 - Store key does not decrypt generated tools across processes.
+- Expected store key fingerprint was computed from a different secret version
+  than the runtime key.
+- Expected store scope does not match the scope used by the deployed host.
 - Target URL points to a local dev app.
 - Codex client path relies on shell-only behavior not present in hosted MCP.
 
