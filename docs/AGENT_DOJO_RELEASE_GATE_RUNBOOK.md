@@ -775,10 +775,30 @@ Invoke-WebRequest "https://$env:DOMAIN/ports" -UseBasicParsing
 ### Manual GKE Rollout Path
 
 Use this only when Cloud Build is unavailable. It should still use Artifact
-Registry images and the same manifests.
+Registry images and the same manifests. Do not apply raw Kustomize output
+directly; the repo manifests contain `build-tag-required` placeholders that
+must be replaced with the approved immutable release tag or digest before
+`kubectl apply`.
 
 ```powershell
-kubectl apply -k k8s/
+$env:RELEASE_REGISTRY = "<region>-docker.pkg.dev/<project-id>/<artifact-repo>"
+$env:MANIFEST_SOURCE_REGISTRY = "<registry-present-in-rendered-manifests>"
+$env:RELEASE_IMAGE_TAG = "<immutable-build-id-or-image-digest>"
+
+New-Item -ItemType Directory -Force tmp | Out-Null
+kubectl kustomize k8s/ |
+  Set-Content -Path tmp/base-render.yaml -Encoding utf8
+
+$baseRender = Get-Content tmp/base-render.yaml -Raw
+$baseRender = $baseRender.Replace($env:MANIFEST_SOURCE_REGISTRY, $env:RELEASE_REGISTRY)
+$baseRender = $baseRender.Replace("build-tag-required", $env:RELEASE_IMAGE_TAG)
+Set-Content -Path tmp/base-render.release.yaml -Value $baseRender -Encoding utf8
+
+if (Select-String -Path tmp/base-render.release.yaml -Pattern "build-tag-required") {
+  throw "Rendered base manifests still contain build-tag-required."
+}
+
+kubectl apply -f tmp/base-render.release.yaml
 kubectl -n $env:K8S_NAMESPACE get pods
 kubectl -n $env:K8S_NAMESPACE describe externalsecret synthi-secrets
 kubectl -n $env:K8S_NAMESPACE rollout status deployment/frontend
@@ -791,12 +811,20 @@ replacement automatically; manual rollout must do the same before `kubectl
 apply`.
 
 ```powershell
+New-Item -ItemType Directory -Force tmp | Out-Null
 kubectl kustomize k8s/overlays/dojo-release-gate --load-restrictor LoadRestrictionsNone |
   Set-Content -Path tmp/dojo-release-gate-render.yaml -Encoding utf8
 
-# Replace build-tag-required placeholders in tmp/dojo-release-gate-render.yaml
-# with the exact release image tag or digest before applying.
-kubectl apply -f tmp/dojo-release-gate-render.yaml
+$dojoRender = Get-Content tmp/dojo-release-gate-render.yaml -Raw
+$dojoRender = $dojoRender.Replace($env:MANIFEST_SOURCE_REGISTRY, $env:RELEASE_REGISTRY)
+$dojoRender = $dojoRender.Replace("build-tag-required", $env:RELEASE_IMAGE_TAG)
+Set-Content -Path tmp/dojo-release-gate-render.release.yaml -Value $dojoRender -Encoding utf8
+
+if (Select-String -Path tmp/dojo-release-gate-render.release.yaml -Pattern "build-tag-required") {
+  throw "Rendered Dojo release-gate manifests still contain build-tag-required."
+}
+
+kubectl apply -f tmp/dojo-release-gate-render.release.yaml
 ```
 
 If image tags are changed manually, update all deployments consistently and
