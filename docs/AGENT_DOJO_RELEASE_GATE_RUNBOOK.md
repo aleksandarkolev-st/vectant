@@ -169,6 +169,14 @@ node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
   --expected-secret=synthi-dojo-mcp-manifest-private-key-pem `
   --expected-secret=synthi-dojo-mcp-manifest-public-key-pem `
   --expected-secret=synthi-dojo-mcp-bearer-token `
+  --expected-secret=synthi-dojo-hosted-browser-cdp-url `
+  --expected-secret=synthi-dojo-hosted-browser-workspace-url `
+  --expected-secret=synthi-dojo-release-workspace-id `
+  --expected-secret=synthi-dojo-release-agent-id `
+  --expected-secret=synthi-private-workflow-tool-store-file `
+  --expected-secret=synthi-private-workflow-tool-scope `
+  --expected-secret=synthi-auth-checkpoint-store-file `
+  --expected-secret=synthi-auth-checkpoint-scope `
   --out-dir=tmp/dojo-gcp-release-inventory
 ```
 
@@ -201,6 +209,14 @@ node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
   --expected-secret=synthi-dojo-mcp-manifest-private-key-pem `
   --expected-secret=synthi-dojo-mcp-manifest-public-key-pem `
   --expected-secret=synthi-dojo-mcp-bearer-token `
+  --expected-secret=synthi-dojo-hosted-browser-cdp-url `
+  --expected-secret=synthi-dojo-hosted-browser-workspace-url `
+  --expected-secret=synthi-dojo-release-workspace-id `
+  --expected-secret=synthi-dojo-release-agent-id `
+  --expected-secret=synthi-private-workflow-tool-store-file `
+  --expected-secret=synthi-private-workflow-tool-scope `
+  --expected-secret=synthi-auth-checkpoint-store-file `
+  --expected-secret=synthi-auth-checkpoint-scope `
   --out-dir=tmp/dojo-gcp-release-inventory
 ```
 
@@ -458,6 +474,14 @@ synthi-dojo-mcp-manifest-key-id -> SYNTHI_DOJO_MCP_MANIFEST_KEY_ID
 synthi-dojo-mcp-manifest-private-key-pem -> SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM
 synthi-dojo-mcp-manifest-public-key-pem -> SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM
 synthi-dojo-mcp-bearer-token -> SYNTHI_DOJO_MCP_BEARER_TOKEN
+synthi-dojo-hosted-browser-cdp-url -> SYNTHI_HOSTED_BROWSER_CDP_URL
+synthi-dojo-hosted-browser-workspace-url -> SYNTHI_HOSTED_BROWSER_WORKSPACE_URL
+synthi-dojo-release-workspace-id -> SYNTHI_WORKSPACE_ID
+synthi-dojo-release-agent-id -> SYNTHI_AGENT_ID
+synthi-private-workflow-tool-store-file -> SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE
+synthi-private-workflow-tool-scope -> SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE
+synthi-auth-checkpoint-store-file -> SYNTHI_AUTH_CHECKPOINT_STORE_FILE
+synthi-auth-checkpoint-scope -> SYNTHI_AUTH_CHECKPOINT_SCOPE
 ```
 
 Do not store a production proof private key or default local signing key in
@@ -571,14 +595,15 @@ Required public or authenticated endpoints:
 ```text
 https://<domain>/workspace
 https://<domain>/ports
-https://<deployed-mcp-host>
+https://<domain>/dojo/mcp
 wss://<hosted-browser-runtime-cdp>
 ```
 
-If the MCP host is deployed behind an internal service, expose it through an
-authenticated load balancer, IAP-protected endpoint, or Cloud Run/Gateway
-facade. The release gate must call the same deployed endpoint that external
-clients will use.
+The Dojo release overlay exposes the MCP host through the GKE Ingress at
+`/dojo/mcp`. If an environment replaces that route with an internal service,
+Cloud Run service, or gateway facade, keep the endpoint authenticated and make
+the release gate call the same deployed endpoint that external strict clients
+will use.
 
 ### Cloud Build Deployment
 
@@ -629,6 +654,7 @@ _NEXT_PUBLIC_AI_ENGINE_URL=https://$env:DOMAIN,`
 _NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=true,`
 _NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH=/auth/loopback,`
 _KUSTOMIZE_DIR=k8s/overlays/dojo-release-gate,`
+_DOJO_RELEASE_KUSTOMIZE_DIR=k8s/overlays/dojo-release-gate,`
 _KUSTOMIZE_LOAD_RESTRICTOR=LoadRestrictionsNone
 ```
 
@@ -649,11 +675,13 @@ kubectl kustomize k8s/overlays/dojo-release-gate --load-restrictor LoadRestricti
 
 The rendered overlay must include the Dojo fail-closed ConfigMap values, the
 Dojo ExternalSecret entries, secret-backed Redis env for static Redis consumers,
-and no in-cluster `postgres` or `redis` workload. The runtime workflow bridge
-receives the Dojo ConfigMap and Secret values through the collab-server runtime
-pod spawner. A future deployed HTTP MCP host must also consume the same
-ConfigMap and Secret keys in its own deployment; the current overlay does not
-invent that host.
+the `dojo-mcp-host` Deployment/Service/BackendConfig, and no in-cluster
+`postgres` or `redis` workload. The runtime workflow bridge receives the Dojo
+ConfigMap and Secret values through the collab-server runtime pod spawner. The
+Dojo release overlay also deploys the token-gated HTTP MCP host at `/dojo/mcp`
+using the `synthi-mcp-http` image. Cloud Build builds that image only when the
+selected kustomize directory equals `_DOJO_RELEASE_KUSTOMIZE_DIR`; the default
+base deployment skips the release-only image.
 
 After Cloud Build finishes:
 
@@ -665,6 +693,7 @@ kubectl -n $env:K8S_NAMESPACE rollout status deployment/collab-server
 kubectl -n $env:K8S_NAMESPACE rollout status deployment/signaling-server
 kubectl -n $env:K8S_NAMESPACE rollout status deployment/ai-gateway
 kubectl -n $env:K8S_NAMESPACE rollout status deployment/ai-engine
+kubectl -n $env:K8S_NAMESPACE rollout status deployment/dojo-mcp-host
 ```
 
 Run the smoke checks from outside the cluster:
@@ -750,15 +779,26 @@ npm --prefix mcp/synthi-mcp run proof:dojo:hosted-runtime-gateway:self-check
 
 ### Deployed MCP Host
 
-Configure the release gate to use the deployed MCP host. The current repository
-ships a stdio MCP server and a browser workflow bridge, but the bridge is not a
-drop-in HTTP MCP host. Before this gate can pass in Google Cloud, deploy either
-a first-class HTTP MCP transport or an authenticated gateway/facade that exposes
-the MCP protocol to external strict clients while preserving the Dojo skill bus,
-proof validation, revocation, and tenant authorization path.
+Configure the release gate to use the deployed HTTP MCP host from the Dojo
+release overlay. The host is built from `mcp/synthi-mcp/Dockerfile.http`,
+deployed as `Deployment/dojo-mcp-host`, exposed through the existing GKE
+Ingress at `/dojo/mcp`, protected by IAP at the GKE backend, and token-gated by
+`SYNTHI_DOJO_MCP_BEARER_TOKEN` from Secret Manager. Do not point this gate at
+the stdio MCP server, the browser workflow bridge, a local tunnel, or a
+loopback endpoint.
+
+Before running conformance, verify the rendered and deployed host shape:
 
 ```powershell
-$env:SYNTHI_DOJO_MCP_HOST_URL = "https://<deployed-mcp-host>"
+npm --prefix mcp/synthi-mcp run proof:dojo:kustomize-overlay
+kubectl -n $env:K8S_NAMESPACE get deployment dojo-mcp-host
+kubectl -n $env:K8S_NAMESPACE get service dojo-mcp-host
+kubectl -n $env:K8S_NAMESPACE get backendconfig dojo-mcp-host-backend-config
+kubectl -n $env:K8S_NAMESPACE get ingress synthi-ingress
+```
+
+```powershell
+$env:SYNTHI_DOJO_MCP_HOST_URL = "https://$env:DOMAIN/dojo/mcp"
 $env:SYNTHI_DOJO_MCP_BEARER_TOKEN = "<short-lived-release-token>"
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE = "1"
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING = "1"
@@ -1015,7 +1055,7 @@ npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex
 **Command:**
 
 ```powershell
-$env:SYNTHI_DOJO_MCP_HOST_URL='https://<deployed-mcp-host>'
+$env:SYNTHI_DOJO_MCP_HOST_URL="https://$env:DOMAIN/dojo/mcp"
 $env:SYNTHI_DOJO_MCP_BEARER_TOKEN='<short-lived-release-token>'
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE='1'
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING='1'
@@ -1065,7 +1105,7 @@ $env:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY='<release-secret-key>'
 $env:SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE='<tenant>/<workspace>/<app-release>'
 $env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL='https://<target-app-origin>'
 $env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND='<deployed-mcp-wrapper-command>'
-$env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON='["--connect","https://<deployed-mcp-host>"]'
+$env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON=('["--connect","https://' + $env:DOMAIN + '/dojo/mcp"]')
 $env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD='<repo-or-wrapper-working-directory>'
 npm --prefix mcp/synthi-mcp run live:browser:private-tool-host-conformance
 npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex-host-conformance
