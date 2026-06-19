@@ -142,6 +142,69 @@ First validate the inventory script without Google Cloud access:
 npm --prefix mcp/synthi-mcp run proof:dojo:gcp-release-inventory:self-check
 ```
 
+Prepare the expected secret inventory flags. Keep this list aligned with
+`k8s/external-secrets.yaml` and
+`k8s/overlays/dojo-release-gate/dojo-release-external-secrets.yaml`.
+`--expected-k8s-secret` checks the Kubernetes Secret object name,
+`--expected-secret-manager-secret` checks Google Secret Manager remote secret
+names, and `--expected-external-secret-binding` checks the full
+`ExternalSecret object -> target Kubernetes Secret -> secretKey -> remoteRef.key`
+mapping without reading payloads.
+
+```powershell
+$dojoSecretInventoryFlags = @(
+  "--expected-k8s-secret=synthi-secrets"
+  "--expected-external-secret=synthi-secrets"
+  "--expected-external-secret=synthi-dojo-release-secrets"
+  "--expected-secret-manager-secret=synthi-database-url"
+  "--expected-secret-manager-secret=synthi-redis-url"
+  "--expected-secret-manager-secret=synthi-dojo-control-plane-postgres-url"
+  "--expected-secret-manager-secret=synthi-dojo-evidence-ledger-postgres-url"
+  "--expected-secret-manager-secret=synthi-dojo-proof-signing-key-id"
+  "--expected-secret-manager-secret=synthi-dojo-proof-signing-command"
+  "--expected-secret-manager-secret=synthi-dojo-proof-signing-command-args"
+  "--expected-secret-manager-secret=synthi-dojo-proof-signing-managed-key-uri"
+  "--expected-secret-manager-secret=synthi-dojo-proof-signing-public-key-pem"
+  "--expected-secret-manager-secret=synthi-dojo-mcp-manifest-key-id"
+  "--expected-secret-manager-secret=synthi-dojo-mcp-manifest-private-key-pem"
+  "--expected-secret-manager-secret=synthi-dojo-mcp-manifest-public-key-pem"
+  "--expected-secret-manager-secret=synthi-dojo-mcp-bearer-token"
+  "--expected-secret-manager-secret=synthi-dojo-hosted-browser-cdp-url"
+  "--expected-secret-manager-secret=synthi-dojo-hosted-browser-workspace-url"
+  "--expected-secret-manager-secret=synthi-dojo-release-workspace-id"
+  "--expected-secret-manager-secret=synthi-dojo-release-agent-id"
+  "--expected-secret-manager-secret=synthi-private-workflow-tool-store-key"
+  "--expected-secret-manager-secret=synthi-private-workflow-tool-store-file"
+  "--expected-secret-manager-secret=synthi-private-workflow-tool-scope"
+  "--expected-secret-manager-secret=synthi-auth-checkpoint-store-key"
+  "--expected-secret-manager-secret=synthi-auth-checkpoint-store-file"
+  "--expected-secret-manager-secret=synthi-auth-checkpoint-scope"
+  "--expected-external-secret-binding=synthi-secrets:synthi-secrets:DATABASE_URL=synthi-database-url"
+  "--expected-external-secret-binding=synthi-secrets:synthi-secrets:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY=synthi-private-workflow-tool-store-key"
+  "--expected-external-secret-binding=synthi-secrets:synthi-secrets:SYNTHI_AUTH_CHECKPOINT_STORE_KEY=synthi-auth-checkpoint-store-key"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL=synthi-dojo-control-plane-postgres-url"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL=synthi-dojo-evidence-ledger-postgres-url"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_DOJO_PROOF_SIGNING_KEY_ID=synthi-dojo-proof-signing-key-id"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_DOJO_PROOF_SIGNING_COMMAND=synthi-dojo-proof-signing-command"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS=synthi-dojo-proof-signing-command-args"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_DOJO_PROOF_SIGNING_MANAGED_KEY_URI=synthi-dojo-proof-signing-managed-key-uri"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM=synthi-dojo-proof-signing-public-key-pem"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_DOJO_MCP_MANIFEST_KEY_ID=synthi-dojo-mcp-manifest-key-id"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM=synthi-dojo-mcp-manifest-private-key-pem"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM=synthi-dojo-mcp-manifest-public-key-pem"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_DOJO_MCP_BEARER_TOKEN=synthi-dojo-mcp-bearer-token"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_HOSTED_BROWSER_CDP_URL=synthi-dojo-hosted-browser-cdp-url"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_HOSTED_BROWSER_WORKSPACE_URL=synthi-dojo-hosted-browser-workspace-url"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_WORKSPACE_ID=synthi-dojo-release-workspace-id"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_AGENT_ID=synthi-dojo-release-agent-id"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE=synthi-private-workflow-tool-store-file"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE=synthi-private-workflow-tool-scope"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_AUTH_CHECKPOINT_STORE_FILE=synthi-auth-checkpoint-store-file"
+  "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:SYNTHI_AUTH_CHECKPOINT_SCOPE=synthi-auth-checkpoint-scope"
+)
+```
+
 Then generate a command plan without touching Google Cloud:
 
 ```powershell
@@ -156,27 +219,7 @@ node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
   --cloud-sql-instance=$env:CLOUD_SQL_INSTANCE `
   --redis-instance=$env:REDIS_INSTANCE `
   --domain=$env:DOMAIN `
-  --expected-secret=synthi-database-url `
-  --expected-secret=synthi-redis-url `
-  --expected-secret=synthi-dojo-control-plane-postgres-url `
-  --expected-secret=synthi-dojo-evidence-ledger-postgres-url `
-  --expected-secret=synthi-dojo-proof-signing-key-id `
-  --expected-secret=synthi-dojo-proof-signing-command `
-  --expected-secret=synthi-dojo-proof-signing-command-args `
-  --expected-secret=synthi-dojo-proof-signing-managed-key-uri `
-  --expected-secret=synthi-dojo-proof-signing-public-key-pem `
-  --expected-secret=synthi-dojo-mcp-manifest-key-id `
-  --expected-secret=synthi-dojo-mcp-manifest-private-key-pem `
-  --expected-secret=synthi-dojo-mcp-manifest-public-key-pem `
-  --expected-secret=synthi-dojo-mcp-bearer-token `
-  --expected-secret=synthi-dojo-hosted-browser-cdp-url `
-  --expected-secret=synthi-dojo-hosted-browser-workspace-url `
-  --expected-secret=synthi-dojo-release-workspace-id `
-  --expected-secret=synthi-dojo-release-agent-id `
-  --expected-secret=synthi-private-workflow-tool-store-file `
-  --expected-secret=synthi-private-workflow-tool-scope `
-  --expected-secret=synthi-auth-checkpoint-store-file `
-  --expected-secret=synthi-auth-checkpoint-scope `
+  @dojoSecretInventoryFlags `
   --out-dir=tmp/dojo-gcp-release-inventory
 ```
 
@@ -196,27 +239,7 @@ node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
   --cloud-sql-instance=$env:CLOUD_SQL_INSTANCE `
   --redis-instance=$env:REDIS_INSTANCE `
   --domain=$env:DOMAIN `
-  --expected-secret=synthi-database-url `
-  --expected-secret=synthi-redis-url `
-  --expected-secret=synthi-dojo-control-plane-postgres-url `
-  --expected-secret=synthi-dojo-evidence-ledger-postgres-url `
-  --expected-secret=synthi-dojo-proof-signing-key-id `
-  --expected-secret=synthi-dojo-proof-signing-command `
-  --expected-secret=synthi-dojo-proof-signing-command-args `
-  --expected-secret=synthi-dojo-proof-signing-managed-key-uri `
-  --expected-secret=synthi-dojo-proof-signing-public-key-pem `
-  --expected-secret=synthi-dojo-mcp-manifest-key-id `
-  --expected-secret=synthi-dojo-mcp-manifest-private-key-pem `
-  --expected-secret=synthi-dojo-mcp-manifest-public-key-pem `
-  --expected-secret=synthi-dojo-mcp-bearer-token `
-  --expected-secret=synthi-dojo-hosted-browser-cdp-url `
-  --expected-secret=synthi-dojo-hosted-browser-workspace-url `
-  --expected-secret=synthi-dojo-release-workspace-id `
-  --expected-secret=synthi-dojo-release-agent-id `
-  --expected-secret=synthi-private-workflow-tool-store-file `
-  --expected-secret=synthi-private-workflow-tool-scope `
-  --expected-secret=synthi-auth-checkpoint-store-file `
-  --expected-secret=synthi-auth-checkpoint-scope `
+  @dojoSecretInventoryFlags `
   --out-dir=tmp/dojo-gcp-release-inventory
 ```
 

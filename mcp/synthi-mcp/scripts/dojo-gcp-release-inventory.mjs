@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const REQUIRED_APIS = [
   "artifactregistry.googleapis.com",
@@ -27,7 +28,10 @@ function parseArgs(argv) {
     execute: false,
     selfCheck: false,
     outDir: DEFAULT_OUT_DIR,
-    expectedSecret: [],
+    expectedK8sSecret: [],
+    expectedSecretManagerSecret: [],
+    expectedExternalSecret: [],
+    expectedExternalSecretBinding: [],
     expectedDeployment: [],
   };
 
@@ -68,8 +72,14 @@ function parseArgs(argv) {
       out.redisInstance = takeValue();
     } else if (arg === "--domain") {
       out.domain = takeValue();
-    } else if (arg === "--expected-secret") {
-      out.expectedSecret.push(takeValue());
+    } else if (arg === "--expected-secret" || arg === "--expected-k8s-secret") {
+      out.expectedK8sSecret.push(takeValue());
+    } else if (arg === "--expected-secret-manager-secret") {
+      out.expectedSecretManagerSecret.push(takeValue());
+    } else if (arg === "--expected-external-secret") {
+      out.expectedExternalSecret.push(takeValue());
+    } else if (arg === "--expected-external-secret-binding") {
+      out.expectedExternalSecretBinding.push(parseExternalSecretBinding(takeValue()));
     } else if (arg === "--expected-deployment") {
       out.expectedDeployment.push(takeValue());
     } else if (arg === "--help" || arg === "-h") {
@@ -121,7 +131,16 @@ Options:
   --cloud-sql-instance <name>      Expected Cloud SQL instance name.
   --redis-instance <name>          Expected Memorystore Redis instance name.
   --domain <name>                  Expected public application domain.
-  --expected-secret <name>         Expected Kubernetes secret name. Repeatable.
+  --expected-k8s-secret <name>     Expected Kubernetes Secret object name. Repeatable.
+  --expected-secret <name>         Deprecated alias for --expected-k8s-secret.
+  --expected-secret-manager-secret <name>
+                                   Expected Secret Manager remote secret name. Repeatable.
+  --expected-external-secret <name>
+                                   Expected ExternalSecret object name. Repeatable.
+  --expected-external-secret-binding <externalSecret:targetSecret:targetKey=remote>
+                                   Expected ExternalSecret object, target Kubernetes
+                                   Secret, target key, and Secret Manager remote
+                                   secret binding. Repeatable.
   --expected-deployment <name>     Expected Kubernetes deployment. Repeatable.
 
 The script never creates, updates, patches, applies, deletes, or deploys cloud
@@ -138,7 +157,7 @@ function fileSha256(filePath) {
 
 function resolveConfig(raw) {
   const env = process.env;
-  const expectedSecrets = raw.expectedSecret.length > 0 ? raw.expectedSecret : [
+  const expectedK8sSecrets = raw.expectedK8sSecret.length > 0 ? raw.expectedK8sSecret : [
     "synthi-secrets",
   ];
   const expectedDeployments = raw.expectedDeployment.length > 0 ? raw.expectedDeployment : [
@@ -164,8 +183,32 @@ function resolveConfig(raw) {
     cloudSqlInstance: raw.cloudSqlInstance || env.CLOUD_SQL_INSTANCE || "",
     redisInstance: raw.redisInstance || env.REDIS_INSTANCE || "",
     domain: raw.domain || env.SYNTHI_PUBLIC_DOMAIN || env.DOMAIN || "",
-    expectedSecrets,
+    expectedK8sSecrets,
+    expectedSecretManagerSecrets: raw.expectedSecretManagerSecret,
+    expectedExternalSecrets: raw.expectedExternalSecret,
+    expectedExternalSecretBindings: raw.expectedExternalSecretBinding,
     expectedDeployments,
+  };
+}
+
+function parseExternalSecretBinding(value) {
+  const text = String(value || "").trim();
+  const equalsIndex = text.indexOf("=");
+  if (equalsIndex <= 0 || equalsIndex === text.length - 1) {
+    throw new Error("--expected-external-secret-binding requires externalSecretName:targetK8sSecretName:targetKey=remoteSecretName");
+  }
+  const leftSide = text.slice(0, equalsIndex).trim();
+  const remoteSecret = text.slice(equalsIndex + 1).trim();
+  const parts = leftSide.split(":").map((part) => part.trim());
+  if (parts.length !== 3 || parts.some((part) => !part) || !remoteSecret) {
+    throw new Error("--expected-external-secret-binding requires externalSecretName:targetK8sSecretName:targetKey=remoteSecretName");
+  }
+  const [externalSecretName, targetSecretName, targetKey] = parts;
+  return {
+    externalSecretName,
+    targetSecretName,
+    targetKey,
+    remoteSecret,
   };
 }
 
@@ -449,9 +492,10 @@ function evaluate(config, inventory, planViolations) {
   const sqlInstances = namesFrom(datasets.cloud_sql_instances, (item) => item.name);
   const redisInstances = namesFrom(datasets.redis_instances, (item) => item.name);
   const buckets = namesFrom(datasets.gcs_buckets, (item) => normalizeBucket(item.name || item.id || ""));
-  const secrets = namesFrom(datasets.secret_manager_names, (item) => item.name?.split("/").pop() || item.name);
+  const secretManagerSecrets = namesFrom(datasets.secret_manager_names, (item) => item.name?.split("/").pop() || item.name);
   const deployments = namesFrom(datasets.k8s_deployments?.items, (item) => item.metadata?.name);
   const k8sSecrets = namesFrom(String(datasets.k8s_secret_names || "").split(/\r?\n/).filter(Boolean), (item) => item);
+  const externalSecrets = externalSecretInventoryFrom(datasets.k8s_external_secrets?.items);
 
   const checks = [];
   checks.push(check("inventory_plan_read_only", planViolations.length === 0, planViolations));
@@ -491,13 +535,53 @@ function evaluate(config, inventory, planViolations) {
   checks.push(namedResourceCheck("redis_instance", config.redisInstance, redisInstances, { optionalWhenNoExecute: !config.execute || !hasDataset("redis_instances"), unavailableReason: datasetUnavailableReason("redis_instances", commandResults.get("redis_instances")) }));
   checks.push(namedResourceCheck("gcs_bucket", config.gcsBucket, buckets, { optionalWhenNoExecute: !config.execute || !hasDataset("gcs_buckets"), unavailableReason: datasetUnavailableReason("gcs_buckets", commandResults.get("gcs_buckets")) }));
 
-  for (const secret of config.expectedSecrets) {
-    checks.push(namedResourceCheck(`k8s_secret:${secret}`, secret, k8sSecrets, { optionalWhenNoExecute: true, unavailableReason: datasetUnavailableReason("k8s_secret_names", commandResults.get("k8s_secret_names")) }));
-    checks.push(namedResourceCheck(`secret_manager:${secret}`, secret, secrets, { optionalWhenNoExecute: true, unavailableReason: datasetUnavailableReason("secret_manager_names", commandResults.get("secret_manager_names")), acceptMissingWhenNameLikelyK8sOnly: true }));
+  for (const secret of config.expectedK8sSecrets) {
+    checks.push(namedResourceCheck(`k8s_secret:${secret}`, secret, k8sSecrets, { optionalWhenNoExecute: !config.execute || !hasDataset("k8s_secret_names"), unavailableReason: datasetUnavailableReason("k8s_secret_names", commandResults.get("k8s_secret_names")) }));
+  }
+
+  for (const secret of config.expectedSecretManagerSecrets) {
+    checks.push(namedResourceCheck(`secret_manager:${secret}`, secret, secretManagerSecrets, { optionalWhenNoExecute: !config.execute || !hasDataset("secret_manager_names"), unavailableReason: datasetUnavailableReason("secret_manager_names", commandResults.get("secret_manager_names")) }));
+  }
+
+  for (const externalSecret of config.expectedExternalSecrets) {
+    checks.push(namedResourceCheck(`externalsecret:${externalSecret}`, externalSecret, externalSecrets.names, { optionalWhenNoExecute: !config.execute || !hasDataset("k8s_external_secrets"), unavailableReason: datasetUnavailableReason("k8s_external_secrets", commandResults.get("k8s_external_secrets")) }));
+  }
+
+  for (const binding of config.expectedExternalSecretBindings) {
+    checks.push(namedResourceCheck(
+      `externalsecret_binding_external_secret:${binding.externalSecretName}`,
+      binding.externalSecretName,
+      externalSecrets.names,
+      { optionalWhenNoExecute: !config.execute || !hasDataset("k8s_external_secrets"), unavailableReason: datasetUnavailableReason("k8s_external_secrets", commandResults.get("k8s_external_secrets")) },
+    ));
+    checks.push(namedResourceCheck(
+      `externalsecret_binding_target_secret:${binding.externalSecretName}:${binding.targetSecretName}`,
+      binding.targetSecretName,
+      externalSecrets.targetSecretNames,
+      { optionalWhenNoExecute: !config.execute || !hasDataset("k8s_external_secrets"), unavailableReason: datasetUnavailableReason("k8s_external_secrets", commandResults.get("k8s_external_secrets")) },
+    ));
+    checks.push(namedResourceCheck(
+      `externalsecret_target_key:${binding.externalSecretName}:${binding.targetSecretName}:${binding.targetKey}`,
+      `${binding.externalSecretName}:${binding.targetSecretName}:${binding.targetKey}`,
+      externalSecrets.targetKeys,
+      { optionalWhenNoExecute: !config.execute || !hasDataset("k8s_external_secrets"), unavailableReason: datasetUnavailableReason("k8s_external_secrets", commandResults.get("k8s_external_secrets")) },
+    ));
+    checks.push(namedResourceCheck(
+      `externalsecret_remote_key:${binding.externalSecretName}:${binding.targetSecretName}:${binding.remoteSecret}`,
+      `${binding.externalSecretName}:${binding.targetSecretName}:${binding.remoteSecret}`,
+      externalSecrets.remoteKeys,
+      { optionalWhenNoExecute: !config.execute || !hasDataset("k8s_external_secrets"), unavailableReason: datasetUnavailableReason("k8s_external_secrets", commandResults.get("k8s_external_secrets")) },
+    ));
+    checks.push(namedResourceCheck(
+      `externalsecret_binding:${externalSecretBindingId(binding)}`,
+      externalSecretBindingId(binding),
+      externalSecrets.bindings,
+      { optionalWhenNoExecute: !config.execute || !hasDataset("k8s_external_secrets"), unavailableReason: datasetUnavailableReason("k8s_external_secrets", commandResults.get("k8s_external_secrets")) },
+    ));
   }
 
   for (const deployment of config.expectedDeployments) {
-    checks.push(namedResourceCheck(`k8s_deployment:${deployment}`, deployment, deployments, { optionalWhenNoExecute: true, unavailableReason: datasetUnavailableReason("k8s_deployments", commandResults.get("k8s_deployments")) }));
+    checks.push(namedResourceCheck(`k8s_deployment:${deployment}`, deployment, deployments, { optionalWhenNoExecute: !config.execute || !hasDataset("k8s_deployments"), unavailableReason: datasetUnavailableReason("k8s_deployments", commandResults.get("k8s_deployments")) }));
   }
 
   const hardFailures = checks.filter((item) => item.status === "failed" && item.optional !== true);
@@ -548,6 +632,54 @@ function namesFrom(values, pick) {
     }
   }
   return result;
+}
+
+function externalSecretInventoryFrom(values) {
+  const names = new Set();
+  const targetSecretNames = new Set();
+  const targetKeys = new Set();
+  const remoteKeys = new Set();
+  const bindings = new Set();
+  if (!Array.isArray(values)) {
+    return { names, targetSecretNames, targetKeys, remoteKeys, bindings };
+  }
+  for (const item of values) {
+    const name = item?.metadata?.name;
+    if (typeof name === "string" && name.trim()) {
+      names.add(name.trim());
+    }
+    const externalSecretName = typeof name === "string" && name.trim() ? name.trim() : "";
+    const targetSecretName = typeof item?.spec?.target?.name === "string" && item.spec.target.name.trim()
+      ? item.spec.target.name.trim()
+      : externalSecretName;
+    if (targetSecretName) {
+      targetSecretNames.add(targetSecretName);
+    }
+    const data = Array.isArray(item?.spec?.data) ? item.spec.data : [];
+    for (const entry of data) {
+      const targetKey = entry?.secretKey;
+      const remoteSecret = entry?.remoteRef?.key;
+      if (typeof targetKey === "string" && targetKey.trim()) {
+        targetKeys.add(`${externalSecretName}:${targetSecretName}:${targetKey.trim()}`);
+      }
+      if (typeof remoteSecret === "string" && remoteSecret.trim()) {
+        remoteKeys.add(`${externalSecretName}:${targetSecretName}:${remoteSecret.trim()}`);
+      }
+      if (externalSecretName && targetSecretName && typeof targetKey === "string" && targetKey.trim() && typeof remoteSecret === "string" && remoteSecret.trim()) {
+        bindings.add(externalSecretBindingId({
+          externalSecretName,
+          targetSecretName,
+          targetKey,
+          remoteSecret,
+        }));
+      }
+    }
+  }
+  return { names, targetSecretNames, targetKeys, remoteKeys, bindings };
+}
+
+function externalSecretBindingId(binding) {
+  return `${String(binding.externalSecretName || "").trim()}:${String(binding.targetSecretName || "").trim()}:${String(binding.targetKey || "").trim()}=${String(binding.remoteSecret || "").trim()}`;
 }
 
 function namedResourceCheck(id, expectedName, names, options = {}) {
@@ -645,7 +777,10 @@ function redactConfig(config) {
     cloudSqlInstance: config.cloudSqlInstance || null,
     redisInstance: config.redisInstance || null,
     domain: config.domain || null,
-    expectedSecrets: config.expectedSecrets,
+    expectedK8sSecrets: config.expectedK8sSecrets,
+    expectedSecretManagerSecrets: config.expectedSecretManagerSecrets,
+    expectedExternalSecrets: config.expectedExternalSecrets,
+    expectedExternalSecretBindings: config.expectedExternalSecretBindings,
     expectedDeployments: config.expectedDeployments,
   };
 }
@@ -679,6 +814,18 @@ function buildSelfCheckInventory() {
       secret_manager_names: [{ name: "projects/self-check/secrets/synthi-secrets" }],
       k8s_secret_names: "synthi-secrets\n",
       k8s_deployments: { items: deployments },
+      k8s_external_secrets: {
+        items: [{
+          metadata: { name: "self-check-external-secret" },
+          spec: {
+            target: { name: "synthi-secrets" },
+            data: [{
+              secretKey: "SELF_CHECK_SECRET",
+              remoteRef: { key: "self-check-remote-secret" },
+            }],
+          },
+        }],
+      },
     },
   };
 }
@@ -710,7 +857,25 @@ async function main() {
   console.log(`[ok] GCP release inventory ${report.mode} complete - report=${paths.reportPath} evidence=${paths.evidencePath}`);
 }
 
-main().catch((error) => {
-  console.error(`[fail] ${error.stack || error.message}`);
-  process.exitCode = 1;
-});
+export {
+  buildPlan,
+  buildReport,
+  buildSelfCheckInventory,
+  evaluate,
+  externalSecretBindingId,
+  externalSecretInventoryFrom,
+  parseArgs,
+  parseExternalSecretBinding,
+  resolveConfig,
+};
+
+function isMain() {
+  return process.argv[1] ? import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href : false;
+}
+
+if (isMain()) {
+  main().catch((error) => {
+    console.error(`[fail] ${error.stack || error.message}`);
+    process.exitCode = 1;
+  });
+}
