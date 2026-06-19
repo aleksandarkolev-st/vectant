@@ -28,20 +28,7 @@ resources:
 patches:
   - path: dojo-release-config.yaml
   - path: redis-secret-env.patch.yaml
-  - target:
-      kind: Ingress
-      name: synthi-ingress
-    patch: |-
-      - op: add
-        path: /spec/rules/0/http/paths/0
-        value:
-          path: /dojo/mcp
-          pathType: Prefix
-          backend:
-            service:
-              name: dojo-mcp-host
-              port:
-                number: 9467
+  - path: dojo-mcp-ingress.patch.yaml
   - target:
       kind: ConfigMap
       name: synthi-config
