@@ -33,6 +33,7 @@ function parseArgs(argv) {
     expectedExternalSecret: [],
     expectedExternalSecretBinding: [],
     expectedSecretKustomization: [],
+    expectedRenderedKustomization: [],
     expectedDeployment: [],
     expectedDeploymentK8sDir: [],
     expectedDeploymentKustomization: [],
@@ -85,6 +86,8 @@ function parseArgs(argv) {
       out.expectedExternalSecretBinding.push(parseExternalSecretBinding(takeValue()));
     } else if (arg === "--expected-secrets-from-kustomization") {
       out.expectedSecretKustomization.push(path.resolve(takeValue()));
+    } else if (arg === "--expected-inventory-from-rendered-kustomization" || arg === "--expected-rendered-kustomization") {
+      out.expectedRenderedKustomization.push(path.resolve(takeValue()));
     } else if (arg === "--expected-deployment") {
       out.expectedDeployment.push(takeValue());
     } else if (arg === "--expected-deployments-from-k8s-dir") {
@@ -155,6 +158,13 @@ Options:
                                    ExternalSecret, Secret Manager remote secret,
                                    and binding checks by following a
                                    kustomization file or directory. Repeatable.
+  --expected-inventory-from-rendered-kustomization <path>
+                                   Derive expected Deployment, Kubernetes
+                                   Secret, ExternalSecret, Secret Manager
+                                   remote secret, and binding checks from
+                                   rendered kustomize output. Uses kubectl
+                                   kustomize or kustomize build locally.
+                                   Repeatable.
   --expected-deployment <name>     Expected Kubernetes deployment. Repeatable.
   --expected-deployments-from-k8s-dir <path>
                                    Recursively derive expected Kubernetes
@@ -177,28 +187,42 @@ function fileSha256(filePath) {
   return sha256(JSON.stringify(JSON.parse(readFileSync(filePath, "utf8"))));
 }
 
-function resolveConfig(raw) {
+function resolveConfig(raw, options = {}) {
   const env = process.env;
   const manifestSecretSources = raw.expectedSecretKustomization.map((kustomizationPath) => ({
     type: "kustomization",
     path: kustomizationPath,
     secrets: secretExpectationsFromKustomization(kustomizationPath),
   }));
+  const renderedInventorySources = raw.expectedRenderedKustomization.map((kustomizationPath) => {
+    const rendered = renderedKustomizationInventory(kustomizationPath, options);
+    return {
+      type: "rendered_kustomization",
+      path: kustomizationPath,
+      renderedSha256: sha256(rendered.text),
+      deployments: rendered.deployments,
+      secrets: rendered.secrets,
+    };
+  });
   let expectedK8sSecrets = uniqueStrings([
     ...raw.expectedK8sSecret,
     ...manifestSecretSources.flatMap((source) => source.secrets.k8sSecrets),
+    ...renderedInventorySources.flatMap((source) => source.secrets.k8sSecrets),
   ]);
   let expectedSecretManagerSecrets = uniqueStrings([
     ...raw.expectedSecretManagerSecret,
     ...manifestSecretSources.flatMap((source) => source.secrets.secretManagerSecrets),
+    ...renderedInventorySources.flatMap((source) => source.secrets.secretManagerSecrets),
   ]);
   let expectedExternalSecrets = uniqueStrings([
     ...raw.expectedExternalSecret,
     ...manifestSecretSources.flatMap((source) => source.secrets.externalSecrets),
+    ...renderedInventorySources.flatMap((source) => source.secrets.externalSecrets),
   ]);
   let expectedExternalSecretBindings = uniqueExternalSecretBindings([
     ...raw.expectedExternalSecretBinding,
     ...manifestSecretSources.flatMap((source) => source.secrets.externalSecretBindings),
+    ...renderedInventorySources.flatMap((source) => source.secrets.externalSecretBindings),
   ]);
   const manifestDeploymentSources = raw.expectedDeploymentK8sDir.map((dirPath) => ({
     type: "k8s_dir",
@@ -212,6 +236,7 @@ function resolveConfig(raw) {
   let expectedDeployments = uniqueStrings([
     ...raw.expectedDeployment,
     ...manifestDeploymentSources.flatMap((source) => source.deployments),
+    ...renderedInventorySources.flatMap((source) => source.deployments),
   ]);
   if (raw.selfCheck) {
     expectedK8sSecrets = expectedK8sSecrets.length > 0 ? expectedK8sSecrets : ["self-check-k8s-secret"];
@@ -241,9 +266,25 @@ function resolveConfig(raw) {
     expectedSecretManagerSecrets,
     expectedExternalSecrets,
     expectedExternalSecretBindings,
-    expectedSecretSources: manifestSecretSources,
+    expectedSecretSources: [
+      ...manifestSecretSources,
+      ...renderedInventorySources.map((source) => ({
+        type: source.type,
+        path: source.path,
+        renderedSha256: source.renderedSha256,
+        secrets: source.secrets,
+      })),
+    ],
     expectedDeployments,
-    expectedDeploymentSources: manifestDeploymentSources,
+    expectedDeploymentSources: [
+      ...manifestDeploymentSources,
+      ...renderedInventorySources.map((source) => ({
+        type: source.type,
+        path: source.path,
+        renderedSha256: source.renderedSha256,
+        deployments: source.deployments,
+      })),
+    ],
   };
 }
 
@@ -287,6 +328,77 @@ function secretExpectationsFromKustomization(kustomizationPath) {
     mergeSecretExpectations(expectations, secretExpectationsFromKubernetesManifestText(manifest.text));
   }
   return sortSecretExpectations(expectations);
+}
+
+function renderedKustomizationInventory(kustomizationPath, options = {}) {
+  const text = renderKustomization(kustomizationPath, options);
+  return {
+    text,
+    deployments: deploymentNamesFromKubernetesManifestText(text)
+      .sort((left, right) => left.localeCompare(right)),
+    secrets: secretExpectationsFromKubernetesManifestText(text),
+  };
+}
+
+function renderKustomization(kustomizationPath, options = {}) {
+  const buildDir = resolveKustomizationBuildDir(kustomizationPath);
+  if (typeof options.renderKustomization === "function") {
+    return String(options.renderKustomization(buildDir, kustomizationPath) || "");
+  }
+
+  const attempts = renderKustomizationCommands(buildDir);
+  const failures = [];
+  for (const attempt of attempts) {
+    const available = attempt.path
+      ? { found: true, path: attempt.path }
+      : findCommand(attempt.bin);
+    if (available.found !== true) {
+      failures.push(`${attempt.bin}: not found`);
+      continue;
+    }
+    const launch = buildLaunch(available.path || attempt.bin, attempt.args);
+    const result = spawnSync(launch.bin, launch.args, {
+      encoding: "utf8",
+      shell: launch.shell,
+      timeout: 120000,
+      windowsHide: true,
+    });
+    if (result.status === 0) {
+      return result.stdout || "";
+    }
+    failures.push(`${attempt.bin}: exit ${result.status}; ${(result.stderr || result.stdout || "").slice(0, 300)}`);
+  }
+
+  throw new Error(`Could not render kustomization ${kustomizationPath}. Tried: ${failures.join(" | ")}`);
+}
+
+function renderKustomizationCommands(buildDir) {
+  const commands = [];
+  const configuredKubectl = process.env.KUBECTL_BIN || "";
+  const configuredKustomize = process.env.KUSTOMIZE_BIN || "";
+  if (configuredKubectl) {
+    commands.push({
+      bin: "kubectl",
+      path: configuredKubectl,
+      args: ["kustomize", "--load-restrictor=LoadRestrictionsNone", buildDir],
+    });
+  }
+  if (configuredKustomize) {
+    commands.push({
+      bin: "kustomize",
+      path: configuredKustomize,
+      args: ["build", "--load-restrictor=LoadRestrictionsNone", buildDir],
+    });
+  }
+  commands.push({
+    bin: "kubectl",
+    args: ["kustomize", "--load-restrictor=LoadRestrictionsNone", buildDir],
+  });
+  commands.push({
+    bin: "kustomize",
+    args: ["build", "--load-restrictor=LoadRestrictionsNone", buildDir],
+  });
+  return commands;
 }
 
 function kubernetesManifestTextsFromKustomization(kustomizationPath) {
@@ -352,6 +464,11 @@ function resolveKustomizationPath(inputPath) {
     return absolutePath;
   }
   throw new Error(`--expected-deployments-from-kustomization must point at a kustomization.yaml file or directory: ${inputPath}`);
+}
+
+function resolveKustomizationBuildDir(inputPath) {
+  const kustomizationFile = resolveKustomizationPath(inputPath);
+  return path.dirname(kustomizationFile);
 }
 
 function findKustomizationFile(dirPath) {
@@ -530,7 +647,17 @@ function parseExternalSecretDocument(documentText) {
       remoteRefIndent = -1;
       continue;
     }
+    if (listItem?.[1] === "remoteRef") {
+      currentData = { secretKey: "", remoteKey: "" };
+      data.push(currentData);
+      remoteRefIndent = indent;
+      continue;
+    }
     if (!currentData || !mapItem) {
+      continue;
+    }
+    if (mapItem[1] === "secretKey" && indent > dataIndent) {
+      currentData.secretKey = parseYamlScalar(mapItem[2]);
       continue;
     }
     if (mapItem[1] === "remoteRef") {
@@ -1330,6 +1457,7 @@ export {
   deploymentNamesFromKubernetesManifestDir,
   deploymentNamesFromKubernetesManifestText,
   deploymentNamesFromKustomization,
+  renderedKustomizationInventory,
   secretExpectationsFromKubernetesManifestText,
   secretExpectationsFromKustomization,
   parseArgs,

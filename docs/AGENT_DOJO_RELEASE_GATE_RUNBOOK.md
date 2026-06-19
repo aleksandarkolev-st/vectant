@@ -142,37 +142,27 @@ First validate the inventory script without Google Cloud access:
 npm --prefix mcp/synthi-mcp run proof:dojo:gcp-release-inventory:self-check
 ```
 
-Prepare the expected secret inventory from the release overlay instead of
-maintaining a copied secret-name list. This follows the `resources:` graph in
-the kustomization and derives Kubernetes Secret names, ExternalSecret names,
-Secret Manager remote secret names, and full
+Prepare the expected release inventory from the rendered overlay instead of
+maintaining copied secret-name or deployment-name lists. This runs a local
+`kubectl kustomize` or `kustomize build` render and derives Kubernetes
+Deployment names, Kubernetes Secret names, ExternalSecret names, Secret Manager
+remote secret names, and full
 `ExternalSecret object -> target Kubernetes Secret -> secretKey -> remoteRef.key`
-bindings from the manifests, without reading payloads.
+bindings from the rendered manifests, without reading payloads or applying
+anything.
 
 ```powershell
-$dojoSecretInventoryFlags = @(
-  "--expected-secrets-from-kustomization=k8s/overlays/dojo-release-gate"
+$dojoReleaseOverlayInventoryFlags = @(
+  "--expected-inventory-from-rendered-kustomization=k8s/overlays/dojo-release-gate"
 )
 ```
 
 Use the individual `--expected-k8s-secret`, `--expected-secret-manager-secret`,
 `--expected-external-secret`, and `--expected-external-secret-binding` flags only
 for intentionally out-of-tree secret contracts that are not represented in the
-release kustomization.
-
-Prepare the expected deployment inventory from the release overlay instead of
-maintaining a copied service-name list. This follows the `resources:` graph in
-the kustomization and verifies the deployments declared by the manifests that
-would be rendered for the Dojo release gate.
-
-```powershell
-$dojoDeploymentInventoryFlags = @(
-  "--expected-deployments-from-kustomization=k8s/overlays/dojo-release-gate"
-)
-```
-
-Use `--expected-deployment=<name>` only for an intentionally out-of-tree
-deployment that is not represented in the release kustomization.
+release kustomization. Use `--expected-deployment=<name>` only for an
+intentionally out-of-tree deployment that is not represented in the rendered
+release overlay.
 
 Then generate a command plan without touching Google Cloud:
 
@@ -188,8 +178,7 @@ node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
   --cloud-sql-instance=$env:CLOUD_SQL_INSTANCE `
   --redis-instance=$env:REDIS_INSTANCE `
   --domain=$env:DOMAIN `
-  @dojoSecretInventoryFlags `
-  @dojoDeploymentInventoryFlags `
+  @dojoReleaseOverlayInventoryFlags `
   --out-dir=tmp/dojo-gcp-release-inventory
 ```
 
@@ -209,8 +198,7 @@ node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
   --cloud-sql-instance=$env:CLOUD_SQL_INSTANCE `
   --redis-instance=$env:REDIS_INSTANCE `
   --domain=$env:DOMAIN `
-  @dojoSecretInventoryFlags `
-  @dojoDeploymentInventoryFlags `
+  @dojoReleaseOverlayInventoryFlags `
   --out-dir=tmp/dojo-gcp-release-inventory
 ```
 

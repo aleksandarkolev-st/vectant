@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -13,6 +14,7 @@ import {
   externalSecretInventoryFrom,
   parseArgs,
   parseExternalSecretBinding,
+  renderedKustomizationInventory,
   resolveConfig,
   secretExpectationsFromKubernetesManifestText,
   secretExpectationsFromKustomization,
@@ -33,6 +35,12 @@ const requiredApis = [
   "logging.googleapis.com",
   "monitoring.googleapis.com",
 ];
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
+
+function readRepoFile(...segments) {
+  return readFileSync(path.join(repoRoot, ...segments), "utf8");
+}
 
 function inventoryWithSecrets({
   remoteSecrets = [],
@@ -355,6 +363,79 @@ spec:
     }
   });
 
+  it("derives expected deployments and secrets from rendered kustomization output", () => {
+    const fixtureRoot = path.join(tmpdir(), `dojo-rendered-kustomize-fixture-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const rendered = `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-api-rendered
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: release-secrets-rendered
+spec:
+  target:
+    name: runtime-secrets-rendered
+  data:
+    - remoteRef:
+        key: release-api-token-rendered
+      secretKey: API_TOKEN
+`;
+    try {
+      mkdirSync(path.join(fixtureRoot, "overlays", "release"), { recursive: true });
+      writeFileSync(path.join(fixtureRoot, "overlays", "release", "kustomization.yaml"), `
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []
+`, "utf8");
+
+      const overlayDir = path.join(fixtureRoot, "overlays", "release");
+      const renderKustomization = (buildDir) => {
+        expect(buildDir).toBe(path.resolve(overlayDir));
+        return rendered;
+      };
+      const config = resolveConfig(parseArgs([
+        `--expected-inventory-from-rendered-kustomization=${overlayDir}`,
+      ]), { renderKustomization });
+
+      expect(renderedKustomizationInventory(overlayDir, { renderKustomization })).toEqual({
+        text: rendered,
+        deployments: ["runtime-api-rendered"],
+        secrets: {
+          k8sSecrets: ["runtime-secrets-rendered"],
+          secretManagerSecrets: ["release-api-token-rendered"],
+          externalSecrets: ["release-secrets-rendered"],
+          externalSecretBindings: [{
+            externalSecretName: "release-secrets-rendered",
+            targetSecretName: "runtime-secrets-rendered",
+            targetKey: "API_TOKEN",
+            remoteSecret: "release-api-token-rendered",
+          }],
+        },
+      });
+      expect(config.expectedDeployments).toEqual(["runtime-api-rendered"]);
+      expect(config.expectedK8sSecrets).toEqual(["runtime-secrets-rendered"]);
+      expect(config.expectedSecretManagerSecrets).toEqual(["release-api-token-rendered"]);
+      expect(config.expectedExternalSecrets).toEqual(["release-secrets-rendered"]);
+      expect(config.expectedDeploymentSources).toEqual([{
+        type: "rendered_kustomization",
+        path: path.resolve(overlayDir),
+        renderedSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        deployments: ["runtime-api-rendered"],
+      }]);
+      expect(config.expectedSecretSources).toEqual([{
+        type: "rendered_kustomization",
+        path: path.resolve(overlayDir),
+        renderedSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        secrets: renderedKustomizationInventory(overlayDir, { renderKustomization }).secrets,
+      }]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it("parses secret manager, Kubernetes Secret, and ExternalSecret expectations separately", () => {
     const raw = parseArgs([
       "--expected-k8s-secret=synthi-secrets",
@@ -571,10 +652,11 @@ spec:
   });
 
   it("documents kustomization-derived secret inventory without copied remote secret flags", () => {
-    const runbook = readFileSync("../../docs/AGENT_DOJO_RELEASE_GATE_RUNBOOK.md", "utf8");
+    const runbook = readRepoFile("docs", "AGENT_DOJO_RELEASE_GATE_RUNBOOK.md");
 
-    expect(runbook).toContain("--expected-secrets-from-kustomization=k8s/overlays/dojo-release-gate");
-    expect(runbook).toContain("@dojoSecretInventoryFlags");
+    expect(runbook).toContain("--expected-inventory-from-rendered-kustomization=k8s/overlays/dojo-release-gate");
+    expect(runbook).toContain("@dojoReleaseOverlayInventoryFlags");
+    expect(runbook).not.toContain("--expected-secrets-from-kustomization=k8s/overlays/dojo-release-gate");
     expect(runbook).not.toContain("--expected-secret-manager-secret=synthi-redis-url");
     expect(runbook).not.toContain("--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url");
     expect(runbook).not.toContain("--expected-secret=synthi-redis-url");
@@ -582,10 +664,11 @@ spec:
   });
 
   it("documents kustomization-derived deployment inventory instead of a copied deployment list", () => {
-    const runbook = readFileSync("../../docs/AGENT_DOJO_RELEASE_GATE_RUNBOOK.md", "utf8");
+    const runbook = readRepoFile("docs", "AGENT_DOJO_RELEASE_GATE_RUNBOOK.md");
 
-    expect(runbook).toContain("--expected-deployments-from-kustomization=k8s/overlays/dojo-release-gate");
-    expect(runbook).toContain("@dojoDeploymentInventoryFlags");
+    expect(runbook).toContain("--expected-inventory-from-rendered-kustomization=k8s/overlays/dojo-release-gate");
+    expect(runbook).toContain("@dojoReleaseOverlayInventoryFlags");
+    expect(runbook).not.toContain("--expected-deployments-from-kustomization=k8s/overlays/dojo-release-gate");
     expect(runbook).not.toContain("--expected-deployment=dojo-mcp-host");
   });
 });
