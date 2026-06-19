@@ -72,6 +72,7 @@ describe("Dojo soak performance loop", () => {
 
       const proofEvidenceRecord = evidenceRecordForSkill(skill, requiredClaims, iteration, evidence.ledger_head_hash);
       const capsule = issueDojoProofCapsule(skill, "run_workflow", {
+        tenant_id: "tenant-a",
         context_claims: { workspace_verified: true },
         evidence_ledger_records: [proofEvidenceRecord],
         ledger_checkpoint_hash: proofEvidenceRecord.ledger_head_hash,
@@ -119,6 +120,7 @@ describe("Dojo soak performance loop", () => {
         const result = await runtime.execute({
           graph: productionGraphFixture(iteration),
           run_id: `soak-graph-run-${iteration}`,
+          tenant: tenantContext(iteration),
           inputs: {
             workspace_verified: true,
             client_id_verified: true,
@@ -317,6 +319,7 @@ function skillFixture(iteration: number) {
       ],
     }),
   ]).contract, {
+    tenant_id: "tenant-a",
     workspace_id: "workspace-a",
     now: isoAt(iteration, 0),
   });
