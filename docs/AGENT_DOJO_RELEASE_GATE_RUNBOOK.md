@@ -231,6 +231,40 @@ The inventory script intentionally does not print or fetch secret values. It
 records secret names, Kubernetes deployment names, endpoint inventory, enabled
 APIs, store resources, and command digests only.
 
+Summarize the inventory into an operator-facing blocker report:
+
+```powershell
+npm --prefix mcp/synthi-mcp run proof:dojo:gcp-release-blockers:self-check
+node mcp/synthi-mcp/scripts/dojo-gcp-release-blockers.mjs `
+  --inventory-report=tmp/dojo-gcp-release-inventory/dojo-gcp-release-inventory.json `
+  --out-dir=tmp/dojo-gcp-release-blockers
+```
+
+Expected output:
+
+```text
+tmp/dojo-gcp-release-blockers/dojo-gcp-release-blockers.json
+tmp/dojo-gcp-release-blockers/dojo-gcp-release-blockers.md
+```
+
+The blocker script exits nonzero when the release is still blocked. That is
+intentional. Use `--allow-blockers` only when you are generating an advisory
+report and do not want the shell step to fail. The Markdown report groups
+failures by release owner action:
+
+- `cloud_api`: a required Google Cloud API is not enabled or not visible.
+- `inventory_access`: the script could not collect a required inventory dataset.
+- `cloud_resource`: a named GCP resource could not be verified.
+- `kubernetes_context`: local `kubectl` is not pointed at the target cluster.
+- `secret_inventory`: Secret Manager or Kubernetes secret names could not be
+  verified.
+- `deployment_inventory`: required Kubernetes deployments could not be verified.
+
+Do not treat warnings under `secret_inventory`, `deployment_inventory`, or
+`kubernetes_context` as proof of absence until the Kubernetes context and
+Secret Manager inventory are readable. They mean the release still lacks
+verifiable evidence for those surfaces.
+
 Interpret the report carefully:
 
 - `inventory_dataset:*_command_failed` means the script could not query that
