@@ -437,4 +437,12 @@ metadata:
     expect(runbook).not.toContain("--expected-secret=synthi-redis-url");
     expect(runbook).not.toContain("--expected-secret=synthi-database-url");
   });
+
+  it("documents kustomization-derived deployment inventory instead of a copied deployment list", () => {
+    const runbook = readFileSync("../../docs/AGENT_DOJO_RELEASE_GATE_RUNBOOK.md", "utf8");
+
+    expect(runbook).toContain("--expected-deployments-from-kustomization=k8s/overlays/dojo-release-gate");
+    expect(runbook).toContain("@dojoDeploymentInventoryFlags");
+    expect(runbook).not.toContain("--expected-deployment=dojo-mcp-host");
+  });
 });

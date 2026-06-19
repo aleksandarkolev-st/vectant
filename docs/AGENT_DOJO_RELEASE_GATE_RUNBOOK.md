@@ -205,6 +205,20 @@ $dojoSecretInventoryFlags = @(
 )
 ```
 
+Prepare the expected deployment inventory from the release overlay instead of
+maintaining a copied service-name list. This follows the `resources:` graph in
+the kustomization and verifies the deployments declared by the manifests that
+would be rendered for the Dojo release gate.
+
+```powershell
+$dojoDeploymentInventoryFlags = @(
+  "--expected-deployments-from-kustomization=k8s/overlays/dojo-release-gate"
+)
+```
+
+Use `--expected-deployment=<name>` only for an intentionally out-of-tree
+deployment that is not represented in the release kustomization.
+
 Then generate a command plan without touching Google Cloud:
 
 ```powershell
@@ -220,6 +234,7 @@ node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
   --redis-instance=$env:REDIS_INSTANCE `
   --domain=$env:DOMAIN `
   @dojoSecretInventoryFlags `
+  @dojoDeploymentInventoryFlags `
   --out-dir=tmp/dojo-gcp-release-inventory
 ```
 
@@ -240,6 +255,7 @@ node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
   --redis-instance=$env:REDIS_INSTANCE `
   --domain=$env:DOMAIN `
   @dojoSecretInventoryFlags `
+  @dojoDeploymentInventoryFlags `
   --out-dir=tmp/dojo-gcp-release-inventory
 ```
 
