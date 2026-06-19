@@ -6826,8 +6826,14 @@ async function dojoIssueProofCapsuleTool(args: unknown): Promise<ToolResponse> {
   const issuedBy = enforcement.production_enforcement
     ? { actor_id: tenant.actor_id, actor_type: tenant.actor_type }
     : (issuerActorId && issuerActorType ? { actor_id: issuerActorId, actor_type: issuerActorType } : undefined);
-  const scopedTenantId = tenant.tenant_id;
   let evidenceLedgerRecords = evidenceLedgerRecordsOpt(a["evidence_ledger_records"]);
+  const scopedTenantId = proofIssuanceTenantId({
+    args: a,
+    tenant,
+    skill: skill.skill,
+    evidence_ledger_records: evidenceLedgerRecords,
+    production_enforcement: enforcement.production_enforcement,
+  });
   const requestedEvidenceRecordIds = stringArrayOpt(a["evidence_record_ids"] ?? a["evidenceRecordIds"]);
   const requireVerifiedEvidence = boolOpt(a["require_verified_evidence"])
     || enforcement.production_enforcement
@@ -7171,6 +7177,22 @@ async function validateProofCapsuleEvidenceAgainstLedgerIfRequired(input: {
       verification: resolved.verification,
     },
   };
+}
+
+function proofIssuanceTenantId(input: {
+  args: Record<string, unknown>;
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  evidence_ledger_records: DojoEvidenceLedgerRecord[];
+  production_enforcement: boolean;
+}): string {
+  if (input.production_enforcement || stringOpt(input.args["tenant_id"])) return input.tenant.tenant_id;
+  const skillTenantId = input.skill.tenant_id?.trim();
+  if (skillTenantId) return skillTenantId;
+  const evidenceTenantIds = [...new Set(input.evidence_ledger_records
+    .map((record) => record.tenant_id.trim())
+    .filter(Boolean))];
+  return evidenceTenantIds.length === 1 ? evidenceTenantIds[0]! : input.tenant.tenant_id;
 }
 
 async function dojoValidateProofCapsuleTool(args: unknown): Promise<ToolResponse> {
@@ -8550,7 +8572,7 @@ function authorizeTenantForDojoSkill(
     development_defaults: { workspace_id: skill.workspace_id },
   });
   if (!tenantContext.ok) return tenantContext;
-  const tenant = tenantContext.tenant;
+  const tenant = localSkillScopedTenantContext(args, tenantContext.tenant, skill);
   if (!isTenantAuthorizedForDojoSkill(tenant, skill)) {
     return {
       ok: false,
@@ -8566,6 +8588,29 @@ function authorizeTenantForDojoSkill(
     };
   }
   return { ok: true, tenant };
+}
+
+function localSkillScopedTenantContext(
+  args: unknown,
+  tenant: DojoTenantContext,
+  skill: DojoSkill
+): DojoTenantContext {
+  const enforcement = resolveDojoEnforcementConfig();
+  if (enforcement.production_enforcement) return tenant;
+  const a = obj(args);
+  if (stringOpt(a["tenant_id"])) return tenant;
+  const skillTenantId = skill.tenant_id?.trim();
+  if (!skillTenantId) return tenant;
+  const scopeDigest = hashId(`${skillTenantId}:${skill.workspace_id}:${skill.skill_id}`);
+  return {
+    ...tenant,
+    tenant_id: skillTenantId,
+    organization_id: stringOpt(a["organization_id"]) ?? `local-org-${scopeDigest}`,
+    workspace_id: skill.workspace_id,
+    actor_id: stringOpt(a["actor_id"]) ?? tenant.actor_id,
+    request_id: stringOpt(a["request_id"]) ?? tenant.request_id,
+    correlation_id: stringOpt(a["correlation_id"]) ?? tenant.correlation_id,
+  };
 }
 
 function authorizeTenantForCaseLawRecord(
@@ -10198,24 +10243,39 @@ function tenantRolesInputInvalid(a: Record<string, unknown>, field: string): boo
 function dojoTenantContextFromArgs(args: unknown): DojoTenantContext {
   const a = obj(args);
   const roles = stringArrayOpt(a["roles"]);
-  const hasTenantInput = Boolean(
+  if (!hasDojoTenantContextInput(a, roles)) return createLegacyDojoTenantContext();
+  const localScopeId = localTenantContextScopeId(a, roles);
+  return {
+    tenant_id: stringOpt(a["tenant_id"]) ?? `local-tenant-${localScopeId}`,
+    organization_id: stringOpt(a["organization_id"]) ?? `local-org-${localScopeId}`,
+    workspace_id: stringOpt(a["workspace_id"]) ?? `local-workspace-${localScopeId}`,
+    actor_id: stringOpt(a["actor_id"]) ?? `local-agent-${localScopeId}`,
+    actor_type: actorTypeOpt(a["actor_type"]),
+    roles: roles.length > 0 ? roles : ["agent"],
+    request_id: stringOpt(a["request_id"]) ?? `dojo-request-${localScopeId}`,
+    correlation_id: stringOpt(a["correlation_id"]) ?? `dojo-correlation-${localScopeId}`,
+  };
+}
+
+function hasDojoTenantContextInput(a: Record<string, unknown>, roles = stringArrayOpt(a["roles"])): boolean {
+  return Boolean(
     stringOpt(a["tenant_id"])
       || stringOpt(a["organization_id"])
       || stringOpt(a["workspace_id"])
       || stringOpt(a["actor_id"])
       || roles.length > 0
   );
-  if (!hasTenantInput) return createLegacyDojoTenantContext();
-  return {
-    tenant_id: stringOpt(a["tenant_id"]) ?? "local-tenant",
-    organization_id: stringOpt(a["organization_id"]) ?? "local-org",
-    workspace_id: stringOpt(a["workspace_id"]) ?? "local-workspace",
-    actor_id: stringOpt(a["actor_id"]) ?? "anonymous-agent",
-    actor_type: actorTypeOpt(a["actor_type"]),
-    roles: roles.length > 0 ? roles : ["agent"],
-    request_id: stringOpt(a["request_id"]) ?? `dojo-list-${hashId(JSON.stringify(a))}`,
-    correlation_id: stringOpt(a["correlation_id"]) ?? `dojo-list-${hashId(`${Date.now()}:${JSON.stringify(a)}`)}`,
-  };
+}
+
+function localTenantContextScopeId(a: Record<string, unknown>, roles: string[]): string {
+  return hashId(JSON.stringify({
+    tenant_id: stringOpt(a["tenant_id"]),
+    organization_id: stringOpt(a["organization_id"]),
+    workspace_id: stringOpt(a["workspace_id"]),
+    actor_id: stringOpt(a["actor_id"]),
+    actor_type: stringOpt(a["actor_type"]),
+    roles,
+  }));
 }
 
 function dojoLicenseKernelToolArgsFromArgs(

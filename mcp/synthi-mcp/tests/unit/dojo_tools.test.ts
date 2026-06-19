@@ -271,7 +271,7 @@ describe("Agent Dojo core", () => {
       }),
     ]);
     const skill = buildDojoSkill(workflow.contract, { workspace_id: "workspace-a", now: "2026-06-11T00:00:00.000Z" });
-    const proofTenantId = "local-tenant";
+    const proofTenantId = localDojoToolTestTenantId(skill);
     const derivedWorkspaceClaim = issueDojoProofCapsule(skill, "run_workflow", {
       context_claims: {},
       evidence_ledger_records: evidenceLedgerRecordsForProof(skill, { tenant_id: proofTenantId }),
@@ -327,6 +327,38 @@ describe("Agent Dojo MCP tools", () => {
     expect(JSON.parse((listed?.content[0] as { type: "text"; text: string }).text)).toEqual(
       expect.objectContaining({ implementation_status: "executable" })
     );
+  });
+
+  it("derives deterministic local tenant context for partial non-production inputs", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+
+    const first = await dispatchDojoTool("synthi_dojo_generate_vivarium_scenarios", {
+      workspace_id: "workspace-a",
+      roles: ["agent"],
+    });
+    const second = await dispatchDojoTool("synthi_dojo_generate_vivarium_scenarios", {
+      workspace_id: "workspace-a",
+      roles: ["agent"],
+    });
+
+    expect(first?.isError).toBeUndefined();
+    expect(second?.isError).toBeUndefined();
+    const firstTenant = (first?.structuredContent as { tenant_context: Record<string, unknown> }).tenant_context;
+    const secondTenant = (second?.structuredContent as { tenant_context: Record<string, unknown> }).tenant_context;
+
+    expect(firstTenant).toEqual(expect.objectContaining({
+      tenant_id: expect.stringMatching(/^local-tenant-[a-f0-9]{12}$/),
+      organization_id: expect.stringMatching(/^local-org-[a-f0-9]{12}$/),
+      workspace_id: "workspace-a",
+      actor_id: expect.stringMatching(/^local-agent-[a-f0-9]{12}$/),
+      request_id: expect.stringMatching(/^dojo-request-[a-f0-9]{12}$/),
+      correlation_id: expect.stringMatching(/^dojo-correlation-[a-f0-9]{12}$/),
+      roles: ["agent"],
+    }));
+    expect(firstTenant.tenant_id).not.toBe("local-tenant");
+    expect(firstTenant.actor_id).not.toBe("anonymous-agent");
+    expect(firstTenant.correlation_id).not.toEqual(expect.stringMatching(/^dojo-list-/));
+    expect(secondTenant).toEqual(firstTenant);
   });
 
   it("requires complete tenant context before listing production competencies", async () => {
@@ -4402,6 +4434,7 @@ describe("Agent Dojo MCP tools", () => {
 
     const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
       skill_id: published.skill.skill_id,
+      workspace_id: published.skill.workspace_id,
       requested_action: "run_workflow",
       context_claims: { workspace_verified: true, ...graphRuntimeClaims },
       evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!),
@@ -4422,6 +4455,7 @@ describe("Agent Dojo MCP tools", () => {
     expect(validate?.structuredContent).toEqual(expect.objectContaining({
       proof_record: expect.objectContaining({
         capsule_id: capsuleRecord.capsule_id,
+        tenant_id: publishedSkill!.tenant_id,
         last_validated_at: validationTime,
         status: "issued",
       }),
@@ -6894,6 +6928,12 @@ function runtimeClaimsForSkillGuardrails(skill: DojoSkill): Record<string, unkno
   return claims;
 }
 
+function localDojoToolTestTenantId(skill: DojoSkill): string {
+  const skillTenantId = skill.tenant_id?.trim();
+  if (skillTenantId) return skillTenantId;
+  return `local-tenant-${createHash("sha256").update(`${skill.workspace_id}:${skill.skill_id}`, "utf8").digest("hex").slice(0, 12)}`;
+}
+
 function evidenceLedgerRecordsForProof(
   skill: DojoSkill,
   options: {
@@ -6917,7 +6957,7 @@ function evidenceLedgerRecordsForProof(
   return [
     buildDojoEvidenceLedgerRecord({
       record_id: recordId,
-      tenant_id: options.tenant_id ?? "local-tenant",
+      tenant_id: options.tenant_id ?? localDojoToolTestTenantId(skill),
       workspace_id: skill.workspace_id,
       skill_id: skill.skill_id,
       run_id: `checkride-${skill.skill_id}`,
