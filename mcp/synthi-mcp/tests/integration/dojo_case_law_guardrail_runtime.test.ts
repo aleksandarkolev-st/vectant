@@ -6,6 +6,7 @@ import {
 import { createDojoCaseLawFromFailure, InMemoryDojoCaseLawRegistry } from "../../src/dojo/case_law/registry.js";
 import { DojoSkillGraphRuntime } from "../../src/dojo/graph/runtime.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
+import type { DojoTenantContext } from "../../src/dojo/mcp/execution_policy_gate.js";
 
 describe("Dojo case-law guardrail runtime binding", () => {
   it("does not synthesize guardrails for proposed case law", () => {
@@ -36,16 +37,21 @@ describe("Dojo case-law guardrail runtime binding", () => {
     await expect(runtime.execute({
       graph,
       mode: "production",
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
+        license_allowed_substrates: ["dom"],
         stable_entity_identity: false,
+        submission_state: "success",
         assertion_results: { assert_submission_state: true },
       },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
-      blocked_by: [expect.stringMatching(/^guardrail_failed:case_guard_case_/)],
+      blocked_by: expect.arrayContaining([expect.stringMatching(/^guardrail_failed:case_guard_case_/)]),
     }));
   });
 
@@ -60,20 +66,40 @@ describe("Dojo case-law guardrail runtime binding", () => {
     await expect(runtime.execute({
       graph,
       mode: "production",
+      tenant: graphTenantContext(),
       inputs: {
         workspace_verified: true,
         client_id_verified: true,
+        license_allowed_substrates: ["dom"],
         stable_entity_identity: true,
         workspace_policy_current: false,
+        submission_state: "success",
         assertion_results: { assert_submission_state: true },
       },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
-      blocked_by: [expect.stringMatching(/^guardrail_failed:case_guard_case_/)],
+      blocked_by: expect.arrayContaining([expect.stringMatching(/^guardrail_failed:case_guard_case_/)]),
     }));
   });
 });
+
+const validProofValidator = () => ({ ok: true, blocked_by: [] });
+
+function graphTenantContext(): DojoTenantContext {
+  return {
+    tenant_id: "tenant-a",
+    organization_id: "org-a",
+    workspace_id: "workspace-a",
+    actor_id: "agent-a",
+    actor_type: "agent",
+    roles: ["dojo:runtime"],
+    request_id: "request-a",
+    correlation_id: "correlation-a",
+  };
+}
 
 function caseFixture(status: "proposed" | "approved") {
   const registry = new InMemoryDojoCaseLawRegistry();
