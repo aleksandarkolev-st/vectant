@@ -215,6 +215,18 @@ The inventory script intentionally does not print or fetch secret values. It
 records secret names, Kubernetes deployment names, endpoint inventory, enabled
 APIs, store resources, and command digests only.
 
+Interpret the report carefully:
+
+- `inventory_dataset:*_command_failed` means the script could not query that
+  dataset. Fix auth, API enablement, network, or local kube context before
+  treating dependent resource checks as true absence.
+- `api:<service>` failures with no dataset failure mean the enabled-API list was
+  collected and the service is genuinely not enabled for the project.
+- Kubernetes checks are read-only and use the current local kube context. The
+  script deliberately does not run `gcloud container clusters get-credentials`.
+  If you want Kubernetes object inventory in the same report, select the target
+  cluster context first, then rerun the inventory.
+
 ### Enable Required APIs
 
 ```powershell
