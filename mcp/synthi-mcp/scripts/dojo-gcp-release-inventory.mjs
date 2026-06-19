@@ -32,6 +32,7 @@ function parseArgs(argv) {
     expectedSecretManagerSecret: [],
     expectedExternalSecret: [],
     expectedExternalSecretBinding: [],
+    expectedSecretKustomization: [],
     expectedDeployment: [],
     expectedDeploymentK8sDir: [],
     expectedDeploymentKustomization: [],
@@ -82,6 +83,8 @@ function parseArgs(argv) {
       out.expectedExternalSecret.push(takeValue());
     } else if (arg === "--expected-external-secret-binding") {
       out.expectedExternalSecretBinding.push(parseExternalSecretBinding(takeValue()));
+    } else if (arg === "--expected-secrets-from-kustomization") {
+      out.expectedSecretKustomization.push(path.resolve(takeValue()));
     } else if (arg === "--expected-deployment") {
       out.expectedDeployment.push(takeValue());
     } else if (arg === "--expected-deployments-from-k8s-dir") {
@@ -147,6 +150,11 @@ Options:
                                    Expected ExternalSecret object, target Kubernetes
                                    Secret, target key, and Secret Manager remote
                                    secret binding. Repeatable.
+  --expected-secrets-from-kustomization <path>
+                                   Derive expected Kubernetes Secret,
+                                   ExternalSecret, Secret Manager remote secret,
+                                   and binding checks by following a
+                                   kustomization file or directory. Repeatable.
   --expected-deployment <name>     Expected Kubernetes deployment. Repeatable.
   --expected-deployments-from-k8s-dir <path>
                                    Recursively derive expected Kubernetes
@@ -171,9 +179,27 @@ function fileSha256(filePath) {
 
 function resolveConfig(raw) {
   const env = process.env;
-  const expectedK8sSecrets = raw.expectedK8sSecret.length > 0 ? raw.expectedK8sSecret : [
-    "synthi-secrets",
-  ];
+  const manifestSecretSources = raw.expectedSecretKustomization.map((kustomizationPath) => ({
+    type: "kustomization",
+    path: kustomizationPath,
+    secrets: secretExpectationsFromKustomization(kustomizationPath),
+  }));
+  let expectedK8sSecrets = uniqueStrings([
+    ...raw.expectedK8sSecret,
+    ...manifestSecretSources.flatMap((source) => source.secrets.k8sSecrets),
+  ]);
+  let expectedSecretManagerSecrets = uniqueStrings([
+    ...raw.expectedSecretManagerSecret,
+    ...manifestSecretSources.flatMap((source) => source.secrets.secretManagerSecrets),
+  ]);
+  let expectedExternalSecrets = uniqueStrings([
+    ...raw.expectedExternalSecret,
+    ...manifestSecretSources.flatMap((source) => source.secrets.externalSecrets),
+  ]);
+  let expectedExternalSecretBindings = uniqueExternalSecretBindings([
+    ...raw.expectedExternalSecretBinding,
+    ...manifestSecretSources.flatMap((source) => source.secrets.externalSecretBindings),
+  ]);
   const manifestDeploymentSources = raw.expectedDeploymentK8sDir.map((dirPath) => ({
     type: "k8s_dir",
     path: dirPath,
@@ -183,10 +209,19 @@ function resolveConfig(raw) {
     path: kustomizationPath,
     deployments: deploymentNamesFromKustomization(kustomizationPath),
   })));
-  const expectedDeployments = uniqueStrings([
+  let expectedDeployments = uniqueStrings([
     ...raw.expectedDeployment,
     ...manifestDeploymentSources.flatMap((source) => source.deployments),
   ]);
+  if (raw.selfCheck) {
+    expectedK8sSecrets = expectedK8sSecrets.length > 0 ? expectedK8sSecrets : ["self-check-k8s-secret"];
+    expectedSecretManagerSecrets = expectedSecretManagerSecrets.length > 0 ? expectedSecretManagerSecrets : ["self-check-remote-secret"];
+    expectedExternalSecrets = expectedExternalSecrets.length > 0 ? expectedExternalSecrets : ["self-check-external-secret"];
+    expectedExternalSecretBindings = expectedExternalSecretBindings.length > 0
+      ? expectedExternalSecretBindings
+      : [parseExternalSecretBinding("self-check-external-secret:self-check-k8s-secret:SELF_CHECK_SECRET=self-check-remote-secret")];
+    expectedDeployments = expectedDeployments.length > 0 ? expectedDeployments : ["self-check-api", "self-check-worker"];
+  }
 
   return {
     execute: raw.execute,
@@ -196,16 +231,17 @@ function resolveConfig(raw) {
     region: raw.region || env.GOOGLE_CLOUD_REGION || env.GCLOUD_REGION || env.CLOUDSDK_COMPUTE_REGION || "",
     zone: raw.zone || env.GOOGLE_CLOUD_ZONE || env.GCLOUD_ZONE || env.CLOUDSDK_COMPUTE_ZONE || "",
     cluster: raw.cluster || env.GKE_CLUSTER || env.GCLOUD_GKE_CLUSTER || "",
-    namespace: raw.namespace || env.K8S_NAMESPACE || "synthi",
+    namespace: raw.namespace || env.K8S_NAMESPACE || (raw.selfCheck ? "self-check-namespace" : ""),
     artifactRepository: raw.artifactRepository || env.ARTIFACT_REGISTRY_REPOSITORY || env.AR_REPO || "",
     gcsBucket: normalizeBucket(raw.gcsBucket || env.GCS_BUCKET || env.GCS_BUCKET_NAME || ""),
     cloudSqlInstance: raw.cloudSqlInstance || env.CLOUD_SQL_INSTANCE || "",
     redisInstance: raw.redisInstance || env.REDIS_INSTANCE || "",
     domain: raw.domain || env.SYNTHI_PUBLIC_DOMAIN || env.DOMAIN || "",
     expectedK8sSecrets,
-    expectedSecretManagerSecrets: raw.expectedSecretManagerSecret,
-    expectedExternalSecrets: raw.expectedExternalSecret,
-    expectedExternalSecretBindings: raw.expectedExternalSecretBinding,
+    expectedSecretManagerSecrets,
+    expectedExternalSecrets,
+    expectedExternalSecretBindings,
+    expectedSecretSources: manifestSecretSources,
     expectedDeployments,
     expectedDeploymentSources: manifestDeploymentSources,
   };
@@ -213,6 +249,17 @@ function resolveConfig(raw) {
 
 function uniqueStrings(values) {
   return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function uniqueExternalSecretBindings(bindings) {
+  const result = new Map();
+  for (const binding of bindings) {
+    const id = externalSecretBindingId(binding);
+    if (id) {
+      result.set(id, binding);
+    }
+  }
+  return [...result.values()];
 }
 
 function deploymentNamesFromKubernetesManifestDir(dirPath) {
@@ -229,12 +276,25 @@ function deploymentNamesFromKubernetesManifestDir(dirPath) {
 }
 
 function deploymentNamesFromKustomization(kustomizationPath) {
-  const resolved = resolveKustomizationPath(kustomizationPath);
-  const deploymentNames = deploymentNamesFromKustomizationFile(resolved, new Set());
+  const deploymentNames = kubernetesManifestTextsFromKustomization(kustomizationPath)
+    .flatMap((manifest) => deploymentNamesFromKubernetesManifestText(manifest.text));
   return uniqueStrings(deploymentNames).sort((left, right) => left.localeCompare(right));
 }
 
-function deploymentNamesFromKustomizationFile(filePath, visited) {
+function secretExpectationsFromKustomization(kustomizationPath) {
+  const expectations = emptySecretExpectations();
+  for (const manifest of kubernetesManifestTextsFromKustomization(kustomizationPath)) {
+    mergeSecretExpectations(expectations, secretExpectationsFromKubernetesManifestText(manifest.text));
+  }
+  return sortSecretExpectations(expectations);
+}
+
+function kubernetesManifestTextsFromKustomization(kustomizationPath) {
+  const resolved = resolveKustomizationPath(kustomizationPath);
+  return kubernetesManifestTextsFromKustomizationFile(resolved, new Set());
+}
+
+function kubernetesManifestTextsFromKustomizationFile(filePath, visited) {
   const absolutePath = path.resolve(filePath);
   if (visited.has(absolutePath)) {
     return [];
@@ -243,15 +303,15 @@ function deploymentNamesFromKustomizationFile(filePath, visited) {
 
   const text = readFileSync(absolutePath, "utf8");
   const baseDir = path.dirname(absolutePath);
-  const deploymentNames = deploymentNamesFromKubernetesManifestText(text);
+  const manifests = [{ path: absolutePath, text }];
   for (const resource of yamlListValuesForTopLevelKey(text, "resources")) {
     const resourcePath = path.resolve(baseDir, resource);
-    deploymentNames.push(...deploymentNamesFromKubernetesResourcePath(resourcePath, visited));
+    manifests.push(...kubernetesManifestTextsFromResourcePath(resourcePath, visited));
   }
-  return deploymentNames;
+  return manifests;
 }
 
-function deploymentNamesFromKubernetesResourcePath(resourcePath, visited) {
+function kubernetesManifestTextsFromResourcePath(resourcePath, visited) {
   if (!existsSync(resourcePath)) {
     throw new Error(`kustomization resource does not exist: ${resourcePath}`);
   }
@@ -259,16 +319,17 @@ function deploymentNamesFromKubernetesResourcePath(resourcePath, visited) {
   if (stat.isDirectory()) {
     const nestedKustomization = findKustomizationFile(resourcePath);
     if (nestedKustomization) {
-      return deploymentNamesFromKustomizationFile(nestedKustomization, visited);
+      return kubernetesManifestTextsFromKustomizationFile(nestedKustomization, visited);
     }
-    return deploymentNamesFromKubernetesManifestDir(resourcePath);
+    return kubernetesManifestFilesIn(resourcePath)
+      .map((filePath) => ({ path: filePath, text: readFileSync(filePath, "utf8") }));
   }
   if (stat.isFile()) {
     if (isKustomizationFile(resourcePath)) {
-      return deploymentNamesFromKustomizationFile(resourcePath, visited);
+      return kubernetesManifestTextsFromKustomizationFile(resourcePath, visited);
     }
     if (/\.(ya?ml)$/i.test(resourcePath)) {
-      return deploymentNamesFromKubernetesManifestText(readFileSync(resourcePath, "utf8"));
+      return [{ path: resourcePath, text: readFileSync(resourcePath, "utf8") }];
     }
   }
   return [];
@@ -356,6 +417,158 @@ function deploymentNamesFromKubernetesManifestText(text) {
     .map(kubernetesDocumentIdentity)
     .filter((identity) => identity.kind === "Deployment" && identity.name)
     .map((identity) => identity.name);
+}
+
+function secretExpectationsFromKubernetesManifestText(text) {
+  const expectations = emptySecretExpectations();
+  for (const documentText of String(text || "").split(/^---\s*$/m)) {
+    mergeSecretExpectations(expectations, secretExpectationsFromKubernetesDocumentText(documentText));
+  }
+  return sortSecretExpectations(expectations);
+}
+
+function secretExpectationsFromKubernetesDocumentText(documentText) {
+  const identity = kubernetesDocumentIdentity(documentText);
+  const expectations = emptySecretExpectations();
+  if (identity.kind === "Secret" && identity.name) {
+    expectations.k8sSecrets.push(identity.name);
+    return expectations;
+  }
+  if (identity.kind !== "ExternalSecret" || !identity.name) {
+    return expectations;
+  }
+
+  expectations.externalSecrets.push(identity.name);
+  const parsed = parseExternalSecretDocument(documentText);
+  if (parsed.targetSecretName) {
+    expectations.k8sSecrets.push(parsed.targetSecretName);
+  }
+  for (const entry of parsed.data) {
+    if (entry.remoteKey) {
+      expectations.secretManagerSecrets.push(entry.remoteKey);
+    }
+    if (parsed.targetSecretName && entry.secretKey && entry.remoteKey) {
+      expectations.externalSecretBindings.push({
+        externalSecretName: identity.name,
+        targetSecretName: parsed.targetSecretName,
+        targetKey: entry.secretKey,
+        remoteSecret: entry.remoteKey,
+      });
+    }
+  }
+  return expectations;
+}
+
+function parseExternalSecretDocument(documentText) {
+  const lines = String(documentText || "").split(/\r?\n/);
+  const data = [];
+  let targetSecretName = "";
+  let inSpec = false;
+  let specIndent = -1;
+  let inTarget = false;
+  let targetIndent = -1;
+  let inData = false;
+  let dataIndent = -1;
+  let currentData = null;
+  let remoteRefIndent = -1;
+
+  for (const rawLine of lines) {
+    const line = stripYamlComment(rawLine).replace(/\s+$/, "");
+    if (!line.trim()) {
+      continue;
+    }
+    const indent = line.match(/^\s*/)?.[0].length || 0;
+    const topLevel = indent === 0 ? line.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/) : null;
+    if (topLevel) {
+      inSpec = topLevel[1] === "spec";
+      specIndent = inSpec ? indent : -1;
+      inTarget = false;
+      inData = false;
+      currentData = null;
+      remoteRefIndent = -1;
+      continue;
+    }
+    if (!inSpec || indent <= specIndent) {
+      continue;
+    }
+
+    const listItem = line.match(/^\s*-\s+([A-Za-z0-9_.-]+):\s*(.*)$/);
+    const mapItem = line.match(/^\s*([A-Za-z0-9_.-]+):\s*(.*)$/);
+    if (mapItem && indent <= targetIndent) {
+      inTarget = false;
+      targetIndent = -1;
+    }
+    if (mapItem && indent <= dataIndent) {
+      inData = false;
+      dataIndent = -1;
+      currentData = null;
+      remoteRefIndent = -1;
+    }
+
+    if (mapItem?.[1] === "target") {
+      inTarget = true;
+      targetIndent = indent;
+      continue;
+    }
+    if (inTarget && mapItem?.[1] === "name" && indent > targetIndent) {
+      targetSecretName = parseYamlScalar(mapItem[2]);
+      continue;
+    }
+    if (mapItem?.[1] === "data") {
+      inData = true;
+      dataIndent = indent;
+      currentData = null;
+      remoteRefIndent = -1;
+      continue;
+    }
+    if (!inData) {
+      continue;
+    }
+    if (listItem?.[1] === "secretKey") {
+      currentData = { secretKey: parseYamlScalar(listItem[2]), remoteKey: "" };
+      data.push(currentData);
+      remoteRefIndent = -1;
+      continue;
+    }
+    if (!currentData || !mapItem) {
+      continue;
+    }
+    if (mapItem[1] === "remoteRef") {
+      remoteRefIndent = indent;
+      continue;
+    }
+    if (remoteRefIndent >= 0 && indent > remoteRefIndent && mapItem[1] === "key") {
+      currentData.remoteKey = parseYamlScalar(mapItem[2]);
+    }
+  }
+
+  return { targetSecretName, data };
+}
+
+function emptySecretExpectations() {
+  return {
+    k8sSecrets: [],
+    secretManagerSecrets: [],
+    externalSecrets: [],
+    externalSecretBindings: [],
+  };
+}
+
+function mergeSecretExpectations(target, source) {
+  target.k8sSecrets.push(...source.k8sSecrets);
+  target.secretManagerSecrets.push(...source.secretManagerSecrets);
+  target.externalSecrets.push(...source.externalSecrets);
+  target.externalSecretBindings.push(...source.externalSecretBindings);
+}
+
+function sortSecretExpectations(expectations) {
+  return {
+    k8sSecrets: uniqueStrings(expectations.k8sSecrets).sort((left, right) => left.localeCompare(right)),
+    secretManagerSecrets: uniqueStrings(expectations.secretManagerSecrets).sort((left, right) => left.localeCompare(right)),
+    externalSecrets: uniqueStrings(expectations.externalSecrets).sort((left, right) => left.localeCompare(right)),
+    externalSecretBindings: uniqueExternalSecretBindings(expectations.externalSecretBindings)
+      .sort((left, right) => externalSecretBindingId(left).localeCompare(externalSecretBindingId(right))),
+  };
 }
 
 function kubernetesDocumentIdentity(documentText) {
@@ -1028,6 +1241,7 @@ function redactConfig(config) {
     expectedSecretManagerSecrets: config.expectedSecretManagerSecrets,
     expectedExternalSecrets: config.expectedExternalSecrets,
     expectedExternalSecretBindings: config.expectedExternalSecretBindings,
+    expectedSecretSources: config.expectedSecretSources,
     expectedDeployments: config.expectedDeployments,
     expectedDeploymentSources: config.expectedDeploymentSources,
   };
@@ -1043,7 +1257,7 @@ function summarizeInventory(inventory) {
 }
 
 function buildSelfCheckInventory() {
-  const deployments = ["frontend", "collab-server", "signaling-server", "ai-gateway", "ai-engine", "worker"]
+  const deployments = ["self-check-api", "self-check-worker"]
     .map((name) => ({ metadata: { name } }));
   return {
     mode: "self_check",
@@ -1059,15 +1273,15 @@ function buildSelfCheckInventory() {
       cloud_sql_instances: [{ name: "self-check-sql" }],
       redis_instances: [{ name: "self-check-redis" }],
       gcs_buckets: [{ name: "gs://self-check-bucket" }],
-      k8s_namespace: { metadata: { name: "synthi" } },
-      secret_manager_names: [{ name: "projects/self-check/secrets/synthi-secrets" }],
-      k8s_secret_names: "synthi-secrets\n",
+      k8s_namespace: { metadata: { name: "self-check-namespace" } },
+      secret_manager_names: [{ name: "projects/self-check/secrets/self-check-remote-secret" }],
+      k8s_secret_names: "self-check-k8s-secret\n",
       k8s_deployments: { items: deployments },
       k8s_external_secrets: {
         items: [{
           metadata: { name: "self-check-external-secret" },
           spec: {
-            target: { name: "synthi-secrets" },
+            target: { name: "self-check-k8s-secret" },
             data: [{
               secretKey: "SELF_CHECK_SECRET",
               remoteRef: { key: "self-check-remote-secret" },
@@ -1116,6 +1330,8 @@ export {
   deploymentNamesFromKubernetesManifestDir,
   deploymentNamesFromKubernetesManifestText,
   deploymentNamesFromKustomization,
+  secretExpectationsFromKubernetesManifestText,
+  secretExpectationsFromKustomization,
   parseArgs,
   parseExternalSecretBinding,
   resolveConfig,

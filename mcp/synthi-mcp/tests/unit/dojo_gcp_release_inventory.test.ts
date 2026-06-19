@@ -14,6 +14,8 @@ import {
   parseArgs,
   parseExternalSecretBinding,
   resolveConfig,
+  secretExpectationsFromKubernetesManifestText,
+  secretExpectationsFromKustomization,
 } from "../../scripts/dojo-gcp-release-inventory.mjs";
 
 const requiredApis = [
@@ -217,6 +219,140 @@ metadata:
     expect(() => resolveConfig(parseArgs([
       `--expected-deployments-from-k8s-dir=${missingDir}`,
     ]))).toThrow(/existing directory/);
+  });
+
+  it("does not assume product namespace or Secret names when expectations are not configured", () => {
+    const config = resolveConfig(parseArgs([]));
+
+    expect(config.namespace).toBe("");
+    expect(config.expectedK8sSecrets).toEqual([]);
+    expect(config.expectedSecretManagerSecrets).toEqual([]);
+    expect(config.expectedExternalSecrets).toEqual([]);
+    expect(config.expectedExternalSecretBindings).toEqual([]);
+  });
+
+  it("derives expected secret inventory from ExternalSecret manifest text", () => {
+    const expectations = secretExpectationsFromKubernetesManifestText(`
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: release-secrets
+spec:
+  target:
+    name: runtime-secrets
+  data:
+    - secretKey: DATABASE_URL
+      remoteRef:
+        key: release-database-url
+    - secretKey: API_TOKEN
+      remoteRef:
+        key: release-api-token
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bootstrap-secret
+`);
+
+    expect(expectations.k8sSecrets).toEqual(["bootstrap-secret", "runtime-secrets"]);
+    expect(expectations.secretManagerSecrets).toEqual(["release-api-token", "release-database-url"]);
+    expect(expectations.externalSecrets).toEqual(["release-secrets"]);
+    expect(expectations.externalSecretBindings).toEqual([
+      {
+        externalSecretName: "release-secrets",
+        targetSecretName: "runtime-secrets",
+        targetKey: "API_TOKEN",
+        remoteSecret: "release-api-token",
+      },
+      {
+        externalSecretName: "release-secrets",
+        targetSecretName: "runtime-secrets",
+        targetKey: "DATABASE_URL",
+        remoteSecret: "release-database-url",
+      },
+    ]);
+  });
+
+  it("derives expected secret inventory by following kustomization resources", () => {
+    const fixtureRoot = path.join(tmpdir(), `dojo-secret-kustomize-fixture-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    try {
+      mkdirSync(path.join(fixtureRoot, "base"), { recursive: true });
+      mkdirSync(path.join(fixtureRoot, "overlays", "release"), { recursive: true });
+      writeFileSync(path.join(fixtureRoot, "base", "kustomization.yaml"), `
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - external-secret.yaml
+`, "utf8");
+      writeFileSync(path.join(fixtureRoot, "base", "external-secret.yaml"), `
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: base-secrets
+spec:
+  target:
+    name: runtime-secrets
+  data:
+    - secretKey: DATABASE_URL
+      remoteRef:
+        key: base-database-url
+`, "utf8");
+      writeFileSync(path.join(fixtureRoot, "overlays", "release", "kustomization.yaml"), `
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - release-secret.yaml
+`, "utf8");
+      writeFileSync(path.join(fixtureRoot, "overlays", "release", "release-secret.yaml"), `
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: release-secrets
+spec:
+  target:
+    name: runtime-secrets
+  data:
+    - secretKey: API_TOKEN
+      remoteRef:
+        key: release-api-token
+`, "utf8");
+
+      const overlayDir = path.join(fixtureRoot, "overlays", "release");
+      const config = resolveConfig(parseArgs([
+        `--expected-secrets-from-kustomization=${overlayDir}`,
+      ]));
+
+      expect(secretExpectationsFromKustomization(overlayDir)).toEqual({
+        k8sSecrets: ["runtime-secrets"],
+        secretManagerSecrets: ["base-database-url", "release-api-token"],
+        externalSecrets: ["base-secrets", "release-secrets"],
+        externalSecretBindings: [
+          {
+            externalSecretName: "base-secrets",
+            targetSecretName: "runtime-secrets",
+            targetKey: "DATABASE_URL",
+            remoteSecret: "base-database-url",
+          },
+          {
+            externalSecretName: "release-secrets",
+            targetSecretName: "runtime-secrets",
+            targetKey: "API_TOKEN",
+            remoteSecret: "release-api-token",
+          },
+        ],
+      });
+      expect(config.expectedK8sSecrets).toEqual(["runtime-secrets"]);
+      expect(config.expectedSecretManagerSecrets).toEqual(["base-database-url", "release-api-token"]);
+      expect(config.expectedExternalSecrets).toEqual(["base-secrets", "release-secrets"]);
+      expect(config.expectedSecretSources).toEqual([{
+        type: "kustomization",
+        path: path.resolve(overlayDir),
+        secrets: secretExpectationsFromKustomization(overlayDir),
+      }]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it("parses secret manager, Kubernetes Secret, and ExternalSecret expectations separately", () => {
@@ -423,17 +559,24 @@ metadata:
 
     expect(report.mode).toBe("self_check");
     expect(report.evaluation.ok).toBe(true);
-    expect(report.config.expectedK8sSecrets).toEqual(["synthi-secrets"]);
-    expect(report.evaluation.checks.find((check) => check.id === "k8s_namespace:synthi")).toEqual(expect.objectContaining({ status: "passed" }));
+    expect(report.config.namespace).toBe("self-check-namespace");
+    expect(report.config.expectedK8sSecrets).toEqual(["self-check-k8s-secret"]);
+    expect(report.config.expectedSecretManagerSecrets).toEqual(["self-check-remote-secret"]);
+    expect(report.config.expectedExternalSecrets).toEqual(["self-check-external-secret"]);
+    expect(report.evaluation.checks.find((check) => check.id === "k8s_namespace:self-check-namespace")).toEqual(expect.objectContaining({ status: "passed" }));
+    expect(report.evaluation.checks.find((check) => check.id === "k8s_secret:self-check-k8s-secret")).toEqual(expect.objectContaining({ status: "passed" }));
+    expect(report.evaluation.checks.find((check) => check.id === "secret_manager:self-check-remote-secret")).toEqual(expect.objectContaining({ status: "passed" }));
+    expect(report.evaluation.checks.find((check) => check.id === "externalsecret:self-check-external-secret")).toEqual(expect.objectContaining({ status: "passed" }));
     expect(report.inventory.datasetKeys).toContain("k8s_external_secrets");
   });
 
-  it("documents split secret inventory flags without using the legacy alias for remote secrets", () => {
+  it("documents kustomization-derived secret inventory without copied remote secret flags", () => {
     const runbook = readFileSync("../../docs/AGENT_DOJO_RELEASE_GATE_RUNBOOK.md", "utf8");
 
-    expect(runbook).toContain("--expected-k8s-secret=synthi-secrets");
-    expect(runbook).toContain("--expected-secret-manager-secret=synthi-redis-url");
-    expect(runbook).toContain("--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url");
+    expect(runbook).toContain("--expected-secrets-from-kustomization=k8s/overlays/dojo-release-gate");
+    expect(runbook).toContain("@dojoSecretInventoryFlags");
+    expect(runbook).not.toContain("--expected-secret-manager-secret=synthi-redis-url");
+    expect(runbook).not.toContain("--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url");
     expect(runbook).not.toContain("--expected-secret=synthi-redis-url");
     expect(runbook).not.toContain("--expected-secret=synthi-database-url");
   });
