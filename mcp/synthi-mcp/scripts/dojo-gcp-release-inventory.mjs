@@ -34,6 +34,7 @@ function parseArgs(argv) {
     expectedExternalSecretBinding: [],
     expectedDeployment: [],
     expectedDeploymentK8sDir: [],
+    expectedDeploymentKustomization: [],
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -85,6 +86,8 @@ function parseArgs(argv) {
       out.expectedDeployment.push(takeValue());
     } else if (arg === "--expected-deployments-from-k8s-dir") {
       out.expectedDeploymentK8sDir.push(path.resolve(takeValue()));
+    } else if (arg === "--expected-deployments-from-kustomization") {
+      out.expectedDeploymentKustomization.push(path.resolve(takeValue()));
     } else if (arg === "--help" || arg === "-h") {
       out.help = true;
     } else {
@@ -149,6 +152,10 @@ Options:
                                    Recursively derive expected Kubernetes
                                    Deployment names from YAML manifests in a
                                    directory. Repeatable.
+  --expected-deployments-from-kustomization <path>
+                                   Derive expected Kubernetes Deployment names
+                                   by following a kustomization file or
+                                   directory. Repeatable.
 
 The script never creates, updates, patches, applies, deletes, or deploys cloud
 resources. Without --execute it writes the planned read-only inventory commands.`);
@@ -171,7 +178,11 @@ function resolveConfig(raw) {
     type: "k8s_dir",
     path: dirPath,
     deployments: deploymentNamesFromKubernetesManifestDir(dirPath),
-  }));
+  })).concat(raw.expectedDeploymentKustomization.map((kustomizationPath) => ({
+    type: "kustomization",
+    path: kustomizationPath,
+    deployments: deploymentNamesFromKustomization(kustomizationPath),
+  })));
   const expectedDeployments = uniqueStrings([
     ...raw.expectedDeployment,
     ...manifestDeploymentSources.flatMap((source) => source.deployments),
@@ -215,6 +226,113 @@ function deploymentNamesFromKubernetesManifestDir(dirPath) {
     deploymentNames.push(...deploymentNamesFromKubernetesManifestText(text));
   }
   return uniqueStrings(deploymentNames).sort((left, right) => left.localeCompare(right));
+}
+
+function deploymentNamesFromKustomization(kustomizationPath) {
+  const resolved = resolveKustomizationPath(kustomizationPath);
+  const deploymentNames = deploymentNamesFromKustomizationFile(resolved, new Set());
+  return uniqueStrings(deploymentNames).sort((left, right) => left.localeCompare(right));
+}
+
+function deploymentNamesFromKustomizationFile(filePath, visited) {
+  const absolutePath = path.resolve(filePath);
+  if (visited.has(absolutePath)) {
+    return [];
+  }
+  visited.add(absolutePath);
+
+  const text = readFileSync(absolutePath, "utf8");
+  const baseDir = path.dirname(absolutePath);
+  const deploymentNames = deploymentNamesFromKubernetesManifestText(text);
+  for (const resource of yamlListValuesForTopLevelKey(text, "resources")) {
+    const resourcePath = path.resolve(baseDir, resource);
+    deploymentNames.push(...deploymentNamesFromKubernetesResourcePath(resourcePath, visited));
+  }
+  return deploymentNames;
+}
+
+function deploymentNamesFromKubernetesResourcePath(resourcePath, visited) {
+  if (!existsSync(resourcePath)) {
+    throw new Error(`kustomization resource does not exist: ${resourcePath}`);
+  }
+  const stat = statSync(resourcePath);
+  if (stat.isDirectory()) {
+    const nestedKustomization = findKustomizationFile(resourcePath);
+    if (nestedKustomization) {
+      return deploymentNamesFromKustomizationFile(nestedKustomization, visited);
+    }
+    return deploymentNamesFromKubernetesManifestDir(resourcePath);
+  }
+  if (stat.isFile()) {
+    if (isKustomizationFile(resourcePath)) {
+      return deploymentNamesFromKustomizationFile(resourcePath, visited);
+    }
+    if (/\.(ya?ml)$/i.test(resourcePath)) {
+      return deploymentNamesFromKubernetesManifestText(readFileSync(resourcePath, "utf8"));
+    }
+  }
+  return [];
+}
+
+function resolveKustomizationPath(inputPath) {
+  const absolutePath = path.resolve(inputPath);
+  if (!existsSync(absolutePath)) {
+    throw new Error(`--expected-deployments-from-kustomization must point at an existing file or directory: ${inputPath}`);
+  }
+  const stat = statSync(absolutePath);
+  if (stat.isDirectory()) {
+    const kustomizationFile = findKustomizationFile(absolutePath);
+    if (!kustomizationFile) {
+      throw new Error(`--expected-deployments-from-kustomization directory has no kustomization.yaml or kustomization.yml: ${inputPath}`);
+    }
+    return kustomizationFile;
+  }
+  if (stat.isFile() && isKustomizationFile(absolutePath)) {
+    return absolutePath;
+  }
+  throw new Error(`--expected-deployments-from-kustomization must point at a kustomization.yaml file or directory: ${inputPath}`);
+}
+
+function findKustomizationFile(dirPath) {
+  for (const fileName of ["kustomization.yaml", "kustomization.yml", "Kustomization"]) {
+    const candidate = path.join(dirPath, fileName);
+    if (existsSync(candidate) && statSync(candidate).isFile()) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+function isKustomizationFile(filePath) {
+  return /(^|[\\/])(kustomization\.ya?ml|Kustomization)$/i.test(filePath);
+}
+
+function yamlListValuesForTopLevelKey(text, key) {
+  const values = [];
+  const lines = String(text || "").split(/\r?\n/);
+  let inList = false;
+  for (const rawLine of lines) {
+    const line = stripYamlComment(rawLine).replace(/\s+$/, "");
+    if (!line.trim()) {
+      continue;
+    }
+    const indent = line.match(/^\s*/)?.[0].length || 0;
+    if (indent === 0) {
+      const topLevel = line.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
+      inList = topLevel?.[1] === key;
+      if (inList && topLevel?.[2]?.trim()) {
+        values.push(parseYamlScalar(topLevel[2]));
+      }
+      continue;
+    }
+    if (inList) {
+      const listItem = line.match(/^\s*-\s+(.+)$/);
+      if (listItem) {
+        values.push(parseYamlScalar(listItem[1]));
+      }
+    }
+  }
+  return uniqueStrings(values);
 }
 
 function kubernetesManifestFilesIn(dirPath) {
@@ -997,6 +1115,7 @@ export {
   externalSecretInventoryFrom,
   deploymentNamesFromKubernetesManifestDir,
   deploymentNamesFromKubernetesManifestText,
+  deploymentNamesFromKustomization,
   parseArgs,
   parseExternalSecretBinding,
   resolveConfig,

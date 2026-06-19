@@ -7,6 +7,7 @@ import {
   buildReport,
   deploymentNamesFromKubernetesManifestDir,
   deploymentNamesFromKubernetesManifestText,
+  deploymentNamesFromKustomization,
   evaluate,
   externalSecretBindingId,
   externalSecretInventoryFrom,
@@ -155,6 +156,54 @@ metadata:
       expect(config.expectedDeploymentSources).toEqual([{
         type: "k8s_dir",
         path: path.resolve(fixtureRoot),
+        deployments: ["runtime-api", "runtime-worker"],
+      }]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("derives expected deployment names by following kustomization resources", () => {
+    const fixtureRoot = path.join(tmpdir(), `dojo-kustomize-fixture-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    try {
+      mkdirSync(path.join(fixtureRoot, "base"), { recursive: true });
+      mkdirSync(path.join(fixtureRoot, "overlays", "release"), { recursive: true });
+      writeFileSync(path.join(fixtureRoot, "base", "kustomization.yaml"), `
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - api.yaml
+`, "utf8");
+      writeFileSync(path.join(fixtureRoot, "base", "api.yaml"), `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-api
+`, "utf8");
+      writeFileSync(path.join(fixtureRoot, "overlays", "release", "kustomization.yaml"), `
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - worker.yaml
+`, "utf8");
+      writeFileSync(path.join(fixtureRoot, "overlays", "release", "worker.yaml"), `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-worker
+`, "utf8");
+
+      const overlayDir = path.join(fixtureRoot, "overlays", "release");
+      const config = resolveConfig(parseArgs([
+        `--expected-deployments-from-kustomization=${overlayDir}`,
+      ]));
+
+      expect(deploymentNamesFromKustomization(overlayDir)).toEqual(["runtime-api", "runtime-worker"]);
+      expect(config.expectedDeployments).toEqual(["runtime-api", "runtime-worker"]);
+      expect(config.expectedDeploymentSources).toEqual([{
+        type: "kustomization",
+        path: path.resolve(overlayDir),
         deployments: ["runtime-api", "runtime-worker"],
       }]);
     } finally {
