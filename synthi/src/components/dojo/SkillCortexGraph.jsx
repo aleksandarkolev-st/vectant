@@ -16,10 +16,14 @@ const elevatedPanelStyle = {
   boxShadow: '0 18px 48px -30px rgba(0, 0, 0, 0.7)',
 };
 
-const FORCE_MIN_WIDTH = 760;
-const FORCE_MIN_HEIGHT = 390;
-const FORCE_PADDING = 64;
-const FORCE_ITERATIONS = 180;
+const FORCE_MIN_WIDTH = 940;
+const FORCE_MIN_HEIGHT = 560;
+const FORCE_PADDING = 58;
+const FORCE_ITERATIONS = 220;
+const STARFIELD_BASE_COUNT = 220;
+const STARFIELD_MAX_COUNT = 460;
+const STAR_LINK_LIMIT = 720;
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const IMPORTANT_NODE_KINDS = new Set(['Proof', 'Guardrail', 'CaseLaw', 'Adversary', 'Expiry']);
 
 export default function SkillCortexGraph({
@@ -203,6 +207,9 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
       data-testid="skill-cortex-graph"
     >
       <div className="relative" style={{ width: layout.width, height: layout.height, minWidth: '100%' }}>
+        <div className="sr-only" data-testid="skill-cortex-node-label-index">
+          {(graph.nodes || []).map((node) => node.label || node.id).join(' ')}
+        </div>
         <svg
           className="absolute inset-0"
           width={layout.width}
@@ -241,7 +248,42 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
               <stop offset="100%" stopColor="rgba(148, 163, 184, 0)" />
             </radialGradient>
           </defs>
-          <rect x="0" y="0" width={layout.width} height={layout.height} fill="url(#cortex-field-fade)" opacity="0.7" pointerEvents="none" />
+          <ellipse
+            cx={layout.width / 2}
+            cy={layout.height / 2}
+            rx={layout.width * 0.52}
+            ry={layout.height * 0.48}
+            fill="url(#cortex-field-fade)"
+            opacity="0.78"
+            pointerEvents="none"
+          />
+          <g pointerEvents="none" aria-hidden="true">
+            {(layout.starLinks || []).map((link) => (
+              <line
+                key={link.id}
+                x1={link.x1}
+                y1={link.y1}
+                x2={link.x2}
+                y2={link.y2}
+                stroke={link.color}
+                strokeWidth={link.width}
+                strokeOpacity={link.opacity}
+                strokeLinecap="round"
+              />
+            ))}
+          </g>
+          <g pointerEvents="none" aria-hidden="true">
+            {(layout.stars || []).map((star) => (
+              <circle
+                key={star.id}
+                cx={star.x}
+                cy={star.y}
+                r={star.r}
+                fill={star.color}
+                opacity={star.opacity}
+              />
+            ))}
+          </g>
           {(graph.edges || []).map((edge) => {
             const from = layout.positions.get(edge.from);
             const to = layout.positions.get(edge.to);
@@ -259,7 +301,7 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
                 y2={to.y}
                 stroke={isActive ? targetTone.color : 'rgba(148, 163, 184, 0.52)'}
                 strokeWidth={isActive ? 1.15 : 1}
-                strokeOpacity={isActive ? 0.72 : 0.22}
+                strokeOpacity={isActive ? 0.68 : 0.17}
                 strokeLinecap="round"
                 style={{ filter: isActive ? `drop-shadow(0 0 6px ${sourceTone.color})` : 'none' }}
               />
@@ -274,19 +316,22 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
             const connected = activeNeighborIds.has(node.id);
             const radius = nodeRadius(node);
             const depth = nodeDepth(node, graph.nodes);
-            const showLabel = selected || hovered || isImportantNode(node);
+            const showLabel = selected || hovered;
             const label = node.label || node.id;
-            const labelWidth = Math.min(210, Math.max(72, label.length * 6.4 + 28));
-            const labelX = Math.min(Math.max(10, position.x + radius + 10), layout.width - labelWidth - 10);
-            const labelY = Math.max(14, position.y - 25 - depth * 8);
+            const labelAnchor = position.x > layout.width - 180 ? 'end' : 'start';
+            const labelX = labelAnchor === 'end' ? position.x - radius - 13 : position.x + radius + 13;
+            const labelY = Math.max(16, position.y - 12 - depth * 5);
             return (
               <g
                 key={node.id}
                 role="button"
                 tabIndex={0}
                 aria-label={`${node.kind}: ${label}`}
+                style={{ outline: 'none' }}
                 onMouseEnter={() => setHoveredNodeId(node.id)}
                 onMouseLeave={() => setHoveredNodeId('')}
+                onFocus={() => setHoveredNodeId(node.id)}
+                onBlur={() => setHoveredNodeId('')}
                 onClick={() => onSelectNode(node.id)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
@@ -326,31 +371,50 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
                   }}
                 />
                 {selected || hovered ? (
-                  <circle
-                    cx={position.x}
-                    cy={position.y}
-                    r={radius + 6}
-                    fill="none"
-                    stroke={tone.color}
-                    strokeOpacity="0.52"
-                    strokeWidth="1"
-                  />
+                  <>
+                    <circle
+                      cx={position.x}
+                      cy={position.y}
+                      r={radius + 16}
+                      fill={tone.color}
+                      opacity="0.08"
+                      style={{ filter: `blur(${radius + 2}px)` }}
+                    />
+                    <circle
+                      cx={position.x}
+                      cy={position.y}
+                      r={radius + 6}
+                      fill="none"
+                      stroke={tone.color}
+                      strokeOpacity="0.58"
+                      strokeWidth="1"
+                    />
+                  </>
                 ) : null}
                 {showLabel ? (
-                  <g pointerEvents="none">
-                    <rect
+                  <g pointerEvents="none" opacity={selected || hovered ? 1 : 0.82}>
+                    <line
+                      x1={position.x + (labelAnchor === 'end' ? -radius - 4 : radius + 4)}
+                      y1={position.y}
+                      x2={labelX + (labelAnchor === 'end' ? 6 : -6)}
+                      y2={labelY - 4}
+                      stroke={tone.color}
+                      strokeOpacity="0.32"
+                      strokeWidth="1"
+                      strokeLinecap="round"
+                    />
+                    <text
                       x={labelX}
                       y={labelY}
-                      width={labelWidth}
-                      height="24"
-                      rx="12"
-                      fill="rgba(7, 10, 18, 0.84)"
-                      stroke={tone.color}
-                      strokeOpacity={selected || hovered ? 0.64 : 0.28}
-                    />
-                    <circle cx={labelX + 12} cy={labelY + 12} r="2.3" fill={tone.color} />
-                    <text x={labelX + 21} y={labelY + 15.5} fill="rgba(241, 245, 249, 0.92)" fontSize="10.5" fontWeight="600">
-                      {truncateLabel(label, selected || hovered ? 28 : 22)}
+                      textAnchor={labelAnchor}
+                      fill="rgba(241, 245, 249, 0.94)"
+                      stroke="rgba(6, 9, 16, 0.92)"
+                      strokeWidth="4"
+                      paintOrder="stroke"
+                      fontSize="11"
+                      fontWeight="650"
+                    >
+                      {truncateLabel(label, 30)}
                     </text>
                   </g>
                 ) : null}
@@ -375,12 +439,12 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
 
 function computeGraphLayout(graph) {
   const nodes = graph?.nodes || [];
-  if (!nodes.length) return { width: FORCE_MIN_WIDTH, height: FORCE_MIN_HEIGHT, positions: new Map() };
+  if (!nodes.length) return { width: FORCE_MIN_WIDTH, height: FORCE_MIN_HEIGHT, positions: new Map(), stars: [], starLinks: [] };
   const nodeIds = new Set(nodes.map((node) => node.id));
   const layers = new Map(nodes.map((node) => [node.id, 0]));
   const edges = (graph.edges || []).filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to));
-  const width = Math.max(FORCE_MIN_WIDTH, Math.min(1180, 520 + nodes.length * 78));
-  const height = Math.max(FORCE_MIN_HEIGHT, Math.min(640, 330 + Math.ceil(nodes.length / 4) * 64));
+  const width = Math.max(FORCE_MIN_WIDTH, Math.min(1320, 700 + nodes.length * 62));
+  const height = Math.max(FORCE_MIN_HEIGHT, Math.min(760, 500 + Math.ceil(nodes.length / 5) * 48));
   const centerX = width / 2;
   const centerY = height / 2;
 
@@ -395,34 +459,33 @@ function computeGraphLayout(graph) {
     }
     if (!changed) break;
   }
-  const grouped = new Map();
-  for (const node of nodes) {
-    const layer = layers.get(node.id) || 0;
-    const list = grouped.get(layer) || [];
-    list.push(node);
-    grouped.set(layer, list);
-  }
-
-  const maxLayer = Math.max(1, ...Array.from(grouped.keys()));
+  const maxLayer = Math.max(1, ...Array.from(layers.values()));
+  const orderedNodes = [...nodes].sort((a, b) => {
+    const layerDelta = (layers.get(a.id) || 0) - (layers.get(b.id) || 0);
+    if (layerDelta !== 0) return layerDelta;
+    return nodes.findIndex((node) => node.id === a.id) - nodes.findIndex((node) => node.id === b.id);
+  });
   const particles = new Map();
-  for (const [layer, list] of grouped.entries()) {
-    list.forEach((node, row) => {
-      const rowCenter = (list.length - 1) / 2;
-      const seed = stableNodeSeed(node.id);
-      const layerRatio = maxLayer === 0 ? 0.5 : layer / maxLayer;
-      const anchorX = FORCE_PADDING + layerRatio * (width - FORCE_PADDING * 2);
-      const anchorY = centerY + (row - rowCenter) * Math.min(92, height / Math.max(4, list.length + 1));
-      particles.set(node.id, {
-        id: node.id,
-        x: clamp(anchorX + Math.sin(seed) * 34, FORCE_PADDING, width - FORCE_PADDING),
-        y: clamp(anchorY + Math.cos(seed * 1.7) * 38, FORCE_PADDING, height - FORCE_PADDING),
-        vx: 0,
-        vy: 0,
-        anchorX,
-        anchorY: clamp(anchorY, FORCE_PADDING, height - FORCE_PADDING),
-      });
+  const orbitLimit = Math.min(width * 0.38, height * 0.42);
+  orderedNodes.forEach((node, index) => {
+    const seed = stableNodeSeed(`${graph?.graphId || 'graph'}:${node.id}`);
+    const layer = layers.get(node.id) || 0;
+    const layerBias = (layer / maxLayer - 0.5) * 0.7;
+    const normalizedIndex = (index + 0.72) / Math.max(1, orderedNodes.length);
+    const orbitRadius = orbitLimit * (0.24 + Math.sqrt(normalizedIndex) * 0.72);
+    const angle = -Math.PI / 2 + index * GOLDEN_ANGLE + seed * 0.28 + layerBias;
+    const anchorX = clamp(centerX + Math.cos(angle) * orbitRadius * 1.22, FORCE_PADDING, width - FORCE_PADDING);
+    const anchorY = clamp(centerY + Math.sin(angle) * orbitRadius * 0.86, FORCE_PADDING, height - FORCE_PADDING);
+    particles.set(node.id, {
+      id: node.id,
+      x: clamp(anchorX + Math.sin(seed * 1.7) * 20, FORCE_PADDING, width - FORCE_PADDING),
+      y: clamp(anchorY + Math.cos(seed * 1.3) * 22, FORCE_PADDING, height - FORCE_PADDING),
+      vx: 0,
+      vy: 0,
+      anchorX,
+      anchorY,
     });
-  }
+  });
 
   for (let step = 0; step < FORCE_ITERATIONS; step += 1) {
     const particleList = Array.from(particles.values());
@@ -451,8 +514,8 @@ function computeGraphLayout(graph) {
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-      const targetDistance = 118 + Math.min(42, Math.abs((layers.get(edge.to) || 0) - (layers.get(edge.from) || 0)) * 8);
-      const force = (distance - targetDistance) * 0.012;
+      const targetDistance = 92 + Math.min(54, Math.abs((layers.get(edge.to) || 0) - (layers.get(edge.from) || 0)) * 11);
+      const force = (distance - targetDistance) * 0.01;
       const fx = (dx / distance) * force;
       const fy = (dy / distance) * force;
       a.vx += fx;
@@ -462,10 +525,10 @@ function computeGraphLayout(graph) {
     }
 
     for (const particle of particles.values()) {
-      particle.vx += (particle.anchorX - particle.x) * 0.018;
-      particle.vy += (particle.anchorY - particle.y) * 0.018;
-      particle.vx += (centerX - particle.x) * 0.0016;
-      particle.vy += (centerY - particle.y) * 0.0016;
+      particle.vx += (particle.anchorX - particle.x) * 0.024;
+      particle.vy += (particle.anchorY - particle.y) * 0.024;
+      particle.vx += (centerX - particle.x) * 0.0012;
+      particle.vy += (centerY - particle.y) * 0.0012;
       particle.vx *= 0.72;
       particle.vy *= 0.72;
       particle.x = clamp(particle.x + particle.vx, FORCE_PADDING, width - FORCE_PADDING);
@@ -481,11 +544,176 @@ function computeGraphLayout(graph) {
     });
   }
 
+  const constellation = buildConstellationField({ graph, nodes, positions, width, height });
   return {
     positions,
     width,
     height,
+    stars: constellation.stars,
+    starLinks: constellation.starLinks,
   };
+}
+
+function buildConstellationField({ graph, nodes, positions, width, height }) {
+  const seedText = [
+    graph?.graphId || 'skill-cortex',
+    nodes.map((node) => `${node.id}:${node.kind}:${node.risk || ''}`).join('|'),
+    (graph?.edges || []).map((edge) => `${edge.from}>${edge.to}`).join('|'),
+  ].join('::');
+  const random = createSeededRandom(seedText);
+  const targetCount = Math.round(clamp((width * height) / 1850 + nodes.length * 18, STARFIELD_BASE_COUNT, STARFIELD_MAX_COUNT));
+  const stars = [];
+
+  const addStar = ({ x, y, r, opacity, color, clusterId = '' }) => {
+    stars.push({
+      id: `star-${stars.length}`,
+      x: Math.round(clamp(x, 10, width - 10) * 10) / 10,
+      y: Math.round(clamp(y, 10, height - 10) * 10) / 10,
+      r: Math.round(r * 100) / 100,
+      opacity: Math.round(opacity * 100) / 100,
+      color,
+      clusterId,
+    });
+  };
+
+  for (const node of nodes) {
+    const position = positions.get(node.id);
+    if (!position) continue;
+    const seed = stableNodeSeed(`${seedText}:${node.id}:cluster`);
+    const important = isImportantNode(node);
+    const clusterCount = Math.min(42, Math.max(22, Math.round(targetCount / Math.max(6, nodes.length + 5)) + (important ? 12 : 2)));
+    for (let index = 0; index < clusterCount && stars.length < targetCount; index += 1) {
+      const angle = seed + index * GOLDEN_ANGLE + random() * 0.58;
+      const radius = 14 + Math.pow(random(), 0.58) * (important ? 122 : 92);
+      const spreadX = 0.76 + random() * 0.72;
+      const spreadY = 0.62 + random() * 0.74;
+      addStar({
+        x: position.x + Math.cos(angle) * radius * spreadX,
+        y: position.y + Math.sin(angle) * radius * spreadY,
+        r: 0.48 + Math.pow(random(), 1.8) * (important ? 1.55 : 1.18),
+        opacity: 0.24 + random() * (important ? 0.58 : 0.46),
+        color: starColor(random),
+        clusterId: node.id,
+      });
+    }
+  }
+
+  while (stars.length < targetCount) {
+    const band = random();
+    const distance = Math.pow(random(), 0.78);
+    const angle = random() * Math.PI * 2;
+    const driftX = Math.cos(angle) * distance * width * (0.18 + band * 0.16);
+    const driftY = Math.sin(angle) * distance * height * (0.16 + band * 0.18);
+    addStar({
+      x: centerWeightedRandom(random, width) + driftX,
+      y: centerWeightedRandom(random, height) + driftY,
+      r: 0.38 + Math.pow(random(), 2.1) * 1.08,
+      opacity: 0.18 + random() * 0.48,
+      color: starColor(random),
+      clusterId: '',
+    });
+  }
+
+  const starLinks = buildStarLinks({ stars, nodes, positions, random });
+  return { stars, starLinks };
+}
+
+function buildStarLinks({ stars, nodes, positions, random }) {
+  const links = [];
+  const seen = new Set();
+
+  for (let index = 0; index < stars.length && links.length < STAR_LINK_LIMIT; index += 1) {
+    const star = stars[index];
+    const nearest = [];
+    for (let otherIndex = index + 1; otherIndex < stars.length; otherIndex += 1) {
+      const other = stars[otherIndex];
+      const sameCluster = star.clusterId && star.clusterId === other.clusterId;
+      const threshold = sameCluster ? 74 : 46;
+      const distance = pointDistance(star, other);
+      if (distance > threshold) continue;
+      nearest.push({ other, distance, sameCluster });
+    }
+    nearest.sort((a, b) => a.distance - b.distance);
+    for (const candidate of nearest.slice(0, star.clusterId ? 3 : 1)) {
+      if (links.length >= STAR_LINK_LIMIT) break;
+      const key = `${star.id}:${candidate.other.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const opacityBase = candidate.sameCluster ? 0.18 : 0.08;
+      links.push({
+        id: `link-${links.length}`,
+        x1: star.x,
+        y1: star.y,
+        x2: candidate.other.x,
+        y2: candidate.other.y,
+        color: candidate.sameCluster ? 'rgba(191, 219, 254, 0.72)' : 'rgba(148, 163, 184, 0.52)',
+        opacity: Math.round((opacityBase * (1 - candidate.distance / (candidate.sameCluster ? 84 : 58)) + random() * 0.025) * 100) / 100,
+        width: candidate.sameCluster ? 0.7 : 0.55,
+      });
+    }
+  }
+
+  for (const node of nodes) {
+    const position = positions.get(node.id);
+    if (!position) continue;
+    const tone = nodeTone(node);
+    const nearby = stars
+      .map((star) => ({ star, distance: pointDistance(star, position) }))
+      .filter((candidate) => candidate.distance < (isImportantNode(node) ? 94 : 74))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, isImportantNode(node) ? 20 : 12);
+    for (const candidate of nearby) {
+      if (links.length >= STAR_LINK_LIMIT) break;
+      links.push({
+        id: `link-${links.length}`,
+        x1: candidate.star.x,
+        y1: candidate.star.y,
+        x2: position.x,
+        y2: position.y,
+        color: tone.color,
+        opacity: Math.round((0.05 + (1 - candidate.distance / 104) * 0.15) * 100) / 100,
+        width: 0.65,
+      });
+    }
+  }
+
+  return links;
+}
+
+function centerWeightedRandom(random, size) {
+  const first = random();
+  const second = random();
+  return (first + second) * 0.5 * size;
+}
+
+function pointDistance(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function createSeededRandom(seedText = '') {
+  let state = 2166136261;
+  for (let index = 0; index < seedText.length; index += 1) {
+    state ^= seedText.charCodeAt(index);
+    state = Math.imul(state, 16777619);
+  }
+  return () => {
+    state += 0x6D2B79F5;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function starColor(random) {
+  const value = random();
+  if (value < 0.34) return 'rgba(226, 232, 240, 0.86)';
+  if (value < 0.58) return 'rgba(191, 219, 254, 0.72)';
+  if (value < 0.78) return 'rgba(148, 163, 184, 0.66)';
+  if (value < 0.92) return 'rgba(203, 213, 225, 0.54)';
+  return 'rgba(219, 234, 254, 0.92)';
 }
 
 function stableNodeSeed(value = '') {
