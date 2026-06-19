@@ -16,15 +16,16 @@ describe("Dojo managed-key signing release observation", () => {
     const keyPair = generateEd25519DojoProofKeyPair("managed-release-key-a");
     const keyUri = `kms://tenant-a/proof/${keyPair.key_id}`;
     const outDir = await mkdtemp(path.join(tmpdir(), "dojo-managed-key-release-observation-"));
+    const observedAt = new Date().toISOString();
     const payload = buildDojoManagedKeySigningObservationPayload({
       keyId: keyPair.key_id,
       keyUri,
-      now: "2026-06-18T00:00:00.000Z",
+      now: observedAt,
       nonce: "unit-test-nonce",
     });
     const artifacts = await runDojoManagedKeySigningReleaseObservation({
       outDir,
-      now: "2026-06-18T00:00:00.000Z",
+      now: observedAt,
       args: {
         provider: "managed-key-service",
         "key-id": keyPair.key_id,

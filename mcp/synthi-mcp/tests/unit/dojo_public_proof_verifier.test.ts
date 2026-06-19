@@ -31,6 +31,7 @@ describe("Dojo public proof capsule verifier", () => {
     const skill = skillFixture();
     const evidenceRecord = dojoEvidenceRecordForProof(skill, { record_id: "evidence-public-proof-a" });
     const capsule = issueDojoProofCapsule(skill, "run_workflow", {
+      tenant_id: evidenceRecord.tenant_id,
       context_claims: { workspace_verified: true },
       evidence_ledger_records: [evidenceRecord],
       require_verified_evidence: true,

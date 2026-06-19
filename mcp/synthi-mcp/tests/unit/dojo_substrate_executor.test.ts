@@ -2,8 +2,14 @@ import { describe, expect, it } from "vitest";
 import { compileDojoApiBackedMcpTool } from "../../src/dojo/api/api_tool_compiler.js";
 import { inferDojoApiEndpointCandidateFromTrace } from "../../src/dojo/api/endpoint_inference.js";
 import { createFakeDojoSubstrateExecutor } from "../../src/dojo/graph/substrate_executor.js";
-import { DojoSkillGraphRuntime } from "../../src/dojo/graph/runtime.js";
+import { DojoSkillGraphRuntime as BaseDojoSkillGraphRuntime, type DojoSkillGraphRuntimeInput } from "../../src/dojo/graph/runtime.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
+
+class DojoSkillGraphRuntime extends BaseDojoSkillGraphRuntime {
+  execute(input: DojoSkillGraphRuntimeInput) {
+    return super.execute({ tenant: tenantFixture(), ...input });
+  }
+}
 
 describe("Dojo substrate executor", () => {
   it("rejects checkride API substrate actions without approved candidate", async () => {
@@ -698,6 +704,19 @@ describe("Dojo substrate executor", () => {
 const validProofValidator = () => ({ ok: true, blocked_by: [] });
 const validApiProofValidator = () => ({ ok: true, blocked_by: [] });
 const graphEvidenceWriter = (event: { run_id: string; node_id: string }) => `ledger://${event.run_id}/${event.node_id}`;
+
+function tenantFixture() {
+  return {
+    tenant_id: "tenant-a",
+    organization_id: "org-a",
+    workspace_id: "workspace-a",
+    actor_id: "agent-a",
+    actor_type: "agent" as const,
+    roles: ["agent"],
+    request_id: "req-graph-runtime-a",
+    correlation_id: "corr-graph-runtime-a",
+  };
+}
 
 function graphFixture(input: { substrate_options: string[]; metadata?: Record<string, unknown> }): DojoSkillGraph {
   return {

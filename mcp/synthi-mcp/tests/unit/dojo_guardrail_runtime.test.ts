@@ -5,8 +5,14 @@ import {
   normalizeDojoGuardrailPredicate,
 } from "../../src/dojo/graph/guardrail_predicates.js";
 import { evaluateDojoGuardrailPredicate } from "../../src/dojo/graph/guardrail_runtime.js";
-import { DojoSkillGraphRuntime } from "../../src/dojo/graph/runtime.js";
+import { DojoSkillGraphRuntime as BaseDojoSkillGraphRuntime, type DojoSkillGraphRuntimeInput } from "../../src/dojo/graph/runtime.js";
 import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
+
+class DojoSkillGraphRuntime extends BaseDojoSkillGraphRuntime {
+  execute(input: DojoSkillGraphRuntimeInput) {
+    return super.execute({ tenant: tenantFixture(), ...input });
+  }
+}
 
 describe("Dojo guardrail runtime", () => {
   it("evaluates equality, inequality, numeric comparison, truth, and membership predicates", () => {
@@ -133,6 +139,19 @@ describe("Dojo guardrail runtime", () => {
     }));
   });
 });
+
+function tenantFixture() {
+  return {
+    tenant_id: "tenant-a",
+    organization_id: "org-a",
+    workspace_id: "workspace-a",
+    actor_id: "agent-a",
+    actor_type: "agent" as const,
+    roles: ["agent"],
+    request_id: "req-guardrail-runtime-a",
+    correlation_id: "corr-guardrail-runtime-a",
+  };
+}
 
 function graphFixture(): DojoSkillGraph {
   return {

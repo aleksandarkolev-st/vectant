@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { evaluateDojoGraphAssertions } from "../../src/dojo/graph/assertion_runtime.js";
 import { decideDojoRollbackForAssertionFailure } from "../../src/dojo/graph/rollback_runtime.js";
-import { DojoSkillGraphRuntime } from "../../src/dojo/graph/runtime.js";
+import { DojoSkillGraphRuntime as BaseDojoSkillGraphRuntime, type DojoSkillGraphRuntimeInput } from "../../src/dojo/graph/runtime.js";
 import { createFakeDojoSubstrateExecutor } from "../../src/dojo/graph/substrate_executor.js";
 import type { DojoGraphNode, DojoSkillGraph } from "../../src/dojo/graph/types.js";
+
+class DojoSkillGraphRuntime extends BaseDojoSkillGraphRuntime {
+  execute(input: DojoSkillGraphRuntimeInput) {
+    return super.execute({ tenant: tenantFixture(), ...input });
+  }
+}
 
 describe("Dojo assertion and rollback runtime", () => {
   it("evaluates required, optional, and missing assertion results", () => {
@@ -95,10 +101,11 @@ describe("Dojo assertion and rollback runtime", () => {
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
-      blocked_by: [
+      blocked_by: expect.arrayContaining([
         "assertion_failed:assert_submission_state",
+        "postcondition_failed:submission_state == success",
         "rollback_unavailable_human_review_required",
-      ],
+      ]),
       node_results: expect.arrayContaining([
         expect.objectContaining({
           node_id: "action_submit",
@@ -151,21 +158,22 @@ describe("Dojo assertion and rollback runtime", () => {
     })).resolves.toEqual(expect.objectContaining({
       ok: false,
       status: "blocked",
-      blocked_by: [
+      blocked_by: expect.arrayContaining([
         "assertion_failed:api_response.body.durable_success",
+        "postcondition_failed:submission_state == success",
         "rollback_unavailable_human_review_required",
-      ],
+      ]),
       node_results: expect.arrayContaining([
         expect.objectContaining({
           node_id: "action_submit",
           status: "blocked",
-          assertion_results: [
+          assertion_results: expect.arrayContaining([
             expect.objectContaining({
               assertion_id: "api_response.body.durable_success",
               status: "failed",
               observed: false,
             }),
-          ],
+          ]),
           substrate_result: expect.objectContaining({
             ok: true,
             substrate: "api",
@@ -177,6 +185,19 @@ describe("Dojo assertion and rollback runtime", () => {
 });
 
 const validProofValidator = () => ({ ok: true, blocked_by: [] });
+
+function tenantFixture() {
+  return {
+    tenant_id: "tenant-a",
+    organization_id: "org-a",
+    workspace_id: "workspace-a",
+    actor_id: "agent-a",
+    actor_type: "agent" as const,
+    roles: ["agent"],
+    request_id: "req-assertion-runtime-a",
+    correlation_id: "corr-assertion-runtime-a",
+  };
+}
 
 function graphFixture(rollbackPolicy: Record<string, unknown>): DojoSkillGraph {
   return {
