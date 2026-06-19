@@ -67,7 +67,7 @@ steps:
         set -euo pipefail
         if grep -RInE '(^[[:space:]]*(FROM|image:|name:)|--destination=).*:latest([^@]|$)' \
           --include='Dockerfile' --include='*.yaml' --include='*.yml' \
-          --exclude='*.backup' --exclude='cloudbuild.yaml' --exclude='cloudbuild_backup.yaml' .; then
+          --exclude='*.backup' --exclude='cloudbuild.yaml' .; then
           echo "Mutable :latest image references must be pinned by digest or replaced with an immutable build tag." >&2
           exit 1
         fi
