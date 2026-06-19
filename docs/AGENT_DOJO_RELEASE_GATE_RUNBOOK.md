@@ -90,20 +90,27 @@ Set these in the shell used for provisioning and release gates. Adjust values
 for the target environment.
 
 ```powershell
-$env:PROJECT_ID = "overview-synti"
+$env:PROJECT_ID = "vectant-proj"
 $env:REGION = "europe-west10"
 $env:ZONE = "europe-west10-a"
 $env:CLUSTER = "synthi-beta-cluster"
 $env:K8S_NAMESPACE = "synthi"
 $env:AR_REPO = "synthi"
-$env:DOMAIN = "beta.synthi.app"
-$env:GCS_BUCKET = "synthi-cloud-storage"
+$env:DOMAIN = "beta.vectant.dev"
+$env:GCS_BUCKET = "vectant-synthi-cloud-storage"
 $env:CLOUD_SQL_INSTANCE = "synthi-prod-postgres"
 $env:REDIS_INSTANCE = "synthi-prod-redis"
 
 gcloud config set project $env:PROJECT_ID
 gcloud config set compute/region $env:REGION
 gcloud config set compute/zone $env:ZONE
+```
+
+If Google Cloud SDK is installed but not on `PATH`, set `GCLOUD_BIN` before
+running local inventory scripts:
+
+```powershell
+$env:GCLOUD_BIN = "C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
 ```
 
 ### Read-Only Hosted Inventory
@@ -390,7 +397,11 @@ SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS
 SYNTHI_DOJO_PROOF_SIGNING_MANAGED_KEY_URI
 SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM
 SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM
-SYNTHI_BRIDGE_TOKEN
+SYNTHI_DOJO_MCP_BEARER_TOKEN
+SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN
+SYNTHI_DOJO_MCP_CONFORMANCE_MCP_COMMAND
+SYNTHI_DOJO_MCP_CONFORMANCE_MCP_ARGS_JSON
+SYNTHI_DOJO_MCP_CONFORMANCE_MCP_CWD
 ```
 
 Do not store a production proof private key or default local signing key in
@@ -468,7 +479,7 @@ Configure the release gate:
 $env:SYNTHI_DOJO_PROOF_SIGNING_PROVIDER = "managed-key-service"
 $env:SYNTHI_DOJO_PROOF_SIGNING_KEY_ID = "prod-dojo-proof-key"
 $env:SYNTHI_DOJO_PROOF_SIGNING_COMMAND = "node"
-$env:SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS = "scripts/your-managed-signer-wrapper.mjs"
+$env:SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS = '["scripts/your-managed-signer-wrapper.mjs"]'
 $env:SYNTHI_DOJO_PROOF_SIGNING_MANAGED_KEY_URI = "managed://provider/path/to/key"
 $env:SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM = @"
 -----BEGIN PUBLIC KEY-----
@@ -526,10 +537,15 @@ gcloud builds submit `
 _REGION=$env:REGION,`
 _GKE_CLUSTER=$env:CLUSTER,`
 _GKE_ZONE=$env:ZONE,`
-_NEXT_PUBLIC_APP_URL=https://$env:DOMAIN,`
-_NEXT_PUBLIC_COLLAB_WS_URL=wss://$env:DOMAIN/collab,`
-_NEXT_PUBLIC_SIGNALING_URL=wss://$env:DOMAIN/signaling,`
-_NEXT_PUBLIC_AI_GATEWAY_URL=https://$env:DOMAIN/ai-gateway
+_NEXT_PUBLIC_COLLAB_SERVER_URL=https://$env:DOMAIN/collab,`
+_NEXT_PUBLIC_YSWEET_URL=https://$env:DOMAIN/collab,`
+_NEXT_PUBLIC_COLLAB_PORT=443,`
+_NEXT_PUBLIC_COMPILE_SIGNAL_URL=wss://$env:DOMAIN/signal,`
+_NEXT_PUBLIC_GATEWAY_WS_URL=wss://$env:DOMAIN/gateway/ws,`
+_NEXT_PUBLIC_CODE_INTEL_URL=https://$env:DOMAIN,`
+_NEXT_PUBLIC_AI_ENGINE_URL=https://$env:DOMAIN,`
+_NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=true,`
+_NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH=/auth/loopback
 ```
 
 After Cloud Build finishes:
@@ -574,9 +590,17 @@ below must point to the deployed runtime, not a developer workstation:
 
 ```powershell
 $env:SYNTHI_HOSTED_BROWSER_CDP_URL = "wss://<hosted-runtime-domain>/devtools/browser/<session-or-broker>"
+$env:FRONTEND_URL = "https://$env:DOMAIN"
+$env:COLLAB_URL = "https://$env:DOMAIN"
+$env:SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL = "https://<deployed-workflow-bridge>"
 $env:SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP = "1"
 $env:SYNTHI_WORKFLOW_PIPELINE_TIMEOUT_MS = "300000"
 ```
+
+`SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP=1` starts a local ephemeral
+verification bridge by design for fresh MCP evidence. The deployed frontend and
+collab URLs must still be set explicitly so the browser workflow is not pointed
+at localhost by default.
 
 The hosted runtime must enforce:
 
@@ -599,8 +623,8 @@ Configure the release gate to use the deployed MCP host:
 
 ```powershell
 $env:SYNTHI_DOJO_MCP_HOST_URL = "https://<deployed-mcp-host>"
-$env:SYNTHI_DOJO_MCP_HOST_TOKEN = "<short-lived-release-token>"
-$env:SYNTHI_BRIDGE_TOKEN = "<bridge-token-from-secret-manager>"
+$env:SYNTHI_DOJO_MCP_BEARER_TOKEN = "<short-lived-release-token>"
+$env:SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN = "<bridge-token-from-secret-manager>"
 ```
 
 Run:
@@ -687,8 +711,8 @@ Use deployed endpoints and production-like backing services:
 ```powershell
 $env:SYNTHI_SESSION_ID = "<live-session-id>"
 $env:SOAK_DURATION_MIN = "60"
-$env:SYNTHI_DOJO_SOAK_TARGET_URL = "https://$env:DOMAIN"
-$env:SYNTHI_DOJO_MCP_HOST_URL = "https://<deployed-mcp-host>"
+$env:SYNTHI_SIGNALING_URL = "wss://$env:DOMAIN/signal"
+$env:SOAK_OUTPUT_DIR = "tmp/dojo-soak-performance-gke"
 
 npm --prefix mcp/synthi-mcp run soak
 ```
@@ -746,11 +770,11 @@ fixture-only artifacts.
 
 | Gate | Required inputs | What it proves |
 |---|---|---|
-| `workflow_e2e_hosted` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP=1` | Hosted browser workflow path runs outside local CDP and exports fresh MCP evidence. |
+| `workflow_e2e_hosted` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `FRONTEND_URL`, `COLLAB_URL`, `SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP=1` | Hosted browser workflow path runs outside local CDP and exports fresh MCP evidence. |
 | `private_tool_stdio_acceptance` | `SYNTHI_HOSTED_BROWSER_CDP_URL` | Strict stdio MCP client can execute proof-gated private tool flow against hosted runtime. |
 | `private_tool_codex_acceptance` | `SYNTHI_HOSTED_BROWSER_CDP_URL` | Codex-style client can execute proof-gated private tool flow without local browser leakage. |
-| `dojo_mcp_host_conformance` | `SYNTHI_DOJO_MCP_HOST_URL`, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE`, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING`, `SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED`, `SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE`, `SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING` | Non-loopback MCP host lists and dispatches only governed competencies. |
-| `private_tool_stdio_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL` | Deployed private tool host path works with external store and strict schema. |
+| `dojo_mcp_host_conformance` | `SYNTHI_DOJO_MCP_HOST_URL`, `SYNTHI_DOJO_MCP_BEARER_TOKEN`, `SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN`, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE`, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING`, `SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED`, `SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE`, `SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING` | Non-loopback MCP host lists and dispatches only governed competencies. |
+| `private_tool_stdio_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD` | Deployed private tool host path works with external store and strict schema. |
 | `private_tool_codex_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL` | Deployed Codex private tool path works without shell-only shortcuts. |
 | `dojo_managed_key_signing_self_check` | `SYNTHI_DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PATH` from the managed-key observation script | Proof signing is backed by a configured managed signing service and public verifier material. |
 | `dojo_live_chaos` | `SYNTHI_CHAOS_ENABLE_LIVE=1`, `SYNTHI_CHAOS_BROWSER_CRASH_COMMAND_JSON`, `SYNTHI_CHAOS_EVIDENCE_STORE_UNAVAILABLE_COMMAND_JSON`, `SYNTHI_CHAOS_POSTGRES_RESTART_PROOF_COMMAND_JSON`, `SYNTHI_CHAOS_PROOF_SIGNING_OUTAGE_COMMAND_JSON`, `SYNTHI_CHAOS_REDIS_RESTART_COMMAND_JSON`, `SYNTHI_CHAOS_SIGNALING_PARTITION_COMMAND_JSON`, `SYNTHI_CHAOS_WORKER_KILL_COMMAND_JSON` | Real worker, Redis, Postgres, browser, evidence-store, and proof-signing failure modes fail closed. |
@@ -778,6 +802,8 @@ missing, the gate should fail instead of silently substituting local evidence.
 
 ```powershell
 $env:SYNTHI_HOSTED_BROWSER_CDP_URL='wss://<hosted-runtime>/devtools/browser/<session>'
+$env:FRONTEND_URL='https://beta.vectant.dev'
+$env:COLLAB_URL='https://beta.vectant.dev'
 $env:SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP='1'
 $env:SYNTHI_WORKFLOW_PIPELINE_TIMEOUT_MS='300000'
 npm --prefix mcp/synthi-mcp run live:browser:workflow-pipeline
@@ -850,6 +876,8 @@ npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex
 
 ```powershell
 $env:SYNTHI_DOJO_MCP_HOST_URL='https://<deployed-mcp-host>'
+$env:SYNTHI_DOJO_MCP_BEARER_TOKEN='<short-lived-release-token>'
+$env:SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN='<bridge-token-from-secret-manager>'
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE='1'
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING='1'
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED='1'
@@ -895,6 +923,9 @@ $env:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE='\\<external-store>\private-tools.e
 $env:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY='<release-secret-key>'
 $env:SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE='<tenant>/<workspace>/<app-release>'
 $env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL='https://<target-app-origin>'
+$env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND='<deployed-mcp-wrapper-command>'
+$env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON='["--connect","https://<deployed-mcp-host>"]'
+$env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD='<repo-or-wrapper-working-directory>'
 npm --prefix mcp/synthi-mcp run live:browser:private-tool-host-conformance
 npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex-host-conformance
 ```
