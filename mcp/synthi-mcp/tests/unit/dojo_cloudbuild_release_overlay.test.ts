@@ -33,4 +33,15 @@ describe("Dojo Cloud Build release overlay contract", () => {
     expect(yaml).toContain('if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then');
     expect(yaml).toMatch(/if \[\[ "\$\$\{KUSTOMIZE_DIR\}" == "\$\$\{DOJO_RELEASE_KUSTOMIZE_DIR\}" \]\]; then\s+kubectl rollout status deployment\/dojo-mcp-host -n \$\$\{NS\} --timeout=300s\s+elif kubectl get deployment\/dojo-mcp-host/);
   });
+
+  it("parameterizes the source registry used for rendered manifest substitution", () => {
+    const yaml = cloudbuildYaml();
+
+    expect(yaml).toContain("_MANIFEST_SOURCE_REGISTRY:");
+    expect(yaml).toContain('MANIFEST_SOURCE_REGISTRY="${_MANIFEST_SOURCE_REGISTRY}"');
+    expect(yaml).toContain('if [[ -z "$${MANIFEST_SOURCE_REGISTRY}" ]]; then');
+    expect(yaml).toContain('sed -i "s|$${MANIFEST_SOURCE_REGISTRY}|$${REGISTRY}|g" "$${RENDERED}"');
+    expect(yaml).toContain('sed "s|$${MANIFEST_SOURCE_REGISTRY}|$${REGISTRY}|g; s|build-tag-required|$${TAG}|g"');
+    expect(yaml).not.toContain('DEFAULT_REGISTRY="europe-west10-docker.pkg.dev/vectant-proj/synthi"');
+  });
 });

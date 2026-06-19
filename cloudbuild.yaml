@@ -29,6 +29,7 @@ substitutions:
   _GKE_CLUSTER: synthi-beta-cluster
   _GKE_ZONE: europe-west10-a
   _REGISTRY: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/synthi
+  _MANIFEST_SOURCE_REGISTRY: europe-west10-docker.pkg.dev/vectant-proj/synthi
   _IMAGE_TAG: ${BUILD_ID}
   _KUSTOMIZE_DIR: k8s
   _KUSTOMIZE_LOAD_RESTRICTOR: ""
@@ -313,6 +314,7 @@ steps:
       - |
         set -euo pipefail
         REGISTRY="${_REGISTRY}"
+        MANIFEST_SOURCE_REGISTRY="${_MANIFEST_SOURCE_REGISTRY}"
         TAG="${_IMAGE_TAG}"
         KUSTOMIZE_DIR="${_KUSTOMIZE_DIR}"
         DOJO_RELEASE_KUSTOMIZE_DIR="${_DOJO_RELEASE_KUSTOMIZE_DIR}"
@@ -335,19 +337,22 @@ steps:
           echo "Unsupported Kustomize load restrictor: $${KUSTOMIZE_LOAD_RESTRICTOR}" >&2
           exit 1
         fi
+        if [[ -z "$${MANIFEST_SOURCE_REGISTRY}" ]]; then
+          echo "Manifest source registry substitution must not be empty." >&2
+          exit 1
+        fi
 
         # Render Kustomize once with the immutable image tag before applying.
         # Applying raw k8s/ directly would briefly roll Deployments to the
         # placeholder image tag "build-tag-required".
         RENDERED="/workspace/.cloudbuild/synthi-k8s.yaml"
-        DEFAULT_REGISTRY="europe-west10-docker.pkg.dev/vectant-proj/synthi"
         mkdir -p "$$(dirname "$${RENDERED}")"
         KUSTOMIZE_ARGS=("$${KUSTOMIZE_DIR}")
         if [[ -n "$${KUSTOMIZE_LOAD_RESTRICTOR}" ]]; then
           KUSTOMIZE_ARGS+=("--load-restrictor" "$${KUSTOMIZE_LOAD_RESTRICTOR}")
         fi
         kubectl kustomize "$${KUSTOMIZE_ARGS[@]}" > "$${RENDERED}"
-        sed -i "s|$${DEFAULT_REGISTRY}|$${REGISTRY}|g" "$${RENDERED}"
+        sed -i "s|$${MANIFEST_SOURCE_REGISTRY}|$${REGISTRY}|g" "$${RENDERED}"
         sed -i "s|build-tag-required|$${TAG}|g" "$${RENDERED}"
         if grep -n "build-tag-required" "$${RENDERED}"; then
           echo "Rendered manifests still contain build-tag-required." >&2
@@ -356,7 +361,7 @@ steps:
 
         echo "=== Running Prisma migrations ==="
         kubectl delete job prisma-migrate -n $${NS} --ignore-not-found
-        sed "s|$${DEFAULT_REGISTRY}|$${REGISTRY}|g; s|build-tag-required|$${TAG}|g" \
+        sed "s|$${MANIFEST_SOURCE_REGISTRY}|$${REGISTRY}|g; s|build-tag-required|$${TAG}|g" \
           k8s/prisma-migrate-job.yaml | kubectl apply -f -
         if ! kubectl wait --for=condition=complete job/prisma-migrate -n $${NS} --timeout=300s; then
           kubectl logs job/prisma-migrate -n $${NS} -c migrate || true
