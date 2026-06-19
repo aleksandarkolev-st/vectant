@@ -16,6 +16,12 @@ The compact machine-readable maturity manifest lives in:
 .synthi/dojo/maturity/implementation-status.json
 ```
 
+The release-gate operator runbook lives in:
+
+```text
+docs/AGENT_DOJO_RELEASE_GATE_RUNBOOK.md
+```
+
 ## Status Classes
 
 | Status | Meaning |
