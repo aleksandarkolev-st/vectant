@@ -69,13 +69,26 @@ const DOJO_MCP_HOST = {
   path: "/dojo/mcp",
   pathType: "Prefix",
   port: "9467",
+  bearerHeader: "X-Synthi-Dojo-Mcp-Token",
 };
+
+function defaultDojoMcpHost(env = process.env) {
+  return {
+    ...DOJO_MCP_HOST,
+    image: env.SYNTHI_DOJO_RELEASE_EXPECTED_MCP_IMAGE || DOJO_MCP_HOST.image,
+    host: env.SYNTHI_DOJO_RELEASE_EXPECTED_MCP_HOST || DOJO_MCP_HOST.host,
+    path: env.SYNTHI_DOJO_RELEASE_EXPECTED_MCP_PATH || DOJO_MCP_HOST.path,
+    port: env.SYNTHI_DOJO_RELEASE_EXPECTED_MCP_PORT || DOJO_MCP_HOST.port,
+    bearerHeader: env.SYNTHI_DOJO_RELEASE_EXPECTED_MCP_BEARER_HEADER || DOJO_MCP_HOST.bearerHeader,
+  };
+}
 
 function parseArgs(argv) {
   const options = {
     overlayDir: DEFAULT_OVERLAY_DIR,
     outDir: DEFAULT_OUT_DIR,
     loadRestrictor: DEFAULT_LOAD_RESTRICTOR,
+    dojoMcpHost: defaultDojoMcpHost(),
     selfCheck: false,
   };
 
@@ -93,6 +106,16 @@ function parseArgs(argv) {
       options.outDir = path.resolve(takeValue());
     } else if (parsed.flag === "--load-restrictor") {
       options.loadRestrictor = takeValue();
+    } else if (parsed.flag === "--expected-dojo-mcp-image") {
+      options.dojoMcpHost.image = takeValue();
+    } else if (parsed.flag === "--expected-dojo-mcp-host") {
+      options.dojoMcpHost.host = takeValue();
+    } else if (parsed.flag === "--expected-dojo-mcp-path") {
+      options.dojoMcpHost.path = takeValue();
+    } else if (parsed.flag === "--expected-dojo-mcp-port") {
+      options.dojoMcpHost.port = takeValue();
+    } else if (parsed.flag === "--expected-dojo-mcp-bearer-header") {
+      options.dojoMcpHost.bearerHeader = takeValue();
     } else if (parsed.flag === "--self-check") {
       options.selfCheck = true;
     } else if (parsed.flag === "--help" || parsed.flag === "-h") {
@@ -134,6 +157,11 @@ Options:
   --self-check                  Run deterministic parser self-check.
   --overlay-dir <path>          Overlay directory to render.
   --load-restrictor <value>     Optional kustomize load restrictor. Default: ${DEFAULT_LOAD_RESTRICTOR}
+  --expected-dojo-mcp-image <v> Expected Dojo MCP image substring.
+  --expected-dojo-mcp-host <v>  Expected public Dojo MCP host.
+  --expected-dojo-mcp-path <v>  Expected public Dojo MCP path.
+  --expected-dojo-mcp-port <v>  Expected Dojo MCP service port.
+  --expected-dojo-mcp-bearer-header <v> Expected Dojo MCP app bearer header.
   --out-dir <path>              Output directory for report and evidence.
 `);
 }
@@ -201,7 +229,7 @@ function metadataName(doc) {
   return undefined;
 }
 
-function validateRenderedOverlay(rendered) {
+function validateRenderedOverlay(rendered, dojoMcpHost = defaultDojoMcpHost()) {
   const resources = parseRenderedResources(rendered);
   const failures = [];
 
@@ -279,61 +307,62 @@ function validateRenderedOverlay(rendered) {
     }
   }
 
-  const mcpDeployment = findResource(resources, "Deployment", DOJO_MCP_HOST.deployment);
+  const mcpDeployment = findResource(resources, "Deployment", dojoMcpHost.deployment);
   if (!mcpDeployment) {
     failures.push({
       code: "missing_dojo_mcp_host_deployment",
-      message: `Deployment/${DOJO_MCP_HOST.deployment} was not rendered.`,
+      message: `Deployment/${dojoMcpHost.deployment} was not rendered.`,
     });
   } else {
-    if (!mcpDeployment.doc.includes(DOJO_MCP_HOST.image)) {
+    if (!mcpDeployment.doc.includes(dojoMcpHost.image)) {
       failures.push({
         code: "dojo_mcp_host_image_missing",
-        message: `Deployment/${DOJO_MCP_HOST.deployment} must use ${DOJO_MCP_HOST.image}.`,
+        message: `Deployment/${dojoMcpHost.deployment} must use ${dojoMcpHost.image}.`,
       });
     }
     if (!hasEnvFromRef(mcpDeployment.doc, "configMapRef", "synthi-config")) {
       failures.push({
-        code: "dojo_mcp_host_config_not_loaded",
-        message: `Deployment/${DOJO_MCP_HOST.deployment} must load ConfigMap/synthi-config.`,
+          code: "dojo_mcp_host_config_not_loaded",
+        message: `Deployment/${dojoMcpHost.deployment} must load ConfigMap/synthi-config.`,
       });
     }
     if (!hasEnvFromRef(mcpDeployment.doc, "secretRef", "synthi-secrets")) {
       failures.push({
         code: "dojo_mcp_host_secret_not_loaded",
-        message: `Deployment/${DOJO_MCP_HOST.deployment} must load Secret/synthi-secrets.`,
+        message: `Deployment/${dojoMcpHost.deployment} must load Secret/synthi-secrets.`,
       });
     }
     for (const [envName, expectedValue] of [
       ["SYNTHI_MCP_HTTP_HOST", "0.0.0.0"],
-      ["SYNTHI_MCP_HTTP_PORT", DOJO_MCP_HOST.port],
-      ["SYNTHI_MCP_HTTP_PATH", DOJO_MCP_HOST.path],
+      ["SYNTHI_MCP_HTTP_PORT", dojoMcpHost.port],
+      ["SYNTHI_MCP_HTTP_PATH", dojoMcpHost.path],
       ["SYNTHI_MCP_HTTP_HEALTH_PATH", "/healthz"],
+      ["SYNTHI_MCP_HTTP_BEARER_HEADER", dojoMcpHost.bearerHeader],
     ]) {
       const blocks = envBlocks(mcpDeployment.doc, envName);
       if (blocks.length !== 1 || !isLiteralEnvBlock(blocks[0], expectedValue)) {
         failures.push({
           code: "dojo_mcp_host_env_invalid",
-          message: `Deployment/${DOJO_MCP_HOST.deployment} must set ${envName}=${expectedValue}.`,
+          message: `Deployment/${dojoMcpHost.deployment} must set ${envName}=${expectedValue}.`,
         });
       }
     }
   }
 
-  const mcpService = findResource(resources, "Service", DOJO_MCP_HOST.service);
+  const mcpService = findResource(resources, "Service", dojoMcpHost.service);
   if (!mcpService) {
-    failures.push({ code: "missing_dojo_mcp_host_service", message: `Service/${DOJO_MCP_HOST.service} was not rendered.` });
+    failures.push({ code: "missing_dojo_mcp_host_service", message: `Service/${dojoMcpHost.service} was not rendered.` });
   } else {
-    if (!mcpService.doc.includes(DOJO_MCP_HOST.backendConfig)) {
+    if (!mcpService.doc.includes(dojoMcpHost.backendConfig)) {
       failures.push({
         code: "dojo_mcp_host_backend_config_not_bound",
-        message: `Service/${DOJO_MCP_HOST.service} must bind BackendConfig/${DOJO_MCP_HOST.backendConfig}.`,
+        message: `Service/${dojoMcpHost.service} must bind BackendConfig/${dojoMcpHost.backendConfig}.`,
       });
     }
-    if (!new RegExp(`port:\\s*${DOJO_MCP_HOST.port}(?:\\s|$)`).test(mcpService.doc)) {
+    if (!new RegExp(`port:\\s*${dojoMcpHost.port}(?:\\s|$)`).test(mcpService.doc)) {
       failures.push({
         code: "dojo_mcp_host_service_port_missing",
-        message: `Service/${DOJO_MCP_HOST.service} must expose port ${DOJO_MCP_HOST.port}.`,
+        message: `Service/${dojoMcpHost.service} must expose port ${dojoMcpHost.port}.`,
       });
     }
     if (!serviceHasIngressNeg(mcpService.doc)) {
@@ -350,34 +379,34 @@ function validateRenderedOverlay(rendered) {
     }
   }
 
-  const mcpBackendConfig = findResource(resources, "BackendConfig", DOJO_MCP_HOST.backendConfig);
+  const mcpBackendConfig = findResource(resources, "BackendConfig", dojoMcpHost.backendConfig);
   if (!mcpBackendConfig) {
     failures.push({
       code: "missing_dojo_mcp_host_backend_config",
-      message: `BackendConfig/${DOJO_MCP_HOST.backendConfig} was not rendered.`,
+      message: `BackendConfig/${dojoMcpHost.backendConfig} was not rendered.`,
     });
   } else if (!backendConfigIapEnabled(mcpBackendConfig.doc)) {
     failures.push({
       code: "dojo_mcp_host_iap_not_enabled",
-      message: `BackendConfig/${DOJO_MCP_HOST.backendConfig} must enable IAP for the public MCP backend.`,
+      message: `BackendConfig/${dojoMcpHost.backendConfig} must enable IAP for the public MCP backend.`,
     });
   }
 
-  const mcpNetworkPolicy = findResource(resources, "NetworkPolicy", DOJO_MCP_HOST.networkPolicy);
+  const mcpNetworkPolicy = findResource(resources, "NetworkPolicy", dojoMcpHost.networkPolicy);
   if (!mcpNetworkPolicy) {
     failures.push({
       code: "missing_dojo_mcp_host_network_policy",
-      message: `NetworkPolicy/${DOJO_MCP_HOST.networkPolicy} was not rendered.`,
+      message: `NetworkPolicy/${dojoMcpHost.networkPolicy} was not rendered.`,
     });
   }
 
   const ingress = findResource(resources, "Ingress", "synthi-ingress");
   if (!ingress) {
     failures.push({ code: "missing_ingress", message: "Ingress/synthi-ingress was not rendered." });
-  } else if (!ingressRoutesToService(ingress.doc, DOJO_MCP_HOST)) {
+  } else if (!ingressRoutesToService(ingress.doc, dojoMcpHost)) {
     failures.push({
       code: "dojo_mcp_host_ingress_missing",
-      message: `Ingress/synthi-ingress must route ${DOJO_MCP_HOST.host}${DOJO_MCP_HOST.path} to Service/${DOJO_MCP_HOST.service}:${DOJO_MCP_HOST.port}.`,
+      message: `Ingress/synthi-ingress must route ${dojoMcpHost.host}${dojoMcpHost.path} to Service/${dojoMcpHost.service}:${dojoMcpHost.port}.`,
     });
   }
 
@@ -640,6 +669,8 @@ spec:
           value: "/dojo/mcp"
         - name: SYNTHI_MCP_HTTP_HEALTH_PATH
           value: "/healthz"
+        - name: SYNTHI_MCP_HTTP_BEARER_HEADER
+          value: "X-Synthi-Dojo-Mcp-Token"
 ---
 apiVersion: v1
 kind: Service
@@ -679,6 +710,18 @@ spec:
   const valid = validateRenderedOverlay(validRendered);
   if (!valid.ok) {
     throw new Error(`valid self-check fixture failed: ${valid.failures.map((failure) => failure.message).join("; ")}`);
+  }
+
+  const customHost = {
+    ...defaultDojoMcpHost(),
+    host: "preview.example.com",
+  };
+  const customHostValid = validateRenderedOverlay(
+    validRendered.replace("host: beta.vectant.dev", "host: preview.example.com"),
+    customHost,
+  );
+  if (!customHostValid.ok) {
+    throw new Error(`custom-host self-check fixture failed: ${customHostValid.failures.map((failure) => failure.message).join("; ")}`);
   }
 
   const invalid = validateRenderedOverlay(`${validRendered}\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: redis\n`);
@@ -731,7 +774,7 @@ function main() {
   } else {
     render = renderKustomize(options);
     validation = render.ok
-      ? validateRenderedOverlay(render.stdout)
+      ? validateRenderedOverlay(render.stdout, options.dojoMcpHost)
       : {
           ok: false,
           failures: [{ code: "kustomize_render_failed", message: render.stderr || "kubectl kustomize failed" }],
@@ -746,6 +789,7 @@ function main() {
     generated_at: generatedAt,
     overlay_dir: options.overlayDir,
     load_restrictor: options.loadRestrictor,
+    expected_dojo_mcp_host: options.dojoMcpHost,
     command: render.command,
     render_status: render.status,
     rendered_sha256: validation.renderedSha256,

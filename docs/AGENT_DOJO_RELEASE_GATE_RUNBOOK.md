@@ -65,8 +65,10 @@ npm --prefix mcp/synthi-mcp run proof:dojo:release-gates:runner:self-check
 npm --prefix mcp/synthi-mcp run proof:dojo:release-gates:verify:self-check
 npm --prefix mcp/synthi-mcp run proof:dojo:package-readiness:self-check
 npm --prefix mcp/synthi-mcp run proof:dojo:kustomize-overlay:self-check
-npm --prefix mcp/synthi-mcp run proof:dojo:kustomize-overlay
 ```
+
+Run the parameterized overlay render check after setting the target Google
+Cloud variables below, especially `$env:DOMAIN`.
 
 ## Google Cloud Hosting Runbook
 
@@ -691,7 +693,10 @@ output. The checked command writes report and evidence artifacts under
 `tmp/dojo-kustomize-overlay-check`:
 
 ```powershell
-npm --prefix mcp/synthi-mcp run proof:dojo:kustomize-overlay
+node mcp/synthi-mcp/scripts/dojo-kustomize-overlay-check.mjs `
+  --expected-dojo-mcp-host=$env:DOMAIN `
+  --expected-dojo-mcp-path=/dojo/mcp `
+  --expected-dojo-mcp-bearer-header=X-Synthi-Dojo-Mcp-Token
 ```
 
 The raw render command is:
@@ -847,7 +852,10 @@ server, the browser workflow bridge, a local tunnel, or a loopback endpoint.
 Before running conformance, verify the rendered and deployed host shape:
 
 ```powershell
-npm --prefix mcp/synthi-mcp run proof:dojo:kustomize-overlay
+node mcp/synthi-mcp/scripts/dojo-kustomize-overlay-check.mjs `
+  --expected-dojo-mcp-host=$env:DOMAIN `
+  --expected-dojo-mcp-path=/dojo/mcp `
+  --expected-dojo-mcp-bearer-header=X-Synthi-Dojo-Mcp-Token
 kubectl -n $env:K8S_NAMESPACE get deployment dojo-mcp-host
 kubectl -n $env:K8S_NAMESPACE get service dojo-mcp-host
 kubectl -n $env:K8S_NAMESPACE get backendconfig dojo-mcp-host-backend-config
@@ -1075,8 +1083,8 @@ missing, the gate should fail instead of silently substituting local evidence.
 
 ```powershell
 $env:SYNTHI_HOSTED_BROWSER_CDP_URL='wss://<hosted-runtime>/devtools/browser/<session>'
-$env:FRONTEND_URL='https://beta.vectant.dev'
-$env:COLLAB_URL='https://beta.vectant.dev'
+$env:FRONTEND_URL="https://$env:DOMAIN"
+$env:COLLAB_URL="https://$env:DOMAIN"
 $env:SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP='1'
 $env:SYNTHI_WORKFLOW_PIPELINE_TIMEOUT_MS='300000'
 npm --prefix mcp/synthi-mcp run live:browser:workflow-pipeline

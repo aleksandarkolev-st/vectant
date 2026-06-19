@@ -20,6 +20,16 @@ Render locally before any deploy:
 kubectl kustomize k8s/overlays/dojo-release-gate --load-restrictor LoadRestrictionsNone > tmp/dojo-release-gate-render.yaml
 ```
 
+Validate the rendered contract against the target release host rather than a
+hardcoded domain:
+
+```powershell
+node mcp/synthi-mcp/scripts/dojo-kustomize-overlay-check.mjs `
+  --expected-dojo-mcp-host=$env:DOMAIN `
+  --expected-dojo-mcp-path=/dojo/mcp `
+  --expected-dojo-mcp-bearer-header=X-Synthi-Dojo-Mcp-Token
+```
+
 The load-restrictor flag is required because the current repository keeps the
 base manifests directly under `k8s/` rather than under a nested `k8s/base/`
 directory. Do not use this overlay from automation unless that flag is part of
