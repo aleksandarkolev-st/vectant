@@ -1337,20 +1337,33 @@ describe("Dojo release gate manifest", () => {
         tier: "T8",
         package_script: "soak",
         script_exists: true,
-        requires_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
-        env_value_requirements: [
+        requires_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN", "SYNTHI_SIGNALING_URL", "SYNTHI_VISION_BACKEND"],
+        env_value_requirements: expect.arrayContaining([
           expect.objectContaining({
             env: "SOAK_DURATION_MIN",
             type: "number",
             min: 60,
           }),
-        ],
+          expect.objectContaining({
+            env: "SYNTHI_SIGNALING_URL",
+            type: "non_loopback_url",
+            allowed_protocols: ["ws", "wss"],
+          }),
+          expect.objectContaining({
+            env: "SYNTHI_VISION_BACKEND",
+            type: "not_in",
+            disallowed_values: ["mock"],
+            case_sensitive: false,
+          }),
+        ]),
         default_summary_path: "mcp/synthi-mcp/.soak/soak-summary.json",
         default_events_path: "mcp/synthi-mcp/.soak/soak-events.ndjson",
         enterprise_artifact_requirements: expect.objectContaining({
           require_min_duration_seconds: 3600,
           require_live_session_env: "SYNTHI_SESSION_ID",
           require_duration_env: "SOAK_DURATION_MIN",
+          require_signaling_env: "SYNTHI_SIGNALING_URL",
+          require_vision_backend_env: "SYNTHI_VISION_BACKEND",
           require_duration_env_min_minutes: 60,
           require_zero_errors: true,
           require_iteration_events: true,
@@ -2286,9 +2299,18 @@ describe("Dojo release gate manifest", () => {
       env: "SOAK_DURATION_MIN",
       type: "string",
       min: 10,
+    }, {
+      env: "SYNTHI_SIGNALING_URL",
+      type: "url",
+      allowed_protocols: ["http"],
+    }, {
+      env: "SYNTHI_VISION_BACKEND",
+      type: "string",
     }];
     soakGate.enterprise_artifact_requirements.require_live_session_env = "";
     soakGate.enterprise_artifact_requirements.require_duration_env = "";
+    soakGate.enterprise_artifact_requirements.require_signaling_env = "";
+    soakGate.enterprise_artifact_requirements.require_vision_backend_env = "";
     soakGate.enterprise_artifact_requirements.require_duration_env_min_minutes = 10;
     soakGate.enterprise_artifact_requirements.require_zero_errors = false;
     soakGate.enterprise_artifact_requirements.require_tool_latency_metrics = false;
@@ -2301,11 +2323,17 @@ describe("Dojo release gate manifest", () => {
       command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs",
     };
     expect(validateDojoReleaseGateManifest(brokenSoak, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
-      "soak_performance_missing_required_env:SOAK_DURATION_MIN",
+      "soak_performance_missing_required_env:SOAK_DURATION_MIN,SYNTHI_SIGNALING_URL,SYNTHI_VISION_BACKEND",
       "soak_performance_duration_env_value_requirement_not_numeric",
       "soak_performance_duration_env_value_min_too_low",
+      "soak_performance_signaling_env_value_requirement_not_non_loopback_url",
+      "soak_performance_signaling_env_value_missing_protocols:ws,wss",
+      "soak_performance_vision_backend_env_value_requirement_not_disallow_list",
+      "soak_performance_vision_backend_env_value_allows_mock",
       "soak_performance_missing_live_session_env_requirement",
       "soak_performance_missing_duration_env_requirement",
+      "soak_performance_missing_signaling_env_requirement",
+      "soak_performance_missing_vision_backend_env_requirement",
       "soak_performance_duration_env_min_too_low",
       "soak_performance_missing_zero_error_requirement",
       "soak_performance_missing_tool_latency_requirement",

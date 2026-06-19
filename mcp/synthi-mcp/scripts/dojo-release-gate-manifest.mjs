@@ -1711,13 +1711,26 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     command: "npm --prefix mcp/synthi-mcp run soak",
     required_for: ["nightly", "enterprise_release"],
     evidence_kind: "metrics",
-    requires_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
+    requires_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN", "SYNTHI_SIGNALING_URL", "SYNTHI_VISION_BACKEND"],
     env_value_requirements: [
       {
         env: "SOAK_DURATION_MIN",
         type: "number",
         min: 60,
         reason: "enterprise soak artifacts must satisfy the 3600-second verifier threshold",
+      },
+      {
+        env: "SYNTHI_SIGNALING_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["ws", "wss"],
+        reason: "enterprise soak must run against deployed signaling rather than the local default",
+      },
+      {
+        env: "SYNTHI_VISION_BACKEND",
+        type: "not_in",
+        disallowed_values: ["mock"],
+        case_sensitive: false,
+        reason: "enterprise soak must run against a configured non-mock vision backend",
       },
     ],
     default_summary_path: "mcp/synthi-mcp/.soak/soak-summary.json",
@@ -1726,6 +1739,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_min_duration_seconds: 3600,
       require_live_session_env: "SYNTHI_SESSION_ID",
       require_duration_env: "SOAK_DURATION_MIN",
+      require_signaling_env: "SYNTHI_SIGNALING_URL",
+      require_vision_backend_env: "SYNTHI_VISION_BACKEND",
       require_duration_env_min_minutes: 60,
       require_zero_errors: true,
       require_iteration_events: true,
@@ -3831,7 +3846,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!soakPerformanceGate.default_summary_path) errors.push("soak_performance_missing_default_summary_path");
     if (!soakPerformanceGate.default_events_path) errors.push("soak_performance_missing_default_events_path");
     const missingSoakEnv = missingRequiredEntries(
-      ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
+      ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN", "SYNTHI_SIGNALING_URL", "SYNTHI_VISION_BACKEND"],
       soakPerformanceGate.requires_env,
     );
     if (missingSoakEnv.length > 0) {
@@ -3845,6 +3860,37 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       if (soakDurationEnvRule.type !== "number") errors.push("soak_performance_duration_env_value_requirement_not_numeric");
       if (Number(soakDurationEnvRule.min) < 60) errors.push("soak_performance_duration_env_value_min_too_low");
     }
+    const soakSignalingEnvRule = (soakPerformanceGate.env_value_requirements || [])
+      .find((requirement) => requirement?.env === "SYNTHI_SIGNALING_URL");
+    if (!soakSignalingEnvRule) {
+      errors.push("soak_performance_missing_signaling_env_value_requirement");
+    } else {
+      if (soakSignalingEnvRule.type !== "non_loopback_url") {
+        errors.push("soak_performance_signaling_env_value_requirement_not_non_loopback_url");
+      }
+      const protocols = Array.isArray(soakSignalingEnvRule.allowed_protocols)
+        ? soakSignalingEnvRule.allowed_protocols.map(String)
+        : [];
+      const missingProtocols = missingRequiredEntries(["ws", "wss"], protocols);
+      if (missingProtocols.length > 0) {
+        errors.push(`soak_performance_signaling_env_value_missing_protocols:${missingProtocols.join(",")}`);
+      }
+    }
+    const soakVisionBackendEnvRule = (soakPerformanceGate.env_value_requirements || [])
+      .find((requirement) => requirement?.env === "SYNTHI_VISION_BACKEND");
+    if (!soakVisionBackendEnvRule) {
+      errors.push("soak_performance_missing_vision_backend_env_value_requirement");
+    } else {
+      if (soakVisionBackendEnvRule.type !== "not_in") {
+        errors.push("soak_performance_vision_backend_env_value_requirement_not_disallow_list");
+      }
+      const disallowedValues = Array.isArray(soakVisionBackendEnvRule.disallowed_values)
+        ? soakVisionBackendEnvRule.disallowed_values.map((item) => String(item).toLowerCase())
+        : [];
+      if (!disallowedValues.includes("mock")) {
+        errors.push("soak_performance_vision_backend_env_value_allows_mock");
+      }
+    }
     if (!Number.isFinite(Number(soakPerformanceGate.enterprise_artifact_requirements?.require_min_duration_seconds))) {
       errors.push("soak_performance_missing_duration_requirement");
     }
@@ -3853,6 +3899,12 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (soakPerformanceGate.enterprise_artifact_requirements?.require_duration_env !== "SOAK_DURATION_MIN") {
       errors.push("soak_performance_missing_duration_env_requirement");
+    }
+    if (soakPerformanceGate.enterprise_artifact_requirements?.require_signaling_env !== "SYNTHI_SIGNALING_URL") {
+      errors.push("soak_performance_missing_signaling_env_requirement");
+    }
+    if (soakPerformanceGate.enterprise_artifact_requirements?.require_vision_backend_env !== "SYNTHI_VISION_BACKEND") {
+      errors.push("soak_performance_missing_vision_backend_env_requirement");
     }
     if (Number(soakPerformanceGate.enterprise_artifact_requirements?.require_duration_env_min_minutes) < 60) {
       errors.push("soak_performance_duration_env_min_too_low");

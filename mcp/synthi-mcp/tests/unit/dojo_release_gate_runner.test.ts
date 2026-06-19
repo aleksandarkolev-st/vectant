@@ -127,7 +127,7 @@ describe("Dojo release gate runner", () => {
     expect(missingSoakGate).toEqual(expect.objectContaining({
       status: "skipped",
       skip_reason: "missing_required_env",
-      missing_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
+      missing_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN", "SYNTHI_SIGNALING_URL", "SYNTHI_VISION_BACKEND"],
     }));
 
     const partialEnvPlan = buildDojoReleaseGateExecutionPlan({
@@ -137,13 +137,18 @@ describe("Dojo release gate runner", () => {
     });
     expect(partialEnvPlan.gates.find((gate) => gate.gate_id === "soak_performance")).toEqual(expect.objectContaining({
       status: "skipped",
-      missing_env: ["SOAK_DURATION_MIN"],
+      missing_env: ["SOAK_DURATION_MIN", "SYNTHI_SIGNALING_URL", "SYNTHI_VISION_BACKEND"],
     }));
 
     const tooShortPlan = buildDojoReleaseGateExecutionPlan({
       manifest: releaseManifest,
       scope: "nightly",
-      env: { SYNTHI_SESSION_ID: "session-123", SOAK_DURATION_MIN: "10" },
+      env: {
+        SYNTHI_SESSION_ID: "session-123",
+        SOAK_DURATION_MIN: "10",
+        SYNTHI_SIGNALING_URL: "wss://signal.example.com/ws",
+        SYNTHI_VISION_BACKEND: "gemini_api",
+      },
     });
     expect(tooShortPlan.gates.find((gate) => gate.gate_id === "soak_performance")).toEqual(expect.objectContaining({
       status: "skipped",
@@ -156,10 +161,41 @@ describe("Dojo release gate runner", () => {
       })],
     }));
 
+    const invalidServicePlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "nightly",
+      env: {
+        SYNTHI_SESSION_ID: "session-123",
+        SOAK_DURATION_MIN: "60",
+        SYNTHI_SIGNALING_URL: "ws://localhost:9000",
+        SYNTHI_VISION_BACKEND: "mock",
+      },
+    });
+    expect(invalidServicePlan.gates.find((gate) => gate.gate_id === "soak_performance")).toEqual(expect.objectContaining({
+      status: "skipped",
+      skip_reason: "invalid_required_env",
+      missing_env: [],
+      invalid_env: expect.arrayContaining([
+        expect.objectContaining({
+          env: "SYNTHI_SIGNALING_URL",
+          reason: "loopback_or_local_bind_url",
+        }),
+        expect.objectContaining({
+          env: "SYNTHI_VISION_BACKEND",
+          reason: "disallowed_value:mock",
+        }),
+      ]),
+    }));
+
     const readyPlan = buildDojoReleaseGateExecutionPlan({
       manifest: releaseManifest,
       scope: "nightly",
-      env: { SYNTHI_SESSION_ID: "session-123", SOAK_DURATION_MIN: "60" },
+      env: {
+        SYNTHI_SESSION_ID: "session-123",
+        SOAK_DURATION_MIN: "60",
+        SYNTHI_SIGNALING_URL: "wss://signal.example.com/ws",
+        SYNTHI_VISION_BACKEND: "gemini_api",
+      },
     });
     expect(readyPlan.gates.find((gate) => gate.gate_id === "soak_performance")).toEqual(expect.objectContaining({
       status: "planned",
@@ -389,7 +425,12 @@ describe("Dojo release gate runner", () => {
       manifest: manifest(),
       scope: "nightly",
       gateIds: ["soak_performance"],
-      env: { SYNTHI_SESSION_ID: "session-123", SOAK_DURATION_MIN: "10" },
+      env: {
+        SYNTHI_SESSION_ID: "session-123",
+        SOAK_DURATION_MIN: "10",
+        SYNTHI_SIGNALING_URL: "wss://signal.example.com/ws",
+        SYNTHI_VISION_BACKEND: "gemini_api",
+      },
       failOnMissingEnv: true,
     });
     const results = await executeDojoReleaseGatePlan({

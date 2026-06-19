@@ -824,6 +824,19 @@ function invalidRequiredEnv(gate, env = process.env) {
       if (!truthy(value)) {
         invalid.push({ env: key, value: String(value), reason: "not_true" });
       }
+    } else if (type === "not_in") {
+      const disallowedValues = Array.isArray(requirement.disallowed_values)
+        ? requirement.disallowed_values.map((item) => String(item))
+        : [];
+      const candidate = String(value);
+      const caseSensitive = requirement.case_sensitive !== false;
+      const normalizedCandidate = caseSensitive ? candidate : candidate.toLowerCase();
+      const normalizedDisallowedValues = caseSensitive
+        ? disallowedValues
+        : disallowedValues.map((item) => item.toLowerCase());
+      if (normalizedDisallowedValues.includes(normalizedCandidate)) {
+        invalid.push({ env: key, value: candidate, reason: `disallowed_value:${candidate}` });
+      }
     } else if (type === "url" || type === "non_loopback_url") {
       const parsed = parseEnvUrl(value);
       if (!parsed.ok) {

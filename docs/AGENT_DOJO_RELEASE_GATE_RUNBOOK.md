@@ -970,6 +970,7 @@ Use deployed endpoints and production-like backing services:
 $env:SYNTHI_SESSION_ID = "<live-session-id>"
 $env:SOAK_DURATION_MIN = "60"
 $env:SYNTHI_SIGNALING_URL = "wss://$env:DOMAIN/signal"
+$env:SYNTHI_VISION_BACKEND = "<non-mock-vision-backend>"
 $env:SOAK_OUTPUT_DIR = "tmp/dojo-soak-performance-gke"
 
 npm --prefix mcp/synthi-mcp run soak
@@ -1036,7 +1037,7 @@ fixture-only artifacts.
 | `private_tool_codex_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD` | Deployed Codex private tool path works through the same explicit MCP wrapper, expected store custody, and without shell-only shortcuts. |
 | `dojo_managed_key_signing_self_check` | `SYNTHI_DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PATH` from the managed-key observation script | Proof signing is backed by a configured managed signing service and public verifier material. |
 | `dojo_live_chaos` | `SYNTHI_CHAOS_ENABLE_LIVE=1`, `SYNTHI_CHAOS_BROWSER_CRASH_COMMAND_JSON`, `SYNTHI_CHAOS_EVIDENCE_STORE_UNAVAILABLE_COMMAND_JSON`, `SYNTHI_CHAOS_POSTGRES_RESTART_PROOF_COMMAND_JSON`, `SYNTHI_CHAOS_PROOF_SIGNING_OUTAGE_COMMAND_JSON`, `SYNTHI_CHAOS_REDIS_RESTART_COMMAND_JSON`, `SYNTHI_CHAOS_SIGNALING_PARTITION_COMMAND_JSON`, `SYNTHI_CHAOS_WORKER_KILL_COMMAND_JSON` | Real worker, Redis, Postgres, browser, evidence-store, and proof-signing failure modes fail closed. |
-| `soak_performance` | `SYNTHI_SESSION_ID`, `SOAK_DURATION_MIN>=60` | Long-running live session stays within latency, memory, leak, false-allow, and false-block budgets. |
+| `soak_performance` | `SYNTHI_SESSION_ID`, `SOAK_DURATION_MIN>=60`, `SYNTHI_SIGNALING_URL=wss://...`, `SYNTHI_VISION_BACKEND=<non-mock-backend>` | Long-running live session stays within latency, memory, leak, false-allow, and false-block budgets. |
 
 ## External Blocker Playbooks
 
@@ -1333,6 +1334,8 @@ npm --prefix mcp/synthi-mcp run chaos:dojo:live
 
 - A real live session exists and can run long enough for soak.
 - `SOAK_DURATION_MIN` is at least `60`.
+- `SYNTHI_SIGNALING_URL` points at a non-loopback deployed signaling endpoint.
+- `SYNTHI_VISION_BACKEND` is explicitly set to a real backend, not `mock`.
 - Runtime metrics collection is enabled.
 - Test tenant has enough data to exercise proof validation, graph execution,
   evidence append, and browser session lifecycle repeatedly.
@@ -1342,6 +1345,8 @@ npm --prefix mcp/synthi-mcp run chaos:dojo:live
 ```powershell
 $env:SYNTHI_SESSION_ID='<live-session-id>'
 $env:SOAK_DURATION_MIN='60'
+$env:SYNTHI_SIGNALING_URL='wss://<release-domain>/signal'
+$env:SYNTHI_VISION_BACKEND='<non-mock-vision-backend>'
 npm --prefix mcp/synthi-mcp run soak
 ```
 
@@ -1407,6 +1412,8 @@ Run the legacy live soak only against a real live session:
 ```powershell
 $env:SYNTHI_SESSION_ID='<live-session-id>'
 $env:SOAK_DURATION_MIN='60'
+$env:SYNTHI_SIGNALING_URL='wss://<release-domain>/signal'
+$env:SYNTHI_VISION_BACKEND='<non-mock-vision-backend>'
 npm --prefix mcp/synthi-mcp run soak
 ```
 
