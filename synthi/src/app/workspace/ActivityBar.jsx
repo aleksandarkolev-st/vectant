@@ -1,6 +1,6 @@
 "use client";
 
-import { Files, Search, GitBranch, GitPullRequest, Puzzle, Settings, Sparkles, Box, Command } from "lucide-react";
+import { Files, Search, GitBranch, GitPullRequest, Puzzle, Settings, ShieldCheck, Box, Command } from "lucide-react";
 
 /**
  * @param {Object} props
@@ -16,7 +16,7 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
     { id: "search", label: "Search", Icon: Search },
     { id: "scm", label: "Source Control", Icon: GitBranch },
     { id: "pullrequests", label: "Pull Requests", Icon: GitPullRequest },
-    { id: "ai-healing", label: "AI Healing", Icon: Sparkles },
+    { id: "ai-healing", label: "AI Healing", Icon: ShieldCheck },
     { id: "extensions", label: "Extensions", Icon: Puzzle },
     { id: "programs", label: "Programs", Icon: Command },
   ];
@@ -129,21 +129,8 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
         )}
       </div>
 
-      {/* Vectant AI Badge */}
       <div className="dock-activitybar-bottom mt-auto mb-2 flex flex-col items-center gap-1">
         {bottomItems.map(renderButton)}
-        <div
-          onClick={() => onSelect('ai')}
-          className="w-6 h-6 rounded-md flex items-center justify-center cursor-pointer transition-all group"
-          style={{
-            background: 'color-mix(in srgb, var(--brand-stop-3) 8%, transparent)',
-            border: '1px solid color-mix(in srgb, var(--brand-stop-3) 24%, transparent)',
-            boxShadow: '0 0 10px -2px color-mix(in srgb, var(--brand-stop-3) 25%, transparent)',
-          }}
-          title="Vectant AI"
-        >
-          <Sparkles className="w-3 h-3 opacity-80 group-hover:opacity-100" style={{ color: 'var(--brand-stop-3)' }} strokeWidth={2} />
-        </div>
       </div>
     </div>
   );

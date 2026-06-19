@@ -116,3 +116,17 @@ export async function scaffoldProgram(workspaceSlug, packageId) {
     body: JSON.stringify({ packageId }),
   });
 }
+
+// ── Slice 1 (real programs): repo auto-detection ──
+
+/** Fetch the container program auto-detected in this workspace ({config, source} or null). */
+export async function fetchDetectedProgram(workspaceSlug) {
+  if (!workspaceSlug) return null;
+  const body = await request(`${programsBase(workspaceSlug)}/detect`);
+  return body.detected || null;
+}
+
+/** Launch the auto-detected container program (re-detected + launched server-side). */
+export async function launchDetectedProgram(workspaceSlug) {
+  return request(`${programsBase(workspaceSlug)}/detect`, { method: 'POST' });
+}

@@ -124,6 +124,25 @@ function makeManager(overrides = {}) {
   });
 }
 
+// Slice-1 (real programs) — the sysbox path stamps the runtime handle's scope onto
+// the session, and pod-detected ports are attributed only within that scope.
+test('launchManagedSession stamps runtimeScope from the runtime handle', async () => {
+  const mgr = makeManager({ launchRuntime: async () => ({ ...createManagedRuntimeHandle(), runtimeScope: 'scope-1' }) });
+  const s = await mgr.launchManagedSession({ sessionId: 'p1', workspaceSlug: 'w', command: 'docker compose up', runtimeType: 'container' });
+  assert.equal(s.runtimeScope, 'scope-1');
+});
+
+test('recomputeRuntimeScopePorts attributes pod ports only to same-scope sessions', async () => {
+  const mgr = makeManager({
+    launchRuntime: async ({ sessionId }) => ({ ...createManagedRuntimeHandle(), runtimeScope: sessionId === 'p1' ? 'scope-1' : 'scope-2' }),
+  });
+  await mgr.launchManagedSession({ sessionId: 'p1', workspaceSlug: 'w', command: 'x', runtimeType: 'container' });
+  await mgr.launchManagedSession({ sessionId: 'p2', workspaceSlug: 'w', command: 'x', runtimeType: 'container' });
+  mgr.recomputeRuntimeScopePorts('scope-1', [3000]);
+  assert.deepEqual(mgr.getManagedSession('p1').activePorts, [3000]);
+  assert.deepEqual(mgr.getManagedSession('p2').activePorts, []);
+});
+
 test('kills orphaned headless sessions after the TTL', () => {
   const activeSessions = new Map();
   const timers = createTimerHarness();

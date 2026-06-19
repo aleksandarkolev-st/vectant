@@ -22,6 +22,8 @@ const h = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
   scaffoldProgram: vi.fn(),
+  fetchDetectedProgram: vi.fn(),
+  launchDetectedProgram: vi.fn(),
 }));
 
 vi.mock('react-redux', () => ({
@@ -41,6 +43,8 @@ vi.mock('../programsClient', () => ({
   fetchMarketplace: h.fetchMarketplace,
   installPublishedProgram: h.installPublishedProgram,
   scaffoldProgram: h.scaffoldProgram,
+  fetchDetectedProgram: h.fetchDetectedProgram,
+  launchDetectedProgram: h.launchDetectedProgram,
 }));
 vi.mock('@/components/docking-wm/state/layout-slice', () => ({
   selectNodes: (s) => s.nodes,
@@ -79,6 +83,7 @@ describe('ProgramsPanel install / launch-from-install', () => {
     h.fetchProgramSessions.mockResolvedValue([]);
     h.fetchInstalledPrograms.mockResolvedValue([]);
     h.fetchMarketplace.mockResolvedValue([]);
+    h.fetchDetectedProgram.mockResolvedValue(null);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -227,5 +232,28 @@ describe('ProgramsPanel install / launch-from-install', () => {
     h.fetchInstalledPrograms.mockResolvedValue([{ id: 'inst2', packageId: 'local:team:web', version: '1.0.0', status: 'installed' }]);
     await render();
     expect(byTestId(container, 'scaffold-inst2')).toBeNull();
+  });
+
+  it('surfaces a detected repo container program and launches it', async () => {
+    h.fetchDetectedProgram.mockResolvedValue({ config: { runtimeType: 'container', displayName: 'Compose' }, source: 'docker-compose.yml' });
+    h.launchDetectedProgram.mockResolvedValue({ session: { id: 'ps-d', state: 'starting', runtimeType: 'container' } });
+    await render();
+
+    const row = byTestId(container, 'detected-program');
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain('docker-compose.yml');
+
+    await act(async () => { byTestId(container, 'launch-detected').click(); });
+    await flush();
+
+    expect(h.launchDetectedProgram).toHaveBeenCalledWith('team');
+    expect(h.dispatch).toHaveBeenCalled();
+  });
+
+  it('hides the detected-program row for a plain member', async () => {
+    h.state.workspace.role = 'member';
+    h.fetchDetectedProgram.mockResolvedValue({ config: { runtimeType: 'container' }, source: 'Dockerfile' });
+    await render();
+    expect(byTestId(container, 'detected-program')).toBeNull();
   });
 });

@@ -41,7 +41,10 @@ const gatewayAuthToken = process.env.AI_BACKEND_AUTH_TOKEN || process.env.GATEWA
 const gatewayJwtSecret = process.env.GATEWAY_JWT_SECRET || process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET || "";
 const gatewayAuthDisabled =
   String(process.env.GATEWAY_AUTH_DISABLED || "false").toLowerCase() === "true" &&
-  process.env.NODE_ENV !== "production";
+  (
+    process.env.NODE_ENV !== "production" ||
+    String(process.env.GATEWAY_AUTH_ALLOW_INSECURE_LOCAL || "false").toLowerCase() === "true"
+  );
 const backendStaticAnalyzeUrl = new URL("/analyze/static", backendUrl).toString();
 const backendAiAnalyzeUrl = new URL("/analyze/ai", backendUrl).toString();
 const backendProactiveAnalyzeUrl = new URL("/analyze/proactive", backendUrl).toString();

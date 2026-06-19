@@ -25,3 +25,14 @@ describe('mergeProgramSession health surfacing', () => {
     expect(merged.lastHealthState).toBeNull();
   });
 });
+
+describe('mergeProgramSession runtimeScope (Slice 1)', () => {
+  it('carries runtimeScope from the runtime session so the frontend builds /runtime/<scope>/port/N', () => {
+    const merged = mergeProgramSession({ id: 'ps-1' }, { runtimeScope: 'scope-1', activePorts: [3000], webPort: 3000 });
+    expect(merged.runtimeScope).toBe('scope-1');
+  });
+
+  it('is null without a runtime session', () => {
+    expect(mergeProgramSession({ id: 'ps-1' }, null).runtimeScope).toBeNull();
+  });
+});

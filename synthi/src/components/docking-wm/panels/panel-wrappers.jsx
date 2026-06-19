@@ -14,7 +14,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { getSession } from 'next-auth/react';
+import { useSession } from 'next-auth/react';
 import { useWorkspacePanelContext } from '../context/workspace-panel-context';
 import { useAppSelector } from '@/redux/hooks';
 import { selectFocusedEditorPaneId } from '../state/layout-slice';
@@ -29,9 +29,82 @@ import {
   resolveAgentWorkflowBridgeUrl,
 } from '@/services/agentWorkflowClient';
 import { gitClient } from '@/services/gitClient';
-import { buildWorkspaceRuntimeScope } from '@/services/runtimeScope';
+import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 
-const WORKSPACE_PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
+const PREVIEW_WORKFLOW_ERROR_CODES = new Set([
+  'preview_not_found',
+  'preview_target_not_found',
+  'preview_discovery_failed',
+  'preview_sidecar_discovery_failed',
+  'preview_open_failed',
+  'preview_snapshot_failed',
+  'preview_target_not_allowed',
+  'invalid_preview_url',
+  'origin_consent_required',
+  'screenshot_consent_required',
+  'runtime_scope_required',
+]);
+
+const RUNTIME_WORKFLOW_ERROR_CODES = new Set([
+  'workflow_runtime_ensure_unreachable',
+  'workflow_runtime_ensure_failed',
+  'workflow_runtime_unavailable',
+  'workflow_bridge_unreachable',
+]);
+
+function workflowToolError(tool, body) {
+  const result = body?.result || {};
+  const code = result.error || body?.error || `${tool}_failed`;
+  const detail = result.detail || result.reason || body?.detail || body?.message || '';
+  const err = new Error(detail ? `${code}: ${detail}` : code);
+  err.code = code;
+  err.detail = detail;
+  err.body = body;
+  err.result = result;
+  err.state = body?.state;
+  return err;
+}
+
+function workflowErrorCode(error) {
+  return error?.code || error?.result?.error || error?.body?.result?.error || error?.body?.error || '';
+}
+
+function workflowErrorDetail(error) {
+  return error?.detail || error?.result?.reason || error?.result?.detail || error?.body?.detail || error?.message || '';
+}
+
+function isWorkflowToolActionError(error) {
+  return Boolean(error?.state || error?.body?.state || error?.body?.result || error?.result);
+}
+
+function previewActionDetail(code, fallback) {
+  if (code === 'preview_not_found') {
+    return 'Start a dev server in this workspace, then click Observe again.';
+  }
+  if (code === 'preview_target_not_found') {
+    return 'A preview was detected, but the hosted browser did not select it yet. Reattach the browser runtime, then click Observe.';
+  }
+  if (code === 'preview_open_failed') {
+    return 'The hosted browser could not open the preview. Restart the dev server or reattach the browser runtime, then click Observe.';
+  }
+  if (code === 'preview_snapshot_failed') {
+    return 'The preview opened, but the hosted browser could not capture it yet. Wait a moment, then click Observe again.';
+  }
+  if (code === 'preview_target_not_allowed' || code === 'invalid_preview_url') {
+    return 'Open a preview URL that belongs to this workspace runtime, then click Observe.';
+  }
+  if (code === 'origin_consent_required' || code === 'screenshot_consent_required') {
+    return 'Click Observe to grant screenshot access for the current preview origin.';
+  }
+  return fallback || 'Open or start a workspace preview, then click Observe again.';
+}
+
+function runtimeActionDetail(code, fallback) {
+  if (code === 'workflow_runtime_ensure_unreachable' || code === 'workflow_bridge_unreachable') {
+    return 'The workspace runtime is still reconnecting. Wait a moment, then try again.';
+  }
+  return fallback || 'The workspace runtime is not ready yet. Wait a moment, then try again.';
+}
 
 // ────────────────────────────────────────────────────────
 //  Lazy component imports (code-split, no SSR)
@@ -73,81 +146,6 @@ const ProblemsPanel = dynamic(
   { ssr: false, loading: Placeholder },
 );
 
-function resolveCollabServerUrl() {
-  const configured = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL;
-  if (configured && configured.trim()) return configured.replace(/\/$/, '');
-  if (typeof window === 'undefined') return 'http://localhost:1234';
-  const { protocol, hostname } = window.location;
-  return `${protocol}//${hostname}:1234`;
-}
-
-async function discoverWorkspacePreviewUrl(workspaceSlug) {
-  if (typeof window === 'undefined') return null;
-  const base = resolveCollabServerUrl();
-  const resolvePreviewUrl = (path) => {
-    if (typeof path !== 'string' || !path.trim()) return null;
-    try {
-      return new URL(path, `${base}/`).href;
-    } catch {
-      return null;
-    }
-  };
-  try {
-    const params = new URLSearchParams();
-    let runtimeScope = '';
-    if (typeof workspaceSlug === 'string' && workspaceSlug.trim()) {
-      const slug = workspaceSlug.trim();
-      params.set('workspace', slug);
-      try {
-        const session = await getSession();
-        const userId = session?.user?.id || session?.user?.email || null;
-        runtimeScope = buildWorkspaceRuntimeScope(slug, { userId });
-        if (runtimeScope) params.set('runtimeScope', runtimeScope);
-      } catch (_) {
-        runtimeScope = buildWorkspaceRuntimeScope(slug);
-        if (runtimeScope) params.set('runtimeScope', runtimeScope);
-      }
-    }
-    const query = params.toString() ? `?${params.toString()}` : '';
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), WORKSPACE_PREVIEW_DISCOVERY_TIMEOUT_MS);
-    const res = await fetch(`${base}/ports${query}`, {
-      cache: 'no-store',
-      signal: controller.signal,
-    }).finally(() => window.clearTimeout(timer));
-    if (!res.ok) return null;
-    const data = await res.json();
-    const previews = Array.isArray(data?.previews)
-      ? data.previews
-        .map((preview) => ({
-          port: Number(preview?.port),
-          url: resolvePreviewUrl(preview?.url),
-        }))
-        .filter((preview) => (
-          Number.isInteger(preview.port) &&
-          preview.port > 0 &&
-          preview.port <= 65535 &&
-          preview.url
-        ))
-        .sort((a, b) => a.port - b.port)
-      : [];
-    if (previews[0]?.url) return previews[0].url;
-
-    const ports = Array.isArray(data?.activePorts)
-      ? data.activePorts
-        .map((port) => Number(port))
-        .filter((port) => Number.isInteger(port) && port > 0 && port <= 65535)
-        .sort((a, b) => a - b)
-      : [];
-    const port = ports[0];
-    return port
-      ? resolvePreviewUrl(runtimeScope ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${port}/` : `/port/${port}/`)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 const SearchView = dynamic(
   () => import('@/app/workspace/[slug]/SearchView'),
   { ssr: false, loading: Placeholder },
@@ -160,6 +158,11 @@ const GitStatus = dynamic(
 
 const ExtensionSidebar = dynamic(
   () => import('@/components/extensions/ExtensionSidebar'),
+  { ssr: false, loading: Placeholder },
+);
+
+const ExtensionViewContainer = dynamic(
+  () => import('@/components/extensions/ExtensionViewContainer'),
   { ssr: false, loading: Placeholder },
 );
 
@@ -318,13 +321,21 @@ export const ChatPanelWrapper = memo(function ChatPanelWrapper({ data }) {
 
 export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapper({ data }) {
   const ctx = useWorkspacePanelContext();
+  const { data: session } = useSession();
   const [workflowState, setWorkflowState] = useState(null);
   const [busyAction, setBusyAction] = useState(null);
   const latestRequestRef = useRef(0);
+  const workflowUserId = session?.user?.id || session?.user?.email || null;
   const bridgeConfig = useMemo(() => ({
     url: resolveAgentWorkflowBridgeUrl(),
     token: resolveAgentWorkflowBridgeToken(),
-  }), []);
+    runtime: ctx?.workspaceSlug && workflowUserId
+      ? {
+          workspaceSlug: ctx.workspaceSlug,
+          ...getWorkspaceRuntimeIdentity(ctx.workspaceSlug, { userId: workflowUserId }),
+        }
+      : {},
+  }), [ctx?.workspaceSlug, workflowUserId]);
 
   const workspaceUrl = useCallback(() => {
     if (typeof window === 'undefined') return '';
@@ -332,7 +343,49 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
   }, []);
 
   const stateWithBridgeError = useCallback((error, previous = null) => {
+    const code = workflowErrorCode(error);
     const detail = error?.message || String(error || 'Workflow bridge unavailable');
+    if (RUNTIME_WORKFLOW_ERROR_CODES.has(code)) {
+      return {
+        ...(previous || {}),
+        bridge: {
+          ...(previous?.bridge || {}),
+          status: 'error',
+          url: bridgeConfig.url,
+          detail: runtimeActionDetail(code, workflowErrorDetail(error) || detail),
+        },
+        runtime: {
+          ...(previous?.runtime || {}),
+          status: 'starting',
+          detail: runtimeActionDetail(code, workflowErrorDetail(error) || detail),
+        },
+        observe: {
+          ...(previous?.observe || {}),
+          status: 'needsPreview',
+          label: 'Runtime starting',
+          detail: runtimeActionDetail(code, workflowErrorDetail(error) || detail),
+          error: code,
+          selectedTabId: null,
+          lastScreenshotAt: null,
+          consent: null,
+        },
+        teach: {
+          ...(previous?.teach || {}),
+          state: 'idle',
+          label: 'Ready after observe',
+          detail: 'Observe a live preview before teaching a workflow.',
+          tabId: null,
+        },
+        blockers: [
+          {
+            id: code || 'workflow_runtime_unavailable',
+            label: 'Workspace runtime unavailable',
+            detail: runtimeActionDetail(code, workflowErrorDetail(error) || detail),
+          },
+          ...(Array.isArray(previous?.blockers) ? previous.blockers.filter((item) => !RUNTIME_WORKFLOW_ERROR_CODES.has(item?.id)) : []),
+        ],
+      };
+    }
     return {
       ...(previous || {}),
       bridge: {
@@ -346,6 +399,23 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
         status: previous?.runtime?.status || 'notConfigured',
         detail: previous?.runtime?.detail || 'Start the browser workflow bridge to enable panel actions.',
       },
+      observe: {
+        ...(previous?.observe || {}),
+        status: 'needsRuntime',
+        label: 'Runtime needed',
+        detail,
+        error: code || 'workflow_bridge_error',
+        selectedTabId: null,
+        lastScreenshotAt: null,
+        consent: null,
+      },
+      teach: {
+        ...(previous?.teach || {}),
+        state: 'idle',
+        label: 'Ready after observe',
+        detail: 'Reconnect the workflow bridge, then observe a preview before teaching.',
+        tabId: null,
+      },
       blockers: [
         {
           id: 'workflow_bridge_error',
@@ -353,6 +423,63 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           detail,
         },
         ...(Array.isArray(previous?.blockers) ? previous.blockers.filter((item) => item?.id !== 'workflow_bridge_error') : []),
+      ],
+    };
+  }, [bridgeConfig.url]);
+
+  const stateWithWorkflowActionError = useCallback((error, previous = null) => {
+    const code = workflowErrorCode(error);
+    const detail = workflowErrorDetail(error);
+    const sourceState = error?.state || error?.body?.state || previous || {};
+    const blockers = Array.isArray(sourceState?.blockers)
+      ? sourceState.blockers.filter((item) => item?.id !== 'workflow_action_error' && item?.id !== code)
+      : [];
+
+    if (PREVIEW_WORKFLOW_ERROR_CODES.has(code)) {
+      return {
+        ...sourceState,
+        bridge: {
+          ...(sourceState.bridge || previous?.bridge || {}),
+          status: 'ready',
+          url: bridgeConfig.url,
+          detail: null,
+        },
+        observe: {
+          ...(sourceState.observe || previous?.observe || {}),
+          status: 'needsPreview',
+          label: 'Preview needed',
+          detail: previewActionDetail(code, detail),
+          error: code,
+          selectedTabId: null,
+          lastScreenshotAt: null,
+          consent: null,
+        },
+        teach: {
+          ...(sourceState.teach || previous?.teach || {}),
+          state: 'idle',
+          label: 'Ready after observe',
+          detail: 'Observe a live preview before teaching a workflow.',
+          tabId: null,
+        },
+        blockers,
+      };
+    }
+
+    return {
+      ...sourceState,
+      bridge: {
+        ...(sourceState.bridge || previous?.bridge || {}),
+        status: 'ready',
+        url: bridgeConfig.url,
+        detail: null,
+      },
+      blockers: [
+        {
+          id: 'workflow_action_error',
+          label: 'Workflow action blocked',
+          detail: detail || code || 'The workflow action could not complete.',
+        },
+        ...blockers,
       ],
     };
   }, [bridgeConfig.url]);
@@ -375,6 +502,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
       const nextState = await getAgentWorkflowState({
         url: bridgeConfig.url,
         token: bridgeConfig.token,
+        runtime: bridgeConfig.runtime,
         signal,
       });
       if (!signal?.aborted && requestId === latestRequestRef.current) {
@@ -385,22 +513,22 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
         setWorkflowState((prev) => stateWithBridgeError(err, prev));
       }
     }
-  }, [applyBridgeState, bridgeConfig.token, bridgeConfig.url, stateWithBridgeError]);
+  }, [applyBridgeState, bridgeConfig.runtime, bridgeConfig.token, bridgeConfig.url, stateWithBridgeError]);
 
   const callWorkflowTool = useCallback(async (tool, args = {}) => {
     const body = await callAgentWorkflowTool({
       url: bridgeConfig.url,
       token: bridgeConfig.token,
+      runtime: bridgeConfig.runtime,
       tool,
       arguments: args,
     });
     if (body?.state) applyBridgeState(body.state);
     if (!body?.ok) {
-      const result = body?.result || {};
-      throw new Error(result.error || body.error || `${tool}_failed`);
+      throw workflowToolError(tool, body);
     }
     return body;
-  }, [applyBridgeState, bridgeConfig.token, bridgeConfig.url]);
+  }, [applyBridgeState, bridgeConfig.runtime, bridgeConfig.token, bridgeConfig.url]);
 
   const readWorkspaceFileOrEmpty = useCallback(async (path) => {
     const workspaceId = ctx?.workspaceSlug;
@@ -432,10 +560,10 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
   const ensureObservedWorkspace = useCallback(async () => {
     const currentUrl = workspaceUrl();
     if (!currentUrl) throw new Error('workspace_url_unavailable');
-    const previewUrl = await discoverWorkspacePreviewUrl(ctx?.workspaceSlug);
     return callWorkflowTool(WORKFLOW_ACTIONS.OBSERVE, {
+      ...(ctx?.workspaceSlug ? { workspace_id: ctx.workspaceSlug } : {}),
       workspace_url: currentUrl,
-      ...(previewUrl ? { preview_url: previewUrl, preferred_url: previewUrl } : {}),
+      user_gesture: true,
     });
   }, [callWorkflowTool, ctx?.workspaceSlug, workspaceUrl]);
 
@@ -451,7 +579,8 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           await callWorkflowTool(WORKFLOW_ACTIONS.ATTACH_WORKSPACE, {
             ...(workspaceId ? { workspace_id: workspaceId } : {}),
             ...(currentUrl ? { workspace_url: currentUrl } : {}),
-            open_workspace: true,
+            runtime_id: bridgeConfig.runtime?.runtimeScope || undefined,
+            open_workspace: false,
           });
           break;
         case WORKFLOW_ACTIONS.OBSERVE:
@@ -527,11 +656,15 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           throw new Error(`Unsupported workflow action: ${action || 'unknown'}`);
       }
     } catch (err) {
-      setWorkflowState((prev) => stateWithBridgeError(err, prev));
+      setWorkflowState((prev) => (
+        isWorkflowToolActionError(err)
+          ? stateWithWorkflowActionError(err, prev)
+          : stateWithBridgeError(err, prev)
+      ));
     } finally {
       setBusyAction(null);
     }
-  }, [callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, stateWithBridgeError, workflowState, workspaceUrl]);
+  }, [bridgeConfig.runtime, callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, stateWithBridgeError, stateWithWorkflowActionError, workflowState, workspaceUrl]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -658,6 +791,34 @@ export const ExtensionsPanelWrapper = memo(function ExtensionsPanelWrapper({ dat
       style={{ background: 'var(--bg-sidebar)' }}
     >
       <ExtensionSidebar {...extensionApi} />
+    </div>
+  );
+});
+
+export const ExtensionViewPanelWrapper = memo(function ExtensionViewPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+  const extensionApi = ctx?.extensionApi || {};
+  const containerId = data?.containerId;
+  const container = (extensionApi.contributedContainers || []).find((item) => item.id === containerId) || null;
+
+  return (
+    <div
+      data-panel-type="extension-view"
+      className="h-full w-full overflow-hidden"
+      style={{ background: 'var(--bg-sidebar)' }}
+    >
+      <ExtensionViewContainer
+        containerId={containerId}
+        container={container}
+        views={extensionApi.contributedViews?.[containerId] || []}
+        treeDataMap={extensionApi.treeDataMap || {}}
+        webviewPanels={extensionApi.webviewPanels || []}
+        webviewManager={extensionApi.webviewManager || null}
+        extensions={extensionApi.extensions || []}
+        onExecuteCommand={extensionApi.onExecuteCommand}
+        onRequestTreeRefresh={extensionApi.onRequestTreeRefresh}
+        viewsWelcome={extensionApi.viewsWelcome || {}}
+      />
     </div>
   );
 });
@@ -862,6 +1023,7 @@ export const PANEL_WRAPPERS = {
   search:         SearchPanelWrapper,
   git:            GitPanelWrapper,
   extensions:     ExtensionsPanelWrapper,
+  'extension-view': ExtensionViewPanelWrapper,
   editor:         EditorPanelWrapper,
   terminal:       TerminalPanelWrapper,
   chat:           ChatPanelWrapper,

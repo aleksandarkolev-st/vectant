@@ -1,5 +1,6 @@
 import { parseProgramManifest } from './manifest';
 import { importDevcontainer } from './devcontainer';
+import { detectRepoProgram } from './repoDetect';
 
 const COLLAB_BASE = (process.env.COLLAB_SERVER_URL || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234').replace(/\/$/, '');
 
@@ -90,11 +91,34 @@ export async function discoverManifest(workspaceSlug, userId = '') {
     return null;
   }
   if (data.source === 'devcontainer.json') {
-    const { config } = importDevcontainer(data.raw);
+    // Slice 1: when the collab-server reports a container runtime is available,
+    // a devcontainer with an image/build becomes a real `container` program;
+    // otherwise it stays a managed-command recipe (existing behavior).
+    const { config } = importDevcontainer(data.raw, { containerRuntime: data.containerRuntimeAvailable === true });
     return { config, source: 'devcontainer.json' };
   }
   const config = parseProgramManifest(data.raw);
   return { config, source: 'vectant.programs.json' };
+}
+
+/**
+ * Slice 1 (real programs): ask the collab-server which container artifacts exist in
+ * the workspace (docker-compose / devcontainer / Dockerfile) and whether a container
+ * runtime is available, then map the highest-precedence one into a container program.
+ *
+ * @returns {Promise<{ config: object, source: string } | null>}
+ */
+export async function fetchDetectedRepoProgram(workspaceSlug, userId = '') {
+  const query = userId ? `?userId=${encodeURIComponent(userId)}` : '';
+  const data = await requestJson(`/program-runtime/${encodeURIComponent(workspaceSlug)}/detect${query}`);
+  if (!data || !data.found) {
+    return null;
+  }
+  return detectRepoProgram({
+    files: data.files || {},
+    containerRuntime: data.containerRuntimeAvailable === true,
+    name: workspaceSlug,
+  });
 }
 
 /**

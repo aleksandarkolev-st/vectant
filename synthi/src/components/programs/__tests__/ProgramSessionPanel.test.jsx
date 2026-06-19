@@ -190,4 +190,22 @@ describe('ProgramSessionPanel', () => {
     expect(container.querySelector('iframe')).toBeNull();
     expect(container.querySelector('[data-testid="app-waiting"]')).toBeNull();
   });
+
+  it('threads the session runtimeScope into the App URL for a sysbox container program', async () => {
+    h.fetchProgramSession.mockResolvedValue({
+      id: 'ps-1', state: 'running', runtimeType: 'container', activePorts: [3000], webPort: 3000, runtimeScope: 'scope-1',
+    });
+    h.getProgramSessionAppUrl.mockImplementation((port, opts) =>
+      (typeof port === 'number' ? `http://localhost:1234/runtime/${opts?.runtimeScope}/port/${port}/` : null));
+
+    await act(async () => {
+      root.render(React.createElement(ProgramSessionPanel, { workspaceSlug: 'team', sessionId: 'ps-1', title: 'Compose' }));
+    });
+    await flush();
+
+    const iframe = container.querySelector('iframe');
+    expect(iframe).not.toBeNull();
+    expect(iframe.getAttribute('src')).toContain('/runtime/scope-1/port/3000/');
+    expect(h.getProgramSessionAppUrl).toHaveBeenCalledWith(3000, expect.objectContaining({ runtimeScope: 'scope-1' }));
+  });
 });

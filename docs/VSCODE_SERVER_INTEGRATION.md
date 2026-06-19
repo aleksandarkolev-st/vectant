@@ -120,10 +120,15 @@ VSIX → parseVSIX() → extract browser bundle → load in Web Worker → eval 
 
 ### VS Code Server Extensions (Path A)
 ```
-VSIX → parseVSIX() → detect Node-only → installMarketplaceExtensionOnServer(id)
+Marketplace install → parseVSIX() → detect Node-only → installMarketplaceExtensionOnServer(id)
   → vscode-server-manager → code-server --install-extension <id>
   → VS Code Server reloads → Extension Host activates it with full API
   → ext-host-preload.js wraps API and relays events via TCP bridge
+
+Local/private VSIX install → parseVSIX() + preserve original VSIX bytes
+  → detect Node-only → installExtensionOnServer(id, vsixBase64)
+  → vscode-server-manager writes a temp VSIX and runs code-server --install-extension <file>
+  → Extension Host activates it with full API and bridged UI events
 ```
 
 ## Configuration
@@ -142,9 +147,10 @@ Environment variables for the backend:
 
 The system degrades gracefully:
 
-1. **VS Code Server available** → Full extension support, marketplace install
-2. **Server unavailable** → Extensions marked `pending-remote`, grammars/themes still work locally
+1. **VS Code Server available** → Full extension support for marketplace IDs and uploaded VSIX bytes
+2. **Server unavailable** → Node-only extensions are marked `pending-remote`, while grammars/themes still work locally
 3. **Web-only extensions** → Always work in the local Web Worker regardless
+4. **Missing install source** → Server-only extensions fail with an actionable reason instead of retrying a bogus marketplace install
 
 ## What Changes for Existing Code
 
@@ -167,7 +173,15 @@ The system degrades gracefully:
 
 ## Next Steps
 
-1. **Rust worker integration** — Add `vscode-server` DataChannel label handling to spawn the manager
-2. **WebSocket tunnel** — Implement DataChannel↔TCP bridging in Rust for the Extension Host Protocol
-3. **UI integration** — Add VS Code Server status to the extension panel
-4. **Testing** — Install real marketplace extensions (ESLint, Prettier, GitLens) and verify
+Implemented:
+
+1. **Rust worker integration** — `vscode-server?slug=...` DataChannel spawning for `vscode-server-manager.js`
+2. **WebSocket tunnel** — DataChannel-backed HTTP/WebSocket proxy for code-server assets and sockets
+3. **UI integration** — status bar/sidebar state, contribution hydration, tree/webview event forwarding
+4. **Preload bridge** — patched Extension Host entrypoints plus TCP bridge for UI/auth/command events
+
+Remaining reliability work:
+
+1. Keep install-source metadata covered by tests for marketplace, uploaded VSIX, and manual code installs.
+2. Continue validating real extensions with UI contributions, auth/device-code flows, and large server responses.
+3. Treat verbose manager logging as a smoke-test path so diagnostics never crash the server manager.

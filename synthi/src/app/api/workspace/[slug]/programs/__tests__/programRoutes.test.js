@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   discoverManifest: vi.fn(),
   launchInstalledProgram: vi.fn(),
   scaffoldProgram: vi.fn(),
+  fetchDetectedRepoProgram: vi.fn(),
 }));
 
 vi.mock('@/lib/integrations/session', () => ({ resolveActor: h.actor }));
@@ -54,6 +55,7 @@ vi.mock('@/lib/programs/runtimeClient', () => ({
   discoverManifest: h.discoverManifest,
   launchInstalledProgram: h.launchInstalledProgram,
   scaffoldProgram: h.scaffoldProgram,
+  fetchDetectedRepoProgram: h.fetchDetectedRepoProgram,
 }));
 
 import { GET as GET_MARKETPLACE } from '../marketplace/route.js';
@@ -62,6 +64,7 @@ import { POST as POST_INSTALL } from '../install/route.js';
 import { POST as POST_LAUNCH } from '../[installId]/launch/route.js';
 import { POST as POST_PUBLISH } from '../publish/route.js';
 import { POST as POST_SCAFFOLD } from '../scaffold/route.js';
+import { GET as GET_DETECT, POST as POST_DETECT } from '../detect/route.js';
 
 const req = (url, body, method = 'GET') => ({ url, method, json: async () => body });
 const ctx = (params) => ({ params: Promise.resolve(params) });
@@ -323,5 +326,64 @@ describe('POST /programs/scaffold', () => {
     const res = await POST_SCAFFOLD(req('http://x/api/workspace/team/programs/scaffold', { packageId: '@vectant/lazygit' }, 'POST'), ctx({ slug: 'team' }));
     expect(res.status).toBe(404);
     expect(h.scaffoldProgram).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /programs/detect (Slice 1)', () => {
+  it('returns the detected repo program for a member (forwarding the workspace user)', async () => {
+    h.fetchDetectedRepoProgram.mockResolvedValue({ config: { runtimeType: 'container', launch: 'docker compose up' }, source: 'docker-compose.yml' });
+    const res = await GET_DETECT(req('http://x/api/workspace/team/programs/detect'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(200);
+    expect(h.fetchDetectedRepoProgram).toHaveBeenCalledWith('team', 'gh1');
+    const body = await res.json();
+    expect(body.detected.source).toBe('docker-compose.yml');
+  });
+
+  it('returns a null detected when nothing container-like is present', async () => {
+    h.fetchDetectedRepoProgram.mockResolvedValue(null);
+    const res = await GET_DETECT(req('http://x/api/workspace/team/programs/detect'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).detected).toBeNull();
+  });
+
+  it('rejects a non-member (403)', async () => {
+    h.canRead.mockResolvedValue(false);
+    const res = await GET_DETECT(req('http://x/api/workspace/team/programs/detect'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(403);
+    expect(h.fetchDetectedRepoProgram).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unauthenticated caller (401)', async () => {
+    h.actor.mockResolvedValue(null);
+    const res = await GET_DETECT(req('http://x/api/workspace/team/programs/detect'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(401);
+  });
+
+  it('POST launches the detected repo program (re-detected server-side) and surfaces runtimeScope', async () => {
+    h.fetchDetectedRepoProgram.mockResolvedValue({ config: { runtimeType: 'container', displayName: 'Compose', launch: 'docker compose up' }, source: 'docker-compose.yml' });
+    h.createProgramSession.mockResolvedValue({ id: 'ps-d', workspaceSlug: 'team', runtimeType: 'container', state: 'starting' });
+    h.launchInstalledProgram.mockResolvedValue({ sessionId: 'ps-d', state: 'running', activePorts: [8080], webPort: 8080, runtimeScope: 'scope-1' });
+    h.updateProgramSession.mockResolvedValue({ id: 'ps-d', workspaceSlug: 'team', state: 'running' });
+
+    const res = await POST_DETECT(req('http://x/api/workspace/team/programs/detect', {}, 'POST'), ctx({ slug: 'team' }));
+
+    expect(res.status).toBe(200);
+    expect(h.launchInstalledProgram).toHaveBeenCalledWith(expect.objectContaining({ workspaceSlug: 'team', sessionId: 'ps-d', userId: 'gh1' }));
+    const body = await res.json();
+    expect(body.session).toMatchObject({ id: 'ps-d', state: 'running', runtimeScope: 'scope-1' });
+  });
+
+  it('POST returns 404 when nothing container-like is detected', async () => {
+    h.fetchDetectedRepoProgram.mockResolvedValue(null);
+    const res = await POST_DETECT(req('http://x/api/workspace/team/programs/detect', {}, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(404);
+    expect(h.launchInstalledProgram).not.toHaveBeenCalled();
+  });
+
+  it('POST rejects a plain member (403)', async () => {
+    h.canWrite.mockResolvedValue(false);
+    const res = await POST_DETECT(req('http://x/api/workspace/team/programs/detect', {}, 'POST'), ctx({ slug: 'team' }));
+    expect(res.status).toBe(403);
+    expect(h.fetchDetectedRepoProgram).not.toHaveBeenCalled();
   });
 });

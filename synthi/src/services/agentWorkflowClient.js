@@ -46,10 +46,16 @@ export function resolveAgentWorkflowBridgeToken() {
   return window.localStorage?.getItem('synthi.agentWorkflowBridgeToken') || '';
 }
 
-function bridgeHeaders(token, includeJson = false) {
+function bridgeHeaders(token, includeJson = false, runtime = {}) {
   const headers = {};
   if (includeJson) headers['Content-Type'] = 'application/json';
   if (token) headers['X-Synthi-Workflow-Token'] = token;
+  if (runtime.runtimeScope) headers['X-Synthi-Runtime-Scope'] = runtime.runtimeScope;
+  if (runtime.workspaceSlug) headers['X-Synthi-Workspace-Slug'] = runtime.workspaceSlug;
+  if (runtime.runtimeKind) headers['X-Synthi-Runtime-Kind'] = runtime.runtimeKind;
+  if (runtime.filesystemUserId) headers['X-Synthi-Filesystem-User-Id'] = runtime.filesystemUserId;
+  if (runtime.actorUserId) headers['X-Synthi-Actor-User-Id'] = runtime.actorUserId;
+  if (runtime.collabSessionId) headers['X-Synthi-Collab-Session-Id'] = runtime.collabSessionId;
   return headers;
 }
 
@@ -60,14 +66,19 @@ async function readJsonOrEmpty(res) {
 function bridgeError(prefix, status, body) {
   const code = body?.error || `${prefix}_${status}`;
   const detail = body?.detail || body?.message || '';
-  return new Error(detail ? `${code}: ${detail}` : code);
+  const err = new Error(detail ? `${code}: ${detail}` : code);
+  err.code = code;
+  err.status = status;
+  err.body = body;
+  err.detail = detail;
+  return err;
 }
 
-export async function getAgentWorkflowState({ url, token, signal } = {}) {
+export async function getAgentWorkflowState({ url, token, runtime, signal } = {}) {
   const bridgeUrl = url || resolveAgentWorkflowBridgeUrl();
   const bridgeToken = token ?? resolveAgentWorkflowBridgeToken();
   const res = await fetch(`${bridgeUrl}/browser-workflows/state`, {
-    headers: bridgeHeaders(bridgeToken),
+    headers: bridgeHeaders(bridgeToken, false, runtime),
     signal,
   });
   const body = await readJsonOrEmpty(res);
@@ -78,6 +89,7 @@ export async function getAgentWorkflowState({ url, token, signal } = {}) {
 export async function callAgentWorkflowTool({
   url,
   token,
+  runtime,
   tool,
   arguments: args = {},
   signal,
@@ -86,11 +98,31 @@ export async function callAgentWorkflowTool({
   const bridgeToken = token ?? resolveAgentWorkflowBridgeToken();
   const res = await fetch(`${bridgeUrl}/browser-workflows/tool`, {
     method: 'POST',
-    headers: bridgeHeaders(bridgeToken, true),
+    headers: bridgeHeaders(bridgeToken, true, runtime),
     body: JSON.stringify({ tool, arguments: args }),
     signal,
   });
   const body = await readJsonOrEmpty(res);
   if (!res.ok) throw bridgeError('workflow_tool_failed', res.status, body);
+  return body;
+}
+
+export async function openAgentWorkflowExternalUrl({
+  url,
+  token,
+  runtime,
+  targetUrl,
+  signal,
+}) {
+  const bridgeUrl = url || resolveAgentWorkflowBridgeUrl();
+  const bridgeToken = token ?? resolveAgentWorkflowBridgeToken();
+  const res = await fetch(`${bridgeUrl}/browser-workflows/open-external`, {
+    method: 'POST',
+    headers: bridgeHeaders(bridgeToken, true, runtime),
+    body: JSON.stringify({ url: targetUrl }),
+    signal,
+  });
+  const body = await readJsonOrEmpty(res);
+  if (!res.ok || body?.ok === false) throw bridgeError('workflow_open_external_failed', res.status, body);
   return body;
 }

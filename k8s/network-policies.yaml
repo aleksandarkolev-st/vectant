@@ -123,7 +123,7 @@ spec:
     - Ingress
 
 ---
-# ── Workspace pods: allow health checks from collab-server only ───────────
+# ── Workspace pods: allow runtime-scoped preview and workflow bridge traffic ─
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -143,5 +143,91 @@ spec:
       ports:
         - port: 8080
           protocol: TCP
+        - port: 18080
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - port: 9466
+          protocol: TCP
   policyTypes:
     - Ingress
+
+---
+# ── Sysbox runtime pods (Slice 4): allow collab-server → preview sidecar ─────
+# Mirrors allow-to-workspace-pods. Lets the preview proxy reach ports opened inside
+# the runtime pod (rt-<hash>-rt Service → :18080 sidecar). default-deny-ingress is
+# in effect, so this explicit allow is required. Inert until runtime pods exist
+# (RUNTIME_BACKEND=sysbox-pod).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-runtime-pods
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: runtime
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: collab-server
+      ports:
+        - port: 18080
+          protocol: TCP
+  policyTypes:
+    - Ingress
+
+---
+# ── Sysbox runtime pods (Slice 6): egress hardening ─────────────────────────
+# Untrusted USER code runs in these pods. Allow DNS + the PUBLIC internet (image
+# registries, user-app outbound API calls) but DENY the cluster-internal network
+# (lateral movement to other workspaces / internal services), RFC1918, and the GKE
+# metadata server 169.254.169.254 (node-credential theft). NetworkPolicy egress
+# rules are additive (OR), so the kube-dns rule allows DNS even though kube-dns
+# lives in 10/8. Selects app=runtime → inert until runtime pods exist. REQUIRES a
+# NetworkPolicy-enforcing dataplane (GKE Dataplane V2 / Calico).
+# DEFERRED (Spike 3 / infra): per-pod bandwidth cap (kubernetes.io/egress-bandwidth),
+# abuse detection (Cilium/Falco flow-logs), dedicated egress IPs, auto-hibernate.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runtime-egress-hardening
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: runtime
+  policyTypes:
+    - Egress
+  egress:
+    # DNS — allow UDP/TCP :53 to ALL destinations. A kube-dns podSelector is NOT
+    # sufficient on GKE: NodeLocal DNSCache (node-local-dns) answers via a
+    # hostNetwork pod and intercepts the kube-dns ClusterIP on the node, so the
+    # responder's identity is the NODE (in 10/8) — which the cluster-internal deny
+    # below would block, breaking DNS entirely (validated live on Dataplane V2:
+    # the podSelector rule left runtime pods unable to resolve any name). Port 53
+    # is DNS-only (no other internal service listens on it) and public egress is
+    # already permitted below, so this does not widen the lateral-movement surface.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Public internet only: everything EXCEPT cluster-internal / RFC1918 / link-local
+    # (the GKE metadata server 169.254.169.254 is inside 169.254.0.0/16).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16

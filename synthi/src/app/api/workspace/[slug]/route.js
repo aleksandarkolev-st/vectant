@@ -102,7 +102,7 @@ export async function GET(request, { params }) {
         const isEmpty = files.length === 0 || (files.length === 1 && files[0].name === storagePathPrefix);
 
         if (isEmpty) {
-             const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+             const COLLAB_SERVER_URL = process.env.COLLAB_SERVER_URL || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
              try {
                  const res = await fetch(`${COLLAB_SERVER_URL}/git/${workspaceId}/files`);
                  if (res.ok) {

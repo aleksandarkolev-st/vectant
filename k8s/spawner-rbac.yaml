@@ -66,14 +66,26 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  # Read one-shot workspace preparation logs.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
   # Open interactive shells inside per-runtime pods for the terminal service.
   - apiGroups: [""]
     resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get", "create"]
   # Create/delete ClusterIP Services per workspace for health checks.
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "create", "delete"]
+  # Run one-shot workspace preparation tasks such as dependency installs.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "create", "delete", "watch"]
+  # Poll one-shot workspace preparation Job status.
+  - apiGroups: ["batch"]
+    resources: ["jobs/status"]
+    verbs: ["get", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

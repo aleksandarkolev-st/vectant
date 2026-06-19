@@ -13,9 +13,9 @@
  *   2. Requests whose Referer starts with /__vscode-proxy__ (iframe sub-resources)
  */
 
-const SW_VERSION = '3.0-streaming-cache';
+const SW_VERSION = '3.2-shim-refresh';
 const PROXY_PREFIX = '/__vscode-proxy__';
-const CACHE_NAME = 'vscode-proxy-assets-v1';
+const CACHE_NAME = 'vscode-proxy-assets-v3';
 let requestIdCounter = 0;
 const pendingRequests = new Map();
 
@@ -68,6 +68,14 @@ channel.addEventListener('message', (event) => {
         try { respHeaders.set(key, value); } catch (_) {}
       }
     }
+
+    // The Synthi app runs cross-origin isolated for SharedArrayBuffer/WebRTC
+    // surfaces. Chrome blocks framed documents under a COEP parent unless the
+    // framed response also opts into embedding isolation, even when the URL is
+    // same-origin through this Service Worker proxy.
+    respHeaders.set('Cross-Origin-Embedder-Policy', 'require-corp');
+    respHeaders.set('Cross-Origin-Opener-Policy', 'same-origin');
+    respHeaders.set('Cross-Origin-Resource-Policy', 'same-origin');
     respHeaders.set('content-length', String(bodyBytes.length));
 
     pending.resolve(new Response(bodyBytes, {

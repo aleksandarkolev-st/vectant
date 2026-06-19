@@ -2,13 +2,23 @@
 import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
-import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { WifiOff, RefreshCw, Terminal, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw, Power } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
-import { resolveCollabWsUrl } from '@/lib/collab-url';
+import { resolveCollabHttpUrl, resolveCollabWsUrl } from '@/lib/collab-url';
 import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
+import {
+  isRuntimeLoopbackUrl,
+  buildLoopbackCallbackBridgeUrl,
+  findTerminalLoopbackAuthLinks,
+  parseTerminalUrl,
+  resolveTerminalLinkUrl,
+  terminalLinkHasNestedLoopbackCallback,
+  terminalLinkNeedsRuntimeResolution,
+} from '@/lib/terminal-preview-links';
 import {
   TERMINAL_COLOR_KEYS,
   getTerminalOverrides,
@@ -43,9 +53,114 @@ let sessionAutoApprovePaste = false;
 const TERMINAL_SERVER_URL = process.env.NEXT_PUBLIC_TERMINAL_URL 
   ? process.env.NEXT_PUBLIC_TERMINAL_URL
   : resolveCollabWsUrl();
+const TERMINAL_HTTP_URL = resolveCollabHttpUrl();
+const LOOPBACK_AUTH_BRIDGE_PATH = process.env.NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH || '/auth/loopback';
+const BLOCKED_TERMINAL_LINK_PROTOCOLS = new Set(['javascript:', 'data:', 'vbscript:']);
+const EXPLICIT_TERMINAL_LINK_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
+const TERMINAL_MOTION_EASE = [0.16, 1, 0.3, 1];
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000]; // Exponential backoff
 const MAX_RECONNECT_ATTEMPTS = 4;
+const terminalSessionIdCache = new Map();
+
+function getTerminalStorage(storageName) {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window[storageName] || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function safeTerminalSessionPart(value, fallback = 'term') {
+  const normalized = String(value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+  return normalized || fallback;
+}
+
+function randomTerminalSessionSuffix() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  }
+  return Math.random().toString(36).slice(2, 14);
+}
+
+function getStableTerminalSessionId({
+  workspaceSlug,
+  terminalId,
+  paneSide,
+  shellType,
+  runtimeScope,
+  userId,
+}) {
+  const scopeKey = [
+    workspaceSlug || 'workspace',
+    runtimeScope || userId || 'runtime',
+    terminalId || 'default',
+    paneSide || 'main',
+    shellType || 'default',
+  ].join(':');
+
+  if (terminalSessionIdCache.has(scopeKey)) {
+    return terminalSessionIdCache.get(scopeKey);
+  }
+
+  const storageKey = `vectant-terminal-session:${scopeKey}`;
+  const localStore = getTerminalStorage('localStorage');
+  const sessionStore = getTerminalStorage('sessionStorage');
+  try {
+    const stored = localStore?.getItem(storageKey) || sessionStore?.getItem(storageKey);
+    if (stored) {
+      terminalSessionIdCache.set(scopeKey, stored);
+      try { localStore?.setItem(storageKey, stored); } catch (_) {}
+      try { sessionStore?.setItem(storageKey, stored); } catch (_) {}
+      return stored;
+    }
+  } catch (_) {}
+
+  const sessionId = [
+    'term',
+    safeTerminalSessionPart(workspaceSlug, 'workspace'),
+    safeTerminalSessionPart(terminalId, 'default'),
+    safeTerminalSessionPart(paneSide, 'main'),
+    randomTerminalSessionSuffix(),
+  ].join('-').slice(0, 96);
+
+  terminalSessionIdCache.set(scopeKey, sessionId);
+  try {
+    localStore?.setItem(storageKey, sessionId);
+  } catch (_) {}
+  try {
+    sessionStore?.setItem(storageKey, sessionId);
+  } catch (_) {}
+  return sessionId;
+}
+
+function resolveLoopbackAuthBridgeBaseUrl(origin) {
+  try {
+    const url = new URL(LOOPBACK_AUTH_BRIDGE_PATH, `${origin}/`);
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return `${origin}/auth/loopback`;
+  }
+}
+
+function resolveOpenableTerminalLink(rawUri) {
+  const uri = typeof rawUri === 'string' ? rawUri.trim() : '';
+  const parsed = parseTerminalUrl(uri);
+  if (!parsed || BLOCKED_TERMINAL_LINK_PROTOCOLS.has(parsed.protocol)) {
+    return null;
+  }
+  if (!EXPLICIT_TERMINAL_LINK_SCHEME_RE.test(uri) && !isRuntimeLoopbackUrl(parsed)) {
+    return null;
+  }
+  return parsed.href;
+}
 
 // ─── Terminal Theme (from ThemeProvider) ───────────────────────────────
 // The `useTheme()` hook provides `terminalTheme` generated from the active
@@ -87,7 +202,12 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const terminalRef = useRef(null);   // { term, fitAddon, dispose() }
   const wsRef = useRef(null);
   const currentSessionIdRef = useRef(null);
+  const inputDataDisposableRef = useRef(null);
+  const inputBinaryDisposableRef = useRef(null);
   const inputBufferRef = useRef('');
+  const oauthOutputBufferRef = useRef('');
+  const oauthRelaySeenLinksRef = useRef(new Set());
+  const openTerminalLinkRef = useRef(null);
   const initializedRef = useRef(false);
   // ─── Ctrl+Z undo stack ───────────────────────────────────────────────
   // Each entry is one undoable input segment: a single typed character or
@@ -125,6 +245,10 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const [pasteConfirm, setPasteConfirm] = useState(null);
   // Color customizer floating panel
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [stoppingRuntime, setStoppingRuntime] = useState(false);
+  const [oauthRelayPrompt, setOauthRelayPrompt] = useState(null);
+  const oauthRelayPromptRef = useRef(null);
+  const oauthRelayLastCompleteRef = useRef('');
   // Live overrides — re-renders when user tweaks colors
   const [colorOverrides, setColorOverrides] = useState(() => getTerminalOverrides());
 
@@ -149,7 +273,99 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     }
   }, [terminalTheme, colorOverrides]);
 
+  useEffect(() => {
+    oauthRelayPromptRef.current = oauthRelayPrompt;
+  }, [oauthRelayPrompt]);
+
+  // OAuth relay helpers live in a separate tab. When a callback is delivered
+  // successfully, force a terminal repaint/focus so waiting TUIs are visibly
+  // refreshed for the user.
+  useEffect(() => {
+    const promptMatchesRelayComplete = (prompt, payload) => {
+      if (!prompt) return false;
+      if (!payload?.runtimeScope) return true;
+      try {
+        const promptUrl = new URL(prompt.bridgeUrl);
+        const promptRuntimeScope = promptUrl.searchParams.get('runtimeScope');
+        return !promptRuntimeScope || promptRuntimeScope === payload.runtimeScope;
+      } catch (_) {
+        return true;
+      }
+    };
+
+    const handleRelayComplete = (payload) => {
+      if (!payload || payload.type !== 'synthi.oauthRelay.complete') return;
+      if (payload.workspaceSlug && payload.workspaceSlug !== workspaceSlug) return;
+      const activePrompt = oauthRelayPromptRef.current;
+      if (!promptMatchesRelayComplete(activePrompt, payload)) return;
+
+      const completeKey = [payload.runtimeScope || '', payload.terminalId || '', payload.at || '', payload.status || ''].join(':');
+      if (completeKey && oauthRelayLastCompleteRef.current === completeKey) return;
+      oauthRelayLastCompleteRef.current = completeKey;
+
+      const instance = terminalRef.current;
+      try { instance?.fitAddon?.fit(); } catch (_) {}
+      try { instance?.term?.refresh(0, instance.term.rows - 1); } catch (_) {}
+      try { instance?.term?.focus(); } catch (_) {}
+      setOauthRelayPrompt(null);
+      oauthRelayPromptRef.current = null;
+      toast.success('Terminal OAuth callback delivered');
+    };
+    const onWindowMessage = (event) => {
+      if (event.origin !== window.location.origin) return;
+      handleRelayComplete(event.data);
+    };
+    const onStorage = (event) => {
+      if (event.key !== 'synthi.oauthRelay.lastComplete' || !event.newValue) return;
+      try {
+        handleRelayComplete(JSON.parse(event.newValue));
+      } catch (_) {}
+    };
+
+    let channel = null;
+    try {
+      channel = new BroadcastChannel('synthi-oauth-relay');
+      channel.onmessage = (event) => handleRelayComplete(event.data);
+    } catch (_) {}
+
+    window.addEventListener('message', onWindowMessage);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('message', onWindowMessage);
+      window.removeEventListener('storage', onStorage);
+      try { channel?.close(); } catch (_) {}
+    };
+  }, [terminalId, workspaceSlug]);
+
+  const dismissOauthRelayPrompt = useCallback(() => {
+    setOauthRelayPrompt(null);
+    try { terminalRef.current?.term?.focus(); } catch (_) {}
+  }, []);
+
+  const openOauthRelayPrompt = useCallback((event) => {
+    event?.preventDefault?.();
+    const prompt = oauthRelayPromptRef.current;
+    if (!prompt?.bridgeUrl) return;
+    setOauthRelayPrompt((current) => (
+      current?.id === prompt.id ? { ...current, opened: true } : current
+    ));
+    try {
+      window.open(prompt.bridgeUrl, '_blank', 'noopener,noreferrer');
+    } catch (_) {}
+  }, []);
+
   // ─── Cleanup helper ───────────────────────────────────────────────────
+  const disposeInputHandlers = useCallback(() => {
+    if (inputDataDisposableRef.current) {
+      try { inputDataDisposableRef.current.dispose(); } catch (_) {}
+      inputDataDisposableRef.current = null;
+    }
+    if (inputBinaryDisposableRef.current) {
+      try { inputBinaryDisposableRef.current.dispose(); } catch (_) {}
+      inputBinaryDisposableRef.current = null;
+    }
+  }, []);
+
   const cleanup = useCallback(() => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
@@ -159,6 +375,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       try { wsRef.current.close(1000); } catch (_) {}
       wsRef.current = null;
     }
+    disposeInputHandlers();
     const terminalInstance = terminalRef.current;
     terminalRef.current = null;
     if (terminalInstance?.dispose) {
@@ -167,7 +384,9 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       try { terminalInstance.term.dispose(); } catch (_) {}
     }
     sessionIdRef.current = null;
-  }, []);
+    currentSessionIdRef.current = null;
+    openTerminalLinkRef.current = null;
+  }, [disposeInputHandlers]);
 
   // ─── Send resize to server ───────────────────────────────────────────
   const sendResize = useCallback((cols, rows) => {
@@ -181,6 +400,50 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   useEffect(() => {
     mountedRef.current = true;
     let disposed = false;
+
+    if (isGuest && !canTerminal) {
+      cleanup();
+      setState('closed');
+      return () => { disposed = true; };
+    }
+    setState('connecting');
+
+    const runtimeLinkContext = () => {
+      const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
+      const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
+      return {
+        workspaceSlug,
+        terminalId,
+        ...runtimeIdentity,
+        bridgeBaseUrl: resolveLoopbackAuthBridgeBaseUrl(window.location.origin),
+      };
+    };
+
+    const surfaceOauthRelayLinks = (outputText) => {
+      if (!outputText) return;
+      const nextBuffer = `${oauthOutputBufferRef.current}${outputText}`;
+      oauthOutputBufferRef.current = nextBuffer.slice(-12000);
+
+      const linkContext = runtimeLinkContext();
+      const links = findTerminalLoopbackAuthLinks(oauthOutputBufferRef.current, {
+        runtimeScope: linkContext.runtimeScope,
+        bridgeBaseUrl: linkContext.bridgeBaseUrl,
+        loopbackContext: linkContext,
+        limit: 2,
+      });
+
+      const nextLink = links.find((link) => !oauthRelaySeenLinksRef.current.has(link.bridgeUrl));
+      if (!nextLink) return;
+
+      oauthRelaySeenLinksRef.current.add(nextLink.bridgeUrl);
+      setOauthRelayPrompt({
+        id: nextLink.bridgeUrl,
+        bridgeUrl: nextLink.bridgeUrl,
+        originalUrl: nextLink.originalUrl,
+        opened: false,
+        detectedAt: Date.now(),
+      });
+    };
 
     const init = async () => {
       // Dynamic import to avoid SSR issues
@@ -203,6 +466,100 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       if (disposed || !containerRef.current) return;
 
+      const openLocalBrowserUrl = (uri, popup = null) => {
+        if (popup) {
+          try { popup.opener = null; } catch {}
+          popup.location.href = uri;
+          return;
+        }
+        window.open(uri, '_blank', 'noopener,noreferrer');
+      };
+
+      const openManualLoopbackFallback = async (uri, linkContext, popup = null) => {
+        const fallbackUrl = await resolveTerminalLinkUrl(uri, linkContext.runtimeScope, {
+          terminalHttpUrl: TERMINAL_HTTP_URL,
+          windowOrigin: window.location.origin,
+          loopbackCallbackBridgeUrl: linkContext.bridgeBaseUrl,
+          loopbackContext: linkContext,
+        });
+        openLocalBrowserUrl(fallbackUrl || uri, popup);
+      };
+
+      const openTerminalLink = (uri) => {
+        try {
+          const localBrowserHref = resolveOpenableTerminalLink(uri);
+          if (!localBrowserHref) {
+            toast.error('Blocked unsafe terminal link');
+            return;
+          }
+
+          const linkContext = runtimeLinkContext();
+          const parsedLink = parseTerminalUrl(uri);
+          const isHttpLink = parsedLink?.protocol === 'http:' || parsedLink?.protocol === 'https:';
+          if (isHttpLink && terminalLinkHasNestedLoopbackCallback(uri)) {
+            const bridgeUrl = buildLoopbackCallbackBridgeUrl(
+              uri,
+              linkContext.runtimeScope,
+              linkContext.bridgeBaseUrl,
+              linkContext,
+            );
+            if (bridgeUrl) {
+              oauthRelaySeenLinksRef.current.add(bridgeUrl);
+              setOauthRelayPrompt({
+                id: bridgeUrl,
+                bridgeUrl,
+                originalUrl: uri,
+                opened: true,
+                detectedAt: Date.now(),
+              });
+              openLocalBrowserUrl(bridgeUrl);
+              return;
+            }
+            const popup = window.open('about:blank', '_blank');
+            openManualLoopbackFallback(uri, linkContext, popup)
+              .then(() => {
+                toast.success('Opened terminal sign-in helper');
+              })
+              .catch((err) => {
+                console.warn('[Terminal] Sign-in helper open failed:', err);
+                toast.warning('Opening the original sign-in link');
+                try { openLocalBrowserUrl(localBrowserHref, popup); } catch {}
+              });
+            return;
+          }
+
+          const needsRuntimeResolution = terminalLinkNeedsRuntimeResolution(uri);
+          if (!needsRuntimeResolution) {
+            openLocalBrowserUrl(localBrowserHref);
+            return;
+          }
+
+          const popup = window.open('about:blank', '_blank');
+          resolveTerminalLinkUrl(uri, linkContext.runtimeScope, {
+            terminalHttpUrl: TERMINAL_HTTP_URL,
+            windowOrigin: window.location.origin,
+            loopbackCallbackBridgeUrl: linkContext.bridgeBaseUrl,
+            loopbackContext: linkContext,
+          }).then((previewUrl) => {
+            openLocalBrowserUrl(previewUrl || localBrowserHref, popup);
+          }).catch(() => {
+            if (isHttpLink && terminalLinkHasNestedLoopbackCallback(uri)) {
+              openManualLoopbackFallback(uri, linkContext, popup).catch(() => {
+                try { openLocalBrowserUrl(localBrowserHref, popup); } catch {}
+              });
+              return;
+            }
+            openLocalBrowserUrl(localBrowserHref, popup);
+          });
+        } catch (_) {
+          const localBrowserHref = resolveOpenableTerminalLink(uri);
+          if (localBrowserHref) {
+            try { openLocalBrowserUrl(localBrowserHref); } catch {}
+          }
+        }
+      };
+      openTerminalLinkRef.current = openTerminalLink;
+
       // ── Create xterm instance ───────────────────────────────────────
       const initialTheme = applyOverridesToTheme(
         terminalTheme || SYNTHI_THEME_FALLBACK,
@@ -218,10 +575,16 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         scrollback: 5000,
         allowTransparency: false,
         convertEol: true,   // Required on Windows — ConPTY can emit bare \n
+        // Handles OSC 8 hyperlinks emitted by CLIs. Without this, xterm shows
+        // its default confirm dialog and opens loopback OAuth links locally.
+        linkHandler: {
+          allowNonHttpProtocols: true,
+          activate: (_event, uri) => openTerminalLink(uri),
+        },
       });
 
       const fitAddon = new FitAddon();
-      const linksAddon = new WebLinksAddon();
+      const linksAddon = new WebLinksAddon((_event, uri) => openTerminalLink(uri));
       term.loadAddon(fitAddon);
       term.loadAddon(linksAddon);
       term.open(containerRef.current);
@@ -492,13 +855,21 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     function connectWS(term, fitAddon) {
       if (disposed) return;
 
-      // Use the fixed session ID (from AI terminal) or generate a new one
-      const sid = fixedSessionId || (sessionKey + '-' + Date.now().toString(36));
-      sessionIdRef.current = sid;
-
+      // Reconnect to the same PTY session. A new PTY behind an old xterm
+      // buffer makes typed text appear duplicated or inserted in odd places.
       const { cols, rows } = term;
       const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
       const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
+      const sid = fixedSessionId || currentSessionIdRef.current || getStableTerminalSessionId({
+        workspaceSlug,
+        terminalId,
+        paneSide,
+        shellType,
+        runtimeScope: runtimeIdentity.runtimeScope,
+        userId: termUserId,
+      });
+      currentSessionIdRef.current = sid;
+      sessionIdRef.current = sid;
       const params = new URLSearchParams({
         sessionId: sid,
         workspace: workspaceSlug,
@@ -544,7 +915,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       // Send user input to backend and forward to WebRTC path.
       // Also provide a local-echo fallback when no backend is connected so
       // the user sees their keystrokes while offline/disconnected.
-      term.onData((data) => {
+      disposeInputHandlers();
+      inputDataDisposableRef.current = term.onData((data) => {
         if (isResizingRef.current) return;
 
         // ── Session permission gate ──────────────────────────────────
@@ -597,6 +969,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         // Binary frame → raw PTY output
         if (event.data instanceof ArrayBuffer) {
           const text = new TextDecoder().decode(new Uint8Array(event.data));
+          surfaceOauthRelayLinks(text);
           term.write(text);
           return;
         }
@@ -641,6 +1014,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             }
           } catch (_) {
             // Not JSON — treat as plain text output
+            surfaceOauthRelayLinks(event.data);
             term.write(event.data);
           }
         }
@@ -664,11 +1038,12 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       };
 
       // Also forward binary (paste, etc.)
-      term.onBinary((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
+      inputBinaryDisposableRef.current = term.onBinary((data) => {
+        const wsLocal = wsRef.current;
+        if (wsLocal && wsLocal.readyState === WebSocket.OPEN) {
           const buffer = new Uint8Array(data.length);
           for (let i = 0; i < data.length; i++) buffer[i] = data.charCodeAt(i);
-          ws.send(buffer);
+          wsLocal.send(buffer);
         }
       });
     }
@@ -699,13 +1074,14 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         try { wsRef.current.close(1000); } catch (_) {}
         wsRef.current = null;
       }
+      disposeInputHandlers();
       const terminalInstance = terminalRef.current;
       terminalRef.current = null;
       if (terminalInstance?.dispose) {
         try { terminalInstance.dispose(); } catch (_) {}
       }
     };
-  }, [sessionKey, workspaceSlug, fixedSessionId, shellType]); // Re-connect if terminal tab, workspace, or shell type changes
+  }, [sessionKey, terminalId, workspaceSlug, fixedSessionId, shellType, isGuest, canTerminal, cleanup, disposeInputHandlers]); // Re-connect if terminal tab, workspace, shell type, or terminal permission changes
 
   // ─── Reconnect button handler ─────────────────────────────────────────
   const handleReconnect = useCallback(() => {
@@ -718,6 +1094,47 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     // So we trigger a micro state change
     window.location.reload();
   }, [cleanup]);
+
+  const handleStopRuntime = useCallback(async () => {
+    if (stoppingRuntime) return;
+    const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
+    const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId: termUserId });
+    const runtimeScope = runtimeIdentity.runtimeScope;
+    if (!runtimeScope) {
+      toast.error('Runtime scope unavailable');
+      return;
+    }
+
+    setStoppingRuntime(true);
+    try {
+      const response = await fetch(`${TERMINAL_HTTP_URL}/api/spawner/release`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-runtime-scope': runtimeScope,
+        },
+        body: JSON.stringify({
+          session_id: runtimeScope,
+          workspaceSlug,
+          reason: 'explicit_release',
+        }),
+      });
+      if (!response.ok) {
+        const message = await response.text().catch(() => '');
+        throw new Error(message || `Runtime stop failed (${response.status})`);
+      }
+
+      cleanup();
+      reconnectCountRef.current = 0;
+      setState('closed');
+      toast.success('Runtime stopped');
+    } catch (err) {
+      console.error('[Terminal] Failed to stop runtime:', err);
+      toast.error(err?.message || 'Failed to stop runtime');
+    } finally {
+      setStoppingRuntime(false);
+    }
+  }, [cleanup, stoppingRuntime, workspaceSlug]);
 
   // ─── Multi-line paste confirmation actions ────────────────────────────
   const confirmPaste = useCallback((opts) => {
@@ -743,24 +1160,42 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   }, []);
 
   // ─── Render ───────────────────────────────────────────────────────────
+  if (isGuest && !canTerminal) {
+    return (
+      <div className="terminal-pane-shell h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
+        <div className="h-full w-full flex items-center justify-center px-6">
+          <div
+            className="max-w-sm rounded-lg border px-4 py-3 text-center"
+            style={{
+              background: 'color-mix(in srgb, var(--accent-warning) 7%, var(--bg-elevated))',
+              borderColor: 'color-mix(in srgb, var(--accent-warning) 28%, var(--border-medium))',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <EyeOff className="w-5 h-5 mx-auto mb-2" style={{ color: 'var(--accent-warning)' }} />
+            <div className="text-xs font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+              Terminal access is off
+            </div>
+            <div className="text-[11px] leading-relaxed">
+              Ask the host to grant terminal permission for this session.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="terminal-pane-shell h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
       <div ref={containerRef} className="h-full w-full" />
 
-      {/* Palette button — opens the terminal color customizer */}
-      <button
-        type="button"
-        onClick={() => setColorPickerOpen(true)}
-        title="Customize terminal colors"
-        aria-label="Customize terminal colors"
-        className="absolute top-1.5 right-1.5 z-10 rounded p-1 opacity-40 hover:opacity-100 transition-opacity"
-        style={{
-          color: 'var(--text-muted)',
-          background: 'color-mix(in srgb, var(--bg-app) 60%, transparent)',
-        }}
-      >
-        <Palette className="w-3.5 h-3.5" />
-      </button>
+      <TerminalUtilityRail
+        state={state}
+        stoppingRuntime={stoppingRuntime}
+        canStop={!fixedSessionId}
+        onStopRuntime={handleStopRuntime}
+        onOpenColors={() => setColorPickerOpen(true)}
+      />
 
       {pasteConfirm && (
         <MultiLinePasteDialog
@@ -772,6 +1207,12 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         />
       )}
 
+      <TerminalOAuthPrompt
+        prompt={oauthRelayPrompt}
+        onOpen={openOauthRelayPrompt}
+        onDismiss={dismissOauthRelayPrompt}
+      />
+
       {colorPickerOpen && (
         <TerminalColorPanel
           baseTheme={terminalTheme || SYNTHI_THEME_FALLBACK}
@@ -782,24 +1223,6 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
 
-      {/* Session: View-only terminal overlay for guests without canTerminal */}
-      {isGuest && !canTerminal && state === 'connected' && (
-        <div
-          className="absolute bottom-0 left-0 right-0 flex items-center justify-center px-4 py-1.5 z-10"
-          style={{
-            background: 'color-mix(in srgb, var(--accent-warning) 8%, transparent)',
-            borderTop: '1px solid color-mix(in srgb, var(--accent-warning) 24%, transparent)',
-          }}
-        >
-          <div className="flex items-center gap-2">
-            <EyeOff className="w-3.5 h-3.5" style={{ color: 'var(--accent-warning)' }} />
-            <span className="text-xs font-medium" style={{ color: 'var(--accent-warning)' }}>
-              Terminal is view-only — Ask the host for terminal access
-            </span>
-          </div>
-        </div>
-      )}
-
       {/* Connection status — viewport-centred floating panel (portal to body) */}
       {(state === 'error' || state === 'closed') && (
         <ConnectionStatusPanel
@@ -808,16 +1231,230 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         />
       )}
 
-      {/* Connecting indicator */}
-      {state === 'connecting' && (
-        <div className="absolute bottom-2 right-3 flex items-center gap-1.5 text-[10px] z-10" style={{ color: 'var(--text-muted)' }}>
-          <Zap className="w-3 h-3 animate-pulse" style={{ color: 'var(--accent-primary)' }} />
-          <span>Connecting…</span>
-        </div>
-      )}
+      <TerminalActivityHint state={state} stoppingRuntime={stoppingRuntime} />
     </div>
   );
 }, /* freeze — never re-render from parent */ () => true);
+
+function terminalStatusMeta(state, stoppingRuntime) {
+  if (stoppingRuntime) {
+    return { label: 'Stopping', tone: 'warning', color: 'var(--accent-warning, #d89b2b)' };
+  }
+  if (state === 'connected') {
+    return { label: 'Live', tone: 'success', color: 'var(--accent-success, #3d8b78)' };
+  }
+  if (state === 'connecting') {
+    return { label: 'Connecting', tone: 'info', color: 'var(--accent-primary, #6c6885)' };
+  }
+  if (state === 'closed') {
+    return { label: 'Closed', tone: 'muted', color: 'var(--text-muted, #6b7089)' };
+  }
+  return { label: 'Issue', tone: 'warning', color: 'var(--accent-warning, #d89b2b)' };
+}
+
+function TerminalUtilityButton({ title, onClick, disabled = false, children, tone = 'neutral' }) {
+  const toneColor = tone === 'danger'
+    ? 'var(--accent-error, #d96c6c)'
+    : tone === 'active'
+      ? 'var(--text-primary, #f4f5f8)'
+      : 'var(--text-secondary, #a1a1aa)';
+
+  return (
+    <motion.button
+      type="button"
+      whileTap={{ scale: 0.96 }}
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={title}
+      className="flex h-7 w-7 items-center justify-center rounded-md border transition-colors hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-40"
+      style={{
+        borderColor: 'var(--border-subtle, #2a2b38)',
+        color: toneColor,
+        background: 'var(--bg-app, #0a0b10)',
+      }}
+    >
+      {children}
+    </motion.button>
+  );
+}
+
+function TerminalUtilityRail({ state, stoppingRuntime, canStop, onStopRuntime, onOpenColors }) {
+  const status = terminalStatusMeta(state, stoppingRuntime);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18, ease: TERMINAL_MOTION_EASE }}
+      className="absolute right-2 top-2 z-10 flex items-center gap-1.5 rounded-lg border px-1.5 py-1 shadow-xl"
+      style={{
+        background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 88%, var(--bg-app, #0a0b10))',
+        borderColor: 'var(--border-subtle, #2a2b38)',
+        color: 'var(--text-secondary, #a1a1aa)',
+        boxShadow: '0 10px 34px -24px rgba(0,0,0,0.9)',
+      }}
+    >
+      <div
+        className="flex h-7 items-center gap-2 rounded-md border px-2 text-[10px] font-medium"
+        style={{
+          borderColor: 'var(--border-subtle, #2a2b38)',
+          background: 'color-mix(in srgb, var(--bg-app, #0a0b10) 92%, transparent)',
+          color: 'var(--text-secondary, #a1a1aa)',
+        }}
+      >
+        <motion.span
+          aria-hidden="true"
+          className="h-1.5 w-1.5 rounded-full"
+          animate={status.tone === 'info' || status.tone === 'warning' ? { opacity: [0.35, 1, 0.35] } : { opacity: 1 }}
+          transition={{ duration: 1.2, repeat: status.tone === 'info' || status.tone === 'warning' ? Infinity : 0 }}
+          style={{ background: status.color }}
+        />
+        <span>{status.label}</span>
+      </div>
+      <TerminalUtilityButton title="Customize terminal colors" onClick={onOpenColors} tone="active">
+        <Palette className="h-3.5 w-3.5" />
+      </TerminalUtilityButton>
+      {canStop && (
+        <TerminalUtilityButton
+          title="Stop runtime"
+          onClick={onStopRuntime}
+          disabled={stoppingRuntime}
+          tone="danger"
+        >
+          <Power className="h-3.5 w-3.5" />
+        </TerminalUtilityButton>
+      )}
+    </motion.div>
+  );
+}
+
+function TerminalOAuthPrompt({ prompt, onOpen, onDismiss }) {
+  return (
+    <AnimatePresence>
+      {prompt && (
+        <motion.div
+          key={prompt.id}
+          initial={{ opacity: 0, y: 18, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 12, scale: 0.98 }}
+          transition={{ duration: 0.22, ease: TERMINAL_MOTION_EASE }}
+          className="absolute bottom-4 left-4 z-20 w-[390px] max-w-[calc(100%-32px)] overflow-hidden rounded-lg border shadow-2xl"
+          style={{
+            background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 91%, var(--bg-app, #0a0b10))',
+            borderColor: 'color-mix(in srgb, var(--accent-primary, #6c6885) 34%, var(--border-medium, #3f3f46))',
+            color: 'var(--text-primary, #e4e4e7)',
+          }}
+          role="status"
+          aria-live="polite"
+        >
+          <div
+            aria-hidden="true"
+            className="h-px w-full"
+            style={{ background: 'var(--brand-gradient-horizontal)' }}
+          />
+          <div className="flex items-start gap-3 px-3 py-3">
+            <div
+              className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
+              style={{
+                borderColor: 'color-mix(in srgb, var(--accent-primary, #6c6885) 42%, transparent)',
+                color: 'var(--text-primary, #f4f5f8)',
+                background: 'color-mix(in srgb, var(--bg-app, #0a0b10) 76%, var(--bg-elevated, #18181b))',
+              }}
+            >
+              <Terminal className="h-3.5 w-3.5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <div className="text-[12px] font-semibold">Terminal sign-in detected</div>
+                <span
+                  className="rounded-full px-1.5 py-0.5 text-[9px] font-medium"
+                  style={{
+                    background: 'color-mix(in srgb, var(--accent-primary, #6c6885) 14%, var(--bg-app, #0a0b10))',
+                    color: 'var(--text-secondary, #a1a1aa)',
+                  }}
+                >
+                  helper
+                </span>
+              </div>
+              <p className="mt-1.5 text-[11px] leading-5" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+                {prompt.opened
+                  ? 'Helper opened. Finish browser sign-in, then return to this terminal.'
+                  : 'This command is waiting on a local callback. Vectant can route it back into this workspace.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="rounded-md p-1 opacity-70 transition-opacity hover:opacity-100"
+              style={{ color: 'var(--text-muted, #6b7089)' }}
+              aria-label="Dismiss terminal sign-in prompt"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div
+            className="flex items-center justify-between gap-2 border-t px-3 py-2.5"
+            style={{ borderColor: 'var(--border-subtle, #2a2b38)' }}
+          >
+            <span className="truncate text-[10px]" style={{ color: 'var(--text-muted, #6b7089)' }}>
+              Callback relay is scoped to this terminal session.
+            </span>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={onDismiss}
+                className="h-8 rounded-md px-3 text-[11px] font-medium transition-colors hover:bg-white/5"
+                style={{ color: 'var(--text-secondary, #a1a1aa)' }}
+              >
+                Later
+              </button>
+              <motion.button
+                type="button"
+                whileTap={{ scale: 0.97 }}
+                onClick={onOpen}
+                className="inline-flex h-8 items-center rounded-md px-3 text-[11px] font-semibold transition-opacity hover:opacity-90"
+                style={{
+                  background: 'var(--text-primary, #f4f5f8)',
+                  color: 'var(--bg-app, #0a0b10)',
+                }}
+              >
+                Open sign-in
+              </motion.button>
+            </div>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function TerminalActivityHint({ state, stoppingRuntime }) {
+  const active = state === 'connecting' || stoppingRuntime;
+  const label = stoppingRuntime ? 'Stopping runtime' : 'Connecting terminal';
+
+  return (
+    <AnimatePresence>
+      {active && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 8 }}
+          transition={{ duration: 0.18, ease: TERMINAL_MOTION_EASE }}
+          className="absolute bottom-2 right-3 z-10 flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[10px]"
+          style={{
+            background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 92%, var(--bg-app, #0a0b10))',
+            borderColor: 'var(--border-subtle, #2a2b38)',
+            color: 'var(--text-secondary, #a1a1aa)',
+          }}
+        >
+          <Zap className="h-3 w-3" style={{ color: 'var(--accent-primary, #6c6885)' }} />
+          <span>{label}</span>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
 
 /**
  * Reusable: drag a panel by its titlebar within the viewport.
@@ -913,101 +1550,128 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
   return createPortal(
     <div
       ref={panelRef}
-      className="fixed rounded-lg border shadow-2xl flex flex-col"
+      className="fixed"
       style={{
         ...placement,
-        width: 460,
+        width: 480,
         maxWidth: 'calc(100vw - 16px)',
         maxHeight: 'calc(100vh - 16px)',
-        background: 'var(--bg-elevated, #18181b)',
-        borderColor: 'var(--border-medium, #3f3f46)',
         zIndex: 2147483646,
       }}
     >
-      <div
-        onMouseDown={onTitleMouseDown}
-        className="flex items-center gap-2 px-3 py-2 border-b rounded-t-lg select-none"
+      <motion.div
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 8, scale: 0.98 }}
+        transition={{ duration: 0.18, ease: TERMINAL_MOTION_EASE }}
+        className="flex max-h-[calc(100vh-16px)] flex-col overflow-hidden rounded-lg border shadow-2xl"
         style={{
-          borderColor: 'var(--border-subtle, #2a2b38)',
-          background: 'var(--bg-app, #0a0b10)',
-          cursor: 'move',
+          background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 92%, var(--bg-app, #0a0b10))',
+          borderColor: 'var(--border-medium, #3f3f46)',
+          color: 'var(--text-primary, #e4e4e7)',
         }}
       >
-        <ClipboardPaste className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--accent-warning, #fbbf24)' }} />
-        <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
-          Paste multi-line text?
-        </span>
-        <button
-          type="button"
-          onClick={onCancel}
-          onMouseDown={(e) => e.stopPropagation()}
-          aria-label="Cancel paste"
-          className="rounded p-0.5 hover:bg-white/10"
-          style={{ color: 'var(--text-muted, #6b7089)' }}
-        >
-          <X className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      <div className="p-3 overflow-auto flex-1 min-h-0">
-        <p className="text-xs mb-2 leading-relaxed" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
-          {lineCount} lines ({charCount} chars). Each newline is sent as Enter
-          and may execute immediately.
-        </p>
-
-        <pre
-          className="font-mono text-[11px] leading-snug whitespace-pre overflow-auto rounded-md p-2 mb-2"
+        <div
+          aria-hidden="true"
+          className="h-px w-full"
+          style={{ background: 'var(--brand-gradient-horizontal)' }}
+        />
+        <div
+          onMouseDown={onTitleMouseDown}
+          className="flex items-start gap-3 border-b px-3 py-3 select-none"
           style={{
-            background: 'var(--bg-app, #0a0b10)',
-            border: '1px solid var(--border-subtle, #2a2b38)',
-            color: 'var(--text-primary, #e4e4e7)',
-            maxHeight: 200,
+            borderColor: 'var(--border-subtle, #2a2b38)',
+            cursor: 'move',
           }}
         >
-          {preview}
-        </pre>
-
-        {truncated && (
-          <p className="text-[10px] mb-2" style={{ color: 'var(--text-muted, #6b7089)' }}>
-            Preview truncated — full payload will still be pasted.
-          </p>
-        )}
-
-        <label
-          className="flex items-center gap-2 text-[11px] mb-3 cursor-pointer select-none"
-          style={{ color: 'var(--text-secondary, #a1a1aa)' }}
-        >
-          <input
-            type="checkbox"
-            checked={autoApprove}
-            onChange={(e) => setAutoApprove(e.target.checked)}
-            className="cursor-pointer"
-          />
-          Auto-approve multi-line pastes for the rest of this session
-        </label>
-
-        <div className="flex items-center justify-end gap-2">
+          <div
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--accent-warning, #fbbf24) 26%, transparent)',
+              color: 'var(--accent-warning, #fbbf24)',
+              background: 'color-mix(in srgb, var(--accent-warning, #fbbf24) 8%, var(--bg-app, #0a0b10))',
+            }}
+          >
+            <ClipboardPaste className="h-3.5 w-3.5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[12px] font-semibold">Review multi-line paste</div>
+            <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+              {lineCount} lines, {charCount} characters. Newlines are sent as Enter and may run commands immediately.
+            </p>
+          </div>
           <button
             type="button"
             onClick={onCancel}
-            autoFocus
-            className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors border"
-            style={{ borderColor: 'var(--border-medium, #3f3f46)', color: 'var(--text-secondary, #a1a1aa)' }}
+            onMouseDown={(e) => e.stopPropagation()}
+            aria-label="Cancel paste"
+            className="rounded-md p-1 opacity-70 transition-opacity hover:bg-white/5 hover:opacity-100"
+            style={{ color: 'var(--text-muted, #6b7089)' }}
           >
-            Cancel
-            <span className="ml-1.5 text-[10px] opacity-60">Esc</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onConfirm({ autoApprove })}
-            className="px-3 py-1.5 rounded-md text-xs font-semibold transition-colors text-white"
-            style={{ background: 'var(--accent-warning, #d97706)' }}
-          >
-            Paste
-            <span className="ml-1.5 text-[10px] opacity-80">Ctrl+Enter</span>
+            <X className="h-3.5 w-3.5" />
           </button>
         </div>
-      </div>
+
+        <div className="min-h-0 flex-1 overflow-auto p-3">
+          <pre
+            className="mb-2 max-h-[220px] overflow-auto rounded-md border p-2 font-mono text-[11px] leading-5 whitespace-pre"
+            style={{
+              background: 'var(--bg-app, #0a0b10)',
+              borderColor: 'var(--border-subtle, #2a2b38)',
+              color: 'var(--text-primary, #e4e4e7)',
+            }}
+          >
+            {preview}
+          </pre>
+
+          {truncated && (
+            <p className="mb-2 text-[10px]" style={{ color: 'var(--text-muted, #6b7089)' }}>
+              Preview truncated. The full payload will still be pasted.
+            </p>
+          )}
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <label
+              className="flex items-center gap-2 text-[11px] cursor-pointer select-none"
+              style={{ color: 'var(--text-secondary, #a1a1aa)' }}
+            >
+              <input
+                type="checkbox"
+                checked={autoApprove}
+                onChange={(e) => setAutoApprove(e.target.checked)}
+                className="cursor-pointer"
+              />
+              Trust multi-line pastes for this page session
+            </label>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={onCancel}
+                autoFocus
+                className="h-8 rounded-md border px-3 text-xs font-medium transition-colors hover:bg-white/[0.04]"
+                style={{ borderColor: 'var(--border-medium, #3f3f46)', color: 'var(--text-secondary, #a1a1aa)' }}
+              >
+                Cancel
+                <span className="ml-1.5 text-[10px] opacity-60">Esc</span>
+              </button>
+              <motion.button
+                type="button"
+                whileTap={{ scale: 0.97 }}
+                onClick={() => onConfirm({ autoApprove })}
+                className="h-8 rounded-md px-3 text-xs font-semibold transition-opacity hover:opacity-90"
+                style={{
+                  background: 'var(--text-primary, #f4f5f8)',
+                  color: 'var(--bg-app, #0a0b10)',
+                }}
+              >
+                Paste
+                <span className="ml-1.5 text-[10px] opacity-70">Ctrl+Enter</span>
+              </motion.button>
+            </div>
+          </div>
+        </div>
+      </motion.div>
     </div>,
     document.body
   );
@@ -1204,45 +1868,75 @@ function ConnectionStatusPanel({ state, onReconnect }) {
   return createPortal(
     <div
       ref={panelRef}
-      className="fixed rounded-lg border shadow-2xl flex flex-col"
+      className="fixed"
       style={{
         ...placement,
-        width: 340,
+        width: 360,
         maxWidth: 'calc(100vw - 16px)',
-        background: 'var(--bg-elevated, #18181b)',
-        borderColor: 'var(--border-medium, #3f3f46)',
-        zIndex: 2147483646,
+        zIndex: 120,
       }}
     >
-      <div
-        onMouseDown={onTitleMouseDown}
-        className="flex items-center gap-2 px-3 py-2 border-b rounded-t-lg select-none"
+      <motion.div
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.18, ease: TERMINAL_MOTION_EASE }}
+        className="flex flex-col overflow-hidden rounded-lg border shadow-2xl"
         style={{
-          borderColor: 'var(--border-subtle, #2a2b38)',
-          background: 'var(--bg-app, #0a0b10)',
-          cursor: 'move',
+          background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 92%, var(--bg-app, #0a0b10))',
+          borderColor: 'var(--border-medium, #3f3f46)',
+          color: 'var(--text-primary, #e4e4e7)',
         }}
       >
-        <WifiOff className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--text-muted, #6b7089)' }} />
-        <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
-          {title}
-        </span>
-      </div>
-
-      <div className="p-4 flex flex-col items-center gap-3 text-center">
-        <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted, #6b7089)' }}>
-          {body}
-        </p>
-        <button
-          type="button"
-          onClick={onReconnect}
-          className="flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium text-white transition-colors"
-          style={{ background: 'var(--accent-primary, #b545ff)' }}
+        <div
+          aria-hidden="true"
+          className="h-px w-full"
+          style={{ background: 'var(--brand-gradient-horizontal)' }}
+        />
+        <div
+          onMouseDown={onTitleMouseDown}
+          className="flex items-start gap-3 border-b px-3 py-3 select-none"
+          style={{
+            borderColor: 'var(--border-subtle, #2a2b38)',
+            cursor: 'move',
+          }}
         >
-          <RefreshCw className="w-3.5 h-3.5" />
-          {actionLabel}
-        </button>
-      </div>
+          <div
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--text-muted, #6b7089) 35%, transparent)',
+              color: 'var(--text-secondary, #a1a1aa)',
+              background: 'color-mix(in srgb, var(--bg-app, #0a0b10) 76%, var(--bg-elevated, #18181b))',
+            }}
+          >
+            <WifiOff className="h-3.5 w-3.5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[12px] font-semibold">{title}</div>
+            <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+              {body}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+          <span className="text-[10px]" style={{ color: 'var(--text-muted, #6b7089)' }}>
+            Terminal state: {state}
+          </span>
+          <motion.button
+            type="button"
+            whileTap={{ scale: 0.97 }}
+            onClick={onReconnect}
+            className="flex h-8 items-center gap-2 rounded-md px-3 text-xs font-semibold transition-opacity hover:opacity-90"
+            style={{
+              background: 'var(--text-primary, #f4f5f8)',
+              color: 'var(--bg-app, #0a0b10)',
+            }}
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            {actionLabel}
+          </motion.button>
+        </div>
+      </motion.div>
     </div>,
     document.body
   );

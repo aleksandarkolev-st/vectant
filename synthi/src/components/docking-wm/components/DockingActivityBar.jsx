@@ -18,12 +18,12 @@ import {
   Puzzle,
   Command,
   Settings,
-  Sparkles,
   MessageSquare,
   Bot,
   Box,
   Network,
   ChevronRight,
+  ShieldCheck,
 } from 'lucide-react';
 import { useActivityBarDocking } from '../hooks/use-activity-bar-docking';
 import { selectNodes, selectTabs, selectFocusedTabGroupId, openTab, activateTabAction, setFocusedTabGroup } from '../state/layout-slice';
@@ -69,7 +69,7 @@ const TOP_ITEMS = [
   { id: 'programs',   panelType: IDE_PANEL.PROGRAMS,   label: 'Programs',        Icon: Command },
   { id: 'chat',       panelType: IDE_PANEL.CHAT,       label: 'AI Chat',         Icon: MessageSquare },
   { id: 'workflows',  panelType: IDE_PANEL.AGENT_WORKFLOWS, label: 'Workflows',  Icon: Bot },
-  { id: 'ai-healing',   panelType: IDE_PANEL.AI_HEALING,   label: 'AI Healing',      Icon: Sparkles },
+  { id: 'ai-healing',   panelType: IDE_PANEL.AI_HEALING,   label: 'AI Healing',      Icon: ShieldCheck },
   { id: 'integrations', panelType: IDE_PANEL.INTEGRATIONS, label: 'Connected Tools', Icon: Plug },
   { id: 'ports',        panelType: IDE_PANEL.PORTS,        label: 'Ports',           Icon: Network },
   { id: 'pullrequests', panelType: IDE_PANEL.PULL_REQUESTS, label: 'Pull Requests', Icon: GitPullRequest },
@@ -250,13 +250,6 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
       {/* Bottom items */}
       <div className="dock-activitybar-bottom mt-auto mb-3 flex flex-col items-center w-full">
         {renderButton({ id: 'settings', panelType: IDE_PANEL.SETTINGS, label: 'Settings', Icon: Settings })}
-        <div
-          className="w-7 h-7 rounded-lg border flex items-center justify-center cursor-pointer transition-all group mt-2"
-          style={{ background: 'color-mix(in srgb, var(--accent-primary) 7%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-primary) 19%, transparent)' }}
-          title="Vectant AI"
-        >
-          <Sparkles className="w-3.5 h-3.5 opacity-70 group-hover:opacity-100" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
-        </div>
       </div>
     </div>
   );

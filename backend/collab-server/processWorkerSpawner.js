@@ -62,6 +62,11 @@ function getActiveWorkspaceCount() {
   return activeSessions.size;
 }
 
+function cleanupReason(options, fallback = 'teardown') {
+  if (typeof options === 'string') return options;
+  return options?.reason || fallback;
+}
+
 function openLogStream(name) {
   if (!WORKER_LOG_DIR) return null;
   try {
@@ -183,17 +188,18 @@ async function touch(sessionId) {
 
 // ── Teardown ───────────────────────────────────────────────────────────────
 
-async function teardown(sessionId) {
+async function teardown(sessionId, options = {}) {
+  const reason = cleanupReason(options);
   const entry = activeSessions.get(sessionId);
   activeSessions.delete(sessionId);
   if (!entry || !entry.child) {
-    lifecycle.markTerminated(sessionId, "teardown_untracked");
+    lifecycle.markTerminated(sessionId, `${reason}_untracked`);
     return;
   }
 
   const child = entry.child;
   if (child.exitCode !== null || child.killed) {
-    lifecycle.markTerminated(sessionId, "teardown_already_exited");
+    lifecycle.markTerminated(sessionId, `${reason}_already_exited`);
     return;
   }
 
@@ -205,7 +211,8 @@ async function teardown(sessionId) {
         try { child.kill('SIGKILL'); } catch (_) { /* ignore */ }
       }
     }, 5000).unref?.();
-    console.log(`[ProcessSpawner] Torn down ${entry.name} pid=${child.pid}`);
+    lifecycle.markTerminated(sessionId, reason);
+    console.log(`[ProcessSpawner] Torn down ${entry.name} pid=${child.pid} (reason=${reason})`);
   } catch (err) {
     console.warn(`[ProcessSpawner] kill failed for ${entry.name}:`, err.message);
   }
@@ -218,7 +225,7 @@ async function cullIdleWorkspaces() {
   for (const [sid, entry] of activeSessions.entries()) {
     if (now - entry.lastActive > IDLE_TIMEOUT_MS) {
       console.log(`[ProcessSpawner/Culler] Culling idle session ${sid} (idle=${Math.round((now - entry.lastActive) / 1000)}s)`);
-      await teardown(sid);
+      await teardown(sid, { reason: 'idle_timeout' });
     }
   }
 }
@@ -246,7 +253,7 @@ async function gracefulShutdown(signal) {
   stopCuller();
   const ids = [...activeSessions.keys()];
   await Promise.allSettled(ids.map(sid =>
-    teardown(sid).catch(err =>
+    teardown(sid, { reason: 'shutdown_cleanup' }).catch(err =>
       console.error(`[ProcessSpawner] Cleanup error for ${sid}:`, err.message)
     )
   ));
@@ -276,7 +283,7 @@ async function handleSessionEnded(req, res) {
   }
 
   console.log(`[ProcessSpawner] Received session-ended webhook for session=${sessionId}`);
-  await teardown(sessionId);
+  await teardown(sessionId, { reason: 'session_ended' });
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ ok: true }));

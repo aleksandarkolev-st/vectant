@@ -18,9 +18,9 @@ const BLOCKED_ENV_KEYS = new Set([
   'PRISMA_DATABASE_URL',
   // DOCKER_HOST stays fully key-blocked: a program must never be able to point
   // Docker at an arbitrary endpoint (host socket OR a TCP daemon API). Container
-  // programs get the correct in-container rootless socket by INHERITING the
-  // runtime-container image's own DOCKER_HOST env (docker:dind-rootless sets it),
-  // so it never needs to pass through this per-program scrub.
+  // programs get the correct in-pod socket by INHERITING the runtime container's
+  // own pod-level DOCKER_HOST env (the rootful dockerd's /var/run/docker.sock —
+  // NOT rootless; lesson #31), so it never passes through this per-program scrub.
   'DOCKER_HOST',
   'DOCKER_SOCKET',
   'DOCKER_CERT_PATH',
@@ -522,6 +522,10 @@ function createProgramRuntimeManager(options = {}) {
         health: health && typeof health === 'object' ? health : null,
       },
       runtime,
+      // Sysbox path (Slice 1): the runtime handle carries the workspace runtime
+      // scope; stamp it so pod-detected ports attribute here and the frontend
+      // builds /runtime/<scope>/port/N. null on the headless/hybrid paths.
+      runtimeScope: runtime?.runtimeScope || null,
       runtimeDataDisposable: null,
       runtimeExitDisposable: null,
       idleTimer: null,
@@ -639,6 +643,48 @@ function createProgramRuntimeManager(options = {}) {
     return updated;
   }
 
+  /**
+   * Slice-1 (real programs): attribute ports detected INSIDE a Sysbox runtime pod
+   * across only the managed sessions stamped with that `runtimeScope`. The global
+   * localhost scanner can't see into a pod, and a pod's ports belong to one
+   * workspace — so attribution is scoped, never global. Emits `ports_updated` only
+   * on an actual change; returns the changed public snapshots.
+   */
+  function recomputeRuntimeScopePorts(runtimeScope, detectedPorts) {
+    if (!runtimeScope) return [];
+    const scoped = [...managedSessions.values()].filter((record) => record.runtimeScope === runtimeScope);
+    const attribution = attributeSessionPorts({
+      sessions: scoped.map((record) => ({
+        sessionId: record.sessionId,
+        state: record.state,
+        declaredPorts: record.declaredPorts || [],
+      })),
+      detectedPorts,
+    });
+    const updated = [];
+
+    for (const [sessionId, ports] of attribution) {
+      const record = managedSessions.get(sessionId);
+      if (!record) {
+        continue;
+      }
+      const nextWebPort = selectWebPort({ declaredPorts: record.declaredPorts || [] }, ports);
+      if (samePorts(record.activePorts, ports) && record.webPort === nextWebPort) {
+        continue;
+      }
+      record.activePorts = ports;
+      record.webPort = nextWebPort;
+      record.lastActivityAt = now();
+      appendManagedSessionEvent(record, 'ports_updated', {
+        activePorts: [...ports],
+        webPort: nextWebPort,
+      });
+      updated.push(toPublicManagedSession(record));
+    }
+
+    return updated;
+  }
+
   async function refreshManagedSessionPorts(sessionId) {
     const detected = normalizePorts(await Promise.resolve(getActivePorts()));
     recomputeManagedPorts(detected);
@@ -731,6 +777,7 @@ function createProgramRuntimeManager(options = {}) {
     listManagedSessions,
     probeManagedSessionHealth,
     recomputeManagedPorts,
+    recomputeRuntimeScopePorts,
     refreshManagedSessionPorts,
     restartManagedSession,
     stopManagedSession,

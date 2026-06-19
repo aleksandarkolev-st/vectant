@@ -17,6 +17,7 @@ set -euo pipefail
 
 PROJECT_ID="vectant-proj"
 K8S_NAMESPACE="synthi"
+WORKSPACE_BUCKET="vectant-synthi-cloud-storage"
 
 echo "=== Synthi IDE — Workload Identity Setup ==="
 echo "Project: ${PROJECT_ID}"
@@ -45,9 +46,9 @@ echo "Granting IAM roles..."
 # GCS SA: Storage Object Admin on the workspace bucket
 gsutil iam ch \
   "serviceAccount:synthi-gcs-sa@${PROJECT_ID}.iam.gserviceaccount.com:roles/storage.objectAdmin" \
-  gs://synthi-cloud-storage
+  "gs://${WORKSPACE_BUCKET}"
 
-echo "  synthi-gcs-sa → roles/storage.objectAdmin on gs://synthi-cloud-storage"
+echo "  synthi-gcs-sa → roles/storage.objectAdmin on gs://${WORKSPACE_BUCKET}"
 
 # ESO SA: Secret Manager Secret Accessor
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
@@ -65,14 +66,15 @@ echo ""
 
 echo "Creating Workload Identity bindings..."
 
-# collab-server-sa (K8s) → synthi-gcs-sa (GCP)
-gcloud iam service-accounts add-iam-policy-binding \
-  "synthi-gcs-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --role="roles/iam.workloadIdentityUser" \
-  --member="serviceAccount:${PROJECT_ID}.svc.id.goog[${K8S_NAMESPACE}/collab-server-sa]" \
-  --quiet
-
-echo "  collab-server-sa → synthi-gcs-sa"
+# K8s service accounts annotated with synthi-gcs-sa.
+for KSA in collab-server-sa frontend-sa y-sweet-sa workspace-runtime-sa; do
+  gcloud iam service-accounts add-iam-policy-binding \
+    "synthi-gcs-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --role="roles/iam.workloadIdentityUser" \
+    --member="serviceAccount:${PROJECT_ID}.svc.id.goog[${K8S_NAMESPACE}/${KSA}]" \
+    --quiet
+  echo "  ${KSA} → synthi-gcs-sa"
+done
 
 # eso-service-account (K8s) → synthi-eso-sa (GCP)
 gcloud iam service-accounts add-iam-policy-binding \

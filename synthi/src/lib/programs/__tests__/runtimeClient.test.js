@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { discoverManifest, launchInstalledProgram } from '../runtimeClient';
+import { discoverManifest, launchInstalledProgram, fetchDetectedRepoProgram } from '../runtimeClient';
 
 function mockFetch(payload, { ok = true, status = 200 } = {}) {
   const fn = vi.fn().mockResolvedValue({
@@ -54,6 +54,35 @@ describe('discoverManifest', () => {
   it('returns null when no manifest is present', async () => {
     mockFetch({ found: false });
     expect(await discoverManifest('team')).toBeNull();
+  });
+});
+
+describe('fetchDetectedRepoProgram (Slice 1)', () => {
+  it('maps a detected compose file from collab-server into a container config', async () => {
+    const fetchFn = mockFetch({
+      found: true,
+      files: { 'docker-compose.yml': 'services:\n  w:\n    ports:\n      - "8080:80"\n' },
+      containerRuntimeAvailable: true,
+    });
+
+    const r = await fetchDetectedRepoProgram('team', 'u-42');
+
+    const [url] = fetchFn.mock.calls[0];
+    expect(url).toContain('/program-runtime/team/detect');
+    expect(url).toContain('userId=u-42');
+    expect(r.source).toBe('docker-compose.yml');
+    expect(r.config.launch).toBe('docker compose up');
+    expect(r.config.ports).toContain(8080);
+  });
+
+  it('returns null when nothing is found', async () => {
+    mockFetch({ found: false });
+    expect(await fetchDetectedRepoProgram('team')).toBeNull();
+  });
+
+  it('returns null when the container runtime is unavailable', async () => {
+    mockFetch({ found: true, files: { 'docker-compose.yml': 'services:\n  w:\n    image: x\n' }, containerRuntimeAvailable: false });
+    expect(await fetchDetectedRepoProgram('team')).toBeNull();
   });
 });
 

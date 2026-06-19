@@ -14,6 +14,8 @@ const proxyService = require('./proxyService');
 const { createRuntimeManager, runtimeContainerHost } = require('./workspaceRuntimeContainer');
 const { handleEnsureRuntime } = require('./ensureRuntime');
 const { createContainerPortMonitor } = require('./containerPortMonitor');
+const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
+const { runtimeRunOnce, createRuntimePodProgram, programRuntimeTarget, pickRuntimeScopeForSlug } = require('./runtimePodTerminal');
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
@@ -153,20 +155,64 @@ const containerPortMonitor = ENABLE_CONTAINER_RUNTIME
     })
   : null;
 
+// Slice 4 — detect ports opened INSIDE the per-workspace Sysbox runtime POD
+// (k8s-exec /proc/net/tcp[6]) and surface them at /runtime/<scope>/port/<N>. Dark:
+// only when RUNTIME_BACKEND=sysbox-pod. Reuses the same monitor (parse/baseline);
+// the key is (slug, runtimeScope) — slug routes the broadcast, scope addresses the pod.
+const runtimePortMonitor = isSysboxRuntimeEnabled()
+  ? createContainerPortMonitor({
+      listContainers: async () => {
+        const sp = require('./spawner');
+        if (typeof sp.listActiveRuntimeSessions !== 'function') return [];
+        const sessions = await sp.listActiveRuntimeSessions();
+        return sessions.map((s) => ({ slug: s.slug || s.runtimeScope, userId: s.runtimeScope }));
+      },
+      runOnce: (_slug, runtimeScope, argv) => runtimeRunOnce(runtimeScope, argv),
+      onPortsChanged: (slug, runtimeScope, ports) => {
+        broadcastRuntimePorts(slug, runtimeScope, ports);
+        // Slice 1 (real programs): also light up the App/Ports surfaces of any
+        // managed program session running in THIS runtime pod (scoped attribution).
+        try { managedProgramRuntime.recomputeRuntimeScopePorts(runtimeScope, ports); }
+        catch (err) { logger.warn({ err }, 'recomputeRuntimeScopePorts failed'); }
+      },
+      logger,
+    })
+  : null;
+
 const managedProgramRuntime = createProgramRuntimeManager({
   activeSessions: terminalSessions,
   logger,
   getActivePorts: () => proxyService.getActivePorts(),
   launchRuntime: async ({ sessionId, workspaceSlug, userId, env, title, command, runtimeType }) => {
-    // `container` programs route into the per-workspace rootless-Docker runtime
-    // container; everything else keeps the existing shared-collab PTY path.
-    if (runtimeType === 'container' && workspaceRuntime) {
+    // Slice 1 (real programs): `container` programs route into the per-workspace
+    // Sysbox runtime POD when the backend is on (its own validated, isolated
+    // dockerd — precedence), else the dev-hybrid runtime container, else fail loud.
+    // Everything else keeps the existing shared-collab headless PTY path.
+    const { target } = programRuntimeTarget({
+      runtimeType,
+      sysboxEnabled: isSysboxRuntimeEnabled(),
+      hasHybrid: Boolean(workspaceRuntime),
+    });
+    if (target === 'sysbox-pod') {
+      const sessions = typeof spawner.listActiveRuntimeSessions === 'function'
+        ? await spawner.listActiveRuntimeSessions()
+        : [];
+      const runtimeScope = pickRuntimeScopeForSlug(sessions, workspaceSlug);
+      if (!runtimeScope) throw new Error('runtime_pod_not_ready');
+      return createRuntimePodProgram({ runtimeScope, workspaceSlug, userId, command, env });
+    }
+    if (target === 'hybrid') {
       await workspaceRuntime.ensureRuntimeContainer(workspaceSlug, userId);
       // The rootless dockerd inside the runtime container takes ~15-25s to be
       // ready; wait for it so the program's first `docker ...` command doesn't
       // race a not-yet-listening daemon.
       await workspaceRuntime.waitForRuntimeReady(workspaceSlug, userId);
       return workspaceRuntime.execInRuntime(workspaceSlug, userId, { command, env, tty: true });
+    }
+    if (target === 'unavailable') {
+      // container requested but no runtime exists — do NOT run in the docker-less
+      // headless PTY (DOCKER_HOST is scrubbed there); surface a clear error.
+      throw new Error('container_runtime_unavailable');
     }
     const runtime = await createHeadlessSession(sessionId, workspaceSlug, userId, 120, 30, title, { env });
     const { commandStartedPromise } = queueHeadlessCommandStart(runtime.ptyProcess, command);
@@ -1004,6 +1050,21 @@ function broadcastContainerPorts(slug, ports) {
 }
 
 /**
+ * Broadcast the live set of forwardable ports detected inside a workspace's Sysbox
+ * runtime POD (Slice 4). Routed to the workspace's clients by slug; carries the
+ * runtimeScope so the frontend builds /runtime/<scope>/port/<N> preview URLs.
+ */
+function broadcastRuntimePorts(slug, runtimeScope, ports) {
+  if (!slug || !notifyWss) return;
+  const message = JSON.stringify({ type: 'runtime-ports', slug, runtimeScope, ports: Array.isArray(ports) ? ports : [] });
+  notifyWss.clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN && ws._slug === slug) {
+      try { ws.send(message); } catch (_) {}
+    }
+  });
+}
+
+/**
  * Broadcast a backup-status event when the durable off-site backup (GCS) for
  * a file transitions between healthy and degraded.  Lets the UI show a
  * "backup degraded" warning so users aren't misled into thinking a save
@@ -1257,9 +1318,22 @@ async function getTurnCredentials() {
 }
 
 const server = http.createServer(async (req, res) => {
-  // Strip /collab or /collab/ prefix if passed by ingress
-  req.url = req.url.replace(/^\/collab/, '');
+  // Strip /collab or /collab/ prefix if passed by ingress, but preserve the
+  // public mount prefix so preview HTML can rewrite absolute asset URLs back
+  // through the externally visible proxy route.
+  const originalUrl = req.url || '/';
+  const collabMountMatch = originalUrl.match(/^\/collab(?=\/|$)/);
+  req._synthiExternalMountPrefix = collabMountMatch ? '/collab' : '';
+  req.url = originalUrl.replace(/^\/collab(?=\/|$)/, '');
   if (!req.url.startsWith('/')) req.url = '/' + req.url;
+
+  // Wildcard preview hosts (p<port>-rt-*.preview.vectant.dev) are user app
+  // traffic, not collab API traffic. Route them into the reverse proxy before
+  // app-level CORS/origin checks so POSTs, HMR, and absolute root assets work.
+  if (proxyService.isPreviewHostRequest(req)) {
+    proxyService.proxyHttpRequest(req, res);
+    return;
+  }
 
   // CORS headers — must echo the exact Origin (not '*') when credentials are included
   const requestOrigin = req.headers.origin;
@@ -1306,6 +1380,13 @@ const server = http.createServer(async (req, res) => {
       const snapshot = spawner.lifecycleSnapshot
         ? await spawner.lifecycleSnapshot(sessionId)
         : { session_id: sessionId, state: 'unknown', tracked: false };
+      // Slice 5: ride the Sysbox runtime pod's coarse state alongside the worker's.
+      // Self-gated → returns {skipped} when sysbox is dark, so the response is
+      // byte-identical unless RUNTIME_BACKEND=sysbox-pod is on.
+      if (spawner.runtimeLifecycleSnapshot && snapshot && typeof snapshot === 'object') {
+        const rt = await spawner.runtimeLifecycleSnapshot(sessionId);
+        if (rt && !rt.skipped) snapshot.runtime = rt;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(snapshot));
     } catch (e) {
@@ -1337,7 +1418,7 @@ const server = http.createServer(async (req, res) => {
       try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
     }
     try {
-      const snapshot = await spawner.warm(sessionId, parsed.user_id || parsed.userId || 'warm_trigger');
+      const snapshot = await spawner.warm(sessionId, parsed.user_id || parsed.userId || 'warm_trigger', parsed);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(snapshot));
     } catch (e) {
@@ -1414,6 +1495,15 @@ const server = http.createServer(async (req, res) => {
         runtimeKind,
         filesystemUserId,
       });
+      // Sysbox runtime pod (dark): bring up the per-workspace container engine
+      // alongside the worker. Fire-and-forget + self-gated on RUNTIME_BACKEND, so
+      // it's a no-op unless the flag is on and never blocks/breaks the worker
+      // session. Only the k8s spawner exposes spawnRuntimePod.
+      if (typeof spawner.spawnRuntimePod === 'function') {
+        Promise.resolve(
+          spawner.spawnRuntimePod(session_id, user_id, { workspaceSlug, runtimeKind, filesystemUserId }),
+        ).catch((err) => console.error('[Spawner] spawnRuntimePod failed:', err && err.message ? err.message : err));
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (e) {
@@ -1440,6 +1530,44 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: true }));
     } catch (e) {
       console.error('[Spawner] touch failed:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ========================================================================
+  // SPAWNER — /api/spawner/release
+  // Explicitly stop the caller's current runtime. This complements the idle
+  // culler so users can free a pod/container immediately.
+  // Body: { session_id | runtimeScope, reason? }
+  // ========================================================================
+  if (req.url === '/api/spawner/release' && req.method === 'POST') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+
+    const sessionId = parsed.session_id || parsed.runtimeScope || '';
+    const headerScope = String(req.headers['x-runtime-scope'] || '').trim();
+    if (!sessionId || typeof sessionId !== 'string') {
+      res.writeHead(400);
+      res.end('Missing session_id');
+      return;
+    }
+    if (headerScope && headerScope !== sessionId) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'runtime_scope_mismatch' }));
+      return;
+    }
+
+    try {
+      const reason = parsed.reason || 'explicit_release';
+      await spawner.teardown(sessionId, { reason });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, session_id: sessionId, reason }));
+    } catch (e) {
+      console.error('[Spawner] release failed:', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
@@ -1487,6 +1615,20 @@ const server = http.createServer(async (req, res) => {
   // ========================================================================
   if (req.url.startsWith('/port/') || req.url.startsWith('/runtime/')) {
     proxyService.proxyHttpRequest(req, res);
+    return;
+  }
+
+  // GET /preview-url — resolve localhost terminal links to the canonical
+  // production preview URL. The client cannot compute the rt-* HMAC itself.
+  if (req.method === 'GET' && (req.url === '/preview-url' || req.url.startsWith('/preview-url?'))) {
+    proxyService.handlePreviewUrlRequest(req, res);
+    return;
+  }
+
+  // POST /runtime-callback — replay a browser localhost OAuth callback into
+  // the correct runtime pod, where the CLI's loopback listener is running.
+  if (req.url === '/runtime-callback' || req.url.startsWith('/runtime-callback?')) {
+    proxyService.handleRuntimeCallbackRequest(req, res);
     return;
   }
 
@@ -1869,11 +2011,47 @@ const server = http.createServer(async (req, res) => {
           break;
         }
       }
+      // Slice 1 (real programs): report whether a container runtime exists so the
+      // frontend imports a devcontainer with an image as a real `container` program.
+      const containerRuntimeAvailable = isSysboxRuntimeEnabled() || process.env.ENABLE_CONTAINER_RUNTIME === '1';
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
+      res.end(JSON.stringify({ ...result, containerRuntimeAvailable }));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message || 'Manifest read failed' }));
+    }
+    return;
+  }
+
+  // GET /program-runtime/:slug/detect → { found, files:{name:raw}, containerRuntimeAvailable }
+  // Slice 1 (real programs): probe the workspace for container artifacts
+  // (docker-compose / devcontainer / Dockerfile) and report whether a container
+  // runtime is available. The frontend (repoDetect) maps the raw bytes → config.
+  const detectMatch = /^\/program-runtime\/([^/]+)\/detect$/.exec(programRuntimeUrl.pathname);
+  if (detectMatch && req.method === 'GET') {
+    const slug = decodeURIComponent(detectMatch[1]);
+    const detectUserId = programRuntimeUrl.searchParams.get('userId') || undefined;
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const { resolveWorkspaceCwd } = require('./terminalService');
+      const cwd = await resolveWorkspaceCwd(slug, detectUserId);
+      const names = [
+        'docker-compose.yml', 'compose.yaml', 'compose.yml',
+        '.devcontainer/devcontainer.json', '.devcontainer.json', 'devcontainer.json',
+        'Dockerfile',
+      ];
+      const files = {};
+      for (const name of names) {
+        const file = path.join(cwd, name);
+        if (fs.existsSync(file)) files[name] = fs.readFileSync(file, 'utf8');
+      }
+      const containerRuntimeAvailable = isSysboxRuntimeEnabled() || process.env.ENABLE_CONTAINER_RUNTIME === '1';
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ found: Object.keys(files).length > 0, files, containerRuntimeAvailable }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'detect failed' }));
     }
     return;
   }
@@ -2863,6 +3041,7 @@ const server = http.createServer(async (req, res) => {
             seen.set(uid, {
               id: uid,
               name: ws._userName || userDisplayNameCache.get(uid)?.name || 'Anonymous',
+              email: ws._userEmail || null,
               color: ws._userColor || '#888',
               image: ws._userImage || userDisplayNameCache.get(uid)?.avatar || null,
               lastActive: Date.now(),
@@ -2933,8 +3112,9 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        // Auto-create session if needed
-        let session = sessionManager.getSessionByHost(hostId);
+        // Auto-create session if needed. Existing sessions must be read
+        // through the host-only view so inviteToken is available for links.
+        let session = sessionManager.getHostSessionForReconnect(hostId, slug);
         if (!session) {
           session = sessionManager.createSession({
             hostId,
@@ -3226,6 +3406,7 @@ const server = http.createServer(async (req, res) => {
     const RATE_BUDGETS = {
       create: 20,
       'validate-token': 60,
+      host: 120,
       knock: 30,
       admit: 60,
       deny: 60,
@@ -3242,7 +3423,17 @@ const server = http.createServer(async (req, res) => {
     // sessionId parameter must look like the format emitted by SessionManager
     // (hex, 2*SESSION_ID_LEN chars).  Reject malformed IDs before they reach
     // any manager call — defence-in-depth against injection via URL paths.
-    if (sessionIdParam && !/^[a-f0-9]{8,64}$/i.test(sessionIdParam)) {
+    const sessionIdActions = new Set([
+      'admit',
+      'deny',
+      'permissions',
+      'kick',
+      'leave',
+      'terminate',
+      'info',
+      'regenerate-token',
+    ]);
+    if (sessionIdActions.has(action) && sessionIdParam && !/^[a-f0-9]{8,64}$/i.test(sessionIdParam)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_session_id_format' }));
       return;
@@ -3274,11 +3465,13 @@ const server = http.createServer(async (req, res) => {
             } catch (e) {
               console.warn(`[Collab] Could not ensure host repo for session: ${e.message}`);
             }
+            const existing = sessionManager.getHostSessionForReconnect(hostId, slug);
             const session = sessionManager.createSession({
               hostId, hostName: hostName || hostId, hostAvatar: hostAvatar || '',
               slug, worktreePath: hostRepoPath || '', defaultPerms,
             });
             result = {
+              reused: Boolean(existing && existing.id === session.id),
               sessionId: session.id,
               inviteToken: session.inviteToken,
               worktreePath: session.worktreePath,
@@ -3289,6 +3482,34 @@ const server = http.createServer(async (req, res) => {
                 inviteToken: session.inviteToken,
                 roomCode: session.roomCode,
                 slug,
+              }),
+            };
+            break;
+          }
+
+          case 'host': {
+            // GET /session/host/:hostId?slug=<workspace>
+            const hostId = sessionIdParam ? decodeURIComponent(sessionIdParam) : '';
+            const slug = urlObj.searchParams.get('slug') || '';
+            if (!hostId) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'hostId is required' }));
+              return;
+            }
+            const session = sessionManager.getHostSessionForReconnect(hostId, slug || null);
+            if (!session) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Session not found' }));
+              return;
+            }
+            result = {
+              ...session,
+              sessionId: session.id,
+              inviteLink: makeInviteLink({
+                sessionId: session.id,
+                inviteToken: session.inviteToken,
+                roomCode: session.roomCode,
+                slug: session.slug,
               }),
             };
             break;
@@ -4426,8 +4647,20 @@ function sendToSessionUser(sessionId, targetUserId, eventType, payload) {
 
 
 server.on('upgrade', (request, socket, head) => {
-  // Use replace to safely strip the prefix
-  request.url = request.url.replace(/^\/collab/, '');
+  if (proxyService.isPreviewHostRequest(request)) {
+    if (!proxyService.proxyWsUpgrade(request, socket, head)) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+    }
+    return;
+  }
+
+  // Use replace to safely strip the prefix while retaining the public mount
+  // prefix for runtime preview WebSocket URL reconstruction.
+  const originalUrl = request.url || '/';
+  const collabMountMatch = originalUrl.match(/^\/collab(?=\/|$)/);
+  request._synthiExternalMountPrefix = collabMountMatch ? '/collab' : '';
+  request.url = originalUrl.replace(/^\/collab(?=\/|$)/, '');
   if (!request.url.startsWith('/')) request.url = '/' + request.url;
   if (request.url.startsWith('/port/') || request.url.startsWith('/runtime/')) {
     if (!proxyService.proxyWsUpgrade(request, socket, head)) {
@@ -4611,8 +4844,9 @@ notifyWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
   ws._slug = params.get('slug') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
+  ws._userEmail = params.get('email') ? decodeURIComponent(params.get('email')).trim().toLowerCase() : null;
   ws._sessionId = params.get('sessionId') || null;
-  logger.info('notify_ws_connected', { slug: ws._slug, userId: ws._userId });
+  logger.info('notify_ws_connected', { slug: ws._slug, userId: ws._userId, hasEmail: !!ws._userEmail });
   // Flush any offline events for this user as a burst of queued:true
   // messages so the UI can surface them as popups.
   if (ws._userId) {
@@ -4627,10 +4861,58 @@ notifyWss.on('connection', (ws, req) => {
 // ── Session-events WS connection handler ────────────────────────────
 sessionWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
+  ws._socketId = `session-ws-${crypto.randomBytes(8).toString('hex')}`;
   ws._sessionId = params.get('sessionId') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
+  ws._role = params.get('role') || null;
+
+  function identify(payload = {}) {
+    const nextSessionId = payload.sessionId || ws._sessionId;
+    const nextUserId = payload.userId || ws._userId;
+    const nextRole = payload.role || ws._role;
+    if (nextSessionId) ws._sessionId = String(nextSessionId);
+    if (nextUserId) ws._userId = String(nextUserId);
+    if (nextRole) ws._role = String(nextRole);
+
+    const session = ws._sessionId ? sessionManager.getSession(ws._sessionId) : null;
+    if (!session || !ws._userId) return;
+
+    if (session.hostId === ws._userId && (ws._role === 'hosting' || ws._role === 'host')) {
+      try { sessionManager.registerHostSocket(ws._sessionId, ws._socketId); } catch (_) {}
+      return;
+    }
+
+    const isGuestLike = ws._role === 'guest' || ws._role === 'knocking';
+    if (isGuestLike) {
+      if (guestDisconnectTimers.has(ws._userId)) {
+        clearTimeout(guestDisconnectTimers.get(ws._userId));
+        guestDisconnectTimers.delete(ws._userId);
+      }
+      try { sessionManager.updateGuestSocket(ws._sessionId, ws._userId, ws); } catch (_) {}
+    }
+  }
+
+  identify();
+
   logger.info('session_ws_connected', { sessionId: ws._sessionId, userId: ws._userId });
+  ws.on('message', (raw) => {
+    try {
+      const text = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+      const msg = JSON.parse(text);
+      if (msg?.type === 'identify') {
+        identify(msg);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'identified', sessionId: ws._sessionId, userId: ws._userId, role: ws._role }));
+        }
+      }
+    } catch (_) {
+      // Session event WS only accepts JSON control frames from clients.
+    }
+  });
   ws.on('close', () => {
+    if (ws._role === 'hosting' || ws._role === 'host') {
+      try { sessionManager.handleDisconnect(ws._socketId); } catch (_) {}
+    }
     logger.info('session_ws_disconnected', { sessionId: ws._sessionId, userId: ws._userId });
   });
 });
@@ -4797,6 +5079,10 @@ process.on('uncaughtException', (err) => {
     if (containerPortMonitor) {
       containerPortMonitor.start();
       logger.info('container_port_monitor_started', {});
+    }
+    if (runtimePortMonitor) {
+      runtimePortMonitor.start();
+      logger.info('runtime_port_monitor_started', {});
     }
     proxyService.onPortsChanged((ports) => {
       try {
