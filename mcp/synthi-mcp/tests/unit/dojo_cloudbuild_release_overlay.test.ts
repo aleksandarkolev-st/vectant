@@ -44,4 +44,24 @@ describe("Dojo Cloud Build release overlay contract", () => {
     expect(yaml).toContain('sed "s|$${MANIFEST_SOURCE_REGISTRY}|$${REGISTRY}|g; s|build-tag-required|$${TAG}|g"');
     expect(yaml).not.toContain('DEFAULT_REGISTRY="europe-west10-docker.pkg.dev/vectant-proj/synthi"');
   });
+
+  it("runs a full-fleet critical vulnerability scan before rollout", () => {
+    const yaml = cloudbuildYaml();
+
+    expect(yaml).toContain("id: vulnerability-scan-images");
+    expect(yaml).toContain("scan \"$${REGISTRY}/synthi-frontend:$${IMAGE_TAG}\"");
+    expect(yaml).toContain("scan \"$${REGISTRY}/synthi-collab-server:$${IMAGE_TAG}\"");
+    expect(yaml).toContain("scan \"$${REGISTRY}/synthi-ai-engine:$${IMAGE_TAG}\"");
+    expect(yaml).toContain("scan \"$${REGISTRY}/synthi-ai-gateway:$${IMAGE_TAG}\"");
+    expect(yaml).toContain("scan \"$${REGISTRY}/synthi-signaling-server:$${IMAGE_TAG}\"");
+    expect(yaml).toContain("scan \"$${REGISTRY}/synthi-worker:$${IMAGE_TAG}\"");
+    expect(yaml).toContain("scan \"$${REGISTRY}/synthi-prisma-migrate:$${IMAGE_TAG}\"");
+    expect(yaml).toContain("scan \"$${REGISTRY}/synthi-browser-workflow-bridge:$${IMAGE_TAG}\"");
+    expect(yaml).toContain('if [ "$${KUSTOMIZE_DIR}" = "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]; then');
+    expect(yaml).toContain("scan \"$${REGISTRY}/synthi-mcp-http:$${IMAGE_TAG}\"");
+    expect(yaml).toContain("--ignorefile=backend/runtime-image/.trivyignore");
+    expect(yaml).toContain("- vulnerability-scan-images");
+    expect(yaml).not.toContain("id: vulnerability-scan-runtime");
+    expect(yaml).not.toContain("First-party images aren't the untrusted surface");
+  });
 });
