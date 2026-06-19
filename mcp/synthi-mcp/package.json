@@ -300,6 +300,7 @@
     "proof:dojo:gcp-release-inventory": "node scripts/dojo-gcp-release-inventory.mjs",
     "proof:dojo:gcp-release-inventory:self-check": "node scripts/dojo-gcp-release-inventory.mjs --self-check",
     "proof:dojo:gcp-release-blockers": "node scripts/dojo-gcp-release-blockers.mjs",
+    "proof:dojo:gcp-release-blockers:advisory": "node scripts/dojo-gcp-release-blockers.mjs --advisory",
     "proof:dojo:gcp-release-blockers:self-check": "node scripts/dojo-gcp-release-blockers.mjs --self-check",
     "proof:dojo:kustomize-overlay": "node scripts/dojo-kustomize-overlay-check.mjs",
     "proof:dojo:kustomize-overlay:self-check": "node scripts/dojo-kustomize-overlay-check.mjs --self-check",

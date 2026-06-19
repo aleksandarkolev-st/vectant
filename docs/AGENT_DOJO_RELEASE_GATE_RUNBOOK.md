@@ -254,7 +254,8 @@ The inventory script intentionally does not print or fetch secret values. It
 records secret names, Kubernetes deployment names, endpoint inventory, enabled
 APIs, store resources, and command digests only.
 
-Summarize the inventory into an operator-facing blocker report:
+Summarize the inventory into an operator-facing blocker report. Strict mode is
+the default and is required for release acceptance:
 
 ```powershell
 npm --prefix mcp/synthi-mcp run proof:dojo:gcp-release-blockers:self-check
@@ -271,8 +272,18 @@ tmp/dojo-gcp-release-blockers/dojo-gcp-release-blockers.md
 ```
 
 The blocker script exits nonzero when the release is still blocked. That is
-intentional. Use `--allow-blockers` only when you are generating an advisory
-report and do not want the shell step to fail. The Markdown report groups
+intentional. In strict mode, evidence-gap warnings under release-critical
+categories are promoted to blockers. Use `--advisory` only for discovery or
+report-only inventory when you want those evidence gaps to remain warnings:
+
+```powershell
+npm --prefix mcp/synthi-mcp run proof:dojo:gcp-release-blockers:advisory -- `
+  --inventory-report=tmp/dojo-gcp-release-inventory/dojo-gcp-release-inventory.json `
+  --out-dir=tmp/dojo-gcp-release-blockers-advisory
+```
+
+Use `--allow-blockers` only when you need artifacts written while preserving a
+zero shell exit for a non-release advisory job. The Markdown report groups
 failures by release owner action:
 
 - `cloud_api`: a required Google Cloud API is not enabled or not visible.
@@ -284,9 +295,10 @@ failures by release owner action:
 - `deployment_inventory`: required Kubernetes deployments could not be verified.
 
 Do not treat warnings under `secret_inventory`, `deployment_inventory`, or
-`kubernetes_context` as proof of absence until the Kubernetes context and
-Secret Manager inventory are readable. They mean the release still lacks
-verifiable evidence for those surfaces.
+`kubernetes_context` as release evidence. In strict mode, those warnings block
+release acceptance until the Kubernetes context and Secret Manager inventory are
+readable. In advisory mode, they mean the report is useful for discovery but not
+for release approval.
 
 Interpret the report carefully:
 
@@ -886,17 +898,19 @@ Run this sequence for a release candidate:
 
 1. Run the read-only hosted inventory and compare it with the expected
    production resources.
-2. Build and deploy with Cloud Build only after explicit deployment approval.
-3. Verify Kubernetes rollouts and external HTTPS endpoints.
-4. Verify External Secrets synced from Secret Manager.
-5. Run database migrations against Cloud SQL.
-6. Run local static/type/unit gates from a clean checkout.
-7. Run managed-key signing observation.
-8. Run hosted browser workflow E2E against the hosted runtime.
-9. Run private tool acceptance against the deployed MCP host.
-10. Run deployed MCP host conformance.
-11. Run live chaos and soak gates using GKE-safe commands.
-12. Run the release gate verifier over the produced evidence.
+2. Run the strict GCP blocker report. Do not deploy or collect external release
+   evidence until `release_ready` is true.
+3. Build and deploy with Cloud Build only after explicit deployment approval.
+4. Verify Kubernetes rollouts and external HTTPS endpoints.
+5. Verify External Secrets synced from Secret Manager.
+6. Run database migrations against Cloud SQL.
+7. Run local static/type/unit gates from a clean checkout.
+8. Run managed-key signing observation.
+9. Run hosted browser workflow E2E against the hosted runtime.
+10. Run private tool acceptance against the deployed MCP host.
+11. Run deployed MCP host conformance.
+12. Run live chaos and soak gates using GKE-safe commands.
+13. Run the release gate verifier over the produced evidence.
 
 Suggested evidence directory layout:
 

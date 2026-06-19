@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const DEFAULT_INVENTORY_REPORT = path.resolve("tmp", "dojo-gcp-release-inventory", "dojo-gcp-release-inventory.json");
 const DEFAULT_OUT_DIR = path.resolve("tmp", "dojo-gcp-release-blockers");
@@ -18,12 +19,22 @@ const CATEGORY_ORDER = [
   "unknown",
 ];
 
+const STRICT_WARNING_BLOCKER_CATEGORIES = new Set([
+  "cloud_api",
+  "inventory_access",
+  "cloud_resource",
+  "kubernetes_context",
+  "secret_inventory",
+  "deployment_inventory",
+]);
+
 function parseArgs(argv) {
   const out = {
     inventoryReport: DEFAULT_INVENTORY_REPORT,
     outDir: DEFAULT_OUT_DIR,
     selfCheck: false,
     allowBlockers: false,
+    advisory: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -43,6 +54,14 @@ function parseArgs(argv) {
       out.outDir = path.resolve(takeValue());
     } else if (arg === "--allow-blockers") {
       out.allowBlockers = true;
+    } else if (arg === "--advisory") {
+      out.advisory = true;
+    } else if (arg === "--mode") {
+      const mode = takeValue();
+      if (mode !== "strict" && mode !== "advisory") {
+        throw new Error("--mode must be strict or advisory");
+      }
+      out.advisory = mode === "advisory";
     } else if (arg === "--self-check") {
       out.selfCheck = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -83,6 +102,8 @@ Usage:
 Options:
   --inventory-report <path>  Inventory report JSON path.
   --out-dir <path>           Directory for blocker JSON and Markdown artifacts.
+  --mode <strict|advisory>   Strict is default. Advisory keeps evidence gaps as warnings.
+  --advisory                 Alias for --mode advisory.
   --allow-blockers           Write artifacts but exit 0 even when blocked.
   --self-check               Run deterministic self-check without cloud access.
 
@@ -117,20 +138,26 @@ function validateInventoryReport(report) {
   return errors;
 }
 
-function buildBlockerReport(inventoryReport, sourcePath = "") {
+function buildBlockerReport(inventoryReport, sourcePath = "", options = {}) {
+  const advisory = options.advisory === true;
   const checks = inventoryReport.evaluation.checks || [];
   const commandResults = new Map((inventoryReport.inventory.commandResults || []).map((item) => [item.id, item]));
-  const hardChecks = checks.filter((check) => check.status === "failed" && check.optional !== true);
-  const warningChecks = checks.filter((check) => check.status === "warning" || check.optional === true);
 
   const blockers = [];
-  for (const check of hardChecks) {
-    blockers.push(blockerFromCheck(check, commandResults));
+  const warnings = [];
+  for (const check of checks) {
+    const classified = classifyReleaseCheck(check, commandResults, { advisory });
+    if (!classified) {
+      continue;
+    }
+    if (classified.kind === "blocker") {
+      blockers.push(classified.item);
+    } else {
+      warnings.push(classified.item);
+    }
   }
 
-  const warnings = warningChecks
-    .filter((check) => check.status !== "passed" && check.status !== "not_checked")
-    .map((check) => warningFromCheck(check, commandResults));
+  const promotedWarningBlockers = blockers.filter((item) => item.promoted_from_warning === true);
 
   const blockedCategories = new Set(blockers.map((item) => item.category));
   const nextActions = buildNextActions(blockers, warnings);
@@ -148,9 +175,12 @@ function buildBlockerReport(inventoryReport, sourcePath = "") {
     region: inventoryReport.config?.region || null,
     cluster: inventoryReport.config?.cluster || null,
     namespace: inventoryReport.config?.namespace || null,
+    mode: advisory ? "advisory" : "strict",
     release_ready: blockers.length === 0,
     blocked_category_count: blockedCategories.size,
     blocker_count: blockers.length,
+    hard_blocker_count: blockers.length - promotedWarningBlockers.length,
+    promoted_warning_blocker_count: promotedWarningBlockers.length,
     warning_count: warnings.length,
     blockers: sortByCategory(blockers),
     warnings: sortByCategory(warnings),
@@ -158,7 +188,32 @@ function buildBlockerReport(inventoryReport, sourcePath = "") {
   };
 }
 
-function blockerFromCheck(check, commandResults) {
+function classifyReleaseCheck(check, commandResults, options = {}) {
+  if (!check || check.status === "passed" || check.status === "not_checked") {
+    return null;
+  }
+  const category = categoryForCheck(check);
+  const shouldPromoteWarning = options.advisory !== true
+    && STRICT_WARNING_BLOCKER_CATEGORIES.has(category)
+    && (check.status === "warning" || check.optional === true);
+  if ((check.status === "failed" && check.optional !== true) || shouldPromoteWarning) {
+    return {
+      kind: "blocker",
+      item: blockerFromCheck(check, commandResults, {
+        promotedFromWarning: shouldPromoteWarning,
+      }),
+    };
+  }
+  if (check.status === "warning" || check.optional === true || check.status === "failed") {
+    return {
+      kind: "warning",
+      item: warningFromCheck(check, commandResults),
+    };
+  }
+  return null;
+}
+
+function blockerFromCheck(check, commandResults, options = {}) {
   const category = categoryForCheck(check);
   const datasetId = datasetIdForCheck(check);
   const commandResult = datasetId ? commandResults.get(datasetId) : null;
@@ -170,6 +225,7 @@ function blockerFromCheck(check, commandResults) {
     id: check.id,
     category,
     severity: "release_blocker",
+    promoted_from_warning: options.promotedFromWarning === true,
     summary: summaryForCheck(check, category),
     detail: check.detail || {},
     evidence: evidenceForCheck(check, commandResult, stderrPreview),
@@ -208,11 +264,19 @@ function categoryForCheck(check) {
   if (check.id.startsWith("inventory_dataset:")) {
     return "inventory_access";
   }
-  if (check.id.startsWith("k8s_secret:") || check.id.startsWith("secret_manager:")) {
+  if (check.id.startsWith("k8s_secret:")
+    || check.id.startsWith("secret_manager:")
+    || check.id.startsWith("externalsecret")) {
     return "secret_inventory";
   }
   if (check.id.startsWith("k8s_deployment:")) {
     return "deployment_inventory";
+  }
+  if (check.id === "kubectl_available") {
+    return "kubernetes_context";
+  }
+  if (check.id === "gcloud_available") {
+    return "inventory_access";
   }
   const reason = String(check.detail?.reason || "");
   if (reason.startsWith("k8s_") || reason.includes("kubectl")) {
@@ -434,7 +498,11 @@ function renderMarkdown(report) {
   lines.push(`- Cluster: ${report.cluster || "not configured"}`);
   lines.push(`- Namespace: ${report.namespace || "not configured"}`);
   lines.push(`- Inventory mode: ${report.inventory_mode || "unknown"}`);
+  lines.push(`- Blocker mode: ${report.mode || "strict"}`);
   lines.push(`- Hard blockers: ${report.blocker_count}`);
+  if (report.promoted_warning_blocker_count > 0) {
+    lines.push(`- Promoted warning blockers: ${report.promoted_warning_blocker_count}`);
+  }
   lines.push(`- Warnings: ${report.warning_count}`);
   lines.push("");
 
@@ -457,6 +525,9 @@ function renderMarkdown(report) {
       lines.push("");
       lines.push(`- Category: ${blocker.category}`);
       lines.push(`- Summary: ${blocker.summary}`);
+      if (blocker.promoted_from_warning) {
+        lines.push("- Promoted from warning: yes");
+      }
       if (blocker.evidence.command_exit_code !== null) {
         lines.push(`- Command exit code: ${blocker.evidence.command_exit_code}`);
       }
@@ -572,10 +643,16 @@ function runSelfCheck() {
 
   const blocked = buildBlockerReport(blockedReport);
   assert(blocked.release_ready === false, "blocked report should not be release ready");
-  assert(blocked.blocker_count === 2, "blocked report should contain two hard blockers");
+  assert(blocked.blocker_count === 3, "blocked report should contain two hard blockers and one promoted warning blocker");
+  assert(blocked.hard_blocker_count === 2, "blocked report should count hard blockers separately");
+  assert(blocked.promoted_warning_blocker_count === 1, "blocked report should count promoted warning blockers");
   assert(blocked.blockers.some((item) => item.category === "cloud_api"), "API failure should be categorized");
   assert(blocked.blockers.some((item) => item.category === "inventory_access"), "dataset failure should be categorized");
-  assert(blocked.warnings.some((item) => item.category === "secret_inventory"), "secret warning should be categorized");
+  assert(blocked.blockers.some((item) => item.category === "secret_inventory" && item.promoted_from_warning === true), "secret warning should be promoted in strict mode");
+
+  const advisory = buildBlockerReport(blockedReport, "", { advisory: true });
+  assert(advisory.blocker_count === 2, "advisory report should keep warnings advisory");
+  assert(advisory.warnings.some((item) => item.category === "secret_inventory"), "advisory report should keep secret warning categorized");
 
   const readyReport = {
     schema_version: "synthi.dojo.gcpReleaseInventory.v1",
@@ -629,7 +706,7 @@ async function main() {
   if (validationErrors.length > 0) {
     throw new Error(`Invalid inventory report: ${validationErrors.join("; ")}`);
   }
-  const blockerReport = buildBlockerReport(inventoryReport, config.inventoryReport);
+  const blockerReport = buildBlockerReport(inventoryReport, config.inventoryReport, { advisory: config.advisory });
   const paths = writeArtifacts(config, blockerReport);
   const status = blockerReport.release_ready ? "ok" : "blocked";
   console.log(`[${status}] GCP release blockers written - json=${paths.jsonPath} markdown=${paths.markdownPath}`);
@@ -638,7 +715,22 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`[fail] ${error.stack || error.message}`);
-  process.exitCode = 1;
-});
+export {
+  buildBlockerReport,
+  categoryForCheck,
+  classifyReleaseCheck,
+  parseArgs,
+  runSelfCheck,
+  validateInventoryReport,
+};
+
+function isMain() {
+  return process.argv[1] ? import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href : false;
+}
+
+if (isMain()) {
+  main().catch((error) => {
+    console.error(`[fail] ${error.stack || error.message}`);
+    process.exitCode = 1;
+  });
+}
