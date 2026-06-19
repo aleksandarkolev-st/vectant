@@ -2652,6 +2652,80 @@ describe("Dojo release gate artifact verifier", () => {
     expect(validateDojoPrivateToolCodexHostConformanceForRelease(missingLocationPolicy).errors).toEqual(expect.arrayContaining([
       "private_tool_codex_host_external_store_location_policy_missing",
     ]));
+
+    const missingStoreFingerprint = privateToolStdioAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      private_tool_store: {
+        key_present: false,
+        key_sha256: null,
+      },
+    }));
+    expect(validateDojoPrivateToolStdioHostConformanceForRelease(missingStoreFingerprint).errors).toEqual(expect.arrayContaining([
+      "private_tool_stdio_host_store_key_fingerprint_missing",
+    ]));
+
+    const unexpectedStoreFingerprint = privateToolStdioAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      private_tool_store: {
+        key_sha256: sha256("runtime-store-key"),
+      },
+      expected_private_tool_store: {
+        key_sha256: sha256("release-expected-store-key"),
+      },
+    }));
+    expect(validateDojoPrivateToolStdioHostConformanceForRelease(unexpectedStoreFingerprint).errors).toEqual(expect.arrayContaining([
+      "private_tool_stdio_host_store_key_fingerprint_mismatch",
+    ]));
+
+    const missingStoreFingerprintAlgorithm = privateToolCodexAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      private_tool_store: {
+        key_fingerprint_alg: undefined,
+      },
+    }));
+    expect(validateDojoPrivateToolCodexHostConformanceForRelease(missingStoreFingerprintAlgorithm).errors).toEqual(expect.arrayContaining([
+      "private_tool_codex_host_store_key_fingerprint_alg_missing",
+    ]));
+
+    const mismatchedStoreScope = privateToolStdioAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      private_tool_store: {
+        expected_scope: "tenant/workspace/other-release",
+        scope_matches_expected: false,
+      },
+    }));
+    expect(validateDojoPrivateToolStdioHostConformanceForRelease(mismatchedStoreScope).errors).toEqual(expect.arrayContaining([
+      "private_tool_stdio_host_store_scope_mismatch",
+    ]));
+
+    const wrongExpectedStoreScope = privateToolCodexAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      private_tool_store: {
+        scope: "tenant/workspace/current-release",
+        expected_scope: "tenant/workspace/current-release",
+        scope_matches_expected: true,
+      },
+      expected_private_tool_store: {
+        scope: "tenant/workspace/approved-release",
+      },
+    }));
+    expect(validateDojoPrivateToolCodexHostConformanceForRelease(wrongExpectedStoreScope).errors).toEqual(expect.arrayContaining([
+      "private_tool_codex_host_expected_store_scope_mismatch",
+    ]));
+
+    const missingStoreScope = privateToolCodexAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      private_tool_store: {
+        scope: "",
+        expected_scope: "",
+      },
+    }));
+    expect(validateDojoPrivateToolCodexHostConformanceForRelease(missingStoreScope).errors).toEqual(expect.arrayContaining([
+      "private_tool_codex_host_store_scope_missing",
+    ]));
+
+    const inconsistentSeededStoreScope = privateToolStdioAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      seeded: {
+        store_scope: "tenant/workspace/previous-release",
+      },
+    }));
+    expect(validateDojoPrivateToolStdioHostConformanceForRelease(inconsistentSeededStoreScope).errors).toEqual(expect.arrayContaining([
+      "private_tool_stdio_host_seeded_store_scope_mismatch",
+    ]));
   });
 
   it("reports missing release-candidate artifacts as structured gate failures", async () => {
@@ -6245,6 +6319,16 @@ function deployedPrivateToolHostFixtureOverrides(overrides = {}) {
       external: true,
       file: "gs://release-private-tool-store/private-tools.enc.json",
       scope: "external-acceptance-fixture",
+      key_present: true,
+      key_fingerprint_alg: "sha256",
+      key_sha256: sha256("external-acceptance-fixture-store-key"),
+      expected_scope: "external-acceptance-fixture",
+      scope_matches_expected: true,
+    },
+    expected_private_tool_store: {
+      key_fingerprint_alg: "sha256",
+      key_sha256: sha256("external-acceptance-fixture-store-key"),
+      scope: "external-acceptance-fixture",
     },
   };
   return {
@@ -6261,6 +6345,10 @@ function deployedPrivateToolHostFixtureOverrides(overrides = {}) {
     private_tool_store: {
       ...base.private_tool_store,
       ...(overrides.private_tool_store || {}),
+    },
+    expected_private_tool_store: {
+      ...base.expected_private_tool_store,
+      ...(overrides.expected_private_tool_store || {}),
     },
   };
 }

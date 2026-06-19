@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,6 +95,34 @@ export function privateToolStoreConformance({
     external_private_tool_store_location_ok: location.ok,
     external_private_tool_store_location_class: location.location_class,
     external_private_tool_store_location_reasons: location.reasons,
+  };
+}
+
+export function privateToolStoreCustodyEvidence({ storeSpec, expectedScope } = {}) {
+  const key = String(storeSpec?.key || "");
+  const scope = String(storeSpec?.scope || "");
+  const expected = String(expectedScope || scope || "");
+  return {
+    key_present: Boolean(key),
+    key_fingerprint_alg: "sha256",
+    key_sha256: key ? sha256String(key) : null,
+    scope,
+    expected_scope: expected || null,
+    scope_matches_expected: Boolean(scope && expected && scope === expected),
+  };
+}
+
+export function privateToolStoreCustodyExpectation({ storeSpec, expectedScope, expectedKeySha256 } = {}) {
+  const scope = String(expectedScope || storeSpec?.scope || "");
+  const configuredFingerprint = normalizeOptionalSha256(
+    expectedKeySha256,
+    "expected_private_tool_store_key_sha256",
+  );
+  const key = String(storeSpec?.key || "");
+  return {
+    key_fingerprint_alg: "sha256",
+    key_sha256: configuredFingerprint || (key ? sha256String(key) : null),
+    scope: scope || null,
   };
 }
 
@@ -256,6 +285,19 @@ function originForUrl(value) {
   } catch {
     return null;
   }
+}
+
+function sha256String(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
+}
+
+function normalizeOptionalSha256(value, label) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "";
+  if (!/^[a-f0-9]{64}$/.test(normalized)) {
+    throw new Error(`${label}_invalid: expected 64 lowercase or uppercase hex characters`);
+  }
+  return normalized;
 }
 
 function classifyRuntimeHost(host) {

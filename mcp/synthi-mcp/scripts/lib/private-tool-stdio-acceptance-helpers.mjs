@@ -6,6 +6,8 @@ export {
   parseJsonObjectArgument,
   privateToolStoreLocationConformance,
   privateToolStoreConformance,
+  privateToolStoreCustodyExpectation,
+  privateToolStoreCustodyEvidence,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
   selectPrivateToolForAcceptance,

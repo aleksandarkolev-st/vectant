@@ -21,8 +21,10 @@ import {
   normalizeOptionalText,
   parseBooleanFlag,
   parseJsonObjectArgument,
-  privateToolStoreConformance,
   parseNonNegativeInteger,
+  privateToolStoreConformance,
+  privateToolStoreCustodyExpectation,
+  privateToolStoreCustodyEvidence,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
 } from "./private-tool-acceptance-conformance.mjs";
@@ -46,6 +48,8 @@ export {
   parseBooleanFlag,
   parseJsonObjectArgument,
   privateToolStoreConformance,
+  privateToolStoreCustodyExpectation,
+  privateToolStoreCustodyEvidence,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
 };
@@ -97,6 +101,14 @@ const CFG = {
   expectedText: normalizeOptionalText(args["expected-text"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_TEXT),
   expectedStepsMin: parseNonNegativeInteger(args["expected-steps-min"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_STEPS_MIN ?? "1", "expected_steps_min"),
   hostedSessionTtlMs: parseNonNegativeInteger(args["hosted-session-ttl-ms"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_HOSTED_SESSION_TTL_MS ?? "900000", "hosted_session_ttl_ms"),
+  expectedPrivateToolStoreKeySha256: args["expected-private-tool-store-key-sha256"]
+    || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256
+    || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256
+    || "",
+  expectedPrivateToolStoreScope: args["expected-private-tool-store-scope"]
+    || process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE
+    || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE
+    || "",
   mcpCommand: resolveCodexMcpServerCommandSpec({
     args,
     env: process.env,
@@ -142,9 +154,18 @@ async function main() {
     defaultKey: `codex-acceptance-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     defaultScope: `codex-acceptance-${process.pid}`,
   });
+  const expectedPrivateToolStore = privateToolStoreCustodyExpectation({
+    storeSpec: privateToolStore,
+    expectedScope: CFG.expectedPrivateToolStoreScope,
+    expectedKeySha256: CFG.expectedPrivateToolStoreKeySha256,
+  });
   const privateToolStoreConformance = assertPrivateToolStoreConformance({
     storeSpec: privateToolStore,
     requireExternalStore: CFG.requireExternalPrivateToolStore,
+  });
+  const privateToolStoreCustody = privateToolStoreCustodyEvidence({
+    storeSpec: privateToolStore,
+    expectedScope: expectedPrivateToolStore.scope,
   });
   if (privateToolStore.external && !CFG.targetUrl.trim()) {
     throw new Error("target_url_required_for_external_private_tool_store: pass --target-url or set SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL");
@@ -190,7 +211,13 @@ async function main() {
       external: privateToolStore.external,
       file: privateToolStore.file,
       scope: privateToolStore.scope,
+      key_present: privateToolStoreCustody.key_present,
+      key_fingerprint_alg: privateToolStoreCustody.key_fingerprint_alg,
+      key_sha256: privateToolStoreCustody.key_sha256,
+      expected_scope: privateToolStoreCustody.expected_scope,
+      scope_matches_expected: privateToolStoreCustody.scope_matches_expected,
     },
+    expected_private_tool_store: expectedPrivateToolStore,
     acceptance: {
       requested_tool_name: CFG.toolName || null,
       tool_args_keys: Object.keys(CFG.toolArgs).sort(),

@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,6 +10,8 @@ import {
   parseJsonObjectArgument,
   privateToolStoreLocationConformance,
   privateToolStoreConformance,
+  privateToolStoreCustodyExpectation,
+  privateToolStoreCustodyEvidence,
   resolveMcpServerCommandSpec,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
@@ -251,6 +254,81 @@ describe("private-tool stdio acceptance harness", () => {
     }));
   });
 
+  it("derives private workflow store custody evidence without exposing the store key", () => {
+    const evidence = privateToolStoreCustodyEvidence({
+      storeSpec: {
+        file: "gs://release-private-tool-store/private-tools.enc.json",
+        key: "external-key",
+        scope: "tenant/workspace/release",
+        external: true,
+      },
+      expectedScope: "tenant/workspace/release",
+    });
+
+    expect(evidence).toEqual(expect.objectContaining({
+      key_present: true,
+      key_fingerprint_alg: "sha256",
+      scope: "tenant/workspace/release",
+      expected_scope: "tenant/workspace/release",
+      scope_matches_expected: true,
+    }));
+    expect(evidence.key_sha256).toBe(sha256("external-key"));
+    expect(JSON.stringify(evidence)).not.toContain("external-key");
+    expect(privateToolStoreCustodyEvidence({
+      storeSpec: {
+        file: "gs://release-private-tool-store/private-tools.enc.json",
+        key: "rotated-external-key",
+        scope: "tenant/workspace/release",
+        external: true,
+      },
+      expectedScope: "tenant/workspace/release",
+    }).key_sha256).toBe(sha256("rotated-external-key"));
+    expect(privateToolStoreCustodyEvidence({
+      storeSpec: {
+        file: "gs://release-private-tool-store/private-tools.enc.json",
+        key: "rotated-external-key",
+        scope: "tenant/workspace/release",
+        external: true,
+      },
+      expectedScope: "tenant/workspace/release",
+    }).key_sha256).not.toBe(evidence.key_sha256);
+
+    expect(privateToolStoreCustodyEvidence({
+      storeSpec: {
+        file: "gs://release-private-tool-store/private-tools.enc.json",
+        key: "external-key",
+        scope: "tenant/workspace/other-release",
+        external: true,
+      },
+      expectedScope: "tenant/workspace/release",
+    })).toEqual(expect.objectContaining({
+      scope: "tenant/workspace/other-release",
+      expected_scope: "tenant/workspace/release",
+      scope_matches_expected: false,
+    }));
+  });
+
+  it("resolves private workflow store custody expectations from explicit release metadata", () => {
+    expect(privateToolStoreCustodyExpectation({
+      storeSpec: {
+        file: "gs://release-private-tool-store/private-tools.enc.json",
+        key: "runtime-key",
+        scope: "runtime-scope",
+        external: true,
+      },
+      expectedScope: "release-scope",
+      expectedKeySha256: sha256("release-key"),
+    })).toEqual({
+      key_fingerprint_alg: "sha256",
+      key_sha256: sha256("release-key"),
+      scope: "release-scope",
+    });
+    expect(() => privateToolStoreCustodyExpectation({
+      storeSpec: { key: "runtime-key", scope: "runtime-scope" },
+      expectedKeySha256: "not-a-sha",
+    })).toThrow("expected_private_tool_store_key_sha256_invalid");
+  });
+
   it("does not count repo-local, home, or temp files as external release stores", () => {
     const roots = {
       repoRoot: path.resolve("/workspace/repo"),
@@ -481,3 +559,7 @@ describe("private-tool stdio acceptance harness", () => {
     expect(strictHostValidateToolArgs(schema, { confirm_mutation: "yes" })).toEqual(["type:confirm_mutation"]);
   });
 });
+
+function sha256(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
+}

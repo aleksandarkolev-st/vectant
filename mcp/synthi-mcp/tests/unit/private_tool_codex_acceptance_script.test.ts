@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -17,6 +18,8 @@ import {
   parseJsonObjectArgument,
   privateToolStoreLocationConformance,
   privateToolStoreConformance,
+  privateToolStoreCustodyExpectation,
+  privateToolStoreCustodyEvidence,
   resolveCodexMcpServerCommandSpec,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
@@ -267,6 +270,40 @@ describe("private-tool Codex acceptance harness", () => {
       external_private_tool_store: true,
       external_private_tool_store_location_ok: true,
     }));
+  });
+
+  it("shares private workflow store custody evidence with the stdio harness", () => {
+    const evidence = privateToolStoreCustodyEvidence({
+      storeSpec: {
+        file: "gs://release-private-tool-store/private-tools.enc.json",
+        key: "codex-external-key",
+        scope: "tenant/workspace/release",
+        external: true,
+      },
+      expectedScope: "tenant/workspace/release",
+    });
+
+    expect(evidence).toEqual(expect.objectContaining({
+      key_present: true,
+      key_fingerprint_alg: "sha256",
+      scope: "tenant/workspace/release",
+      expected_scope: "tenant/workspace/release",
+      scope_matches_expected: true,
+    }));
+    expect(evidence.key_sha256).toBe(sha256("codex-external-key"));
+    expect(JSON.stringify(evidence)).not.toContain("codex-external-key");
+    expect(privateToolStoreCustodyExpectation({
+      storeSpec: {
+        file: "gs://release-private-tool-store/private-tools.enc.json",
+        key: "codex-external-key",
+        scope: "tenant/workspace/release",
+        external: true,
+      },
+    })).toEqual({
+      key_fingerprint_alg: "sha256",
+      key_sha256: sha256("codex-external-key"),
+      scope: "tenant/workspace/release",
+    });
   });
 
   it("does not let local paths satisfy deployed Codex external-store conformance", () => {
@@ -549,6 +586,10 @@ describe("private-tool Codex acceptance harness", () => {
     });
   });
 });
+
+function sha256(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
+}
 
 function completedCall(tool, args, structuredContent = {}) {
   return {

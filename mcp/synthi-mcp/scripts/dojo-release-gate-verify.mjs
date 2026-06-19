@@ -5117,6 +5117,40 @@ function validateDeployedPrivateToolHostConformance(transcript, {
   if (!storeLocation.ok) {
     errors.push(`${errorPrefix}_external_store_location_invalid:${storeLocation.location_class}:${storeLocation.reasons.join("|")}`);
   }
+  const store = transcript?.private_tool_store || {};
+  if (store.key_fingerprint_alg !== "sha256") {
+    errors.push(`${errorPrefix}_store_key_fingerprint_alg_missing`);
+  }
+  if (store.key_present !== true || !isSha256Hex(store.key_sha256)) {
+    errors.push(`${errorPrefix}_store_key_fingerprint_missing`);
+  }
+  const expectedStore = transcript?.expected_private_tool_store || {};
+  if (expectedStore.key_fingerprint_alg !== "sha256") {
+    errors.push(`${errorPrefix}_expected_store_key_fingerprint_alg_missing`);
+  }
+  if (!isSha256Hex(expectedStore.key_sha256)) {
+    errors.push(`${errorPrefix}_expected_store_key_fingerprint_missing`);
+  }
+  if (isSha256Hex(store.key_sha256)
+    && isSha256Hex(expectedStore.key_sha256)
+    && String(store.key_sha256).toLowerCase() !== String(expectedStore.key_sha256).toLowerCase()) {
+    errors.push(`${errorPrefix}_store_key_fingerprint_mismatch`);
+  }
+  if (!String(store.scope || "").trim() || !String(store.expected_scope || "").trim()) {
+    errors.push(`${errorPrefix}_store_scope_missing`);
+  }
+  if (store.scope_matches_expected !== true || String(store.scope || "") !== String(store.expected_scope || "")) {
+    errors.push(`${errorPrefix}_store_scope_mismatch`);
+  }
+  if (!String(expectedStore.scope || "").trim()) {
+    errors.push(`${errorPrefix}_expected_store_scope_missing`);
+  }
+  if (String(expectedStore.scope || "").trim() && String(store.scope || "") !== String(expectedStore.scope)) {
+    errors.push(`${errorPrefix}_expected_store_scope_mismatch`);
+  }
+  if (transcript?.seeded?.store_scope && String(transcript.seeded.store_scope) !== String(store.scope || "")) {
+    errors.push(`${errorPrefix}_seeded_store_scope_mismatch`);
+  }
   if (classifyUrlHost(transcript?.target_url) !== "remote") {
     errors.push(`${errorPrefix}_target_not_remote:${classifyUrlHost(transcript?.target_url)}`);
   }
@@ -5141,6 +5175,10 @@ function validateDeployedPrivateToolHostConformance(transcript, {
     }
   }
   return errors;
+}
+
+function isSha256Hex(value) {
+  return /^[a-f0-9]{64}$/i.test(String(value || ""));
 }
 
 async function validateTranscriptVisualStepArtifact({ id, transcript, transcriptPath }) {
@@ -6972,6 +7010,16 @@ function deployedPrivateToolHostTranscriptOverrides(overrides = {}) {
       external: true,
       file: "gs://release-private-tool-store/private-tools.enc.json",
       scope: "external-self-check",
+      key_present: true,
+      key_fingerprint_alg: "sha256",
+      key_sha256: sha256("external-self-check-store-key"),
+      expected_scope: "external-self-check",
+      scope_matches_expected: true,
+    },
+    expected_private_tool_store: {
+      key_fingerprint_alg: "sha256",
+      key_sha256: sha256("external-self-check-store-key"),
+      scope: "external-self-check",
     },
   };
   return {
@@ -6988,6 +7036,10 @@ function deployedPrivateToolHostTranscriptOverrides(overrides = {}) {
     private_tool_store: {
       ...base.private_tool_store,
       ...(overrides.private_tool_store || {}),
+    },
+    expected_private_tool_store: {
+      ...base.expected_private_tool_store,
+      ...(overrides.expected_private_tool_store || {}),
     },
   };
 }

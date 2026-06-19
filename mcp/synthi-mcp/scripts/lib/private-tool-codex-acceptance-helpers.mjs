@@ -6,6 +6,8 @@ export {
   parseJsonObjectArgument,
   privateToolStoreLocationConformance,
   privateToolStoreConformance,
+  privateToolStoreCustodyExpectation,
+  privateToolStoreCustodyEvidence,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
 } from "../private-tool-acceptance-conformance.mjs";
