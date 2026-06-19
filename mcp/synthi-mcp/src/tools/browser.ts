@@ -1055,6 +1055,8 @@ function browserRevokeHostedRuntimeSessionTool(args: unknown): ToolResponse {
     revoked: true,
     runtime: revoked.runtime,
   });
+}
+
 async function ensureHostedBrowserRuntimeAttachedForPreview(input: {
   workspace_id?: string;
   workspace_url?: string;
