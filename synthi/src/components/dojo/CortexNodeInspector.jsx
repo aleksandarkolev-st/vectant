@@ -8,7 +8,7 @@ const panelStyle = {
 export default function CortexNodeInspector({ node, graph }) {
   if (!node) {
     return (
-      <aside className="rounded-md border p-4" style={panelStyle} data-testid="cortex-node-inspector-empty">
+      <aside className="rounded-lg border p-4" style={panelStyle} data-testid="cortex-node-inspector-empty">
         <h2 className="text-sm font-semibold">Node Inspector</h2>
         <p className="mt-2 text-sm" style={{ color: 'var(--text-muted)' }}>Select a graph node to inspect its operational memory.</p>
       </aside>
@@ -20,7 +20,7 @@ export default function CortexNodeInspector({ node, graph }) {
   const incomingProofRequired = incoming.some((edge) => graph?.nodes?.find((candidate) => candidate.id === edge.from)?.kind === 'Proof');
   const proofRequired = node.proofRequired || incomingProofRequired;
   return (
-    <aside className="rounded-md border p-4" style={panelStyle} data-testid="cortex-node-inspector">
+    <aside className="rounded-lg border p-4 md:p-5" style={panelStyle} data-testid="cortex-node-inspector">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="truncate text-base font-semibold">{node.label}</h2>
@@ -47,12 +47,20 @@ export default function CortexNodeInspector({ node, graph }) {
       <InspectorSection title="Evidence Policy" items={node.evidencePolicy} />
 
       {node.memory && Object.keys(node.memory).length ? (
-        <section className="mt-4">
-          <h3 className="mb-2 text-xs font-semibold">Memory</h3>
-          <pre className="max-h-40 overflow-auto rounded-md border p-3 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
-            {JSON.stringify(node.memory, null, 2)}
-          </pre>
-        </section>
+        <>
+          <details className="mt-3 rounded-md border px-3 py-2 md:hidden" style={{ borderColor: 'var(--border-subtle)' }}>
+            <summary className="cursor-pointer text-xs font-semibold">Memory</summary>
+            <pre className="mt-3 max-h-40 overflow-auto rounded-md border p-3 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+              {JSON.stringify(node.memory, null, 2)}
+            </pre>
+          </details>
+          <section className="mt-4 hidden md:block">
+            <h3 className="mb-2 text-xs font-semibold">Memory</h3>
+            <pre className="max-h-40 overflow-auto rounded-md border p-3 text-[11px]" style={{ borderColor: 'var(--border-subtle)' }}>
+              {JSON.stringify(node.memory, null, 2)}
+            </pre>
+          </section>
+        </>
       ) : null}
     </aside>
   );
@@ -68,20 +76,28 @@ function InfoRow({ label, value }) {
 }
 
 function InspectorSection({ title, items = [] }) {
+  const content = items.length ? (
+    <ul className="grid gap-2 text-xs">
+      {items.map((item) => (
+        <li key={`${title}-${item}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+          {item}
+        </li>
+      ))}
+    </ul>
+  ) : (
+    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>None recorded</p>
+  );
+
   return (
-    <section className="mt-4">
-      <h3 className="mb-2 text-xs font-semibold">{title}</h3>
-      {items.length ? (
-        <ul className="grid gap-2 text-xs">
-          {items.map((item) => (
-            <li key={`${title}-${item}`} className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
-              {item}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>None recorded</p>
-      )}
-    </section>
+    <>
+      <details className="mt-3 rounded-md border px-3 py-2 md:hidden" style={{ borderColor: 'var(--border-subtle)' }}>
+        <summary className="cursor-pointer text-xs font-semibold">{title}</summary>
+        <div className="mt-3">{content}</div>
+      </details>
+      <section className="mt-4 hidden md:block">
+        <h3 className="mb-2 text-xs font-semibold">{title}</h3>
+        {content}
+      </section>
+    </>
   );
 }

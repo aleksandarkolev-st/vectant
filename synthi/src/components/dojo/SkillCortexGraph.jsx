@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, GitBranch, Layers3, Route, ShieldCheck, Waypoints } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, Eye, GitBranch, Layers3, ShieldCheck, Waypoints } from 'lucide-react';
 import { createEmptyDojoSummary, getDojoWorkspaceSummary } from '@/services/dojoClient';
 import CortexNodeInspector from './CortexNodeInspector';
 
@@ -75,7 +75,7 @@ export default function SkillCortexGraph({
   }, [graph]);
 
   const selectedNode = graph?.nodes?.find((node) => node.id === selectedNodeId) || null;
-  const layout = useMemo(() => computeGraphLayout(graph), [graph]);
+  const statusChips = useMemo(() => buildStatusChips({ skill, graph, loading, error }), [skill, graph, loading, error]);
   const backHref = `/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`;
 
   return (
@@ -84,8 +84,8 @@ export default function SkillCortexGraph({
       style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
       data-testid="skill-cortex-view"
     >
-      <div className="mx-auto flex max-w-[1500px] flex-col gap-5">
-        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-5" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="mx-auto flex max-w-[1580px] flex-col gap-4">
+        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
           <div className="min-w-0">
             <a href={backHref} className="mb-3 inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs transition hover:-translate-y-px" style={panelStyle}>
               <ArrowLeft size={13} aria-hidden="true" />
@@ -93,6 +93,11 @@ export default function SkillCortexGraph({
             </a>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{workspaceSlug || 'workspace'}</p>
             <h1 className="mt-1 text-2xl font-semibold tracking-normal md:text-3xl">Skill Cortex</h1>
+            {skill ? (
+              <p className="mt-2 max-w-3xl truncate text-sm" style={{ color: 'var(--text-secondary)' }}>
+                {skill.title} / {graph?.mode || 'runtime'} / {graphSchemaLabel(graph) || graph?.graphId || skill.skillId}
+              </p>
+            ) : null}
           </div>
           <div className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs" style={elevatedPanelStyle}>
             <GitBranch size={14} aria-hidden="true" />
@@ -108,67 +113,24 @@ export default function SkillCortexGraph({
 
         {skill && graph?.nodes?.length ? (
           <>
-            <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
-              <div className="rounded-lg border p-5" style={elevatedPanelStyle}>
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="mb-2 inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px]" style={panelStyle}>
-                      <Waypoints size={13} aria-hidden="true" />
-                      Runtime graph
-                    </div>
-                    <h2 className="truncate text-xl font-semibold">{skill.title}</h2>
-                    <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-                      {graph.graphId || graph.schemaVersion || skill.skillId}
-                    </p>
-                  </div>
-                  <div className="flex gap-2">
-                    <Badge icon={ShieldCheck} label={skill.entrustmentLevel || 'E0'} />
-                    <Badge label={`SRL ${skill.readinessLevel ?? 0}`} />
-                  </div>
-                </div>
-                <div className="mt-5 grid gap-3 sm:grid-cols-4">
-                  <Metric label="Nodes" value={graph.nodes.length} />
-                  <Metric label="Edges" value={graph.edges?.length || 0} />
-                  <Metric label="Validation" value={graph.validation?.ok === false ? 'Warnings' : 'OK'} />
-                  <Metric label="Source" value={graph.derived ? 'Derived' : 'Backend'} />
-                </div>
+            <RuntimeSummary skill={skill} graph={graph} />
+            <GraphRuntimeExplorer
+              graph={graph}
+              skill={skill}
+              selectedNodeId={selectedNodeId}
+              selectedNode={selectedNode}
+              onSelectNode={setSelectedNodeId}
+              statusChips={statusChips}
+            />
+            <details className="rounded-lg border px-4 py-3 text-xs" style={panelStyle} data-testid="cortex-runtime-metadata">
+              <summary className="cursor-pointer font-semibold">Evidence and graph metadata</summary>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <MetadataItem label="Graph" value={graph.graphId || graph.schemaVersion || skill.skillId} />
+                <MetadataItem label="Schema" value={graphSchemaLabel(graph) || 'runtime graph'} />
+                <MetadataItem label="Mode" value={graph.mode || 'runtime'} />
+                <MetadataItem label="Validation" value={graph.validation?.ok === false ? 'warnings' : 'ok'} />
               </div>
-
-              <aside className="rounded-lg border p-4" style={elevatedPanelStyle}>
-                <div className="mb-3 flex items-center gap-2">
-                  <Layers3 size={15} aria-hidden="true" />
-                  <h2 className="text-sm font-semibold">Legend</h2>
-                </div>
-                <div className="grid gap-2">
-                  <Legend label="Proof" tone="proof" />
-                  <Legend label="Guardrail / Case Law" tone="guardrail" />
-                  <Legend label="Mutation Action" tone="mutation" />
-                  <Legend label="Dangerous Action" tone="dangerous" />
-                  <Legend label="Expired / Recertify" tone="expired" />
-                </div>
-              </aside>
-            </section>
-
-            <section className="grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(720px,1fr)_390px]">
-              <div className="min-w-0 rounded-lg border p-3" style={elevatedPanelStyle}>
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Route size={15} aria-hidden="true" />
-                    <h2 className="text-sm font-semibold">Graph</h2>
-                  </div>
-                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                    {graph.schemaVersion || 'graph'}
-                  </span>
-                </div>
-                <GraphCanvas
-                  graph={graph}
-                  layout={layout}
-                  selectedNodeId={selectedNodeId}
-                  onSelectNode={setSelectedNodeId}
-                />
-              </div>
-              <CortexNodeInspector node={selectedNode} graph={graph} />
-            </section>
+            </details>
           </>
         ) : (
           <section className="rounded-md border p-6" style={panelStyle} data-testid="skill-cortex-empty">
@@ -183,12 +145,193 @@ export default function SkillCortexGraph({
   );
 }
 
-export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
+function buildStatusChips({ skill, graph, loading, error }) {
+  const validationOk = !error && graph?.validation?.ok !== false;
+  return [
+    { label: 'Nodes', value: graph?.nodes?.length ?? 0 },
+    { label: 'Edges', value: graph?.edges?.length ?? 0 },
+    { label: 'Status', value: loading ? 'Loading' : validationOk ? 'OK' : 'Check', tone: validationOk ? 'ok' : 'warning' },
+    { label: 'Source', value: graph?.derived ? 'Derived' : 'Backend' },
+    { label: 'Trust', value: skill?.entrustmentLevel || 'E0', tone: 'proof' },
+    { label: 'SRL', value: skill?.readinessLevel ?? 0 },
+  ];
+}
+
+function graphSchemaLabel(graph) {
+  return graph?.schemaVersion
+    || graph?.schema_version
+    || graph?.schema?.version
+    || graph?.schema?.schema_version
+    || '';
+}
+
+function RuntimeSummary({ skill, graph }) {
+  return (
+    <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3" style={panelStyle} data-testid="cortex-runtime-summary">
+      <div className="min-w-0">
+        <div className="mb-1 inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px]" style={panelStyle}>
+          <Waypoints size={13} aria-hidden="true" />
+          Runtime star map
+        </div>
+        <h2 className="truncate text-lg font-semibold md:text-xl">{skill.title}</h2>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Badge icon={ShieldCheck} label={skill.entrustmentLevel || 'E0'} />
+        <Badge label={`SRL ${skill.readinessLevel ?? 0}`} />
+        <Badge label={graph.mode || 'runtime'} />
+      </div>
+    </section>
+  );
+}
+
+function GraphRuntimeExplorer({ graph, skill, selectedNodeId, selectedNode, onSelectNode, statusChips }) {
+  const [legendOpen, setLegendOpen] = useState(false);
+  const [viewMode, setViewMode] = useState('focus');
+
+  return (
+    <section
+      className="grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,68fr)_minmax(320px,32fr)]"
+      data-testid="cortex-runtime-explorer"
+    >
+      <div className="min-w-0 rounded-xl border p-2 md:p-3" style={elevatedPanelStyle}>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5" aria-label="Runtime status">
+            {statusChips.map((chip) => (
+              <StatusChip key={chip.label} {...chip} />
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs transition hover:-translate-y-px"
+              style={panelStyle}
+              aria-expanded={legendOpen}
+              onClick={() => setLegendOpen((open) => !open)}
+            >
+              <Layers3 size={13} aria-hidden="true" />
+              Legend
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs transition hover:-translate-y-px"
+              style={viewMode === 'focus' ? elevatedPanelStyle : panelStyle}
+              aria-pressed={viewMode === 'focus'}
+              onClick={() => setViewMode('focus')}
+            >
+              <Eye size={13} aria-hidden="true" />
+              Focus
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-8 items-center rounded-md border px-2.5 text-xs transition hover:-translate-y-px"
+              style={viewMode === 'map' ? elevatedPanelStyle : panelStyle}
+              aria-pressed={viewMode === 'map'}
+              onClick={() => setViewMode('map')}
+            >
+              Map
+            </button>
+          </div>
+        </div>
+        {legendOpen ? (
+          <div className="mb-2 grid gap-1.5 px-1 sm:grid-cols-2 xl:grid-cols-5" data-testid="cortex-legend">
+            <Legend label="Proof" tone="proof" />
+            <Legend label="Guardrail / Case Law" tone="guardrail" />
+            <Legend label="Mutation Action" tone="mutation" />
+            <Legend label="Dangerous Action" tone="dangerous" />
+            <Legend label="Expired / Recertify" tone="expired" />
+          </div>
+        ) : null}
+        <GraphCanvas
+          graph={graph}
+          selectedNodeId={selectedNodeId}
+          onSelectNode={onSelectNode}
+          viewMode={viewMode}
+        />
+      </div>
+      <div className="min-w-0 lg:sticky lg:top-4">
+        <CortexNodeInspector node={selectedNode} graph={graph} skill={skill} />
+      </div>
+    </section>
+  );
+}
+
+function StatusChip({ label, value, tone = 'neutral' }) {
+  const toneStyle = {
+    ok: {
+      borderColor: 'color-mix(in srgb, var(--accent-success) 34%, var(--border-subtle))',
+      background: 'color-mix(in srgb, var(--accent-success) 11%, transparent)',
+      color: 'var(--text-primary)',
+    },
+    warning: {
+      borderColor: 'color-mix(in srgb, var(--accent-warning) 38%, var(--border-subtle))',
+      background: 'color-mix(in srgb, var(--accent-warning) 12%, transparent)',
+      color: 'var(--text-primary)',
+    },
+    proof: {
+      borderColor: 'color-mix(in srgb, oklch(63% 0.15 248) 42%, var(--border-subtle))',
+      background: 'color-mix(in srgb, oklch(63% 0.15 248) 12%, transparent)',
+      color: 'var(--text-primary)',
+    },
+    neutral: panelStyle,
+  }[tone] || panelStyle;
+
+  return (
+    <span className="inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[11px]" style={toneStyle} data-testid="cortex-status-chip">
+      <span style={{ color: 'var(--text-muted)' }}>{label}</span>
+      <span className="font-semibold">{value}</span>
+    </span>
+  );
+}
+
+function MetadataItem({ label, value }) {
+  return (
+    <div className="rounded-md border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div style={{ color: 'var(--text-muted)' }}>{label}</div>
+      <div className="mt-1 truncate font-medium">{value}</div>
+    </div>
+  );
+}
+
+export function GraphCanvas({ graph, selectedNodeId, onSelectNode, viewMode = 'focus' }) {
+  const frameRef = useRef(null);
+  const [frameSize, setFrameSize] = useState({ width: 960, height: 660 });
   const selectedNode = graph?.nodes?.find((node) => node.id === selectedNodeId);
   const [hoveredNodeId, setHoveredNodeId] = useState('');
   const [hoveredOperationalStarId, setHoveredOperationalStarId] = useState('');
   const activeNodeId = hoveredNodeId || selectedNodeId;
   const activeNode = graph?.nodes?.find((node) => node.id === activeNodeId) || selectedNode;
+  const isMobileFrame = frameSize.width < 680;
+  const layout = useMemo(() => computeGraphLayout(graph, {
+    width: frameSize.width,
+    height: frameSize.height,
+    mobile: isMobileFrame,
+    selectedNodeId: viewMode === 'focus' || isMobileFrame ? selectedNodeId : '',
+  }), [frameSize.height, frameSize.width, graph, isMobileFrame, selectedNodeId, viewMode]);
+
+  useEffect(() => {
+    const element = frameRef.current;
+    if (!element || typeof window === 'undefined') return undefined;
+    const updateSize = () => {
+      const nextWidth = Math.max(320, Math.round(element.clientWidth || 0));
+      const nextHeight = Math.max(420, Math.round(element.clientHeight || 0));
+      setFrameSize((current) => (
+        current.width === nextWidth && current.height === nextHeight
+          ? current
+          : { width: nextWidth, height: nextHeight }
+      ));
+    };
+    updateSize();
+
+    if (typeof ResizeObserver === 'function') {
+      const observer = new ResizeObserver(updateSize);
+      observer.observe(element);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener('resize', updateSize);
+    return () => window.removeEventListener('resize', updateSize);
+  }, []);
+
   const activeNeighborIds = useMemo(() => {
     if (!activeNodeId) return new Set();
     const neighbors = new Set([activeNodeId]);
@@ -201,7 +344,8 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
 
   return (
     <div
-      className="max-w-full overflow-auto rounded-lg border"
+      ref={frameRef}
+      className="relative h-[460px] min-h-[420px] max-h-[560px] w-full overflow-hidden rounded-lg border md:h-[72vh] md:min-h-[620px] md:max-h-[780px]"
       style={{
         borderColor: 'var(--border-subtle)',
         background:
@@ -209,7 +353,7 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
       }}
       data-testid="skill-cortex-graph"
     >
-      <div className="relative" style={{ width: layout.width, height: layout.height, minWidth: '100%' }}>
+      <div className="absolute inset-0">
         <div className="sr-only" data-testid="skill-cortex-node-label-index">
           {[
             ...(graph.nodes || []).map((node) => node.label || node.id),
@@ -220,6 +364,8 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
           className="absolute inset-0"
           width={layout.width}
           height={layout.height}
+          viewBox={`0 0 ${layout.width} ${layout.height}`}
+          preserveAspectRatio="xMidYMid meet"
           role="img"
           aria-label={`Skill Cortex graph${activeNode?.label ? `, active node ${activeNode.label}` : ''}`}
         >
@@ -371,7 +517,7 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
                       stroke="rgba(6, 9, 16, 0.92)"
                       strokeWidth="4"
                       paintOrder="stroke"
-                      fontSize="10.5"
+                      fontSize={layout.mobile ? 11.5 : 10.5}
                       fontWeight="650"
                     >
                       {truncateLabel(star.label, 30)}
@@ -392,7 +538,9 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
             const depth = nodeDepth(node, graph.nodes);
             const showLabel = selected || hovered;
             const label = node.label || node.id;
-            const labelAnchor = position.x > layout.width - 180 ? 'end' : 'start';
+            const labelAnchor = layout.mobile
+              ? position.x > layout.width * 0.52 ? 'end' : 'start'
+              : position.x > layout.width - 180 ? 'end' : 'start';
             const labelX = labelAnchor === 'end' ? position.x - radius - 13 : position.x + radius + 13;
             const labelY = Math.max(16, position.y - 12 - depth * 5);
             return (
@@ -485,10 +633,10 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
                       stroke="rgba(6, 9, 16, 0.92)"
                       strokeWidth="4"
                       paintOrder="stroke"
-                      fontSize="11"
+                      fontSize={layout.mobile ? 12.5 : 11}
                       fontWeight="650"
                     >
-                      {truncateLabel(label, 30)}
+                      {truncateLabel(label, layout.mobile ? 25 : 30)}
                     </text>
                   </g>
                 ) : null}
@@ -511,12 +659,19 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
   );
 }
 
-function computeGraphLayout(graph) {
+function computeGraphLayout(graph, options = {}) {
+  const requestedWidth = Number(options.width || 0);
+  const requestedHeight = Number(options.height || 0);
+  const mobile = Boolean(options.mobile || requestedWidth < 680);
+  const width = Math.max(mobile ? 320 : FORCE_MIN_WIDTH, Math.round(requestedWidth || (mobile ? 390 : FORCE_MIN_WIDTH)));
+  const height = Math.max(mobile ? 420 : FORCE_MIN_HEIGHT, Math.round(requestedHeight || (mobile ? 500 : FORCE_MIN_HEIGHT)));
+  const padding = mobile ? 34 : FORCE_PADDING;
   const nodes = graph?.nodes || [];
   if (!nodes.length) {
     return {
-      width: FORCE_MIN_WIDTH,
-      height: FORCE_MIN_HEIGHT,
+      width,
+      height,
+      mobile,
       positions: new Map(),
       stars: [],
       starLinks: [],
@@ -528,10 +683,8 @@ function computeGraphLayout(graph) {
   const nodeIds = new Set(nodes.map((node) => node.id));
   const layers = new Map(nodes.map((node) => [node.id, 0]));
   const edges = (graph.edges || []).filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to));
-  const width = Math.max(FORCE_MIN_WIDTH, Math.min(1320, 700 + nodes.length * 62));
-  const height = Math.max(FORCE_MIN_HEIGHT, Math.min(760, 500 + Math.ceil(nodes.length / 5) * 48));
   const centerX = width / 2;
-  const centerY = height / 2;
+  const centerY = mobile ? height * 0.52 : height / 2;
 
   for (let pass = 0; pass < Math.max(1, nodes.length * 2); pass += 1) {
     let changed = false;
@@ -551,20 +704,20 @@ function computeGraphLayout(graph) {
     return nodes.findIndex((node) => node.id === a.id) - nodes.findIndex((node) => node.id === b.id);
   });
   const particles = new Map();
-  const orbitLimit = Math.min(width * 0.38, height * 0.42);
+  const orbitLimit = Math.min(width * (mobile ? 0.42 : 0.44), height * (mobile ? 0.38 : 0.46));
   orderedNodes.forEach((node, index) => {
     const seed = stableNodeSeed(`${graph?.graphId || 'graph'}:${node.id}`);
     const layer = layers.get(node.id) || 0;
-    const layerBias = (layer / maxLayer - 0.5) * 0.7;
+    const layerBias = (layer / maxLayer - 0.5) * (mobile ? 1.05 : 0.7);
     const normalizedIndex = (index + 0.72) / Math.max(1, orderedNodes.length);
-    const orbitRadius = orbitLimit * (0.24 + Math.sqrt(normalizedIndex) * 0.72);
+    const orbitRadius = orbitLimit * (mobile ? 0.22 + Math.sqrt(normalizedIndex) * 0.76 : 0.24 + Math.sqrt(normalizedIndex) * 0.72);
     const angle = -Math.PI / 2 + index * GOLDEN_ANGLE + seed * 0.28 + layerBias;
-    const anchorX = clamp(centerX + Math.cos(angle) * orbitRadius * 1.22, FORCE_PADDING, width - FORCE_PADDING);
-    const anchorY = clamp(centerY + Math.sin(angle) * orbitRadius * 0.86, FORCE_PADDING, height - FORCE_PADDING);
+    const anchorX = clamp(centerX + Math.cos(angle) * orbitRadius * (mobile ? 0.9 : 1.22), padding, width - padding);
+    const anchorY = clamp(centerY + Math.sin(angle) * orbitRadius * (mobile ? 1.08 : 0.86), padding, height - padding);
     particles.set(node.id, {
       id: node.id,
-      x: clamp(anchorX + Math.sin(seed * 1.7) * 20, FORCE_PADDING, width - FORCE_PADDING),
-      y: clamp(anchorY + Math.cos(seed * 1.3) * 22, FORCE_PADDING, height - FORCE_PADDING),
+      x: clamp(anchorX + Math.sin(seed * 1.7) * (mobile ? 12 : 20), padding, width - padding),
+      y: clamp(anchorY + Math.cos(seed * 1.3) * (mobile ? 14 : 22), padding, height - padding),
       vx: 0,
       vy: 0,
       anchorX,
@@ -582,7 +735,7 @@ function computeGraphLayout(graph) {
         const dy = b.y - a.y || 0.01;
         const distanceSquared = Math.max(64, dx * dx + dy * dy);
         const distance = Math.sqrt(distanceSquared);
-        const force = 1450 / distanceSquared;
+        const force = (mobile ? 1040 : 1450) / distanceSquared;
         const fx = (dx / distance) * force;
         const fy = (dy / distance) * force;
         a.vx -= fx;
@@ -599,7 +752,7 @@ function computeGraphLayout(graph) {
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-      const targetDistance = 92 + Math.min(54, Math.abs((layers.get(edge.to) || 0) - (layers.get(edge.from) || 0)) * 11);
+      const targetDistance = (mobile ? 70 : 92) + Math.min(mobile ? 38 : 54, Math.abs((layers.get(edge.to) || 0) - (layers.get(edge.from) || 0)) * (mobile ? 8 : 11));
       const force = (distance - targetDistance) * 0.01;
       const fx = (dx / distance) * force;
       const fy = (dy / distance) * force;
@@ -616,8 +769,8 @@ function computeGraphLayout(graph) {
       particle.vy += (centerY - particle.y) * 0.0012;
       particle.vx *= 0.72;
       particle.vy *= 0.72;
-      particle.x = clamp(particle.x + particle.vx, FORCE_PADDING, width - FORCE_PADDING);
-      particle.y = clamp(particle.y + particle.vy, FORCE_PADDING, height - FORCE_PADDING);
+      particle.x = clamp(particle.x + particle.vx, padding, width - padding);
+      particle.y = clamp(particle.y + particle.vy, padding, height - padding);
     }
   }
 
@@ -629,18 +782,90 @@ function computeGraphLayout(graph) {
     });
   }
 
-  const constellation = buildConstellationField({ graph, nodes, positions, width, height });
+  const constellation = buildConstellationField({ graph, nodes, positions, width, height, mobile });
   const semanticSegments = buildSemanticPathSegments({ graph, nodes, edges, positions, stars: constellation.stars });
   const operations = buildOperationalStars({ graph, nodes, positions, width, height });
-  return {
+  const layout = {
     positions,
     width,
     height,
+    mobile,
     stars: constellation.stars,
     starLinks: constellation.starLinks,
     semanticSegments,
     operationalStars: operations.stars,
     operationalLinks: operations.links,
+  };
+
+  if (mobile && options.selectedNodeId && positions.has(options.selectedNodeId)) {
+    return focusLayoutOnNode(layout, options.selectedNodeId, {
+      x: width * 0.52,
+      y: height * 0.48,
+      padding: 16,
+    });
+  }
+
+  return layout;
+}
+
+function focusLayoutOnNode(layout, nodeId, target) {
+  const selected = layout.positions.get(nodeId);
+  if (!selected) return layout;
+
+  const bounds = layoutPointBounds(layout);
+  const availableWidth = layout.width - target.padding * 2;
+  const availableHeight = layout.height - target.padding * 2;
+  let dx = target.x - selected.x;
+  let dy = target.y - selected.y;
+
+  if (bounds.maxX - bounds.minX < availableWidth) {
+    dx = clamp(dx, target.padding - bounds.minX, layout.width - target.padding - bounds.maxX);
+  }
+  if (bounds.maxY - bounds.minY < availableHeight) {
+    dy = clamp(dy, target.padding - bounds.minY, layout.height - target.padding - bounds.maxY);
+  }
+
+  return translateLayout(layout, dx, dy);
+}
+
+function layoutPointBounds(layout) {
+  const points = [
+    ...Array.from(layout.positions.values()),
+    ...(layout.stars || []),
+    ...(layout.operationalStars || []),
+  ];
+  if (!points.length) return { minX: 0, maxX: layout.width, minY: 0, maxY: layout.height };
+  return points.reduce((bounds, point) => ({
+    minX: Math.min(bounds.minX, point.x),
+    maxX: Math.max(bounds.maxX, point.x),
+    minY: Math.min(bounds.minY, point.y),
+    maxY: Math.max(bounds.maxY, point.y),
+  }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+}
+
+function translateLayout(layout, dx, dy) {
+  if (Math.abs(dx) < 0.1 && Math.abs(dy) < 0.1) return layout;
+  const translatePoint = (point) => ({
+    ...point,
+    x: Math.round((point.x + dx) * 10) / 10,
+    y: Math.round((point.y + dy) * 10) / 10,
+  });
+  const translateLine = (line) => ({
+    ...line,
+    x1: Math.round((line.x1 + dx) * 10) / 10,
+    y1: Math.round((line.y1 + dy) * 10) / 10,
+    x2: Math.round((line.x2 + dx) * 10) / 10,
+    y2: Math.round((line.y2 + dy) * 10) / 10,
+  });
+
+  return {
+    ...layout,
+    positions: new Map(Array.from(layout.positions.entries()).map(([id, point]) => [id, translatePoint(point)])),
+    stars: (layout.stars || []).map(translatePoint),
+    operationalStars: (layout.operationalStars || []).map(translatePoint),
+    starLinks: (layout.starLinks || []).map(translateLine),
+    semanticSegments: (layout.semanticSegments || []).map(translateLine),
+    operationalLinks: (layout.operationalLinks || []).map(translateLine),
   };
 }
 
@@ -811,14 +1036,18 @@ function operationStarRadius(operation, node) {
   return 2.45;
 }
 
-function buildConstellationField({ graph, nodes, positions, width, height }) {
+function buildConstellationField({ graph, nodes, positions, width, height, mobile = false }) {
   const seedText = [
     graph?.graphId || 'skill-cortex',
     nodes.map((node) => `${node.id}:${node.kind}:${node.risk || ''}`).join('|'),
     (graph?.edges || []).map((edge) => `${edge.from}>${edge.to}`).join('|'),
   ].join('::');
   const random = createSeededRandom(seedText);
-  const targetCount = Math.round(clamp((width * height) / 1450 + nodes.length * 24, STARFIELD_BASE_COUNT, STARFIELD_MAX_COUNT));
+  const targetCount = Math.round(clamp(
+    (width * height) / (mobile ? 1000 : 1320) + nodes.length * (mobile ? 18 : 26),
+    mobile ? 260 : STARFIELD_BASE_COUNT,
+    mobile ? 520 : STARFIELD_MAX_COUNT,
+  ));
   const stars = [];
 
   const addStar = ({ x, y, r, opacity, color, clusterId = '' }) => {
@@ -841,7 +1070,7 @@ function buildConstellationField({ graph, nodes, positions, width, height }) {
     const clusterCount = Math.min(42, Math.max(22, Math.round(targetCount / Math.max(6, nodes.length + 5)) + (important ? 12 : 2)));
     for (let index = 0; index < clusterCount && stars.length < targetCount; index += 1) {
       const angle = seed + index * GOLDEN_ANGLE + random() * 0.58;
-      const radius = 14 + Math.pow(random(), 0.58) * (important ? 122 : 92);
+      const radius = 14 + Math.pow(random(), 0.58) * (important ? (mobile ? 86 : 126) : (mobile ? 68 : 96));
       const spreadX = 0.76 + random() * 0.72;
       const spreadY = 0.62 + random() * 0.74;
       addStar({
@@ -855,14 +1084,14 @@ function buildConstellationField({ graph, nodes, positions, width, height }) {
     }
   }
 
-  const edgeClusterCount = Math.min(10, Math.max(5, Math.ceil(nodes.length * 0.9)));
+  const edgeClusterCount = Math.min(mobile ? 8 : 14, Math.max(mobile ? 5 : 7, Math.ceil(nodes.length * (mobile ? 0.8 : 1.15))));
   for (let clusterIndex = 0; clusterIndex < edgeClusterCount && stars.length < targetCount; clusterIndex += 1) {
     const anchor = edgeClusterAnchor(random, width, height, clusterIndex);
-    const clusterSize = 14 + Math.floor(random() * 14);
+    const clusterSize = (mobile ? 12 : 18) + Math.floor(random() * (mobile ? 12 : 18));
     const clusterSeed = stableNodeSeed(`${seedText}:edge-cluster:${clusterIndex}`);
     for (let index = 0; index < clusterSize && stars.length < targetCount; index += 1) {
       const angle = clusterSeed + index * GOLDEN_ANGLE + random() * 0.44;
-      const radius = 6 + Math.pow(random(), 0.62) * (56 + random() * 48);
+      const radius = 6 + Math.pow(random(), 0.62) * ((mobile ? 44 : 64) + random() * (mobile ? 34 : 56));
       addStar({
         x: anchor.x + Math.cos(angle) * radius * (0.78 + random() * 0.58),
         y: anchor.y + Math.sin(angle) * radius * (0.72 + random() * 0.52),
@@ -1041,15 +1270,6 @@ function operationalStarTone(star) {
   if (star.type === 'expiry') return { color: 'oklch(62% 0.035 250)' };
   if (star.type === 'substrate') return { color: 'oklch(68% 0.11 88)' };
   return { color: 'rgba(203, 213, 225, 0.78)' };
-}
-
-function Metric({ label, value }) {
-  return (
-    <div className="rounded-lg border px-3 py-3" style={panelStyle}>
-      <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
-      <div className="mt-1 truncate text-sm font-semibold">{value}</div>
-    </div>
-  );
 }
 
 function Badge({ label, icon: Icon }) {
