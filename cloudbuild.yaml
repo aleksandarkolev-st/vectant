@@ -30,6 +30,8 @@ substitutions:
   _GKE_ZONE: europe-west10-a
   _REGISTRY: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/synthi
   _IMAGE_TAG: ${BUILD_ID}
+  _KUSTOMIZE_DIR: k8s
+  _KUSTOMIZE_LOAD_RESTRICTOR: ""
 
   # NEXT_PUBLIC_* build args baked into the frontend client bundle.
   # Override these per environment via trigger substitutions.
@@ -282,10 +284,26 @@ steps:
         set -euo pipefail
         REGISTRY="${_REGISTRY}"
         TAG="${_IMAGE_TAG}"
+        KUSTOMIZE_DIR="${_KUSTOMIZE_DIR}"
+        KUSTOMIZE_LOAD_RESTRICTOR="${_KUSTOMIZE_LOAD_RESTRICTOR}"
         NS="synthi"
 
         echo "=== Deploying tag: $${TAG} ==="
         echo "=== Region: ${_REGION} ==="
+        echo "=== Kustomize dir: $${KUSTOMIZE_DIR} ==="
+
+        if [[ "$${KUSTOMIZE_DIR}" = /* || "$${KUSTOMIZE_DIR}" == *..* ]]; then
+          echo "Kustomize dir must be a relative repo path without '..': $${KUSTOMIZE_DIR}" >&2
+          exit 1
+        fi
+        if [[ ! -f "$${KUSTOMIZE_DIR}/kustomization.yaml" ]]; then
+          echo "Kustomize dir does not contain kustomization.yaml: $${KUSTOMIZE_DIR}" >&2
+          exit 1
+        fi
+        if [[ -n "$${KUSTOMIZE_LOAD_RESTRICTOR}" && "$${KUSTOMIZE_LOAD_RESTRICTOR}" != "LoadRestrictionsNone" ]]; then
+          echo "Unsupported Kustomize load restrictor: $${KUSTOMIZE_LOAD_RESTRICTOR}" >&2
+          exit 1
+        fi
 
         # Render Kustomize once with the immutable image tag before applying.
         # Applying raw k8s/ directly would briefly roll Deployments to the
@@ -293,7 +311,11 @@ steps:
         RENDERED="/workspace/.cloudbuild/synthi-k8s.yaml"
         DEFAULT_REGISTRY="europe-west10-docker.pkg.dev/vectant-proj/synthi"
         mkdir -p "$$(dirname "$${RENDERED}")"
-        kubectl kustomize k8s > "$${RENDERED}"
+        KUSTOMIZE_ARGS=("$${KUSTOMIZE_DIR}")
+        if [[ -n "$${KUSTOMIZE_LOAD_RESTRICTOR}" ]]; then
+          KUSTOMIZE_ARGS+=("--load-restrictor" "$${KUSTOMIZE_LOAD_RESTRICTOR}")
+        fi
+        kubectl kustomize "$${KUSTOMIZE_ARGS[@]}" > "$${RENDERED}"
         sed -i "s|$${DEFAULT_REGISTRY}|$${REGISTRY}|g" "$${RENDERED}"
         sed -i "s|build-tag-required|$${TAG}|g" "$${RENDERED}"
         if grep -n "build-tag-required" "$${RENDERED}"; then

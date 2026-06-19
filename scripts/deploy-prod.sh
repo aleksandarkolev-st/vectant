@@ -14,6 +14,9 @@ Options:
   --zone ZONE          GKE cluster zone/location. Default: europe-west10-a
   --registry REGISTRY  Artifact Registry repo. Default: <region>-docker.pkg.dev/<project>/synthi
   --tag TAG            Immutable image tag. Default: prod-<UTC timestamp>-<git sha>
+  --kustomize-dir DIR  Kustomize render directory. Default: k8s
+  --kustomize-load-restrictor VALUE
+                       Optional Kustomize load restrictor. Only LoadRestrictionsNone is accepted.
   --branch BRANCH      Branch to push when --push is used. Default: main
   --push               Push HEAD to origin/<branch> before submitting Cloud Build
   --allow-dirty        Allow deploying a dirty local checkout
@@ -27,6 +30,7 @@ Examples:
   scripts/deploy-prod.sh
   scripts/deploy-prod.sh --push
   scripts/deploy-prod.sh --tag prod-20260611-a1b2c3d4
+  scripts/deploy-prod.sh --kustomize-dir k8s/overlays/dojo-release-gate --kustomize-load-restrictor LoadRestrictionsNone
 EOF
 }
 
@@ -36,6 +40,8 @@ GKE_CLUSTER="synthi-beta-cluster"
 GKE_ZONE="europe-west10-a"
 REGISTRY=""
 IMAGE_TAG=""
+KUSTOMIZE_DIR="k8s"
+KUSTOMIZE_LOAD_RESTRICTOR=""
 DEPLOY_BRANCH="main"
 PUSH_FIRST="false"
 ALLOW_DIRTY="false"
@@ -65,6 +71,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --tag)
       IMAGE_TAG="${2:?--tag requires a value}"
+      shift 2
+      ;;
+    --kustomize-dir)
+      KUSTOMIZE_DIR="${2:?--kustomize-dir requires a value}"
+      shift 2
+      ;;
+    --kustomize-load-restrictor)
+      KUSTOMIZE_LOAD_RESTRICTOR="${2:?--kustomize-load-restrictor requires a value}"
       shift 2
       ;;
     --branch)
@@ -119,6 +133,21 @@ if [[ ! "$IMAGE_TAG" =~ ^[A-Za-z0-9_.-]+$ ]]; then
   exit 1
 fi
 
+if [[ "$KUSTOMIZE_DIR" = /* || "$KUSTOMIZE_DIR" == *..* ]]; then
+  echo "Kustomize dir must be a relative repo path without '..': $KUSTOMIZE_DIR" >&2
+  exit 1
+fi
+
+if [[ ! -f "$REPO_ROOT/$KUSTOMIZE_DIR/kustomization.yaml" ]]; then
+  echo "Kustomize dir does not contain kustomization.yaml: $KUSTOMIZE_DIR" >&2
+  exit 1
+fi
+
+if [[ -n "$KUSTOMIZE_LOAD_RESTRICTOR" && "$KUSTOMIZE_LOAD_RESTRICTOR" != "LoadRestrictionsNone" ]]; then
+  echo "Unsupported Kustomize load restrictor: $KUSTOMIZE_LOAD_RESTRICTOR" >&2
+  exit 1
+fi
+
 if [[ "$ALLOW_DIRTY" != "true" ]]; then
   if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
     echo "Refusing to deploy a dirty checkout." >&2
@@ -139,9 +168,13 @@ echo "  cluster:  ${GKE_CLUSTER}"
 echo "  location: ${GKE_ZONE}"
 echo "  registry: ${REGISTRY}"
 echo "  tag:      ${IMAGE_TAG}"
+echo "  kustomize: ${KUSTOMIZE_DIR}"
+if [[ -n "$KUSTOMIZE_LOAD_RESTRICTOR" ]]; then
+  echo "  kustomize load restrictor: ${KUSTOMIZE_LOAD_RESTRICTOR}"
+fi
 
 "$GCLOUD_BIN" builds submit "$REPO_ROOT" \
   --project="$PROJECT_ID" \
   --config="$REPO_ROOT/cloudbuild.yaml" \
   --ignore-file="$REPO_ROOT/.gcloudignore" \
-  --substitutions="_REGION=${REGION},_GKE_CLUSTER=${GKE_CLUSTER},_GKE_ZONE=${GKE_ZONE},_REGISTRY=${REGISTRY},_IMAGE_TAG=${IMAGE_TAG}"
+  --substitutions="_REGION=${REGION},_GKE_CLUSTER=${GKE_CLUSTER},_GKE_ZONE=${GKE_ZONE},_REGISTRY=${REGISTRY},_IMAGE_TAG=${IMAGE_TAG},_KUSTOMIZE_DIR=${KUSTOMIZE_DIR},_KUSTOMIZE_LOAD_RESTRICTOR=${KUSTOMIZE_LOAD_RESTRICTOR}"
