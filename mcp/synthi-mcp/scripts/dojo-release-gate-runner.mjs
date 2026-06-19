@@ -854,9 +854,29 @@ function invalidRequiredEnv(gate, env = process.env) {
       } else if (requirement.must_exist === true && !existsSync(String(value))) {
         invalid.push({ env: key, value: String(value), reason: "path_missing" });
       }
+    } else if (type === "external_store_ref") {
+      if (!isExternalStoreRef(value)) {
+        invalid.push({ env: key, value: String(value), reason: "not_external_store_ref" });
+      }
+    } else if (type === "sha256_hex") {
+      if (!/^[a-f0-9]{64}$/i.test(String(value || "").trim())) {
+        invalid.push({ env: key, value: String(value), reason: "not_sha256_hex" });
+      }
+    } else if (type === "non_empty") {
+      if (!String(value || "").trim()) {
+        invalid.push({ env: key, value: String(value), reason: "empty" });
+      }
     }
   }
   return invalid;
+}
+
+function isExternalStoreRef(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  const scheme = raw.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1]?.toLowerCase();
+  if (scheme && scheme !== "file") return true;
+  return path.isAbsolute(raw);
 }
 
 function parseEnvUrl(value) {

@@ -923,6 +923,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
@@ -939,7 +941,9 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
         type: "non_loopback_url",
         allowed_protocols: ["http", "https"],
       },
-      { env: "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE", type: "absolute_path" },
+      { env: "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE", type: "external_store_ref" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256", type: "sha256_hex" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE", type: "non_empty" },
       { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON", type: "json_array" },
       { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD", type: "absolute_path" },
     ],
@@ -965,6 +969,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
@@ -981,7 +987,9 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
         type: "non_loopback_url",
         allowed_protocols: ["http", "https"],
       },
-      { env: "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE", type: "absolute_path" },
+      { env: "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE", type: "external_store_ref" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256", type: "sha256_hex" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE", type: "non_empty" },
       { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON", type: "json_array" },
       { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD", type: "absolute_path" },
     ],
@@ -2729,6 +2737,15 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!Array.isArray(gate.requires_env) || !gate.requires_env.includes("SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL")) {
       errors.push(`private_tool_host_conformance_missing_target_env:${gate.id}`);
+    }
+    const requiredStoreCustodyEnv = [
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE",
+    ];
+    const missingStoreCustodyEnv = requiredStoreCustodyEnv
+      .filter((envName) => !Array.isArray(gate.requires_env) || !gate.requires_env.includes(envName));
+    if (missingStoreCustodyEnv.length > 0) {
+      errors.push(`${gate.id}_missing_store_custody_env:${missingStoreCustodyEnv.join(",")}`);
     }
     if (gate.id === "private_tool_stdio_host_conformance" || gate.id === "private_tool_codex_host_conformance") {
       const requiredMcpCommandEnv = [

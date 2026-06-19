@@ -175,6 +175,8 @@ describe("Dojo release gate runner", () => {
         SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: "relative/private-tools.json",
         SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: "secret-key",
         SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: "tenant/workspace",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256: "not-a-sha256",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE: "tenant/workspace",
         SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL: "https://app.example.com/workspace",
         SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND: "node",
         SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON: "{\"bad\":true}",
@@ -193,7 +195,11 @@ describe("Dojo release gate runner", () => {
         }),
         expect.objectContaining({
           env: "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
-          reason: "not_absolute_path",
+          reason: "not_external_store_ref",
+        }),
+        expect.objectContaining({
+          env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256",
+          reason: "not_sha256_hex",
         }),
         expect.objectContaining({
           env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
@@ -212,9 +218,11 @@ describe("Dojo release gate runner", () => {
       gateIds: ["private_tool_stdio_host_conformance"],
       env: {
         SYNTHI_HOSTED_BROWSER_CDP_URL: "wss://runtime.example.com/devtools/browser/remote",
-        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: join(tmpdir(), "private-tools.json"),
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: "gs://release-private-tool-store/private-tools.json",
         SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: "secret-key",
         SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: "tenant/workspace",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256: createHash("sha256").update("secret-key").digest("hex"),
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE: "tenant/workspace",
         SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL: "https://app.example.com/workspace",
         SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND: "node",
         SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON: "[\"/opt/synthi/mcp/dist/index.js\"]",
