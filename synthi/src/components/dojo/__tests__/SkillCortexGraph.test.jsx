@@ -153,6 +153,8 @@ describe('SkillCortexGraph', () => {
 
     expect(view.querySelector('[data-testid="skill-cortex-graph"]')?.textContent).toContain('MCP skill call');
     expect(view.querySelector('[data-testid="skill-cortex-graph"]')?.textContent).toContain('Submit invoice with runtime guardrail');
+    expect(view.querySelector('[data-testid="skill-cortex-graph"]')?.textContent).toContain('workspace_verified');
+    expect(view.querySelectorAll('[data-testid^="cortex-operational-star-"]').length).toBeGreaterThan(4);
     expect(view.querySelector('[data-testid="skill-cortex-graph"]')?.textContent).not.toContain('Legacy submit invoice');
     expect(view.querySelector('[data-testid="cortex-node-inspector"]')?.textContent).toContain('MCP skill call');
 
