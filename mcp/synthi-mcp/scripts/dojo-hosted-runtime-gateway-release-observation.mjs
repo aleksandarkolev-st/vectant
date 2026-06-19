@@ -60,6 +60,29 @@ export const DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_INPUTS = {
 
 const args = parseArgs(process.argv.slice(2));
 
+const STEP_REQUIREMENTS = {
+  hostedWorkspaceAttach: {
+    ids: ["hosted_workspace_browser_attach", "hosted_runtime_attach", "hosted_attach"],
+    legacyNames: ["attach hosted workspace browser through MCP"],
+  },
+  originPolicyConsent: {
+    ids: ["origin_policy_consent", "origin_policy_granted", "exact_origin_consent"],
+    legacyNames: ["grant exact-origin consent"],
+  },
+  proofGatedExecution: {
+    ids: ["proof_gated_dojo_execution", "proof_gated_execution", "dojo_skill_proof_execution"],
+    legacyNames: ["execute proof-gated Dojo skill"],
+  },
+  revokedProofValidationBlocked: {
+    ids: ["revoked_proof_validation_blocked", "proof_revocation_validation_blocked"],
+    legacyNames: ["revoked proof validation blocked"],
+  },
+  revokedProofRunBlocked: {
+    ids: ["revoked_proof_run_blocked", "proof_revocation_run_blocked"],
+    legacyNames: ["revoked proof run blocked"],
+  },
+};
+
 if (isDirectRun()) {
   main().catch((err) => {
     console.error(`[fail] ${err instanceof Error ? err.stack || err.message : String(err)}`);
@@ -220,7 +243,7 @@ export function deriveHostedRuntimeReleaseChecks(artifacts) {
       && workflow?.hosted_runtime?.non_loopback_runtime === true
       && stdioHostedAttachObserved(stdio)
       && codexHostedAttachObserved(codex)
-      && hasPassingStep(conformance, "execute proof-gated Dojo skill"),
+      && hasPassingStep(conformance, STEP_REQUIREMENTS.proofGatedExecution),
     external_session_store_observed: workflow?.fresh_mcp?.private_workflow_store_env_configured === true
       && stdioHost?.conformance?.external_private_tool_store === true
       && stdioHost?.private_tool_store?.external === true
@@ -240,7 +263,7 @@ export function deriveHostedRuntimeReleaseChecks(artifacts) {
       "credentials_short_lived",
       "runtime_credentials_short_lived",
     ]),
-    origin_policy_observed: hasPassingStep(stdio, "grant exact-origin consent")
+    origin_policy_observed: hasPassingStep(stdio, STEP_REQUIREMENTS.originPolicyConsent)
       && observedBoolean(allJson, ["origin_policy_observed", "origin_policy_enforced", "origin_allowlist_enforced"]),
     local_network_policy_observed: observedBoolean(allJson, [
       "local_network_policy_observed",
@@ -255,8 +278,8 @@ export function deriveHostedRuntimeReleaseChecks(artifacts) {
     ]),
     audit_event_observed: observedBoolean(allJson, ["audit_event_observed", "audit_events_observed", "runtime_audit_event_written"]),
     evidence_write_observed: observedBoolean(allJson, ["evidence_write_observed", "runtime_evidence_written", "evidence_record_written"]),
-    revocation_observed: hasPassingStep(conformance, "revoked proof validation blocked")
-      && hasPassingStep(conformance, "revoked proof run blocked"),
+    revocation_observed: hasPassingStep(conformance, STEP_REQUIREMENTS.revokedProofValidationBlocked)
+      && hasPassingStep(conformance, STEP_REQUIREMENTS.revokedProofRunBlocked),
     expiry_observed: observedBoolean(allJson, ["expiry_observed", "expired_session_blocked", "credentials_expiry_observed"]),
     no_static_cdp_endpoint_observed: workflow?.hosted_runtime?.non_loopback_runtime === true
       && !hasLoopbackOrLocalUrl(workflow?.hosted_runtime?.cdp_url)
@@ -294,14 +317,33 @@ async function readArtifactRef({ gateId, artifactPath, evidencePath }) {
   };
 }
 
-function hasPassingStep(report, name) {
-  return Array.isArray(report?.steps) && report.steps.some((step) => step?.name === name && step.ok === true && step.dry_run !== true);
+function hasPassingStep(report, requirement) {
+  return findPassingStep(report, requirement) !== null;
+}
+
+function findPassingStep(report, requirement) {
+  if (!Array.isArray(report?.steps)) return null;
+  return report.steps.find((step) => stepMatchesRequirement(step, requirement)) || null;
+}
+
+function stepMatchesRequirement(step, requirement) {
+  if (!step || step.ok !== true || step.dry_run === true) return false;
+  const ids = new Set((requirement?.ids || []).map(normalizeStepToken).filter(Boolean));
+  if (ids.size > 0 && stepMachineTokens(step).some((token) => ids.has(token))) return true;
+  return (requirement?.legacyNames || []).some((name) => step.name === name);
+}
+
+function stepMachineTokens(step) {
+  const fields = ["id", "step_id", "capability", "capability_id", "check", "check_id", "observation", "observation_id"];
+  return fields.map((field) => normalizeStepToken(step?.[field])).filter(Boolean);
+}
+
+function normalizeStepToken(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
 function stdioHostedAttachObserved(transcript) {
-  const step = Array.isArray(transcript?.steps)
-    ? transcript.steps.find((item) => item?.name === "attach hosted workspace browser through MCP" && item.ok === true)
-    : null;
+  const step = findPassingStep(transcript, STEP_REQUIREMENTS.hostedWorkspaceAttach);
   return step?.evidence?.hosted_attach === true && step?.evidence?.local_attach === false;
 }
 

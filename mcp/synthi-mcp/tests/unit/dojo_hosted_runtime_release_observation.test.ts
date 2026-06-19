@@ -118,6 +118,52 @@ describe("hosted runtime gateway release observation producer", () => {
       DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_CHECKS.map((check) => [check, true]),
     ));
   });
+
+  it("uses stable machine step identifiers when human-readable step labels change", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "dojo-hosted-runtime-observation-machine-steps-"));
+    const paths = await writeHostedRuntimeReleaseArtifacts({ dir });
+    const artifacts = {};
+    for (const [gateId, refs] of Object.entries(paths)) {
+      artifacts[gateId] = {
+        json: JSON.parse(await readFile(refs.artifact_path, "utf8")),
+        evidence_json: refs.evidence_path ? JSON.parse(await readFile(refs.evidence_path, "utf8")) : undefined,
+      };
+    }
+
+    const stdioSteps = artifacts.private_tool_stdio_acceptance.json.steps;
+    stdioSteps[0] = {
+      ...stdioSteps[0],
+      id: "hosted_workspace_browser_attach",
+      name: "renamed hosted attach step",
+    };
+    stdioSteps[1] = {
+      ...stdioSteps[1],
+      capability_id: "origin_policy_consent",
+      name: "renamed origin consent step",
+    };
+    const conformanceSteps = artifacts.dojo_mcp_host_conformance.json.steps;
+    conformanceSteps[0] = {
+      ...conformanceSteps[0],
+      check_id: "proof_gated_dojo_execution",
+      name: "renamed proof execution step",
+    };
+    conformanceSteps[2] = {
+      ...conformanceSteps[2],
+      observation_id: "revoked_proof_validation_blocked",
+      name: "renamed revocation validation step",
+    };
+    conformanceSteps[3] = {
+      ...conformanceSteps[3],
+      capability: "revoked_proof_run_blocked",
+      name: "renamed revocation run step",
+    };
+
+    const checks = deriveHostedRuntimeReleaseChecks(artifacts);
+
+    expect(checks.hosted_runtime_gateway_observed).toBe(true);
+    expect(checks.origin_policy_observed).toBe(true);
+    expect(checks.revocation_observed).toBe(true);
+  });
 });
 
 async function writeHostedRuntimeReleaseArtifacts({
