@@ -64,10 +64,14 @@ gcloud compute addresses describe synthi-ip --global
 
 ### Build & Push Images
 
-Replace `REGISTRY` with your Artifact Registry path (e.g., `us-central1-docker.pkg.dev/overview-synti/synthi`).
+Set the project and region for the target environment, then derive the Artifact
+Registry path. Keep these as variables so local, staging, and production
+operators do not accidentally build against a stale project.
 
 ```bash
-REGISTRY=us-central1-docker.pkg.dev/overview-synti/synthi
+: "${PROJECT_ID:?Set PROJECT_ID, for example vectant-proj}"
+: "${REGION:?Set REGION, for example europe-west10}"
+REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/synthi"
 
 # Frontend
 cd synthi
@@ -220,14 +224,22 @@ creates the `preview-wildcard-tls` secret used by `k8s/ingress.yaml`.
 
 ### Configure Registry
 
-Image references in all manifests default to `us-central1-docker.pkg.dev/overview-synti/synthi/`.
-To use a different registry, override via Kustomize:
+Image references in the active manifests point at the current Artifact Registry
+shape and use the `build-tag-required` placeholder. Cloud Build and
+`scripts/deploy-prod.sh` replace that placeholder with an immutable image tag
+during deployment.
+
+For a manual render outside Cloud Build, set the target registry and tag through
+Kustomize instead of editing manifests in place:
 
 ```bash
+: "${REGISTRY:?Set REGISTRY, for example europe-west10-docker.pkg.dev/vectant-proj/synthi}"
+: "${IMAGE_TAG:?Set IMAGE_TAG, for example prod-20260618-821d174d4864}"
+
 cd k8s
 kustomize edit set image \
-  us-central1-docker.pkg.dev/overview-synti/synthi/synthi-frontend=YOUR_REGISTRY/synthi-frontend:v1.0 \
-  us-central1-docker.pkg.dev/overview-synti/synthi/synthi-collab-server=YOUR_REGISTRY/synthi-collab-server:v1.0 \
+  europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-frontend="${REGISTRY}/synthi-frontend:${IMAGE_TAG}" \
+  europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-collab-server="${REGISTRY}/synthi-collab-server:${IMAGE_TAG}" \
   # ...etc
 ```
 
@@ -237,15 +249,17 @@ The project includes a `cloudbuild.yaml` at the repo root that automates build a
 
 ```bash
 # One-time setup: create Artifact Registry
+: "${PROJECT_ID:?Set PROJECT_ID}"
+: "${REGION:?Set REGION}"
 gcloud artifacts repositories create synthi \
-  --repository-format=docker --location=us-central1 --project=overview-synti
+  --repository-format=docker --location="${REGION}" --project="${PROJECT_ID}"
 
 # Grant Cloud Build permissions
-PROJECT_NUM=$(gcloud projects describe overview-synti --format='value(projectNumber)')
-gcloud projects add-iam-policy-binding overview-synti \
+PROJECT_NUM=$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="serviceAccount:${PROJECT_NUM}@cloudbuild.gserviceaccount.com" \
   --role="roles/artifactregistry.writer"
-gcloud projects add-iam-policy-binding overview-synti \
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="serviceAccount:${PROJECT_NUM}@cloudbuild.gserviceaccount.com" \
   --role="roles/container.developer"
 
@@ -254,7 +268,7 @@ gcloud builds triggers create github \
   --name="synthi-deploy-main" \
   --repo-name="synthi-ide" --repo-owner="YOUR_ORG" \
   --branch-pattern="^main$" --build-config="cloudbuild.yaml" \
-  --project=overview-synti
+  --project="${PROJECT_ID}"
 ```
 
 For the current beta production environment, use one of these paths instead of
