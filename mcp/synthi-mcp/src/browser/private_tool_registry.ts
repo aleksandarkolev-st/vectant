@@ -45,6 +45,16 @@ export interface PrivateWorkflowToolStore {
   clear(): void;
 }
 
+export interface PrivateWorkflowToolPublishOptions {
+  reservedToolNames?: Iterable<string>;
+  now?: number;
+  workflowArtifact?: BrowserWorkflowArtifact;
+}
+
+export type PrivateWorkflowToolPublishValidation =
+  | { ok: true; tool_name: string }
+  | { ok: false; error: string; tool_name: string };
+
 export class InMemoryPrivateWorkflowToolStore implements PrivateWorkflowToolStore {
   private readonly registrations = new Map<string, PrivateWorkflowToolRegistration>();
 
@@ -206,22 +216,11 @@ export class PrivateWorkflowToolRegistry {
 
   publish(
     manifest: PrivateWorkflowToolManifestV7,
-    options: { reservedToolNames?: Iterable<string>; now?: number; workflowArtifact?: BrowserWorkflowArtifact } = {}
+    options: PrivateWorkflowToolPublishOptions = {}
   ): { ok: true; registration: PrivateWorkflowToolRegistration } | { ok: false; error: string; tool_name: string } {
+    const validation = validatePrivateWorkflowToolPublication(manifest, options);
+    if (!validation.ok) return validation;
     const toolName = manifest.tool_name;
-    if (!toolName.startsWith(PRIVATE_TOOL_PREFIX)) {
-      return { ok: false, error: "private_tool_name_must_use_synthi_app_prefix", tool_name: toolName };
-    }
-    if (options.workflowArtifact && options.workflowArtifact.workflow_id !== manifest.workflow_id) {
-      return { ok: false, error: "private_tool_workflow_artifact_mismatch", tool_name: toolName };
-    }
-    if (manifest.status === "blocked") {
-      return { ok: false, error: "private_tool_manifest_blocked", tool_name: toolName };
-    }
-    const reserved = new Set(options.reservedToolNames ?? []);
-    if (reserved.has(toolName)) {
-      return { ok: false, error: "private_tool_name_reserved", tool_name: toolName };
-    }
     const registration: PrivateWorkflowToolRegistration = {
       workflow_id: manifest.workflow_id,
       tool_name: toolName,
@@ -272,6 +271,27 @@ export class PrivateWorkflowToolRegistry {
   }
 }
 
+export function validatePrivateWorkflowToolPublication(
+  manifest: PrivateWorkflowToolManifestV7,
+  options: PrivateWorkflowToolPublishOptions = {}
+): PrivateWorkflowToolPublishValidation {
+  const toolName = manifest.tool_name;
+  if (!toolName.startsWith(PRIVATE_TOOL_PREFIX)) {
+    return { ok: false, error: "private_tool_name_must_use_synthi_app_prefix", tool_name: toolName };
+  }
+  if (options.workflowArtifact && options.workflowArtifact.workflow_id !== manifest.workflow_id) {
+    return { ok: false, error: "private_tool_workflow_artifact_mismatch", tool_name: toolName };
+  }
+  if (manifest.status === "blocked") {
+    return { ok: false, error: "private_tool_manifest_blocked", tool_name: toolName };
+  }
+  const reserved = new Set(options.reservedToolNames ?? []);
+  if (reserved.has(toolName)) {
+    return { ok: false, error: "private_tool_name_reserved", tool_name: toolName };
+  }
+  return { ok: true, tool_name: toolName };
+}
+
 export const privateWorkflowToolRegistry = new PrivateWorkflowToolRegistry(createDefaultPrivateWorkflowToolStore());
 
 export function privateWorkflowToolDefinition(registration: PrivateWorkflowToolRegistration): PrivateWorkflowMcpToolDefinition {
@@ -280,11 +300,32 @@ export function privateWorkflowToolDefinition(registration: PrivateWorkflowToolR
     name: manifest.tool_name,
     description: [
       manifest.description,
-      manifest.mutation.requires_confirmation
-        ? "Defaults to prefix-only replay. Use ciOnly for a configured isolated mutation replay, or sameSession with confirm_mutation=true for an explicit human-approved live session."
-        : "Runs the taught workflow through the Synthi-hosted browser runtime.",
+      "This is a Dojo backing tool and cannot be called directly.",
+      "Use synthi_dojo_issue_proof_capsule, then synthi_dojo_run_with_proof_capsule with this tool's arguments in tool_args.",
     ].join(" "),
-    inputSchema: privateWorkflowToolInputSchema(manifest),
+    inputSchema: proofGatedPrivateWorkflowToolInputSchema(manifest),
+  };
+}
+
+function proofGatedPrivateWorkflowToolInputSchema(manifest: PrivateWorkflowToolManifestV7): Record<string, unknown> {
+  const raw = privateWorkflowToolInputSchema(manifest);
+  const rawProperties = raw["properties"] && typeof raw["properties"] === "object" && !Array.isArray(raw["properties"])
+    ? raw["properties"] as Record<string, unknown>
+    : {};
+  const rawRequired = Array.isArray(raw["required"]) ? raw["required"].filter((item): item is string => typeof item === "string") : [];
+  return {
+    type: "object",
+    properties: {
+      proof_capsule: {
+        type: "object",
+        description: "Proof-carrying capsule issued by synthi_dojo_issue_proof_capsule for this workflow.",
+      },
+      ...rawProperties,
+      tool_args: privateWorkflowToolInputSchema(manifest),
+    },
+    required: ["proof_capsule", ...rawRequired],
+    additionalProperties: false,
+    description: "Direct calls are rejected. Raw workflow args are shown for discovery; pass proof_capsule and matching tool_args to synthi_dojo_run_with_proof_capsule instead.",
   };
 }
 

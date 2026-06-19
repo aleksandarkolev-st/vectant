@@ -157,6 +157,13 @@ export interface WorkflowStepContractV7 {
     transformVersion?: string;
     missingReason?: "sourceTokenMissing";
   };
+  apiPlan?: {
+    status: "observed";
+    method: string;
+    url: string;
+    redacted: boolean;
+    resourceType?: string;
+  };
   semanticPlan?: {
     reducerVersion: string;
     windowId: string;
@@ -900,6 +907,7 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
   const mutation = mutationFor(actionKind, targetLabel, event);
   const surfacePlan = surfacePlanFor(event, actionKind);
   const sourcePlan = actionKind === "navigate" ? { status: "notRequired" as const } : sourcePlanFor(element);
+  const apiPlan = apiPlanForEvent(event);
   const limitations: WorkflowLimitationV7[] = [];
   if (sourcePlan.status === "missing") limitations.push("sourceIdentityMissing");
   if (!primary && actionKind !== "navigate") limitations.push("unresolvedStep");
@@ -927,6 +935,7 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
       confidence,
     },
     sourcePlan,
+    ...(apiPlan ? { apiPlan } : {}),
     ...(event.semantic ? {
       semanticPlan: {
         reducerVersion: event.semantic.reducer_version,
@@ -941,6 +950,19 @@ function stepFromEvent(event: BrowserTraceEvent, ordinal: number): WorkflowStepC
     expectedEffects: expectedEffectsFor(actionKind, targetLabel, mutation !== undefined),
     ...(mutation ? { mutation } : {}),
     limitations,
+  };
+}
+
+function apiPlanForEvent(event: BrowserTraceEvent): WorkflowStepContractV7["apiPlan"] | undefined {
+  const method = stringDetail(event, "network_method")?.toUpperCase();
+  const url = stringDetail(event, "network_url");
+  if (!method || !url) return undefined;
+  return {
+    status: "observed",
+    method,
+    url,
+    redacted: boolDetail(event, "network_url_redacted"),
+    ...(stringDetail(event, "resource_type") ? { resourceType: stringDetail(event, "resource_type") } : {}),
   };
 }
 

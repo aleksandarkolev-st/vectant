@@ -14,6 +14,8 @@ import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, browserWorkflowOverlayAction, dispat
 
 const originalBrowserCdpUrl = process.env["SYNTHI_BROWSER_CDP_URL"];
 const originalHostedBrowserCdpUrl = process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"];
+const originalHostedOriginAllowlist = process.env["SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST"];
+const originalHostedSessionTtlMs = process.env["SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS"];
 
 beforeEach(() => {
   browserBroker.resetForTests();
@@ -21,6 +23,8 @@ beforeEach(() => {
   eventLog._resetForTests();
   delete process.env["SYNTHI_BROWSER_CDP_URL"];
   delete process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"];
+  delete process.env["SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST"];
+  delete process.env["SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS"];
 });
 
 afterEach(async () => {
@@ -36,6 +40,16 @@ afterEach(async () => {
     delete process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"];
   } else {
     process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"] = originalHostedBrowserCdpUrl;
+  }
+  if (originalHostedOriginAllowlist === undefined) {
+    delete process.env["SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST"];
+  } else {
+    process.env["SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST"] = originalHostedOriginAllowlist;
+  }
+  if (originalHostedSessionTtlMs === undefined) {
+    delete process.env["SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS"];
+  } else {
+    process.env["SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS"] = originalHostedSessionTtlMs;
   }
 });
 
@@ -1342,6 +1356,58 @@ describe("browser MCP tool surface", () => {
       required_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
     }));
     expect(browserBroker.runtimeAttachment()).toBeNull();
+  });
+
+  it("revokes a hosted runtime session and blocks subsequent browser actions", async () => {
+    const url = "https://workspace.example.test/workspace/browser";
+    process.env["SYNTHI_HOSTED_BROWSER_CDP_URL"] = "ws://hosted-runtime.example.test/devtools/browser/session";
+    process.env["SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST"] = "https://workspace.example.test";
+    process.env["SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS"] = "900000";
+    browserBroker.requestConsent(url);
+    const attach = vi.spyOn(browserPlaywrightAdapter, "attach").mockResolvedValue([
+      { tab_id: "hosted_tab", url, active: true },
+    ]);
+    vi.spyOn(browserPlaywrightAdapter, "open").mockResolvedValue({ tab_id: "hosted_tab", url, active: true });
+    vi.spyOn(browserPlaywrightAdapter, "listTabs").mockResolvedValue([
+      { tab_id: "hosted_tab", url, active: true },
+    ]);
+    const action = vi.spyOn(browserPlaywrightAdapter, "action").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "hosted_tab",
+      url,
+    });
+
+    const attached = await dispatchBrowserTool("synthi_browser_attach_current_workspace", {
+      workspace_id: "workspace-a",
+      workspace_url: url,
+    });
+    const lease = browserBroker.acquireLease("agent", 5000, "unit");
+    const revoked = await dispatchBrowserTool("synthi_browser_revoke_hosted_runtime_session", {
+      reason: "operator_revoked",
+    });
+    const blocked = await dispatchBrowserTool("synthi_browser_action", {
+      lease_id: lease.lease_id,
+      tab_id: "hosted_tab",
+      action: "click",
+      selector: "button",
+    });
+
+    expect(attach).toHaveBeenCalledWith("ws://hosted-runtime.example.test/devtools/browser/session");
+    expect(attached?.isError).toBeUndefined();
+    expect(revoked?.isError).toBeUndefined();
+    expect(revoked?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      revoked: true,
+      runtime: expect.objectContaining({
+        revoked_reason: "operator_revoked",
+      }),
+    }));
+    expect(blocked?.isError).toBe(true);
+    expect(blocked?.structuredContent).toEqual(expect.objectContaining({
+      error: "hosted_runtime_session_revoked",
+    }));
+    expect(action).not.toHaveBeenCalled();
   });
 
   it("returns high-level workflow diagnostics without requiring raw trace reads", async () => {

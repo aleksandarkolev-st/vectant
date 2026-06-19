@@ -1,0 +1,1563 @@
+import { describe, expect, it } from "vitest";
+import {
+  DojoSkillGraphRuntime,
+  evaluateStaticCondition,
+  type DojoGraphEvidenceEvent,
+} from "../../src/dojo/graph/runtime.js";
+import {
+  createDefaultDojoGraphNodeRegistry,
+  createDojoGraphNodeRegistry,
+  DOJO_GRAPH_NODE_KINDS,
+  validateDojoGraphNodeRegistryForGraph,
+} from "../../src/dojo/graph/node_registry.js";
+import { createFakeDojoSubstrateExecutor } from "../../src/dojo/graph/substrate_executor.js";
+import type { DojoSkillGraph } from "../../src/dojo/graph/types.js";
+import type { DojoTenantContext } from "../../src/dojo/mcp/execution_policy_gate.js";
+
+describe("Dojo graph runtime", () => {
+  it("validates node handler registry coverage and blocks missing runtime handlers", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const defaultRegistry = createDefaultDojoGraphNodeRegistry();
+    const graph = graphFixture();
+
+    expect(defaultRegistry.list().map((handler) => handler.kind).sort()).toEqual([...DOJO_GRAPH_NODE_KINDS].sort());
+    expect(validateDojoGraphNodeRegistryForGraph(graph, defaultRegistry)).toEqual({
+      ok: true,
+      missing_handlers: [],
+      duplicate_handlers: [],
+    });
+
+    const missingActionRegistry = createDojoGraphNodeRegistry(
+      defaultRegistry.list().filter((handler) => handler.kind !== "Action")
+    );
+    await expect(runtime.execute({
+      graph,
+      tenant: graphTenantContext(),
+      node_registry: missingActionRegistry,
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["node_handler_missing:Action"],
+      node_results: [],
+    }));
+  });
+
+  it("executes a valid production graph when proof and preconditions are satisfied", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({ node_id: "trigger", status: "completed" }),
+        expect.objectContaining({ node_id: "action_submit", status: "completed" }),
+      ]),
+      blocked_by: [],
+    }));
+  });
+
+  it("fails closed before graph validation, evidence, or substrate execution when production tenant context is incomplete", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const events: DojoGraphEvidenceEvent[] = [];
+    let substrateExecutions = 0;
+
+    const result = await runtime.execute({
+      graph: graphFixture(),
+      tenant: invalidGraphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: async () => {
+        substrateExecutions += 1;
+        return { ok: true, status: "executed", substrate: "dom", evidence_refs: ["substrate:should-not-run"] };
+      },
+      evidence_writer: (event) => {
+        events.push(event);
+        return `ledger://${event.run_id}/${event.node_id}`;
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      node_results: [],
+      blocked_by: [
+        "graph_runtime_tenant_required",
+        "graph_runtime_organization_required",
+        "graph_runtime_actor_required",
+        "graph_runtime_actor_type_invalid",
+        "graph_runtime_roles_invalid",
+        "graph_runtime_request_required",
+        "graph_runtime_correlation_required",
+      ],
+      evidence_refs: [],
+    }));
+    expect(substrateExecutions).toBe(0);
+    expect(events).toEqual([]);
+  });
+
+  it("preflights production graph proof and guardrails without action execution", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const events: DojoGraphEvidenceEvent[] = [];
+    let substrateExecutions = 0;
+
+    const result = await runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      run_id: "graph-run-preflight",
+      preflight_only: true,
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: async () => {
+        substrateExecutions += 1;
+        return { ok: true, status: "executed", substrate: "dom", evidence_refs: ["substrate:should-not-run"] };
+      },
+      evidence_writer: (event) => {
+        events.push(event);
+        return `ledger://${event.run_id}/${event.node_id}`;
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      run_id: "graph-run-preflight",
+      blocked_by: [],
+      evidence_refs: [
+        "ledger://graph-run-preflight/trigger",
+        "ledger://graph-run-preflight/action_submit",
+      ],
+    }));
+    expect(substrateExecutions).toBe(0);
+    expect(result.node_results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        node_id: "action_submit",
+        status: "skipped",
+        control_flow: { skipped_by: ["graph_preflight_only"] },
+      }),
+    ]));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        run_id: "graph-run-preflight",
+        node_id: "action_submit",
+        status: "skipped",
+        guardrail_ids: ["guard_client_stable_id"],
+      }),
+    ]));
+  });
+
+  it("executes nodes in graph edge order rather than node array order", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const graph = graphFixture();
+    graph.nodes = [...graph.nodes].reverse();
+
+    const result = await runtime.execute({
+      graph,
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+    }));
+    expect(result.node_results.map((nodeResult) => nodeResult.node_id)).toEqual(["trigger", "action_submit"]);
+  });
+
+  it("emits graph run evidence events with stable run and node refs", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const events: DojoGraphEvidenceEvent[] = [];
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      run_id: "graph-run-1",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      now: "2026-06-11T00:00:02.000Z",
+      evidence_writer: (event) => {
+        events.push(event);
+        return `ledger://${event.run_id}/${event.node_id}`;
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      run_id: "graph-run-1",
+      evidence_refs: [
+        "ledger://graph-run-1/trigger",
+        "ledger://graph-run-1/action_submit",
+      ],
+    }));
+    expect(events).toEqual([
+      expect.objectContaining({
+        schema_version: "synthi.dojo.graphEvidenceEvent.v1",
+        run_id: "graph-run-1",
+        graph_id: "graph-a",
+        skill_id: "skill-a",
+        node_id: "trigger",
+        status: "completed",
+        created_at: "2026-06-11T00:00:02.000Z",
+      }),
+      expect.objectContaining({
+        run_id: "graph-run-1",
+        node_id: "action_submit",
+        status: "completed",
+        created_at: "2026-06-11T00:00:02.000Z",
+        guardrail_ids: ["guard_client_stable_id"],
+        proof_required: true,
+        proof_claims: ["checkride_passed", "workspace_verified"],
+        case_law_refs: [],
+        substrate_status: "executed",
+        substrate: "dom",
+        substrate_evidence_refs: ["substrate:dom:action_submit"],
+        assertion_ids: ["assert_submission_state", "postcondition:assert_submission_state == true"],
+        evidence_policy: ["append_action_trace"],
+      }),
+    ]);
+  });
+
+  it("returns a blocked run when graph evidence writing fails", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      run_id: "graph-run-evidence-fail",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: (event) => {
+        if (event.node_id === "action_submit") throw new Error("ledger unavailable");
+        return `ledger://${event.run_id}/${event.node_id}`;
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      run_id: "graph-run-evidence-fail",
+      blocked_by: ["graph_evidence_write_failed"],
+      evidence_refs: ["ledger://graph-run-evidence-fail/trigger"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["graph_evidence_write_failed"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks production actions when evidence writer does not return a ledger-backed ref", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      run_id: "graph-run-evidence-missing",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: (event) => event.node_id === "trigger" ? `ledger://${event.run_id}/${event.node_id}` : undefined,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      run_id: "graph-run-evidence-missing",
+      blocked_by: ["graph_evidence_record_missing"],
+      evidence_refs: ["ledger://graph-run-evidence-missing/trigger"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["graph_evidence_record_missing"],
+        }),
+      ]),
+    }));
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      run_id: "graph-run-evidence-unbacked",
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: (event) => event.node_id === "trigger"
+        ? `ledger://${event.run_id}/${event.node_id}`
+        : `dojo-graph://${event.run_id}/${event.node_id}`,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      run_id: "graph-run-evidence-unbacked",
+      blocked_by: ["graph_evidence_record_unbacked"],
+      evidence_refs: ["ledger://graph-run-evidence-unbacked/trigger"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["graph_evidence_record_unbacked"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks a node when static preconditions fail", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      inputs: { client_id_verified: true, assertion_results: { assert_submission_state: true } },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["precondition_failed:workspace_verified == true"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["precondition_failed:workspace_verified == true"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks production proof-required actions without proof", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      inputs: { workspace_verified: true, client_id_verified: true, assertion_results: { assert_submission_state: true } },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["proof_capsule_missing"],
+    }));
+  });
+
+  it("blocks production proof-required actions when proof validation fails", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: () => ({ ok: false, blocked_by: ["proof_capsule_signature_invalid"] }),
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["proof_capsule_signature_invalid"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["proof_capsule_signature_invalid"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks production proof-required actions when proof validation throws", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: () => {
+        throw new Error("proof validator unavailable");
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["proof_validator_failed"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["proof_validator_failed"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks production action execution without an explicit substrate executor", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      evidence_writer: graphEvidenceWriter,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["substrate_executor_required"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["substrate_executor_required"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks production action execution when substrate executor throws", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: {
+        execute: async () => {
+          throw new Error("substrate unavailable");
+        },
+      },
+      evidence_writer: graphEvidenceWriter,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["substrate_executor_failed"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["substrate_executor_failed"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks production action execution without an explicit graph evidence writer", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["graph_evidence_writer_required"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["graph_evidence_writer_required"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks executable postconditions from observed runtime context", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const baseGraph = graphFixture();
+    const graph = {
+      ...baseGraph,
+      nodes: baseGraph.nodes.map((node) => node.node_id === "action_submit"
+        ? { ...node, postconditions: ["submission_state == success"] }
+        : node),
+    };
+
+    await expect(runtime.execute({
+      graph,
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        submission_state: "draft",
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: expect.arrayContaining(["postcondition_failed:submission_state == success"]),
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: expect.arrayContaining(["postcondition_failed:submission_state == success"]),
+          assertion_results: expect.arrayContaining([
+            expect.objectContaining({
+              assertion_id: "postcondition:submission_state == success",
+              status: "failed",
+            }),
+          ]),
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks explicit production proof nodes before action execution", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const validatedNodeIds: string[] = [];
+
+    const result = await runtime.execute({
+      graph: proofNodeGraphFixture(),
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: ({ node }) => {
+        validatedNodeIds.push(node.node_id);
+        return { ok: false, blocked_by: ["proof_capsule_revoked"] };
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["proof_capsule_revoked"],
+    }));
+    expect(result.node_results.map((nodeResult) => nodeResult.node_id)).toEqual(["trigger", "proof_gate"]);
+    expect(result.node_results[1]).toEqual(expect.objectContaining({
+      node_id: "proof_gate",
+      kind: "Proof",
+      status: "blocked",
+      blocked_by: ["proof_capsule_revoked"],
+    }));
+    expect(validatedNodeIds).toEqual(["proof_gate"]);
+  });
+
+  it("blocks production proof-required actions without a validator", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["proof_validator_missing"],
+    }));
+  });
+
+  it("rejects self-attested proof for production proof-required actions", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        proof_capsule_valid: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      allow_self_attested_proof: true,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["proof_self_attestation_not_allowed_in_production"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["proof_self_attestation_not_allowed_in_production"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks an explicitly expired node before proof or substrate execution", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      expiry_state: { expired_node_ids: ["action_submit"] },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["node_expired:action_submit"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["node_expired:action_submit"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks a node when one of its expiry triggers is active", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        assertion_results: { assert_submission_state: true },
+      },
+      expiry_state: { expired_triggers: ["source_drift"] },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["expiry_trigger_active:source_drift"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: ["expiry_trigger_active:source_drift"],
+        }),
+      ]),
+    }));
+  });
+
+  it("selects a matching branch path and skips unchosen branch-only nodes", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: branchGraphFixture(),
+      mode: "practice",
+      inputs: { duplicate_display_name_count: 2 },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "branch_duplicate_client",
+          status: "completed",
+          control_flow: expect.objectContaining({
+            selected_edge_id: "edge_branch_duplicate",
+            selected_to_node_id: "action_duplicate",
+          }),
+        }),
+        expect.objectContaining({
+          node_id: "action_unique",
+          status: "skipped",
+          control_flow: expect.objectContaining({
+            skipped_by: ["branch_not_selected:branch_duplicate_client"],
+          }),
+        }),
+        expect.objectContaining({ node_id: "action_duplicate", status: "completed" }),
+        expect.objectContaining({ node_id: "assertion", status: "completed" }),
+      ]),
+    }));
+  });
+
+  it("selects a default branch path when no conditional edge matches", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: branchGraphFixture({ includeDefault: true }),
+      mode: "practice",
+      inputs: { duplicate_display_name_count: 0 },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "branch_duplicate_client",
+          status: "completed",
+          control_flow: expect.objectContaining({
+            selected_edge_id: "edge_branch_default",
+            selected_to_node_id: "action_unique",
+          }),
+        }),
+        expect.objectContaining({ node_id: "action_unique", status: "completed" }),
+        expect.objectContaining({ node_id: "action_duplicate", status: "skipped" }),
+      ]),
+    }));
+  });
+
+  it("blocks a branch node when no outgoing edge condition matches", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: branchGraphFixture(),
+      mode: "practice",
+      inputs: { duplicate_display_name_count: 0 },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["branch_condition_unmatched"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "branch_duplicate_client",
+          status: "blocked",
+          blocked_by: ["branch_condition_unmatched"],
+        }),
+      ]),
+    }));
+  });
+
+  it("allows a retry node while attempts are below the configured limit", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: retryGraphFixture(),
+      mode: "practice",
+      inputs: { retry_attempts: { submit_invoice: 1 } },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({ node_id: "retry_submit", status: "completed" }),
+      ]),
+    }));
+  });
+
+  it("blocks a retry node once the configured attempt limit is reached", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: retryGraphFixture(),
+      mode: "practice",
+      inputs: { retry_attempts: { submit_invoice: 2 } },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["retry_limit_exceeded:submit_invoice"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "retry_submit",
+          status: "blocked",
+          blocked_by: ["retry_limit_exceeded:submit_invoice"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks retry nodes that do not declare a retry policy", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const graph = retryGraphFixture();
+    graph.nodes = graph.nodes.map((node) =>
+      node.node_id === "retry_submit" ? { ...node, metadata: undefined } : node
+    );
+
+    await expect(runtime.execute({
+      graph,
+      mode: "practice",
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["retry_policy_missing"],
+    }));
+  });
+
+  it("executes case-law nodes only when referenced cases are binding", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const events: DojoGraphEvidenceEvent[] = [];
+
+    await expect(runtime.execute({
+      graph: caseLawGraphFixture(),
+      mode: "practice",
+      run_id: "case-law-run-1",
+      inputs: {
+        case_law_bindings: {
+          case_duplicate_client: "approved",
+          case_fake_success: true,
+        },
+      },
+      evidence_writer: (event) => {
+        events.push(event);
+        return `ledger://${event.run_id}/${event.node_id}`;
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({ node_id: "case_law_gate", status: "completed" }),
+        expect.objectContaining({ node_id: "action_after_case_law", status: "completed" }),
+      ]),
+    }));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        node_id: "case_law_gate",
+        case_law_refs: ["case_duplicate_client", "case_fake_success"],
+      }),
+    ]));
+  });
+
+  it("blocks case-law nodes when binding state is missing or inactive", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: caseLawGraphFixture(),
+      mode: "practice",
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["case_law_binding_state_missing"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "case_law_gate",
+          status: "blocked",
+          blocked_by: ["case_law_binding_state_missing"],
+        }),
+      ]),
+    }));
+
+    await expect(runtime.execute({
+      graph: caseLawGraphFixture(),
+      mode: "practice",
+      inputs: {
+        case_law_bindings: {
+          case_duplicate_client: "proposed",
+        },
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: [
+        "case_law_not_binding:case_duplicate_client",
+        "case_law_binding_missing:case_fake_success",
+      ],
+    }));
+  });
+
+  it("executes rollback nodes with an available rollback policy", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const events: DojoGraphEvidenceEvent[] = [];
+
+    await expect(runtime.execute({
+      graph: rollbackNodeGraphFixture({ strategy: "same_session_restore", checkpoints: ["pre_submit"] }),
+      mode: "practice",
+      run_id: "rollback-run-1",
+      evidence_writer: (event) => {
+        events.push(event);
+        return `ledger://${event.run_id}/${event.node_id}`;
+      },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "rollback_submit",
+          status: "completed",
+          rollback_decision: expect.objectContaining({
+            status: "rollback_available",
+            strategy: "same_session_restore",
+            checkpoints: ["pre_submit"],
+          }),
+        }),
+      ]),
+    }));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        node_id: "rollback_submit",
+        rollback_status: "rollback_available",
+        rollback_strategy: "same_session_restore",
+        rollback_requires_human_review: false,
+        rollback_checkpoints: ["pre_submit"],
+      }),
+    ]));
+  });
+
+  it("blocks rollback nodes when rollback is unavailable without human review", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: rollbackNodeGraphFixture({ strategy: "none", checkpoints: ["pre_submit"] }),
+      mode: "practice",
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["rollback_unavailable_human_review_required"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "rollback_submit",
+          status: "blocked",
+          rollback_decision: expect.objectContaining({
+            status: "needs_human",
+            requires_human_review: true,
+          }),
+        }),
+      ]),
+    }));
+  });
+
+  it("pauses at a human node and returns resume state when approval is missing", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: humanGraphFixture(),
+      mode: "practice",
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "paused",
+      blocked_by: ["human_decision_required:supervisor_approval"],
+      resume_state: {
+        paused_node_id: "human_approval",
+        decision_key: "supervisor_approval",
+        completed_node_ids: ["trigger"],
+      },
+      node_results: expect.arrayContaining([
+        expect.objectContaining({ node_id: "trigger", status: "completed" }),
+        expect.objectContaining({
+          node_id: "human_approval",
+          status: "paused",
+          blocked_by: ["human_decision_required:supervisor_approval"],
+        }),
+      ]),
+    }));
+  });
+
+  it("resumes after human approval without rerunning completed nodes", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: humanGraphFixture(),
+      mode: "practice",
+      resume_state: {
+        paused_node_id: "human_approval",
+        decision_key: "supervisor_approval",
+        completed_node_ids: ["trigger"],
+      },
+      human_decisions: { supervisor_approval: "approved" },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      status: "completed",
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "trigger",
+          status: "skipped",
+          control_flow: expect.objectContaining({ skipped_by: ["resume_already_completed"] }),
+        }),
+        expect.objectContaining({ node_id: "human_approval", status: "completed" }),
+        expect.objectContaining({ node_id: "action_after_approval", status: "completed" }),
+      ]),
+    }));
+  });
+
+  it("does not trust production resume state for proof or action node completion", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    let proofValidations = 0;
+    let substrateExecutions = 0;
+
+    const result = await runtime.execute({
+      graph: graphFixture(),
+      tenant: graphTenantContext(),
+      run_id: "graph-run-malicious-resume",
+      resume_state: {
+        paused_node_id: "action_submit",
+        decision_key: "operator_approval",
+        completed_node_ids: ["trigger", "action_submit"],
+      },
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: () => {
+        proofValidations += 1;
+        return { ok: true, blocked_by: [] };
+      },
+      substrate_executor: {
+        execute: async () => {
+          substrateExecutions += 1;
+          return { ok: true, status: "executed", substrate: "dom", evidence_refs: ["substrate:should-not-run"] };
+        },
+      },
+      evidence_writer: graphEvidenceWriter,
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: [
+        "resume_completed_node_not_before_pause:action_submit",
+        "resume_completed_node_untrusted:action_submit",
+      ],
+      node_results: [
+        expect.objectContaining({
+          node_id: "trigger",
+          status: "skipped",
+          control_flow: { skipped_by: ["resume_already_completed"] },
+        }),
+        expect.objectContaining({
+          node_id: "action_submit",
+          status: "blocked",
+          blocked_by: [
+            "resume_completed_node_not_before_pause:action_submit",
+            "resume_completed_node_untrusted:action_submit",
+          ],
+        }),
+      ],
+    }));
+    expect(proofValidations).toBe(0);
+    expect(substrateExecutions).toBe(0);
+  });
+
+  it("blocks when a human decision is denied", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+
+    await expect(runtime.execute({
+      graph: humanGraphFixture(),
+      mode: "practice",
+      human_decisions: { supervisor_approval: "denied" },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      blocked_by: ["human_decision_denied:supervisor_approval"],
+      node_results: expect.arrayContaining([
+        expect.objectContaining({
+          node_id: "human_approval",
+          status: "blocked",
+          blocked_by: ["human_decision_denied:supervisor_approval"],
+        }),
+      ]),
+    }));
+  });
+
+  it("blocks execution when graph validation fails", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const invalid = graphFixture();
+    invalid.nodes = invalid.nodes.map((node) =>
+      node.node_id === "action_submit" ? { ...node, guardrails: [] } : node
+    );
+
+    await expect(runtime.execute({
+      graph: invalid,
+      tenant: graphTenantContext(),
+      inputs: { workspace_verified: true },
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      node_results: [],
+      blocked_by: expect.arrayContaining(["dangerous_action_guardrail_required"]),
+    }));
+  });
+
+  it("blocks unreachable action nodes instead of executing unvisited nodes", async () => {
+    const runtime = new DojoSkillGraphRuntime();
+    const invalid = graphFixture();
+    invalid.nodes.push({
+      ...invalid.nodes.find((node) => node.node_id === "action_submit")!,
+      node_id: "action_orphan",
+      label: "Orphan action",
+    });
+
+    await expect(runtime.execute({
+      graph: invalid,
+      tenant: graphTenantContext(),
+      inputs: {
+        workspace_verified: true,
+        client_id_verified: true,
+        license_allowed_substrates: ["dom"],
+        assertion_results: { assert_submission_state: true },
+      },
+      proof_capsule: { capsule_id: "capsule-a" },
+      proof_validator: validProofValidator,
+      substrate_executor: createFakeDojoSubstrateExecutor(),
+      evidence_writer: graphEvidenceWriter,
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      status: "blocked",
+      node_results: [],
+      blocked_by: expect.arrayContaining(["graph_node_unreachable"]),
+    }));
+  });
+
+  it("evaluates simple equality preconditions", () => {
+    expect(evaluateStaticCondition("workspace_verified == true", { workspace_verified: true })).toBe(true);
+    expect(evaluateStaticCondition("amount == 50", { amount: 50 })).toBe(true);
+    expect(evaluateStaticCondition("amount <= 500", { amount: 50 })).toBe(true);
+    expect(evaluateStaticCondition("approval_status != denied", { approval_status: "pending" })).toBe(true);
+    expect(evaluateStaticCondition("currency == EUR", { currency: "EUR" })).toBe(true);
+    expect(evaluateStaticCondition("currency == \"EUR\"", { currency: "EUR" })).toBe(true);
+    expect(evaluateStaticCondition("currency in [\"EUR\",\"USD\"]", { currency: "EUR" })).toBe(true);
+    expect(evaluateStaticCondition("workspace_verified", { workspace_verified: true })).toBe(true);
+    expect(evaluateStaticCondition("workspace_verified == true", { workspace_verified: false })).toBe(false);
+    expect(evaluateStaticCondition("amount <= 500", { amount: 501 })).toBe(false);
+    expect(evaluateStaticCondition("unsupported >== 1", { unsupported: 2 })).toBe(false);
+  });
+});
+
+const validProofValidator = () => ({ ok: true, blocked_by: [] });
+const graphEvidenceWriter = (event: DojoGraphEvidenceEvent) => `ledger://${event.run_id}/${event.node_id}`;
+
+function graphTenantContext(): DojoTenantContext {
+  return {
+    tenant_id: "tenant-a",
+    organization_id: "org-a",
+    workspace_id: "workspace-a",
+    actor_id: "agent-a",
+    actor_type: "agent",
+    roles: ["dojo:runtime"],
+    request_id: "request-a",
+    correlation_id: "correlation-a",
+  };
+}
+
+function invalidGraphTenantContext(): DojoTenantContext {
+  return {
+    ...graphTenantContext(),
+    tenant_id: "",
+    organization_id: "",
+    actor_id: "",
+    actor_type: "robot" as never,
+    roles: ["dojo:runtime", ""],
+    request_id: "",
+    correlation_id: "",
+  };
+}
+
+function graphFixture(): DojoSkillGraph {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-a",
+    skill_id: "skill-a",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "production",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      {
+        node_id: "trigger",
+        kind: "Trigger",
+        label: "Skill invocation",
+        risk: "safe",
+        preconditions: [],
+        postconditions: [],
+        guardrails: [],
+        assertions: [],
+        substrate_options: [],
+        evidence_policy: [],
+        case_law_refs: [],
+        expiry_triggers: [],
+      },
+      {
+        node_id: "action_submit",
+        kind: "Action",
+        label: "Submit invoice",
+        risk: "dangerous",
+        action: "run_workflow",
+        preconditions: ["workspace_verified == true"],
+        postconditions: ["assert_submission_state == true"],
+        guardrails: [
+          {
+            guardrail_id: "guard_client_stable_id",
+            predicate: "client_id_verified == true",
+            severity: "block",
+          },
+        ],
+        proof: {
+          required: true,
+          required_claims: ["checkride_passed", "workspace_verified"],
+          required_guardrails: ["guard_client_stable_id"],
+        },
+        assertions: [
+          {
+            assertion_id: "assert_submission_state",
+            description: "Submission state is success.",
+            required: true,
+          },
+        ],
+        substrate_options: ["dom", "mcp"],
+        evidence_policy: ["append_action_trace"],
+        case_law_refs: [],
+        expiry_triggers: ["source_drift"],
+      },
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_action",
+        from_node_id: "trigger",
+        to_node_id: "action_submit",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function proofNodeGraphFixture(): DojoSkillGraph {
+  const graph = graphFixture();
+  const trigger = graph.nodes.find((node) => node.node_id === "trigger")!;
+  const action = graph.nodes.find((node) => node.node_id === "action_submit")!;
+  return {
+    ...graph,
+    graph_id: "graph-proof-node",
+    nodes: [
+      trigger,
+      {
+        node_id: "proof_gate",
+        kind: "Proof",
+        label: "Validate proof capsule",
+        risk: "safe",
+        preconditions: [],
+        postconditions: [],
+        guardrails: [],
+        proof: {
+          required: true,
+          required_claims: ["checkride_passed", "workspace_verified"],
+          required_guardrails: ["guard_client_stable_id"],
+        },
+        assertions: [],
+        substrate_options: [],
+        evidence_policy: ["proof_validation_recorded"],
+        case_law_refs: [],
+        expiry_triggers: [],
+      },
+      action,
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_proof",
+        from_node_id: "trigger",
+        to_node_id: "proof_gate",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_proof_action",
+        from_node_id: "proof_gate",
+        to_node_id: "action_submit",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function humanGraphFixture(): DojoSkillGraph {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-human",
+    skill_id: "skill-human",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "practice",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      safeNode("trigger", "Trigger", "Skill invocation"),
+      {
+        ...safeNode("human_approval", "Human", "Request supervisor approval"),
+        metadata: { decision_key: "supervisor_approval" },
+      },
+      safeNode("action_after_approval", "Action", "Submit after approval"),
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_human",
+        from_node_id: "trigger",
+        to_node_id: "human_approval",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_human_action",
+        from_node_id: "human_approval",
+        to_node_id: "action_after_approval",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function retryGraphFixture(): DojoSkillGraph {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-retry",
+    skill_id: "skill-retry",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "practice",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      safeNode("trigger", "Trigger", "Skill invocation"),
+      {
+        ...safeNode("retry_submit", "Retry", "Retry submit invoice"),
+        metadata: { attempt_key: "submit_invoice", max_attempts: 2 },
+      },
+      safeNode("action_submit", "Action", "Submit invoice"),
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_retry",
+        from_node_id: "trigger",
+        to_node_id: "retry_submit",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_retry_action",
+        from_node_id: "retry_submit",
+        to_node_id: "action_submit",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function caseLawGraphFixture(): DojoSkillGraph {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-case-law",
+    skill_id: "skill-case-law",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "practice",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      safeNode("trigger", "Trigger", "Skill invocation"),
+      {
+        ...safeNode("case_law_gate", "CaseLaw", "Apply binding case law"),
+        case_law_refs: ["case_duplicate_client"],
+        metadata: { required_case_law_refs: ["case_fake_success"] },
+      },
+      safeNode("action_after_case_law", "Action", "Continue after case law"),
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_case_law",
+        from_node_id: "trigger",
+        to_node_id: "case_law_gate",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_case_law_action",
+        from_node_id: "case_law_gate",
+        to_node_id: "action_after_case_law",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function rollbackNodeGraphFixture(rollbackPolicy?: Record<string, unknown>): DojoSkillGraph {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-rollback",
+    skill_id: "skill-rollback",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "practice",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      safeNode("trigger", "Trigger", "Skill invocation"),
+      {
+        ...safeNode("rollback_submit", "Rollback", "Restore pre-submit checkpoint"),
+        ...(rollbackPolicy ? { metadata: { rollback_policy: rollbackPolicy } } : {}),
+      },
+      safeNode("action_after_rollback", "Action", "Continue after rollback"),
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_rollback",
+        from_node_id: "trigger",
+        to_node_id: "rollback_submit",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_rollback_action",
+        from_node_id: "rollback_submit",
+        to_node_id: "action_after_rollback",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function branchGraphFixture(input: { includeDefault?: boolean } = {}): DojoSkillGraph {
+  return {
+    schema_version: "synthi.dojo.skillGraph.v1",
+    graph_id: "graph-branch",
+    skill_id: "skill-branch",
+    skill_version: "skill-v1",
+    graph_version: "graph-v1",
+    mode: "practice",
+    created_at: "2026-06-11T00:00:00.000Z",
+    nodes: [
+      safeNode("trigger", "Trigger", "Skill invocation"),
+      safeNode("branch_duplicate_client", "Branch", "Choose duplicate client path"),
+      safeNode("action_unique", "Action", "Proceed with selected client"),
+      safeNode("action_duplicate", "Action", "Ask for stable client ID"),
+      safeNode("assertion", "Assertion", "Verify branch outcome"),
+    ],
+    edges: [
+      {
+        edge_id: "edge_trigger_branch",
+        from_node_id: "trigger",
+        to_node_id: "branch_duplicate_client",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: input.includeDefault ? "edge_branch_default" : "edge_branch_unique",
+        from_node_id: "branch_duplicate_client",
+        to_node_id: "action_unique",
+        ...(input.includeDefault ? {} : { condition: "duplicate_display_name_count == 1" }),
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_branch_duplicate",
+        from_node_id: "branch_duplicate_client",
+        to_node_id: "action_duplicate",
+        condition: "duplicate_display_name_count == 2",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_unique_assertion",
+        from_node_id: "action_unique",
+        to_node_id: "assertion",
+        confidence: 1,
+        observed_variants: [],
+      },
+      {
+        edge_id: "edge_duplicate_assertion",
+        from_node_id: "action_duplicate",
+        to_node_id: "assertion",
+        confidence: 1,
+        observed_variants: [],
+      },
+    ],
+  };
+}
+
+function safeNode(
+  nodeId: string,
+  kind: DojoSkillGraph["nodes"][number]["kind"],
+  label: string
+): DojoSkillGraph["nodes"][number] {
+  return {
+    node_id: nodeId,
+    kind,
+    label,
+    risk: "safe",
+    preconditions: [],
+    postconditions: [],
+    guardrails: [],
+    assertions: [],
+    substrate_options: kind === "Action" ? ["dom"] : [],
+    evidence_policy: [],
+    case_law_refs: [],
+    expiry_triggers: [],
+  };
+}

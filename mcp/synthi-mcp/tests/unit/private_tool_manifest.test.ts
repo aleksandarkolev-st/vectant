@@ -7,6 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { authCheckpointManager } from "../../src/browser/auth.js";
 import { browserBroker } from "../../src/browser/broker.js";
+import { dojoSkillRegistry } from "../../src/browser/dojo.js";
 import { generatePrivateWorkflowToolManifest } from "../../src/browser/private_tool_manifest.js";
 import {
   EncryptedFilePrivateWorkflowToolStore,
@@ -22,11 +23,15 @@ import type { BrowserTraceEvent } from "../../src/browser/types.js";
 import { createSynthiServer } from "../../src/server.js";
 import { browserPrivateWorkflowTools, dispatchBrowserTool } from "../../src/tools/browser.js";
 
+const originalEnv = { ...process.env };
+
 beforeEach(() => {
+  process.env = { ...originalEnv };
   privateWorkflowToolRegistry.useStoreForTests(new InMemoryPrivateWorkflowToolStore());
   browserBroker.resetForTests();
   authCheckpointManager.resetForTests();
   privateWorkflowToolRegistry.resetForTests();
+  dojoSkillRegistry.resetForTests();
   sourceIdentityRegistry.resetForTests();
   vi.restoreAllMocks();
 });
@@ -355,7 +360,7 @@ describe("private browser workflow MCP tool manifest", () => {
       type: "string",
       description: expect.stringContaining("workflow parameter: workflow_run_mode"),
     }));
-    expect(tool.inputSchema.required).toEqual(["workflow_run_mode", "workflow_run_mode_2"]);
+    expect(tool.inputSchema.required).toEqual(["proof_capsule", "workflow_run_mode", "workflow_run_mode_2"]);
   });
 
   it("keeps same-name parameters separate when they target different source identities", () => {
@@ -526,9 +531,12 @@ describe("private browser workflow MCP tool manifest", () => {
     expect(browserPrivateWorkflowTools()).toEqual([
       expect.objectContaining({
         name: "synthi_app_open_details",
+        description: expect.stringContaining("cannot be called directly"),
         inputSchema: expect.objectContaining({
           type: "object",
+          required: ["proof_capsule"],
           properties: expect.objectContaining({
+            proof_capsule: expect.objectContaining({ type: "object" }),
             run_mode: expect.objectContaining({ enum: ["sameSession", "prefixOnly", "coldSession"] }),
           }),
         }),
@@ -545,21 +553,44 @@ describe("private browser workflow MCP tool manifest", () => {
 
     const response = await dispatchBrowserTool("synthi_app_open_details", {});
 
-    expect(response?.isError).toBeUndefined();
+    expect(response?.isError).toBe(true);
     expect(response?.structuredContent).toEqual(expect.objectContaining({
-      ok: true,
-      private_tool: expect.objectContaining({
-        tool_name: "synthi_app_open_details",
-        run_mode: "sameSession",
-      }),
+      error: "dojo_proof_capsule_required",
+      tool_name: "synthi_app_open_details",
+      required_tool: "synthi_dojo_run_with_proof_capsule",
     }));
-    expect(replay).toHaveBeenCalledWith(
-      "tab-a",
-      expect.objectContaining({ event_id: expect.any(String), action: "click" }),
-      "click",
-      "page.locator(\"[data-synthi-source-id=\\\"s_open\\\"]\")",
-      undefined
-    );
+    expect(replay).not.toHaveBeenCalled();
+  });
+
+  it("blocks raw private tool publication in production enforcement", async () => {
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+    const url = "https://app.example.test/settings";
+    browserBroker.requestConsent(url);
+    browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
+    browserBroker.selectTab("tab-a");
+    expect(browserBroker.startTeachMode("tab-a").ok).toBe(true);
+    registerSourceToken("s_open");
+    browserBroker.recordHumanAction({
+      tab_id: "tab-a",
+      url,
+      origin: "https://app.example.test",
+      action: "click",
+      element: { role: "button", name: "Open details", source_id: "s_open" },
+      locator_candidates: [
+        { kind: "role", locator: "page.getByRole(\"button\", { name: \"Open details\" })", confidence: 0.98, reason: "role" },
+      ],
+    });
+
+    const published = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});
+
+    expect(published?.isError).toBe(true);
+    expect(published?.structuredContent).toEqual(expect.objectContaining({
+      error: "dojo_private_tool_publish_requires_dojo",
+      enforcement_mode: "production",
+      required_tool: "synthi_dojo_publish_skill",
+      blocked_by: ["raw_private_tool_publish_blocked"],
+    }));
+    expect(browserPrivateWorkflowTools()).toEqual([]);
   });
 
   it("tells agents which target origins need consent before a private tool replay", async () => {
@@ -613,22 +644,10 @@ describe("private browser workflow MCP tool manifest", () => {
 
     expect(blocked?.isError).toBe(true);
     expect(blocked?.structuredContent).toEqual(expect.objectContaining({
-      error: "workflow_origin_consent_required",
-      failure_class: "originConsentMissing",
-      required_tool: "synthi_browser_request_consent",
-      missing_origins: [
-        expect.objectContaining({
-          origin: popupOrigin,
-          reason: "origin_consent_required",
-          request: expect.objectContaining({
-            tool: "synthi_browser_request_consent",
-            arguments: expect.objectContaining({
-              url: popupOrigin,
-              screenshot: true,
-            }),
-          }),
-        }),
-      ],
+      error: "dojo_proof_capsule_required",
+      required_tool: "synthi_dojo_run_with_proof_capsule",
+      issue_capsule_tool: "synthi_dojo_issue_proof_capsule",
+      blocked_by: ["direct_private_workflow_tool_call"],
     }));
     expect(replay).not.toHaveBeenCalled();
   });
@@ -659,14 +678,11 @@ describe("private browser workflow MCP tool manifest", () => {
 
     expect(blocked?.isError).toBe(true);
     expect(blocked?.structuredContent).toEqual(expect.objectContaining({
-      error: "mutation_confirmation_required",
+      error: "dojo_proof_capsule_required",
       tool_name: "synthi_app_save_settings",
-      confirmation_field: "confirm_mutation",
-      confirmation_token_field: "mutation_confirmation",
-      confirmation_token: expect.stringMatching(/^confirm:synthi_app_save_settings:/),
-      safe_run_modes: expect.arrayContaining(["prefixOnly", "coldSession", "ciOnly"]),
+      required_tool: "synthi_dojo_run_with_proof_capsule",
+      issue_capsule_tool: "synthi_dojo_issue_proof_capsule",
     }));
-    const confirmationToken = (blocked?.structuredContent as { confirmation_token: string }).confirmation_token;
 
     const blockedBooleanOnly = await dispatchBrowserTool("synthi_app_save_settings", {
       run_mode: "sameSession",
@@ -674,8 +690,7 @@ describe("private browser workflow MCP tool manifest", () => {
     });
     expect(blockedBooleanOnly?.isError).toBe(true);
     expect(blockedBooleanOnly?.structuredContent).toEqual(expect.objectContaining({
-      error: "mutation_confirmation_required",
-      confirmation_token: confirmationToken,
+      error: "dojo_proof_capsule_required",
     }));
 
     const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
@@ -688,20 +703,15 @@ describe("private browser workflow MCP tool manifest", () => {
     const confirmed = await dispatchBrowserTool("synthi_app_save_settings", {
       run_mode: "sameSession",
       confirm_mutation: true,
-      mutation_confirmation: confirmationToken,
+      mutation_confirmation: "confirm:synthi_app_save_settings:test",
     });
 
-    expect(confirmed?.isError).toBeUndefined();
+    expect(confirmed?.isError).toBe(true);
     expect(confirmed?.structuredContent).toEqual(expect.objectContaining({
-      ok: true,
-      private_tool: expect.objectContaining({
-        tool_name: "synthi_app_save_settings",
-        run_mode: "sameSession",
-        mutation_confirmed: true,
-      }),
-      replay: expect.objectContaining({ steps_run: 1 }),
+      error: "dojo_proof_capsule_required",
+      required_tool: "synthi_dojo_run_with_proof_capsule",
     }));
-    expect(replay).toHaveBeenCalled();
+    expect(replay).not.toHaveBeenCalled();
   });
 
   it("lets an MCP client publish, discover, and call a generated private workflow tool", async () => {
@@ -787,15 +797,13 @@ describe("private browser workflow MCP tool manifest", () => {
 
       attachHostedRuntimeForTest(url);
       const run = await client.callTool({ name: "synthi_app_open_details", arguments: {} });
-      expect(run.isError).not.toBe(true);
+      expect(run.isError).toBe(true);
       expect(JSON.parse(String(run.content[0]?.text))).toEqual(expect.objectContaining({
-        ok: true,
-        private_tool: expect.objectContaining({
-          tool_name: "synthi_app_open_details",
-          run_mode: "sameSession",
-        }),
+        error: "dojo_proof_capsule_required",
+        required_tool: "synthi_dojo_run_with_proof_capsule",
+        tool_name: "synthi_app_open_details",
       }));
-      expect(replay).toHaveBeenCalledTimes(1);
+      expect(replay).not.toHaveBeenCalled();
     } finally {
       await client.close();
       await server.close();
@@ -827,20 +835,10 @@ describe("private browser workflow MCP tool manifest", () => {
 
     expect(response?.isError).toBe(true);
     expect(response?.structuredContent).toEqual(expect.objectContaining({
-      error: "private_workflow_hosted_runtime_required",
+      error: "dojo_proof_capsule_required",
       tool_name: "synthi_app_open_details",
-      required_tool: "synthi_browser_attach_current_workspace",
-      product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
-      next_action: expect.objectContaining({
-        tool: "synthi_browser_attach_current_workspace",
-        arguments: expect.objectContaining({
-          open_workspace: true,
-        }),
-      }),
-      readiness: expect.objectContaining({
-        product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
-        ignored_local_dev_env: expect.any(Array),
-      }),
+      required_tool: "synthi_dojo_run_with_proof_capsule",
+      product_path: "agent_to_dojo_license_kernel_to_proof_validator_to_private_workflow_tool",
     }));
     expect(JSON.stringify(response?.structuredContent)).not.toContain("SYNTHI_BROWSER_CDP_URL=");
   });
@@ -875,14 +873,14 @@ describe("private browser workflow MCP tool manifest", () => {
 
     expect(response?.isError).toBe(true);
     expect(response?.structuredContent).toEqual(expect.objectContaining({
-      error: "private_workflow_invalid_run_mode",
-      received_run_mode: "desktopChrome",
-      allowed_run_modes: ["sameSession", "prefixOnly", "coldSession"],
+      error: "dojo_proof_capsule_required",
+      required_tool: "synthi_dojo_run_with_proof_capsule",
+      tool_name: "synthi_app_open_details",
     }));
     expect(replay).not.toHaveBeenCalled();
   });
 
-  it("persists published private tools with encrypted workflow artifacts for later MCP discovery", async () => {
+  it("persists published private tools with encrypted workflow artifacts and redacted secret-shaped parameters", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "synthi-private-tools-"));
     const filePath = path.join(directory, "private-tools.enc.json");
     privateWorkflowToolRegistry.useStoreForTests(new EncryptedFilePrivateWorkflowToolStore({
@@ -917,7 +915,9 @@ describe("private browser workflow MCP tool manifest", () => {
     const persisted = await readFile(filePath, "utf8");
     expect(persisted).toContain("synthi_private_workflow_tool_store_envelope_v1");
     expect(persisted).not.toMatch(/app\.example|Access token|secret-value-that-must-not-be-plaintext|tenant-a|workspace-a/);
-    expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+    }
     expect((await readdir(directory)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
 
     browserBroker.resetForTests();
@@ -991,21 +991,13 @@ describe("private browser workflow MCP tool manifest", () => {
         name: publishedToolName,
         arguments: { access_token: "agent-supplied-value" },
       });
-      expect(run.isError).not.toBe(true);
+      expect(run.isError).toBe(true);
       expect(JSON.parse(String(run.content[0]?.text))).toEqual(expect.objectContaining({
-        ok: true,
-        private_tool: expect.objectContaining({
-          tool_name: publishedToolName,
-          run_mode: "sameSession",
-        }),
+        error: "dojo_proof_capsule_required",
+        required_tool: "synthi_dojo_run_with_proof_capsule",
+        tool_name: publishedToolName,
       }));
-      expect(replay).toHaveBeenCalledWith(
-        "tab-b",
-        expect.objectContaining({ action: "fill" }),
-        "fill",
-        "page.locator(\"[data-synthi-source-id=\\\"s_token\\\"]\")",
-        "agent-supplied-value"
-      );
+      expect(replay).not.toHaveBeenCalled();
     } finally {
       await client.close();
       await server.close();
@@ -1052,56 +1044,56 @@ describe("private browser workflow MCP tool manifest", () => {
       const privateTool = listed.tools.find((tool) => tool.name === toolName);
       expect(privateTool?.inputSchema).toEqual(expect.objectContaining({
         type: "object",
-        required: ["access_token"],
+        required: ["proof_capsule", "access_token"],
         additionalProperties: false,
         properties: expect.objectContaining({
+          proof_capsule: expect.objectContaining({ type: "object" }),
           access_token: expect.objectContaining({ type: "string", format: "password" }),
           run_mode: expect.objectContaining({ enum: ["sameSession", "prefixOnly", "coldSession"] }),
         }),
       }));
 
-      expect(await strictHostCallTool(client, privateTool, {})).toEqual({
+      expect(await strictHostCallTool(client, privateTool, {})).toEqual(expect.objectContaining({
         ok: false,
-        errors: ["missing_required:access_token"],
-      });
+        errors: expect.arrayContaining(["missing_required:proof_capsule", "missing_required:access_token"]),
+      }));
       expect(await strictHostCallTool(client, privateTool, {
         access_token: "agent-supplied-value",
         script_path: "/tmp/brittle/generated.spec.ts",
-      })).toEqual({
+      })).toEqual(expect.objectContaining({
         ok: false,
-        errors: ["additional_property:script_path"],
-      });
+        errors: expect.arrayContaining(["missing_required:proof_capsule", "additional_property:script_path"]),
+      }));
       expect(await strictHostCallTool(client, privateTool, {
         access_token: "agent-supplied-value",
         run_mode: "desktopChrome",
-      })).toEqual({
+      })).toEqual(expect.objectContaining({
         ok: false,
-        errors: ["enum:run_mode"],
-      });
+        errors: expect.arrayContaining(["missing_required:proof_capsule", "enum:run_mode"]),
+      }));
       expect(replay).not.toHaveBeenCalled();
 
       const run = await strictHostCallTool(client, privateTool, {
+        proof_capsule: { schema_version: "synthi.dojo.proofCapsule.v1" },
         access_token: "agent-supplied-value",
         run_mode: "sameSession",
       });
 
       expect(run.ok).toBe(true);
-      expect(run.result?.isError).not.toBe(true);
+      expect(run.result?.isError).toBe(true);
       expect(JSON.parse(String(run.result?.content[0]?.text))).toEqual(expect.objectContaining({
-        ok: true,
-        private_tool: expect.objectContaining({
-          tool_name: toolName,
-          run_mode: "sameSession",
-        }),
+        error: "dojo_proof_capsule_required",
+        required_tool: "synthi_dojo_run_with_proof_capsule",
+        tool_name: toolName,
       }));
-      expect(replay).toHaveBeenCalledTimes(1);
+      expect(replay).not.toHaveBeenCalled();
     } finally {
       await client.close();
       await server.close();
     }
   });
 
-  it("advertises ciOnly for mutation tools and routes private tool execution through isolated replay", async () => {
+  it("advertises ciOnly for mutation backing tools while direct execution remains proof-gated", async () => {
     const url = "https://app.example.test/settings";
     browserBroker.requestConsent(url);
     browserBroker.registerTabs([{ tab_id: "tab-a", url, active: true }]);
@@ -1136,18 +1128,11 @@ describe("private browser workflow MCP tool manifest", () => {
       workspace_id: "manifest-tests",
     });
 
-    expect(run?.isError).toBeUndefined();
+    expect(run?.isError).toBe(true);
     expect(run?.structuredContent).toEqual(expect.objectContaining({
-      ok: false,
-      private_tool: expect.objectContaining({
-        tool_name: manifest.tool_name,
-        run_mode: "ciOnly",
-      }),
-      replay: expect.objectContaining({
-        status: "blocked",
-        failure_class: "mutationBlocked",
-        mutation_executed: false,
-      }),
+      error: "dojo_proof_capsule_required",
+      tool_name: manifest.tool_name,
+      required_tool: "synthi_dojo_run_with_proof_capsule",
     }));
   });
 });

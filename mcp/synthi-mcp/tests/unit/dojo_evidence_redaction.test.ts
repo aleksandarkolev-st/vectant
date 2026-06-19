@@ -1,0 +1,206 @@
+import { describe, expect, it } from "vitest";
+import {
+  redactDojoEvidenceArtifact,
+  verifyDojoRedactionManifest,
+} from "../../src/dojo/evidence/redaction.js";
+
+describe("Dojo evidence redaction", () => {
+  it("redacts sensitive trace and storage fields while producing a verifiable manifest", () => {
+    const result = redactDojoEvidenceArtifact({
+      artifact_kind: "trace",
+      created_at: "2026-06-11T00:00:00.000Z",
+      content: {
+        url: "https://app.example.test/invoices",
+        headers: {
+          Authorization: "Bearer secret-token-value",
+          Cookie: "sid=secret; theme=dark",
+        },
+        localStorage: {
+          authToken: "secret-token",
+        },
+        form: {
+          email: "person@example.test",
+          file_path: "C:\\Users\\polek\\Downloads\\invoice.pdf",
+        },
+      },
+    });
+
+    const material = JSON.stringify(result.redacted_content);
+    expect(material).not.toContain("secret-token-value");
+    expect(material).not.toContain("sid=secret");
+    expect(material).not.toContain("person@example.test");
+    expect(material).not.toContain("polek");
+    expect(result.redacted_content).toEqual(expect.objectContaining({
+      headers: {
+        Authorization: "[REDACTED]",
+        Cookie: "[REDACTED]",
+      },
+      localStorage: "[REDACTED]",
+      form: expect.objectContaining({
+        email: "[REDACTED_EMAIL]",
+        file_path: "C:\\Users\\[REDACTED_USER]\\Downloads\\invoice.pdf",
+      }),
+    }));
+    expect(result.manifest).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.redactionManifest.v1",
+      artifact_kind: "trace",
+      original_sha256: expect.stringMatching(/^sha256:/),
+      redacted_sha256: expect.stringMatching(/^sha256:/),
+      manifest_sha256: expect.stringMatching(/^sha256:/),
+      redaction_count: expect.any(Number),
+      rules_applied: expect.arrayContaining([
+        expect.objectContaining({ rule_id: "sensitive_key" }),
+        expect.objectContaining({ rule_id: "email_address" }),
+        expect.objectContaining({ rule_id: "local_file_path" }),
+      ]),
+    }));
+    expect(verifyDojoRedactionManifest(result)).toEqual({ ok: true, blocked_by: [] });
+  });
+
+  it("redacts bearer tokens, JWT-like tokens, emails, and home paths in text artifacts", () => {
+    const result = redactDojoEvidenceArtifact({
+      artifact_kind: "document_text",
+      created_at: "2026-06-11T00:00:00.000Z",
+      content: [
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        "JWT aaaaaaaaaaaaaaaa.bbbbbbbb.cccccccc",
+        "Callback https://app.example.test/oauth/callback?access_token=secret-access-token&state=kept",
+        "Image /pixel.gif?sid=session-secret&size=small",
+        "Email finance@example.test",
+        "Path /Users/polek/Downloads/report.pdf",
+      ].join("\n"),
+    });
+
+    expect(result.redacted_content).toContain("Authorization: [REDACTED]");
+    expect(result.redacted_content).toContain("JWT [REDACTED_TOKEN]");
+    expect(result.redacted_content).toContain("access_token=[REDACTED]");
+    expect(result.redacted_content).toContain("sid=[REDACTED]");
+    expect(result.redacted_content).toContain("state=kept");
+    expect(result.redacted_content).not.toContain("secret-access-token");
+    expect(result.redacted_content).not.toContain("session-secret");
+    expect(result.redacted_content).toContain("[REDACTED_EMAIL]");
+    expect(result.redacted_content).toContain("/Users/[REDACTED_USER]/Downloads/report.pdf");
+    expect(result.manifest.rules_applied).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rule_id: "bearer_token", count: 1 }),
+      expect.objectContaining({ rule_id: "raw_sensitive_header", count: 1 }),
+      expect.objectContaining({ rule_id: "sensitive_url_param", count: 2 }),
+    ]));
+    expect(result.manifest.redaction_count).toBeGreaterThanOrEqual(6);
+  });
+
+  it("redacts structured user-entered text and file-name fields in trace and API artifacts", () => {
+    const result = redactDojoEvidenceArtifact({
+      artifact_kind: "api_response",
+      created_at: "2026-06-11T00:00:00.000Z",
+      content: {
+        status: "validation_failed",
+        form_state: {
+          user_entered_text: "Please reimburse Jane Doe for the private hotel booking.",
+          typedText: "Internal cost center: FIN-SECRET-44",
+          file_name: "jane-doe-bank-statement.pdf",
+          documentName: "acquisition-target-contract-draft.docx",
+        },
+        safe_metadata: {
+          workflow_id: "wf_expense_review",
+          field_count: 4,
+        },
+      },
+    });
+
+    const serialized = JSON.stringify(result.redacted_content);
+    expect(serialized).not.toContain("Jane Doe");
+    expect(serialized).not.toContain("FIN-SECRET-44");
+    expect(serialized).not.toContain("bank-statement");
+    expect(serialized).not.toContain("acquisition-target");
+    expect(result.redacted_content).toEqual(expect.objectContaining({
+      status: "validation_failed",
+      form_state: {
+        user_entered_text: "[REDACTED]",
+        typedText: "[REDACTED]",
+        file_name: "[REDACTED]",
+        documentName: "[REDACTED]",
+      },
+      safe_metadata: {
+        workflow_id: "wf_expense_review",
+        field_count: 4,
+      },
+    }));
+    expect(result.manifest.rules_applied).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rule_id: "sensitive_key", count: 4 }),
+    ]));
+    expect(verifyDojoRedactionManifest(result)).toEqual({ ok: true, blocked_by: [] });
+  });
+
+  it("redacts raw header and serialized JSON secret strings in text evidence", () => {
+    const result = redactDojoEvidenceArtifact({
+      artifact_kind: "trace",
+      created_at: "2026-06-11T00:00:00.000Z",
+      content: [
+        "Cookie: sid=raw-cookie-secret; theme=dark",
+        "Set-Cookie: refresh=raw-refresh-secret; HttpOnly",
+        "{\"accessToken\":\"json-secret-token\",\"safe\":\"kept\",\"headers\":{\"x-api-key\":\"raw-api-key\"}}",
+        "localStorage.setItem('authToken', 'browser-secret-token')",
+      ].join("\n"),
+    });
+
+    expect(result.redacted_content).toContain("Cookie: [REDACTED]");
+    expect(result.redacted_content).toContain("Set-Cookie: [REDACTED]");
+    expect(result.redacted_content).toContain("\"accessToken\":\"[REDACTED]\"");
+    expect(result.redacted_content).toContain("\"x-api-key\":\"[REDACTED]\"");
+    expect(result.redacted_content).toContain("localStorage.setItem('authToken', '[REDACTED]')");
+    expect(result.redacted_content).toContain("\"safe\":\"kept\"");
+    expect(result.redacted_content).not.toContain("raw-cookie-secret");
+    expect(result.redacted_content).not.toContain("raw-refresh-secret");
+    expect(result.redacted_content).not.toContain("json-secret-token");
+    expect(result.redacted_content).not.toContain("raw-api-key");
+    expect(result.redacted_content).not.toContain("browser-secret-token");
+    expect(result.manifest.rules_applied).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rule_id: "raw_sensitive_header", count: 2 }),
+      expect.objectContaining({ rule_id: "serialized_sensitive_pair", count: 2 }),
+      expect.objectContaining({ rule_id: "serialized_storage_secret", count: 1 }),
+    ]));
+    expect(verifyDojoRedactionManifest(result)).toEqual({ ok: true, blocked_by: [] });
+  });
+
+  it("detects redacted content or manifest tampering", () => {
+    const result = redactDojoEvidenceArtifact({
+      artifact_kind: "api_response",
+      created_at: "2026-06-11T00:00:00.000Z",
+      content: { email: "person@example.test" },
+    });
+
+    expect(verifyDojoRedactionManifest({
+      redacted_content: { email: "person@example.test" },
+      manifest: result.manifest,
+    })).toEqual({
+      ok: false,
+      blocked_by: ["redaction_manifest_redacted_digest_mismatch"],
+    });
+    expect(verifyDojoRedactionManifest({
+      redacted_content: result.redacted_content,
+      manifest: { ...result.manifest, redaction_count: 0 },
+    })).toEqual({
+      ok: false,
+      blocked_by: ["redaction_manifest_digest_mismatch"],
+    });
+  });
+
+  it("replaces binary screenshot evidence with a digest placeholder", () => {
+    const result = redactDojoEvidenceArtifact({
+      artifact_kind: "screenshot",
+      created_at: "2026-06-11T00:00:00.000Z",
+      content: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]),
+    });
+
+    expect(result.redacted_content).toEqual({
+      redacted_binary: true,
+      byte_length: 12,
+      sha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    });
+    expect(JSON.stringify(result.redacted_content)).not.toContain("137,80,78,71");
+    expect(result.manifest.rules_applied).toEqual([
+      { rule_id: "binary_artifact", count: 1 },
+    ]);
+    expect(verifyDojoRedactionManifest(result)).toEqual({ ok: true, blocked_by: [] });
+  });
+});

@@ -18,12 +18,200 @@
       "types": "./dist/browser/source_identity.d.ts",
       "import": "./dist/browser/source_identity.js"
     },
+    "./dojo/proof/public-verifier": {
+      "types": "./dist/dojo/proof/public_verifier.d.ts",
+      "import": "./dist/dojo/proof/public_verifier.js"
+    },
+    "./dojo/proof/public-verification-export": {
+      "types": "./dist/dojo/proof/public_verification_export.d.ts",
+      "import": "./dist/dojo/proof/public_verification_export.js"
+    },
+    "./dojo/proof/capsule-service": {
+      "types": "./dist/dojo/proof/capsule_service.d.ts",
+      "import": "./dist/dojo/proof/capsule_service.js"
+    },
+    "./dojo/license/kernel": {
+      "types": "./dist/dojo/license/kernel.d.ts",
+      "import": "./dist/dojo/license/kernel.js"
+    },
+    "./dojo/mcp/skill-bus": {
+      "types": "./dist/dojo/mcp/skill_bus.d.ts",
+      "import": "./dist/dojo/mcp/skill_bus.js"
+    },
+    "./dojo/mcp/execution-policy-gate": {
+      "types": "./dist/dojo/mcp/execution_policy_gate.d.ts",
+      "import": "./dist/dojo/mcp/execution_policy_gate.js"
+    },
+    "./dojo/mcp/manifest-signing": {
+      "types": "./dist/dojo/mcp/manifest_signing.d.ts",
+      "import": "./dist/dojo/mcp/manifest_signing.js"
+    },
+    "./dojo/evidence/types": {
+      "types": "./dist/dojo/evidence/types.d.ts",
+      "import": "./dist/dojo/evidence/types.js"
+    },
+    "./dojo/evidence/ledger-store": {
+      "types": "./dist/dojo/evidence/ledger_store.d.ts",
+      "import": "./dist/dojo/evidence/ledger_store.js"
+    },
+    "./dojo/evidence/claims": {
+      "types": "./dist/dojo/evidence/claims.d.ts",
+      "import": "./dist/dojo/evidence/claims.js"
+    },
+    "./dojo/evidence/redaction": {
+      "types": "./dist/dojo/evidence/redaction.d.ts",
+      "import": "./dist/dojo/evidence/redaction.js"
+    },
+    "./dojo/evidence/export": {
+      "types": "./dist/dojo/evidence/export.d.ts",
+      "import": "./dist/dojo/evidence/export.js"
+    },
+    "./dojo/evidence/retention": {
+      "types": "./dist/dojo/evidence/retention.d.ts",
+      "import": "./dist/dojo/evidence/retention.js"
+    },
+    "./dojo/graph/types": {
+      "types": "./dist/dojo/graph/types.d.ts",
+      "import": "./dist/dojo/graph/types.js"
+    },
+    "./dojo/graph/compiler": {
+      "types": "./dist/dojo/graph/compiler.d.ts",
+      "import": "./dist/dojo/graph/compiler.js"
+    },
+    "./dojo/graph/runtime": {
+      "types": "./dist/dojo/graph/runtime.d.ts",
+      "import": "./dist/dojo/graph/runtime.js"
+    },
+    "./dojo/graph/substrate-executor": {
+      "types": "./dist/dojo/graph/substrate_executor.d.ts",
+      "import": "./dist/dojo/graph/substrate_executor.js"
+    },
+    "./dojo/vivarium/scenario-dsl": {
+      "types": "./dist/dojo/vivarium/scenario_dsl.d.ts",
+      "import": "./dist/dojo/vivarium/scenario_dsl.js"
+    },
+    "./dojo/vivarium/fixture-materializer": {
+      "types": "./dist/dojo/vivarium/fixture_materializer.d.ts",
+      "import": "./dist/dojo/vivarium/fixture_materializer.js"
+    },
+    "./dojo/vivarium/oracle": {
+      "types": "./dist/dojo/vivarium/oracle.d.ts",
+      "import": "./dist/dojo/vivarium/oracle.js"
+    },
+    "./dojo/vivarium/runner": {
+      "types": "./dist/dojo/vivarium/runner.d.ts",
+      "import": "./dist/dojo/vivarium/runner.js"
+    },
+    "./dojo/checkride/runner": {
+      "types": "./dist/dojo/checkride/runner.d.ts",
+      "import": "./dist/dojo/checkride/runner.js"
+    },
+    "./dojo/checkride/entrustment": {
+      "types": "./dist/dojo/checkride/entrustment.d.ts",
+      "import": "./dist/dojo/checkride/entrustment.js"
+    },
+    "./dojo/checkride/readiness": {
+      "types": "./dist/dojo/checkride/readiness.d.ts",
+      "import": "./dist/dojo/checkride/readiness.js"
+    },
+    "./dojo/case-law/registry": {
+      "types": "./dist/dojo/case_law/registry.d.ts",
+      "import": "./dist/dojo/case_law/registry.js"
+    },
+    "./dojo/case-law/guardrail-synthesizer": {
+      "types": "./dist/dojo/case_law/guardrail_synthesizer.d.ts",
+      "import": "./dist/dojo/case_law/guardrail_synthesizer.js"
+    },
+    "./dojo/case-law/antibody-matcher": {
+      "types": "./dist/dojo/case_law/antibody_matcher.d.ts",
+      "import": "./dist/dojo/case_law/antibody_matcher.js"
+    },
+    "./dojo/source/source-snapshot": {
+      "types": "./dist/dojo/source/source_snapshot.d.ts",
+      "import": "./dist/dojo/source/source_snapshot.js"
+    },
+    "./dojo/source/source-drift": {
+      "types": "./dist/dojo/source/source_drift.d.ts",
+      "import": "./dist/dojo/source/source_drift.js"
+    },
+    "./dojo/source/agent-ready-ui-contract": {
+      "types": "./dist/dojo/source/agent_ready_ui_contract.d.ts",
+      "import": "./dist/dojo/source/agent_ready_ui_contract.js"
+    },
+    "./dojo/source/affordance-pr-plan": {
+      "types": "./dist/dojo/source/affordance_pr_plan.d.ts",
+      "import": "./dist/dojo/source/affordance_pr_plan.js"
+    },
+    "./dojo/source/codemod": {
+      "types": "./dist/dojo/source/codemod.d.ts",
+      "import": "./dist/dojo/source/codemod.js"
+    },
+    "./dojo/source/pr-generator": {
+      "types": "./dist/dojo/source/pr_generator.d.ts",
+      "import": "./dist/dojo/source/pr_generator.js"
+    },
+    "./dojo/api/types": {
+      "types": "./dist/dojo/api/types.d.ts",
+      "import": "./dist/dojo/api/types.js"
+    },
+    "./dojo/api/endpoint-inference": {
+      "types": "./dist/dojo/api/endpoint_inference.d.ts",
+      "import": "./dist/dojo/api/endpoint_inference.js"
+    },
+    "./dojo/api/api-tool-compiler": {
+      "types": "./dist/dojo/api/api_tool_compiler.d.ts",
+      "import": "./dist/dojo/api/api_tool_compiler.js"
+    },
+    "./dojo/governance/service": {
+      "types": "./dist/dojo/governance/service.d.ts",
+      "import": "./dist/dojo/governance/service.js"
+    },
+    "./dojo/runtime/hosted-runtime-gateway": {
+      "types": "./dist/dojo/runtime/hosted_runtime_gateway.d.ts",
+      "import": "./dist/dojo/runtime/hosted_runtime_gateway.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
+    "scripts/dojo-agent-ready-ui-contract-self-check.mjs",
+    "scripts/dojo-api-tool-compiler-self-check.mjs",
+    "scripts/dojo-checkride-license-self-check.mjs",
+    "scripts/dojo-evidence-authority-self-check.mjs",
     "scripts/lib/gpu-hmr-acceptance-contract.mjs",
     "scripts/lib/gpu-hmr-validation-matrix-ledger.mjs",
+    "scripts/dojo-affordance-codemod-self-check.mjs",
+    "scripts/dojo-case-law-runtime-self-check.mjs",
+    "scripts/dojo-chaos-performance-self-check.mjs",
+    "scripts/dojo-compliance-export-self-check.mjs",
+    "scripts/dojo-docker-integration-self-check.mjs",
+    "scripts/dojo-generated-pr-self-check.mjs",
+    "scripts/dojo-governance-lifecycle-self-check.mjs",
+    "scripts/dojo-graph-runtime-self-check.mjs",
+    "scripts/dojo-ghost-mode-evidence-self-check.mjs",
+    "scripts/dojo-hosted-runtime-gateway-release-observation.mjs",
+    "scripts/dojo-hosted-runtime-gateway-self-check.mjs",
+    "scripts/dojo-implementation-status-self-check.mjs",
+    "scripts/dojo-managed-key-signing-release-observation.mjs",
+    "scripts/dojo-managed-key-signing-self-check.mjs",
+    "scripts/dojo-mcp-skill-bus-self-check.mjs",
+    "scripts/dojo-package-readiness-self-check.mjs",
+    "scripts/dojo-privacy-redaction-self-check.mjs",
+    "scripts/dojo-postgres-control-plane-self-check.mjs",
+    "scripts/dojo-proof-self-check.mjs",
+    "scripts/dojo-public-proof-verification-self-check.mjs",
+    "scripts/dojo-release-gate-runner.mjs",
+    "scripts/dojo-release-gate-verify.mjs",
+    "scripts/dojo-release-gate-manifest.mjs",
+    "scripts/dojo-security-abuse-self-check.mjs",
+    "scripts/dojo-skill-passport-self-check.mjs",
+    "scripts/dojo-soak-performance-self-check.mjs",
+    "scripts/dojo-source-drift-self-check.mjs",
+    "scripts/dojo-time-machine-debugger-self-check.mjs",
+    "scripts/dojo-vivarium-runtime-self-check.mjs",
+    "scripts/dojo-mcp-host-conformance.mjs",
+    "tests/chaos",
+    "tests/soak",
     "scripts/gpu-hmr-validation-matrix-ledger.mjs",
     "scripts/gpu-hmr-webgpu-preflight.mjs",
     "scripts/gpu-hmr-webgpu-runtime-visual-proof.mjs",
@@ -50,6 +238,7 @@
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
+    "test:dojo:postgres-control-plane": "vitest run tests/integration/dojo_postgres_schema.test.ts tests/integration/dojo_postgres_proof_store.test.ts tests/integration/dojo_postgres_proof_key_registry.test.ts tests/integration/dojo_evidence_ledger_store.test.ts tests/integration/dojo_audit_store.test.ts tests/integration/dojo_postgres_skill_store.test.ts tests/integration/dojo_postgres_license_store.test.ts tests/integration/dojo_postgres_tool_control_plane.test.ts tests/integration/dojo_postgres_ghost_shadow_evidence_store.test.ts tests/integration/dojo_postgres_governance_store.test.ts tests/integration/dojo_postgres_source_registry_store.test.ts tests/integration/dojo_postgres_mcp_skill_bus_store.test.ts tests/integration/dojo_postgres_graph_run_store.test.ts tests/integration/dojo_postgres_hosted_runtime_store.test.ts tests/integration/dojo_hosted_runtime_gateway_resolver.test.ts tests/integration/dojo_postgres_mcp_host_conformance_store.test.ts tests/integration/dojo_proof_ledger_tool.test.ts",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/release-smoke.mjs --command dist/index.js",
     "smoke:image": "node scripts/release-smoke.mjs",
@@ -60,6 +249,9 @@
     "spike:E3": "tsx tests/spike/E3_p99_load.ts",
     "spike:E4": "tsx tests/spike/E4_cost_budget.ts",
     "soak": "node tests/soak/soak_loop.mjs",
+    "chaos:dojo:preflight": "node tests/chaos/runner.mjs --require-scenarios --json ../../tmp/dojo-chaos-runner/chaos-runner.report.json",
+    "chaos:dojo:live:list": "node tests/chaos/runner.mjs --kind live --list",
+    "chaos:dojo:live": "node tests/chaos/runner.mjs --kind live --require-scenarios --json ../../tmp/dojo-chaos-runner/live-chaos-runner.report.json",
     "live:phase3": "node scripts/live-test-phase3.mjs",
     "live:browser": "node scripts/live-browser-smoke.mjs",
     "live:browser:workspace": "node scripts/live-browser-smoke.mjs --workspace",
@@ -68,7 +260,46 @@
     "live:browser:private-tool-host-conformance": "node scripts/private-tool-stdio-acceptance.mjs --require-custom-mcp-command --require-non-loopback-runtime --require-external-private-tool-store",
     "live:browser:private-tool-codex": "node scripts/private-tool-codex-acceptance.mjs",
     "live:browser:private-tool-codex-host-conformance": "node scripts/private-tool-codex-acceptance.mjs --require-non-loopback-runtime --require-external-private-tool-store",
+    "live:dojo:mcp-host-conformance": "node scripts/dojo-mcp-host-conformance.mjs --out-dir tmp/dojo-mcp-host-conformance-live --require-non-loopback-mcp-host --execute-production --require-external-control-plane-store --require-external-proof-signing --require-bridge-token --require-no-local-cdp --require-licensed-skill-filtering",
     "live:browser:install": "npx playwright-core install chromium",
+    "proof:dojo": "node scripts/dojo-proof-self-check.mjs",
+    "proof:dojo:self-check": "node scripts/dojo-proof-self-check.mjs",
+    "proof:dojo:mcp-host-conformance:self-check": "node scripts/dojo-mcp-host-conformance.mjs --self-check",
+    "proof:dojo:docker-integration:self-check": "node scripts/dojo-docker-integration-self-check.mjs",
+    "proof:dojo:postgres-control-plane:self-check": "node scripts/dojo-postgres-control-plane-self-check.mjs",
+    "proof:dojo:affordance-codemod:self-check": "node scripts/dojo-affordance-codemod-self-check.mjs",
+    "proof:dojo:agent-ready-ui-contract:self-check": "node scripts/dojo-agent-ready-ui-contract-self-check.mjs --from-json ../../tmp/dojo-agent-ready-ui-contract/dojo-agent-ready-ui-contract.vitest.json --run-tests",
+    "proof:dojo:api-tool-compiler:self-check": "node scripts/dojo-api-tool-compiler-self-check.mjs --from-json ../../tmp/dojo-api-tool-compiler/dojo-api-tool-compiler.vitest.json --run-tests",
+    "proof:dojo:checkride-license:self-check": "node scripts/dojo-checkride-license-self-check.mjs --from-json ../../tmp/dojo-checkride-license/dojo-checkride-license.vitest.json --run-tests",
+    "proof:dojo:evidence-authority:self-check": "node scripts/dojo-evidence-authority-self-check.mjs --from-json ../../tmp/dojo-evidence-authority/dojo-evidence-authority.vitest.json --run-tests",
+    "proof:dojo:source-drift:self-check": "node scripts/dojo-source-drift-self-check.mjs --from-json ../../tmp/dojo-source-drift/dojo-source-drift.vitest.json --run-tests",
+    "proof:dojo:case-law-runtime:self-check": "node scripts/dojo-case-law-runtime-self-check.mjs --from-json ../../tmp/dojo-case-law-runtime/dojo-case-law-runtime.vitest.json --run-tests",
+    "proof:dojo:generated-pr:self-check": "node scripts/dojo-generated-pr-self-check.mjs --from-json ../../tmp/dojo-generated-pr/dojo-generated-pr.vitest.json --run-tests",
+    "proof:dojo:governance-lifecycle:self-check": "node scripts/dojo-governance-lifecycle-self-check.mjs --from-json ../../tmp/dojo-governance-lifecycle/dojo-governance-lifecycle.vitest.json --run-tests",
+    "proof:dojo:graph-runtime:self-check": "node scripts/dojo-graph-runtime-self-check.mjs --from-json ../../tmp/dojo-graph-runtime/dojo-graph-runtime.vitest.json --run-tests",
+    "proof:dojo:ghost-mode-evidence:self-check": "node scripts/dojo-ghost-mode-evidence-self-check.mjs --from-json ../../tmp/dojo-ghost-mode-evidence/dojo-ghost-mode-evidence.vitest.json --run-tests",
+    "proof:dojo:hosted-runtime-gateway:self-check": "node scripts/dojo-hosted-runtime-gateway-self-check.mjs --from-json ../../tmp/dojo-hosted-runtime-gateway/dojo-hosted-runtime-gateway.vitest.json --run-tests",
+    "proof:dojo:implementation-status:self-check": "node scripts/dojo-implementation-status-self-check.mjs --from-json ../../tmp/dojo-implementation-status/dojo-implementation-status.vitest.json --run-tests",
+    "proof:dojo:mcp-skill-bus:self-check": "node scripts/dojo-mcp-skill-bus-self-check.mjs --from-json ../../tmp/dojo-mcp-skill-bus/dojo-mcp-skill-bus.vitest.json --run-tests",
+    "proof:dojo:skill-passport:self-check": "node scripts/dojo-skill-passport-self-check.mjs --from-json ../../tmp/dojo-skill-passport/dojo-skill-passport.vitest.json --run-tests",
+    "proof:dojo:time-machine-debugger:self-check": "node scripts/dojo-time-machine-debugger-self-check.mjs --from-json ../../tmp/dojo-time-machine-debugger/dojo-time-machine-debugger.vitest.json --run-tests",
+    "proof:dojo:vivarium-runtime:self-check": "node scripts/dojo-vivarium-runtime-self-check.mjs --from-json ../../tmp/dojo-vivarium-runtime/dojo-vivarium-runtime.vitest.json --run-tests",
+    "proof:dojo:release-gates:self-check": "node scripts/dojo-release-gate-manifest.mjs --self-check",
+    "proof:dojo:release-gates:run": "node scripts/dojo-release-gate-runner.mjs",
+    "proof:dojo:release-gates:enterprise": "node scripts/dojo-release-gate-runner.mjs --scope enterprise-release --execute --fail-on-missing-env --continue-on-failure",
+    "proof:dojo:release-gates:runner:self-check": "node scripts/dojo-release-gate-runner.mjs --self-check",
+    "proof:dojo:release-gates:verify": "node scripts/dojo-release-gate-verify.mjs",
+    "proof:dojo:release-gates:verify:self-check": "node scripts/dojo-release-gate-verify.mjs --self-check",
+    "proof:dojo:package-readiness:self-check": "node scripts/dojo-package-readiness-self-check.mjs",
+    "proof:dojo:hosted-runtime-gateway:observe": "node scripts/dojo-hosted-runtime-gateway-release-observation.mjs",
+    "proof:dojo:managed-key-signing:observe": "node scripts/dojo-managed-key-signing-release-observation.mjs",
+    "proof:dojo:managed-key-signing:self-check": "node scripts/dojo-managed-key-signing-self-check.mjs",
+    "proof:dojo:public-proof-verification:self-check": "node scripts/dojo-public-proof-verification-self-check.mjs --from-json ../../tmp/dojo-public-proof-verification/dojo-public-proof-verification.vitest.json --run-tests",
+    "proof:dojo:security-abuse:self-check": "node scripts/dojo-security-abuse-self-check.mjs",
+    "proof:dojo:compliance-export:self-check": "node scripts/dojo-compliance-export-self-check.mjs",
+    "proof:dojo:privacy-redaction:self-check": "node scripts/dojo-privacy-redaction-self-check.mjs",
+    "proof:dojo:chaos-performance:self-check": "node scripts/dojo-chaos-performance-self-check.mjs",
+    "proof:dojo:soak-performance:self-check": "node scripts/dojo-soak-performance-self-check.mjs",
     "smoke:operator-agents": "node scripts/operator-multi-agent-smoke.mjs",
     "live:lease-contention": "node scripts/live-lease-contention.mjs",
     "proof:real-rocm": "node scripts/gpu-hmr-real-rocm-repo-validation.mjs",
@@ -113,13 +344,16 @@
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@google/genai": "^1.50.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "pg": "^8.21.0",
     "playwright-core": "^1.60.0",
     "sharp": "^0.33.0",
     "werift": "^0.22.9",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.20.0",
     "@types/ws": "^8.5.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",

@@ -1,0 +1,287 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { ArchiveX, ArrowLeft, CheckCircle2, Landmark } from 'lucide-react';
+import {
+  createEmptyDojoSummary,
+  exportDojoCompliancePack,
+  getDojoWorkspaceSummary,
+  recertifyDojoSkill,
+  reviewDojoCaseLaw,
+  reviewDojoPermissionUpgrade,
+  revokeDojoLicense,
+} from '@/services/dojoClient';
+import ApprovalQueue from './ApprovalQueue';
+import AuditExportPanel from './AuditExportPanel';
+import ComplianceEvidencePack from './ComplianceEvidencePack';
+import GovernanceOverview from './GovernanceOverview';
+import LicenseHealthBoard from './LicenseHealthBoard';
+import PolicyGateTable from './PolicyGateTable';
+import RecertificationQueue from './RecertificationQueue';
+import SkillRegistryTable from './SkillRegistryTable';
+
+const panelStyle = {
+  borderColor: 'var(--border-subtle)',
+  background: 'color-mix(in srgb, var(--bg-panel) 92%, transparent)',
+};
+
+export default function GovernanceDashboard({
+  workspaceSlug = '',
+  initialSummary,
+  loadSummary = getDojoWorkspaceSummary,
+  autoLoad = true,
+  onApproveApproval,
+  onDenyApproval,
+  onApproveCaseLaw,
+  onDeprecateCaseLaw,
+  onExportCompliancePack,
+  onRecertifySkill,
+  onRevokeLicense,
+  enableBridgeActions = true,
+}) {
+  const [summary, setSummary] = useState(initialSummary || createEmptyDojoSummary(workspaceSlug));
+  const [loading, setLoading] = useState(autoLoad && !initialSummary);
+  const [error, setError] = useState('');
+  const [actionState, setActionState] = useState({ busyKey: '', message: '', error: '' });
+
+  useEffect(() => {
+    if (!autoLoad) return undefined;
+    const controller = new AbortController();
+    setLoading(true);
+    loadSummary({ workspaceSlug, signal: controller.signal })
+      .then((next) => {
+        setSummary(next);
+        setError('');
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setError(err?.message || 'dojo_governance_load_failed');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [autoLoad, loadSummary, workspaceSlug]);
+
+  const governance = summary.governance || createEmptyDojoSummary(workspaceSlug).governance;
+  const backHref = `/workspace/${encodeURIComponent(workspaceSlug || 'current')}/dojo`;
+  const supportsPermissionUpgradeReview = (item) => Boolean(item?.requestId && item?.source === 'permission_upgrade_request');
+  const approveApprovalHandler = onApproveApproval
+    ?? (enableBridgeActions ? (item) => reviewDojoPermissionUpgrade({ item, decision: 'approved', workspaceSlug }) : undefined);
+  const denyApprovalHandler = onDenyApproval
+    ?? (enableBridgeActions ? (item) => reviewDojoPermissionUpgrade({ item, decision: 'denied', workspaceSlug }) : undefined);
+  const approveCaseLawHandler = onApproveCaseLaw
+    ?? (enableBridgeActions ? (item) => reviewDojoCaseLaw({ item, decision: 'approved', workspaceSlug }) : undefined);
+  const deprecateCaseLawHandler = onDeprecateCaseLaw
+    ?? (enableBridgeActions ? (item) => reviewDojoCaseLaw({ item, decision: 'deprecated', workspaceSlug }) : undefined);
+  const recertifySkillHandler = onRecertifySkill
+    ?? (enableBridgeActions ? (item) => recertifyDojoSkill({ item, workspaceSlug }) : undefined);
+  const exportComplianceHandler = onExportCompliancePack
+    ?? (enableBridgeActions ? () => exportDojoCompliancePack({ skillId: summary.selectedSkill?.skillId || '', workspaceSlug }) : undefined);
+  const revokeLicenseHandler = onRevokeLicense
+    ?? (enableBridgeActions ? (item) => revokeDojoLicense({ item, workspaceSlug }) : undefined);
+
+  const invokeGovernanceAction = async ({ busyKey, successLabel, item, handler }) => {
+    if (!handler) return;
+    setActionState({ busyKey, message: '', error: '' });
+    try {
+      const result = await handler(item);
+      if (result?.summary) setSummary(result.summary);
+      setActionState({
+        busyKey: '',
+        message: result?.message || successLabel,
+        error: '',
+      });
+    } catch (err) {
+      setActionState({
+        busyKey: '',
+        message: '',
+        error: err?.message || 'dojo_governance_action_failed',
+      });
+    }
+  };
+
+  return (
+    <main
+      className="min-h-screen px-5 py-5 text-sm"
+      style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}
+      data-testid="governance-dashboard"
+    >
+      <div className="mx-auto flex max-w-6xl flex-col gap-4">
+        <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
+          <div className="min-w-0">
+            <a href={backHref} className="mb-3 inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs" style={panelStyle}>
+              <ArrowLeft size={13} aria-hidden="true" />
+              Dojo
+            </a>
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{workspaceSlug || 'workspace'}</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-normal">Governance</h1>
+          </div>
+          <div className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs" style={panelStyle}>
+            <Landmark size={14} aria-hidden="true" />
+            <span>{loading ? 'Loading' : error ? 'Unavailable' : `${governance.metrics.pendingApprovalCount} approvals`}</span>
+          </div>
+        </header>
+
+        {error ? (
+          <section className="rounded-md border p-3 text-xs" style={{ ...panelStyle, color: 'var(--accent-warning)' }} role="status">
+            {error}
+          </section>
+        ) : null}
+
+        {actionState.message || actionState.error ? (
+          <section
+            className="rounded-md border p-3 text-xs"
+            style={{ ...panelStyle, color: actionState.error ? 'var(--accent-danger, #ef4444)' : 'var(--accent-success, #22c55e)' }}
+            role="status"
+            data-testid="governance-action-status"
+          >
+            {actionState.error || actionState.message}
+          </section>
+        ) : null}
+
+        <GovernanceOverview metrics={governance.metrics} />
+
+        <SkillRegistryTable items={governance.skillRegistry} />
+
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
+          <LicenseHealthBoard
+            items={governance.licenseHealth}
+            busyLicenseId={actionState.busyKey.startsWith('license:') ? actionState.busyKey.slice('license:'.length) : ''}
+            onRevoke={revokeLicenseHandler ? (item) => invokeGovernanceAction({
+              busyKey: `license:${item.licenseId}`,
+              successLabel: `License revoked: ${item.skillName || item.skillId}`,
+              item,
+              handler: revokeLicenseHandler,
+            }) : undefined}
+          />
+          <ApprovalQueue
+            items={governance.approvalQueue}
+            busyQueueId={actionState.busyKey.startsWith('approval:') ? actionState.busyKey.slice('approval:'.length) : ''}
+            canApprove={onApproveApproval ? undefined : supportsPermissionUpgradeReview}
+            canDeny={onDenyApproval ? undefined : supportsPermissionUpgradeReview}
+            onApprove={approveApprovalHandler ? (item) => invokeGovernanceAction({
+              busyKey: `approval:${item.queueId}`,
+              successLabel: `Approval approved: ${item.action || item.queueId}`,
+              item,
+              handler: approveApprovalHandler,
+            }) : undefined}
+            onDeny={denyApprovalHandler ? (item) => invokeGovernanceAction({
+              busyKey: `approval:${item.queueId}`,
+              successLabel: `Approval denied: ${item.action || item.queueId}`,
+              item,
+              handler: denyApprovalHandler,
+            }) : undefined}
+          />
+        </section>
+
+        <section className="grid gap-4 lg:grid-cols-2">
+          <PolicyGateTable items={governance.policyGates} />
+          <RecertificationQueue
+            items={governance.recertificationQueue}
+            busyQueueId={actionState.busyKey.startsWith('recertification:') ? actionState.busyKey.slice('recertification:'.length) : ''}
+            onRecertify={recertifySkillHandler ? (item) => invokeGovernanceAction({
+              busyKey: `recertification:${item.queueId}`,
+              successLabel: `Skill recertified: ${item.skillName || item.skillId}`,
+              item,
+              handler: recertifySkillHandler,
+            }) : undefined}
+          />
+        </section>
+
+        <CaseLawReviewQueue
+          items={governance.caseLawReviewQueue}
+          busyCaseId={actionState.busyKey.startsWith('case-law:') ? actionState.busyKey.slice('case-law:'.length) : ''}
+          onApprove={approveCaseLawHandler ? (item) => invokeGovernanceAction({
+            busyKey: `case-law:${item.caseId}`,
+            successLabel: `Case law approved: ${item.title || item.caseId}`,
+            item,
+            handler: approveCaseLawHandler,
+          }) : undefined}
+          onDeprecate={deprecateCaseLawHandler ? (item) => invokeGovernanceAction({
+            busyKey: `case-law:${item.caseId}`,
+            successLabel: `Case law deprecated: ${item.title || item.caseId}`,
+            item,
+            handler: deprecateCaseLawHandler,
+          }) : undefined}
+        />
+
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
+          <ComplianceEvidencePack
+            pack={governance.complianceEvidencePack}
+            busy={actionState.busyKey === 'compliance:export'}
+            onExport={exportComplianceHandler ? (pack) => invokeGovernanceAction({
+              busyKey: 'compliance:export',
+              successLabel: 'Compliance pack exported',
+              item: pack,
+              handler: exportComplianceHandler,
+            }) : undefined}
+          />
+          <AuditExportPanel items={governance.auditExports} />
+        </section>
+      </div>
+    </main>
+  );
+}
+
+function CaseLawReviewQueue({ items = [], busyCaseId = '', onApprove, onDeprecate }) {
+  return (
+    <section className="rounded-md border p-4" style={panelStyle} data-testid="case-law-review-queue">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold">Case-Law Review</h2>
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{items.length} proposed</span>
+      </div>
+      {items.length ? (
+        <div className="grid gap-2">
+          {items.map((item) => (
+            <article key={item.caseId || item.title} className="rounded-md border p-3" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="truncate text-sm font-semibold">{item.title || item.caseId}</h3>
+                  <p className="mt-1 truncate text-xs" style={{ color: 'var(--text-muted)' }}>{item.caseId}</p>
+                </div>
+                <span className="rounded-md border px-2 py-1 text-xs" style={panelStyle}>{item.status}</span>
+              </div>
+              <p className="mt-3 text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>{item.finding || item.ruleCreated}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <CaseLawActionButton
+                  icon={CheckCircle2}
+                  label="Approve"
+                  disabled={!onApprove || busyCaseId === item.caseId}
+                  testId={`case-law-${item.caseId}-approve`}
+                  onClick={() => onApprove?.(item)}
+                />
+                <CaseLawActionButton
+                  icon={ArchiveX}
+                  label="Deprecate"
+                  disabled={!onDeprecate || busyCaseId === item.caseId}
+                  testId={`case-law-${item.caseId}-deprecate`}
+                  onClick={() => onDeprecate?.(item)}
+                />
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No proposed case law requires review.</p>
+      )}
+    </section>
+  );
+}
+
+function CaseLawActionButton({ icon: Icon, label, disabled, testId, onClick }) {
+  return (
+    <button
+      type="button"
+      className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs disabled:cursor-not-allowed disabled:opacity-45"
+      style={panelStyle}
+      disabled={disabled}
+      data-testid={testId}
+      onClick={onClick}
+      title={disabled ? 'Action handler unavailable' : label}
+    >
+      <Icon size={13} aria-hidden="true" />
+      {label}
+    </button>
+  );
+}

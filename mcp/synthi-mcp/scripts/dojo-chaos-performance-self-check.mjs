@@ -1,0 +1,567 @@
+#!/usr/bin/env node
+/*
+ * Lightweight Dojo T8 gate. It does not replace the long-running soak harness;
+ * it proves the chaos/fault paths are executable and emits timing evidence that
+ * nightly jobs can compare over time.
+ */
+
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { performance } from "node:perf_hooks";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const MCP_ROOT = path.resolve(__dirname, "..");
+const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
+
+export const DOJO_CHAOS_PERFORMANCE_TEST_FILES = [
+  "tests/unit/dojo_fixture_materializer.test.ts",
+  "tests/unit/dojo_evidence_record.test.ts",
+  "tests/unit/dojo_graph_runtime.test.ts",
+  "tests/unit/dojo_proof_capsule_service.test.ts",
+  "tests/unit/dojo_proof_signing.test.ts",
+  "tests/unit/dojo_source_drift.test.ts",
+  "tests/integration/dojo_api_fault_server.test.ts",
+  "tests/integration/dojo_vivarium_runner.test.ts",
+  "tests/integration/dojo_checkride_runner.test.ts",
+  "tests/integration/dojo_evil_twin_runner.test.ts",
+  "tests/unit/dojo_tools.test.ts",
+];
+
+export const DOJO_CHAOS_SCENARIOS = [
+  "api_timeout",
+  "partial_write",
+  "fake_success_ui",
+  "validation_error",
+  "downstream_failure",
+  "duplicate_entity_fixture",
+  "prompt_injection_fixture",
+  "runtime_oracle_classification",
+  "evil_twin_attack_hardening",
+  "hosted_runtime_preflight_fail_closed",
+  "proof_not_consumed_on_failed_preflight",
+  "proof_replay_false_allow",
+  "evidence_store_unavailable",
+  "proof_signing_service_unavailable",
+  "source_contract_drift_mid_run",
+];
+
+export const DOJO_CHAOS_PERFORMANCE_REQUIRED_METRICS = [
+  "proof_validation_p95_ms",
+  "proof_replay_rejection_p95_ms",
+  "proof_replay_false_allow_count",
+  "graph_node_execution_p95_ms",
+  "vivarium_scenario_runtime_p95_ms",
+  "checkride_runtime_p95_ms",
+  "evidence_append_p95_ms",
+  "api_fault_runtime_p95_ms",
+  "evil_twin_hardening_p95_ms",
+  "hosted_runtime_preflight_p95_ms",
+  "source_drift_expiry_p95_ms",
+];
+
+const DOJO_CHAOS_PERFORMANCE_METRIC_RULES = [
+  {
+    metric: "proof_validation_p95_ms",
+    aliases: ["validates without consuming", "reusable proof validation", "proof validator"],
+  },
+  {
+    metric: "proof_replay_rejection_p95_ms",
+    aliases: ["consumes exactly once", "proof capsule replay detected"],
+  },
+  {
+    metric: "graph_node_execution_p95_ms",
+    aliases: ["dojo graph runtime", "graph runtime"],
+  },
+  {
+    metric: "vivarium_scenario_runtime_p95_ms",
+    aliases: ["dojo vivarium runner", "executes scenario against materialized synthetic fixtures"],
+  },
+  {
+    metric: "checkride_runtime_p95_ms",
+    aliases: ["dojo executable checkride runner", "checkride runner"],
+  },
+  {
+    metric: "evidence_append_p95_ms",
+    aliases: ["appends checkride scenario evidence", "evidence signature", "ledger-backed checkride evidence"],
+  },
+  {
+    metric: "api_fault_runtime_p95_ms",
+    aliases: ["dojo api fault server", "api fault server"],
+  },
+  {
+    metric: "evil_twin_hardening_p95_ms",
+    aliases: ["evil twin", "attack hardening", "expanded hardening guardrails"],
+  },
+  {
+    metric: "hosted_runtime_preflight_p95_ms",
+    aliases: ["hosted runtime session", "before consuming production proof capsules", "runtime session not found"],
+  },
+  {
+    metric: "source_drift_expiry_p95_ms",
+    aliases: ["source drift expiry", "expires graph nodes mapped to changed source tokens"],
+  },
+];
+
+const args = parseArgs(process.argv.slice(2));
+
+if (isDirectRun()) {
+  main().catch((err) => {
+    console.error(`[fail] ${err instanceof Error ? err.stack || err.message : String(err)}`);
+    process.exit(1);
+  });
+}
+
+async function main() {
+  const outDir = path.resolve(args["out-dir"] || path.join(REPO_ROOT, "tmp", "dojo-chaos-performance"));
+  const artifacts = await runDojoChaosPerformanceSelfCheck({ outDir });
+  console.log(`[ok] Dojo chaos/performance self-check passed - evidence=${artifacts.evidence_path}`);
+}
+
+export async function runDojoChaosPerformanceSelfCheck({
+  outDir,
+  now = new Date().toISOString(),
+  timeoutMs = 120000,
+} = {}) {
+  const outputDir = path.resolve(outDir || path.join(REPO_ROOT, "tmp", "dojo-chaos-performance"));
+  await mkdir(outputDir, { recursive: true });
+  const missing = DOJO_CHAOS_PERFORMANCE_TEST_FILES.filter((file) => !existsSync(path.join(MCP_ROOT, file)));
+  assert.deepEqual(missing, [], `missing chaos/performance test files: ${missing.join(", ")}`);
+
+  const vitestPath = path.join(MCP_ROOT, "node_modules", "vitest", "vitest.mjs");
+  assert.equal(existsSync(vitestPath), true, `missing vitest executable: ${vitestPath}`);
+  const started = performance.now();
+  const result = spawnSync(process.execPath, [
+    vitestPath,
+    "run",
+    ...DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+    "--reporter=basic",
+  ], {
+    cwd: MCP_ROOT,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    windowsHide: true,
+  });
+  const basicRunDurationMs = performance.now() - started;
+  const stdout = String(result.stdout ?? "");
+  const stderr = String(result.stderr ?? "");
+  const stdoutPath = path.join(outputDir, "dojo-chaos-performance.stdout.log");
+  const stderrPath = path.join(outputDir, "dojo-chaos-performance.stderr.log");
+  const jsonReportPath = path.join(outputDir, "dojo-chaos-performance.vitest.json");
+  await writeFile(stdoutPath, stdout);
+  await writeFile(stderrPath, stderr);
+  const jsonResult = spawnSync(process.execPath, [
+    vitestPath,
+    "run",
+    ...DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+    "--reporter=json",
+    "--outputFile",
+    jsonReportPath,
+  ], {
+    cwd: MCP_ROOT,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    windowsHide: true,
+  });
+  const jsonStdout = String(jsonResult.stdout ?? "");
+  const jsonStderr = String(jsonResult.stderr ?? "");
+  await writeFile(path.join(outputDir, "dojo-chaos-performance.json-reporter.stdout.log"), jsonStdout);
+  await writeFile(path.join(outputDir, "dojo-chaos-performance.json-reporter.stderr.log"), jsonStderr);
+  const jsonReportError = existsSync(jsonReportPath) ? undefined : `json_report_missing:${jsonReportPath}`;
+  const jsonReportText = jsonReportError ? "" : await readFile(jsonReportPath, "utf8");
+  const jsonReport = jsonReportError ? null : JSON.parse(jsonReportText);
+  const chaosRunnerReportPath = path.join(outputDir, "dojo-chaos-runner.report.json");
+  const chaosRunnerArtifactDir = path.join(outputDir, "chaos-runner");
+  const chaosRunnerStdoutPath = path.join(outputDir, "dojo-chaos-runner.stdout.log");
+  const chaosRunnerStderrPath = path.join(outputDir, "dojo-chaos-runner.stderr.log");
+  const chaosRunnerResult = spawnSync(process.execPath, [
+    path.join(MCP_ROOT, "tests", "chaos", "runner.mjs"),
+    "--require-scenarios",
+    "--json",
+    chaosRunnerReportPath,
+    "--artifact-dir",
+    chaosRunnerArtifactDir,
+    "--timeout-ms",
+    String(timeoutMs),
+  ], {
+    cwd: MCP_ROOT,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    windowsHide: true,
+  });
+  const chaosRunnerStdout = String(chaosRunnerResult.stdout ?? "");
+  const chaosRunnerStderr = String(chaosRunnerResult.stderr ?? "");
+  await writeFile(chaosRunnerStdoutPath, chaosRunnerStdout);
+  await writeFile(chaosRunnerStderrPath, chaosRunnerStderr);
+  const chaosRunnerReportError = existsSync(chaosRunnerReportPath) ? undefined : `chaos_runner_report_missing:${chaosRunnerReportPath}`;
+  const chaosRunnerReportText = chaosRunnerReportError ? "" : await readFile(chaosRunnerReportPath, "utf8");
+  const chaosRunnerReport = chaosRunnerReportError ? null : JSON.parse(chaosRunnerReportText);
+  const chaosRunnerError = chaosRunnerResult.error?.message
+    ?? (chaosRunnerResult.status === 0 ? undefined : `chaos_runner_exit_${chaosRunnerResult.status}`)
+    ?? chaosRunnerReportError;
+  const durationMs = performance.now() - started;
+  const evidence = buildDojoChaosPerformanceEvidenceManifest({
+    now,
+    exitCode: result.status ?? jsonResult.status,
+    signal: result.signal ?? jsonResult.signal,
+    durationMs,
+    basicRunDurationMs,
+    testFiles: DOJO_CHAOS_PERFORMANCE_TEST_FILES,
+    scenarios: DOJO_CHAOS_SCENARIOS,
+    stdout,
+    stderr: [stderr, jsonStderr].filter(Boolean).join("\n"),
+    stdoutPath,
+    stderrPath,
+    jsonReport,
+    jsonReportPath,
+    jsonReportText,
+    chaosRunnerReport,
+    chaosRunnerReportPath,
+    chaosRunnerReportText,
+    chaosRunnerStdout,
+    chaosRunnerStderr,
+    chaosRunnerStdoutPath,
+    chaosRunnerStderrPath,
+    chaosRunnerExitCode: chaosRunnerResult.status,
+    chaosRunnerSignal: chaosRunnerResult.signal,
+    chaosRunnerError,
+    timeoutMs,
+    error: result.error?.message ?? jsonResult.error?.message ?? jsonReportError ?? chaosRunnerError,
+  });
+  const evidencePath = path.join(outputDir, "dojo-chaos-performance.evidence.json");
+  await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
+  if (result.error) throw new Error(`dojo_chaos_performance_self_check_failed:${result.error.message}`);
+  if (result.status !== 0) throw new Error(`dojo_chaos_performance_self_check_failed:exit_${result.status}`);
+  if (jsonResult.error) throw new Error(`dojo_chaos_performance_json_report_failed:${jsonResult.error.message}`);
+  if (jsonResult.status !== 0) throw new Error(`dojo_chaos_performance_json_report_failed:exit_${jsonResult.status}`);
+  if (jsonReportError) throw new Error(`dojo_chaos_performance_json_report_failed:${jsonReportError}`);
+  if (chaosRunnerResult.error) throw new Error(`dojo_chaos_runner_failed:${chaosRunnerResult.error.message}`);
+  if (chaosRunnerResult.status !== 0) throw new Error(`dojo_chaos_runner_failed:exit_${chaosRunnerResult.status}`);
+  if (chaosRunnerReportError) throw new Error(`dojo_chaos_runner_failed:${chaosRunnerReportError}`);
+  assert.equal(evidence.ok, true);
+  return {
+    evidence_path: evidencePath,
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    evidence,
+  };
+}
+
+export function buildDojoChaosPerformanceEvidenceManifest({
+  now,
+  exitCode,
+  signal,
+  durationMs,
+  basicRunDurationMs,
+  testFiles,
+  scenarios,
+  stdout,
+  stderr,
+  stdoutPath,
+  stderrPath,
+  jsonReport,
+  jsonReportPath,
+  jsonReportText,
+  chaosRunnerReport,
+  chaosRunnerReportPath,
+  chaosRunnerReportText,
+  chaosRunnerStdout,
+  chaosRunnerStderr,
+  chaosRunnerStdoutPath,
+  chaosRunnerStderrPath,
+  chaosRunnerExitCode,
+  chaosRunnerSignal,
+  chaosRunnerError,
+  timeoutMs = 120000,
+  error,
+}) {
+  const testSummary = summarizeVitestJsonReport(jsonReport);
+  const scenarioCoverage = buildScenarioCoverage({ scenarios, jsonReport });
+  const performanceMetrics = buildPerformanceMetrics({ durationMs, testSummary, jsonReport });
+  const budgetEvaluation = buildBudgetEvaluation({
+    scenarioCoverage,
+    performanceMetrics,
+    testSummary,
+    testFiles,
+    timeoutMs,
+    error,
+    chaosRunnerReport,
+    chaosRunnerError,
+  });
+  return {
+    schema_version: "synthi.dojo.chaosPerformanceEvidence.v1",
+    generated_at: now,
+    ok: exitCode === 0 && !error && budgetEvaluation.ok,
+    exit_code: exitCode,
+    signal: signal ?? null,
+    duration_ms: Number(durationMs.toFixed(3)),
+    configured_chaos_scenarios: [...scenarios],
+    tested_chaos_scenarios: scenarioCoverage.filter((item) => item.covered).map((item) => item.scenario),
+    missing_chaos_scenarios: scenarioCoverage.filter((item) => !item.covered).map((item) => item.scenario),
+    scenario_coverage: scenarioCoverage,
+    scenario_count: scenarioCoverage.filter((item) => item.covered).length,
+    configured_scenario_count: scenarios.length,
+    scenario_coverage_complete: scenarioCoverage.every((item) => item.covered),
+    release_metric_coverage_complete: performanceMetrics.dojo_metric_coverage.every((item) => item.covered),
+    missing_release_metrics: performanceMetrics.dojo_metric_coverage.filter((item) => !item.covered).map((item) => item.metric),
+    release_metric_coverage: performanceMetrics.dojo_metric_coverage,
+    chaos_runner_required: true,
+    chaos_runner: {
+      ok: chaosRunnerReport?.ok === true && !chaosRunnerError,
+      exit_code: chaosRunnerExitCode ?? null,
+      signal: chaosRunnerSignal ?? null,
+      report_path: chaosRunnerReportPath ?? null,
+      report_sha256: sha256(chaosRunnerReportText ?? (chaosRunnerReport ? JSON.stringify(chaosRunnerReport) : "")),
+      report_bytes: Buffer.byteLength(chaosRunnerReportText ?? (chaosRunnerReport ? JSON.stringify(chaosRunnerReport) : "")),
+      stdout_path: chaosRunnerStdoutPath ?? null,
+      stderr_path: chaosRunnerStderrPath ?? null,
+      stdout_sha256: sha256(chaosRunnerStdout ?? ""),
+      stderr_sha256: sha256(chaosRunnerStderr ?? ""),
+      stdout_bytes: Buffer.byteLength(chaosRunnerStdout ?? ""),
+      stderr_bytes: Buffer.byteLength(chaosRunnerStderr ?? ""),
+      scenario_count: numberOrZero(chaosRunnerReport?.scenario_count),
+      expected_run_count: numberOrZero(chaosRunnerReport?.expected_run_count),
+      passed_run_count: numberOrZero(chaosRunnerReport?.passed_run_count),
+      failed_run_count: numberOrZero(chaosRunnerReport?.failed_run_count),
+      scenarios: Array.isArray(chaosRunnerReport?.scenarios)
+        ? chaosRunnerReport.scenarios.map((scenario) => scenario.name).filter(Boolean)
+        : [],
+      ...(chaosRunnerError ? { error: chaosRunnerError } : {}),
+    },
+    test_files: [...testFiles],
+    test_file_count: testFiles.length,
+    reported_test_file_count: testSummary.reported_test_file_count,
+    test_summary: testSummary,
+    performance_metrics: performanceMetrics,
+    basic_run_duration_ms: typeof basicRunDurationMs === "number" ? Number(basicRunDurationMs.toFixed(3)) : null,
+    budget_evaluation: budgetEvaluation,
+    json_report_path: jsonReportPath ?? null,
+    json_report_sha256: sha256(jsonReportText ?? (jsonReport ? JSON.stringify(jsonReport) : "")),
+    json_report_bytes: Buffer.byteLength(jsonReportText ?? (jsonReport ? JSON.stringify(jsonReport) : "")),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    stdout_sha256: sha256(stdout),
+    stderr_sha256: sha256(stderr),
+    stdout_bytes: Buffer.byteLength(stdout),
+    stderr_bytes: Buffer.byteLength(stderr),
+    budget: {
+      self_check_timeout_ms: timeoutMs,
+      intended_gate: "lightweight_preflight_not_long_soak",
+    },
+    ...(error ? { error } : {}),
+  };
+}
+
+export function summarizeVitestJsonReport(report) {
+  const testResults = Array.isArray(report?.testResults) ? report.testResults : [];
+  const assertions = testResults.flatMap((result) => Array.isArray(result.assertionResults) ? result.assertionResults : []);
+  const assertionDurations = assertions
+    .map((assertion) => Number(assertion.duration))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  const fileDurations = testResults
+    .map((result) => Number(result.endTime) - Number(result.startTime))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  return {
+    success: report?.success === true,
+    total_tests: numberOrZero(report?.numTotalTests),
+    passed_tests: numberOrZero(report?.numPassedTests),
+    failed_tests: numberOrZero(report?.numFailedTests),
+    pending_tests: numberOrZero(report?.numPendingTests),
+    total_suites: numberOrZero(report?.numTotalTestSuites),
+    passed_suites: numberOrZero(report?.numPassedTestSuites),
+    failed_suites: numberOrZero(report?.numFailedTestSuites),
+    reported_test_file_count: testResults.length,
+    assertion_duration_p95_ms: percentile(assertionDurations, 0.95),
+    test_file_duration_p95_ms: percentile(fileDurations, 0.95),
+    assertion_titles: assertions.map((assertion) => String(assertion.fullName || assertion.title || "")).filter(Boolean),
+  };
+}
+
+export function buildScenarioCoverage({ scenarios, jsonReport }) {
+  const titles = summarizeVitestJsonReport(jsonReport).assertion_titles;
+  return scenarios.map((scenario) => {
+    const matchers = scenarioMatchers(scenario);
+    const evidenceTitles = titles.filter((title) => {
+      const normalizedTitle = normalizeScenarioText(title);
+      return matchers.some((matcher) => normalizedTitle.includes(matcher));
+    });
+    return {
+      scenario,
+      covered: evidenceTitles.length > 0,
+      evidence_titles: evidenceTitles,
+    };
+  });
+}
+
+function buildPerformanceMetrics({ durationMs, testSummary, jsonReport }) {
+  const dojoMetricCoverage = buildDojoReleaseMetricCoverage({ jsonReport, testSummary });
+  const dojoMetrics = Object.fromEntries(dojoMetricCoverage.map((item) => [item.metric, item.value]));
+  return {
+    self_check_duration_ms: Number(durationMs.toFixed(3)),
+    test_case_duration_p95_ms: testSummary.assertion_duration_p95_ms,
+    test_file_duration_p95_ms: testSummary.test_file_duration_p95_ms,
+    failed_test_count: testSummary.failed_tests,
+    passed_test_count: testSummary.passed_tests,
+    dojo_metrics: dojoMetrics,
+    dojo_metric_coverage: dojoMetricCoverage,
+  };
+}
+
+export function buildDojoReleaseMetricCoverage({ jsonReport, testSummary = summarizeVitestJsonReport(jsonReport) }) {
+  const assertionRecords = assertionDurationRecords(jsonReport);
+  const metricCoverage = DOJO_CHAOS_PERFORMANCE_METRIC_RULES.map((rule) => {
+    const evidence = assertionRecords.filter((record) => {
+      const normalizedTitle = normalizeScenarioText(record.title);
+      return rule.aliases.some((alias) => normalizedTitle.includes(normalizeScenarioText(alias)));
+    });
+    return {
+      metric: rule.metric,
+      covered: evidence.length > 0,
+      value: evidence.length > 0 ? percentile(evidence.map((record) => record.duration_ms), 0.95) : null,
+      sample_count: evidence.length,
+      evidence_titles: evidence.map((record) => record.title),
+    };
+  });
+  const replayEvidence = metricCoverage.find((item) => item.metric === "proof_replay_rejection_p95_ms");
+  metricCoverage.push({
+    metric: "proof_replay_false_allow_count",
+    covered: Boolean(replayEvidence?.covered) && testSummary.failed_tests === 0,
+    value: Boolean(replayEvidence?.covered) && testSummary.failed_tests === 0 ? 0 : null,
+    sample_count: replayEvidence?.sample_count ?? 0,
+    evidence_titles: replayEvidence?.evidence_titles ?? [],
+  });
+  return metricCoverage.sort((left, right) => left.metric.localeCompare(right.metric));
+}
+
+function buildBudgetEvaluation({
+  scenarioCoverage,
+  performanceMetrics,
+  testSummary,
+  testFiles,
+  timeoutMs,
+  error,
+  chaosRunnerReport,
+  chaosRunnerError,
+}) {
+  const checks = {
+    no_spawn_error: !error,
+    no_failed_tests: testSummary.failed_tests === 0,
+    all_reported_tests_passed: testSummary.total_tests > 0 && testSummary.passed_tests === testSummary.total_tests,
+    all_test_files_reported: testSummary.reported_test_file_count === testFiles.length,
+    scenario_coverage_complete: scenarioCoverage.every((item) => item.covered),
+    chaos_runner_report_ok: !chaosRunnerError && chaosRunnerReport?.ok === true,
+    chaos_runner_has_scenarios: numberOrZero(chaosRunnerReport?.scenario_count) > 0,
+    chaos_runner_all_runs_passed: numberOrZero(chaosRunnerReport?.expected_run_count) > 0
+      && numberOrZero(chaosRunnerReport?.failed_run_count) === 0
+      && numberOrZero(chaosRunnerReport?.passed_run_count) === numberOrZero(chaosRunnerReport?.expected_run_count),
+    self_check_within_timeout: performanceMetrics.self_check_duration_ms <= timeoutMs,
+    test_case_p95_recorded: Number.isFinite(performanceMetrics.test_case_duration_p95_ms),
+    test_file_p95_recorded: Number.isFinite(performanceMetrics.test_file_duration_p95_ms),
+    dojo_release_metrics_complete: performanceMetrics.dojo_metric_coverage.every((item) => item.covered),
+    proof_replay_false_allow_count_zero: typeof performanceMetrics.dojo_metrics.proof_replay_false_allow_count === "number"
+      && Number.isFinite(performanceMetrics.dojo_metrics.proof_replay_false_allow_count)
+      && performanceMetrics.dojo_metrics.proof_replay_false_allow_count === 0,
+  };
+  return {
+    ok: Object.values(checks).every(Boolean),
+    checks,
+  };
+}
+
+async function readVitestJsonReport(jsonReportPath) {
+  const raw = await readFile(jsonReportPath, "utf8");
+  return JSON.parse(raw);
+}
+
+function scenarioMatchers(scenario) {
+  const normalized = normalizeScenarioText(scenario);
+  const aliases = {
+    api_timeout: ["timeout"],
+    partial_write: ["partial write"],
+    fake_success_ui: ["fake visual success", "fake success"],
+    validation_error: ["validation error"],
+    downstream_failure: ["downstream failure"],
+    duplicate_entity_fixture: ["duplicate", "duplicate entity"],
+    prompt_injection_fixture: ["prompt injection"],
+    runtime_oracle_classification: ["oracle", "classifies"],
+    evil_twin_attack_hardening: ["evil twin", "attack hardening", "hardening"],
+    hosted_runtime_preflight_fail_closed: ["hosted runtime session", "before consuming production proof capsules", "runtime session not found"],
+    proof_not_consumed_on_failed_preflight: ["proof not consumed", "before consuming production proof capsules"],
+    proof_replay_false_allow: ["proof capsule replay detected", "consumes exactly once"],
+    evidence_store_unavailable: [
+      "evidence writing fails",
+      "evidence writer does not return a ledger backed ref",
+      "ledger backed checkride evidence is required but unavailable",
+      "required evidence signature is unavailable",
+    ],
+    proof_signing_service_unavailable: [
+      "external command signer exits",
+      "kms unavailable",
+      "managed key service returns mismatched custody metadata",
+    ],
+    source_contract_drift_mid_run: [
+      "source drift expiry",
+      "expiry trigger active source drift",
+      "one of its expiry triggers is active",
+      "expires graph nodes mapped to changed source tokens",
+    ],
+  };
+  return [...new Set([normalized, ...(aliases[scenario] ?? [])].map(normalizeScenarioText))];
+}
+
+function normalizeScenarioText(value) {
+  return String(value || "").toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function assertionDurationRecords(report) {
+  const testResults = Array.isArray(report?.testResults) ? report.testResults : [];
+  return testResults.flatMap((result) => {
+    const assertions = Array.isArray(result.assertionResults) ? result.assertionResults : [];
+    return assertions.map((assertion) => ({
+      title: String(assertion.fullName || assertion.title || ""),
+      duration_ms: Number(assertion.duration),
+    })).filter((record) => record.title && Number.isFinite(record.duration_ms) && record.duration_ms >= 0);
+  });
+}
+
+function numberOrZero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function percentile(values, ratio) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1);
+  return Number(sorted[index].toFixed(3));
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function parseArgs(argv) {
+  const parsed = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const item = argv[i];
+    if (!item.startsWith("--")) continue;
+    const key = item.slice(2);
+    const next = argv[i + 1];
+    if (!next || next.startsWith("--")) {
+      parsed[key] = "1";
+      continue;
+    }
+    parsed[key] = next;
+    i += 1;
+  }
+  return parsed;
+}
+
+function isDirectRun() {
+  return process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
+}

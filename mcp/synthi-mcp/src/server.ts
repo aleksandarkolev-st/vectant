@@ -66,6 +66,7 @@ import { answerEscapeHatchTool } from "./tools/answer_escape_hatch.js";
 import { AUTH_TOOLS, dispatchAuthTool } from "./tools/auth.js";
 import { BROWSER_TOOLS, browserPrivateWorkflowTools, dispatchBrowserTool } from "./tools/browser.js";
 import { privateWorkflowToolRegistry } from "./browser/private_tool_registry.js";
+import { DOJO_TOOLS, dispatchDojoTool } from "./tools/dojo.js";
 import { SOURCE_TOOLS, dispatchSourceTool } from "./tools/source.js";
 import { SAFETY_TOOLS, dispatchSafetyTool } from "./tools/safety.js";
 import type { ToolContext } from "./tools/shared.js";
@@ -78,6 +79,7 @@ export interface SynthiServerOptions {
 
 const TOOLS = [
   ...BROWSER_TOOLS,
+  ...DOJO_TOOLS,
   ...AUTH_TOOLS,
   ...SOURCE_TOOLS,
   ...SAFETY_TOOLS,
@@ -1232,6 +1234,8 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
   ): Promise<CallToolResult> {
     const browserResponse = await dispatchBrowserTool(toolName, args);
     if (browserResponse) return browserResponse as CallToolResult;
+    const dojoResponse = await dispatchDojoTool(toolName, args);
+    if (dojoResponse) return dojoResponse as CallToolResult;
     const authResponse = await dispatchAuthTool(toolName, args);
     if (authResponse) return authResponse as CallToolResult;
     const sourceResponse = await dispatchSourceTool(toolName, args);

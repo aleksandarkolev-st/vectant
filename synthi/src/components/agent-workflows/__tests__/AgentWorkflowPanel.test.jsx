@@ -47,11 +47,17 @@ describe('AgentWorkflowPanel view model', () => {
     const summary = deriveWorkflowPanelSummary(model);
 
     expect(WORKFLOW_ACTIONS.COMPILE_CONTRACT).toBe('synthi_browser_compile_workflow');
+    expect(WORKFLOW_ACTIONS.RUN_CHECKRIDE).toBe('synthi_dojo_run_checkride');
     expect(WORKFLOW_ACTIONS.GET_MUTATION_PLAN).toBe('synthi_safety_get_mutation_plan');
     expect(WORKFLOW_ACTIONS.SET_REPLAY_ISOLATION_PROFILE).toBe('synthi_safety_set_replay_isolation_profile');
     expect(WORKFLOW_ACTIONS.PREFIX_VALIDATE).toBe('synthi_safety_run_prefix_validation');
     expect(WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY).toBe('synthi_safety_run_ci_isolated_replay');
     expect(WORKFLOW_ACTIONS.GENERATE_SCRIPT).toBe('synthi_browser_generate_script');
+    expect(WORKFLOW_ACTIONS.PUBLISH_TOOL).toBe('synthi_dojo_publish_skill');
+    expect(WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER).toBe('synthi_dojo_get_universe_dossier');
+    expect(WORKFLOW_ACTIONS.RUN_VIVARIUM_SCENARIO).toBe('synthi_dojo_run_vivarium_scenario');
+    expect(WORKFLOW_ACTIONS.RUN_WIND_TUNNEL).toBe('synthi_dojo_run_wind_tunnel');
+    expect(WORKFLOW_ACTIONS.GET_LICENSE_HEALTH).toBe('synthi_dojo_get_license_health');
     expect(model.workspaceLabel).toBe('Current workspace');
     expect(summary.primaryAction).toBe(WORKFLOW_ACTIONS.ATTACH_WORKSPACE);
     expect(summary.primaryEnabled).toBe(true);
@@ -150,6 +156,75 @@ describe('AgentWorkflowPanel view model', () => {
       postconditionConfigured: true,
     }));
     expect(summary.enabledActions).toContain(WORKFLOW_ACTIONS.RUN_CI_ISOLATED_REPLAY);
+  });
+
+  it('normalizes Dojo skill cards and proof-carrying license state', () => {
+    const model = normalizeWorkflowPanelState(
+      {
+        runtime: { status: 'ready' },
+        observe: { status: 'ready', lastScreenshotAt: '2026-06-04T00:00:00.000Z' },
+        workflow: {
+          title: 'Save workspace state',
+          stepCount: 2,
+          contractStatus: 'compiled',
+          scriptStatus: 'generated',
+        },
+        dojo: {
+          status: 'licensed',
+          published: true,
+          skillId: 'dojo_save_settings',
+          entrustmentLevel: 'E3',
+          readinessLevel: 7,
+          proofRequired: true,
+          publishedToolName: 'synthi_app_save_settings',
+          scenarioCount: 20,
+          skillCard: {
+            title: 'Save settings',
+            status: 'Licensed E3',
+            can_do_alone: ['run_workflow'],
+            will_ask_before: ['commit_mutation'],
+            will_not_do: ['delete'],
+            practiced: '20 synthetic cases',
+            found_and_fixed: '2 guardrails',
+            proof_badge: 'Proof required',
+          },
+          license: {
+            allowedActions: ['run_workflow'],
+            gatedActions: ['commit_mutation'],
+            blockedActions: ['delete'],
+          },
+          lifecycle: { status: 'active', daysUntilExpiry: 23, recertificationRequired: false },
+          governance: { approvalCount: 1, policyGateCount: 3, evidenceClaims: ['guardrails_active'] },
+          metrics: { coverage: 0.9, proofRequiredPercent: 1, mcpBackedSkillCount: 1 },
+          sourceAffordancePrPlan: { readiness: 'ready_for_review', patchCount: 2 },
+          windTunnel: { runCount: 20, passCount: 18, blockedCount: 2 },
+          licenseHealth: { status: 'active', proofRecords: { issued: 1 } },
+        },
+      },
+      'developer-workspace',
+    );
+    const summary = deriveWorkflowPanelSummary(model);
+
+    expect(model.dojo).toEqual(expect.objectContaining({
+      status: 'licensed',
+      skillId: 'dojo_save_settings',
+      entrustmentLevel: 'E3',
+      readinessLevel: 7,
+      proofRequired: true,
+      publishedToolName: 'synthi_app_save_settings',
+      lifecycle: expect.objectContaining({ status: 'active', daysUntilExpiry: 23 }),
+      sourceAffordancePrPlan: expect.objectContaining({ patchCount: 2 }),
+      windTunnel: expect.objectContaining({ runCount: 20 }),
+      skillCard: expect.objectContaining({
+        canDoAlone: ['run_workflow'],
+        willAskBefore: ['commit_mutation'],
+        willNotDo: ['delete'],
+      }),
+    }));
+    expect(summary.enabledActions).toContain(WORKFLOW_ACTIONS.RUN_CHECKRIDE);
+    expect(summary.enabledActions).toContain(WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER);
+    expect(summary.enabledActions).toContain(WORKFLOW_ACTIONS.RUN_WIND_TUNNEL);
+    expect(summary.canPublish).toBe(true);
   });
 });
 
@@ -269,6 +344,124 @@ describe('AgentWorkflowPanel rendering', () => {
         workspaceSlug: 'developer-workspace',
       }),
     );
+  });
+
+  it('renders Dojo credential state and dispatches checkride and license actions', () => {
+    const onWorkflowAction = vi.fn();
+    const panel = renderPanel({
+      workspaceSlug: 'developer-workspace',
+      onWorkflowAction,
+      workflowState: {
+        runtime: { status: 'ready' },
+        observe: { status: 'ready', lastScreenshotAt: '2026-06-04T00:00:00.000Z' },
+        workflow: {
+          title: 'Save workspace state',
+          stepCount: 2,
+          contractStatus: 'compiled',
+          scriptStatus: 'generated',
+        },
+        dojo: {
+          status: 'licensed',
+          published: true,
+          skillId: 'dojo_save_settings',
+          entrustmentLevel: 'E3',
+          readinessLevel: 7,
+          proofRequired: true,
+          publishedToolName: 'synthi_app_save_settings',
+          scenarioCount: 20,
+          checkride: { coverageScore: 0.9 },
+          lifecycle: { status: 'active', daysUntilExpiry: 23 },
+          sourceAffordancePrPlan: { readiness: 'ready_for_review', patchCount: 2 },
+          windTunnel: { runCount: 20, passCount: 18, blockedCount: 2 },
+          vivariumRun: { scenarioTitle: 'Duplicate entity check', status: 'blocked', syntheticDataOnly: true },
+          timeMachine: { changedVariable: 'stable_entity_identity', expectedStatusAfterChange: 'blocked' },
+          governance: { approvalCount: 1, policyGateCount: 3 },
+          caseLawRecord: { title: 'Operator Review Required', status: 'binding' },
+          skillCard: {
+            title: 'Save settings',
+            status: 'Licensed E3',
+            can_do_alone: ['run_workflow'],
+            will_ask_before: ['commit_mutation'],
+            will_not_do: ['delete'],
+            practiced: '20 synthetic cases',
+            found_and_fixed: '2 guardrails',
+            proof_badge: 'Proof required',
+          },
+        },
+      },
+    });
+
+    expect(panel.textContent).toContain('Dojo Skill');
+    expect(panel.textContent).toContain('SRL 7');
+    expect(panel.textContent).toContain('90% coverage');
+    expect(panel.textContent).toContain('20 synthetic cases');
+    expect(panel.textContent).toContain('synthi_app_save_settings');
+    expect(panel.textContent).toContain('active');
+    expect(panel.textContent).toContain('2 patches');
+    expect(panel.textContent).toContain('20 runs');
+    expect(panel.textContent).toContain('Duplicate entity check');
+    expect(panel.textContent).toContain('stable_entity_identity');
+    expect(panel.textContent).toContain('Operator Review Required');
+    expect(panel.textContent).toContain('Dojo Export');
+    expect(panel.textContent).toContain('Universe');
+    expect(panel.textContent).toContain('Practice');
+    expect(panel.textContent).toContain('Wind');
+    expect([...panel.querySelectorAll('button')]
+      .filter((button) => button.textContent.trim() === 'Export')).toHaveLength(1);
+
+    const checkrideButton = [...panel.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('Checkride'));
+    const licenseButton = [...panel.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('Relicense'));
+    const universeButton = [...panel.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('Universe'));
+    const practiceButton = [...panel.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('Practice'));
+    const windButton = [...panel.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('Wind'));
+    const healthButton = [...panel.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('Health'));
+
+    expect(checkrideButton).toBeTruthy();
+    expect(licenseButton).toBeTruthy();
+    expect(universeButton).toBeTruthy();
+    expect(practiceButton).toBeTruthy();
+    expect(windButton).toBeTruthy();
+    expect(healthButton).toBeTruthy();
+
+    act(() => {
+      checkrideButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      licenseButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      universeButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      practiceButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      windButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      healthButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(onWorkflowAction).toHaveBeenCalledWith(expect.objectContaining({
+      action: WORKFLOW_ACTIONS.RUN_CHECKRIDE,
+      workspaceSlug: 'developer-workspace',
+    }));
+    expect(onWorkflowAction).toHaveBeenCalledWith(expect.objectContaining({
+      action: WORKFLOW_ACTIONS.PUBLISH_TOOL,
+      workspaceSlug: 'developer-workspace',
+    }));
+    expect(onWorkflowAction).toHaveBeenCalledWith(expect.objectContaining({
+      action: WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER,
+      workspaceSlug: 'developer-workspace',
+    }));
+    expect(onWorkflowAction).toHaveBeenCalledWith(expect.objectContaining({
+      action: WORKFLOW_ACTIONS.RUN_VIVARIUM_SCENARIO,
+      workspaceSlug: 'developer-workspace',
+    }));
+    expect(onWorkflowAction).toHaveBeenCalledWith(expect.objectContaining({
+      action: WORKFLOW_ACTIONS.RUN_WIND_TUNNEL,
+      workspaceSlug: 'developer-workspace',
+    }));
+    expect(onWorkflowAction).toHaveBeenCalledWith(expect.objectContaining({
+      action: WORKFLOW_ACTIONS.GET_LICENSE_HEALTH,
+      workspaceSlug: 'developer-workspace',
+    }));
   });
 
   it('edits CI replay profiles through the portable manifest action', () => {
