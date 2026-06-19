@@ -1,16 +1,10 @@
-import { Storage } from '@google-cloud/storage';
 import { NextResponse } from 'next/server';
 import { requireWorkspaceAccess } from '@/lib/workspaceAccess';
+import { createGcsStorage, getGcsBucketName } from '@/server/gcsStorage';
 
-const storage = new Storage({
-    projectId: process.env.GCP_PROJECT_ID,
-    credentials: {
-        client_email: process.env.GCP_CLIENT_EMAIL,
-        private_key: process.env.GCP_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    },
-});
+const storage = createGcsStorage();
 
-const BUCKET_NAME = process.env.GCS_BUCKET_NAME;
+const BUCKET_NAME = getGcsBucketName();
 
 function buildFileTree(flatFiles, prefixLength) {
     const root = { name: 'root', isFolder: true, children: [], path: '' };
@@ -108,7 +102,7 @@ export async function GET(request, { params }) {
         const isEmpty = files.length === 0 || (files.length === 1 && files[0].name === storagePathPrefix);
 
         if (isEmpty) {
-             const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+             const COLLAB_SERVER_URL = process.env.COLLAB_SERVER_URL || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
              try {
                  const res = await fetch(`${COLLAB_SERVER_URL}/git/${workspaceId}/files`);
                  if (res.ok) {

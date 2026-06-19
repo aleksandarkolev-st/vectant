@@ -16,6 +16,7 @@
  * Endpoints:
  *   GET  /healthz                     -> "ok"
  *   GET  /browser-workflows/state     -> panel-safe state, no screenshots
+ *   POST /browser-workflows/open-external -> open http(s) URL in hosted browser, no page inspection
  *   POST /browser-workflows/tool      -> { tool, arguments }
  */
 
@@ -32,6 +33,8 @@ import {
 import { buildDojoGovernanceServiceView } from "../dojo/governance/service.js";
 import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
+import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
+import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
 import {
   mutationSafetyPlanFor,
   replayIsolationProfileManifestFor,
@@ -96,6 +99,10 @@ interface BrowserWorkflowOverlayBody {
   url?: unknown;
 }
 
+interface BrowserWorkflowExternalOpenBody {
+  url?: unknown;
+}
+
 interface PreviewDiscoveryResult {
   ok: boolean;
   url?: string;
@@ -105,12 +112,56 @@ interface PreviewDiscoveryResult {
 
 const MAX_HISTORY = 8;
 const PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
+const EXTERNAL_OPEN_BODY_LIMIT_BYTES = parsePositiveInt(process.env["SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES"], 20_000);
+const EXTERNAL_OPEN_TIMEOUT_MS = parsePositiveInt(process.env["SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS"], 15_000);
+const PREVIEW_DISCOVERY_PROBE_TIMEOUT_MS = 1000;
+const PREVIEW_DISCOVERY_MAX_CONCURRENCY = 4;
+const DEFAULT_PREVIEW_DISCOVERY_PORTS = [
+  3000,
+  3001,
+  4173,
+  4200,
+  5000,
+  5173,
+  8000,
+  8080,
+];
+
+const PREVIEW_DISCOVERY_PORTS = parsePortList(
+  process.env["SYNTHI_PREVIEW_DISCOVERY_PORTS"] ||
+  process.env["SYNTHI_PREVIEW_SCAN_PORTS"] ||
+  process.env["SYNTHI_WORKFLOW_PREVIEW_PORTS"] ||
+  ""
+);
+
+const FALLBACK_PREVIEW_DISCOVERY_PORTS = PREVIEW_DISCOVERY_PORTS.length > 0
+  ? PREVIEW_DISCOVERY_PORTS
+  : DEFAULT_PREVIEW_DISCOVERY_PORTS;
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Synthi-Workflow-Token",
+  "Access-Control-Allow-Headers": [
+    "Content-Type",
+    "X-Synthi-Workflow-Token",
+    "X-Synthi-Runtime-Scope",
+    "X-Synthi-Workspace-Slug",
+    "X-Synthi-Runtime-Kind",
+    "X-Synthi-Filesystem-User-Id",
+    "X-Synthi-Actor-User-Id",
+    "X-Synthi-Collab-Session-Id",
+  ].join(", "),
   "Access-Control-Max-Age": "600",
 };
+
+interface RuntimeHeaderContext {
+  runtimeScope?: string;
+  workspaceSlug?: string;
+  runtimeKind?: string;
+  filesystemUserId?: string;
+  actorUserId?: string;
+  collabSessionId?: string;
+}
 
 const TOOL_ALIASES: Record<string, string> = {
   synthi_browser_configure_auth: "synthi_auth_get_tool_auth_readiness",
@@ -153,6 +204,11 @@ class BridgeToolInputError extends Error {
     this.detail = detail;
     this.status = status;
   }
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 async function readJsonBody<T>(req: http.IncomingMessage, maxBytes: number = 1_000_000): Promise<T> {
@@ -258,6 +314,37 @@ function isLoopbackHost(host: string): boolean {
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
+function normalizeExternalBrowserUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureHostedRuntimeForExternalOpen(): Promise<
+  { ok: true } | { ok: false; status: number; error: string; detail?: unknown }
+> {
+  if (browserPlaywrightAdapter.isAttached() && browserBroker.runtimeAttachment()) {
+    return { ok: true };
+  }
+
+  const attached = await attachHostedBrowserRuntime(
+    { open_workspace: false },
+    browserPlaywrightAdapter,
+    browserBroker
+  );
+  if (attached.ok) return { ok: true };
+  return {
+    ok: false,
+    status: 503,
+    error: attached.error,
+    detail: attached.runtime,
+  };
+}
+
 function requestUrlFromArgs(args: unknown): string | undefined {
   const a = objectArgs(args);
   return stringOpt(a["url"]) ?? stringOpt(a["workspace_url"]);
@@ -300,10 +387,43 @@ async function enrichToolArgs(toolName: string, args: unknown): Promise<Record<s
   return base;
 }
 
+function requestRuntimeContext(req: http.IncomingMessage): RuntimeHeaderContext {
+  return {
+    runtimeScope: stringHeader(req.headers["x-synthi-runtime-scope"]),
+    workspaceSlug: stringHeader(req.headers["x-synthi-workspace-slug"]),
+    runtimeKind: stringHeader(req.headers["x-synthi-runtime-kind"]),
+    filesystemUserId: stringHeader(req.headers["x-synthi-filesystem-user-id"]),
+    actorUserId: stringHeader(req.headers["x-synthi-actor-user-id"]),
+    collabSessionId: stringHeader(req.headers["x-synthi-collab-session-id"]),
+  };
+}
+
+function withRuntimeToolDefaults(args: unknown, context: RuntimeHeaderContext = {}): Record<string, unknown> {
+  const base = objectArgs(args);
+  return {
+    ...base,
+    ...(context.runtimeScope && !stringOpt(base["runtime_scope"]) && !stringOpt(base["runtimeScope"]) ? { runtime_scope: context.runtimeScope } : {}),
+    ...(context.workspaceSlug && !stringOpt(base["workspace_id"]) && !stringOpt(base["workspace"]) ? { workspace_id: context.workspaceSlug } : {}),
+    ...(context.runtimeKind && !stringOpt(base["runtime_kind"]) && !stringOpt(base["runtimeKind"]) ? { runtime_kind: context.runtimeKind } : {}),
+    ...(context.filesystemUserId && !stringOpt(base["filesystem_user_id"]) && !stringOpt(base["filesystemUserId"]) ? { filesystem_user_id: context.filesystemUserId } : {}),
+    ...(context.actorUserId && !stringOpt(base["actor_user_id"]) && !stringOpt(base["actorUserId"]) ? { actor_user_id: context.actorUserId } : {}),
+    ...(context.collabSessionId && !stringOpt(base["collab_session_id"]) && !stringOpt(base["collabSessionId"]) ? { collab_session_id: context.collabSessionId } : {}),
+  };
+}
+
+async function enrichToolArgsForBridge(toolName: string, args: unknown, context: RuntimeHeaderContext = {}): Promise<Record<string, unknown>> {
+  const merged = withRuntimeToolDefaults(args, context);
+  return enrichToolArgs(toolName, merged);
+}
+
 async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promise<PreviewDiscoveryResult> {
   const slug = workspaceSlugFromArgs(args);
   if (!slug) return { ok: true };
   const collab = resolveCollabServerUrl();
+  const runtimeScope =
+    stringOpt(args["runtime_scope"]) ??
+    stringOpt(args["runtimeScope"]) ??
+    stringOpt(process.env["SYNTHI_WORKFLOW_RUNTIME_SCOPE"]);
   if (!collab) {
     return {
       ok: false,
@@ -316,36 +436,159 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PREVIEW_DISCOVERY_TIMEOUT_MS);
+  const timeoutMessage = `discovery timed out after ${PREVIEW_DISCOVERY_TIMEOUT_MS}ms`;
   try {
-    const response = await fetch(`${collab.url}/ports?workspace=${encodeURIComponent(slug)}`, {
+    const portsUrl = new URL("ports", `${collab.url}/`);
+    portsUrl.searchParams.set("workspace", slug);
+    if (runtimeScope) portsUrl.searchParams.set("runtimeScope", runtimeScope);
+    const response = await fetch(portsUrl.href, {
       signal: controller.signal,
     });
     if (!response.ok) {
       return {
         ok: false,
         error: "preview_discovery_failed",
-        detail: { workspace: slug, collab_url: collab.url, collab_url_source: collab.source, status: response.status },
+        detail: { workspace: slug, runtimeScope, collab_url: collab.url, collab_url_source: collab.source, status: response.status },
       };
     }
     const payload = await response.json() as Record<string, unknown>;
     const preview = previewUrlFromPortsPayload(payload, collab.url);
     if (preview) return { ok: true, url: preview };
+
+    if (runtimeScope) {
+      const runtimeFallback = await discoverRuntimeScopePreviewViaProxy(
+        collab.url,
+        runtimeScope,
+        extractPortCandidatesFromPayload(payload),
+        PREVIEW_DISCOVERY_TIMEOUT_MS,
+      );
+      if (runtimeFallback) return { ok: true, url: runtimeFallback };
+    }
+
     return {
       ok: false,
       error: "preview_not_found",
-      detail: { workspace: slug, collab_url: collab.url, collab_url_source: collab.source },
+      detail: { workspace: slug, runtimeScope, collab_url: collab.url, collab_url_source: collab.source },
     };
   } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return {
+        ok: false,
+        error: "preview_discovery_timeout",
+        detail: {
+          workspace: slug,
+          runtimeScope,
+          collab_url: collab.url,
+          collab_url_source: collab.source,
+          message: timeoutMessage,
+        },
+      };
+    }
     return {
       ok: false,
       error: "preview_discovery_failed",
       detail: {
         workspace: slug,
+        runtimeScope,
         collab_url: collab.url,
         collab_url_source: collab.source,
         message: err instanceof Error ? err.message : String(err),
       },
     };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractPortCandidatesFromPayload(payload: Record<string, unknown>): number[] {
+  const ports = Array.isArray(payload["activePorts"]) ? payload["activePorts"] : [];
+  const previews = Array.isArray(payload["previews"]) ? payload["previews"] : [];
+  const fromPayload = [
+    ...ports,
+    ...previews
+      .map((item) => Number(item && typeof item === "object" ? (item as Record<string, unknown>)["port"] : undefined))
+      .filter((value) => Number.isInteger(value) && value > 0 && value <= 65_535),
+  ]
+    .map((port) => Number(port))
+    .filter((port) => Number.isInteger(port) && port > 0 && port <= 65_535)
+    .sort((a, b) => a - b);
+
+  return [...new Set(fromPayload.concat(FALLBACK_PREVIEW_DISCOVERY_PORTS))];
+}
+
+async function discoverRuntimeScopePreviewViaProxy(
+  collabUrl: string,
+  runtimeScope: string,
+  candidates: ReadonlyArray<number>,
+  timeoutMs: number
+): Promise<string | null> {
+  if (!runtimeScope) return null;
+
+  const deadline = Date.now() + timeoutMs;
+  const nowRemaining = () => deadline - Date.now();
+
+  const orderedCandidates = dedupeNumbers(candidates).filter((port) => port > 0 && port <= 65_535);
+  if (orderedCandidates.length === 0) return null;
+
+  let nextIndex = 0;
+  let remaining = orderedCandidates.length;
+
+  while (remaining > 0) {
+    const remainingMs = nowRemaining();
+    if (remainingMs <= 0) return null;
+
+    const batchTimeout = Math.max(
+      1,
+      Math.min(PREVIEW_DISCOVERY_PROBE_TIMEOUT_MS, remainingMs)
+    );
+
+    const batch = orderedCandidates
+      .slice(nextIndex, nextIndex + PREVIEW_DISCOVERY_MAX_CONCURRENCY)
+      .map((port) => probePortPreview(collabUrl, runtimeScope, port, batchTimeout));
+    if (batch.length === 0) break;
+
+    const results = await Promise.all(batch);
+    for (const result of results) {
+      if (result) return result;
+    }
+
+    nextIndex += PREVIEW_DISCOVERY_MAX_CONCURRENCY;
+    if (remainingMs <= 0) return null;
+    remaining = orderedCandidates.length - nextIndex;
+  }
+
+  return null;
+}
+
+async function probePortPreview(
+  collabUrl: string,
+  runtimeScope: string,
+  port: number,
+  timeoutMs: number
+): Promise<string | null> {
+  const candidateUrl = resolvePreviewUrl(`/runtime/${encodeURIComponent(runtimeScope)}/port/${port}/`, collabUrl);
+  if (!candidateUrl) return null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    let response = await fetch(candidateUrl, {
+      method: "HEAD",
+      redirect: "manual",
+      signal: controller.signal,
+    });
+
+    if (response.status === 405 || response.status === 501) {
+      response = await fetch(candidateUrl, {
+        method: "GET",
+        redirect: "manual",
+        signal: controller.signal,
+      });
+    }
+
+    return response.status >= 200 && response.status < 400 ? candidateUrl : null;
+  } catch {
+    return null;
   } finally {
     clearTimeout(timer);
   }
@@ -926,6 +1169,64 @@ export function buildBrowserWorkflowPanelState(
   };
 }
 
+function fallbackBrowserWorkflowPanelState(bridgeState: Partial<BrowserWorkflowBridgeState>, detail: string): Record<string, unknown> {
+  return {
+    workspaceLabel: stringOpt(process.env["SYNTHI_WORKSPACE_ID"]) || "Current workspace",
+    bridge: {
+      status: "error",
+      lastTool: bridgeState.lastTool ?? null,
+      lastToolAt: bridgeState.lastToolAt ?? null,
+      detail,
+    },
+    runtime: {
+      status: "notConfigured",
+      label: "Panel state unavailable",
+      detail,
+      readiness: resolveHostedBrowserRuntime(),
+    },
+    observe: {
+      status: "needsRuntime",
+      label: "Attach workflow runtime",
+      detail,
+      lastScreenshotAt: bridgeState.lastObserveAt ?? null,
+      selectedTabId: null,
+    },
+    teach: {
+      state: "idle",
+      label: "Ready",
+      detail,
+      tabId: null,
+    },
+    workflow: {
+      stepCount: 0,
+      contractStatus: "notCompiled",
+      scriptStatus: "notGenerated",
+      unresolvedCount: 0,
+    },
+    blockers: [
+      {
+        id: "panel_state_generation_failed",
+        label: "Panel state generation failed",
+        detail,
+      },
+    ],
+  };
+}
+
+function safeBuildBrowserWorkflowPanelState(
+  bridgeState: Partial<BrowserWorkflowBridgeState>,
+  detail: string = "Temporary panel state issue."
+): Record<string, unknown> {
+  try {
+    return buildBrowserWorkflowPanelState(bridgeState);
+  } catch (err) {
+    return fallbackBrowserWorkflowPanelState(
+      bridgeState,
+      detail || (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
 export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): {
   server: http.Server;
   ready: Promise<void>;
@@ -938,118 +1239,263 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
     const url = req.url ?? "/";
     const method = req.method ?? "GET";
 
-    if (method === "OPTIONS") {
-      res.writeHead(204, CORS_HEADERS);
-      res.end();
-      return;
-    }
+    try {
 
-    if (url === "/healthz" && method === "GET") {
-      res.writeHead(200, { "Content-Type": "text/plain", ...CORS_HEADERS });
-      res.end("ok\n");
-      return;
-    }
-
-    if (url.startsWith("/browser-workflows/")) {
-      const auth = authorizeBridgeRequest(req, opts, host);
-      if (!auth.ok) {
-        writeJson(res, auth.status, { error: auth.error });
-        return;
-      }
-    }
-
-    if (url === "/browser-workflows/state" && method === "GET") {
-      writeJson(res, 200, { ok: true, state: buildBrowserWorkflowPanelState(bridgeState) });
-      return;
-    }
-
-    if (url === "/browser-workflows/overlay" && method === "POST") {
-      let body: BrowserWorkflowOverlayBody;
-      try {
-        body = await readJsonBody(req, 20_000);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        writeJson(res, 400, { ok: false, status: "error", label: "Overlay failed", error: "invalid_body", detail: msg });
-        return;
-      }
-      const action = body.action;
-      if (action !== "state" && action !== "observe" && action !== "teach" && action !== "stop") {
-        writeJson(res, 400, { ok: false, status: "error", label: "Overlay failed", error: "invalid_overlay_action" });
-        return;
-      }
-      const pageUrl = typeof body.url === "string" ? body.url : "";
-      const selected = browserBroker.selectedTab();
-      const tabId = action === "observe" ? "" : selected?.tab_id ?? "";
-      const result = await browserWorkflowOverlayAction({
-        action,
-        ...(pageUrl ? { url: pageUrl } : {}),
-        tab_id: tabId,
-        page_url: pageUrl,
-      });
-      writeJson(res, result.ok ? 200 : 400, result);
-      return;
-    }
-
-    if (url === "/browser-workflows/tool" && method === "POST") {
-      let body: { tool?: unknown; arguments?: unknown };
-      try {
-        body = await readJsonBody(req);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        writeJson(res, 400, { error: "invalid_body", detail: msg, state: buildBrowserWorkflowPanelState(bridgeState) });
+      if (method === "OPTIONS") {
+        res.writeHead(204, CORS_HEADERS);
+        res.end();
         return;
       }
 
-      if (typeof body.tool !== "string" || body.tool.length === 0) {
-        writeJson(res, 400, { error: "invalid_args", field: "tool", state: buildBrowserWorkflowPanelState(bridgeState) });
+      if (url === "/healthz" && method === "GET") {
+        res.writeHead(200, { "Content-Type": "text/plain", ...CORS_HEADERS });
+        res.end("ok\n");
         return;
       }
 
-      const requestedTool = body.tool;
-      const tool = normalizeToolName(requestedTool);
-      let args: Record<string, unknown>;
-      try {
-        args = await enrichToolArgs(tool, body.arguments);
-      } catch (err) {
-        if (err instanceof BridgeToolInputError) {
-          writeJson(res, err.status, {
-            ok: false,
-            error: err.code,
-            requested_tool: requestedTool,
-            tool,
-            ...err.detail,
-            state: buildBrowserWorkflowPanelState(bridgeState),
-          });
+      if (url.startsWith("/browser-workflows/")) {
+        const auth = authorizeBridgeRequest(req, opts, host);
+        if (!auth.ok) {
+          writeJson(res, auth.status, { error: auth.error });
           return;
         }
-        throw err;
       }
-      const result = await dispatchWorkflowTool(tool, args);
-      if (!result) {
-        writeJson(res, 404, {
-          error: "unknown_workflow_tool",
-          tool,
-          requested_tool: requestedTool,
-          state: buildBrowserWorkflowPanelState(bridgeState),
+
+      if (url === "/browser-workflows/state" && method === "GET") {
+        writeJson(res, 200, {
+          ok: true,
+          state: safeBuildBrowserWorkflowPanelState(
+            bridgeState,
+            "Unable to build the workflow state from the current runtime."
+          ),
         });
         return;
       }
 
-      const payload = structuredPayload(result);
-      const ok = result.isError !== true && payload["ok"] !== false;
-      updateBridgeState(bridgeState, tool, ok, payload);
-      writeJson(res, 200, {
-        ok,
-        requested_tool: requestedTool,
-        tool,
-        is_error: result.isError === true,
-        result: payload,
-        state: buildBrowserWorkflowPanelState(bridgeState),
+      if (url === "/browser-workflows/overlay" && method === "POST") {
+        let body: BrowserWorkflowOverlayBody;
+        try {
+          body = await readJsonBody(req, 20_000);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          writeJson(res, 400, {
+            ok: false,
+            status: "error",
+            label: "Overlay failed",
+            error: "invalid_body",
+            detail: msg,
+          });
+          return;
+        }
+        const action = body.action;
+        if (
+          action !== "state" &&
+          action !== "observe" &&
+          action !== "teach" &&
+          action !== "stop"
+        ) {
+          writeJson(res, 400, {
+            ok: false,
+            status: "error",
+            label: "Overlay failed",
+            error: "invalid_overlay_action",
+          });
+          return;
+        }
+        const pageUrl = typeof body.url === "string" ? body.url : "";
+        const selected = browserBroker.selectedTab();
+        const tabId = action === "observe" ? "" : selected?.tab_id ?? "";
+        try {
+          const result = await browserWorkflowOverlayAction({
+            action,
+            ...(pageUrl ? { url: pageUrl } : {}),
+            tab_id: tabId,
+            page_url: pageUrl,
+          });
+          writeJson(res, result.ok ? 200 : 400, result);
+        } catch (err) {
+          writeJson(res, 500, {
+            ok: false,
+            status: "error",
+            label: "Overlay failed",
+            error: "overlay_action_failed",
+            detail: err instanceof Error ? err.message : String(err),
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "Overlay action failed while processing the current page."
+            ),
+          });
+        }
+        return;
+      }
+
+      if (url === "/browser-workflows/open-external" && method === "POST") {
+        let body: BrowserWorkflowExternalOpenBody;
+        try {
+          body = await readJsonBody(req, EXTERNAL_OPEN_BODY_LIMIT_BYTES);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          writeJson(res, 400, { ok: false, error: "invalid_body", detail: msg });
+          return;
+        }
+
+        const openUrl = normalizeExternalBrowserUrl(body.url);
+        if (!openUrl) {
+          writeJson(res, 400, { ok: false, error: "invalid_url" });
+          return;
+        }
+
+        const runtime = await ensureHostedRuntimeForExternalOpen();
+        if (!runtime.ok) {
+          writeJson(res, runtime.status, { ok: false, error: runtime.error, detail: runtime.detail });
+          return;
+        }
+
+        try {
+          const opened = await browserPlaywrightAdapter.openExternal(openUrl, { timeoutMs: EXTERNAL_OPEN_TIMEOUT_MS });
+          writeJson(res, 200, {
+            ok: true,
+            workspaceBrowser: {
+              url: openUrl,
+              tab_id: opened.tab_id,
+              navigation_started: opened.navigation_started,
+              tabId: opened.tab_id,
+              navigationStarted: opened.navigation_started,
+            },
+            opened: {
+              url: openUrl,
+              tab_id: opened.tab_id,
+              navigation_started: opened.navigation_started,
+              tabId: opened.tab_id,
+              navigationStarted: opened.navigation_started,
+            },
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          writeJson(res, 502, { ok: false, error: "browser_open_failed", detail: msg });
+        }
+        return;
+      }
+
+      if (url === "/browser-workflows/tool" && method === "POST") {
+        let body: { tool?: unknown; arguments?: unknown };
+        try {
+          body = await readJsonBody(req);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          writeJson(res, 400, {
+            error: "invalid_body",
+            detail: msg,
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "The request body could not be parsed as JSON."
+            ),
+          });
+          return;
+        }
+
+        if (typeof body.tool !== "string" || body.tool.length === 0) {
+          writeJson(res, 400, {
+            error: "invalid_args",
+            field: "tool",
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "A workflow tool name is required to invoke this endpoint."
+            ),
+          });
+          return;
+        }
+
+        const requestedTool = body.tool;
+        const tool = normalizeToolName(requestedTool);
+        let args: Record<string, unknown>;
+        try {
+          const runtimeContext = requestRuntimeContext(req);
+          args = await enrichToolArgsForBridge(tool, body.arguments, runtimeContext);
+        } catch (err) {
+          if (err instanceof BridgeToolInputError) {
+            writeJson(res, err.status, {
+              ok: false,
+              error: err.code,
+              requested_tool: requestedTool,
+              tool,
+              ...err.detail,
+              state: safeBuildBrowserWorkflowPanelState(
+                bridgeState,
+                err.message || "Workflow tool arguments are missing required values for this action."
+              ),
+            });
+            return;
+          }
+          writeJson(res, 500, {
+            ok: false,
+            error: "tool_preprocess_failed",
+            requested_tool: requestedTool,
+            tool,
+            detail: err instanceof Error ? err.message : String(err),
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "Failed to prepare the workflow tool arguments."
+            ),
+          });
+          return;
+        }
+
+        try {
+          const result = await dispatchWorkflowTool(tool, args);
+          if (!result) {
+            writeJson(res, 404, {
+              error: "unknown_workflow_tool",
+              tool,
+              requested_tool: requestedTool,
+              state: safeBuildBrowserWorkflowPanelState(
+                bridgeState,
+                "This workflow tool is not currently supported by this runtime."
+              ),
+            });
+            return;
+          }
+
+          const payload = structuredPayload(result);
+          const ok = result.isError !== true && payload["ok"] !== false;
+          updateBridgeState(bridgeState, tool, ok, payload);
+          writeJson(res, 200, {
+            ok,
+            requested_tool: requestedTool,
+            tool,
+            is_error: result.isError === true,
+            result: payload,
+            state: safeBuildBrowserWorkflowPanelState(bridgeState),
+          });
+          return;
+        } catch (err) {
+          writeJson(res, 500, {
+            ok: false,
+            error: "tool_execution_failed",
+            requested_tool: requestedTool,
+            tool,
+            detail: err instanceof Error ? err.message : String(err),
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "Workflow tool execution failed while processing this action."
+            ),
+          });
+        }
+        return;
+      }
+
+      writeJson(res, 404, { error: "not_found", url, method });
+    } catch (err) {
+      writeJson(res, 500, {
+        error: "bridge_internal_error",
+        detail: err instanceof Error ? err.message : String(err),
+        state: safeBuildBrowserWorkflowPanelState(
+          bridgeState,
+          "An unexpected browser workflow bridge error occurred."
+        ),
       });
-      return;
     }
 
-    writeJson(res, 404, { error: "not_found", url, method });
   });
 
   const ready = new Promise<void>((resolve, reject) => {
@@ -1434,4 +1880,44 @@ function boolPayload(value: unknown): boolean {
 
 function numberOpt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+function dedupeNumbers(values: ReadonlyArray<number | string>): number[] {
+  const normalized = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value > 0 && value <= 65_535);
+  return [...new Set(normalized)].sort((a, b) => a - b);
+}
+
+function parsePortList(value: string | undefined): number[] {
+  if (!value) return [];
+
+  const output = new Set<number>();
+
+  for (const item of value.split(",")) {
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+
+    const rangeMatch = /^(\d+)\s*-\s*(\d+)$/.exec(trimmed);
+    if (rangeMatch) {
+      const start = Number(rangeMatch[1]);
+      const end = Number(rangeMatch[2]);
+      if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+
+      const min = Math.min(start, end);
+      const max = Math.max(start, end);
+      const lower = Math.max(1, Math.min(min, 65_535));
+      const upper = Math.max(1, Math.min(max, 65_535));
+
+      for (let port = lower; port <= upper; port += 1) {
+        output.add(port);
+      }
+      continue;
+    }
+
+    const parsed = Number(trimmed);
+    if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535) {
+      output.add(parsed);
+    }
+  }
+
+  return [...output].sort((a, b) => a - b);
 }

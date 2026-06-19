@@ -24,6 +24,7 @@ const sseService = require('./sseService');
 const persistence = require('./persistence');
 const logger = require('./logger').child({ component: 'collab' });
 const workspacePrepManager = require('./workspacePrepManager');
+const { ensureRuntimeFilesystem } = require('./runtimeFilesystem');
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
 // blockedBy: userId → Set<blockedUserId>
@@ -45,6 +46,39 @@ if (typeof fetch === 'function') {
 const CODE_INTEL_URL = config.CODE_INTEL_URL;
 
 const PORT = config.PORT;
+
+function normalizeBaseUrl(value, fallback) {
+  const raw = String(value || fallback || '').trim();
+  if (!raw) return '';
+  return raw.replace(/\/+$/, '');
+}
+
+function publicAppBaseUrl() {
+  return normalizeBaseUrl(
+    process.env.SYNTHI_PUBLIC_APP_URL || process.env.SYNTHI_APP_URL,
+    'http://localhost:3000',
+  );
+}
+
+function internalAppBaseUrl() {
+  return normalizeBaseUrl(
+    process.env.SYNTHI_APP_INTERNAL_URL || process.env.SYNTHI_APP_URL,
+    'http://localhost:3000',
+  );
+}
+
+function makeInviteLink({ sessionId, inviteToken, roomCode, slug }) {
+  const style = String(process.env.SYNTHI_INVITE_LINK_STYLE || 'slug').trim().toLowerCase();
+  const useSlugPath = style !== 'legacy' && slug;
+  const url = new URL(
+    useSlugPath ? `/${encodeURIComponent(slug)}` : `/collab/${encodeURIComponent(sessionId)}`,
+    publicAppBaseUrl(),
+  );
+  if (useSlugPath) url.searchParams.set('collab', sessionId);
+  url.searchParams.set('token', inviteToken);
+  if (roomCode) url.searchParams.set('code', roomCode);
+  return url.toString();
+}
 
 // PERF: Bounded LRU cache replaces unbounded Map to prevent memory leak and
 // GC pauses on long-running servers with many files.  1000 entries covers the
@@ -1023,9 +1057,22 @@ async function getTurnCredentials() {
 }
 
 const server = http.createServer(async (req, res) => {
-  // Strip /collab or /collab/ prefix if passed by ingress
-  req.url = req.url.replace(/^\/collab/, '');
+  // Strip /collab or /collab/ prefix if passed by ingress, but preserve the
+  // public mount prefix so preview HTML can rewrite absolute asset URLs back
+  // through the externally visible proxy route.
+  const originalUrl = req.url || '/';
+  const collabMountMatch = originalUrl.match(/^\/collab(?=\/|$)/);
+  req._synthiExternalMountPrefix = collabMountMatch ? '/collab' : '';
+  req.url = originalUrl.replace(/^\/collab(?=\/|$)/, '');
   if (!req.url.startsWith('/')) req.url = '/' + req.url;
+
+  // Wildcard preview hosts (p<port>-rt-*.preview.vectant.dev) are user app
+  // traffic, not collab API traffic. Route them into the reverse proxy before
+  // app-level CORS/origin checks so POSTs, HMR, and absolute root assets work.
+  if (proxyService.isPreviewHostRequest(req)) {
+    proxyService.proxyHttpRequest(req, res);
+    return;
+  }
 
   // CORS headers — must echo the exact Origin (not '*') when credentials are included
   const requestOrigin = req.headers.origin;
@@ -1033,7 +1080,7 @@ const server = http.createServer(async (req, res) => {
   if (requestOrigin) res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-session-id, x-user-name, x-user-email');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-session-id, x-user-name, x-user-email, x-runtime-scope, x-runtime-fs-user-id');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -1103,7 +1150,7 @@ const server = http.createServer(async (req, res) => {
       try { parsed = JSON.parse(body); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
     }
     try {
-      const snapshot = await spawner.warm(sessionId, parsed.user_id || parsed.userId || 'warm_trigger');
+      const snapshot = await spawner.warm(sessionId, parsed.user_id || parsed.userId || 'warm_trigger', parsed);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(snapshot));
     } catch (e) {
@@ -1160,7 +1207,26 @@ const server = http.createServer(async (req, res) => {
     const { session_id, user_id } = parsed;
     if (!session_id || !user_id) { res.writeHead(400); res.end('Missing session_id or user_id'); return; }
     try {
-      const result = await spawner.ensurePod(session_id, user_id);
+      const workspaceSlug = parsed.workspace_slug || parsed.workspaceSlug || '';
+      const runtimeKind = parsed.runtime_kind || parsed.runtimeKind || '';
+      const filesystemUserId =
+        parsed.filesystemUserId ||
+        parsed.filesystem_user_id ||
+        parsed.fsUserId ||
+        user_id;
+      if (workspaceSlug) {
+        await ensureRuntimeFilesystem({
+          workspaceSlug,
+          filesystemUserId,
+          runtimeScope: session_id,
+          reason: 'spawner_ensure',
+        });
+      }
+      const result = await spawner.ensurePod(session_id, user_id, {
+        workspaceSlug,
+        runtimeKind,
+        filesystemUserId,
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (e) {
@@ -1193,6 +1259,44 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ========================================================================
+  // SPAWNER — /api/spawner/release
+  // Explicitly stop the caller's current runtime. This complements the idle
+  // culler so users can free a pod/container immediately.
+  // Body: { session_id | runtimeScope, reason? }
+  // ========================================================================
+  if (req.url === '/api/spawner/release' && req.method === 'POST') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); } catch { res.writeHead(400); res.end('Invalid JSON'); return; }
+
+    const sessionId = parsed.session_id || parsed.runtimeScope || '';
+    const headerScope = String(req.headers['x-runtime-scope'] || '').trim();
+    if (!sessionId || typeof sessionId !== 'string') {
+      res.writeHead(400);
+      res.end('Missing session_id');
+      return;
+    }
+    if (headerScope && headerScope !== sessionId) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'runtime_scope_mismatch' }));
+      return;
+    }
+
+    try {
+      const reason = parsed.reason || 'explicit_release';
+      await spawner.teardown(sessionId, { reason });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, session_id: sessionId, reason }));
+    } catch (e) {
+      console.error('[Spawner] release failed:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   if (req.url === '/turn-credentials' && req.method === 'GET') {
     res.setHeader('Content-Type', 'application/json');
     try {
@@ -1213,11 +1317,25 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ========================================================================
-  // REVERSE PROXY — /port/<N>/... → http://127.0.0.1:<N>/...
+  // REVERSE PROXY — /port/<N>/... or /runtime/<scope>/port/<N>/...
   // Enables in-IDE preview of running dev servers (Next.js, Vite, etc.)
   // ========================================================================
-  if (req.url.startsWith('/port/')) {
+  if (req.url.startsWith('/port/') || req.url.startsWith('/runtime/')) {
     proxyService.proxyHttpRequest(req, res);
+    return;
+  }
+
+  // GET /preview-url — resolve localhost terminal links to the canonical
+  // production preview URL. The client cannot compute the rt-* HMAC itself.
+  if (req.method === 'GET' && (req.url === '/preview-url' || req.url.startsWith('/preview-url?'))) {
+    proxyService.handlePreviewUrlRequest(req, res);
+    return;
+  }
+
+  // POST /runtime-callback — replay a browser localhost OAuth callback into
+  // the correct runtime pod, where the CLI's loopback listener is running.
+  if (req.url === '/runtime-callback' || req.url.startsWith('/runtime-callback?')) {
+    proxyService.handleRuntimeCallbackRequest(req, res);
     return;
   }
 
@@ -1484,11 +1602,26 @@ const server = http.createServer(async (req, res) => {
       const { createHeadlessSession } = require('./terminalService');
       const crypto = require('crypto');
       const sessionId = `ai-${crypto.randomUUID().slice(0, 8)}`;
+      const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+      const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+      const terminalUserId = parsed.userId || headerUserId || '';
+      const filesystemUserId =
+        parsed.filesystemUserId ||
+        (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+        terminalUserId;
 
       // Create a real PTY with a known session ID
-      const { ptyProcess, cwd } = await createHeadlessSession(sessionId, slug, parsed.userId || '');
+      const { ptyProcess, cwd } = await createHeadlessSession(
+        sessionId,
+        slug,
+        terminalUserId,
+        120,
+        30,
+        parsed.name || null,
+        { runtimeScope, filesystemUserId },
+      );
 
-      console.log(`[ExecTerminal] slug=${slug} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
+      console.log(`[ExecTerminal] slug=${slug} runtimeScope=${runtimeScope || 'legacy'} fsUser=${filesystemUserId || 'none'} cwd=${cwd} sessionId=${sessionId} cmd=${command.slice(0, 120)}`);
 
       // Collect output from the PTY
       let output = '';
@@ -1607,6 +1740,8 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           sessionId,
+          runtimeScope: runtimeScope || null,
+          filesystemScoped: Boolean(filesystemUserId),
           command,
           output: cleanOutput || '(no output)',
           exitCode: inferredExitCode,
@@ -1661,14 +1796,37 @@ const server = http.createServer(async (req, res) => {
 
     const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
     const { resolveWorkspaceCwd } = require('./terminalService');
-    const cwd = resolveWorkspaceCwd(slug);
+    const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+    const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const terminalUserId = parsed.userId || headerUserId || '';
+    const filesystemUserId =
+      parsed.filesystemUserId ||
+      (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+      terminalUserId;
+    let cwd;
+    try {
+      await ensureRuntimeFilesystem({
+        workspaceSlug: slug,
+        filesystemUserId,
+        runtimeScope,
+        reason: 'exec_pty',
+      });
+      cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+    } catch (err) {
+      console.error('[ExecPTY] Workspace filesystem preparation failed:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Workspace filesystem preparation failed', detail: err.message }));
+      return;
+    }
 
-    console.log(`[ExecPTY] slug=${slug} cwd=${cwd} cmd=${command.slice(0, 120)}`);
+    console.log(`[ExecPTY] slug=${slug} runtimeScope=${runtimeScope || 'legacy'} fsUser=${filesystemUserId || 'none'} cwd=${cwd} cmd=${command.slice(0, 120)}`);
 
     // Find active PTY session for this workspace to mirror output
     let targetSession = null;
     for (const [, session] of terminalSessions) {
-      if (session.cwd && session.cwd.endsWith(slug) && session.pty) {
+      const sameWorkspace = session.workspaceSlug === slug || (session.cwd && session.cwd.endsWith(slug));
+      const sameFilesystem = !filesystemUserId || !session.filesystemUserId || session.filesystemUserId === filesystemUserId;
+      if (sameWorkspace && sameFilesystem && session.pty) {
         targetSession = session;
         break;
       }
@@ -1763,9 +1921,30 @@ const server = http.createServer(async (req, res) => {
 
     const timeoutMs = Math.min(Number(parsed.timeout) || 30000, 60000);
     const { resolveWorkspaceCwd } = require('./terminalService');
-    const cwd = resolveWorkspaceCwd(slug);
+    const headerUserId = req.headers['x-user-id'] ? String(req.headers['x-user-id']) : '';
+    const runtimeScope = parsed.runtimeScope || (req.headers['x-runtime-scope'] ? String(req.headers['x-runtime-scope']) : '');
+    const terminalUserId = parsed.userId || headerUserId || '';
+    const filesystemUserId =
+      parsed.filesystemUserId ||
+      (req.headers['x-runtime-fs-user-id'] ? String(req.headers['x-runtime-fs-user-id']) : '') ||
+      terminalUserId;
+    let cwd;
+    try {
+      await ensureRuntimeFilesystem({
+        workspaceSlug: slug,
+        filesystemUserId,
+        runtimeScope,
+        reason: 'exec',
+      });
+      cwd = await resolveWorkspaceCwd(slug, filesystemUserId);
+    } catch (err) {
+      console.error('[Exec] Workspace filesystem preparation failed:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Workspace filesystem preparation failed', detail: err.message }));
+      return;
+    }
 
-    console.log(`[Exec] slug=${slug} cwd=${cwd} cmd=${command.slice(0, 120)}`);
+    console.log(`[Exec] slug=${slug} runtimeScope=${runtimeScope || 'legacy'} fsUser=${filesystemUserId || 'none'} cwd=${cwd} cmd=${command.slice(0, 120)}`);
 
     const { spawn } = require('child_process');
     const isWin = require('os').platform() === 'win32';
@@ -2349,6 +2528,7 @@ const server = http.createServer(async (req, res) => {
             seen.set(uid, {
               id: uid,
               name: ws._userName || userDisplayNameCache.get(uid)?.name || 'Anonymous',
+              email: ws._userEmail || null,
               color: ws._userColor || '#888',
               image: ws._userImage || userDisplayNameCache.get(uid)?.avatar || null,
               lastActive: Date.now(),
@@ -2419,8 +2599,9 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        // Auto-create session if needed
-        let session = sessionManager.getSessionByHost(hostId);
+        // Auto-create session if needed. Existing sessions must be read
+        // through the host-only view so inviteToken is available for links.
+        let session = sessionManager.getHostSessionForReconnect(hostId, slug);
         if (!session) {
           session = sessionManager.createSession({
             hostId,
@@ -2452,8 +2633,12 @@ const server = http.createServer(async (req, res) => {
           .then((r) => logger.info('invite_delivery', { targetUserId, slug, delivered: r.delivered, queued: r.queued }))
           .catch((err) => logger.warn('invite_delivery_failed', { targetUserId, slug }, err));
 
-        const appUrl = process.env.SYNTHI_APP_URL || 'http://localhost:3000';
-        const inviteLink = `${appUrl}/collab/${session.id}?token=${session.inviteToken}${session.roomCode ? `&code=${session.roomCode}` : ''}`;
+        const inviteLink = makeInviteLink({
+          sessionId: session.id,
+          inviteToken: session.inviteToken,
+          roomCode: session.roomCode,
+          slug,
+        });
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -2708,6 +2893,7 @@ const server = http.createServer(async (req, res) => {
     const RATE_BUDGETS = {
       create: 20,
       'validate-token': 60,
+      host: 120,
       knock: 30,
       admit: 60,
       deny: 60,
@@ -2724,7 +2910,17 @@ const server = http.createServer(async (req, res) => {
     // sessionId parameter must look like the format emitted by SessionManager
     // (hex, 2*SESSION_ID_LEN chars).  Reject malformed IDs before they reach
     // any manager call — defence-in-depth against injection via URL paths.
-    if (sessionIdParam && !/^[a-f0-9]{8,64}$/i.test(sessionIdParam)) {
+    const sessionIdActions = new Set([
+      'admit',
+      'deny',
+      'permissions',
+      'kick',
+      'leave',
+      'terminate',
+      'info',
+      'regenerate-token',
+    ]);
+    if (sessionIdActions.has(action) && sessionIdParam && !/^[a-f0-9]{8,64}$/i.test(sessionIdParam)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_session_id_format' }));
       return;
@@ -2756,17 +2952,52 @@ const server = http.createServer(async (req, res) => {
             } catch (e) {
               console.warn(`[Collab] Could not ensure host repo for session: ${e.message}`);
             }
+            const existing = sessionManager.getHostSessionForReconnect(hostId, slug);
             const session = sessionManager.createSession({
               hostId, hostName: hostName || hostId, hostAvatar: hostAvatar || '',
               slug, worktreePath: hostRepoPath || '', defaultPerms,
             });
             result = {
+              reused: Boolean(existing && existing.id === session.id),
               sessionId: session.id,
               inviteToken: session.inviteToken,
               worktreePath: session.worktreePath,
               roomCode: session.roomCode || null,
               createdAt: session.createdAt,
-              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${session.id}?token=${session.inviteToken}${session.roomCode ? `&code=${session.roomCode}` : ''}`,
+              inviteLink: makeInviteLink({
+                sessionId: session.id,
+                inviteToken: session.inviteToken,
+                roomCode: session.roomCode,
+                slug,
+              }),
+            };
+            break;
+          }
+
+          case 'host': {
+            // GET /session/host/:hostId?slug=<workspace>
+            const hostId = sessionIdParam ? decodeURIComponent(sessionIdParam) : '';
+            const slug = urlObj.searchParams.get('slug') || '';
+            if (!hostId) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'hostId is required' }));
+              return;
+            }
+            const session = sessionManager.getHostSessionForReconnect(hostId, slug || null);
+            if (!session) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Session not found' }));
+              return;
+            }
+            result = {
+              ...session,
+              sessionId: session.id,
+              inviteLink: makeInviteLink({
+                sessionId: session.id,
+                inviteToken: session.inviteToken,
+                roomCode: session.roomCode,
+                slug: session.slug,
+              }),
             };
             break;
           }
@@ -2911,7 +3142,12 @@ const server = http.createServer(async (req, res) => {
             result = {
               inviteToken: regenResult.inviteToken,
               roomCode: regenResult.roomCode,
-              inviteLink: `${process.env.SYNTHI_APP_URL || 'http://localhost:3000'}/collab/${sessionIdParam}?token=${regenResult.inviteToken}${regenResult.roomCode ? `&code=${regenResult.roomCode}` : ''}`,
+              inviteLink: makeInviteLink({
+                sessionId: sessionIdParam,
+                inviteToken: regenResult.inviteToken,
+                roomCode: regenResult.roomCode,
+                slug: sessionManager.getSession(sessionIdParam)?.slug,
+              }),
             };
             break;
           }
@@ -3149,8 +3385,8 @@ const server = http.createServer(async (req, res) => {
                   };
 
                   // Try to create the workspace in the main Synthi app DB so the web UI finds it.
-                  // Use environment var SYNTHI_APP_URL or default to http://localhost:3000
-                  const SYNTHI_APP_URL = process.env.SYNTHI_APP_URL || 'http://localhost:3000';
+                  // Use the internal app URL when deployed; public invite links use SYNTHI_PUBLIC_APP_URL.
+                  const appInternalUrl = internalAppBaseUrl();
 
                   // Determine fetch function - prefer global fetch (Node 18+), otherwise require node-fetch
                   let fetchFunc = null;
@@ -3179,7 +3415,7 @@ const server = http.createServer(async (req, res) => {
                     while (attempt < maxAttempts && !created) {
                       attempt += 1;
                       try {
-                        const res = await fetchFunc(`${SYNTHI_APP_URL}/api/workspace`, {
+                        const res = await fetchFunc(`${appInternalUrl}/api/workspace`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify(payload),
@@ -3211,7 +3447,7 @@ const server = http.createServer(async (req, res) => {
 
                     workspaceRegistration.created = created;
                   } else {
-                    console.warn('[Collab] Fetch not available - skipping workspace creation in main app. Set SYNTHI_APP_URL or install node-fetch.');
+                    console.warn('[Collab] Fetch not available - skipping workspace creation in main app. Set SYNTHI_APP_INTERNAL_URL or install node-fetch.');
                     workspaceRegistration.pending = true;
                   }
 
@@ -3894,10 +4130,22 @@ function sendToSessionUser(sessionId, targetUserId, eventType, payload) {
 
 
 server.on('upgrade', (request, socket, head) => {
-  // Use replace to safely strip the prefix
-  request.url = request.url.replace(/^\/collab/, '');
+  if (proxyService.isPreviewHostRequest(request)) {
+    if (!proxyService.proxyWsUpgrade(request, socket, head)) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+    }
+    return;
+  }
+
+  // Use replace to safely strip the prefix while retaining the public mount
+  // prefix for runtime preview WebSocket URL reconstruction.
+  const originalUrl = request.url || '/';
+  const collabMountMatch = originalUrl.match(/^\/collab(?=\/|$)/);
+  request._synthiExternalMountPrefix = collabMountMatch ? '/collab' : '';
+  request.url = originalUrl.replace(/^\/collab(?=\/|$)/, '');
   if (!request.url.startsWith('/')) request.url = '/' + request.url;
-  if (request.url.startsWith('/port/')) {
+  if (request.url.startsWith('/port/') || request.url.startsWith('/runtime/')) {
     if (!proxyService.proxyWsUpgrade(request, socket, head)) {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
@@ -4073,8 +4321,9 @@ notifyWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
   ws._slug = params.get('slug') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
+  ws._userEmail = params.get('email') ? decodeURIComponent(params.get('email')).trim().toLowerCase() : null;
   ws._sessionId = params.get('sessionId') || null;
-  logger.info('notify_ws_connected', { slug: ws._slug, userId: ws._userId });
+  logger.info('notify_ws_connected', { slug: ws._slug, userId: ws._userId, hasEmail: !!ws._userEmail });
   // Flush any offline events for this user as a burst of queued:true
   // messages so the UI can surface them as popups.
   if (ws._userId) {
@@ -4089,10 +4338,58 @@ notifyWss.on('connection', (ws, req) => {
 // ── Session-events WS connection handler ────────────────────────────
 sessionWss.on('connection', (ws, req) => {
   const params = new URLSearchParams((req.url || '').split('?')[1] || '');
+  ws._socketId = `session-ws-${crypto.randomBytes(8).toString('hex')}`;
   ws._sessionId = params.get('sessionId') || null;
   ws._userId = params.get('userId') ? decodeURIComponent(params.get('userId')) : null;
+  ws._role = params.get('role') || null;
+
+  function identify(payload = {}) {
+    const nextSessionId = payload.sessionId || ws._sessionId;
+    const nextUserId = payload.userId || ws._userId;
+    const nextRole = payload.role || ws._role;
+    if (nextSessionId) ws._sessionId = String(nextSessionId);
+    if (nextUserId) ws._userId = String(nextUserId);
+    if (nextRole) ws._role = String(nextRole);
+
+    const session = ws._sessionId ? sessionManager.getSession(ws._sessionId) : null;
+    if (!session || !ws._userId) return;
+
+    if (session.hostId === ws._userId && (ws._role === 'hosting' || ws._role === 'host')) {
+      try { sessionManager.registerHostSocket(ws._sessionId, ws._socketId); } catch (_) {}
+      return;
+    }
+
+    const isGuestLike = ws._role === 'guest' || ws._role === 'knocking';
+    if (isGuestLike) {
+      if (guestDisconnectTimers.has(ws._userId)) {
+        clearTimeout(guestDisconnectTimers.get(ws._userId));
+        guestDisconnectTimers.delete(ws._userId);
+      }
+      try { sessionManager.updateGuestSocket(ws._sessionId, ws._userId, ws); } catch (_) {}
+    }
+  }
+
+  identify();
+
   logger.info('session_ws_connected', { sessionId: ws._sessionId, userId: ws._userId });
+  ws.on('message', (raw) => {
+    try {
+      const text = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+      const msg = JSON.parse(text);
+      if (msg?.type === 'identify') {
+        identify(msg);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'identified', sessionId: ws._sessionId, userId: ws._userId, role: ws._role }));
+        }
+      }
+    } catch (_) {
+      // Session event WS only accepts JSON control frames from clients.
+    }
+  });
   ws.on('close', () => {
+    if (ws._role === 'hosting' || ws._role === 'host') {
+      try { sessionManager.handleDisconnect(ws._socketId); } catch (_) {}
+    }
     logger.info('session_ws_disconnected', { sessionId: ws._sessionId, userId: ws._userId });
   });
 });

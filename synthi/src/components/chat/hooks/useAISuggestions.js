@@ -8,6 +8,7 @@ import { selectFileThunk, setExternalFileContent, fetchFilesThunk } from '@/redu
 import { setShowTerminal } from '@/redux/uiSlice';
 import { useContextWindow } from './useContextWindow';
 import { useAgentPipeline, PIPELINE_MODES } from './useAgentPipeline';
+import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 
 const INTENT_CLASSIFY_URL = '/api/classify/intent';
 
@@ -1887,6 +1888,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                 }))
                 : [];
 
+            const runtimeIdentity = workspaceSlug ? getWorkspaceRuntimeIdentity(workspaceSlug) : null;
             const resp = await fetch('/api/chat', {
                 method: 'POST',
                 signal: abortController.signal,
@@ -1904,6 +1906,9 @@ If image attachments are present, read/ocr the images and extract any text or co
                     provider: aiProvider || undefined,
                     // Code intelligence integration
                     workspacePath: workspaceSlug || null,
+                    runtimeScope: runtimeIdentity?.runtimeScope || '',
+                    runtimeKind: runtimeIdentity?.runtimeKind || null,
+                    filesystemUserId: runtimeIdentity?.filesystemUserId || null,
                     useCodeIntel: !isRunOnly,
                     maxContextTokens: isRunOnly ? 0 : Math.min(30000, Math.floor(availableTokens * 0.3)),
                     fullRepoContext: wantsFullRepo,

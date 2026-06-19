@@ -18,6 +18,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { resolveCollabHttpUrl } from '@/lib/collab-url';
 
 // ============================================================================
 // Constants
@@ -266,7 +267,7 @@ export class VirtualFileSystem extends EventEmitter {
     super();
     
     this.workspaceId = workspaceId;
-    this.serverUrl = serverUrl || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+    this.serverUrl = serverUrl || resolveCollabHttpUrl();
     
     // Hot cache (in-memory)
     /** @type {Map<string, VFSFile>} */

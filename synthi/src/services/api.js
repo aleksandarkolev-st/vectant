@@ -3,6 +3,8 @@
 import { getSession } from 'next-auth/react';
 import SynthiException from "@/components/SynthiException";
 import collabSessionService from '@/services/collabSessionService';
+import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
+import { resolveCollabHttpUrl } from '@/lib/collab-url';
 
 /**
  * Parse an error response body and extract a human-readable message.
@@ -106,7 +108,7 @@ function buildTreeFromFlatMeta(flatFiles) {
 // Centralized collab-server URL — the single source of truth for file data.
 // All file reads/writes go through the collab-server to prevent dual-source
 // inconsistencies between GCS and disk.
-const COLLAB_SERVER_URL = process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234';
+const COLLAB_SERVER_URL = resolveCollabHttpUrl();
 
 export class ApiClient {
     constructor() {
@@ -117,7 +119,7 @@ export class ApiClient {
      * Build common headers for collab-server requests.
      * Attaches x-user-id so the server routes to the per-user repo.
      */
-    async _headers(extra = {}) {
+    async _headers(extra = {}, { workspaceSlug = null } = {}) {
         const base = { ...extra };
         try {
             const session = await getSession();
@@ -125,6 +127,12 @@ export class ApiClient {
             if (userId) base['x-user-id'] = userId;
             if (collabSessionService?.isActive && collabSessionService.sessionId) {
                 base['x-session-id'] = collabSessionService.sessionId;
+            }
+            if (workspaceSlug) {
+                const runtimeIdentity = getWorkspaceRuntimeIdentity(workspaceSlug, { userId });
+                if (runtimeIdentity.runtimeScope) base['x-runtime-scope'] = runtimeIdentity.runtimeScope;
+                if (runtimeIdentity.runtimeKind) base['x-runtime-kind'] = runtimeIdentity.runtimeKind;
+                if (runtimeIdentity.filesystemUserId) base['x-runtime-fs-user-id'] = runtimeIdentity.filesystemUserId;
             }
         } catch (_) {
             // Non-fatal — server falls back to slug-level repo
@@ -313,8 +321,14 @@ export class ApiClient {
             throw new SynthiException('Missing command', 'No workspace command was provided.');
         }
 
-        const headers = await this._headers({ 'Content-Type': 'application/json' });
-        const body = JSON.stringify({ command: trimmed, timeout });
+        const headers = await this._headers({ 'Content-Type': 'application/json' }, { workspaceSlug: slug });
+        const body = JSON.stringify({
+            command: trimmed,
+            timeout,
+            runtimeScope: headers['x-runtime-scope'] || null,
+            runtimeKind: headers['x-runtime-kind'] || null,
+            filesystemUserId: headers['x-runtime-fs-user-id'] || null,
+        });
         const signal =
             typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
                 ? AbortSignal.timeout(timeout + 5000)

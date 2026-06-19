@@ -105,6 +105,12 @@ function DockableWorkspaceInner({
 
     // ── Migration: ensure Output tab exists ──
     // If no tab with panelType 'output' exists, inject one next to the Terminal tab.
+    const hasStaleVSCodeServerTab = Object.values(layoutToUse.tabs || {})
+      .some((tab) => tab?.panelType === 'vscode-server');
+    if (hasStaleVSCodeServerTab) {
+      layoutToUse = createLayoutFromPreset(defaultPreset);
+    }
+
     const allTabs = layoutToUse.tabs || {};
     const hasOutputTab = Object.values(allTabs).some((t) => t.panelType === 'output');
     if (!hasOutputTab) {

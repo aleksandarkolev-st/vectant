@@ -107,6 +107,20 @@ const STEP_ICONS = {
   verified: CheckCircle2,
 };
 
+const OPERATIONAL_BLOCKER_IDS = new Set([
+  'workflow_bridge_error',
+  'preview_not_found',
+  'preview_target_not_found',
+  'preview_discovery_failed',
+  'preview_sidecar_discovery_failed',
+  'preview_open_failed',
+  'preview_snapshot_failed',
+  'workflow_runtime_ensure_unreachable',
+  'workflow_runtime_ensure_failed',
+  'workflow_runtime_unavailable',
+  'workflow_bridge_unreachable',
+]);
+
 function normalizeTone(value, fallback = 'neutral') {
   if (value === 'ok' || value === 'warn' || value === 'danger' || value === 'neutral') {
     return value;
@@ -131,6 +145,10 @@ function isRuntimeAttached(runtime) {
 
 function hasObservedPage(model) {
   return ['ready', 'observing', 'teaching', 'recording'].includes(model.observe?.status) || model.observe?.lastScreenshotAt;
+}
+
+function observeNeedsPreview(model) {
+  return model.observe?.status === 'needsPreview';
 }
 
 function hasRecordedTrace(model) {
@@ -362,6 +380,7 @@ function shouldShowDojoSkill(model) {
 function buildReadinessRows(model) {
   const runtimeReady = isRuntimeAttached(model.runtime);
   const observed = hasObservedPage(model);
+  const needsPreview = observeNeedsPreview(model);
   const traceReady = hasRecordedTrace(model);
   const compiled = hasCompiledContract(model);
   const scriptReady = hasGeneratedScript(model);
@@ -375,7 +394,7 @@ function buildReadinessRows(model) {
     },
     {
       label: 'Observe',
-      value: observed ? 'Screenshot allowed' : 'Consent pending',
+      value: observed ? 'Screenshot allowed' : needsPreview ? 'Preview needed' : 'Consent pending',
       tone: observed ? 'ok' : 'warn',
     },
     {
@@ -399,6 +418,7 @@ function buildReadinessRows(model) {
 function buildStages(model) {
   const runtimeReady = isRuntimeAttached(model.runtime);
   const observed = hasObservedPage(model);
+  const needsPreview = observeNeedsPreview(model);
   const traceReady = hasRecordedTrace(model);
   const compiled = hasCompiledContract(model);
   const scriptReady = hasGeneratedScript(model);
@@ -421,10 +441,12 @@ function buildStages(model) {
     {
       id: 'observe',
       label: 'Observe',
-      title: 'Screenshot consent',
+      title: needsPreview ? 'Preview target' : 'Screenshot consent',
       detail: observed
         ? model.observe?.detail || 'The current workspace view can be inspected.'
-        : model.observe?.detail || 'Attach first, then request a screenshot from the hosted runtime.',
+        : needsPreview
+          ? model.observe?.detail || 'Start or open a workspace preview, then inspect it from the hosted runtime.'
+          : model.observe?.detail || 'Attach first, then request a screenshot from the hosted runtime.',
       tone: observed ? 'ok' : runtimeReady ? 'warn' : 'neutral',
       action: WORKFLOW_ACTIONS.OBSERVE,
       actionLabel: 'Observe',
@@ -766,9 +788,19 @@ function ReadinessRow({ row }) {
   );
 }
 
-function ActionButton({ action, label, icon, enabled = true, disabledReason, variant = 'secondary', onAction }) {
+function ActionButton({
+  action,
+  label,
+  icon,
+  enabled = true,
+  disabledReason,
+  variant = 'secondary',
+  isBusy = false,
+  onAction,
+}) {
   const Icon = STAGE_ICONS[icon] || (action === WORKFLOW_ACTIONS.BEGIN_TEACH ? Eye : action === WORKFLOW_ACTIONS.END_TEACH ? Square : Play);
-  const disabled = !enabled;
+  const disabled = isBusy || !enabled;
+  const disabledMessage = disabled ? disabledReason || (isBusy ? 'Workflow action in progress...' : undefined) : undefined;
   const primary = variant === 'primary';
 
   return (
@@ -785,7 +817,7 @@ function ActionButton({ action, label, icon, enabled = true, disabledReason, var
         color: primary ? 'var(--accent-foreground, var(--bg-app))' : 'var(--text-primary)',
       }}
       disabled={disabled}
-      title={disabled ? disabledReason : undefined}
+      title={disabledMessage}
       onClick={() => onAction?.(action)}
     >
       <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
@@ -862,9 +894,11 @@ function ProfileField({ label, value, onChange, multiline = false }) {
   );
 }
 
-function WorkflowStage({ stage, onAction }) {
+function WorkflowStage({ stage, onAction, isBusy = false }) {
   const Icon = STAGE_ICONS[stage.id] || Workflow;
   const style = toneStyle(stage.tone);
+  const disabled = isBusy || !stage.actionEnabled;
+  const disabledMessage = disabled ? (stage.disabledReason || (isBusy ? 'Workflow action in progress...' : undefined)) : undefined;
 
   return (
     <div className="grid min-h-16 grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-3 border-t px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -884,8 +918,8 @@ function WorkflowStage({ stage, onAction }) {
         type="button"
         className="inline-flex h-7 min-w-16 items-center justify-center gap-1.5 rounded-md border px-2 text-[11px] font-semibold transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
         style={{ ...style, minWidth: 64 }}
-        disabled={!stage.actionEnabled}
-        title={stage.actionEnabled ? undefined : stage.disabledReason}
+        disabled={disabled}
+        title={disabledMessage}
         onClick={() => onAction?.(stage.action, { stageId: stage.id })}
       >
         {stage.action === WORKFLOW_ACTIONS.END_TEACH ? <Square className="h-3.5 w-3.5" strokeWidth={2} /> : <Play className="h-3.5 w-3.5" strokeWidth={2} />}
@@ -936,7 +970,8 @@ function EmptyTrace() {
 }
 
 function ReviewQueue({ items, blockers }) {
-  const rows = items.length > 0 ? items : blockers;
+  const replayBlockers = blockers.filter((item) => !OPERATIONAL_BLOCKER_IDS.has(item?.id));
+  const rows = items.length > 0 ? items : replayBlockers;
   if (!rows.length) return null;
 
   return (
@@ -1387,6 +1422,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
   workspaceSlug,
   workflowState,
   onWorkflowAction,
+  isBusy = false,
 }) {
   const [localRecording, setLocalRecording] = useState(false);
 
@@ -1484,7 +1520,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
 
           <div data-testid="agent-workflow-stages">
             {model.stages.map((stage) => (
-              <WorkflowStage key={stage.id} stage={stage} onAction={emitWorkflowAction} />
+              <WorkflowStage key={stage.id} stage={stage} onAction={emitWorkflowAction} isBusy={isBusy} />
             ))}
           </div>
         </section>
@@ -1515,6 +1551,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
           label={model.actions.primary?.label || 'Attach'}
           enabled={model.actions.primary?.enabled}
           disabledReason={model.actions.primary?.disabledReason}
+          isBusy={isBusy}
           variant="primary"
           icon={model.actions.primary?.action === WORKFLOW_ACTIONS.ATTACH_WORKSPACE ? 'connect' : undefined}
           onAction={emitWorkflowAction}
@@ -1528,6 +1565,7 @@ export const AgentWorkflowPanel = memo(function AgentWorkflowPanel({
               icon={action.icon}
               enabled={action.enabled}
               disabledReason={action.disabledReason}
+              isBusy={isBusy}
               onAction={emitWorkflowAction}
             />
           ))}

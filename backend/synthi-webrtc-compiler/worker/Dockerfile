@@ -71,6 +71,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG ROCM_VERSION=7.2.1
 ARG ROCM_UBUNTU_CODENAME=noble
 ARG ROCDXG_VERSION=1.2.0
+ARG INSTALL_ROCM=true
 
 # ── System compilers & language runtimes ────────────────────────────────────
 # We need the latest GCC for C++26 — gcc-14 only recognises the `-std=c++26`
@@ -113,21 +114,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # the current Ubuntu 24.04 (noble) ROCm 7.2.1 repository. ROCm 7.2.1 is the
 # matching release family for RX 9070 XT / gfx1201 and ROCDXG 1.2.0 WSL support.
 RUN set -eux; \
-    install -d -m 0755 /etc/apt/keyrings; \
-    curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key \
-      | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg; \
-    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${ROCM_VERSION} ${ROCM_UBUNTU_CODENAME} main" \
-      > /etc/apt/sources.list.d/rocm.list; \
-    printf 'Package: *\nPin: origin repo.radeon.com\nPin-Priority: 600\n' \
-      > /etc/apt/preferences.d/rocm-pin-600; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends rocm-hip-sdk rocminfo; \
-    curl -fsSL "https://github.com/ROCm/librocdxg/releases/download/v${ROCDXG_VERSION}/rocdxg-roct_${ROCDXG_VERSION}_amd64.deb" \
-      -o /tmp/rocdxg.deb; \
-    apt-get install -y --no-install-recommends /tmp/rocdxg.deb; \
-    rm -f /tmp/rocdxg.deb; \
-    ldconfig; \
-    rm -rf /var/lib/apt/lists/*
+    if [ "${INSTALL_ROCM}" = "true" ]; then \
+      install -d -m 0755 /etc/apt/keyrings; \
+      curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg; \
+      echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${ROCM_VERSION} ${ROCM_UBUNTU_CODENAME} main" \
+        > /etc/apt/sources.list.d/rocm.list; \
+      printf 'Package: *\nPin: origin repo.radeon.com\nPin-Priority: 600\n' \
+        > /etc/apt/preferences.d/rocm-pin-600; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends rocm-hip-sdk rocminfo; \
+      curl -fsSL "https://github.com/ROCm/librocdxg/releases/download/v${ROCDXG_VERSION}/rocdxg-roct_${ROCDXG_VERSION}_amd64.deb" \
+        -o /tmp/rocdxg.deb; \
+      apt-get install -y --no-install-recommends /tmp/rocdxg.deb; \
+      rm -f /tmp/rocdxg.deb; \
+      ldconfig; \
+      rm -rf /var/lib/apt/lists/*; \
+    else \
+      echo "Skipping ROCm SDK install for host-only worker image."; \
+    fi
 
 ENV ROCM_PATH="/opt/rocm"
 ENV RUSTUP_HOME="/usr/local/rustup"

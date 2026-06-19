@@ -1,15 +1,9 @@
-import { Storage } from '@google-cloud/storage';
 import { NextResponse } from 'next/server';
+import { createGcsStorage, getGcsBucketName } from '@/server/gcsStorage';
 
-const storage = new Storage({
-    projectId: process.env.GCP_PROJECT_ID,
-    credentials: {
-        client_email: process.env.GCP_CLIENT_EMAIL,
-        private_key: process.env.GCP_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    },
-});
+const storage = createGcsStorage();
 
-const BUCKET_NAME = process.env.GCS_BUCKET_NAME || 'my-workspace-content-bucket';
+const BUCKET_NAME = getGcsBucketName('my-workspace-content-bucket');
 
 
 export async function GET(request, { params }) {

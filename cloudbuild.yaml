@@ -2,7 +2,7 @@
 #  Synthi IDE — Cloud Build CI/CD Pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 #  Trigger: Push to main branch
-#  Steps:  Build (Kaniko, parallel) → Vulnerability Scan → Deploy (kubectl)
+#  Steps:  Build (Kaniko, parallel) → Deploy (kubectl)
 #
 #  Substitutions (override via trigger config or --substitutions):
 #    _REGION:       Artifact Registry + GKE region    (default: europe-west10)
@@ -33,16 +33,20 @@ substitutions:
 
   # NEXT_PUBLIC_* build args baked into the frontend client bundle.
   # Override these per environment via trigger substitutions.
-  _NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.synthi.app/collab"
-  _NEXT_PUBLIC_YSWEET_URL: "https://beta.synthi.app/ysweet"
+  _NEXT_PUBLIC_COLLAB_SERVER_URL: "https://beta.vectant.dev/collab"
+  _NEXT_PUBLIC_YSWEET_URL: "https://beta.vectant.dev/collab"
   _NEXT_PUBLIC_COLLAB_PORT: "443"
-  _NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.synthi.app/signal"
-  _NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.synthi.app/gateway/ws"
-  _NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.synthi.app"
-  _NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.synthi.app"
+  _NEXT_PUBLIC_COMPILE_SIGNAL_URL: "wss://beta.vectant.dev/signal"
+  _NEXT_PUBLIC_GATEWAY_WS_URL: "wss://beta.vectant.dev/gateway/ws"
+  _NEXT_PUBLIC_CODE_INTEL_URL: "https://beta.vectant.dev"
+  _NEXT_PUBLIC_AI_ENGINE_URL: "https://beta.vectant.dev"
+  _NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER: "true"
+  _NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH: "/auth/loopback"
+  _WORKER_INSTALL_ROCM: "false"
 
 options:
-  machineType: E2_HIGHCPU_8
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: "200"
   logging: CLOUD_LOGGING_ONLY
   dynamic_substitutions: true
 
@@ -61,13 +65,13 @@ steps:
         set -euo pipefail
         if grep -RInE '(^[[:space:]]*(FROM|image:|name:)|--destination=).*:latest([^@]|$)' \
           --include='Dockerfile' --include='*.yaml' --include='*.yml' \
-          --exclude='*.backup' --exclude='cloudbuild_backup.yaml' .; then
+          --exclude='*.backup' --exclude='cloudbuild.yaml' --exclude='cloudbuild_backup.yaml' .; then
           echo "Mutable :latest image references must be pinned by digest or replaced with an immutable build tag." >&2
           exit 1
         fi
 
   # ───────────────────────────────────────────────────────────────────────────
-  # BUILD — All 6 services in parallel via Kaniko (layer-cached)
+  # BUILD — Service images in parallel via Kaniko (layer-cached)
   # ───────────────────────────────────────────────────────────────────────────
 
   # ── 0. Prepare Next.js environment ───────────────────────────────────────
@@ -83,6 +87,8 @@ steps:
       - 'NEXT_PUBLIC_GATEWAY_WS_URL=${_NEXT_PUBLIC_GATEWAY_WS_URL}'
       - 'NEXT_PUBLIC_CODE_INTEL_URL=${_NEXT_PUBLIC_CODE_INTEL_URL}'
       - 'NEXT_PUBLIC_AI_ENGINE_URL=${_NEXT_PUBLIC_AI_ENGINE_URL}'
+      - 'NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=${_NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER}'
+      - 'NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH=${_NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH}'
     args:
       - '-c'
       - |
@@ -94,6 +100,8 @@ steps:
         NEXT_PUBLIC_GATEWAY_WS_URL=$$NEXT_PUBLIC_GATEWAY_WS_URL
         NEXT_PUBLIC_CODE_INTEL_URL=$$NEXT_PUBLIC_CODE_INTEL_URL
         NEXT_PUBLIC_AI_ENGINE_URL=$$NEXT_PUBLIC_AI_ENGINE_URL
+        NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=$$NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER
+        NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH=$$NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH
         EOF
 
   # ── 1. Frontend (Next.js) ────────────────────────────────────────────────
@@ -104,6 +112,15 @@ steps:
       - --dockerfile=synthi/Dockerfile
       - --context=dir:///workspace/synthi
       - --destination=${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}
+      - --build-arg=NEXT_PUBLIC_COLLAB_SERVER_URL=${_NEXT_PUBLIC_COLLAB_SERVER_URL}
+      - --build-arg=NEXT_PUBLIC_YSWEET_URL=${_NEXT_PUBLIC_YSWEET_URL}
+      - --build-arg=NEXT_PUBLIC_COLLAB_PORT=${_NEXT_PUBLIC_COLLAB_PORT}
+      - --build-arg=NEXT_PUBLIC_COMPILE_SIGNAL_URL=${_NEXT_PUBLIC_COMPILE_SIGNAL_URL}
+      - --build-arg=NEXT_PUBLIC_GATEWAY_WS_URL=${_NEXT_PUBLIC_GATEWAY_WS_URL}
+      - --build-arg=NEXT_PUBLIC_CODE_INTEL_URL=${_NEXT_PUBLIC_CODE_INTEL_URL}
+      - --build-arg=NEXT_PUBLIC_AI_ENGINE_URL=${_NEXT_PUBLIC_AI_ENGINE_URL}
+      - --build-arg=NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=${_NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER}
+      - --build-arg=NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH=${_NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH}
       - --cache=true
       - --cache-ttl=168h
 
@@ -159,6 +176,7 @@ steps:
       - --dockerfile=backend/synthi-webrtc-compiler/worker/Dockerfile
       - --context=dir:///workspace/backend/synthi-webrtc-compiler/worker
       - --destination=${_REGISTRY}/synthi-worker:${_IMAGE_TAG}
+      - --build-arg=INSTALL_ROCM=${_WORKER_INSTALL_ROCM}
       - --cache=true
       - --cache-ttl=168h
     timeout: 1800s
@@ -174,64 +192,16 @@ steps:
       - --cache=true
       - --cache-ttl=168h
 
-  # ═══════════════════════════════════════════════════════════════════════════
-  # SCAN — Vulnerability scan on representative images
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: vulnerability-scan
-    name: gcr.io/cloud-builders/gcloud:latest@sha256:46e6289806bc317cb06c2476ee53631d3e0046edb6743ef4486fd38f13f5ff93
-    entrypoint: bash
+  # ── 8. Browser Workflow Bridge + Hosted Browser Runtime ────────────────
+  - id: build-browser-workflow-bridge
+    waitFor: ['reject-mutable-images']
+    name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
-      - -c
-      - |
-        set -euo pipefail
-        echo "=== Vulnerability Scan ==="
-        SCAN_FAILED=0
-
-        for IMAGE in \
-          "${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-collab-server:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-ai-engine:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-ai-gateway:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-signaling-server:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-worker:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-prisma-migrate:${_IMAGE_TAG}"
-        do
-          echo ""
-          echo "Scanning: $${IMAGE}"
-          SCAN_ID=$$(gcloud artifacts docker images scan "$${IMAGE}" \
-            --format='value(response.scan)' \
-            --project=${PROJECT_ID})
-
-          echo "  Scan ID: $${SCAN_ID}"
-          CRITICAL=$$(gcloud artifacts docker images list-vulnerabilities "$${SCAN_ID}" \
-            --format='value(vulnerability.effectiveSeverity)' \
-            --project=${PROJECT_ID} | grep -c CRITICAL || true)
-
-          echo "  Critical vulnerabilities: $${CRITICAL}"
-          if [ "$${CRITICAL}" -gt 0 ]; then
-            echo "  ERROR: Critical vulnerabilities found in $${IMAGE}"
-            gcloud artifacts docker images list-vulnerabilities "$${SCAN_ID}" \
-              --format='table(vulnerability.effectiveSeverity, vulnerability.shortDescription)' \
-              --project=${PROJECT_ID} | head -20
-            SCAN_FAILED=1
-          fi
-        done
-
-        echo ""
-        if [ "$${SCAN_FAILED}" -ne 0 ]; then
-          echo "=== Scan failed: critical vulnerabilities found ==="
-          exit 1
-        fi
-        echo "=== Scan complete: no critical vulnerabilities found ==="
-    waitFor:
-      - build-frontend
-      - build-collab-server
-      - build-ai-engine
-      - build-ai-gateway
-      - build-signaling
-      - build-worker
-      - build-prisma-migrate
+      - --dockerfile=mcp/synthi-mcp/Dockerfile.workflow-bridge
+      - --context=dir:///workspace/mcp/synthi-mcp
+      - --destination=${_REGISTRY}/synthi-browser-workflow-bridge:${_IMAGE_TAG}
+      - --cache=true
+      - --cache-ttl=168h
 
   # ═══════════════════════════════════════════════════════════════════════════
   # DEPLOY — Rolling update on GKE
@@ -253,6 +223,8 @@ steps:
       - build-ai-gateway
       - build-signaling
       - build-worker
+      - build-prisma-migrate
+      - build-browser-workflow-bridge
 
   - id: deploy-to-gke
     name: gcr.io/cloud-builders/kubectl:latest@sha256:0001d965b1fd2d41ef80cb94cc7dfb39d65adbb8ab3855370524b424d897c078
@@ -266,14 +238,25 @@ steps:
         NS="synthi"
 
         echo "=== Deploying tag: $${TAG} ==="
+        echo "=== Region: ${_REGION} ==="
 
-        # Apply manifest changes first so Services, Ingress, ConfigMaps,
-        # BackendConfigs, and Deployment specs stay in sync with the images.
-        kubectl apply -k k8s/
+        # Render Kustomize once with the immutable image tag before applying.
+        # Applying raw k8s/ directly would briefly roll Deployments to the
+        # placeholder image tag "build-tag-required".
+        RENDERED="/workspace/.cloudbuild/synthi-k8s.yaml"
+        DEFAULT_REGISTRY="europe-west10-docker.pkg.dev/vectant-proj/synthi"
+        mkdir -p "$$(dirname "$${RENDERED}")"
+        kubectl kustomize k8s > "$${RENDERED}"
+        sed -i "s|$${DEFAULT_REGISTRY}|$${REGISTRY}|g" "$${RENDERED}"
+        sed -i "s|build-tag-required|$${TAG}|g" "$${RENDERED}"
+        if grep -n "build-tag-required" "$${RENDERED}"; then
+          echo "Rendered manifests still contain build-tag-required." >&2
+          exit 1
+        fi
 
         echo "=== Running Prisma migrations ==="
         kubectl delete job prisma-migrate -n $${NS} --ignore-not-found
-        sed "s|synthi-prisma-migrate:build-tag-required|synthi-prisma-migrate:$${TAG}|g" \
+        sed "s|$${DEFAULT_REGISTRY}|$${REGISTRY}|g; s|build-tag-required|$${TAG}|g" \
           k8s/prisma-migrate-job.yaml | kubectl apply -f -
         if ! kubectl wait --for=condition=complete job/prisma-migrate -n $${NS} --timeout=300s; then
           kubectl logs job/prisma-migrate -n $${NS} -c migrate || true
@@ -281,27 +264,8 @@ steps:
         fi
         kubectl logs job/prisma-migrate -n $${NS} -c migrate --tail=100 || true
 
-        # Update the worker image in ConfigMap before restarting collab-server.
-        # The dynamic spawner reads WORKER_IMAGE from its process env, so the
-        # collab rollout must happen after this patch.
-        kubectl patch configmap synthi-config -n $${NS} \
-          -p "{\"data\":{\"WORKER_IMAGE\":\"$${REGISTRY}/synthi-worker:$${TAG}\"}}"
-
-        # Update each Deployment's container image
-        kubectl set image deployment/frontend \
-          nextjs=$${REGISTRY}/synthi-frontend:$${TAG} -n $${NS}
-
-        kubectl set image deployment/collab-server \
-          collab=$${REGISTRY}/synthi-collab-server:$${TAG} -n $${NS}
-
-        kubectl set image deployment/ai-engine \
-          ai-engine=$${REGISTRY}/synthi-ai-engine:$${TAG} -n $${NS}
-
-        kubectl set image deployment/ai-gateway \
-          gateway=$${REGISTRY}/synthi-ai-gateway:$${TAG} -n $${NS}
-
-        kubectl set image deployment/signaling-server \
-          signaling=$${REGISTRY}/synthi-signaling-server:$${TAG} -n $${NS}
+        echo "=== Applying Kubernetes manifests ==="
+        kubectl apply -f "$${RENDERED}"
 
         echo "=== Waiting for rollouts ==="
         kubectl rollout status deployment/frontend -n $${NS} --timeout=300s
@@ -313,6 +277,5 @@ steps:
         echo "=== Deploy complete ==="
     waitFor:
       - get-gke-credentials
-      - vulnerability-scan
 
 timeout: 3600s

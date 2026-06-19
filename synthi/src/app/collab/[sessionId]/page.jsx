@@ -84,7 +84,7 @@ function CollabJoinContent({ params }) {
         } catch (_) {}
         // Redirect to the host's workspace after short delay
         setTimeout(() => {
-          window.location.href = `/workspace/${hostSlug}`;
+          window.location.href = `/${encodeURIComponent(hostSlug)}`;
         }, 1500);
       }),
       collabSessionService.on('knock:denied', () => {

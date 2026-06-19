@@ -3190,7 +3190,7 @@ const EditorPanel = ({
         };
     }, [dispatch]);
 
-    const handleCodeChange = useCallback((newCode) => {
+    const handleCodeChange = useCallback((newCode, options = {}) => {
 
         // CRITICAL: Only process changes if we're bound to the correct file
         // This prevents stale onChange handlers from writing content to the wrong file
@@ -3207,8 +3207,10 @@ const EditorPanel = ({
         // Always track latest content for flush-on-unmount and save
         latestCodeRef.current = newCode;
 
-        // Check if collab is applying remote changes
-        const remoteApplying = !!collabBindingRef.current?.isApplyingRemote?.();
+        // Check if collab is applying remote changes. Some remote syncs are
+        // intentionally deferred out of Monaco's synchronous edit event, so
+        // callers can pass { remote: true } instead of relying on timing.
+        const remoteApplying = options?.remote === true || !!collabBindingRef.current?.isApplyingRemote?.();
 
 
         // P0: ALWAYS dispatch to Redux immediately — no debounce.
@@ -4874,7 +4876,7 @@ const EditorPanel = ({
                                                                 queueMicrotask(() => {
                                                                     _remoteContentSyncPending = false;
                                                                     const v = editor.getModel()?.getValue() ?? '';
-                                                                    if (v) handleCodeChangeRef.current(v);
+                                                                    handleCodeChangeRef.current(v, { remote: true });
                                                                 });
                                                             }
                                                             return;

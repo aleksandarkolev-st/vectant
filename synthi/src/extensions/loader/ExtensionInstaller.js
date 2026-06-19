@@ -59,7 +59,7 @@ function txPromise(tx) {
 
 /**
  * Save an installed extension to IndexedDB.
- * @param {{ id: string, manifest: object, code: string }} extension
+ * @param {{ id: string, manifest: object, code: string, nodeCode?: string, installSource?: string, vsixBase64?: string }} extension
  */
 export async function saveExtension(extension) {
   const db = await openDB();
@@ -75,6 +75,12 @@ export async function saveExtension(extension) {
   // Persist the real Node.js code for remote extension host if present
   if (extension.nodeCode) {
     record.nodeCode = extension.nodeCode;
+  }
+  if (extension.installSource) {
+    record.installSource = extension.installSource;
+  }
+  if (extension.vsixBase64) {
+    record.vsixBase64 = extension.vsixBase64;
   }
   store.put(record);
   await txPromise(tx);

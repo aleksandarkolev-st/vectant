@@ -44,6 +44,8 @@ model WorkspaceMembership {
   id          String    @id @default(cuid())
   userId      String
   workspaceId String
+  role        String    @default("member")
+  invitedByEmail String?
   createdAt   DateTime  @default(now())
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)

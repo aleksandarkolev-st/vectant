@@ -42,6 +42,11 @@ export interface BrowserActionResult {
   detail?: Record<string, unknown>;
 }
 
+export interface BrowserExternalOpenResult {
+  tab_id: string;
+  navigation_started: true;
+}
+
 export interface BrowserWaitInput {
   tab_id: string;
   condition: "selector" | "url" | "load" | "networkidle" | "timeout";
@@ -191,6 +196,20 @@ export class BrowserPlaywrightAdapter {
     }
     await page.bringToFront();
     return this.describePage(page);
+  }
+
+  async openExternal(url: string, options: { timeoutMs: number }): Promise<BrowserExternalOpenResult> {
+    const browser = this.requireBrowser();
+    const context = browser.contexts()[0] ?? await browser.newContext();
+    const page = await context.newPage();
+    const tab_id = this.idForPage(page);
+    this.pages.set(tab_id, { page, tab_id });
+    void page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: options.timeoutMs,
+    }).catch(() => undefined);
+    await page.bringToFront().catch(() => undefined);
+    return { tab_id, navigation_started: true };
   }
 
   async openCold(url: string, storageState?: AuthBrowserStorageState): Promise<BrowserTab> {
@@ -750,6 +769,15 @@ export class BrowserPlaywrightAdapter {
     const page = this.pages.get(tab_id)?.page;
     if (!page || page.isClosed()) return { ok: false, error: "tab_not_found" };
     await this.installTeachCapture(page, tab_id);
+    if (this.workflowOverlayEnabled) {
+      const visible = await this.installWorkflowOverlay(page, tab_id);
+      if (visible) {
+        this.workflowOverlayInstalled.add(page);
+      } else {
+        this.workflowOverlayInstalled.delete(page);
+        return { ok: false, error: "workflow_overlay_install_failed" };
+      }
+    }
     return { ok: true };
   }
 
@@ -3714,11 +3742,24 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
 
 function workflowOverlayBridgeUrl(): string {
   const configured = process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL"];
-  if (configured && configured.trim()) return configured.replace(/\/$/, "");
+  if (configured && configured.trim()) return browserReachableBridgeUrl(configured.trim().replace(/\/$/, ""));
   const port = process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT"];
   if (!port || !port.trim()) return "";
   const host = process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_HOST"] || "127.0.0.1";
-  return `http://${host}:${port.trim()}`;
+  return browserReachableBridgeUrl(`http://${host}:${port.trim()}`);
+}
+
+function browserReachableBridgeUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    if (host === "0.0.0.0" || host === "::" || host === "[::]") {
+      parsed.hostname = "127.0.0.1";
+    }
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return value.replace(/^http:\/\/0\.0\.0\.0:/i, "http://127.0.0.1:");
+  }
 }
 
 function workflowOverlayBridgeToken(): string {
@@ -3751,14 +3792,11 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
       window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ &&
       window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ === bindingName &&
       window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ === bridgeUrl &&
-      window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ === bridgeToken;
+      window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ === bridgeToken &&
+      document.getElementById('synthi-workflow-toolbox-host');
     if (installedForCurrentRuntime) return;
     const existingHost = document.getElementById('synthi-workflow-toolbox-host');
     if (existingHost) existingHost.remove();
-    window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ = true;
-    window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ = bindingName;
-    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ = bridgeUrl;
-    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ = bridgeToken;
 
     function shouldRender() {
       if (!window[bindingName] && !bridgeUrl) return false;
@@ -3780,6 +3818,10 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
     host.style.zIndex = '2147483647';
     host.style.pointerEvents = 'auto';
     document.documentElement.appendChild(host);
+    window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ = true;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ = bindingName;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ = bridgeUrl;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ = bridgeToken;
 
     const root = host.attachShadow({ mode: 'open' });
     root.innerHTML = [

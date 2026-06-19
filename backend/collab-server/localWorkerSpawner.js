@@ -5,7 +5,7 @@
  * Mirrors the public API of workspacePodSpawner.js but uses the Docker
  * Engine API (via dockerode + /var/run/docker.sock) instead of Kubernetes.
  * Each active session maps to a single worker container named
- * "workspace-<sanitised-session-id>" with SESSION_ID wired into its env.
+ * "rt-<base32-hmac>" with SESSION_ID wired into its env.
  *
  * The signaling server multiplexes peers by (session_id, role), so a
  * dedicated container per session is the local equivalent of the cloud's
@@ -15,6 +15,7 @@
 
 const Docker = require('dockerode');
 const lifecycle = require('./sessionLifecycle');
+const { runtimeResourceId, metadataHash } = require('./runtimeIdentity');
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -45,16 +46,17 @@ const activeSessions = new Map();
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function safeName(sessionId) {
-  return String(sessionId).toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 48);
-}
-
 function containerName(sessionId) {
-  return `workspace-${safeName(sessionId)}`;
+  return runtimeResourceId(sessionId);
 }
 
 function getActiveWorkspaceCount() {
   return activeSessions.size;
+}
+
+function cleanupReason(options, fallback = 'teardown') {
+  if (typeof options === 'string') return options;
+  return options?.reason || fallback;
 }
 
 async function findContainerByName(name) {
@@ -131,9 +133,9 @@ async function ensurePod(sessionId, userId) {
     Env: env,
     Labels: {
       [MANAGED_LABEL]: MANAGED_VALUE,
-      'synthi/session': safeName(sessionId),
-      'synthi/sessionIdRaw': String(sessionId),
-      'synthi/userId': String(userId || ''),
+      'synthi/runtime-id': runtimeResourceId(sessionId),
+      'synthi/runtimeScopeFull': String(sessionId),
+      ...(userId ? { 'synthi/userIdHash': metadataHash(userId) } : {}),
       'synthi/lastActive': String(now),
     },
     HostConfig: {
@@ -191,7 +193,8 @@ async function touch(sessionId) {
 
 // ── Teardown ───────────────────────────────────────────────────────────────
 
-async function teardown(sessionId) {
+async function teardown(sessionId, options = {}) {
+  const reason = cleanupReason(options);
   const name = containerName(sessionId);
   const entry = activeSessions.get(sessionId);
   activeSessions.delete(sessionId);
@@ -205,13 +208,13 @@ async function teardown(sessionId) {
       }
     }
     await c.remove({ force: true });
-    console.log(`[LocalSpawner] Torn down worker container ${name}`);
+    console.log(`[LocalSpawner] Torn down worker container ${name} (reason=${reason})`);
   } catch (err) {
     if (err.statusCode !== 404) {
       console.error(`[LocalSpawner] teardown failed for ${name}:`, err.message);
     }
   }
-  lifecycle.markTerminated(sessionId, "teardown");
+  lifecycle.markTerminated(sessionId, reason);
 }
 
 /**
@@ -271,7 +274,7 @@ async function cullIdleWorkspaces() {
   for (const [sid, entry] of activeSessions.entries()) {
     if (now - entry.lastActive > IDLE_TIMEOUT_MS) {
       console.log(`[LocalSpawner/Culler] Culling idle session ${sid} (idle=${Math.round((now - entry.lastActive) / 1000)}s)`);
-      await teardown(sid);
+      await teardown(sid, { reason: 'idle_timeout' });
     }
   }
 
@@ -283,12 +286,13 @@ async function cullIdleWorkspaces() {
       filters: { label: [`${MANAGED_LABEL}=${MANAGED_VALUE}`] },
     });
     for (const c of containers) {
-      const sid = c.Labels?.['synthi/sessionIdRaw'];
+      const sid = c.Labels?.['synthi/runtimeScopeFull'];
       if (!sid || activeSessions.has(sid)) continue;
       const lastActive = Number(c.Labels?.['synthi/lastActive'] || 0);
       if (now - lastActive > IDLE_TIMEOUT_MS) {
         console.log(`[LocalSpawner/Culler] Removing orphan container ${c.Names?.[0] || c.Id}`);
         try { await docker.getContainer(c.Id).remove({ force: true }); } catch (_) { /* ignore */ }
+        lifecycle.markTerminated(sid, 'idle_orphan_removed');
       }
     }
   } catch (err) {
@@ -324,7 +328,7 @@ async function gracefulShutdown(signal) {
     console.log('[LocalSpawner] SPAWNER_CLEANUP_ON_SHUTDOWN=true, tearing down all sessions...');
     const ids = [...activeSessions.keys()];
     await Promise.allSettled(ids.map(sid =>
-      teardown(sid).catch(err =>
+      teardown(sid, { reason: 'shutdown_cleanup' }).catch(err =>
         console.error(`[LocalSpawner] Cleanup error for ${sid}:`, err.message)
       )
     ));
@@ -363,7 +367,7 @@ async function handleSessionEnded(req, res) {
   }
 
   console.log(`[LocalSpawner] Received session-ended webhook for session=${sessionId}`);
-  await teardown(sessionId);
+  await teardown(sessionId, { reason: 'session_ended' });
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ ok: true }));
