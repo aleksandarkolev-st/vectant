@@ -328,7 +328,8 @@ Actions workflow above.
 # Apply everything in dependency order
 kubectl apply -k k8s/
 
-# Run Prisma migrations (via dedicated Job with Cloud SQL Auth Proxy)
+# Run Prisma migrations via the dedicated Job.
+# DATABASE_URL must already reach the target Postgres endpoint.
 IMAGE_TAG=<immutable build tag>
 kubectl delete job prisma-migrate -n synthi --ignore-not-found
 sed "s|synthi-prisma-migrate:build-tag-required|synthi-prisma-migrate:${IMAGE_TAG}|g" \
@@ -402,6 +403,6 @@ The collab server holds Yjs documents in memory and uses LevelDB on disk — it 
 - [x] Add NetworkPolicies to restrict pod-to-pod traffic
 - [x] Add PodDisruptionBudgets for frontend, gateway, signaling
 - [x] HTTP → HTTPS 301 redirect via FrontendConfig
-- [x] Prisma migration Job with Cloud SQL Auth Proxy sidecar
+- [x] Prisma migration Job using configured `DATABASE_URL`
 - [ ] Configure Cloud Armor WAF rules on the Ingress
 - [ ] Set up Cloud Monitoring alerts for pod restarts and error rates
