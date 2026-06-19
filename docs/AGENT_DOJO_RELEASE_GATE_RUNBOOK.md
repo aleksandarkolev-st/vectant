@@ -53,6 +53,21 @@ promotion_ready=false
 failed > 0 when external release inputs are absent
 ```
 
+## Release Harness Preflight
+
+Run these before any live Google Cloud evidence collection. They validate the
+release manifest, runner, verifier, package contents, and kustomize overlay
+without deploying:
+
+```powershell
+npm --prefix mcp/synthi-mcp run proof:dojo:release-gates:self-check
+npm --prefix mcp/synthi-mcp run proof:dojo:release-gates:runner:self-check
+npm --prefix mcp/synthi-mcp run proof:dojo:release-gates:verify:self-check
+npm --prefix mcp/synthi-mcp run proof:dojo:package-readiness:self-check
+npm --prefix mcp/synthi-mcp run proof:dojo:kustomize-overlay:self-check
+npm --prefix mcp/synthi-mcp run proof:dojo:kustomize-overlay
+```
+
 ## Google Cloud Hosting Runbook
 
 This section describes the concrete Google Cloud path for producing external
@@ -106,11 +121,12 @@ gcloud config set compute/region $env:REGION
 gcloud config set compute/zone $env:ZONE
 ```
 
-If Google Cloud SDK is installed but not on `PATH`, set `GCLOUD_BIN` before
-running local inventory scripts:
+If Google Cloud SDK or `kubectl` is installed but not on `PATH`, set
+`GCLOUD_BIN` and `KUBECTL_BIN` before running local inventory scripts:
 
 ```powershell
 $env:GCLOUD_BIN = "C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
+$env:KUBECTL_BIN = "C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\kubectl.cmd"
 ```
 
 ### Read-Only Hosted Inventory
@@ -257,7 +273,7 @@ address and ensure the GKE cluster is on the same VPC path.
 
 ```powershell
 $databaseUrl = "postgresql://synthi:<strong-generated-password>@127.0.0.1:5432/synthi?schema=public"
-$databaseUrl | gcloud secrets create database-url --data-file=-
+$databaseUrl | gcloud secrets create synthi-database-url --data-file=-
 ```
 
 The mature Dojo release gate should also have an explicit Postgres URL for Dojo
@@ -289,7 +305,7 @@ Store the deployed Redis URL in Secret Manager:
 
 ```powershell
 $redisUrl = "redis://<memorystore-private-ip>:6379"
-$redisUrl | gcloud secrets create redis-url --data-file=-
+$redisUrl | gcloud secrets create synthi-redis-url --data-file=-
 ```
 
 ### GKE Cluster
@@ -379,29 +395,31 @@ kubectl -n $env:K8S_NAMESPACE get externalsecret
 kubectl -n $env:K8S_NAMESPACE get secret synthi-secrets
 ```
 
-Store every required application secret in Secret Manager. At minimum,
-production Dojo release validation needs:
+Store every required application secret in Secret Manager. The left side below
+is the Secret Manager remote name. The right side is the Kubernetes
+`synthi-secrets` key produced by External Secrets Operator:
 
 ```text
-database-url
-redis-url
-nextauth-secret
-google-client-id
-google-client-secret
-y-sweet-auth-token
-openai-api-key or equivalent model provider key
-SYNTHI_DOJO_PROOF_SIGNING_PROVIDER
-SYNTHI_DOJO_PROOF_SIGNING_KEY_ID
-SYNTHI_DOJO_PROOF_SIGNING_COMMAND
-SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS
-SYNTHI_DOJO_PROOF_SIGNING_MANAGED_KEY_URI
-SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM
-SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM
-SYNTHI_DOJO_MCP_BEARER_TOKEN
-SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN
-SYNTHI_DOJO_MCP_CONFORMANCE_MCP_COMMAND
-SYNTHI_DOJO_MCP_CONFORMANCE_MCP_ARGS_JSON
-SYNTHI_DOJO_MCP_CONFORMANCE_MCP_CWD
+synthi-database-url -> DATABASE_URL
+synthi-redis-url -> REDIS_URL
+synthi-auth-secret -> AUTH_SECRET
+synthi-nextauth-secret -> NEXTAUTH_SECRET
+synthi-google-client-id -> GOOGLE_CLIENT_ID
+synthi-google-client-secret -> GOOGLE_CLIENT_SECRET
+synthi-y-sweet-auth-token -> YSWEET_AUTH_KEY
+synthi-openai-api-key or equivalent model provider key -> OPENAI_API_KEY
+synthi-browser-workflow-bridge-token -> SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN
+synthi-dojo-control-plane-postgres-url -> SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL
+synthi-dojo-evidence-ledger-postgres-url -> SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL
+synthi-dojo-proof-signing-key-id -> SYNTHI_DOJO_PROOF_SIGNING_KEY_ID
+synthi-dojo-proof-signing-command -> SYNTHI_DOJO_PROOF_SIGNING_COMMAND
+synthi-dojo-proof-signing-command-args -> SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS
+synthi-dojo-proof-signing-managed-key-uri -> SYNTHI_DOJO_PROOF_SIGNING_MANAGED_KEY_URI
+synthi-dojo-proof-signing-public-key-pem -> SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM
+synthi-dojo-mcp-manifest-key-id -> SYNTHI_DOJO_MCP_MANIFEST_KEY_ID
+synthi-dojo-mcp-manifest-private-key-pem -> SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM
+synthi-dojo-mcp-manifest-public-key-pem -> SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM
+synthi-dojo-mcp-bearer-token -> SYNTHI_DOJO_MCP_BEARER_TOKEN
 ```
 
 Do not store a production proof private key or default local signing key in
@@ -491,7 +509,7 @@ $env:SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM = @"
 Then run:
 
 ```powershell
-npm --prefix mcp/synthi-mcp run proof:dojo:managed-key-signing:observe -- --out-dir tmp/dojo-managed-key-signing-live
+npm --prefix mcp/synthi-mcp run proof:dojo:managed-key-signing:observe -- --out-dir ../../tmp/dojo-managed-key-signing-live
 ```
 
 The observation must produce a signed proof artifact, verifier result, and
@@ -581,7 +599,7 @@ output. The checked command writes report and evidence artifacts under
 `tmp/dojo-kustomize-overlay-check`:
 
 ```powershell
-node mcp/synthi-mcp/scripts/dojo-kustomize-overlay-check.mjs
+npm --prefix mcp/synthi-mcp run proof:dojo:kustomize-overlay
 ```
 
 The raw render command is:
@@ -592,7 +610,12 @@ kubectl kustomize k8s/overlays/dojo-release-gate --load-restrictor LoadRestricti
 ```
 
 The rendered overlay must include the Dojo fail-closed ConfigMap values, the
-Dojo ExternalSecret entries, and no in-cluster `postgres` or `redis` workload.
+Dojo ExternalSecret entries, secret-backed Redis env for static Redis consumers,
+and no in-cluster `postgres` or `redis` workload. The runtime workflow bridge
+receives the Dojo ConfigMap and Secret values through the collab-server runtime
+pod spawner. A future deployed HTTP MCP host must also consume the same
+ConfigMap and Secret keys in its own deployment; the current overlay does not
+invent that host.
 
 After Cloud Build finishes:
 
@@ -625,12 +648,19 @@ kubectl -n $env:K8S_NAMESPACE describe externalsecret synthi-secrets
 kubectl -n $env:K8S_NAMESPACE rollout status deployment/frontend
 ```
 
-For an approved Dojo release-gate rollout, render and apply the opt-in overlay
-instead:
+For an approved Dojo release-gate rollout, first render the opt-in overlay,
+replace the `build-tag-required` image placeholders with the exact release tag
+or image digest, then apply the rendered result. Cloud Build performs this
+replacement automatically; manual rollout must do the same before `kubectl
+apply`.
 
 ```powershell
 kubectl kustomize k8s/overlays/dojo-release-gate --load-restrictor LoadRestrictionsNone |
-  kubectl apply -f -
+  Set-Content -Path tmp/dojo-release-gate-render.yaml -Encoding utf8
+
+# Replace build-tag-required placeholders in tmp/dojo-release-gate-render.yaml
+# with the exact release image tag or digest before applying.
+kubectl apply -f tmp/dojo-release-gate-render.yaml
 ```
 
 If image tags are changed manually, update all deployments consistently and
@@ -671,6 +701,15 @@ Run:
 npm --prefix mcp/synthi-mcp run live:browser:workflow-pipeline
 ```
 
+After the hosted runtime, workflow, private-tool, and MCP host evidence files
+exist, produce the hosted-runtime gateway release observation:
+
+```powershell
+npm --prefix mcp/synthi-mcp run proof:dojo:hosted-runtime-gateway:observe -- --out-dir ../../tmp/dojo-hosted-runtime-gateway-release-observation
+$env:SYNTHI_DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_PATH = "$PWD\tmp\dojo-hosted-runtime-gateway-release-observation\hosted-runtime-gateway-release-observation.json"
+npm --prefix mcp/synthi-mcp run proof:dojo:hosted-runtime-gateway:self-check
+```
+
 ### Deployed MCP Host
 
 Configure the release gate to use the deployed MCP host. The current repository
@@ -693,7 +732,7 @@ $env:SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING = "1"
 Run:
 
 ```powershell
-npm --prefix mcp/synthi-mcp run live:dojo:mcp-host-conformance -- --out-dir tmp/dojo-mcp-host-conformance-live
+npm --prefix mcp/synthi-mcp run live:dojo:mcp-host-conformance -- --out-dir ../../tmp/dojo-mcp-host-conformance-live
 ```
 
 The conformance run must prove:
