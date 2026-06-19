@@ -9,18 +9,19 @@
 
 FROM node:22-slim@sha256:689c11043dad91472750cd824c97dd5e2318e9dd6f954e492fe7af0135d33ceb
 
-WORKDIR /app
+WORKDIR /workspace/mcp/synthi-mcp
 
 # sharp and @ffmpeg-installer/ffmpeg ship prebuilt linux binaries via npm, but
 # ffmpeg-installer's binary still needs a libc that matches — `slim` (glibc)
 # works, alpine does not without extra work.
 
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY packages/mcp-hub /workspace/packages/mcp-hub
+COPY mcp/synthi-mcp/.npmrc mcp/synthi-mcp/package.json mcp/synthi-mcp/package-lock.json ./
+RUN npm ci --workspaces=false
 
-COPY tsconfig.json ./
-COPY src ./src
-COPY scripts ./scripts
+COPY mcp/synthi-mcp/tsconfig.json ./
+COPY mcp/synthi-mcp/src ./src
+COPY mcp/synthi-mcp/scripts ./scripts
 RUN npm run build
 
 # Keep the container up so live-test.mjs can `docker exec` into it repeatedly

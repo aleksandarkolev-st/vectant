@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -30,6 +30,11 @@ export const DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_NAMES = [
   "proof:dojo:release-gates:runner:self-check",
   "proof:dojo:release-gates:verify:self-check",
   "proof:dojo:mcp-host-conformance:self-check",
+  "live:browser:workflow-pipeline",
+  "live:browser:private-tool-stdio",
+  "live:browser:private-tool-codex",
+  "live:browser:private-tool-host-conformance",
+  "live:browser:private-tool-codex-host-conformance",
   "live:dojo:mcp-host-conformance",
   "chaos:dojo:preflight",
   "chaos:dojo:live",
@@ -41,6 +46,7 @@ export const DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS = [
   "typecheck",
   "soak",
   "proof:dojo*",
+  "live:browser*",
   "live:dojo*",
   "chaos:dojo*",
 ];
@@ -52,6 +58,13 @@ export const DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES = [
   "scripts/dojo-release-gate-runner.mjs",
   "scripts/dojo-release-gate-verify.mjs",
   "scripts/dojo-mcp-host-conformance.mjs",
+  "scripts/dojo-vitest-self-check-runner.mjs",
+  "scripts/live-browser-smoke.mjs",
+  "scripts/workflow-pipeline-e2e.mjs",
+  "scripts/private-tool-acceptance-conformance.mjs",
+  "scripts/private-tool-stdio-acceptance.mjs",
+  "scripts/private-tool-codex-acceptance.mjs",
+  "scripts/lib",
   "tests/chaos",
   "tests/soak",
   "README.md",
@@ -150,6 +163,7 @@ export function buildDojoPackageReadinessEvidenceManifest({
   packageJson,
   packageJsonText,
   packageJsonPath,
+  packageRoot = MCP_ROOT,
   packResult,
   packReport,
   packParseError,
@@ -159,6 +173,7 @@ export function buildDojoPackageReadinessEvidenceManifest({
   packStdoutPath,
   packStderrPath,
 }) {
+  const packageRootPath = path.resolve(packageRoot || MCP_ROOT);
   const scripts = packageJson?.scripts && typeof packageJson.scripts === "object" ? packageJson.scripts : {};
   const filesField = Array.isArray(packageJson?.files) ? packageJson.files.map(String) : [];
   const packedPackage = Array.isArray(packReport) ? packReport[0] : null;
@@ -169,7 +184,12 @@ export function buildDojoPackageReadinessEvidenceManifest({
 
   const requiredScriptNames = deriveDojoPackageReadinessRequiredScriptNames(packageJson);
   const entryPaths = collectPackageEntryPaths(packageJson);
-  const scriptReferencedPaths = collectScriptReferencedPackagePaths(scripts, requiredScriptNames);
+  const scriptDependencyGraph = collectScriptDependencyGraph(scripts, requiredScriptNames, { rootDir: packageRootPath });
+  const directScriptReferencedPaths = scriptDependencyGraph.direct_script_referenced_paths;
+  const scriptReferencedPaths = scriptDependencyGraph.script_referenced_paths;
+  const scriptDependencyPaths = stableUnique(
+    scriptReferencedPaths.filter((entry) => !directScriptReferencedPaths.includes(entry))
+  );
   const requiredPackedPaths = stableUnique([
     "package.json",
     ...entryPaths,
@@ -183,8 +203,8 @@ export function buildDojoPackageReadinessEvidenceManifest({
     .filter((scriptName) => typeof scripts[scriptName] !== "string" || !scripts[scriptName].trim());
   const missingFilesEntries = DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES
     .filter((entry) => !packageFilesEntryCovers(filesField, entry));
-  const missingLocalEntryPaths = entryPaths.filter((entry) => !existsSync(path.join(MCP_ROOT, entry)));
-  const missingLocalScriptPaths = scriptReferencedPaths.filter((entry) => !existsSync(path.join(MCP_ROOT, entry)));
+  const missingLocalEntryPaths = entryPaths.filter((entry) => !existsSync(path.join(packageRootPath, entry)));
+  const missingLocalScriptPaths = scriptReferencedPaths.filter((entry) => !existsSync(path.join(packageRootPath, entry)));
   const missingPackedPaths = requiredPackedPaths
     .filter((entry) => !packedPathIsCovered(packedFileSet, entry));
   const packageFilesUncoveredScriptPaths = scriptReferencedPaths
@@ -195,6 +215,7 @@ export function buildDojoPackageReadinessEvidenceManifest({
     ...missingFilesEntries.map((entry) => `missing_package_files_entry:${entry}`),
     ...missingLocalEntryPaths.map((entry) => `missing_local_export_entry:${entry}`),
     ...missingLocalScriptPaths.map((entry) => `missing_local_script_path:${entry}`),
+    ...scriptDependencyGraph.outside_package_script_imports.map((entry) => `outside_package_script_import:${entry}`),
     ...packageFilesUncoveredScriptPaths.map((entry) => `script_path_not_covered_by_files:${entry}`),
     ...missingPackedPaths.map((entry) => `missing_packed_path:${entry}`),
   ];
@@ -217,6 +238,7 @@ export function buildDojoPackageReadinessEvidenceManifest({
     missing_package_files_entries: missingFilesEntries,
     missing_local_export_entry_paths: missingLocalEntryPaths,
     missing_local_script_paths: missingLocalScriptPaths,
+    outside_package_script_imports: scriptDependencyGraph.outside_package_script_imports,
     missing_packed_paths: missingPackedPaths,
     package_files_uncovered_script_paths: packageFilesUncoveredScriptPaths,
   };
@@ -238,6 +260,9 @@ export function buildDojoPackageReadinessEvidenceManifest({
     package_files_entries: filesField,
     export_entry_paths: entryPaths,
     script_referenced_paths: scriptReferencedPaths,
+    direct_script_referenced_paths: directScriptReferencedPaths,
+    script_dependency_paths: scriptDependencyPaths,
+    outside_package_script_imports: scriptDependencyGraph.outside_package_script_imports,
     required_packed_paths: requiredPackedPaths,
     validation,
     npm_pack: {
@@ -339,6 +364,28 @@ export function collectScriptReferencedPackagePaths(scripts, scriptNames) {
   return stableUnique(paths);
 }
 
+export function collectScriptTransitivePackagePaths(scripts, scriptNames, options = {}) {
+  return collectScriptDependencyGraph(scripts, scriptNames, options).script_referenced_paths;
+}
+
+export function collectScriptDependencyGraph(scripts, scriptNames, options = {}) {
+  const rootDir = path.resolve(options.rootDir || MCP_ROOT);
+  const directPaths = collectScriptReferencedPackagePaths(scripts, scriptNames);
+  const seen = new Set();
+  const outsidePackageImports = [];
+  const paths = [...directPaths];
+  for (const entry of directPaths) {
+    paths.push(...collectRelativeImportPackagePaths(entry, rootDir, seen, outsidePackageImports));
+  }
+  const scriptReferencedPaths = stableUnique(paths);
+  return {
+    direct_script_referenced_paths: directPaths,
+    script_referenced_paths: scriptReferencedPaths,
+    script_dependency_paths: stableUnique(scriptReferencedPaths.filter((entry) => !directPaths.includes(entry))),
+    outside_package_script_imports: stableUnique(outsidePackageImports),
+  };
+}
+
 export function isDojoReleaseHarnessScriptName(scriptName) {
   const name = String(scriptName || "");
   return DOJO_PACKAGE_READINESS_REQUIRED_SCRIPT_SELECTORS.some((selector) => (
@@ -358,6 +405,77 @@ export function extractPackagePathsFromScript(command) {
     match = regex.exec(command);
   }
   return stableUnique(paths);
+}
+
+export function extractRelativeImportSpecifiers(sourceText) {
+  const imports = [];
+  const regex = /\b(?:import|export)\s+(?:[^"'()]*?\s+from\s+)?["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
+  let match = regex.exec(String(sourceText || ""));
+  while (match) {
+    const specifier = match[1] || match[2] || "";
+    if (specifier.startsWith("./") || specifier.startsWith("../")) imports.push(specifier);
+    match = regex.exec(String(sourceText || ""));
+  }
+  return stableUnique(imports);
+}
+
+function collectRelativeImportPackagePaths(packagePath, rootDir, seen, outsidePackageImports) {
+  const normalizedPackagePath = normalizePackagePath(packagePath);
+  if (!normalizedPackagePath || seen.has(normalizedPackagePath)) return [];
+  seen.add(normalizedPackagePath);
+
+  const absolutePath = path.resolve(rootDir, normalizedPackagePath);
+  if (!fileExists(absolutePath)) return [];
+
+  const sourceText = readFileSync(absolutePath, "utf8");
+  const dependencies = [];
+  for (const specifier of extractRelativeImportSpecifiers(sourceText)) {
+    const resolution = resolveRelativeImportPackagePath(normalizedPackagePath, specifier, rootDir);
+    if (resolution.outsidePackageImport) {
+      outsidePackageImports.push(resolution.outsidePackageImport);
+    }
+    const dependencyPath = resolution.packagePath;
+    if (!dependencyPath) continue;
+    dependencies.push(dependencyPath);
+    dependencies.push(...collectRelativeImportPackagePaths(dependencyPath, rootDir, seen, outsidePackageImports));
+  }
+  return stableUnique(dependencies);
+}
+
+function resolveRelativeImportPackagePath(fromPackagePath, specifier, rootDir) {
+  const base = path.resolve(rootDir, path.dirname(fromPackagePath), specifier);
+  const rootWithSeparator = `${rootDir}${path.sep}`;
+  const candidates = [
+    base,
+    `${base}.mjs`,
+    `${base}.js`,
+    `${base}.cjs`,
+    `${base}.ts`,
+    `${base}.tsx`,
+    path.join(base, "index.mjs"),
+    path.join(base, "index.js"),
+    path.join(base, "index.ts"),
+  ];
+  const found = candidates.find(fileExists);
+  if (!found) return { packagePath: "", outsidePackageImport: "" };
+  if (found !== rootDir && !found.startsWith(rootWithSeparator)) {
+    return {
+      packagePath: "",
+      outsidePackageImport: `${normalizePackagePath(fromPackagePath)}->${specifier}->${normalizePackagePath(path.relative(rootDir, found))}`,
+    };
+  }
+  return {
+    packagePath: normalizePackagePath(path.relative(rootDir, found)),
+    outsidePackageImport: "",
+  };
+}
+
+function fileExists(filePath) {
+  try {
+    return existsSync(filePath) && statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function collectExportLeafPaths(exportsField) {

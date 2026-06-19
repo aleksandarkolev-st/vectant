@@ -13,7 +13,7 @@ The source of truth for a specific run is the runner report and evidence
 manifest produced by:
 
 ```powershell
-node mcp/synthi-mcp/scripts/dojo-release-gate-runner.mjs --scope enterprise-release --execute --continue-on-failure
+node mcp/synthi-mcp/scripts/dojo-release-gate-runner.mjs --scope enterprise-release --execute --continue-on-failure --fail-on-missing-env
 ```
 
 ## Local Gate Baseline
@@ -27,7 +27,7 @@ $env:NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS='1'
 $env:AI_ENGINE_HOST_PORT='8081'
 $env:POSTGRES_HOST_PORT='15432'
 $env:SYNTHI_DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_PATH="$PWD\tmp\dojo-hosted-runtime-gateway-release-observation\hosted-runtime-gateway-release-observation.json"
-node mcp/synthi-mcp/scripts/dojo-release-gate-runner.mjs --scope enterprise-release --execute --continue-on-failure
+node mcp/synthi-mcp/scripts/dojo-release-gate-runner.mjs --scope enterprise-release --execute --continue-on-failure --fail-on-missing-env
 node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --release-gate-run-report tmp/dojo-release-gate-runner/dojo-release-gate-runner-report.json --release-gate-run-evidence tmp/dojo-release-gate-runner/dojo-release-gate-runner.evidence.json
 ```
 
@@ -52,6 +52,23 @@ ok=false
 promotion_ready=false
 failed > 0 when external release inputs are absent
 ```
+
+## Release Harness Preflight
+
+Run these before any live Google Cloud evidence collection. They validate the
+release manifest, runner, verifier, package contents, and kustomize overlay
+without deploying:
+
+```powershell
+npm --prefix mcp/synthi-mcp run proof:dojo:release-gates:self-check
+npm --prefix mcp/synthi-mcp run proof:dojo:release-gates:runner:self-check
+npm --prefix mcp/synthi-mcp run proof:dojo:release-gates:verify:self-check
+npm --prefix mcp/synthi-mcp run proof:dojo:package-readiness:self-check
+npm --prefix mcp/synthi-mcp run proof:dojo:kustomize-overlay:self-check
+```
+
+Run the parameterized overlay render check after setting the target Google
+Cloud variables below, especially `$env:DOMAIN`.
 
 ## Google Cloud Hosting Runbook
 
@@ -90,14 +107,14 @@ Set these in the shell used for provisioning and release gates. Adjust values
 for the target environment.
 
 ```powershell
-$env:PROJECT_ID = "overview-synti"
+$env:PROJECT_ID = "vectant-proj"
 $env:REGION = "europe-west10"
 $env:ZONE = "europe-west10-a"
 $env:CLUSTER = "synthi-beta-cluster"
 $env:K8S_NAMESPACE = "synthi"
 $env:AR_REPO = "synthi"
-$env:DOMAIN = "beta.synthi.app"
-$env:GCS_BUCKET = "synthi-cloud-storage"
+$env:DOMAIN = "beta.vectant.dev"
+$env:GCS_BUCKET = "vectant-synthi-cloud-storage"
 $env:CLOUD_SQL_INSTANCE = "synthi-prod-postgres"
 $env:REDIS_INSTANCE = "synthi-prod-redis"
 
@@ -105,6 +122,156 @@ gcloud config set project $env:PROJECT_ID
 gcloud config set compute/region $env:REGION
 gcloud config set compute/zone $env:ZONE
 ```
+
+If Google Cloud SDK or `kubectl` is installed but not on `PATH`, set
+`GCLOUD_BIN` and `KUBECTL_BIN` before running local inventory scripts:
+
+```powershell
+$env:GCLOUD_BIN = "C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
+$env:KUBECTL_BIN = "C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\kubectl.cmd"
+```
+
+### Read-Only Hosted Inventory
+
+Before creating or changing any Google Cloud resource, run a read-only
+inventory against the authenticated project. This verifies what is already
+implemented in production and writes redacted evidence that can be compared with
+the remaining release blockers.
+
+First validate the inventory script without Google Cloud access:
+
+```powershell
+npm --prefix mcp/synthi-mcp run proof:dojo:gcp-release-inventory:self-check
+```
+
+Prepare the expected release inventory from the rendered overlay instead of
+maintaining copied secret-name or deployment-name lists. This runs a local
+`kubectl kustomize` or `kustomize build` render and derives Kubernetes
+Deployment names, Kubernetes Secret names, ExternalSecret names, Secret Manager
+remote secret names, and full
+`ExternalSecret object -> target Kubernetes Secret -> secretKey -> remoteRef.key`
+bindings from the rendered manifests, without reading payloads or applying
+anything.
+
+```powershell
+$dojoReleaseOverlayInventoryFlags = @(
+  "--expected-inventory-from-rendered-kustomization=k8s/overlays/dojo-release-gate"
+)
+```
+
+Use the individual `--expected-k8s-secret`, `--expected-secret-manager-secret`,
+`--expected-external-secret`, and `--expected-external-secret-binding` flags only
+for intentionally out-of-tree secret contracts that are not represented in the
+release kustomization. Use `--expected-deployment=<name>` only for an
+intentionally out-of-tree deployment that is not represented in the rendered
+release overlay.
+
+Then generate a command plan without touching Google Cloud:
+
+```powershell
+node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
+  --project=$env:PROJECT_ID `
+  --region=$env:REGION `
+  --zone=$env:ZONE `
+  --cluster=$env:CLUSTER `
+  --namespace=$env:K8S_NAMESPACE `
+  --artifact-repository=$env:AR_REPO `
+  --gcs-bucket=$env:GCS_BUCKET `
+  --cloud-sql-instance=$env:CLOUD_SQL_INSTANCE `
+  --redis-instance=$env:REDIS_INSTANCE `
+  --domain=$env:DOMAIN `
+  @dojoReleaseOverlayInventoryFlags `
+  --out-dir=tmp/dojo-gcp-release-inventory
+```
+
+After confirming the plan contains only read/list/describe/get commands, run the
+actual read-only inventory:
+
+```powershell
+node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
+  --execute `
+  --project=$env:PROJECT_ID `
+  --region=$env:REGION `
+  --zone=$env:ZONE `
+  --cluster=$env:CLUSTER `
+  --namespace=$env:K8S_NAMESPACE `
+  --artifact-repository=$env:AR_REPO `
+  --gcs-bucket=$env:GCS_BUCKET `
+  --cloud-sql-instance=$env:CLOUD_SQL_INSTANCE `
+  --redis-instance=$env:REDIS_INSTANCE `
+  --domain=$env:DOMAIN `
+  @dojoReleaseOverlayInventoryFlags `
+  --out-dir=tmp/dojo-gcp-release-inventory
+```
+
+Expected output:
+
+```text
+tmp/dojo-gcp-release-inventory/dojo-gcp-release-inventory.json
+tmp/dojo-gcp-release-inventory/dojo-gcp-release-inventory.evidence.json
+```
+
+The inventory script intentionally does not print or fetch secret values. It
+records secret names, Kubernetes deployment names, endpoint inventory, enabled
+APIs, store resources, and command digests only.
+
+Summarize the inventory into an operator-facing blocker report. Strict mode is
+the default and is required for release acceptance:
+
+```powershell
+npm --prefix mcp/synthi-mcp run proof:dojo:gcp-release-blockers:self-check
+node mcp/synthi-mcp/scripts/dojo-gcp-release-blockers.mjs `
+  --inventory-report=tmp/dojo-gcp-release-inventory/dojo-gcp-release-inventory.json `
+  --out-dir=tmp/dojo-gcp-release-blockers
+```
+
+Expected output:
+
+```text
+tmp/dojo-gcp-release-blockers/dojo-gcp-release-blockers.json
+tmp/dojo-gcp-release-blockers/dojo-gcp-release-blockers.md
+```
+
+The blocker script exits nonzero when the release is still blocked. That is
+intentional. In strict mode, evidence-gap warnings under release-critical
+categories are promoted to blockers. Use `--advisory` only for discovery or
+report-only inventory when you want those evidence gaps to remain warnings:
+
+```powershell
+npm --prefix mcp/synthi-mcp run proof:dojo:gcp-release-blockers:advisory -- `
+  --inventory-report=tmp/dojo-gcp-release-inventory/dojo-gcp-release-inventory.json `
+  --out-dir=tmp/dojo-gcp-release-blockers-advisory
+```
+
+Use `--allow-blockers` only when you need artifacts written while preserving a
+zero shell exit for a non-release advisory job. The Markdown report groups
+failures by release owner action:
+
+- `cloud_api`: a required Google Cloud API is not enabled or not visible.
+- `inventory_access`: the script could not collect a required inventory dataset.
+- `cloud_resource`: a named GCP resource could not be verified.
+- `kubernetes_context`: local `kubectl` is not pointed at the target cluster.
+- `secret_inventory`: Secret Manager or Kubernetes secret names could not be
+  verified.
+- `deployment_inventory`: required Kubernetes deployments could not be verified.
+
+Do not treat warnings under `secret_inventory`, `deployment_inventory`, or
+`kubernetes_context` as release evidence. In strict mode, those warnings block
+release acceptance until the Kubernetes context and Secret Manager inventory are
+readable. In advisory mode, they mean the report is useful for discovery but not
+for release approval.
+
+Interpret the report carefully:
+
+- `inventory_dataset:*_command_failed` means the script could not query that
+  dataset. Fix auth, API enablement, network, or local kube context before
+  treating dependent resource checks as true absence.
+- `api:<service>` failures with no dataset failure mean the enabled-API list was
+  collected and the service is genuinely not enabled for the project.
+- Kubernetes checks are read-only and use the current local kube context. The
+  script deliberately does not run `gcloud container clusters get-credentials`.
+  If you want Kubernetes object inventory in the same report, select the target
+  cluster context first, then rerun the inventory.
 
 ### Enable Required APIs
 
@@ -190,7 +357,7 @@ address and ensure the GKE cluster is on the same VPC path.
 
 ```powershell
 $databaseUrl = "postgresql://synthi:<strong-generated-password>@127.0.0.1:5432/synthi?schema=public"
-$databaseUrl | gcloud secrets create database-url --data-file=-
+$databaseUrl | gcloud secrets create synthi-database-url --data-file=-
 ```
 
 The mature Dojo release gate should also have an explicit Postgres URL for Dojo
@@ -222,7 +389,7 @@ Store the deployed Redis URL in Secret Manager:
 
 ```powershell
 $redisUrl = "redis://<memorystore-private-ip>:6379"
-$redisUrl | gcloud secrets create redis-url --data-file=-
+$redisUrl | gcloud secrets create synthi-redis-url --data-file=-
 ```
 
 ### GKE Cluster
@@ -312,25 +479,39 @@ kubectl -n $env:K8S_NAMESPACE get externalsecret
 kubectl -n $env:K8S_NAMESPACE get secret synthi-secrets
 ```
 
-Store every required application secret in Secret Manager. At minimum,
-production Dojo release validation needs:
+Store every required application secret in Secret Manager. The left side below
+is the Secret Manager remote name. The right side is the Kubernetes
+`synthi-secrets` key produced by External Secrets Operator:
 
 ```text
-database-url
-redis-url
-nextauth-secret
-google-client-id
-google-client-secret
-y-sweet-auth-token
-openai-api-key or equivalent model provider key
-SYNTHI_DOJO_PROOF_SIGNING_PROVIDER
-SYNTHI_DOJO_PROOF_SIGNING_KEY_ID
-SYNTHI_DOJO_PROOF_SIGNING_COMMAND
-SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS
-SYNTHI_DOJO_PROOF_SIGNING_MANAGED_KEY_URI
-SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM
-SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM
-SYNTHI_BRIDGE_TOKEN
+synthi-database-url -> DATABASE_URL
+synthi-redis-url -> REDIS_URL
+synthi-auth-secret -> AUTH_SECRET
+synthi-nextauth-secret -> NEXTAUTH_SECRET
+synthi-google-client-id -> GOOGLE_CLIENT_ID
+synthi-google-client-secret -> GOOGLE_CLIENT_SECRET
+synthi-y-sweet-auth-token -> YSWEET_AUTH_KEY
+synthi-openai-api-key or equivalent model provider key -> OPENAI_API_KEY
+synthi-browser-workflow-bridge-token -> SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN
+synthi-dojo-control-plane-postgres-url -> SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL
+synthi-dojo-evidence-ledger-postgres-url -> SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL
+synthi-dojo-proof-signing-key-id -> SYNTHI_DOJO_PROOF_SIGNING_KEY_ID
+synthi-dojo-proof-signing-command -> SYNTHI_DOJO_PROOF_SIGNING_COMMAND
+synthi-dojo-proof-signing-command-args -> SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS
+synthi-dojo-proof-signing-managed-key-uri -> SYNTHI_DOJO_PROOF_SIGNING_MANAGED_KEY_URI
+synthi-dojo-proof-signing-public-key-pem -> SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM
+synthi-dojo-mcp-manifest-key-id -> SYNTHI_DOJO_MCP_MANIFEST_KEY_ID
+synthi-dojo-mcp-manifest-private-key-pem -> SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM
+synthi-dojo-mcp-manifest-public-key-pem -> SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM
+synthi-dojo-mcp-bearer-token -> SYNTHI_DOJO_MCP_BEARER_TOKEN
+synthi-dojo-hosted-browser-cdp-url -> SYNTHI_HOSTED_BROWSER_CDP_URL
+synthi-dojo-hosted-browser-workspace-url -> SYNTHI_HOSTED_BROWSER_WORKSPACE_URL
+synthi-dojo-release-workspace-id -> SYNTHI_WORKSPACE_ID
+synthi-dojo-release-agent-id -> SYNTHI_AGENT_ID
+synthi-private-workflow-tool-store-file -> SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE
+synthi-private-workflow-tool-scope -> SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE
+synthi-auth-checkpoint-store-file -> SYNTHI_AUTH_CHECKPOINT_STORE_FILE
+synthi-auth-checkpoint-scope -> SYNTHI_AUTH_CHECKPOINT_SCOPE
 ```
 
 Do not store a production proof private key or default local signing key in
@@ -408,7 +589,7 @@ Configure the release gate:
 $env:SYNTHI_DOJO_PROOF_SIGNING_PROVIDER = "managed-key-service"
 $env:SYNTHI_DOJO_PROOF_SIGNING_KEY_ID = "prod-dojo-proof-key"
 $env:SYNTHI_DOJO_PROOF_SIGNING_COMMAND = "node"
-$env:SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS = "scripts/your-managed-signer-wrapper.mjs"
+$env:SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS = '["scripts/your-managed-signer-wrapper.mjs"]'
 $env:SYNTHI_DOJO_PROOF_SIGNING_MANAGED_KEY_URI = "managed://provider/path/to/key"
 $env:SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM = @"
 -----BEGIN PUBLIC KEY-----
@@ -420,7 +601,7 @@ $env:SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM = @"
 Then run:
 
 ```powershell
-npm --prefix mcp/synthi-mcp run proof:dojo:managed-key-signing:observe -- --out-dir tmp/dojo-managed-key-signing-live
+npm --prefix mcp/synthi-mcp run proof:dojo:managed-key-signing:observe -- --out-dir ../../tmp/dojo-managed-key-signing-live
 ```
 
 The observation must produce a signed proof artifact, verifier result, and
@@ -444,14 +625,15 @@ Required public or authenticated endpoints:
 ```text
 https://<domain>/workspace
 https://<domain>/ports
-https://<deployed-mcp-host>
+https://<domain>/dojo/mcp
 wss://<hosted-browser-runtime-cdp>
 ```
 
-If the MCP host is deployed behind an internal service, expose it through an
-authenticated load balancer, IAP-protected endpoint, or Cloud Run/Gateway
-facade. The release gate must call the same deployed endpoint that external
-clients will use.
+The Dojo release overlay exposes the MCP host through the GKE Ingress at
+`/dojo/mcp`. If an environment replaces that route with an internal service,
+Cloud Run service, or gateway facade, keep the endpoint authenticated and make
+the release gate call the same deployed endpoint that external strict clients
+will use.
 
 ### Cloud Build Deployment
 
@@ -466,11 +648,73 @@ gcloud builds submit `
 _REGION=$env:REGION,`
 _GKE_CLUSTER=$env:CLUSTER,`
 _GKE_ZONE=$env:ZONE,`
-_NEXT_PUBLIC_APP_URL=https://$env:DOMAIN,`
-_NEXT_PUBLIC_COLLAB_WS_URL=wss://$env:DOMAIN/collab,`
-_NEXT_PUBLIC_SIGNALING_URL=wss://$env:DOMAIN/signaling,`
-_NEXT_PUBLIC_AI_GATEWAY_URL=https://$env:DOMAIN/ai-gateway
+_NEXT_PUBLIC_COLLAB_SERVER_URL=https://$env:DOMAIN/collab,`
+_NEXT_PUBLIC_YSWEET_URL=https://$env:DOMAIN/collab,`
+_NEXT_PUBLIC_COLLAB_PORT=443,`
+_NEXT_PUBLIC_COMPILE_SIGNAL_URL=wss://$env:DOMAIN/signal,`
+_NEXT_PUBLIC_GATEWAY_WS_URL=wss://$env:DOMAIN/gateway/ws,`
+_NEXT_PUBLIC_CODE_INTEL_URL=https://$env:DOMAIN,`
+_NEXT_PUBLIC_AI_ENGINE_URL=https://$env:DOMAIN,`
+_NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=true,`
+_NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH=/auth/loopback,`
+_KUSTOMIZE_DIR=k8s,`
+_KUSTOMIZE_LOAD_RESTRICTOR=
 ```
+
+The base kustomization is the safe default for the already-hosted application.
+It does not claim the Dojo enterprise release gate by itself. After the Cloud
+SQL, Memorystore, External Secrets, managed proof-signing, hosted runtime, and
+MCP host blockers are closed, the approved Dojo release-gate rollout should use
+the opt-in overlay:
+
+```powershell
+gcloud builds submit `
+  --config cloudbuild.yaml `
+  --substitutions `
+_REGION=$env:REGION,`
+_GKE_CLUSTER=$env:CLUSTER,`
+_GKE_ZONE=$env:ZONE,`
+_NEXT_PUBLIC_COLLAB_SERVER_URL=https://$env:DOMAIN/collab,`
+_NEXT_PUBLIC_YSWEET_URL=https://$env:DOMAIN/collab,`
+_NEXT_PUBLIC_COLLAB_PORT=443,`
+_NEXT_PUBLIC_COMPILE_SIGNAL_URL=wss://$env:DOMAIN/signal,`
+_NEXT_PUBLIC_GATEWAY_WS_URL=wss://$env:DOMAIN/gateway/ws,`
+_NEXT_PUBLIC_CODE_INTEL_URL=https://$env:DOMAIN,`
+_NEXT_PUBLIC_AI_ENGINE_URL=https://$env:DOMAIN,`
+_NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=true,`
+_NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH=/auth/loopback,`
+_KUSTOMIZE_DIR=k8s/overlays/dojo-release-gate,`
+_DOJO_RELEASE_KUSTOMIZE_DIR=k8s/overlays/dojo-release-gate,`
+_KUSTOMIZE_LOAD_RESTRICTOR=LoadRestrictionsNone
+```
+
+Before using that overlay in Cloud Build, render it locally and inspect the
+output. The checked command writes report and evidence artifacts under
+`tmp/dojo-kustomize-overlay-check`:
+
+```powershell
+node mcp/synthi-mcp/scripts/dojo-kustomize-overlay-check.mjs `
+  --expected-dojo-mcp-host=$env:DOMAIN `
+  --expected-dojo-mcp-path=/dojo/mcp `
+  --expected-dojo-mcp-bearer-header=X-Synthi-Dojo-Mcp-Token
+```
+
+The raw render command is:
+
+```powershell
+kubectl kustomize k8s/overlays/dojo-release-gate --load-restrictor LoadRestrictionsNone |
+  Set-Content -Path tmp/dojo-release-gate-render.yaml -Encoding utf8
+```
+
+The rendered overlay must include the Dojo fail-closed ConfigMap values, the
+Dojo ExternalSecret entries, secret-backed Redis env for static Redis consumers,
+the `dojo-mcp-host` Deployment/Service/BackendConfig, and no in-cluster
+`postgres` or `redis` workload. The runtime workflow bridge receives the Dojo
+ConfigMap and Secret values through the collab-server runtime pod spawner. The
+Dojo release overlay also deploys the token-gated HTTP MCP host at `/dojo/mcp`
+using the `synthi-mcp-http` image. Cloud Build builds that image only when the
+selected kustomize directory equals `_DOJO_RELEASE_KUSTOMIZE_DIR`; the default
+base deployment skips the release-only image.
 
 After Cloud Build finishes:
 
@@ -482,6 +726,7 @@ kubectl -n $env:K8S_NAMESPACE rollout status deployment/collab-server
 kubectl -n $env:K8S_NAMESPACE rollout status deployment/signaling-server
 kubectl -n $env:K8S_NAMESPACE rollout status deployment/ai-gateway
 kubectl -n $env:K8S_NAMESPACE rollout status deployment/ai-engine
+kubectl -n $env:K8S_NAMESPACE rollout status deployment/dojo-mcp-host
 ```
 
 Run the smoke checks from outside the cluster:
@@ -494,13 +739,56 @@ Invoke-WebRequest "https://$env:DOMAIN/ports" -UseBasicParsing
 ### Manual GKE Rollout Path
 
 Use this only when Cloud Build is unavailable. It should still use Artifact
-Registry images and the same manifests.
+Registry images and the same manifests. Do not apply raw Kustomize output
+directly; the repo manifests contain `build-tag-required` placeholders that
+must be replaced with the approved immutable release tag or digest before
+`kubectl apply`.
 
 ```powershell
-kubectl apply -k k8s/
+$env:RELEASE_REGISTRY = "<region>-docker.pkg.dev/<project-id>/<artifact-repo>"
+$env:MANIFEST_SOURCE_REGISTRY = "<registry-present-in-rendered-manifests>"
+$env:RELEASE_IMAGE_TAG = "<immutable-build-id-or-image-digest>"
+
+New-Item -ItemType Directory -Force tmp | Out-Null
+kubectl kustomize k8s/ |
+  Set-Content -Path tmp/base-render.yaml -Encoding utf8
+
+$baseRender = Get-Content tmp/base-render.yaml -Raw
+$baseRender = $baseRender.Replace($env:MANIFEST_SOURCE_REGISTRY, $env:RELEASE_REGISTRY)
+$baseRender = $baseRender.Replace("build-tag-required", $env:RELEASE_IMAGE_TAG)
+Set-Content -Path tmp/base-render.release.yaml -Value $baseRender -Encoding utf8
+
+if (Select-String -Path tmp/base-render.release.yaml -Pattern "build-tag-required") {
+  throw "Rendered base manifests still contain build-tag-required."
+}
+
+kubectl apply -f tmp/base-render.release.yaml
 kubectl -n $env:K8S_NAMESPACE get pods
 kubectl -n $env:K8S_NAMESPACE describe externalsecret synthi-secrets
 kubectl -n $env:K8S_NAMESPACE rollout status deployment/frontend
+```
+
+For an approved Dojo release-gate rollout, first render the opt-in overlay,
+replace the `build-tag-required` image placeholders with the exact release tag
+or image digest, then apply the rendered result. Cloud Build performs this
+replacement automatically; manual rollout must do the same before `kubectl
+apply`.
+
+```powershell
+New-Item -ItemType Directory -Force tmp | Out-Null
+kubectl kustomize k8s/overlays/dojo-release-gate --load-restrictor LoadRestrictionsNone |
+  Set-Content -Path tmp/dojo-release-gate-render.yaml -Encoding utf8
+
+$dojoRender = Get-Content tmp/dojo-release-gate-render.yaml -Raw
+$dojoRender = $dojoRender.Replace($env:MANIFEST_SOURCE_REGISTRY, $env:RELEASE_REGISTRY)
+$dojoRender = $dojoRender.Replace("build-tag-required", $env:RELEASE_IMAGE_TAG)
+Set-Content -Path tmp/dojo-release-gate-render.release.yaml -Value $dojoRender -Encoding utf8
+
+if (Select-String -Path tmp/dojo-release-gate-render.release.yaml -Pattern "build-tag-required") {
+  throw "Rendered Dojo release-gate manifests still contain build-tag-required."
+}
+
+kubectl apply -f tmp/dojo-release-gate-render.release.yaml
 ```
 
 If image tags are changed manually, update all deployments consistently and
@@ -514,9 +802,17 @@ below must point to the deployed runtime, not a developer workstation:
 
 ```powershell
 $env:SYNTHI_HOSTED_BROWSER_CDP_URL = "wss://<hosted-runtime-domain>/devtools/browser/<session-or-broker>"
+$env:FRONTEND_URL = "https://$env:DOMAIN"
+$env:COLLAB_URL = "https://$env:DOMAIN"
+$env:SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL = "https://<deployed-workflow-bridge>"
 $env:SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP = "1"
 $env:SYNTHI_WORKFLOW_PIPELINE_TIMEOUT_MS = "300000"
 ```
+
+`SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP=1` starts a local ephemeral
+verification bridge by design for fresh MCP evidence. The deployed frontend and
+collab URLs must still be set explicitly so the browser workflow is not pointed
+at localhost by default.
 
 The hosted runtime must enforce:
 
@@ -533,20 +829,66 @@ Run:
 npm --prefix mcp/synthi-mcp run live:browser:workflow-pipeline
 ```
 
-### Deployed MCP Host
-
-Configure the release gate to use the deployed MCP host:
+After the hosted runtime, workflow, private-tool, and MCP host evidence files
+exist, produce the hosted-runtime gateway release observation:
 
 ```powershell
-$env:SYNTHI_DOJO_MCP_HOST_URL = "https://<deployed-mcp-host>"
-$env:SYNTHI_DOJO_MCP_HOST_TOKEN = "<short-lived-release-token>"
-$env:SYNTHI_BRIDGE_TOKEN = "<bridge-token-from-secret-manager>"
+npm --prefix mcp/synthi-mcp run proof:dojo:hosted-runtime-gateway:observe -- --out-dir ../../tmp/dojo-hosted-runtime-gateway-release-observation
+$env:SYNTHI_DOJO_HOSTED_RUNTIME_GATEWAY_RELEASE_OBSERVATION_PATH = "$PWD\tmp\dojo-hosted-runtime-gateway-release-observation\hosted-runtime-gateway-release-observation.json"
+npm --prefix mcp/synthi-mcp run proof:dojo:hosted-runtime-gateway:self-check
 ```
+
+### Deployed MCP Host
+
+Configure the release gate to use the deployed HTTP MCP host from the Dojo
+release overlay. The host is built from `mcp/synthi-mcp/Dockerfile.http`,
+deployed as `Deployment/dojo-mcp-host`, exposed through the existing GKE
+Ingress at `/dojo/mcp`, protected by IAP at the GKE backend, and token-gated by
+`SYNTHI_DOJO_MCP_BEARER_TOKEN` from Secret Manager. Because IAP uses the HTTP
+`Authorization` header, the release overlay sends the Dojo application bearer
+token through `X-Synthi-Dojo-Mcp-Token`. Do not point this gate at the stdio MCP
+server, the browser workflow bridge, a local tunnel, or a loopback endpoint.
+
+Before running conformance, verify the rendered and deployed host shape:
+
+```powershell
+node mcp/synthi-mcp/scripts/dojo-kustomize-overlay-check.mjs `
+  --expected-dojo-mcp-host=$env:DOMAIN `
+  --expected-dojo-mcp-path=/dojo/mcp `
+  --expected-dojo-mcp-bearer-header=X-Synthi-Dojo-Mcp-Token
+kubectl -n $env:K8S_NAMESPACE get deployment dojo-mcp-host
+kubectl -n $env:K8S_NAMESPACE get service dojo-mcp-host
+kubectl -n $env:K8S_NAMESPACE get backendconfig dojo-mcp-host-backend-config
+kubectl -n $env:K8S_NAMESPACE get ingress synthi-ingress
+```
+
+```powershell
+$env:SYNTHI_DOJO_MCP_HOST_URL = "https://$env:DOMAIN/dojo/mcp"
+$env:SYNTHI_DOJO_MCP_BEARER_HEADER = "X-Synthi-Dojo-Mcp-Token"
+$env:SYNTHI_DOJO_MCP_BEARER_TOKEN = "<short-lived-release-token>"
+$env:SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN = "<iap-id-token-for-release-client>"
+$env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE = "1"
+$env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING = "1"
+$env:SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED = "1"
+$env:SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE = "1"
+$env:SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING = "1"
+```
+
+For IAP-protected hosts, generate `SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN` for the
+release IAP OAuth client ID, for example:
+
+```powershell
+$env:SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN = gcloud auth print-identity-token --audiences="<iap-oauth-client-id>" --include-email
+```
+
+For a non-IAP host, omit `SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN` and either omit
+`SYNTHI_DOJO_MCP_BEARER_HEADER` or set it to the app header configured on that
+host.
 
 Run:
 
 ```powershell
-npm --prefix mcp/synthi-mcp run live:dojo:mcp-host-conformance -- --out-dir tmp/dojo-mcp-host-conformance-live
+npm --prefix mcp/synthi-mcp run live:dojo:mcp-host-conformance -- --out-dir ../../tmp/dojo-mcp-host-conformance-live
 ```
 
 The conformance run must prove:
@@ -563,17 +905,21 @@ The conformance run must prove:
 
 Run this sequence for a release candidate:
 
-1. Build and deploy with Cloud Build.
-2. Verify Kubernetes rollouts and external HTTPS endpoints.
-3. Verify External Secrets synced from Secret Manager.
-4. Run database migrations against Cloud SQL.
-5. Run local static/type/unit gates from a clean checkout.
-6. Run managed-key signing observation.
-7. Run hosted browser workflow E2E against the hosted runtime.
-8. Run private tool acceptance against the deployed MCP host.
-9. Run deployed MCP host conformance.
-10. Run live chaos and soak gates using GKE-safe commands.
-11. Run the release gate verifier over the produced evidence.
+1. Run the read-only hosted inventory and compare it with the expected
+   production resources.
+2. Run the strict GCP blocker report. Do not deploy or collect external release
+   evidence until `release_ready` is true.
+3. Build and deploy with Cloud Build only after explicit deployment approval.
+4. Verify Kubernetes rollouts and external HTTPS endpoints.
+5. Verify External Secrets synced from Secret Manager.
+6. Run database migrations against Cloud SQL.
+7. Run local static/type/unit gates from a clean checkout.
+8. Run managed-key signing observation.
+9. Run hosted browser workflow E2E against the hosted runtime.
+10. Run private tool acceptance against the deployed MCP host.
+11. Run deployed MCP host conformance.
+12. Run live chaos and soak gates using GKE-safe commands.
+13. Run the release gate verifier over the produced evidence.
 
 Suggested evidence directory layout:
 
@@ -593,24 +939,44 @@ tmp/dojo-release/<yyyy-mm-dd>-<git-sha>/
 
 ### GKE Live Chaos Command Examples
 
-The live chaos script expects command JSON values. Verify Kubernetes object
-names before setting these. The examples below use label selectors and rollout
-restarts so they are repeatable in GKE.
+The live chaos script expects command JSON values. Keep these commands
+environment-specific and reviewed before execution. For mature Google Cloud
+release gates, prefer managed-service-safe fault injection: network policy
+windows, application-level dependency fault toggles, or a dedicated test
+dependency endpoint. Do not restart Cloud SQL or Memorystore directly as a
+release gate.
 
 ```powershell
-$env:SYNTHI_CHAOS_WORKER_KILL_COMMAND_JSON = '["kubectl","delete","pod","-n","synthi","-l","app=worker","--ignore-not-found=true"]'
-$env:SYNTHI_CHAOS_REDIS_RESTART_COMMAND_JSON = '["kubectl","rollout","restart","deployment/redis","-n","synthi"]'
-$env:SYNTHI_CHAOS_POSTGRES_RESTART_PROOF_COMMAND_JSON = '["kubectl","rollout","restart","deployment/postgres","-n","synthi"]'
-$env:SYNTHI_CHAOS_BROWSER_CRASH_COMMAND_JSON = '["kubectl","delete","pod","-n","synthi","-l","app=hosted-browser","--ignore-not-found=true"]'
-$env:SYNTHI_CHAOS_EVIDENCE_STORE_UNAVAILABLE_COMMAND_JSON = '["kubectl","scale","deployment/evidence-store","-n","synthi","--replicas=0"]'
-$env:SYNTHI_CHAOS_PROOF_SIGNING_OUTAGE_COMMAND_JSON = '["kubectl","scale","deployment/dojo-proof-signer","-n","synthi","--replicas=0"]'
-$env:SYNTHI_CHAOS_SIGNALING_PARTITION_COMMAND_JSON = '["kubectl","rollout","restart","deployment/signaling-server","-n","synthi"]'
+$env:SYNTHI_CHAOS_WORKER_KILL_COMMAND_JSON = $env:DOJO_CHAOS_WORKER_KILL_COMMAND_JSON
+$env:SYNTHI_CHAOS_REDIS_RESTART_COMMAND_JSON = $env:DOJO_CHAOS_REDIS_FAULT_COMMAND_JSON
+$env:SYNTHI_CHAOS_POSTGRES_RESTART_PROOF_COMMAND_JSON = $env:DOJO_CHAOS_POSTGRES_FAULT_COMMAND_JSON
+$env:SYNTHI_CHAOS_BROWSER_CRASH_COMMAND_JSON = $env:DOJO_CHAOS_BROWSER_FAULT_COMMAND_JSON
+$env:SYNTHI_CHAOS_EVIDENCE_STORE_UNAVAILABLE_COMMAND_JSON = $env:DOJO_CHAOS_EVIDENCE_STORE_FAULT_COMMAND_JSON
+$env:SYNTHI_CHAOS_PROOF_SIGNING_OUTAGE_COMMAND_JSON = $env:DOJO_CHAOS_PROOF_SIGNING_FAULT_COMMAND_JSON
+$env:SYNTHI_CHAOS_SIGNALING_PARTITION_COMMAND_JSON = $env:DOJO_CHAOS_SIGNALING_FAULT_COMMAND_JSON
 ```
 
-If production uses Cloud SQL and Memorystore rather than in-cluster deployments,
-do not restart managed services directly. Instead, use a controlled network
-policy or application-level fault injection window that blocks the app from
-reaching the dependency, then remove the block and verify recovery.
+Example managed-service-safe patterns:
+
+```powershell
+# Apply a pre-reviewed NetworkPolicy manifest that temporarily blocks app egress
+# to the Postgres endpoint, then remove it in the recovery step.
+$env:DOJO_CHAOS_POSTGRES_FAULT_COMMAND_JSON = "[`"kubectl`",`"apply`",`"-n`",`"$env:K8S_NAMESPACE`",`"-f`",`"<reviewed-postgres-egress-block-manifest.yaml>`"]"
+
+# Toggle an application-level dependency fault switch exposed only in the
+# release-candidate environment.
+$env:DOJO_CHAOS_REDIS_FAULT_COMMAND_JSON = '["curl","-fsS","-X","POST","https://<release-admin-host>/dojo/faults/redis/unavailable"]'
+```
+
+Local or beta clusters that still run Redis/Postgres inside Kubernetes can use
+rollout restarts as a lower-fidelity rehearsal only. Do not use these as mature
+Google Cloud release proof when the production path is backed by managed
+services:
+
+```powershell
+$env:DOJO_CHAOS_REDIS_FAULT_COMMAND_JSON = "[`"kubectl`",`"rollout`",`"restart`",`"deployment/<redis-deployment>`",`"-n`",`"$env:K8S_NAMESPACE`"]"
+$env:DOJO_CHAOS_POSTGRES_FAULT_COMMAND_JSON = "[`"kubectl`",`"rollout`",`"restart`",`"deployment/<postgres-deployment>`",`"-n`",`"$env:K8S_NAMESPACE`"]"
+```
 
 Run:
 
@@ -625,8 +991,9 @@ Use deployed endpoints and production-like backing services:
 ```powershell
 $env:SYNTHI_SESSION_ID = "<live-session-id>"
 $env:SOAK_DURATION_MIN = "60"
-$env:SYNTHI_DOJO_SOAK_TARGET_URL = "https://$env:DOMAIN"
-$env:SYNTHI_DOJO_MCP_HOST_URL = "https://<deployed-mcp-host>"
+$env:SYNTHI_SIGNALING_URL = "wss://$env:DOMAIN/signal"
+$env:SYNTHI_VISION_BACKEND = "<non-mock-vision-backend>"
+$env:SOAK_OUTPUT_DIR = "tmp/dojo-soak-performance-gke"
 
 npm --prefix mcp/synthi-mcp run soak
 ```
@@ -684,15 +1051,15 @@ fixture-only artifacts.
 
 | Gate | Required inputs | What it proves |
 |---|---|---|
-| `workflow_e2e_hosted` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP=1` | Hosted browser workflow path runs outside local CDP and exports fresh MCP evidence. |
+| `workflow_e2e_hosted` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `FRONTEND_URL`, `COLLAB_URL`, `SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP=1` | Hosted browser workflow path runs outside local CDP and exports fresh MCP evidence. |
 | `private_tool_stdio_acceptance` | `SYNTHI_HOSTED_BROWSER_CDP_URL` | Strict stdio MCP client can execute proof-gated private tool flow against hosted runtime. |
 | `private_tool_codex_acceptance` | `SYNTHI_HOSTED_BROWSER_CDP_URL` | Codex-style client can execute proof-gated private tool flow without local browser leakage. |
-| `dojo_mcp_host_conformance` | `SYNTHI_DOJO_MCP_HOST_URL`, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE`, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING`, `SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED`, `SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE`, `SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING` | Non-loopback MCP host lists and dispatches only governed competencies. |
-| `private_tool_stdio_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL` | Deployed private tool host path works with external store and strict schema. |
-| `private_tool_codex_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL` | Deployed Codex private tool path works without shell-only shortcuts. |
+| `dojo_mcp_host_conformance` | `SYNTHI_DOJO_MCP_HOST_URL`, `SYNTHI_DOJO_MCP_BEARER_HEADER`, `SYNTHI_DOJO_MCP_BEARER_TOKEN`, `SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN` for IAP-protected hosts, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE`, `SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING`, `SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED`, `SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE`, `SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING` | Non-loopback MCP host lists and dispatches only governed competencies. |
+| `private_tool_stdio_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD` | Deployed private tool host path works with external store, independently expected store custody, and strict schema. |
+| `private_tool_codex_host_conformance` | `SYNTHI_HOSTED_BROWSER_CDP_URL`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY`, `SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON`, `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD` | Deployed Codex private tool path works through the same explicit MCP wrapper, expected store custody, and without shell-only shortcuts. |
 | `dojo_managed_key_signing_self_check` | `SYNTHI_DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PATH` from the managed-key observation script | Proof signing is backed by a configured managed signing service and public verifier material. |
 | `dojo_live_chaos` | `SYNTHI_CHAOS_ENABLE_LIVE=1`, `SYNTHI_CHAOS_BROWSER_CRASH_COMMAND_JSON`, `SYNTHI_CHAOS_EVIDENCE_STORE_UNAVAILABLE_COMMAND_JSON`, `SYNTHI_CHAOS_POSTGRES_RESTART_PROOF_COMMAND_JSON`, `SYNTHI_CHAOS_PROOF_SIGNING_OUTAGE_COMMAND_JSON`, `SYNTHI_CHAOS_REDIS_RESTART_COMMAND_JSON`, `SYNTHI_CHAOS_SIGNALING_PARTITION_COMMAND_JSON`, `SYNTHI_CHAOS_WORKER_KILL_COMMAND_JSON` | Real worker, Redis, Postgres, browser, evidence-store, and proof-signing failure modes fail closed. |
-| `soak_performance` | `SYNTHI_SESSION_ID`, `SOAK_DURATION_MIN>=60` | Long-running live session stays within latency, memory, leak, false-allow, and false-block budgets. |
+| `soak_performance` | `SYNTHI_SESSION_ID`, `SOAK_DURATION_MIN>=60`, `SYNTHI_SIGNALING_URL=wss://...`, `SYNTHI_VISION_BACKEND=<non-mock-backend>` | Long-running live session stays within latency, memory, leak, false-allow, and false-block budgets. |
 
 ## External Blocker Playbooks
 
@@ -716,6 +1083,8 @@ missing, the gate should fail instead of silently substituting local evidence.
 
 ```powershell
 $env:SYNTHI_HOSTED_BROWSER_CDP_URL='wss://<hosted-runtime>/devtools/browser/<session>'
+$env:FRONTEND_URL="https://$env:DOMAIN"
+$env:COLLAB_URL="https://$env:DOMAIN"
 $env:SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP='1'
 $env:SYNTHI_WORKFLOW_PIPELINE_TIMEOUT_MS='300000'
 npm --prefix mcp/synthi-mcp run live:browser:workflow-pipeline
@@ -787,7 +1156,10 @@ npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex
 **Command:**
 
 ```powershell
-$env:SYNTHI_DOJO_MCP_HOST_URL='https://<deployed-mcp-host>'
+$env:SYNTHI_DOJO_MCP_HOST_URL="https://$env:DOMAIN/dojo/mcp"
+$env:SYNTHI_DOJO_MCP_BEARER_HEADER='X-Synthi-Dojo-Mcp-Token'
+$env:SYNTHI_DOJO_MCP_BEARER_TOKEN='<short-lived-release-token>'
+$env:SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN='<iap-id-token-for-release-client>'
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE='1'
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING='1'
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED='1'
@@ -804,6 +1176,8 @@ npm --prefix mcp/synthi-mcp run live:dojo:mcp-host-conformance
 - Proof-gated execution path works through the deployed host.
 - Revoked proof, revoked tool, or revoked license fails closed.
 - Old proof cannot call a newer license version.
+- Bridge or workflow endpoints reject unauthenticated calls; this is proven by
+  deployed-host behavior, not by passing a local bridge token to the harness.
 
 **Common failures:**
 
@@ -821,25 +1195,55 @@ npm --prefix mcp/synthi-mcp run live:dojo:mcp-host-conformance
 
 - Hosted CDP endpoint is non-loopback.
 - Private workflow tool store is external and encrypted.
+- The external store file is not under the repo checkout, OS temp directory, or
+  user home directory. Use a network path, mounted release secret volume, or a
+  durable release-controlled path. If the store is mounted under a nonstandard
+  approved root, set
+  `SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXTERNAL_STORE_ALLOWED_ROOTS_JSON` to a JSON
+  array of allowed root paths before running the host-conformance gates.
 - Store key is provided through release secret management.
 - Tool scope is explicit and tenant/workspace bounded.
+- Expected store custody is supplied independently as:
+  - SHA-256 fingerprint of the exact release private-tool store key.
+  - Expected tenant/workspace/app-release store scope.
 - Acceptance target URL is the deployed target app, not a local fixture.
 
 **Commands:**
 
 ```powershell
 $env:SYNTHI_HOSTED_BROWSER_CDP_URL='wss://<hosted-runtime>/devtools/browser/<session>'
-$env:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE='\\<external-store>\private-tools.enc.json'
-$env:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY='<release-secret-key>'
+$env:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE='gs://<release-private-tool-store>/private-tools.enc.json'
+$privateToolStoreKey = gcloud secrets versions access latest --secret='<private-tool-store-key-secret>'
+$env:SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY=$privateToolStoreKey
 $env:SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE='<tenant>/<workspace>/<app-release>'
+$env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE=$env:SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE
+$env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256=(
+  [Convert]::ToHexString(
+    [Security.Cryptography.SHA256]::HashData(
+      [Text.Encoding]::UTF8.GetBytes($privateToolStoreKey)
+    )
+  ).ToLowerInvariant()
+)
 $env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL='https://<target-app-origin>'
+$env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND='<deployed-mcp-wrapper-command>'
+$env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON=('["--connect","https://' + $env:DOMAIN + '/dojo/mcp"]')
+$env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD='<repo-or-wrapper-working-directory>'
 npm --prefix mcp/synthi-mcp run live:browser:private-tool-host-conformance
 npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex-host-conformance
 ```
 
+Do not echo or commit `$privateToolStoreKey`. The verifier only needs
+`SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256`; the
+runtime harness still receives the key through release secret management so it
+can decrypt the external store.
+
 **Expected evidence:**
 
 - External private tool store is used.
+- `private_tool_store.key_sha256` matches
+  `expected_private_tool_store.key_sha256`.
+- `private_tool_store.scope` matches
+  `expected_private_tool_store.scope`.
 - Runtime URL is non-loopback.
 - Strict stdio and Codex-style clients both execute the proof path.
 - Raw backing tool path is blocked outside Dojo dispatcher context.
@@ -848,6 +1252,9 @@ npm --prefix mcp/synthi-mcp run live:browser:private-tool-codex-host-conformance
 
 - Store file is local temp output.
 - Store key does not decrypt generated tools across processes.
+- Expected store key fingerprint was computed from a different secret version
+  than the runtime key.
+- Expected store scope does not match the scope used by the deployed host.
 - Target URL points to a local dev app.
 - Codex client path relies on shell-only behavior not present in hosted MCP.
 
@@ -878,7 +1285,7 @@ Use the generated observation path in the release gate runner:
 
 ```powershell
 $env:SYNTHI_DOJO_MANAGED_KEY_SIGNING_RELEASE_OBSERVATION_PATH='<path-from-observe-output>'
-node mcp/synthi-mcp/scripts/dojo-release-gate-runner.mjs --scope enterprise-release --execute --continue-on-failure
+node mcp/synthi-mcp/scripts/dojo-release-gate-runner.mjs --scope enterprise-release --execute --continue-on-failure --fail-on-missing-env
 ```
 
 **Expected evidence:**
@@ -951,6 +1358,8 @@ npm --prefix mcp/synthi-mcp run chaos:dojo:live
 
 - A real live session exists and can run long enough for soak.
 - `SOAK_DURATION_MIN` is at least `60`.
+- `SYNTHI_SIGNALING_URL` points at a non-loopback deployed signaling endpoint.
+- `SYNTHI_VISION_BACKEND` is explicitly set to a real backend, not `mock`.
 - Runtime metrics collection is enabled.
 - Test tenant has enough data to exercise proof validation, graph execution,
   evidence append, and browser session lifecycle repeatedly.
@@ -960,6 +1369,8 @@ npm --prefix mcp/synthi-mcp run chaos:dojo:live
 ```powershell
 $env:SYNTHI_SESSION_ID='<live-session-id>'
 $env:SOAK_DURATION_MIN='60'
+$env:SYNTHI_SIGNALING_URL='wss://<release-domain>/signal'
+$env:SYNTHI_VISION_BACKEND='<non-mock-vision-backend>'
 npm --prefix mcp/synthi-mcp run soak
 ```
 
@@ -1025,6 +1436,8 @@ Run the legacy live soak only against a real live session:
 ```powershell
 $env:SYNTHI_SESSION_ID='<live-session-id>'
 $env:SOAK_DURATION_MIN='60'
+$env:SYNTHI_SIGNALING_URL='wss://<release-domain>/signal'
+$env:SYNTHI_VISION_BACKEND='<non-mock-vision-backend>'
 npm --prefix mcp/synthi-mcp run soak
 ```
 
@@ -1037,7 +1450,7 @@ A release candidate is not complete until the verifier covers the release
 sections:
 
 ```powershell
-node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --release-candidate --require-complete-release-gate-coverage
+node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs --enterprise-release --require-complete-release-gate-coverage
 ```
 
 If a required artifact is missing, stale, fixture-only, or self-check-only where

@@ -1,9 +1,13 @@
+import path from "node:path";
 import { hostedRuntimePolicyEnv } from "../private-tool-acceptance-conformance.mjs";
 
 export {
   parseBooleanFlag,
   parseJsonObjectArgument,
+  privateToolStoreLocationConformance,
   privateToolStoreConformance,
+  privateToolStoreCustodyExpectation,
+  privateToolStoreCustodyEvidence,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
 } from "../private-tool-acceptance-conformance.mjs";
@@ -15,6 +19,7 @@ export function buildCodexConfigToml({
   codexReasoning,
   codexModel,
   distIndex,
+  mcpCommandSpec,
   storeFile,
   storeKey,
   storeScope,
@@ -24,12 +29,20 @@ export function buildCodexConfigToml({
   hostedSessionTtlMs = 900_000,
 }) {
   const hostedPolicy = hostedRuntimePolicyEnv({ targetUrl, sessionTtlMs: hostedSessionTtlMs });
+  const mcpCommand = mcpCommandSpec ?? resolveCodexMcpServerCommandSpec({
+    args: {},
+    env: {},
+    defaultCommand: "node",
+    defaultArgs: [distIndex],
+    defaultCwd: defaultMcpCwdForDistIndex(distIndex),
+  });
   const config = [
     `model_reasoning_effort = ${JSON.stringify(codexReasoning || "low")}`,
     "",
     "[mcp_servers.synthi]",
-    'command = "node"',
-    `args = [${JSON.stringify(distIndex)}]`,
+    `command = ${JSON.stringify(mcpCommand.command)}`,
+    `args = [${mcpCommand.args.map((item) => JSON.stringify(item)).join(", ")}]`,
+    ...(mcpCommand.explicit_cwd ? [`cwd = ${JSON.stringify(mcpCommand.cwd)}`] : []),
     "",
     "[mcp_servers.synthi.env]",
     `SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE = ${JSON.stringify(storeFile)}`,
@@ -48,6 +61,58 @@ export function buildCodexConfigToml({
     config.unshift(`model = ${JSON.stringify(codexModel)}`);
   }
   return config.join("\n");
+}
+
+export function resolveCodexMcpServerCommandSpec({
+  args = {},
+  env = process.env,
+  defaultCommand = "node",
+  defaultArgs = [],
+  defaultCwd = process.cwd(),
+} = {}) {
+  const commandRaw = args["mcp-command"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND;
+  const explicitCommand = Boolean(commandRaw);
+  const command = String(commandRaw || defaultCommand).trim();
+  if (!command) throw new Error("mcp_command_required");
+  const argsJson = args["mcp-args-json"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON;
+  const explicitArgs = Boolean(argsJson);
+  const commandArgs = argsJson
+    ? parseMcpCommandArgsJson(argsJson)
+    : explicitCommand
+    ? []
+    : [...defaultArgs];
+  const cwdRaw = args["mcp-cwd"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD;
+  const explicitCwd = Boolean(cwdRaw);
+  const cwd = path.resolve(String(explicitCwd ? cwdRaw : defaultCwd));
+  return {
+    command,
+    args: commandArgs,
+    cwd,
+    explicit_command: explicitCommand,
+    explicit_args: explicitArgs,
+    explicit_cwd: explicitCwd,
+    default_repo_dist: command === defaultCommand
+      && commandArgs.length === defaultArgs.length
+      && commandArgs.every((item, index) => item === defaultArgs[index])
+      && cwd === path.resolve(defaultCwd),
+  };
+}
+
+export function codexMcpCommandConformance({ commandSpec, requireCustomCommand = false }) {
+  const customMcpCommand = commandSpec?.default_repo_dist === false;
+  const explicitMcpCommandSpec = commandSpec?.explicit_command === true
+    && commandSpec?.explicit_args === true
+    && commandSpec?.explicit_cwd === true;
+  const requireCustom = Boolean(requireCustomCommand);
+  return {
+    ok: !requireCustom || (customMcpCommand && explicitMcpCommandSpec),
+    require_custom_mcp_command: requireCustom,
+    custom_mcp_command: customMcpCommand,
+    explicit_mcp_command: commandSpec?.explicit_command === true,
+    explicit_mcp_args: commandSpec?.explicit_args === true,
+    explicit_mcp_cwd: commandSpec?.explicit_cwd === true,
+    explicit_mcp_command_spec: explicitMcpCommandSpec,
+  };
 }
 
 export function buildCodexAcceptancePrompt({ targetUrl, requestedToolName = "", toolArgs = {} } = {}) {
@@ -202,4 +267,23 @@ function sameOrigin(a, b) {
 
 function redactCommandForEvidence(command) {
   return typeof command === "string" && command.trim() ? "[redacted-command]" : null;
+}
+
+function defaultMcpCwdForDistIndex(distIndex) {
+  return distIndex
+    ? path.resolve(path.dirname(distIndex), "..")
+    : process.cwd();
+}
+
+function parseMcpCommandArgsJson(value) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(value));
+  } catch (error) {
+    throw new Error("mcp_args_json_invalid");
+  }
+  if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "string")) {
+    throw new Error("mcp_args_json_must_be_string_array");
+  }
+  return parsed;
 }

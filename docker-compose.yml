@@ -275,8 +275,10 @@ services:
   # block (403 Forbidden IP on CREATE_PERMISSION for --external-ip).
   mcp:
     build:
-      context: ./mcp/synthi-mcp
-      dockerfile: Dockerfile
+      # Root context so the MCP package can resolve packages/mcp-hub, matching
+      # the Cloud Build image layout.
+      context: .
+      dockerfile: mcp/synthi-mcp/Dockerfile
     ports:
       # Expose Prometheus /metrics to the host so live-test.mjs can scrape
       # http://127.0.0.1:9464/metrics without a second `docker exec`.

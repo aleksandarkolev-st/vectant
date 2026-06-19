@@ -2,6 +2,9 @@
 #  Synthi IDE — Prisma Migration Job
 # ─────────────────────────────────────────────────────────────────────────────
 #  Runs `npx prisma migrate deploy` against the configured DATABASE_URL.
+#  This manifest does not include a database proxy sidecar. For Cloud SQL,
+#  set DATABASE_URL to a reachable private IP/proxy endpoint, or add a
+#  deployment-specific overlay that includes the proxy.
 #
 #  Usage:
 #    IMAGE_TAG=<immutable build tag>

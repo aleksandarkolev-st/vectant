@@ -132,6 +132,8 @@ describe("Dojo MCP host conformance harness", () => {
       env: {
         SYNTHI_DOJO_MCP_HOST_URL: "https://mcp.example.test/mcp",
         SYNTHI_DOJO_MCP_BEARER_TOKEN: "test-token",
+        SYNTHI_DOJO_MCP_BEARER_HEADER: "X-Synthi-Dojo-Mcp-Token",
+        SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN: "iap-token",
         SYNTHI_DOJO_MCP_CONFORMANCE_REQUIRE_NON_LOOPBACK_HOST: "1",
         SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_ACTOR_ID: "host-conformance-operator",
       },
@@ -139,6 +141,8 @@ describe("Dojo MCP host conformance harness", () => {
 
     expect(config.host.transport).toBe("http-json-rpc");
     expect(config.host.mcpHostUrl).toBe("https://mcp.example.test/mcp");
+    expect(config.host.bearerHeader).toBe("x-synthi-dojo-mcp-token");
+    expect(config.host.iapBearerToken).toBe("iap-token");
     expect(config.host.requireNonLoopbackMcpHost).toBe(true);
     expect(config.contextClaims).toEqual({ workspace_verified: true });
     expect(config.toolArgs).toEqual({ workspace_id: "acme" });
@@ -160,6 +164,29 @@ describe("Dojo MCP host conformance harness", () => {
     expect(config.revocationActorId).toBe("host-conformance-operator");
     expect(config.revocationActorType).toBe("service");
     expect(config.revocationEvidenceRefs).toEqual(["evidence-a", "evidence-b"]);
+  });
+
+  it("requires a separate app bearer header when IAP also uses Authorization", () => {
+    expect(() => buildDojoMcpHostConformanceConfig({
+      env: {
+        SYNTHI_DOJO_MCP_HOST_URL: "https://mcp.example.test/mcp",
+        SYNTHI_DOJO_MCP_BEARER_TOKEN: "app-token",
+        SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN: "iap-token",
+      },
+    })).toThrow("dojo_mcp_bearer_header_conflicts_with_iap_authorization");
+
+    expect(buildDojoMcpHostConformanceConfig({
+      env: {
+        SYNTHI_DOJO_MCP_HOST_URL: "https://mcp.example.test/mcp",
+        SYNTHI_DOJO_MCP_BEARER_TOKEN: "app-token",
+        SYNTHI_DOJO_MCP_BEARER_HEADER: "X-Synthi-Dojo-Mcp-Token",
+        SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN: "iap-token",
+      },
+    }).host).toEqual(expect.objectContaining({
+      bearerHeader: "x-synthi-dojo-mcp-token",
+      bearerToken: "app-token",
+      iapBearerToken: "iap-token",
+    }));
   });
 
   it("selects an unambiguous published Dojo competency for conformance", () => {

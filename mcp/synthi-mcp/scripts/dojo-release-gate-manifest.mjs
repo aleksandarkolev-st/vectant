@@ -322,6 +322,7 @@ export const DOJO_LIVE_HOSTED_RUNTIME_REQUIREMENTS = Object.freeze({
 export const DOJO_DEPLOYED_PRIVATE_TOOL_HOST_REQUIREMENTS = Object.freeze({
   ...DOJO_LIVE_HOSTED_RUNTIME_REQUIREMENTS,
   require_external_private_tool_store: true,
+  require_external_private_tool_store_location_policy: true,
   require_no_local_attach: true,
   require_private_tool_call: true,
 });
@@ -747,6 +748,11 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       "AI_ENGINE_HOST_PORT",
       "POSTGRES_HOST_PORT",
     ],
+    env_value_requirements: [
+      { env: "NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS", type: "boolean_true" },
+      { env: "AI_ENGINE_HOST_PORT", type: "number", min: 1, max: 65535 },
+      { env: "POSTGRES_HOST_PORT", type: "number", min: 1, max: 65535 },
+    ],
   },
   {
     id: "dojo_full_visual_proof",
@@ -800,7 +806,27 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
     requires_env: [
       "SYNTHI_HOSTED_BROWSER_CDP_URL",
+      "FRONTEND_URL",
+      "COLLAB_URL",
       "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP",
+    ],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["ws", "wss", "http", "https"],
+      },
+      {
+        env: "FRONTEND_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["http", "https"],
+      },
+      {
+        env: "COLLAB_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["http", "https"],
+      },
+      { env: "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP", type: "boolean_true" },
     ],
   },
   {
@@ -820,6 +846,13 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_no_local_attach: true,
     },
     requires_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["ws", "wss", "http", "https"],
+      },
+    ],
   },
   {
     id: "private_tool_codex_acceptance",
@@ -838,6 +871,13 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_no_local_attach: true,
     },
     requires_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["ws", "wss", "http", "https"],
+      },
+    ],
   },
   {
     id: "dojo_mcp_host_conformance",
@@ -856,11 +896,26 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     },
     requires_env: [
       "SYNTHI_DOJO_MCP_HOST_URL",
+      "SYNTHI_DOJO_MCP_BEARER_HEADER",
+      "SYNTHI_DOJO_MCP_BEARER_TOKEN",
       "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE",
       "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
       "SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED",
       "SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE",
       "SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING",
+    ],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_DOJO_MCP_HOST_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["http", "https", "ws", "wss"],
+      },
+      { env: "SYNTHI_DOJO_MCP_BEARER_HEADER", type: "http_header_name" },
+      { env: "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE", type: "boolean_true" },
+      { env: "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING", type: "boolean_true" },
+      { env: "SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED", type: "boolean_true" },
+      { env: "SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE", type: "boolean_true" },
+      { env: "SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING", type: "boolean_true" },
     ],
   },
   {
@@ -883,7 +938,29 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
+    ],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["ws", "wss", "http", "https"],
+      },
+      {
+        env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["http", "https"],
+      },
+      { env: "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE", type: "external_store_ref" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256", type: "sha256_hex" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE", type: "non_empty" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON", type: "json_array" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD", type: "absolute_path" },
     ],
   },
   {
@@ -898,6 +975,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     default_report_path: "tmp/private-tool-codex-host-conformance/codex-private-tool-acceptance.json",
     release_artifact_requirements: {
       ...DOJO_DEPLOYED_PRIVATE_TOOL_HOST_REQUIREMENTS,
+      require_custom_mcp_command: true,
       require_agent_mcp_only: true,
       require_no_shell_commands: true,
     },
@@ -906,7 +984,29 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
+    ],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["ws", "wss", "http", "https"],
+      },
+      {
+        env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["http", "https"],
+      },
+      { env: "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE", type: "external_store_ref" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256", type: "sha256_hex" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE", type: "non_empty" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON", type: "json_array" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD", type: "absolute_path" },
     ],
   },
   {
@@ -1613,13 +1713,26 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     command: "npm --prefix mcp/synthi-mcp run soak",
     required_for: ["nightly", "enterprise_release"],
     evidence_kind: "metrics",
-    requires_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
+    requires_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN", "SYNTHI_SIGNALING_URL", "SYNTHI_VISION_BACKEND"],
     env_value_requirements: [
       {
         env: "SOAK_DURATION_MIN",
         type: "number",
         min: 60,
         reason: "enterprise soak artifacts must satisfy the 3600-second verifier threshold",
+      },
+      {
+        env: "SYNTHI_SIGNALING_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["ws", "wss"],
+        reason: "enterprise soak must run against deployed signaling rather than the local default",
+      },
+      {
+        env: "SYNTHI_VISION_BACKEND",
+        type: "not_in",
+        disallowed_values: ["mock"],
+        case_sensitive: false,
+        reason: "enterprise soak must run against a configured non-mock vision backend",
       },
     ],
     default_summary_path: "mcp/synthi-mcp/.soak/soak-summary.json",
@@ -1628,6 +1741,8 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_min_duration_seconds: 3600,
       require_live_session_env: "SYNTHI_SESSION_ID",
       require_duration_env: "SOAK_DURATION_MIN",
+      require_signaling_env: "SYNTHI_SIGNALING_URL",
+      require_vision_backend_env: "SYNTHI_VISION_BACKEND",
       require_duration_env_min_minutes: 60,
       require_zero_errors: true,
       require_iteration_events: true,
@@ -2534,6 +2649,34 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       }
     }
   }
+  const workflowHostedGate = gates.find((gate) => gate.id === "workflow_e2e_hosted");
+  if (workflowHostedGate) {
+    for (const requiredEnv of [
+      "SYNTHI_HOSTED_BROWSER_CDP_URL",
+      "FRONTEND_URL",
+      "COLLAB_URL",
+      "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP",
+    ]) {
+      if (!Array.isArray(workflowHostedGate.requires_env) || !workflowHostedGate.requires_env.includes(requiredEnv)) {
+        errors.push(`workflow_e2e_hosted_missing_env:${requiredEnv}`);
+      }
+    }
+    for (const requiredUrlEnv of [
+      "SYNTHI_HOSTED_BROWSER_CDP_URL",
+      "FRONTEND_URL",
+      "COLLAB_URL",
+    ]) {
+      const rule = (workflowHostedGate.env_value_requirements || []).find((item) => item?.env === requiredUrlEnv);
+      if (!rule || rule.type !== "non_loopback_url") {
+        errors.push(`workflow_e2e_hosted_missing_non_loopback_url_requirement:${requiredUrlEnv}`);
+      }
+    }
+    const freshMcpRule = (workflowHostedGate.env_value_requirements || [])
+      .find((item) => item?.env === "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP");
+    if (!freshMcpRule || freshMcpRule.type !== "boolean_true") {
+      errors.push("workflow_e2e_hosted_missing_fresh_mcp_env_requirement");
+    }
+  }
   const mcpHostConformanceGate = gates.find((gate) => gate.id === "dojo_mcp_host_conformance");
   const mcpHostConformanceSelfCheckGate = gates.find((gate) => gate.id === "dojo_mcp_host_conformance_self_check");
   if (mcpHostConformanceSelfCheckGate) {
@@ -2594,6 +2737,8 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     for (const requiredEnv of [
       "SYNTHI_DOJO_MCP_HOST_URL",
+      "SYNTHI_DOJO_MCP_BEARER_HEADER",
+      "SYNTHI_DOJO_MCP_BEARER_TOKEN",
       "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE",
       "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
       "SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED",
@@ -2603,6 +2748,13 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       if (!Array.isArray(mcpHostConformanceGate.requires_env) || !mcpHostConformanceGate.requires_env.includes(requiredEnv)) {
         errors.push(`mcp_host_conformance_missing_env:${requiredEnv}`);
       }
+    }
+    const mcpHostBearerHeaderRule = (mcpHostConformanceGate.env_value_requirements || [])
+      .find((requirement) => requirement?.env === "SYNTHI_DOJO_MCP_BEARER_HEADER");
+    if (!mcpHostBearerHeaderRule) {
+      errors.push("mcp_host_conformance_missing_bearer_header_env_value_requirement");
+    } else if (mcpHostBearerHeaderRule.type !== "http_header_name") {
+      errors.push("mcp_host_conformance_bearer_header_env_value_requirement_not_http_header_name");
     }
     const missingScriptFlags = missingRequiredPackageScriptTokens(packageScripts, mcpHostConformanceGate, [
       "--out-dir",
@@ -2632,6 +2784,9 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!gate.release_artifact_requirements?.require_external_private_tool_store) {
       errors.push(`private_tool_host_conformance_missing_external_store:${gate.id}`);
     }
+    if (!gate.release_artifact_requirements?.require_external_private_tool_store_location_policy) {
+      errors.push(`private_tool_host_conformance_missing_external_store_location_policy:${gate.id}`);
+    }
     if (!gate.release_artifact_requirements?.require_visual_proof) {
       errors.push(`private_tool_host_conformance_missing_visual_proof:${gate.id}`);
     }
@@ -2641,13 +2796,37 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!gate.release_artifact_requirements?.require_private_tool_call) {
       errors.push(`private_tool_host_conformance_missing_private_tool_call:${gate.id}`);
     }
+    if (!gate.release_artifact_requirements?.require_custom_mcp_command) {
+      errors.push(`private_tool_host_conformance_missing_custom_mcp:${gate.id}`);
+    }
     if (!Array.isArray(gate.requires_env) || !gate.requires_env.includes("SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE")) {
       errors.push(`private_tool_host_conformance_missing_store_env:${gate.id}`);
     }
     if (!Array.isArray(gate.requires_env) || !gate.requires_env.includes("SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL")) {
       errors.push(`private_tool_host_conformance_missing_target_env:${gate.id}`);
     }
-    const requiredScriptFlags = gate.id === "private_tool_stdio_host_conformance"
+    const requiredStoreCustodyEnv = [
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE",
+    ];
+    const missingStoreCustodyEnv = requiredStoreCustodyEnv
+      .filter((envName) => !Array.isArray(gate.requires_env) || !gate.requires_env.includes(envName));
+    if (missingStoreCustodyEnv.length > 0) {
+      errors.push(`${gate.id}_missing_store_custody_env:${missingStoreCustodyEnv.join(",")}`);
+    }
+    if (gate.id === "private_tool_stdio_host_conformance" || gate.id === "private_tool_codex_host_conformance") {
+      const requiredMcpCommandEnv = [
+        "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
+        "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
+        "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
+      ];
+      const missingMcpCommandEnv = requiredMcpCommandEnv
+        .filter((envName) => !Array.isArray(gate.requires_env) || !gate.requires_env.includes(envName));
+      if (missingMcpCommandEnv.length > 0) {
+        errors.push(`${gate.id}_missing_custom_mcp_command_env:${missingMcpCommandEnv.join(",")}`);
+      }
+    }
+    const requiredScriptFlags = gate.id === "private_tool_stdio_host_conformance" || gate.id === "private_tool_codex_host_conformance"
       ? ["--require-custom-mcp-command", "--require-non-loopback-runtime", "--require-external-private-tool-store"]
       : ["--require-non-loopback-runtime", "--require-external-private-tool-store"];
     const missingScriptFlags = missingRequiredPackageScriptTokens(packageScripts, gate, requiredScriptFlags);
@@ -3677,7 +3856,7 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!soakPerformanceGate.default_summary_path) errors.push("soak_performance_missing_default_summary_path");
     if (!soakPerformanceGate.default_events_path) errors.push("soak_performance_missing_default_events_path");
     const missingSoakEnv = missingRequiredEntries(
-      ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
+      ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN", "SYNTHI_SIGNALING_URL", "SYNTHI_VISION_BACKEND"],
       soakPerformanceGate.requires_env,
     );
     if (missingSoakEnv.length > 0) {
@@ -3691,6 +3870,37 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       if (soakDurationEnvRule.type !== "number") errors.push("soak_performance_duration_env_value_requirement_not_numeric");
       if (Number(soakDurationEnvRule.min) < 60) errors.push("soak_performance_duration_env_value_min_too_low");
     }
+    const soakSignalingEnvRule = (soakPerformanceGate.env_value_requirements || [])
+      .find((requirement) => requirement?.env === "SYNTHI_SIGNALING_URL");
+    if (!soakSignalingEnvRule) {
+      errors.push("soak_performance_missing_signaling_env_value_requirement");
+    } else {
+      if (soakSignalingEnvRule.type !== "non_loopback_url") {
+        errors.push("soak_performance_signaling_env_value_requirement_not_non_loopback_url");
+      }
+      const protocols = Array.isArray(soakSignalingEnvRule.allowed_protocols)
+        ? soakSignalingEnvRule.allowed_protocols.map(String)
+        : [];
+      const missingProtocols = missingRequiredEntries(["ws", "wss"], protocols);
+      if (missingProtocols.length > 0) {
+        errors.push(`soak_performance_signaling_env_value_missing_protocols:${missingProtocols.join(",")}`);
+      }
+    }
+    const soakVisionBackendEnvRule = (soakPerformanceGate.env_value_requirements || [])
+      .find((requirement) => requirement?.env === "SYNTHI_VISION_BACKEND");
+    if (!soakVisionBackendEnvRule) {
+      errors.push("soak_performance_missing_vision_backend_env_value_requirement");
+    } else {
+      if (soakVisionBackendEnvRule.type !== "not_in") {
+        errors.push("soak_performance_vision_backend_env_value_requirement_not_disallow_list");
+      }
+      const disallowedValues = Array.isArray(soakVisionBackendEnvRule.disallowed_values)
+        ? soakVisionBackendEnvRule.disallowed_values.map((item) => String(item).toLowerCase())
+        : [];
+      if (!disallowedValues.includes("mock")) {
+        errors.push("soak_performance_vision_backend_env_value_allows_mock");
+      }
+    }
     if (!Number.isFinite(Number(soakPerformanceGate.enterprise_artifact_requirements?.require_min_duration_seconds))) {
       errors.push("soak_performance_missing_duration_requirement");
     }
@@ -3699,6 +3909,12 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (soakPerformanceGate.enterprise_artifact_requirements?.require_duration_env !== "SOAK_DURATION_MIN") {
       errors.push("soak_performance_missing_duration_env_requirement");
+    }
+    if (soakPerformanceGate.enterprise_artifact_requirements?.require_signaling_env !== "SYNTHI_SIGNALING_URL") {
+      errors.push("soak_performance_missing_signaling_env_requirement");
+    }
+    if (soakPerformanceGate.enterprise_artifact_requirements?.require_vision_backend_env !== "SYNTHI_VISION_BACKEND") {
+      errors.push("soak_performance_missing_vision_backend_env_requirement");
     }
     if (Number(soakPerformanceGate.enterprise_artifact_requirements?.require_duration_env_min_minutes) < 60) {
       errors.push("soak_performance_duration_env_min_too_low");

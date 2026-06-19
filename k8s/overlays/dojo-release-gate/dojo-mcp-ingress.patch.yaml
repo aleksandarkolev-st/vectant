@@ -1,0 +1,17 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: synthi-ingress
+  namespace: synthi
+spec:
+  rules:
+    - host: beta.vectant.dev
+      http:
+        paths:
+          - path: /dojo/mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: dojo-mcp-host
+                port:
+                  number: 9467

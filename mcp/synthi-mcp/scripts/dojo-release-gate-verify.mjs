@@ -28,6 +28,9 @@ import {
   runDojoReleaseGateRunner,
 } from "./dojo-release-gate-runner.mjs";
 import {
+  privateToolStoreLocationConformance,
+} from "./private-tool-acceptance-conformance.mjs";
+import {
   DOJO_AGENT_READY_UI_CONTRACT_CAPABILITIES,
   DOJO_AGENT_READY_UI_CONTRACT_TEST_FILES,
 } from "./dojo-agent-ready-ui-contract-self-check.mjs";
@@ -2907,7 +2910,7 @@ export function validateDojoPrivateToolCodexHostConformanceForRelease(transcript
     ...validateDojoPrivateToolCodexAcceptanceForRelease(transcript).errors,
     ...validateDeployedPrivateToolHostConformance(transcript, {
       errorPrefix: "private_tool_codex_host",
-      requireCustomMcpCommand: false,
+      requireCustomMcpCommand: true,
     }),
   ];
   return {
@@ -5104,6 +5107,50 @@ function validateDeployedPrivateToolHostConformance(transcript, {
   if (conformance.external_private_tool_store !== true || transcript?.private_tool_store?.external !== true) {
     errors.push(`${errorPrefix}_external_store_missing`);
   }
+  if (conformance.external_private_tool_store_location_ok !== true) {
+    errors.push(`${errorPrefix}_external_store_location_policy_missing`);
+  }
+  const storeLocation = privateToolStoreLocationConformance({
+    file: transcript?.private_tool_store?.file,
+    requireExternalStore: true,
+  });
+  if (!storeLocation.ok) {
+    errors.push(`${errorPrefix}_external_store_location_invalid:${storeLocation.location_class}:${storeLocation.reasons.join("|")}`);
+  }
+  const store = transcript?.private_tool_store || {};
+  if (store.key_fingerprint_alg !== "sha256") {
+    errors.push(`${errorPrefix}_store_key_fingerprint_alg_missing`);
+  }
+  if (store.key_present !== true || !isSha256Hex(store.key_sha256)) {
+    errors.push(`${errorPrefix}_store_key_fingerprint_missing`);
+  }
+  const expectedStore = transcript?.expected_private_tool_store || {};
+  if (expectedStore.key_fingerprint_alg !== "sha256") {
+    errors.push(`${errorPrefix}_expected_store_key_fingerprint_alg_missing`);
+  }
+  if (!isSha256Hex(expectedStore.key_sha256)) {
+    errors.push(`${errorPrefix}_expected_store_key_fingerprint_missing`);
+  }
+  if (isSha256Hex(store.key_sha256)
+    && isSha256Hex(expectedStore.key_sha256)
+    && String(store.key_sha256).toLowerCase() !== String(expectedStore.key_sha256).toLowerCase()) {
+    errors.push(`${errorPrefix}_store_key_fingerprint_mismatch`);
+  }
+  if (!String(store.scope || "").trim() || !String(store.expected_scope || "").trim()) {
+    errors.push(`${errorPrefix}_store_scope_missing`);
+  }
+  if (store.scope_matches_expected !== true || String(store.scope || "") !== String(store.expected_scope || "")) {
+    errors.push(`${errorPrefix}_store_scope_mismatch`);
+  }
+  if (!String(expectedStore.scope || "").trim()) {
+    errors.push(`${errorPrefix}_expected_store_scope_missing`);
+  }
+  if (String(expectedStore.scope || "").trim() && String(store.scope || "") !== String(expectedStore.scope)) {
+    errors.push(`${errorPrefix}_expected_store_scope_mismatch`);
+  }
+  if (transcript?.seeded?.store_scope && String(transcript.seeded.store_scope) !== String(store.scope || "")) {
+    errors.push(`${errorPrefix}_seeded_store_scope_mismatch`);
+  }
   if (classifyUrlHost(transcript?.target_url) !== "remote") {
     errors.push(`${errorPrefix}_target_not_remote:${classifyUrlHost(transcript?.target_url)}`);
   }
@@ -5114,8 +5161,24 @@ function validateDeployedPrivateToolHostConformance(transcript, {
     if (conformance.custom_mcp_command !== true || transcript?.mcp_server?.default_repo_dist === true) {
       errors.push(`${errorPrefix}_custom_mcp_command_missing`);
     }
+    if (conformance.explicit_mcp_command !== true || transcript?.mcp_server?.explicit_command !== true) {
+      errors.push(`${errorPrefix}_explicit_mcp_command_missing`);
+    }
+    if (conformance.explicit_mcp_args !== true || transcript?.mcp_server?.explicit_args !== true) {
+      errors.push(`${errorPrefix}_explicit_mcp_args_missing`);
+    }
+    if (conformance.explicit_mcp_cwd !== true || transcript?.mcp_server?.explicit_cwd !== true) {
+      errors.push(`${errorPrefix}_explicit_mcp_cwd_missing`);
+    }
+    if (conformance.explicit_mcp_command_spec !== true) {
+      errors.push(`${errorPrefix}_explicit_mcp_command_spec_incomplete`);
+    }
   }
   return errors;
+}
+
+function isSha256Hex(value) {
+  return /^[a-f0-9]{64}$/i.test(String(value || ""));
 }
 
 async function validateTranscriptVisualStepArtifact({ id, transcript, transcriptPath }) {
@@ -5961,11 +6024,18 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
       conformance: {
         require_custom_mcp_command: true,
         custom_mcp_command: true,
+        explicit_mcp_command: true,
+        explicit_mcp_args: true,
+        explicit_mcp_cwd: true,
+        explicit_mcp_command_spec: true,
       },
       mcp_server: {
         command: "node",
         cwd: "/opt/synthi/mcp",
         args_count: 2,
+        explicit_command: true,
+        explicit_args: true,
+        explicit_cwd: true,
         default_repo_dist: false,
       },
     }),
@@ -5985,6 +6055,35 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
     releaseCandidate: true,
   });
   assert.equal(codexHostConformanceResult.ok, true, codexHostConformanceResult.errors.join(";"));
+  const rejectedCodexHostTranscriptPath = await writeCodexAcceptanceTranscriptForSelfCheck({
+    outDir: conformanceDir,
+    basename: "codex-private-tool-host-conformance-rejected",
+    overrides: deployedPrivateToolHostTranscriptOverrides({
+      conformance: {
+        custom_mcp_command: true,
+        explicit_mcp_command: true,
+        explicit_mcp_args: false,
+        explicit_mcp_cwd: false,
+        explicit_mcp_command_spec: false,
+      },
+      mcp_server: {
+        command: "synthi-mcp-wrapper",
+        cwd: MCP_ROOT,
+        args_count: 0,
+        explicit_command: true,
+        explicit_args: false,
+        explicit_cwd: false,
+        default_repo_dist: false,
+      },
+    }),
+  });
+  const rejectedCodexHostConformance = await verifyDojoPrivateToolCodexHostConformanceArtifact({
+    transcriptPath: rejectedCodexHostTranscriptPath,
+    releaseCandidate: true,
+  });
+  assert(rejectedCodexHostConformance.errors.includes("private_tool_codex_host_explicit_mcp_args_missing"));
+  assert(rejectedCodexHostConformance.errors.includes("private_tool_codex_host_explicit_mcp_cwd_missing"));
+  assert(rejectedCodexHostConformance.errors.includes("private_tool_codex_host_explicit_mcp_command_spec_incomplete"));
 
   const selfCheckReport = buildReleaseCandidateConformanceReport({
     schemaVersion: "synthi.dojo.mcpHostConformance.selfCheck.v1",
@@ -6032,7 +6131,11 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
         require_external_private_tool_store: true,
         external_private_tool_store: false,
         require_custom_mcp_command: true,
-        custom_mcp_command: false,
+        custom_mcp_command: true,
+        explicit_mcp_command: true,
+        explicit_mcp_args: false,
+        explicit_mcp_cwd: false,
+        explicit_mcp_command_spec: false,
       },
       private_tool_store: {
         external: false,
@@ -6043,7 +6146,10 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
         command: "node",
         cwd: MCP_ROOT,
         args_count: 1,
-        default_repo_dist: true,
+        explicit_command: true,
+        explicit_args: false,
+        explicit_cwd: false,
+        default_repo_dist: false,
       },
     },
   });
@@ -6052,7 +6158,9 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
     releaseCandidate: true,
   });
   assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_external_store_missing"));
-  assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_custom_mcp_command_missing"));
+  assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_explicit_mcp_args_missing"));
+  assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_explicit_mcp_cwd_missing"));
+  assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_explicit_mcp_command_spec_incomplete"));
   assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_target_not_remote:loopback"));
 
   const managedKeySigningDir = path.join(outDir, "managed-key-signing");
@@ -6879,10 +6987,38 @@ function deployedPrivateToolHostTranscriptOverrides(overrides = {}) {
       runtime_host_class: "remote",
       require_external_private_tool_store: true,
       external_private_tool_store: true,
+      external_private_tool_store_location_ok: true,
+      external_private_tool_store_location_class: "remote_uri",
+      external_private_tool_store_location_reasons: ["remote_uri_scheme:gs"],
+      require_custom_mcp_command: true,
+      custom_mcp_command: true,
+      explicit_mcp_command: true,
+      explicit_mcp_args: true,
+      explicit_mcp_cwd: true,
+      explicit_mcp_command_spec: true,
+    },
+    mcp_server: {
+      command: "synthi-mcp-wrapper",
+      cwd: "/opt/synthi/mcp",
+      args_count: 2,
+      explicit_command: true,
+      explicit_args: true,
+      explicit_cwd: true,
+      default_repo_dist: false,
     },
     private_tool_store: {
       external: true,
-      file: "redacted-external-private-tools.enc.json",
+      file: "gs://release-private-tool-store/private-tools.enc.json",
+      scope: "external-self-check",
+      key_present: true,
+      key_fingerprint_alg: "sha256",
+      key_sha256: sha256("external-self-check-store-key"),
+      expected_scope: "external-self-check",
+      scope_matches_expected: true,
+    },
+    expected_private_tool_store: {
+      key_fingerprint_alg: "sha256",
+      key_sha256: sha256("external-self-check-store-key"),
       scope: "external-self-check",
     },
   };
@@ -6893,9 +7029,17 @@ function deployedPrivateToolHostTranscriptOverrides(overrides = {}) {
       ...base.conformance,
       ...(overrides.conformance || {}),
     },
+    mcp_server: {
+      ...base.mcp_server,
+      ...(overrides.mcp_server || {}),
+    },
     private_tool_store: {
       ...base.private_tool_store,
       ...(overrides.private_tool_store || {}),
+    },
+    expected_private_tool_store: {
+      ...base.expected_private_tool_store,
+      ...(overrides.expected_private_tool_store || {}),
     },
   };
 }

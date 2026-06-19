@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   buildDojoReleaseGateManifest,
@@ -23,9 +24,12 @@ import {
   selectDojoReleaseGateIds,
 } from "../../scripts/dojo-release-gate-runner.mjs";
 
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const repoRoot = resolve(packageRoot, "../..");
+
 function realPackageScripts() {
-  const mcpPackage = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
-  const frontendPackage = JSON.parse(readFileSync(join(process.cwd(), "..", "..", "synthi", "package.json"), "utf8"));
+  const mcpPackage = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+  const frontendPackage = JSON.parse(readFileSync(join(repoRoot, "synthi", "package.json"), "utf8"));
   return {
     "mcp/synthi-mcp/package.json": mcpPackage.scripts,
     "synthi/package.json": frontendPackage.scripts,
@@ -123,7 +127,7 @@ describe("Dojo release gate runner", () => {
     expect(missingSoakGate).toEqual(expect.objectContaining({
       status: "skipped",
       skip_reason: "missing_required_env",
-      missing_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
+      missing_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN", "SYNTHI_SIGNALING_URL", "SYNTHI_VISION_BACKEND"],
     }));
 
     const partialEnvPlan = buildDojoReleaseGateExecutionPlan({
@@ -133,13 +137,18 @@ describe("Dojo release gate runner", () => {
     });
     expect(partialEnvPlan.gates.find((gate) => gate.gate_id === "soak_performance")).toEqual(expect.objectContaining({
       status: "skipped",
-      missing_env: ["SOAK_DURATION_MIN"],
+      missing_env: ["SOAK_DURATION_MIN", "SYNTHI_SIGNALING_URL", "SYNTHI_VISION_BACKEND"],
     }));
 
     const tooShortPlan = buildDojoReleaseGateExecutionPlan({
       manifest: releaseManifest,
       scope: "nightly",
-      env: { SYNTHI_SESSION_ID: "session-123", SOAK_DURATION_MIN: "10" },
+      env: {
+        SYNTHI_SESSION_ID: "session-123",
+        SOAK_DURATION_MIN: "10",
+        SYNTHI_SIGNALING_URL: "wss://signal.example.com/ws",
+        SYNTHI_VISION_BACKEND: "gemini_api",
+      },
     });
     expect(tooShortPlan.gates.find((gate) => gate.gate_id === "soak_performance")).toEqual(expect.objectContaining({
       status: "skipped",
@@ -152,15 +161,200 @@ describe("Dojo release gate runner", () => {
       })],
     }));
 
+    const invalidServicePlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "nightly",
+      env: {
+        SYNTHI_SESSION_ID: "session-123",
+        SOAK_DURATION_MIN: "60",
+        SYNTHI_SIGNALING_URL: "ws://localhost:9000",
+        SYNTHI_VISION_BACKEND: "mock",
+      },
+    });
+    expect(invalidServicePlan.gates.find((gate) => gate.gate_id === "soak_performance")).toEqual(expect.objectContaining({
+      status: "skipped",
+      skip_reason: "invalid_required_env",
+      missing_env: [],
+      invalid_env: expect.arrayContaining([
+        expect.objectContaining({
+          env: "SYNTHI_SIGNALING_URL",
+          reason: "loopback_or_local_bind_url",
+        }),
+        expect.objectContaining({
+          env: "SYNTHI_VISION_BACKEND",
+          reason: "disallowed_value:mock",
+        }),
+      ]),
+    }));
+
     const readyPlan = buildDojoReleaseGateExecutionPlan({
       manifest: releaseManifest,
       scope: "nightly",
-      env: { SYNTHI_SESSION_ID: "session-123", SOAK_DURATION_MIN: "60" },
+      env: {
+        SYNTHI_SESSION_ID: "session-123",
+        SOAK_DURATION_MIN: "60",
+        SYNTHI_SIGNALING_URL: "wss://signal.example.com/ws",
+        SYNTHI_VISION_BACKEND: "gemini_api",
+      },
     });
     expect(readyPlan.gates.find((gate) => gate.gate_id === "soak_performance")).toEqual(expect.objectContaining({
       status: "planned",
       missing_env: [],
       invalid_env: [],
+    }));
+  });
+
+  it("validates typed live-gate environment values before planning execution", () => {
+    const releaseManifest = manifest();
+    const invalidHostPlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "release",
+      gateIds: ["private_tool_stdio_host_conformance"],
+      env: {
+        SYNTHI_HOSTED_BROWSER_CDP_URL: "ws://127.0.0.1:9222/devtools/browser/local",
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: "relative/private-tools.json",
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: "secret-key",
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: "tenant/workspace",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256: "not-a-sha256",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE: "tenant/workspace",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL: "https://app.example.com/workspace",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND: "node",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON: "{\"bad\":true}",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD: "relative/cwd",
+      },
+    });
+
+    expect(invalidHostPlan.gates[0]).toEqual(expect.objectContaining({
+      status: "skipped",
+      skip_reason: "invalid_required_env",
+      missing_env: [],
+      invalid_env: expect.arrayContaining([
+        expect.objectContaining({
+          env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+          reason: "loopback_or_local_bind_url",
+        }),
+        expect.objectContaining({
+          env: "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
+          reason: "not_external_store_ref",
+        }),
+        expect.objectContaining({
+          env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256",
+          reason: "not_sha256_hex",
+        }),
+        expect.objectContaining({
+          env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
+          reason: "not_json_array",
+        }),
+        expect.objectContaining({
+          env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
+          reason: "not_absolute_path",
+        }),
+      ]),
+    }));
+
+    const readyHostPlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "release",
+      gateIds: ["private_tool_stdio_host_conformance"],
+      env: {
+        SYNTHI_HOSTED_BROWSER_CDP_URL: "wss://runtime.example.com/devtools/browser/remote",
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: "gs://release-private-tool-store/private-tools.json",
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: "secret-key",
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: "tenant/workspace",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256: createHash("sha256").update("secret-key").digest("hex"),
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE: "tenant/workspace",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL: "https://app.example.com/workspace",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND: "node",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON: "[\"/opt/synthi/mcp/dist/index.js\"]",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD: join(tmpdir(), "mcp"),
+      },
+    });
+
+    expect(readyHostPlan.gates[0]).toEqual(expect.objectContaining({
+      status: "planned",
+      missing_env: [],
+      invalid_env: [],
+    }));
+  });
+
+  it("validates explicit boolean release claims for deployed MCP conformance gates", () => {
+    const releaseManifest = manifest();
+    const plan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "release",
+      gateIds: ["dojo_mcp_host_conformance"],
+      env: {
+        SYNTHI_DOJO_MCP_HOST_URL: "https://mcp.example.com",
+        SYNTHI_DOJO_MCP_BEARER_HEADER: "X-Synthi-Dojo-Mcp-Token",
+        SYNTHI_DOJO_MCP_BEARER_TOKEN: "release-token",
+        SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING: "false",
+        SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING: "1",
+      },
+    });
+
+    expect(plan.gates[0]).toEqual(expect.objectContaining({
+      status: "skipped",
+      skip_reason: "missing_required_env",
+      missing_env: ["SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING"],
+    }));
+
+    const invalidUrlPlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "release",
+      gateIds: ["dojo_mcp_host_conformance"],
+      env: {
+        SYNTHI_DOJO_MCP_HOST_URL: "http://localhost:3333",
+        SYNTHI_DOJO_MCP_BEARER_HEADER: "X-Synthi-Dojo-Mcp-Token",
+        SYNTHI_DOJO_MCP_BEARER_TOKEN: "release-token",
+        SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING: "1",
+      },
+    });
+
+    expect(invalidUrlPlan.gates[0]).toEqual(expect.objectContaining({
+      status: "skipped",
+      skip_reason: "invalid_required_env",
+      missing_env: [],
+      invalid_env: [
+        expect.objectContaining({
+          env: "SYNTHI_DOJO_MCP_HOST_URL",
+          reason: "loopback_or_local_bind_url",
+        }),
+      ],
+    }));
+
+    const invalidHeaderPlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "release",
+      gateIds: ["dojo_mcp_host_conformance"],
+      env: {
+        SYNTHI_DOJO_MCP_HOST_URL: "https://mcp.example.com",
+        SYNTHI_DOJO_MCP_BEARER_HEADER: "not a header",
+        SYNTHI_DOJO_MCP_BEARER_TOKEN: "release-token",
+        SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING: "1",
+      },
+    });
+
+    expect(invalidHeaderPlan.gates[0]).toEqual(expect.objectContaining({
+      status: "skipped",
+      skip_reason: "invalid_required_env",
+      missing_env: [],
+      invalid_env: [
+        expect.objectContaining({
+          env: "SYNTHI_DOJO_MCP_BEARER_HEADER",
+          reason: "invalid_http_header_name",
+        }),
+      ],
     }));
   });
 
@@ -261,7 +455,12 @@ describe("Dojo release gate runner", () => {
       manifest: manifest(),
       scope: "nightly",
       gateIds: ["soak_performance"],
-      env: { SYNTHI_SESSION_ID: "session-123", SOAK_DURATION_MIN: "10" },
+      env: {
+        SYNTHI_SESSION_ID: "session-123",
+        SOAK_DURATION_MIN: "10",
+        SYNTHI_SIGNALING_URL: "wss://signal.example.com/ws",
+        SYNTHI_VISION_BACKEND: "gemini_api",
+      },
       failOnMissingEnv: true,
     });
     const results = await executeDojoReleaseGatePlan({

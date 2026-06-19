@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { createHash } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -6,7 +8,10 @@ import {
   mcpCommandConformance,
   parseBooleanFlag,
   parseJsonObjectArgument,
+  privateToolStoreLocationConformance,
   privateToolStoreConformance,
+  privateToolStoreCustodyExpectation,
+  privateToolStoreCustodyEvidence,
   resolveMcpServerCommandSpec,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
@@ -56,6 +61,9 @@ describe("private-tool stdio acceptance harness", () => {
       command: "/usr/bin/node",
       args: ["/repo/mcp/synthi-mcp/dist/index.js"],
       cwd: path.resolve("/repo/mcp/synthi-mcp"),
+      explicit_command: false,
+      explicit_args: false,
+      explicit_cwd: false,
       default_repo_dist: true,
     });
   });
@@ -77,6 +85,9 @@ describe("private-tool stdio acceptance harness", () => {
       command: "synthi-mcp",
       args: ["--stdio", "--profile", "prod"],
       cwd: path.resolve("/srv/synthi"),
+      explicit_command: true,
+      explicit_args: true,
+      explicit_cwd: true,
       default_repo_dist: false,
     });
   });
@@ -96,6 +107,17 @@ describe("private-tool stdio acceptance harness", () => {
       defaultArgs: ["/repo/mcp/synthi-mcp/dist/index.js"],
       defaultCwd: "/repo/mcp/synthi-mcp",
     });
+    const completeCustomSpec = resolveMcpServerCommandSpec({
+      args: {
+        "mcp-command": "synthi-mcp",
+        "mcp-args-json": "[\"--connect\",\"https://mcp.example.test/dojo/mcp\"]",
+        "mcp-cwd": "/srv/synthi",
+      },
+      env: {},
+      defaultCommand: "/usr/bin/node",
+      defaultArgs: ["/repo/mcp/synthi-mcp/dist/index.js"],
+      defaultCwd: "/repo/mcp/synthi-mcp",
+    });
 
     expect(mcpCommandConformance({
       commandSpec: defaultSpec,
@@ -104,6 +126,10 @@ describe("private-tool stdio acceptance harness", () => {
       ok: true,
       require_custom_mcp_command: false,
       custom_mcp_command: false,
+      explicit_mcp_command: false,
+      explicit_mcp_args: false,
+      explicit_mcp_cwd: false,
+      explicit_mcp_command_spec: false,
     });
     expect(mcpCommandConformance({
       commandSpec: defaultSpec,
@@ -112,14 +138,34 @@ describe("private-tool stdio acceptance harness", () => {
       ok: false,
       require_custom_mcp_command: true,
       custom_mcp_command: false,
+      explicit_mcp_command: false,
+      explicit_mcp_args: false,
+      explicit_mcp_cwd: false,
+      explicit_mcp_command_spec: false,
     });
     expect(mcpCommandConformance({
       commandSpec: customSpec,
       requireCustomCommand: true,
     })).toEqual({
+      ok: false,
+      require_custom_mcp_command: true,
+      custom_mcp_command: true,
+      explicit_mcp_command: true,
+      explicit_mcp_args: false,
+      explicit_mcp_cwd: false,
+      explicit_mcp_command_spec: false,
+    });
+    expect(mcpCommandConformance({
+      commandSpec: completeCustomSpec,
+      requireCustomCommand: true,
+    })).toEqual({
       ok: true,
       require_custom_mcp_command: true,
       custom_mcp_command: true,
+      explicit_mcp_command: true,
+      explicit_mcp_args: true,
+      explicit_mcp_cwd: true,
+      explicit_mcp_command_spec: true,
     });
   });
 
@@ -172,11 +218,13 @@ describe("private-tool stdio acceptance harness", () => {
         external: false,
       },
       requireExternalStore: false,
-    })).toEqual({
+    })).toEqual(expect.objectContaining({
       ok: true,
       require_external_private_tool_store: false,
       external_private_tool_store: false,
-    });
+      external_private_tool_store_location_ok: true,
+      external_private_tool_store_location_class: "not_required",
+    }));
     expect(privateToolStoreConformance({
       storeSpec: {
         file: "/tmp/default-private-tools.enc.json",
@@ -185,11 +233,11 @@ describe("private-tool stdio acceptance harness", () => {
         external: false,
       },
       requireExternalStore: true,
-    })).toEqual({
+    })).toEqual(expect.objectContaining({
       ok: false,
       require_external_private_tool_store: true,
       external_private_tool_store: false,
-    });
+    }));
     expect(privateToolStoreConformance({
       storeSpec: {
       file: path.resolve("/srv/synthi/private-tools.enc.json"),
@@ -198,11 +246,136 @@ describe("private-tool stdio acceptance harness", () => {
         external: true,
       },
       requireExternalStore: true,
-    })).toEqual({
+    })).toEqual(expect.objectContaining({
       ok: true,
       require_external_private_tool_store: true,
       external_private_tool_store: true,
+      external_private_tool_store_location_ok: true,
+    }));
+  });
+
+  it("derives private workflow store custody evidence without exposing the store key", () => {
+    const evidence = privateToolStoreCustodyEvidence({
+      storeSpec: {
+        file: "gs://release-private-tool-store/private-tools.enc.json",
+        key: "external-key",
+        scope: "tenant/workspace/release",
+        external: true,
+      },
+      expectedScope: "tenant/workspace/release",
     });
+
+    expect(evidence).toEqual(expect.objectContaining({
+      key_present: true,
+      key_fingerprint_alg: "sha256",
+      scope: "tenant/workspace/release",
+      expected_scope: "tenant/workspace/release",
+      scope_matches_expected: true,
+    }));
+    expect(evidence.key_sha256).toBe(sha256("external-key"));
+    expect(JSON.stringify(evidence)).not.toContain("external-key");
+    expect(privateToolStoreCustodyEvidence({
+      storeSpec: {
+        file: "gs://release-private-tool-store/private-tools.enc.json",
+        key: "rotated-external-key",
+        scope: "tenant/workspace/release",
+        external: true,
+      },
+      expectedScope: "tenant/workspace/release",
+    }).key_sha256).toBe(sha256("rotated-external-key"));
+    expect(privateToolStoreCustodyEvidence({
+      storeSpec: {
+        file: "gs://release-private-tool-store/private-tools.enc.json",
+        key: "rotated-external-key",
+        scope: "tenant/workspace/release",
+        external: true,
+      },
+      expectedScope: "tenant/workspace/release",
+    }).key_sha256).not.toBe(evidence.key_sha256);
+
+    expect(privateToolStoreCustodyEvidence({
+      storeSpec: {
+        file: "gs://release-private-tool-store/private-tools.enc.json",
+        key: "external-key",
+        scope: "tenant/workspace/other-release",
+        external: true,
+      },
+      expectedScope: "tenant/workspace/release",
+    })).toEqual(expect.objectContaining({
+      scope: "tenant/workspace/other-release",
+      expected_scope: "tenant/workspace/release",
+      scope_matches_expected: false,
+    }));
+  });
+
+  it("resolves private workflow store custody expectations from explicit release metadata", () => {
+    expect(privateToolStoreCustodyExpectation({
+      storeSpec: {
+        file: "gs://release-private-tool-store/private-tools.enc.json",
+        key: "runtime-key",
+        scope: "runtime-scope",
+        external: true,
+      },
+      expectedScope: "release-scope",
+      expectedKeySha256: sha256("release-key"),
+    })).toEqual({
+      key_fingerprint_alg: "sha256",
+      key_sha256: sha256("release-key"),
+      scope: "release-scope",
+    });
+    expect(() => privateToolStoreCustodyExpectation({
+      storeSpec: { key: "runtime-key", scope: "runtime-scope" },
+      expectedKeySha256: "not-a-sha",
+    })).toThrow("expected_private_tool_store_key_sha256_invalid");
+  });
+
+  it("does not count repo-local, home, or temp files as external release stores", () => {
+    const roots = {
+      repoRoot: path.resolve("/workspace/repo"),
+      packageRoot: path.resolve("/workspace/repo/mcp/synthi-mcp"),
+      cwd: path.resolve("/workspace/repo/mcp/synthi-mcp"),
+      tmpDir: path.resolve(os.tmpdir()),
+      homeDir: path.resolve(os.homedir()),
+    };
+
+    for (const file of [
+      path.join(roots.repoRoot, "tmp", "private-tools.enc.json"),
+      path.join(roots.cwd, "tmp", "private-tools.enc.json"),
+      path.join(roots.packageRoot, "tmp", "private-tools.enc.json"),
+      path.join(roots.tmpDir, "private-tools.enc.json"),
+      path.join(roots.homeDir, ".synthi", "private-tools.enc.json"),
+    ]) {
+      expect(privateToolStoreConformance({
+        storeSpec: {
+          file,
+          key: "external-key",
+          scope: "workspace-scope",
+          external: true,
+        },
+        requireExternalStore: true,
+        ...roots,
+      })).toEqual(expect.objectContaining({
+        ok: false,
+        require_external_private_tool_store: true,
+        external_private_tool_store: true,
+        external_private_tool_store_location_ok: false,
+        external_private_tool_store_location_class: "local_disallowed_root",
+      }));
+    }
+
+    expect(privateToolStoreLocationConformance({
+      file: path.join(roots.tmpDir, "approved-mounted-store", "private-tools.enc.json"),
+      requireExternalStore: true,
+      ...roots,
+      env: {
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXTERNAL_STORE_ALLOWED_ROOTS_JSON: JSON.stringify([
+          path.join(roots.tmpDir, "approved-mounted-store"),
+        ]),
+      },
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      location_class: "allowed_external_root",
+    }));
   });
 
   it("selects private workflow tools deterministically", () => {
@@ -386,3 +559,7 @@ describe("private-tool stdio acceptance harness", () => {
     expect(strictHostValidateToolArgs(schema, { confirm_mutation: "yes" })).toEqual(["type:confirm_mutation"]);
   });
 });
+
+function sha256(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
+}

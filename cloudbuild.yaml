@@ -29,7 +29,11 @@ substitutions:
   _GKE_CLUSTER: synthi-beta-cluster
   _GKE_ZONE: europe-west10-a
   _REGISTRY: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/synthi
+  _MANIFEST_SOURCE_REGISTRY: europe-west10-docker.pkg.dev/vectant-proj/synthi
   _IMAGE_TAG: ${BUILD_ID}
+  _KUSTOMIZE_DIR: k8s
+  _KUSTOMIZE_LOAD_RESTRICTOR: ""
+  _DOJO_RELEASE_KUSTOMIZE_DIR: k8s/overlays/dojo-release-gate
 
   # NEXT_PUBLIC_* build args baked into the frontend client bundle.
   # Override these per environment via trigger substitutions.
@@ -64,8 +68,8 @@ steps:
       - |
         set -euo pipefail
         if grep -RInE '(^[[:space:]]*(FROM|image:|name:)|--destination=).*:latest([^@]|$)' \
-          --include='Dockerfile' --include='*.yaml' --include='*.yml' \
-          --exclude='*.backup' --exclude='cloudbuild.yaml' --exclude='cloudbuild_backup.yaml' .; then
+          --include='Dockerfile*' --include='*.yaml' --include='*.yml' \
+          --exclude='*.backup' --exclude='cloudbuild.yaml' .; then
           echo "Mutable :latest image references must be pinned by digest or replaced with an immutable build tag." >&2
           exit 1
         fi
@@ -200,10 +204,38 @@ steps:
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=mcp/synthi-mcp/Dockerfile.workflow-bridge
-      - --context=dir:///workspace/mcp/synthi-mcp
+      # Root context: the MCP package depends on packages/mcp-hub via a local
+      # file dependency, matching the frontend workspace image pattern.
+      - --context=dir:///workspace
       - --destination=${_REGISTRY}/synthi-browser-workflow-bridge:${_IMAGE_TAG}
       - --cache=true
       - --cache-ttl=168h
+
+  # Agent Dojo HTTP MCP host. Built for the release-gate overlay; the default
+  # beta kustomization does not deploy this image.
+  - id: build-dojo-mcp-host
+    waitFor: ['reject-mutable-images']
+    name: gcr.io/kaniko-project/executor:debug@sha256:2562c4fe551399514277ffff7dcca9a3b1628c4ea38cb017d7286dc6ea52f4cd
+    entrypoint: /busybox/sh
+    env:
+      - KUSTOMIZE_DIR=${_KUSTOMIZE_DIR}
+      - DOJO_RELEASE_KUSTOMIZE_DIR=${_DOJO_RELEASE_KUSTOMIZE_DIR}
+      - REGISTRY=${_REGISTRY}
+      - IMAGE_TAG=${_IMAGE_TAG}
+    args:
+      - -c
+      - |
+        set -eu
+        if [ "$${KUSTOMIZE_DIR}" != "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]; then
+          echo "Skipping Dojo MCP host image build for kustomize dir: $${KUSTOMIZE_DIR}"
+          exit 0
+        fi
+        exec /kaniko/executor \
+          --dockerfile=mcp/synthi-mcp/Dockerfile.http \
+          --context=dir:///workspace \
+          --destination="$${REGISTRY}/synthi-mcp-http:$${IMAGE_TAG}" \
+          --cache=true \
+          --cache-ttl=168h
 
   # ── 9. Per-workspace runtime image (rootful dind under Sysbox) ──────────
   # ROOTFUL build (RUNTIME_USER=root, daemon at /var/run/docker.sock): under Sysbox
@@ -225,28 +257,56 @@ steps:
       - --cache=true
       - --cache-ttl=168h
 
-  # ── 10. Vulnerability gate — runtime image (untrusted user-code surface) ────
-  # The per-workspace runtime runs UNTRUSTED user code, so it MUST pass a CRITICAL
-  # CVE gate before a deploy can safely enable RUNTIME_BACKEND=sysbox-pod. Mirrors
-  # the validated local gate (lessons #28): trivy, CRITICAL-only, honoring the
-  # committed waiver file backend/runtime-image/.trivyignore (the base-bundled grpc
-  # CVE-2026-33186 — local in-pod containerd socket, not network-exposed). trivy
-  # authenticates to Artifact Registry via the ambient Cloud Build service account
-  # (artifactregistry.reader). Exit 1 on any non-waived CRITICAL fails the build,
-  # blocking deploy. First-party images aren't the untrusted surface; add more scan
-  # targets here for a full-fleet gate. (Fallback if AR keychain auth is ever
-  # fiddly: `gcloud artifacts docker images scan` via the pinned gcloud builder.)
-  - id: vulnerability-scan-runtime
-    waitFor: ['build-runtime-image']
+  # ── 10. Vulnerability gate — full release image fleet ─────────────────────
+  # Every image built by this pipeline must pass a CRITICAL CVE gate before
+  # deployment. The per-workspace runtime additionally honors its committed
+  # waiver file for the known base-bundled grpc CVE. The release-only Dojo MCP
+  # host image is scanned when the release-gate overlay is selected.
+  - id: vulnerability-scan-images
+    waitFor:
+      - build-frontend
+      - build-collab-server
+      - build-ai-engine
+      - build-ai-gateway
+      - build-signaling
+      - build-worker
+      - build-prisma-migrate
+      - build-browser-workflow-bridge
+      - build-dojo-mcp-host
+      - build-runtime-image
     name: aquasec/trivy:0.71.0@sha256:016eae51fdcf989332a5404af7e8f625cd5d95d7c0907a221d080a996f556500
+    entrypoint: /bin/sh
+    env:
+      - KUSTOMIZE_DIR=${_KUSTOMIZE_DIR}
+      - DOJO_RELEASE_KUSTOMIZE_DIR=${_DOJO_RELEASE_KUSTOMIZE_DIR}
+      - REGISTRY=${_REGISTRY}
+      - IMAGE_TAG=${_IMAGE_TAG}
     args:
-      - image
-      - --severity=CRITICAL
-      - --exit-code=1
-      - --ignorefile=backend/runtime-image/.trivyignore
-      - --no-progress
-      - --timeout=10m
-      - ${_REGISTRY}/vectant-runtime:${_IMAGE_TAG}
+      - -c
+      - |
+        set -eu
+        scan() {
+          echo "Scanning $1"
+          trivy image --severity=CRITICAL --exit-code=1 --no-progress --timeout=10m "$1"
+        }
+        scan "$${REGISTRY}/synthi-frontend:$${IMAGE_TAG}"
+        scan "$${REGISTRY}/synthi-collab-server:$${IMAGE_TAG}"
+        scan "$${REGISTRY}/synthi-ai-engine:$${IMAGE_TAG}"
+        scan "$${REGISTRY}/synthi-ai-gateway:$${IMAGE_TAG}"
+        scan "$${REGISTRY}/synthi-signaling-server:$${IMAGE_TAG}"
+        scan "$${REGISTRY}/synthi-worker:$${IMAGE_TAG}"
+        scan "$${REGISTRY}/synthi-prisma-migrate:$${IMAGE_TAG}"
+        scan "$${REGISTRY}/synthi-browser-workflow-bridge:$${IMAGE_TAG}"
+        if [ "$${KUSTOMIZE_DIR}" = "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]; then
+          scan "$${REGISTRY}/synthi-mcp-http:$${IMAGE_TAG}"
+        fi
+        trivy image \
+          --severity=CRITICAL \
+          --exit-code=1 \
+          --ignorefile=backend/runtime-image/.trivyignore \
+          --no-progress \
+          --timeout=10m \
+          "$${REGISTRY}/vectant-runtime:$${IMAGE_TAG}"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # DEPLOY — Rolling update on GKE
@@ -270,8 +330,9 @@ steps:
       - build-worker
       - build-prisma-migrate
       - build-browser-workflow-bridge
+      - build-dojo-mcp-host
       - build-runtime-image
-      - vulnerability-scan-runtime
+      - vulnerability-scan-images
 
   - id: deploy-to-gke
     name: gcr.io/cloud-builders/kubectl:latest@sha256:0001d965b1fd2d41ef80cb94cc7dfb39d65adbb8ab3855370524b424d897c078
@@ -281,20 +342,45 @@ steps:
       - |
         set -euo pipefail
         REGISTRY="${_REGISTRY}"
+        MANIFEST_SOURCE_REGISTRY="${_MANIFEST_SOURCE_REGISTRY}"
         TAG="${_IMAGE_TAG}"
+        KUSTOMIZE_DIR="${_KUSTOMIZE_DIR}"
+        DOJO_RELEASE_KUSTOMIZE_DIR="${_DOJO_RELEASE_KUSTOMIZE_DIR}"
+        KUSTOMIZE_LOAD_RESTRICTOR="${_KUSTOMIZE_LOAD_RESTRICTOR}"
         NS="synthi"
 
         echo "=== Deploying tag: $${TAG} ==="
         echo "=== Region: ${_REGION} ==="
+        echo "=== Kustomize dir: $${KUSTOMIZE_DIR} ==="
+
+        if [[ "$${KUSTOMIZE_DIR}" = /* || "$${KUSTOMIZE_DIR}" == *..* ]]; then
+          echo "Kustomize dir must be a relative repo path without '..': $${KUSTOMIZE_DIR}" >&2
+          exit 1
+        fi
+        if [[ ! -f "$${KUSTOMIZE_DIR}/kustomization.yaml" ]]; then
+          echo "Kustomize dir does not contain kustomization.yaml: $${KUSTOMIZE_DIR}" >&2
+          exit 1
+        fi
+        if [[ -n "$${KUSTOMIZE_LOAD_RESTRICTOR}" && "$${KUSTOMIZE_LOAD_RESTRICTOR}" != "LoadRestrictionsNone" ]]; then
+          echo "Unsupported Kustomize load restrictor: $${KUSTOMIZE_LOAD_RESTRICTOR}" >&2
+          exit 1
+        fi
+        if [[ -z "$${MANIFEST_SOURCE_REGISTRY}" ]]; then
+          echo "Manifest source registry substitution must not be empty." >&2
+          exit 1
+        fi
 
         # Render Kustomize once with the immutable image tag before applying.
         # Applying raw k8s/ directly would briefly roll Deployments to the
         # placeholder image tag "build-tag-required".
         RENDERED="/workspace/.cloudbuild/synthi-k8s.yaml"
-        DEFAULT_REGISTRY="europe-west10-docker.pkg.dev/vectant-proj/synthi"
         mkdir -p "$$(dirname "$${RENDERED}")"
-        kubectl kustomize k8s > "$${RENDERED}"
-        sed -i "s|$${DEFAULT_REGISTRY}|$${REGISTRY}|g" "$${RENDERED}"
+        KUSTOMIZE_ARGS=("$${KUSTOMIZE_DIR}")
+        if [[ -n "$${KUSTOMIZE_LOAD_RESTRICTOR}" ]]; then
+          KUSTOMIZE_ARGS+=("--load-restrictor" "$${KUSTOMIZE_LOAD_RESTRICTOR}")
+        fi
+        kubectl kustomize "$${KUSTOMIZE_ARGS[@]}" > "$${RENDERED}"
+        sed -i "s|$${MANIFEST_SOURCE_REGISTRY}|$${REGISTRY}|g" "$${RENDERED}"
         sed -i "s|build-tag-required|$${TAG}|g" "$${RENDERED}"
         if grep -n "build-tag-required" "$${RENDERED}"; then
           echo "Rendered manifests still contain build-tag-required." >&2
@@ -303,7 +389,7 @@ steps:
 
         echo "=== Running Prisma migrations ==="
         kubectl delete job prisma-migrate -n $${NS} --ignore-not-found
-        sed "s|$${DEFAULT_REGISTRY}|$${REGISTRY}|g; s|build-tag-required|$${TAG}|g" \
+        sed "s|$${MANIFEST_SOURCE_REGISTRY}|$${REGISTRY}|g; s|build-tag-required|$${TAG}|g" \
           k8s/prisma-migrate-job.yaml | kubectl apply -f -
         if ! kubectl wait --for=condition=complete job/prisma-migrate -n $${NS} --timeout=300s; then
           kubectl logs job/prisma-migrate -n $${NS} -c migrate || true
@@ -320,6 +406,11 @@ steps:
         kubectl rollout status deployment/ai-engine -n $${NS} --timeout=300s
         kubectl rollout status deployment/ai-gateway -n $${NS} --timeout=300s
         kubectl rollout status deployment/signaling-server -n $${NS} --timeout=300s
+        if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then
+          kubectl rollout status deployment/dojo-mcp-host -n $${NS} --timeout=300s
+        elif kubectl get deployment/dojo-mcp-host -n $${NS} >/dev/null 2>&1; then
+          kubectl rollout status deployment/dojo-mcp-host -n $${NS} --timeout=300s
+        fi
 
         echo "=== Deploy complete ==="
     waitFor:
