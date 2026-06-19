@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, GitBranch, Layers3, Route, ShieldCheck, Sparkles, Waypoints } from 'lucide-react';
+import { ArrowLeft, GitBranch, Layers3, Route, ShieldCheck, Waypoints } from 'lucide-react';
 import { createEmptyDojoSummary, getDojoWorkspaceSummary } from '@/services/dojoClient';
 import CortexNodeInspector from './CortexNodeInspector';
 
@@ -16,12 +16,11 @@ const elevatedPanelStyle = {
   boxShadow: '0 18px 48px -30px rgba(0, 0, 0, 0.7)',
 };
 
-const NODE_WIDTH = 204;
-const NODE_HEIGHT = 94;
-const NODE_HUB_SIZE = 46;
-const NODE_SIGNAL_DOT_SIZE = 6;
-const LAYER_GAP = 260;
-const ROW_GAP = 138;
+const FORCE_MIN_WIDTH = 760;
+const FORCE_MIN_HEIGHT = 390;
+const FORCE_PADDING = 64;
+const FORCE_ITERATIONS = 180;
+const IMPORTANT_NODE_KINDS = new Set(['Proof', 'Guardrail', 'CaseLaw', 'Adversary', 'Expiry']);
 
 export default function SkillCortexGraph({
   workspaceSlug = '',
@@ -180,195 +179,195 @@ export default function SkillCortexGraph({
 
 export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
   const selectedNode = graph?.nodes?.find((node) => node.id === selectedNodeId);
+  const [hoveredNodeId, setHoveredNodeId] = useState('');
+  const activeNodeId = hoveredNodeId || selectedNodeId;
+  const activeNode = graph?.nodes?.find((node) => node.id === activeNodeId) || selectedNode;
+  const activeNeighborIds = useMemo(() => {
+    if (!activeNodeId) return new Set();
+    const neighbors = new Set([activeNodeId]);
+    for (const edge of graph?.edges || []) {
+      if (edge.from === activeNodeId) neighbors.add(edge.to);
+      if (edge.to === activeNodeId) neighbors.add(edge.from);
+    }
+    return neighbors;
+  }, [activeNodeId, graph?.edges]);
+
   return (
     <div
       className="max-w-full overflow-auto rounded-lg border"
       style={{
         borderColor: 'var(--border-subtle)',
         background:
-          'radial-gradient(circle at 18% 22%, color-mix(in srgb, var(--accent-primary) 13%, transparent), transparent 28%), radial-gradient(circle at 84% 72%, color-mix(in srgb, var(--text-primary) 7%, transparent), transparent 34%), linear-gradient(90deg, color-mix(in srgb, var(--text-primary) 4%, transparent) 1px, transparent 1px), linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 4%, transparent) 1px, transparent 1px), color-mix(in srgb, var(--bg-app) 84%, transparent)',
-        backgroundSize: 'auto, auto, 36px 36px, 36px 36px, auto',
+          'radial-gradient(circle at 22% 18%, color-mix(in srgb, var(--accent-primary) 13%, transparent), transparent 30%), radial-gradient(circle at 76% 68%, color-mix(in srgb, var(--text-primary) 8%, transparent), transparent 34%), radial-gradient(circle at 50% 48%, rgba(15, 23, 42, 0.18), transparent 52%), color-mix(in srgb, var(--bg-app) 88%, transparent)',
       }}
       data-testid="skill-cortex-graph"
     >
-      <div className="sticky left-0 top-0 z-[1] flex min-w-full items-center justify-between gap-3 border-b px-4 py-3 backdrop-blur-sm" style={panelStyle}>
-        <div className="min-w-0">
-          <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Selected node</div>
-          <div className="truncate text-xs font-semibold">{selectedNode?.label || 'None'}</div>
-        </div>
-        <div className="hidden items-center gap-2 text-[11px] md:flex" style={{ color: 'var(--text-muted)' }}>
-          <Sparkles size={13} aria-hidden="true" />
-          Proof, guardrail, assertion, and expiry path
-        </div>
-      </div>
       <div className="relative" style={{ width: layout.width, height: layout.height, minWidth: '100%' }}>
-        <svg className="absolute inset-0" width={layout.width} height={layout.height} aria-hidden="true">
+        <svg
+          className="absolute inset-0"
+          width={layout.width}
+          height={layout.height}
+          role="img"
+          aria-label={`Skill Cortex graph${activeNode?.label ? `, active node ${activeNode.label}` : ''}`}
+        >
           <style>{`
-            @keyframes cortex-signal-dash {
-              to { stroke-dashoffset: -44; }
+            @keyframes cortex-active-path {
+              0%, 100% { opacity: 0.36; }
+              50% { opacity: 0.86; }
             }
-            @keyframes cortex-node-breathe {
-              0%, 100% { transform: scale(1); opacity: 0.68; }
-              50% { transform: scale(1.18); opacity: 1; }
+            @keyframes cortex-particle-pulse {
+              0%, 100% { transform: scale(1); opacity: 0.82; }
+              50% { transform: scale(1.35); opacity: 1; }
             }
-            .cortex-signal-path {
-              animation: cortex-signal-dash 2.8s linear infinite;
+            .cortex-active-edge {
+              animation: cortex-active-path 2.2s cubic-bezier(0.16, 1, 0.3, 1) infinite;
             }
-            .cortex-neuron-pulse {
-              animation: cortex-node-breathe 2.6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+            .cortex-active-node {
+              animation: cortex-particle-pulse 2.4s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+              transform-box: fill-box;
               transform-origin: center;
             }
             @media (prefers-reduced-motion: reduce) {
-              .cortex-signal-path,
-              .cortex-neuron-pulse {
+              .cortex-active-edge,
+              .cortex-active-node {
                 animation: none;
               }
             }
           `}</style>
           <defs>
-            <marker id="cortex-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M0,0 L8,4 L0,8 Z" fill="rgba(148, 163, 184, 0.74)" />
-            </marker>
+            <radialGradient id="cortex-field-fade" cx="50%" cy="50%" r="62%">
+              <stop offset="0%" stopColor="rgba(148, 163, 184, 0.13)" />
+              <stop offset="62%" stopColor="rgba(148, 163, 184, 0.035)" />
+              <stop offset="100%" stopColor="rgba(148, 163, 184, 0)" />
+            </radialGradient>
           </defs>
+          <rect x="0" y="0" width={layout.width} height={layout.height} fill="url(#cortex-field-fade)" opacity="0.7" pointerEvents="none" />
           {(graph.edges || []).map((edge) => {
             const from = layout.positions.get(edge.from);
             const to = layout.positions.get(edge.to);
             if (!from || !to) return null;
-            const source = nodeCenter(from);
-            const target = nodeCenter(to);
-            const x1 = source.x + NODE_HUB_SIZE / 2;
-            const y1 = source.y;
-            const x2 = target.x - NODE_HUB_SIZE / 2;
-            const y2 = target.y;
-            const mid = x1 + Math.max(40, (x2 - x1) / 2);
+            const sourceTone = nodeTone(graph.nodes.find((node) => node.id === edge.from) || {});
+            const targetTone = nodeTone(graph.nodes.find((node) => node.id === edge.to) || {});
+            const isActive = edge.from === activeNodeId || edge.to === activeNodeId;
             return (
-              <g key={edge.id}>
-                <path
-                  d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`}
-                  fill="none"
-                  stroke="rgba(148, 163, 184, 0.28)"
-                  strokeWidth="5"
-                  strokeLinecap="round"
+              <line
+                key={edge.id}
+                className={isActive ? 'cortex-active-edge' : undefined}
+                x1={from.x}
+                y1={from.y}
+                x2={to.x}
+                y2={to.y}
+                stroke={isActive ? targetTone.color : 'rgba(148, 163, 184, 0.52)'}
+                strokeWidth={isActive ? 1.15 : 1}
+                strokeOpacity={isActive ? 0.72 : 0.22}
+                strokeLinecap="round"
+                style={{ filter: isActive ? `drop-shadow(0 0 6px ${sourceTone.color})` : 'none' }}
+              />
+            );
+          })}
+          {graph.nodes.map((node) => {
+            const position = layout.positions.get(node.id);
+            if (!position) return null;
+            const tone = nodeTone(node);
+            const selected = selectedNodeId === node.id;
+            const hovered = hoveredNodeId === node.id;
+            const connected = activeNeighborIds.has(node.id);
+            const radius = nodeRadius(node);
+            const depth = nodeDepth(node, graph.nodes);
+            const showLabel = selected || hovered || isImportantNode(node);
+            const label = node.label || node.id;
+            const labelWidth = Math.min(210, Math.max(72, label.length * 6.4 + 28));
+            const labelX = Math.min(Math.max(10, position.x + radius + 10), layout.width - labelWidth - 10);
+            const labelY = Math.max(14, position.y - 25 - depth * 8);
+            return (
+              <g
+                key={node.id}
+                role="button"
+                tabIndex={0}
+                aria-label={`${node.kind}: ${label}`}
+                onMouseEnter={() => setHoveredNodeId(node.id)}
+                onMouseLeave={() => setHoveredNodeId('')}
+                onClick={() => onSelectNode(node.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onSelectNode(node.id);
+                  }
+                }}
+              >
+                <title>{label}</title>
+                <circle
+                  cx={position.x + 1.2 * depth}
+                  cy={position.y + 1.6 * depth}
+                  r={radius + 5 + depth}
+                  fill={tone.color}
+                  opacity={selected || hovered ? 0.18 : connected ? 0.11 : 0.055}
+                  style={{ filter: `blur(${Math.max(3, radius)}px)` }}
                 />
-                <path
-                  className="cortex-signal-path"
-                  d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`}
-                  fill="none"
-                  stroke="rgba(148, 163, 184, 0.78)"
-                  strokeWidth="1.6"
-                  strokeDasharray="7 15"
-                  strokeLinecap="round"
-                  markerEnd="url(#cortex-arrow)"
+                <circle
+                  cx={position.x}
+                  cy={position.y}
+                  r={Math.max(16, radius + 11)}
+                  fill="rgba(255,255,255,0.001)"
+                  stroke="transparent"
+                  style={{ cursor: 'pointer' }}
+                  data-testid={`cortex-node-${node.id}`}
+                  aria-label={`${node.kind}: ${label}`}
                 />
-                <circle cx={x1} cy={y1} r="2.5" fill="rgba(148, 163, 184, 0.9)" />
-                <circle cx={x2} cy={y2} r="2.5" fill="rgba(148, 163, 184, 0.9)" />
-                {edge.condition ? (
-                  <text x={mid} y={Math.min(y1, y2) - 12} textAnchor="middle" fill="rgba(148, 163, 184, 0.82)" fontSize="10">
-                    {compactCondition(edge.condition)}
-                  </text>
+                <circle
+                  cx={position.x}
+                  cy={position.y}
+                  r={radius}
+                  fill={tone.color}
+                  opacity={connected ? 1 : 0.78}
+                  className={selected || hovered ? 'cortex-active-node' : undefined}
+                  style={{
+                    filter: `drop-shadow(0 0 ${selected || hovered ? 13 : 8}px ${tone.color})`,
+                  }}
+                />
+                {selected || hovered ? (
+                  <circle
+                    cx={position.x}
+                    cy={position.y}
+                    r={radius + 6}
+                    fill="none"
+                    stroke={tone.color}
+                    strokeOpacity="0.52"
+                    strokeWidth="1"
+                  />
+                ) : null}
+                {showLabel ? (
+                  <g pointerEvents="none">
+                    <rect
+                      x={labelX}
+                      y={labelY}
+                      width={labelWidth}
+                      height="24"
+                      rx="12"
+                      fill="rgba(7, 10, 18, 0.84)"
+                      stroke={tone.color}
+                      strokeOpacity={selected || hovered ? 0.64 : 0.28}
+                    />
+                    <circle cx={labelX + 12} cy={labelY + 12} r="2.3" fill={tone.color} />
+                    <text x={labelX + 21} y={labelY + 15.5} fill="rgba(241, 245, 249, 0.92)" fontSize="10.5" fontWeight="600">
+                      {truncateLabel(label, selected || hovered ? 28 : 22)}
+                    </text>
+                  </g>
                 ) : null}
               </g>
             );
           })}
+          {activeNode ? (
+            <g pointerEvents="none">
+              <text x="18" y={layout.height - 36} fill="rgba(148, 163, 184, 0.78)" fontSize="10">
+                Selected node
+              </text>
+              <text x="18" y={layout.height - 18} fill="rgba(241, 245, 249, 0.94)" fontSize="12" fontWeight="700">
+                {truncateLabel(activeNode.label || activeNode.id, 52)}
+              </text>
+            </g>
+          ) : null}
         </svg>
-        {graph.nodes.map((node) => {
-          const position = layout.positions.get(node.id);
-          if (!position) return null;
-          const tone = nodeTone(node);
-          const signalDots = signalDotsForNode(node);
-          const selected = selectedNodeId === node.id;
-          return (
-            <button
-              key={node.id}
-              type="button"
-              onClick={() => onSelectNode(node.id)}
-              className="group absolute rounded-xl text-left transition duration-200 ease-out hover:-translate-y-0.5 active:scale-[0.99]"
-              style={{
-                left: position.x,
-                top: position.y,
-                width: NODE_WIDTH,
-                height: NODE_HEIGHT,
-                color: 'var(--text-primary)',
-              }}
-              data-testid={`cortex-node-${node.id}`}
-            >
-              <span
-                className="absolute left-1/2 top-[35px] rounded-full"
-                style={{
-                  width: NODE_HUB_SIZE + 28,
-                  height: NODE_HUB_SIZE + 28,
-                  transform: 'translate(-50%, -50%)',
-                  background: selected
-                    ? `radial-gradient(circle, ${tone.aura} 0%, transparent 66%)`
-                    : `radial-gradient(circle, ${tone.aura} 0%, transparent 62%)`,
-                  opacity: selected ? 0.95 : 0.56,
-                }}
-                aria-hidden="true"
-              />
-              <span
-                className="absolute left-1/2 top-[35px] rounded-full border transition duration-200 group-hover:scale-105"
-                style={{
-                  width: NODE_HUB_SIZE,
-                  height: NODE_HUB_SIZE,
-                  transform: 'translate(-50%, -50%)',
-                  borderColor: selected ? 'var(--accent-primary)' : tone.border,
-                  background: tone.background,
-                  boxShadow: selected
-                    ? `0 0 0 1px color-mix(in srgb, var(--accent-primary) 68%, transparent), 0 18px 36px -26px ${tone.shadow}, inset 0 1px 0 rgba(255,255,255,0.22)`
-                    : `0 16px 30px -28px ${tone.shadow}, inset 0 1px 0 rgba(255,255,255,0.16)`,
-                }}
-                aria-hidden="true"
-              >
-                <span
-                  className="cortex-neuron-pulse absolute left-1/2 top-1/2 block rounded-full"
-                  style={{
-                    width: 10,
-                    height: 10,
-                    transform: 'translate(-50%, -50%)',
-                    background: tone.border,
-                    boxShadow: `0 0 0 4px ${tone.aura}`,
-                  }}
-                />
-              </span>
-              {signalDots.map((dot) => (
-                <span
-                  key={dot.key}
-                  className="absolute rounded-full transition duration-200 group-hover:scale-125"
-                  style={{
-                    width: NODE_SIGNAL_DOT_SIZE,
-                    height: NODE_SIGNAL_DOT_SIZE,
-                    left: `calc(50% + ${dot.x}px)`,
-                    top: `${35 + dot.y}px`,
-                    transform: 'translate(-50%, -50%)',
-                    background: dot.primary ? tone.border : 'rgba(148, 163, 184, 0.62)',
-                    opacity: dot.opacity,
-                    boxShadow: dot.primary ? `0 0 0 3px ${tone.aura}` : 'none',
-                  }}
-                  aria-hidden="true"
-                />
-              ))}
-              <span className="absolute inset-x-0 bottom-0 rounded-lg border px-3 py-2" style={{
-                borderColor: selected ? 'var(--accent-primary)' : 'color-mix(in srgb, var(--border-subtle) 78%, transparent)',
-                background: 'color-mix(in srgb, var(--bg-panel) 82%, transparent)',
-                boxShadow: selected ? `0 12px 26px -24px ${tone.shadow}` : 'none',
-              }}>
-                <span className="flex items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-normal" style={{ color: tone.text }}>
-                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: tone.border }} />
-                    {node.kind}
-                  </span>
-                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                    {node.risk || 'safe'}
-                  </span>
-                </span>
-                <span className="mt-1 line-clamp-1 block text-xs font-semibold leading-5">{node.label}</span>
-                {node.proofRequired || node.proofClaims?.length ? (
-                  <span className="mt-0.5 block truncate text-[10px]" style={{ color: 'var(--text-muted)' }}>Proof bound</span>
-                ) : null}
-              </span>
-            </button>
-          );
-        })}
       </div>
     </div>
   );
@@ -376,10 +375,15 @@ export function GraphCanvas({ graph, layout, selectedNodeId, onSelectNode }) {
 
 function computeGraphLayout(graph) {
   const nodes = graph?.nodes || [];
-  if (!nodes.length) return { width: 640, height: 320, positions: new Map() };
+  if (!nodes.length) return { width: FORCE_MIN_WIDTH, height: FORCE_MIN_HEIGHT, positions: new Map() };
   const nodeIds = new Set(nodes.map((node) => node.id));
   const layers = new Map(nodes.map((node) => [node.id, 0]));
   const edges = (graph.edges || []).filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to));
+  const width = Math.max(FORCE_MIN_WIDTH, Math.min(1180, 520 + nodes.length * 78));
+  const height = Math.max(FORCE_MIN_HEIGHT, Math.min(640, 330 + Math.ceil(nodes.length / 4) * 64));
+  const centerX = width / 2;
+  const centerY = height / 2;
+
   for (let pass = 0; pass < Math.max(1, nodes.length * 2); pass += 1) {
     let changed = false;
     for (const edge of edges) {
@@ -398,34 +402,112 @@ function computeGraphLayout(graph) {
     list.push(node);
     grouped.set(layer, list);
   }
-  const positions = new Map();
-  let maxLayer = 0;
-  let maxRows = 1;
+
+  const maxLayer = Math.max(1, ...Array.from(grouped.keys()));
+  const particles = new Map();
   for (const [layer, list] of grouped.entries()) {
-    maxLayer = Math.max(maxLayer, layer);
-    maxRows = Math.max(maxRows, list.length);
     list.forEach((node, row) => {
-      positions.set(node.id, {
-        x: 32 + layer * LAYER_GAP,
-        y: 32 + row * ROW_GAP,
+      const rowCenter = (list.length - 1) / 2;
+      const seed = stableNodeSeed(node.id);
+      const layerRatio = maxLayer === 0 ? 0.5 : layer / maxLayer;
+      const anchorX = FORCE_PADDING + layerRatio * (width - FORCE_PADDING * 2);
+      const anchorY = centerY + (row - rowCenter) * Math.min(92, height / Math.max(4, list.length + 1));
+      particles.set(node.id, {
+        id: node.id,
+        x: clamp(anchorX + Math.sin(seed) * 34, FORCE_PADDING, width - FORCE_PADDING),
+        y: clamp(anchorY + Math.cos(seed * 1.7) * 38, FORCE_PADDING, height - FORCE_PADDING),
+        vx: 0,
+        vy: 0,
+        anchorX,
+        anchorY: clamp(anchorY, FORCE_PADDING, height - FORCE_PADDING),
       });
     });
   }
+
+  for (let step = 0; step < FORCE_ITERATIONS; step += 1) {
+    const particleList = Array.from(particles.values());
+    for (let i = 0; i < particleList.length; i += 1) {
+      for (let j = i + 1; j < particleList.length; j += 1) {
+        const a = particleList[i];
+        const b = particleList[j];
+        const dx = b.x - a.x || 0.01;
+        const dy = b.y - a.y || 0.01;
+        const distanceSquared = Math.max(64, dx * dx + dy * dy);
+        const distance = Math.sqrt(distanceSquared);
+        const force = 1450 / distanceSquared;
+        const fx = (dx / distance) * force;
+        const fy = (dy / distance) * force;
+        a.vx -= fx;
+        a.vy -= fy;
+        b.vx += fx;
+        b.vy += fy;
+      }
+    }
+
+    for (const edge of edges) {
+      const a = particles.get(edge.from);
+      const b = particles.get(edge.to);
+      if (!a || !b) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      const targetDistance = 118 + Math.min(42, Math.abs((layers.get(edge.to) || 0) - (layers.get(edge.from) || 0)) * 8);
+      const force = (distance - targetDistance) * 0.012;
+      const fx = (dx / distance) * force;
+      const fy = (dy / distance) * force;
+      a.vx += fx;
+      a.vy += fy;
+      b.vx -= fx;
+      b.vy -= fy;
+    }
+
+    for (const particle of particles.values()) {
+      particle.vx += (particle.anchorX - particle.x) * 0.018;
+      particle.vy += (particle.anchorY - particle.y) * 0.018;
+      particle.vx += (centerX - particle.x) * 0.0016;
+      particle.vy += (centerY - particle.y) * 0.0016;
+      particle.vx *= 0.72;
+      particle.vy *= 0.72;
+      particle.x = clamp(particle.x + particle.vx, FORCE_PADDING, width - FORCE_PADDING);
+      particle.y = clamp(particle.y + particle.vy, FORCE_PADDING, height - FORCE_PADDING);
+    }
+  }
+
+  const positions = new Map();
+  for (const particle of particles.values()) {
+    positions.set(particle.id, {
+      x: Math.round(particle.x * 10) / 10,
+      y: Math.round(particle.y * 10) / 10,
+    });
+  }
+
   return {
     positions,
-    width: 64 + (maxLayer + 1) * LAYER_GAP,
-    height: 80 + maxRows * ROW_GAP,
+    width,
+    height,
   };
 }
 
+function stableNodeSeed(value = '') {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) % 1000003;
+  }
+  return (hash / 1000003) * Math.PI * 2;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function nodeTone(node) {
-  if (node.kind === 'Proof') return { border: 'oklch(58% 0.16 248)', text: 'oklch(82% 0.08 248)', shadow: 'oklch(58% 0.16 248 / 0.55)', aura: 'oklch(58% 0.16 248 / 0.18)', background: 'linear-gradient(180deg, oklch(58% 0.16 248 / 0.22), oklch(21% 0.035 248 / 0.68))' };
-  if (['Guardrail', 'CaseLaw', 'Adversary'].includes(node.kind)) return { border: 'oklch(58% 0.12 178)', text: 'oklch(83% 0.08 178)', shadow: 'oklch(58% 0.12 178 / 0.50)', aura: 'oklch(58% 0.12 178 / 0.18)', background: 'linear-gradient(180deg, oklch(58% 0.12 178 / 0.22), oklch(21% 0.03 190 / 0.68))' };
-  if (node.kind === 'Expiry') return { border: 'oklch(56% 0.04 250)', text: 'oklch(83% 0.025 250)', shadow: 'oklch(56% 0.04 250 / 0.48)', aura: 'oklch(56% 0.04 250 / 0.16)', background: 'linear-gradient(180deg, oklch(28% 0.035 250 / 0.86), oklch(17% 0.028 250 / 0.76))' };
-  if (node.risk === 'dangerous') return { border: 'oklch(57% 0.17 25)', text: 'oklch(82% 0.09 25)', shadow: 'oklch(57% 0.17 25 / 0.50)', aura: 'oklch(57% 0.17 25 / 0.18)', background: 'linear-gradient(180deg, oklch(57% 0.17 25 / 0.22), oklch(21% 0.035 25 / 0.70))' };
-  if (node.kind === 'Action' || node.risk === 'mutation') return { border: 'oklch(66% 0.14 75)', text: 'oklch(86% 0.09 75)', shadow: 'oklch(66% 0.14 75 / 0.50)', aura: 'oklch(66% 0.14 75 / 0.18)', background: 'linear-gradient(180deg, oklch(66% 0.14 75 / 0.22), oklch(23% 0.035 75 / 0.68))' };
-  if (['Permission', 'Assertion', 'Checkride'].includes(node.kind)) return { border: 'oklch(60% 0.13 145)', text: 'oklch(84% 0.08 145)', shadow: 'oklch(60% 0.13 145 / 0.45)', aura: 'oklch(60% 0.13 145 / 0.16)', background: 'linear-gradient(180deg, oklch(60% 0.13 145 / 0.20), oklch(21% 0.035 145 / 0.64))' };
-  return { border: 'rgba(148, 163, 184, 0.66)', text: '#cbd5e1', shadow: 'rgba(148, 163, 184, 0.42)', aura: 'rgba(148, 163, 184, 0.16)', background: 'linear-gradient(180deg, rgba(30, 41, 59, 0.66), rgba(15, 23, 42, 0.46))' };
+  if (node.kind === 'Proof') return { color: 'oklch(63% 0.15 248)', text: 'oklch(84% 0.08 248)' };
+  if (['Guardrail', 'CaseLaw', 'Adversary'].includes(node.kind)) return { color: 'oklch(62% 0.12 164)', text: 'oklch(84% 0.08 164)' };
+  if (node.kind === 'Expiry') return { color: 'oklch(62% 0.035 250)', text: 'oklch(84% 0.025 250)' };
+  if (node.risk === 'dangerous') return { color: 'oklch(62% 0.17 25)', text: 'oklch(84% 0.09 25)' };
+  if (node.kind === 'Action' || node.risk === 'mutation') return { color: 'oklch(69% 0.14 75)', text: 'oklch(87% 0.09 75)' };
+  if (['Permission', 'Assertion', 'Checkride'].includes(node.kind)) return { color: 'oklch(63% 0.12 145)', text: 'oklch(84% 0.08 145)' };
+  return { color: 'rgba(148, 163, 184, 0.76)', text: '#cbd5e1' };
 }
 
 function Metric({ label, value }) {
@@ -462,21 +544,38 @@ function Legend({ label, tone }) {
   );
 }
 
-function compactCondition(condition = '') {
-  const text = String(condition || '');
-  if (text.length <= 24) return text;
-  return `${text.slice(0, 21)}...`;
-}
-
-function nodeCenter(position) {
-  return {
-    x: position.x + NODE_WIDTH / 2,
-    y: position.y + NODE_HEIGHT / 2 - 12,
-  };
-}
-
 function arrayCount(value) {
   return Array.isArray(value) ? value.length : 0;
+}
+
+function nodeRadius(node) {
+  const signalCount = nodeSignalCount(node);
+  if (node.risk === 'dangerous') return 8;
+  if (node.kind === 'Proof') return 7;
+  if (node.kind === 'Action' || node.risk === 'mutation') return 6.5;
+  if (IMPORTANT_NODE_KINDS.has(node.kind)) return 6;
+  return Math.min(5.8, Math.max(3, 3 + Math.log2(signalCount) * 0.85));
+}
+
+function nodeDepth(node, nodes) {
+  const index = Math.max(0, nodes.findIndex((candidate) => candidate.id === node.id));
+  const semanticWeight = node.risk === 'dangerous' || node.kind === 'Proof' ? 2 : IMPORTANT_NODE_KINDS.has(node.kind) ? 1 : 0;
+  return (index % 5) * 0.25 + semanticWeight;
+}
+
+function isImportantNode(node) {
+  return node.risk === 'dangerous'
+    || node.risk === 'mutation'
+    || node.kind === 'Action'
+    || node.proofRequired
+    || arrayCount(node.proofClaims) > 0
+    || IMPORTANT_NODE_KINDS.has(node.kind);
+}
+
+function truncateLabel(label = '', max = 24) {
+  const text = String(label || '');
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 3))}...`;
 }
 
 function nodeSignalCount(node) {
@@ -496,19 +595,4 @@ function nodeSignalCount(node) {
     + arrayCount(metadata.evidence_claims)
     + arrayCount(metadata.expected_effects);
   return Math.min(8, Math.max(3, count));
-}
-
-function signalDotsForNode(node) {
-  const total = nodeSignalCount(node);
-  const radius = 34;
-  return Array.from({ length: total }, (_, index) => {
-    const angle = (-90 + (360 / total) * index) * (Math.PI / 180);
-    return {
-      key: `${node.id}-signal-${index}`,
-      x: Math.cos(angle) * radius,
-      y: Math.sin(angle) * radius,
-      primary: index < Math.max(1, Math.ceil(total / 3)),
-      opacity: 0.56 + (index / Math.max(1, total - 1)) * 0.28,
-    };
-  });
 }
