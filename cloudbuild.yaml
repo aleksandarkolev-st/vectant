@@ -202,7 +202,9 @@ steps:
     name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=mcp/synthi-mcp/Dockerfile.workflow-bridge
-      - --context=dir:///workspace/mcp/synthi-mcp
+      # Root context: the MCP package depends on packages/mcp-hub via a local
+      # file dependency, matching the frontend workspace image pattern.
+      - --context=dir:///workspace
       - --destination=${_REGISTRY}/synthi-browser-workflow-bridge:${_IMAGE_TAG}
       - --cache=true
       - --cache-ttl=168h

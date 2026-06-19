@@ -1,6 +1,6 @@
 FROM mcr.microsoft.com/playwright:v1.60.0-noble
 
-WORKDIR /app
+WORKDIR /workspace/mcp/synthi-mcp
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -10,12 +10,13 @@ RUN apt-get update \
     xvfb \
   && rm -rf /var/lib/apt/lists/*
 
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY packages/mcp-hub /workspace/packages/mcp-hub
+COPY mcp/synthi-mcp/.npmrc mcp/synthi-mcp/package.json mcp/synthi-mcp/package-lock.json ./
+RUN npm ci --workspaces=false
 
-COPY tsconfig.json ./
-COPY src ./src
-COPY scripts ./scripts
+COPY mcp/synthi-mcp/tsconfig.json ./
+COPY mcp/synthi-mcp/src ./src
+COPY mcp/synthi-mcp/scripts ./scripts
 
 RUN npm run build
 
