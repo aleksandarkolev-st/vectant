@@ -579,6 +579,22 @@ async function writeGateCommandResult({
 
 function buildDryRunGateResult(gatePlan) {
   if (gatePlan.status === "skipped") return buildSkippedGateResult(gatePlan);
+  if (gatePlan.fail_if_missing_env) {
+    return {
+      ...buildSkippedGateResult(gatePlan),
+      status: "failed",
+      skip_reason: null,
+      failure_reason: "missing_required_env",
+    };
+  }
+  if (gatePlan.fail_if_invalid_env) {
+    return {
+      ...buildSkippedGateResult(gatePlan),
+      status: "failed",
+      skip_reason: null,
+      failure_reason: "invalid_required_env",
+    };
+  }
   return {
     gate_id: gatePlan.gate_id,
     tier: gatePlan.tier,

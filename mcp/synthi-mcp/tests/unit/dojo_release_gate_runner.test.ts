@@ -211,6 +211,51 @@ describe("Dojo release gate runner", () => {
     ]);
   });
 
+  it("fails dry-run reports when fail-on-missing-env is requested", async () => {
+    const outDir = await mkdtemp(join(tmpdir(), "dojo-release-gate-runner-"));
+    const result = await runDojoReleaseGateRunner({
+      scope: "milestone",
+      gateIds: ["dojo_postgres_control_plane_self_check"],
+      dryRun: true,
+      execute: false,
+      outDir,
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      env: {},
+      failOnMissingEnv: true,
+    });
+    const report = JSON.parse(await readFile(result.report_path, "utf8"));
+    const evidence = JSON.parse(await readFile(result.evidence_path, "utf8"));
+
+    expect(report).toEqual(expect.objectContaining({
+      ok: false,
+      complete: false,
+      promotion_ready: false,
+      counts: expect.objectContaining({
+        failed: 1,
+        skipped: 0,
+      }),
+    }));
+    expect(report.errors).toEqual(expect.arrayContaining([
+      "gate_failed:dojo_postgres_control_plane_self_check:missing_required_env",
+    ]));
+    expect(report.results).toEqual([
+      expect.objectContaining({
+        gate_id: "dojo_postgres_control_plane_self_check",
+        status: "failed",
+        executed: false,
+        failure_reason: "missing_required_env",
+        missing_env: ["SYNTHI_DOJO_POSTGRES_TEST_URL"],
+      }),
+    ]);
+    expect(evidence).toEqual(expect.objectContaining({
+      ok: false,
+      complete: false,
+      promotion_ready: false,
+      failed_gate_count: 1,
+      skipped_gate_count: 0,
+    }));
+  });
+
   it("can escalate invalid environment requirements into failed execution results", async () => {
     const plan = buildDojoReleaseGateExecutionPlan({
       manifest: manifest(),
