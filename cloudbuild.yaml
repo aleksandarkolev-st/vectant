@@ -315,6 +315,7 @@ steps:
         REGISTRY="${_REGISTRY}"
         TAG="${_IMAGE_TAG}"
         KUSTOMIZE_DIR="${_KUSTOMIZE_DIR}"
+        DOJO_RELEASE_KUSTOMIZE_DIR="${_DOJO_RELEASE_KUSTOMIZE_DIR}"
         KUSTOMIZE_LOAD_RESTRICTOR="${_KUSTOMIZE_LOAD_RESTRICTOR}"
         NS="synthi"
 
@@ -372,7 +373,9 @@ steps:
         kubectl rollout status deployment/ai-engine -n $${NS} --timeout=300s
         kubectl rollout status deployment/ai-gateway -n $${NS} --timeout=300s
         kubectl rollout status deployment/signaling-server -n $${NS} --timeout=300s
-        if kubectl get deployment/dojo-mcp-host -n $${NS} >/dev/null 2>&1; then
+        if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then
+          kubectl rollout status deployment/dojo-mcp-host -n $${NS} --timeout=300s
+        elif kubectl get deployment/dojo-mcp-host -n $${NS} >/dev/null 2>&1; then
           kubectl rollout status deployment/dojo-mcp-host -n $${NS} --timeout=300s
         fi
 
