@@ -27,7 +27,35 @@ const requiredApis = [
   "monitoring.googleapis.com",
 ];
 
-function inventoryWithSecrets({ remoteSecrets = [], k8sSecrets = [], externalSecrets = [] } = {}) {
+function inventoryWithSecrets({
+  remoteSecrets = [],
+  k8sSecrets = [],
+  externalSecrets = [],
+  namespace = null,
+  ingressHosts = null,
+  deployments = null,
+} = {}) {
+  const datasets = {
+    enabled_apis: requiredApis.map((name) => ({ config: { name } })),
+    secret_manager_names: remoteSecrets.map((name) => ({ name: `projects/test/secrets/${name}` })),
+    k8s_secret_names: `${k8sSecrets.join("\n")}\n`,
+    k8s_external_secrets: {
+      items: externalSecrets,
+    },
+  };
+  if (namespace !== null) {
+    datasets.k8s_namespace = { metadata: { name: namespace } };
+  }
+  if (Array.isArray(ingressHosts)) {
+    datasets.k8s_ingresses = {
+      items: ingressHosts.map((host) => ({ spec: { rules: [{ host }] } })),
+    };
+  }
+  if (Array.isArray(deployments)) {
+    datasets.k8s_deployments = {
+      items: deployments.map((name) => ({ metadata: { name } })),
+    };
+  }
   return {
     mode: "execute",
     commandAvailability: {
@@ -37,17 +65,13 @@ function inventoryWithSecrets({ remoteSecrets = [], k8sSecrets = [], externalSec
     commandResults: [
       { id: "enabled_apis", ok: true, parseOk: true },
       { id: "secret_manager_names", ok: true, parseOk: true },
+      { id: "k8s_namespace", ok: true, parseOk: true },
+      { id: "k8s_ingresses", ok: true, parseOk: true },
       { id: "k8s_secret_names", ok: true, parseOk: true },
+      { id: "k8s_deployments", ok: true, parseOk: true },
       { id: "k8s_external_secrets", ok: true, parseOk: true },
     ],
-    datasets: {
-      enabled_apis: requiredApis.map((name) => ({ config: { name } })),
-      secret_manager_names: remoteSecrets.map((name) => ({ name: `projects/test/secrets/${name}` })),
-      k8s_secret_names: `${k8sSecrets.join("\n")}\n`,
-      k8s_external_secrets: {
-        items: externalSecrets,
-      },
-    },
+    datasets,
   };
 }
 
@@ -223,6 +247,44 @@ describe("Dojo GCP release inventory", () => {
     expect(result.checks.find((check) => check.id === "k8s_deployment:dojo-mcp-host")).toEqual(expect.objectContaining({ status: "failed" }));
   });
 
+  it("verifies namespace and ingress host when those datasets are collected", () => {
+    const config = resolveConfig(parseArgs([
+      "--execute",
+      "--namespace=synthi",
+      "--domain=beta.vectant.dev",
+      "--expected-deployment=dojo-mcp-host",
+    ]));
+    const result = evaluate(config, inventoryWithSecrets({
+      namespace: "synthi",
+      ingressHosts: ["beta.vectant.dev"],
+      deployments: ["dojo-mcp-host"],
+      k8sSecrets: ["synthi-secrets"],
+    }), []);
+
+    expect(result.ok).toBe(true);
+    expect(result.checks.find((check) => check.id === "k8s_namespace:synthi")).toEqual(expect.objectContaining({ status: "passed" }));
+    expect(result.checks.find((check) => check.id === "k8s_ingress_host:beta.vectant.dev")).toEqual(expect.objectContaining({ status: "passed" }));
+  });
+
+  it("fails namespace and ingress host checks when collected data does not match", () => {
+    const config = resolveConfig(parseArgs([
+      "--execute",
+      "--namespace=synthi",
+      "--domain=beta.vectant.dev",
+      "--expected-deployment=dojo-mcp-host",
+    ]));
+    const result = evaluate(config, inventoryWithSecrets({
+      namespace: "other-namespace",
+      ingressHosts: ["preview.vectant.dev"],
+      deployments: ["dojo-mcp-host"],
+      k8sSecrets: ["synthi-secrets"],
+    }), []);
+
+    expect(result.ok).toBe(false);
+    expect(result.checks.find((check) => check.id === "k8s_namespace:synthi")).toEqual(expect.objectContaining({ status: "failed" }));
+    expect(result.checks.find((check) => check.id === "k8s_ingress_host:beta.vectant.dev")).toEqual(expect.objectContaining({ status: "failed" }));
+  });
+
   it("keeps self-check import-safe and runnable through buildReport", () => {
     const raw = parseArgs(["--self-check"]);
     const config = resolveConfig(raw);
@@ -240,6 +302,7 @@ describe("Dojo GCP release inventory", () => {
     expect(report.mode).toBe("self_check");
     expect(report.evaluation.ok).toBe(true);
     expect(report.config.expectedK8sSecrets).toEqual(["synthi-secrets"]);
+    expect(report.evaluation.checks.find((check) => check.id === "k8s_namespace:synthi")).toEqual(expect.objectContaining({ status: "passed" }));
     expect(report.inventory.datasetKeys).toContain("k8s_external_secrets");
   });
 

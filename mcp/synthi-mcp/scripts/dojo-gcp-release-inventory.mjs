@@ -494,6 +494,8 @@ function evaluate(config, inventory, planViolations) {
   const buckets = namesFrom(datasets.gcs_buckets, (item) => normalizeBucket(item.name || item.id || ""));
   const secretManagerSecrets = namesFrom(datasets.secret_manager_names, (item) => item.name?.split("/").pop() || item.name);
   const deployments = namesFrom(datasets.k8s_deployments?.items, (item) => item.metadata?.name);
+  const namespaces = namesFrom(datasets.k8s_namespace ? [datasets.k8s_namespace] : [], (item) => item.metadata?.name);
+  const ingressHosts = ingressHostsFrom(datasets.k8s_ingresses?.items);
   const k8sSecrets = namesFrom(String(datasets.k8s_secret_names || "").split(/\r?\n/).filter(Boolean), (item) => item);
   const externalSecrets = externalSecretInventoryFrom(datasets.k8s_external_secrets?.items);
 
@@ -534,6 +536,8 @@ function evaluate(config, inventory, planViolations) {
   checks.push(namedResourceCheck("cloud_sql_instance", config.cloudSqlInstance, sqlInstances, { optionalWhenNoExecute: !config.execute || !hasDataset("cloud_sql_instances"), unavailableReason: datasetUnavailableReason("cloud_sql_instances", commandResults.get("cloud_sql_instances")) }));
   checks.push(namedResourceCheck("redis_instance", config.redisInstance, redisInstances, { optionalWhenNoExecute: !config.execute || !hasDataset("redis_instances"), unavailableReason: datasetUnavailableReason("redis_instances", commandResults.get("redis_instances")) }));
   checks.push(namedResourceCheck("gcs_bucket", config.gcsBucket, buckets, { optionalWhenNoExecute: !config.execute || !hasDataset("gcs_buckets"), unavailableReason: datasetUnavailableReason("gcs_buckets", commandResults.get("gcs_buckets")) }));
+  checks.push(namedResourceCheck(`k8s_namespace:${config.namespace}`, config.namespace, namespaces, { optionalWhenNoExecute: !config.execute || !hasDataset("k8s_namespace"), unavailableReason: datasetUnavailableReason("k8s_namespace", commandResults.get("k8s_namespace")) }));
+  checks.push(namedResourceCheck(`k8s_ingress_host:${config.domain}`, config.domain, ingressHosts, { optionalWhenNoExecute: !config.execute || !hasDataset("k8s_ingresses"), unavailableReason: datasetUnavailableReason("k8s_ingresses", commandResults.get("k8s_ingresses")) }));
 
   for (const secret of config.expectedK8sSecrets) {
     checks.push(namedResourceCheck(`k8s_secret:${secret}`, secret, k8sSecrets, { optionalWhenNoExecute: !config.execute || !hasDataset("k8s_secret_names"), unavailableReason: datasetUnavailableReason("k8s_secret_names", commandResults.get("k8s_secret_names")) }));
@@ -629,6 +633,22 @@ function namesFrom(values, pick) {
     const name = pick(value);
     if (typeof name === "string" && name.trim()) {
       result.add(name.trim());
+    }
+  }
+  return result;
+}
+
+function ingressHostsFrom(values) {
+  const result = new Set();
+  if (!Array.isArray(values)) {
+    return result;
+  }
+  for (const ingress of values) {
+    const rules = Array.isArray(ingress?.spec?.rules) ? ingress.spec.rules : [];
+    for (const rule of rules) {
+      if (typeof rule?.host === "string" && rule.host.trim()) {
+        result.add(rule.host.trim());
+      }
     }
   }
   return result;
@@ -811,6 +831,7 @@ function buildSelfCheckInventory() {
       cloud_sql_instances: [{ name: "self-check-sql" }],
       redis_instances: [{ name: "self-check-redis" }],
       gcs_buckets: [{ name: "gs://self-check-bucket" }],
+      k8s_namespace: { metadata: { name: "synthi" } },
       secret_manager_names: [{ name: "projects/self-check/secrets/synthi-secrets" }],
       k8s_secret_names: "synthi-secrets\n",
       k8s_deployments: { items: deployments },

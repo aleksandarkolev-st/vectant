@@ -272,6 +272,9 @@ function categoryForCheck(check) {
   if (check.id.startsWith("k8s_deployment:")) {
     return "deployment_inventory";
   }
+  if (check.id.startsWith("k8s_namespace:") || check.id.startsWith("k8s_ingress")) {
+    return "kubernetes_context";
+  }
   if (check.id === "kubectl_available") {
     return "kubernetes_context";
   }
