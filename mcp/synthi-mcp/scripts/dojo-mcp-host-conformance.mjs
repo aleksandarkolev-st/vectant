@@ -114,6 +114,8 @@ async function main() {
       evidence_record_count: config.evidenceRecordIds.length,
       ledger_checkpoint_hash_configured: Boolean(config.ledgerCheckpointHash),
       require_verified_evidence: config.requireVerifiedEvidence,
+      app_bearer_header: config.host.bearerToken ? config.host.bearerHeader : null,
+      iap_authorization_configured: Boolean(config.host.iapBearerToken),
     },
     deployment_claims: {
       require_external_control_plane_store: config.requireExternalControlPlaneStore,
@@ -334,6 +336,12 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
     || (mcpHostUrl ? "http-json-rpc" : "stdio");
   const outDir = path.resolve(args["out-dir"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_OUT_DIR || path.join(REPO_ROOT, "tmp", "dojo-mcp-host-conformance"));
   const timeoutMs = parseNonNegativeInteger(args["timeout-ms"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_TIMEOUT_MS || "60000", "timeout_ms");
+  const bearerToken = args["mcp-bearer-token"] || env.SYNTHI_DOJO_MCP_BEARER_TOKEN || "";
+  const bearerHeader = normalizeHttpHeaderName(args["mcp-bearer-header"] || env.SYNTHI_DOJO_MCP_BEARER_HEADER || "authorization");
+  const iapBearerToken = args["iap-bearer-token"] || env.SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN || "";
+  if (bearerToken && iapBearerToken && bearerHeader === "authorization") {
+    throw new Error("dojo_mcp_bearer_header_conflicts_with_iap_authorization");
+  }
   return {
     selfCheck: parseBooleanFlag(args["self-check"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_SELF_CHECK),
     outDir,
@@ -341,7 +349,9 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
     host: {
       transport,
       mcpHostUrl,
-      bearerToken: args["mcp-bearer-token"] || env.SYNTHI_DOJO_MCP_BEARER_TOKEN || "",
+      bearerToken,
+      bearerHeader,
+      iapBearerToken,
       commandSpec: resolveMcpCommandSpec({ args, env }),
       requireNonLoopbackMcpHost: parseBooleanFlag(args["require-non-loopback-mcp-host"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUIRE_NON_LOOPBACK_HOST),
       allowCustomStdioHost: parseBooleanFlag(args["allow-custom-stdio-host"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_ALLOW_CUSTOM_STDIO_HOST),
@@ -376,6 +386,14 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
     revocationActorType: normalizeActorType(args["revocation-actor-type"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_ACTOR_TYPE) || "service",
     revocationEvidenceRefs: parseStringList(args["revocation-evidence-refs"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_EVIDENCE_REFS),
   };
+}
+
+function normalizeHttpHeaderName(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized || !/^[!#$%&'*+\-.^_`|~0-9a-z]+$/.test(normalized)) {
+    throw new Error(`invalid_http_header_name:${value || ""}`);
+  }
+  return normalized;
 }
 
 function normalizeActorType(value) {
@@ -571,6 +589,8 @@ async function createMcpClient(config) {
     return new HttpJsonRpcClient({
       endpoint: config.host.mcpHostUrl,
       bearerToken: config.host.bearerToken,
+      bearerHeader: config.host.bearerHeader,
+      iapBearerToken: config.host.iapBearerToken,
       timeoutMs: config.timeoutMs,
     });
   }
@@ -586,9 +606,11 @@ async function createMcpClient(config) {
 }
 
 class HttpJsonRpcClient {
-  constructor({ endpoint, bearerToken, timeoutMs }) {
+  constructor({ endpoint, bearerToken, bearerHeader, iapBearerToken, timeoutMs }) {
     this.endpoint = endpoint;
     this.bearerToken = bearerToken;
+    this.bearerHeader = bearerHeader || "authorization";
+    this.iapBearerToken = iapBearerToken || "";
     this.timeoutMs = timeoutMs;
     this.nextId = 1;
   }
@@ -598,6 +620,8 @@ class HttpJsonRpcClient {
     const response = await fetchWithTimeout(this.endpoint, {
       timeoutMs: this.timeoutMs,
       bearerToken: this.bearerToken,
+      bearerHeader: this.bearerHeader,
+      iapBearerToken: this.iapBearerToken,
       body: { jsonrpc: "2.0", id, method, params },
     });
     if (response.error) throw new Error(`${response.error.code ?? "json_rpc_error"}: ${response.error.message ?? "unknown"}`);
@@ -608,6 +632,8 @@ class HttpJsonRpcClient {
     return fetchWithTimeout(this.endpoint, {
       timeoutMs: Math.min(this.timeoutMs, 10_000),
       bearerToken: this.bearerToken,
+      bearerHeader: this.bearerHeader,
+      iapBearerToken: this.iapBearerToken,
       body: { jsonrpc: "2.0", method, params },
     }).catch(() => undefined);
   }
@@ -1057,18 +1083,28 @@ async function runSelfCheck({ outDir }) {
   return { report_path: artifacts.report_path, manifest_path: artifacts.manifest_path, report: artifacts.report, manifest: artifacts.manifest };
 }
 
-async function fetchWithTimeout(endpoint, { timeoutMs, bearerToken, body }) {
+async function fetchWithTimeout(endpoint, { timeoutMs, bearerToken, bearerHeader = "authorization", iapBearerToken = "", body }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const headers = {
+      "content-type": "application/json",
+      accept: "application/json",
+    };
+    if (iapBearerToken) {
+      headers.authorization = `Bearer ${iapBearerToken}`;
+    }
+    if (bearerToken) {
+      const normalizedBearerHeader = normalizeHttpHeaderName(bearerHeader);
+      if (headers[normalizedBearerHeader] && normalizedBearerHeader === "authorization") {
+        throw new Error("dojo_mcp_bearer_header_conflicts_with_iap_authorization");
+      }
+      headers[normalizedBearerHeader] = `Bearer ${bearerToken}`;
+    }
     const response = await fetch(endpoint, {
       method: "POST",
       signal: controller.signal,
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        ...(bearerToken ? { authorization: `Bearer ${bearerToken}` } : {}),
-      },
+      headers,
       body: JSON.stringify(body),
     });
     const text = await response.text();

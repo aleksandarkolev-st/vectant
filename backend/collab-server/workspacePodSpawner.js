@@ -77,6 +77,36 @@ const WORKFLOW_EXTERNAL_OPEN_TIMEOUT_MS = parsePositiveInt(process.env.SYNTHI_BR
 const HOSTED_BROWSER_CDP_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT, 9222);
 const HOSTED_BROWSER_VIEW_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT, 6080);
 const HOSTED_BROWSER_VNC_PORT = parseSinglePort(process.env.SYNTHI_HOSTED_BROWSER_VNC_PORT, 5900);
+const SYNTHI_CONFIG_MAP_NAME = 'synthi-config';
+const SYNTHI_SECRET_NAME = 'synthi-secrets';
+const WORKFLOW_BRIDGE_DOJO_CONFIG_ENVS = [
+  'SYNTHI_DOJO_PRODUCTION_ENFORCEMENT',
+  'SYNTHI_DOJO_REQUIRE_DURABLE_STORE',
+  'SYNTHI_DOJO_CONTROL_PLANE_STORE',
+  'SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING',
+  'SYNTHI_DOJO_PROOF_SIGNING_PROVIDER',
+  'SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER',
+  'SYNTHI_DOJO_EVIDENCE_LEDGER_STORE',
+  'SYNTHI_DOJO_MCP_MANIFEST_ISSUER',
+  'SYNTHI_DOJO_MCP_MANIFEST_SIGNING_ALGORITHM',
+  'SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST',
+  'SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS',
+  'SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS',
+  'SYNTHI_TENANT_ID',
+];
+const WORKFLOW_BRIDGE_DOJO_SECRET_ENVS = [
+  'SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL',
+  'SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL',
+  'SYNTHI_DOJO_PROOF_SIGNING_KEY_ID',
+  'SYNTHI_DOJO_PROOF_SIGNING_COMMAND',
+  'SYNTHI_DOJO_PROOF_SIGNING_COMMAND_ARGS',
+  'SYNTHI_DOJO_PROOF_SIGNING_MANAGED_KEY_URI',
+  'SYNTHI_DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM',
+  'SYNTHI_DOJO_MCP_MANIFEST_KEY_ID',
+  'SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM',
+  'SYNTHI_DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM',
+  'SYNTHI_DOJO_MCP_BEARER_TOKEN',
+];
 
 // ── Sysbox runtime-pod config (Slice 2; dark behind RUNTIME_BACKEND=sysbox-pod) ──
 // Separate caps/timeouts from the worker's so the two untrusted workloads are
@@ -205,6 +235,39 @@ function runtimeWorkspaceUrl(metadata = {}) {
   return slug ? `${appUrl}/workspace/${encodeURIComponent(slug)}` : appUrl;
 }
 
+function optionalConfigMapEnv(name, key = name) {
+  return {
+    name,
+    valueFrom: {
+      configMapKeyRef: {
+        name: SYNTHI_CONFIG_MAP_NAME,
+        key,
+        optional: true,
+      },
+    },
+  };
+}
+
+function optionalSecretEnv(name, key = name) {
+  return {
+    name,
+    valueFrom: {
+      secretKeyRef: {
+        name: SYNTHI_SECRET_NAME,
+        key,
+        optional: true,
+      },
+    },
+  };
+}
+
+function workflowBridgeDojoEnv() {
+  return [
+    ...WORKFLOW_BRIDGE_DOJO_CONFIG_ENVS.map((name) => optionalConfigMapEnv(name)),
+    ...WORKFLOW_BRIDGE_DOJO_SECRET_ENVS.map((name) => optionalSecretEnv(name)),
+  ];
+}
+
 function workflowBridgeContainers(sessionId, metadata = {}) {
   if (!WORKFLOW_BRIDGE_IMAGE) return [];
 
@@ -247,22 +310,24 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
         { name: 'SYNTHI_AUTH_CHECKPOINT_SCOPE', value: sessionId },
         {
           name: 'SYNTHI_COLLAB_SERVER_URL',
-          valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'COLLAB_SERVER_URL' } },
+          valueFrom: { configMapKeyRef: { name: SYNTHI_CONFIG_MAP_NAME, key: 'COLLAB_SERVER_URL' } },
         },
         {
           name: 'COLLAB_SERVER_URL',
-          valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'COLLAB_SERVER_URL' } },
+          valueFrom: { configMapKeyRef: { name: SYNTHI_CONFIG_MAP_NAME, key: 'COLLAB_SERVER_URL' } },
         },
         { name: 'SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE', value: `${storeDir}/private-tools.enc.json` },
         {
           name: 'SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY',
-          valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY' } },
+          valueFrom: { secretKeyRef: { name: SYNTHI_SECRET_NAME, key: 'SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY' } },
         },
         { name: 'SYNTHI_AUTH_CHECKPOINT_STORE_FILE', value: `${storeDir}/auth-checkpoints.enc.json` },
         {
           name: 'SYNTHI_AUTH_CHECKPOINT_STORE_KEY',
-          valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'SYNTHI_AUTH_CHECKPOINT_STORE_KEY' } },
+          valueFrom: { secretKeyRef: { name: SYNTHI_SECRET_NAME, key: 'SYNTHI_AUTH_CHECKPOINT_STORE_KEY' } },
         },
+        { name: 'SYNTHI_ACTOR_ID', value: String(metadata.filesystemUserId || metadata.userId || 'workspace-runtime') },
+        ...workflowBridgeDojoEnv(),
         { name: 'SYNTHI_VISION_BACKEND', value: 'agent_side' },
       ],
       ports: [
@@ -1863,4 +1928,6 @@ module.exports = {
   runtimeSessionsFromDeployments,
   runtimeCullDecision,
   runtimeAtCapacity,
+  workflowBridgeContainers,
+  workflowBridgeDojoEnv,
 };

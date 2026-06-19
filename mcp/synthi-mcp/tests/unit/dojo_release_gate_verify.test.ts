@@ -75,6 +75,7 @@ import {
   buildDojoPackageReadinessEvidenceManifest,
   collectPackageEntryPaths,
   collectScriptReferencedPackagePaths,
+  collectScriptTransitivePackagePaths,
   deriveDojoPackageReadinessRequiredScriptNames,
   DOJO_PACKAGE_READINESS_REQUIRED_FILE_ENTRIES,
 } from "../../scripts/dojo-package-readiness-self-check.mjs";
@@ -2519,11 +2520,18 @@ describe("Dojo release gate artifact verifier", () => {
         conformance: {
           require_custom_mcp_command: true,
           custom_mcp_command: true,
+          explicit_mcp_command: true,
+          explicit_mcp_args: true,
+          explicit_mcp_cwd: true,
+          explicit_mcp_command_spec: true,
         },
         mcp_server: {
           command: "node",
           cwd: "/opt/synthi/mcp",
           args_count: 2,
+          explicit_command: true,
+          explicit_args: true,
+          explicit_cwd: true,
           default_repo_dist: false,
         },
       })),
@@ -2557,6 +2565,30 @@ describe("Dojo release gate artifact verifier", () => {
       errors: [],
     }));
 
+    const weakCodexHost = privateToolCodexAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      conformance: {
+        custom_mcp_command: true,
+        explicit_mcp_command: true,
+        explicit_mcp_args: false,
+        explicit_mcp_cwd: false,
+        explicit_mcp_command_spec: false,
+      },
+      mcp_server: {
+        command: "synthi-mcp-wrapper",
+        cwd: MCP_ROOT,
+        args_count: 0,
+        explicit_command: true,
+        explicit_args: false,
+        explicit_cwd: false,
+        default_repo_dist: false,
+      },
+    }));
+    expect(validateDojoPrivateToolCodexHostConformanceForRelease(weakCodexHost).errors).toEqual(expect.arrayContaining([
+      "private_tool_codex_host_explicit_mcp_args_missing",
+      "private_tool_codex_host_explicit_mcp_cwd_missing",
+      "private_tool_codex_host_explicit_mcp_command_spec_incomplete",
+    ]));
+
     const weakStdio = privateToolStdioAcceptanceFixture({
       target_url: "http://127.0.0.1:3000/private-tool",
       conformance: {
@@ -2566,7 +2598,11 @@ describe("Dojo release gate artifact verifier", () => {
         require_external_private_tool_store: true,
         external_private_tool_store: false,
         require_custom_mcp_command: true,
-        custom_mcp_command: false,
+        custom_mcp_command: true,
+        explicit_mcp_command: true,
+        explicit_mcp_args: false,
+        explicit_mcp_cwd: false,
+        explicit_mcp_command_spec: false,
       },
       private_tool_store: {
         external: false,
@@ -2577,13 +2613,118 @@ describe("Dojo release gate artifact verifier", () => {
         command: "node",
         cwd: MCP_ROOT,
         args_count: 1,
-        default_repo_dist: true,
+        explicit_command: true,
+        explicit_args: false,
+        explicit_cwd: false,
+        default_repo_dist: false,
       },
     });
     expect(validateDojoPrivateToolStdioHostConformanceForRelease(weakStdio).errors).toEqual(expect.arrayContaining([
       "private_tool_stdio_host_external_store_missing",
-      "private_tool_stdio_host_custom_mcp_command_missing",
+      "private_tool_stdio_host_explicit_mcp_args_missing",
+      "private_tool_stdio_host_explicit_mcp_cwd_missing",
+      "private_tool_stdio_host_explicit_mcp_command_spec_incomplete",
       "private_tool_stdio_host_target_not_remote:loopback",
+    ]));
+
+    const forgedLocalStore = privateToolStdioAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      conformance: {
+        require_custom_mcp_command: true,
+        custom_mcp_command: true,
+        external_private_tool_store_location_ok: true,
+      },
+      private_tool_store: {
+        external: true,
+        file: path.join(tmpdir(), "private-tools.enc.json"),
+      },
+    }));
+    expect(validateDojoPrivateToolStdioHostConformanceForRelease(forgedLocalStore).errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("private_tool_stdio_host_external_store_location_invalid:local_disallowed_root"),
+    ]));
+
+    const missingLocationPolicy = privateToolCodexAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      conformance: {
+        external_private_tool_store_location_ok: undefined,
+        external_private_tool_store_location_class: undefined,
+        external_private_tool_store_location_reasons: undefined,
+      },
+    }));
+    expect(validateDojoPrivateToolCodexHostConformanceForRelease(missingLocationPolicy).errors).toEqual(expect.arrayContaining([
+      "private_tool_codex_host_external_store_location_policy_missing",
+    ]));
+
+    const missingStoreFingerprint = privateToolStdioAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      private_tool_store: {
+        key_present: false,
+        key_sha256: null,
+      },
+    }));
+    expect(validateDojoPrivateToolStdioHostConformanceForRelease(missingStoreFingerprint).errors).toEqual(expect.arrayContaining([
+      "private_tool_stdio_host_store_key_fingerprint_missing",
+    ]));
+
+    const unexpectedStoreFingerprint = privateToolStdioAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      private_tool_store: {
+        key_sha256: sha256("runtime-store-key"),
+      },
+      expected_private_tool_store: {
+        key_sha256: sha256("release-expected-store-key"),
+      },
+    }));
+    expect(validateDojoPrivateToolStdioHostConformanceForRelease(unexpectedStoreFingerprint).errors).toEqual(expect.arrayContaining([
+      "private_tool_stdio_host_store_key_fingerprint_mismatch",
+    ]));
+
+    const missingStoreFingerprintAlgorithm = privateToolCodexAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      private_tool_store: {
+        key_fingerprint_alg: undefined,
+      },
+    }));
+    expect(validateDojoPrivateToolCodexHostConformanceForRelease(missingStoreFingerprintAlgorithm).errors).toEqual(expect.arrayContaining([
+      "private_tool_codex_host_store_key_fingerprint_alg_missing",
+    ]));
+
+    const mismatchedStoreScope = privateToolStdioAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      private_tool_store: {
+        expected_scope: "tenant/workspace/other-release",
+        scope_matches_expected: false,
+      },
+    }));
+    expect(validateDojoPrivateToolStdioHostConformanceForRelease(mismatchedStoreScope).errors).toEqual(expect.arrayContaining([
+      "private_tool_stdio_host_store_scope_mismatch",
+    ]));
+
+    const wrongExpectedStoreScope = privateToolCodexAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      private_tool_store: {
+        scope: "tenant/workspace/current-release",
+        expected_scope: "tenant/workspace/current-release",
+        scope_matches_expected: true,
+      },
+      expected_private_tool_store: {
+        scope: "tenant/workspace/approved-release",
+      },
+    }));
+    expect(validateDojoPrivateToolCodexHostConformanceForRelease(wrongExpectedStoreScope).errors).toEqual(expect.arrayContaining([
+      "private_tool_codex_host_expected_store_scope_mismatch",
+    ]));
+
+    const missingStoreScope = privateToolCodexAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      private_tool_store: {
+        scope: "",
+        expected_scope: "",
+      },
+    }));
+    expect(validateDojoPrivateToolCodexHostConformanceForRelease(missingStoreScope).errors).toEqual(expect.arrayContaining([
+      "private_tool_codex_host_store_scope_missing",
+    ]));
+
+    const inconsistentSeededStoreScope = privateToolStdioAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      seeded: {
+        store_scope: "tenant/workspace/previous-release",
+      },
+    }));
+    expect(validateDojoPrivateToolStdioHostConformanceForRelease(inconsistentSeededStoreScope).errors).toEqual(expect.arrayContaining([
+      "private_tool_stdio_host_seeded_store_scope_mismatch",
     ]));
   });
 
@@ -3070,11 +3211,18 @@ describe("Dojo release gate artifact verifier", () => {
         conformance: {
           require_custom_mcp_command: true,
           custom_mcp_command: true,
+          explicit_mcp_command: true,
+          explicit_mcp_args: true,
+          explicit_mcp_cwd: true,
+          explicit_mcp_command_spec: true,
         },
         mcp_server: {
           command: "node",
           cwd: "/opt/synthi/mcp",
           args_count: 2,
+          explicit_command: true,
+          explicit_args: true,
+          explicit_cwd: true,
           default_repo_dist: false,
         },
       })),
@@ -6148,10 +6296,38 @@ function deployedPrivateToolHostFixtureOverrides(overrides = {}) {
       runtime_host_class: "remote",
       require_external_private_tool_store: true,
       external_private_tool_store: true,
+      external_private_tool_store_location_ok: true,
+      external_private_tool_store_location_class: "remote_uri",
+      external_private_tool_store_location_reasons: ["remote_uri_scheme:gs"],
+      require_custom_mcp_command: true,
+      custom_mcp_command: true,
+      explicit_mcp_command: true,
+      explicit_mcp_args: true,
+      explicit_mcp_cwd: true,
+      explicit_mcp_command_spec: true,
+    },
+    mcp_server: {
+      command: "synthi-mcp-wrapper",
+      cwd: "/opt/synthi/mcp",
+      args_count: 2,
+      explicit_command: true,
+      explicit_args: true,
+      explicit_cwd: true,
+      default_repo_dist: false,
     },
     private_tool_store: {
       external: true,
-      file: "redacted-external-private-tools.enc.json",
+      file: "gs://release-private-tool-store/private-tools.enc.json",
+      scope: "external-acceptance-fixture",
+      key_present: true,
+      key_fingerprint_alg: "sha256",
+      key_sha256: sha256("external-acceptance-fixture-store-key"),
+      expected_scope: "external-acceptance-fixture",
+      scope_matches_expected: true,
+    },
+    expected_private_tool_store: {
+      key_fingerprint_alg: "sha256",
+      key_sha256: sha256("external-acceptance-fixture-store-key"),
       scope: "external-acceptance-fixture",
     },
   };
@@ -6162,9 +6338,17 @@ function deployedPrivateToolHostFixtureOverrides(overrides = {}) {
       ...base.conformance,
       ...(overrides.conformance || {}),
     },
+    mcp_server: {
+      ...base.mcp_server,
+      ...(overrides.mcp_server || {}),
+    },
     private_tool_store: {
       ...base.private_tool_store,
       ...(overrides.private_tool_store || {}),
+    },
+    expected_private_tool_store: {
+      ...base.expected_private_tool_store,
+      ...(overrides.expected_private_tool_store || {}),
     },
   };
 }
@@ -9610,7 +9794,7 @@ async function writePackageReadinessEvidenceFixture({
   const packageJson = JSON.parse(packageJsonText);
   const exportEntryPaths = collectPackageEntryPaths(packageJson);
   const requiredScriptNames = deriveDojoPackageReadinessRequiredScriptNames(packageJson);
-  const scriptReferencedPaths = collectScriptReferencedPackagePaths(
+  const scriptReferencedPaths = collectScriptTransitivePackagePaths(
     packageJson.scripts,
     requiredScriptNames,
   );

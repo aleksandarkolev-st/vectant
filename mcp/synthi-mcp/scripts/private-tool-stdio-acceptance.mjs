@@ -27,10 +27,12 @@ import {
   parseBooleanFlag,
   parseJsonObjectArgument,
   parseNonNegativeInteger,
+  privateToolStoreConformance,
+  privateToolStoreCustodyExpectation,
+  privateToolStoreCustodyEvidence,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
   selectPrivateToolForAcceptance,
-  privateToolStoreConformance,
 } from "./private-tool-acceptance-conformance.mjs";
 import {
   buildStdioMcpEnv,
@@ -46,6 +48,8 @@ export {
   parseBooleanFlag,
   parseJsonObjectArgument,
   privateToolStoreConformance,
+  privateToolStoreCustodyExpectation,
+  privateToolStoreCustodyEvidence,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
   selectPrivateToolForAcceptance,
@@ -81,6 +85,8 @@ const CFG = {
   expectedText: normalizeOptionalText(args["expected-text"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_TEXT),
   expectedStepsMin: parseNonNegativeInteger(args["expected-steps-min"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_STEPS_MIN ?? "1", "expected_steps_min"),
   hostedSessionTtlMs: parseNonNegativeInteger(args["hosted-session-ttl-ms"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_HOSTED_SESSION_TTL_MS ?? "900000", "hosted_session_ttl_ms"),
+  expectedPrivateToolStoreKeySha256: args["expected-private-tool-store-key-sha256"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256 || "",
+  expectedPrivateToolStoreScope: args["expected-private-tool-store-scope"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE || "",
   mcpCommand: resolveMcpServerCommandSpec({
     args,
     env: process.env,
@@ -121,9 +127,18 @@ async function main() {
     defaultKey: `stdio-acceptance-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     defaultScope: `stdio-acceptance-${process.pid}`,
   });
+  const expectedPrivateToolStore = privateToolStoreCustodyExpectation({
+    storeSpec: privateToolStore,
+    expectedScope: CFG.expectedPrivateToolStoreScope,
+    expectedKeySha256: CFG.expectedPrivateToolStoreKeySha256,
+  });
   const privateToolStoreConformance = assertPrivateToolStoreConformance({
     storeSpec: privateToolStore,
     requireExternalStore: CFG.requireExternalPrivateToolStore,
+  });
+  const privateToolStoreCustody = privateToolStoreCustodyEvidence({
+    storeSpec: privateToolStore,
+    expectedScope: expectedPrivateToolStore.scope,
   });
   if (privateToolStore.external && !CFG.targetUrl.trim()) {
     throw new Error("target_url_required_for_external_private_tool_store: pass --target-url or set SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL");
@@ -146,22 +161,38 @@ async function main() {
       command: CFG.mcpCommand.command,
       cwd: CFG.mcpCommand.cwd,
       args_count: CFG.mcpCommand.args.length,
+      explicit_command: CFG.mcpCommand.explicit_command,
+      explicit_args: CFG.mcpCommand.explicit_args,
+      explicit_cwd: CFG.mcpCommand.explicit_cwd,
       default_repo_dist: CFG.mcpCommand.default_repo_dist,
     },
     conformance: {
       require_custom_mcp_command: mcpCommandConformance.require_custom_mcp_command,
       custom_mcp_command: mcpCommandConformance.custom_mcp_command,
+      explicit_mcp_command: mcpCommandConformance.explicit_mcp_command,
+      explicit_mcp_args: mcpCommandConformance.explicit_mcp_args,
+      explicit_mcp_cwd: mcpCommandConformance.explicit_mcp_cwd,
+      explicit_mcp_command_spec: mcpCommandConformance.explicit_mcp_command_spec,
       require_non_loopback_runtime: runtimeConformance.require_non_loopback_runtime,
       non_loopback_runtime: runtimeConformance.non_loopback_runtime,
       runtime_host_class: runtimeConformance.runtime_host_class,
       require_external_private_tool_store: privateToolStoreConformance.require_external_private_tool_store,
       external_private_tool_store: privateToolStoreConformance.external_private_tool_store,
+      external_private_tool_store_location_ok: privateToolStoreConformance.external_private_tool_store_location_ok,
+      external_private_tool_store_location_class: privateToolStoreConformance.external_private_tool_store_location_class,
+      external_private_tool_store_location_reasons: privateToolStoreConformance.external_private_tool_store_location_reasons,
     },
     private_tool_store: {
       external: privateToolStore.external,
       file: privateToolStore.file,
       scope: privateToolStore.scope,
+      key_present: privateToolStoreCustody.key_present,
+      key_fingerprint_alg: privateToolStoreCustody.key_fingerprint_alg,
+      key_sha256: privateToolStoreCustody.key_sha256,
+      expected_scope: privateToolStoreCustody.expected_scope,
+      scope_matches_expected: privateToolStoreCustody.scope_matches_expected,
     },
+    expected_private_tool_store: expectedPrivateToolStore,
     acceptance: {
       requested_tool_name: CFG.toolName || null,
       tool_args_keys: Object.keys(CFG.toolArgs).sort(),

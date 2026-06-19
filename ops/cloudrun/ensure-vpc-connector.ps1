@@ -1,5 +1,5 @@
 param(
-    [string]$ProjectId = 'overview-synti',
+    [string]$ProjectId = $env:PROJECT_ID,
     [string]$Region = 'europe-west10',
     [string]$Network = 'default',
     [string]$ConnectorName = 'synthi-serverless-ew10',
@@ -11,6 +11,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($ProjectId)) {
+    throw 'ProjectId is required. Pass -ProjectId or set PROJECT_ID.'
+}
 
 Write-Host 'Ensuring required APIs are enabled ...'
 gcloud services enable run.googleapis.com vpcaccess.googleapis.com --project $ProjectId | Out-Host

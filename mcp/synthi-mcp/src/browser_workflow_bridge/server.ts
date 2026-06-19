@@ -31,7 +31,6 @@ import {
   buildDojoUniverseMetrics,
 } from "../browser/dojo_universe.js";
 import { buildDojoGovernanceServiceView } from "../dojo/governance/service.js";
-import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
@@ -1880,6 +1879,8 @@ function boolPayload(value: unknown): boolean {
 
 function numberOpt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function dedupeNumbers(values: ReadonlyArray<number | string>): number[] {
   const normalized = values
     .map((value) => Number(value))

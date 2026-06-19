@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   buildDojoReleaseGateEvidenceManifest,
@@ -151,6 +152,8 @@ import {
   DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES,
 } from "../../scripts/dojo-time-machine-debugger-self-check.mjs";
 
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
 const PACKAGE_SCRIPTS = {
   "mcp/synthi-mcp/package.json": {
     typecheck: "tsc --noEmit",
@@ -195,7 +198,7 @@ const PACKAGE_SCRIPTS = {
     "live:browser:private-tool-codex": "node scripts/private-tool-codex-acceptance.mjs",
     "live:dojo:mcp-host-conformance": "node scripts/dojo-mcp-host-conformance.mjs --out-dir tmp/dojo-mcp-host-conformance-live --require-non-loopback-mcp-host --execute-production --require-external-control-plane-store --require-external-proof-signing --require-bridge-token --require-no-local-cdp --require-licensed-skill-filtering",
     "live:browser:private-tool-host-conformance": "node scripts/private-tool-stdio-acceptance.mjs --require-custom-mcp-command --require-non-loopback-runtime --require-external-private-tool-store",
-    "live:browser:private-tool-codex-host-conformance": "node scripts/private-tool-codex-acceptance.mjs --require-non-loopback-runtime --require-external-private-tool-store",
+    "live:browser:private-tool-codex-host-conformance": "node scripts/private-tool-codex-acceptance.mjs --require-custom-mcp-command --require-non-loopback-runtime --require-external-private-tool-store",
     soak: "node tests/soak/soak_loop.mjs",
   },
   "synthi/package.json": {
@@ -209,7 +212,7 @@ const PACKAGE_SCRIPTS = {
 
 describe("Dojo release gate manifest", () => {
   it("keeps the package Postgres control-plane script aligned with the authoritative self-check suite", () => {
-    const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
+    const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
     const script = packageJson.scripts["test:dojo:postgres-control-plane"];
     const scriptFiles = script.split(/\s+/).filter((part) => part.endsWith(".test.ts"));
 
@@ -217,7 +220,7 @@ describe("Dojo release gate manifest", () => {
   });
 
   it("publishes script harnesses used by release-gate package scripts", () => {
-    const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
+    const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
     expect(packageJson.scripts["chaos:dojo:preflight"]).toContain("tests/chaos/runner.mjs");
     expect(packageJson.scripts["chaos:dojo:live"]).toContain("tests/chaos/runner.mjs");
     expect(packageJson.scripts.soak).toContain("tests/soak/soak_loop.mjs");
@@ -565,6 +568,36 @@ describe("Dojo release gate manifest", () => {
         ]),
       }),
       expect.objectContaining({
+        id: "workflow_e2e_hosted",
+        tier: "T5",
+        package_script: "live:browser:workflow-pipeline",
+        report_schema_version: "synthi.dojo.workflowPipelineE2E.v1",
+        requires_env: expect.arrayContaining([
+          "SYNTHI_HOSTED_BROWSER_CDP_URL",
+          "FRONTEND_URL",
+          "COLLAB_URL",
+          "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP",
+        ]),
+        env_value_requirements: expect.arrayContaining([
+          expect.objectContaining({
+            env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+            type: "non_loopback_url",
+          }),
+          expect.objectContaining({
+            env: "FRONTEND_URL",
+            type: "non_loopback_url",
+          }),
+          expect.objectContaining({
+            env: "COLLAB_URL",
+            type: "non_loopback_url",
+          }),
+          expect.objectContaining({
+            env: "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP",
+            type: "boolean_true",
+          }),
+        ]),
+      }),
+      expect.objectContaining({
         id: "dojo_full_visual_proof",
         tier: "T4",
         evidence_kind: "visual_report",
@@ -615,11 +648,19 @@ describe("Dojo release gate manifest", () => {
         release_artifact_requirements: DOJO_MCP_HOST_CONFORMANCE_REQUIREMENTS,
         requires_env: expect.arrayContaining([
           "SYNTHI_DOJO_MCP_HOST_URL",
+          "SYNTHI_DOJO_MCP_BEARER_HEADER",
+          "SYNTHI_DOJO_MCP_BEARER_TOKEN",
           "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE",
           "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
           "SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED",
           "SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE",
           "SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING",
+        ]),
+        env_value_requirements: expect.arrayContaining([
+          expect.objectContaining({
+            env: "SYNTHI_DOJO_MCP_BEARER_HEADER",
+            type: "http_header_name",
+          }),
         ]),
       }),
       expect.objectContaining({
@@ -631,6 +672,7 @@ describe("Dojo release gate manifest", () => {
         release_artifact_requirements: expect.objectContaining({
           require_non_loopback_runtime: true,
           require_external_private_tool_store: true,
+          require_external_private_tool_store_location_policy: true,
           require_no_local_attach: true,
           require_private_tool_call: true,
           require_custom_mcp_command: true,
@@ -642,7 +684,12 @@ describe("Dojo release gate manifest", () => {
           "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
           "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
           "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE",
           "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
         ]),
       }),
       expect.objectContaining({
@@ -654,12 +701,26 @@ describe("Dojo release gate manifest", () => {
         release_artifact_requirements: expect.objectContaining({
           require_non_loopback_runtime: true,
           require_external_private_tool_store: true,
+          require_external_private_tool_store_location_policy: true,
           require_no_local_attach: true,
           require_private_tool_call: true,
+          require_custom_mcp_command: true,
           require_agent_mcp_only: true,
           require_no_shell_commands: true,
           require_visual_proof: true,
         }),
+        requires_env: expect.arrayContaining([
+          "SYNTHI_HOSTED_BROWSER_CDP_URL",
+          "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
+          "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
+          "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_KEY_SHA256",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_PRIVATE_TOOL_STORE_SCOPE",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
+        ]),
       }),
       expect.objectContaining({
         id: "dojo_generated_pr_self_check",
@@ -1283,20 +1344,33 @@ describe("Dojo release gate manifest", () => {
         tier: "T8",
         package_script: "soak",
         script_exists: true,
-        requires_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN"],
-        env_value_requirements: [
+        requires_env: ["SYNTHI_SESSION_ID", "SOAK_DURATION_MIN", "SYNTHI_SIGNALING_URL", "SYNTHI_VISION_BACKEND"],
+        env_value_requirements: expect.arrayContaining([
           expect.objectContaining({
             env: "SOAK_DURATION_MIN",
             type: "number",
             min: 60,
           }),
-        ],
+          expect.objectContaining({
+            env: "SYNTHI_SIGNALING_URL",
+            type: "non_loopback_url",
+            allowed_protocols: ["ws", "wss"],
+          }),
+          expect.objectContaining({
+            env: "SYNTHI_VISION_BACKEND",
+            type: "not_in",
+            disallowed_values: ["mock"],
+            case_sensitive: false,
+          }),
+        ]),
         default_summary_path: "mcp/synthi-mcp/.soak/soak-summary.json",
         default_events_path: "mcp/synthi-mcp/.soak/soak-events.ndjson",
         enterprise_artifact_requirements: expect.objectContaining({
           require_min_duration_seconds: 3600,
           require_live_session_env: "SYNTHI_SESSION_ID",
           require_duration_env: "SOAK_DURATION_MIN",
+          require_signaling_env: "SYNTHI_SIGNALING_URL",
+          require_vision_backend_env: "SYNTHI_VISION_BACKEND",
           require_duration_env_min_minutes: 60,
           require_zero_errors: true,
           require_iteration_events: true,
@@ -1348,6 +1422,19 @@ describe("Dojo release gate manifest", () => {
       tier_count: 9,
     }));
 
+    const brokenWorkflowHosted = JSON.parse(JSON.stringify(manifest));
+    const workflowHostedGate = brokenWorkflowHosted.gates.find((gate) => gate.id === "workflow_e2e_hosted");
+    workflowHostedGate.requires_env = workflowHostedGate.requires_env
+      .filter((envName) => envName !== "FRONTEND_URL" && envName !== "COLLAB_URL");
+    workflowHostedGate.env_value_requirements = workflowHostedGate.env_value_requirements
+      .filter((rule) => rule.env !== "FRONTEND_URL" && rule.env !== "COLLAB_URL");
+    expect(validateDojoReleaseGateManifest(brokenWorkflowHosted, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "workflow_e2e_hosted_missing_env:FRONTEND_URL",
+      "workflow_e2e_hosted_missing_env:COLLAB_URL",
+      "workflow_e2e_hosted_missing_non_loopback_url_requirement:FRONTEND_URL",
+      "workflow_e2e_hosted_missing_non_loopback_url_requirement:COLLAB_URL",
+    ]));
+
     const brokenEnterpriseRelease = JSON.parse(JSON.stringify(manifest));
     brokenEnterpriseRelease.enterprise_release_gate_ids = brokenEnterpriseRelease.enterprise_release_gate_ids
       .filter((id) => !["workflow_e2e_hosted", "dojo_chaos_performance_self_check", "dojo_live_chaos", "dojo_soak_performance_self_check", "soak_performance"].includes(id));
@@ -1386,7 +1473,7 @@ describe("Dojo release gate manifest", () => {
     expect(validateDojoReleaseGateManifest(brokenLiveManifest, { packageScripts: brokenLiveScripts }).errors).toEqual(expect.arrayContaining([
       "mcp_host_conformance_package_script_missing_flags:--out-dir,tmp/dojo-mcp-host-conformance-live,--execute-production,--require-external-control-plane-store,--require-external-proof-signing,--require-bridge-token,--require-no-local-cdp,--require-licensed-skill-filtering",
       "private_tool_host_conformance_package_script_missing_flags:private_tool_stdio_host_conformance:--require-non-loopback-runtime,--require-external-private-tool-store",
-      "private_tool_host_conformance_package_script_missing_flags:private_tool_codex_host_conformance:--require-external-private-tool-store",
+      "private_tool_host_conformance_package_script_missing_flags:private_tool_codex_host_conformance:--require-custom-mcp-command,--require-external-private-tool-store",
     ]));
 
     const brokenFullVisual = JSON.parse(JSON.stringify(manifest));
@@ -1635,7 +1722,10 @@ describe("Dojo release gate manifest", () => {
     mcpHostGate.release_artifact_requirements.require_external_proof_signing = false;
     mcpHostGate.release_artifact_requirements.require_no_local_cdp = false;
     mcpHostGate.requires_env = mcpHostGate.requires_env
-      .filter((envName) => envName !== "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING");
+      .filter((envName) => envName !== "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING"
+        && envName !== "SYNTHI_DOJO_MCP_BEARER_HEADER");
+    mcpHostGate.env_value_requirements = mcpHostGate.env_value_requirements
+      .filter((requirement) => requirement.env !== "SYNTHI_DOJO_MCP_BEARER_HEADER");
     expect(validateDojoReleaseGateManifest(brokenMcpHostConformance, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "mcp_host_conformance_self_check_missing_private_network_rejection",
       "mcp_host_conformance_self_check_missing_link_local_rejection",
@@ -1643,7 +1733,9 @@ describe("Dojo release gate manifest", () => {
       "mcp_host_conformance_missing_revocation_requirement",
       "mcp_host_conformance_missing_external_signing_requirement",
       "mcp_host_conformance_missing_no_local_cdp_requirement",
+      "mcp_host_conformance_missing_env:SYNTHI_DOJO_MCP_BEARER_HEADER",
       "mcp_host_conformance_missing_env:SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
+      "mcp_host_conformance_missing_bearer_header_env_value_requirement",
       "mcp_host_conformance_default_report_path_conflicts_self_check",
       "mcp_host_conformance_default_evidence_path_conflicts_self_check",
     ]));
@@ -1653,9 +1745,26 @@ describe("Dojo release gate manifest", () => {
       .find((gate) => gate.id === "private_tool_stdio_host_conformance");
     privateHostGate.release_artifact_requirements.require_no_local_attach = false;
     privateHostGate.release_artifact_requirements.require_private_tool_call = false;
+    privateHostGate.requires_env = privateHostGate.requires_env
+      .filter((envName) => envName !== "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON"
+        && envName !== "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD");
     expect(validateDojoReleaseGateManifest(brokenPrivateToolHostConformance, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
       "private_tool_host_conformance_missing_no_local_attach:private_tool_stdio_host_conformance",
       "private_tool_host_conformance_missing_private_tool_call:private_tool_stdio_host_conformance",
+      "private_tool_stdio_host_conformance_missing_custom_mcp_command_env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON,SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
+    ]));
+
+    const brokenPrivateToolCodexHostConformance = JSON.parse(JSON.stringify(manifest));
+    const privateCodexHostGate = brokenPrivateToolCodexHostConformance.gates
+      .find((gate) => gate.id === "private_tool_codex_host_conformance");
+    privateCodexHostGate.release_artifact_requirements.require_custom_mcp_command = false;
+    privateCodexHostGate.requires_env = privateCodexHostGate.requires_env
+      .filter((envName) => envName !== "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND"
+        && envName !== "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON"
+        && envName !== "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD");
+    expect(validateDojoReleaseGateManifest(brokenPrivateToolCodexHostConformance, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "private_tool_host_conformance_missing_custom_mcp:private_tool_codex_host_conformance",
+      "private_tool_codex_host_conformance_missing_custom_mcp_command_env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND,SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON,SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
     ]));
 
     const brokenGeneratedPr = JSON.parse(JSON.stringify(manifest));
@@ -2202,9 +2311,18 @@ describe("Dojo release gate manifest", () => {
       env: "SOAK_DURATION_MIN",
       type: "string",
       min: 10,
+    }, {
+      env: "SYNTHI_SIGNALING_URL",
+      type: "url",
+      allowed_protocols: ["http"],
+    }, {
+      env: "SYNTHI_VISION_BACKEND",
+      type: "string",
     }];
     soakGate.enterprise_artifact_requirements.require_live_session_env = "";
     soakGate.enterprise_artifact_requirements.require_duration_env = "";
+    soakGate.enterprise_artifact_requirements.require_signaling_env = "";
+    soakGate.enterprise_artifact_requirements.require_vision_backend_env = "";
     soakGate.enterprise_artifact_requirements.require_duration_env_min_minutes = 10;
     soakGate.enterprise_artifact_requirements.require_zero_errors = false;
     soakGate.enterprise_artifact_requirements.require_tool_latency_metrics = false;
@@ -2217,11 +2335,17 @@ describe("Dojo release gate manifest", () => {
       command: "node mcp/synthi-mcp/scripts/dojo-release-gate-verify.mjs",
     };
     expect(validateDojoReleaseGateManifest(brokenSoak, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
-      "soak_performance_missing_required_env:SOAK_DURATION_MIN",
+      "soak_performance_missing_required_env:SOAK_DURATION_MIN,SYNTHI_SIGNALING_URL,SYNTHI_VISION_BACKEND",
       "soak_performance_duration_env_value_requirement_not_numeric",
       "soak_performance_duration_env_value_min_too_low",
+      "soak_performance_signaling_env_value_requirement_not_non_loopback_url",
+      "soak_performance_signaling_env_value_missing_protocols:ws,wss",
+      "soak_performance_vision_backend_env_value_requirement_not_disallow_list",
+      "soak_performance_vision_backend_env_value_allows_mock",
       "soak_performance_missing_live_session_env_requirement",
       "soak_performance_missing_duration_env_requirement",
+      "soak_performance_missing_signaling_env_requirement",
+      "soak_performance_missing_vision_backend_env_requirement",
       "soak_performance_duration_env_min_too_low",
       "soak_performance_missing_zero_error_requirement",
       "soak_performance_missing_tool_latency_requirement",

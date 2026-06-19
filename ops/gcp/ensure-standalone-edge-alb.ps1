@@ -1,10 +1,10 @@
 param(
-    [string]$ProjectId = 'overview-synti',
+    [string]$ProjectId = $env:PROJECT_ID,
     [string]$ClusterName = 'synthi-beta-cluster',
     [string]$Region = 'europe-west10',
     [string]$Zone = 'europe-west10-a',
     [string]$Namespace = 'synthi',
-    [string]$Domain = 'beta.synthi.app',
+    [string]$Domain = $env:DOMAIN,
     [string]$AddressName = 'synthi-edge-ip',
     [string]$UrlMapName = 'synthi-edge-url-map',
     [string]$HttpsProxyName = 'synthi-edge-https-proxy',
@@ -30,6 +30,14 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($ProjectId)) {
+    throw 'ProjectId is required. Pass -ProjectId or set PROJECT_ID.'
+}
+
+if ([string]::IsNullOrWhiteSpace($Domain)) {
+    throw 'Domain is required. Pass -Domain or set DOMAIN.'
+}
 
 function Invoke-GcloudValue {
     param([string[]]$Arguments)

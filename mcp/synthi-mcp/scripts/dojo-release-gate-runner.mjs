@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -798,7 +799,8 @@ function invalidRequiredEnv(gate, env = process.env) {
     const key = String(requirement?.env || "");
     if (!key || !truthy(env[key])) continue;
     const value = env[key];
-    if (requirement.type === "number") {
+    const type = String(requirement.type || "").trim();
+    if (type === "number") {
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) {
         invalid.push({ env: key, value: String(value), reason: "not_number" });
@@ -818,9 +820,115 @@ function invalidRequiredEnv(gate, env = process.env) {
           reason: `above_max:${Number(requirement.max)}`,
         });
       }
+    } else if (type === "boolean_true") {
+      if (!truthy(value)) {
+        invalid.push({ env: key, value: String(value), reason: "not_true" });
+      }
+    } else if (type === "not_in") {
+      const disallowedValues = Array.isArray(requirement.disallowed_values)
+        ? requirement.disallowed_values.map((item) => String(item))
+        : [];
+      const candidate = String(value);
+      const caseSensitive = requirement.case_sensitive !== false;
+      const normalizedCandidate = caseSensitive ? candidate : candidate.toLowerCase();
+      const normalizedDisallowedValues = caseSensitive
+        ? disallowedValues
+        : disallowedValues.map((item) => item.toLowerCase());
+      if (normalizedDisallowedValues.includes(normalizedCandidate)) {
+        invalid.push({ env: key, value: candidate, reason: `disallowed_value:${candidate}` });
+      }
+    } else if (type === "http_header_name") {
+      if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(String(value))) {
+        invalid.push({ env: key, value: String(value), reason: "invalid_http_header_name" });
+      }
+    } else if (type === "url" || type === "non_loopback_url") {
+      const parsed = parseEnvUrl(value);
+      if (!parsed.ok) {
+        invalid.push({ env: key, value: String(value), reason: parsed.reason });
+        continue;
+      }
+      const protocolError = validateUrlProtocol(parsed.url, requirement.allowed_protocols);
+      if (protocolError) {
+        invalid.push({ env: key, value: String(value), reason: protocolError });
+        continue;
+      }
+      if (type === "non_loopback_url" && isLoopbackOrLocalBindHost(parsed.url.hostname)) {
+        invalid.push({ env: key, value: String(value), reason: "loopback_or_local_bind_url" });
+      }
+    } else if (type === "json") {
+      const parsed = parseEnvJson(value);
+      if (!parsed.ok) invalid.push({ env: key, value: String(value), reason: parsed.reason });
+    } else if (type === "json_array") {
+      const parsed = parseEnvJson(value);
+      if (!parsed.ok) {
+        invalid.push({ env: key, value: String(value), reason: parsed.reason });
+      } else if (!Array.isArray(parsed.value)) {
+        invalid.push({ env: key, value: String(value), reason: "not_json_array" });
+      }
+    } else if (type === "absolute_path") {
+      if (!path.isAbsolute(String(value))) {
+        invalid.push({ env: key, value: String(value), reason: "not_absolute_path" });
+      } else if (requirement.must_exist === true && !existsSync(String(value))) {
+        invalid.push({ env: key, value: String(value), reason: "path_missing" });
+      }
+    } else if (type === "external_store_ref") {
+      if (!isExternalStoreRef(value)) {
+        invalid.push({ env: key, value: String(value), reason: "not_external_store_ref" });
+      }
+    } else if (type === "sha256_hex") {
+      if (!/^[a-f0-9]{64}$/i.test(String(value || "").trim())) {
+        invalid.push({ env: key, value: String(value), reason: "not_sha256_hex" });
+      }
+    } else if (type === "non_empty") {
+      if (!String(value || "").trim()) {
+        invalid.push({ env: key, value: String(value), reason: "empty" });
+      }
     }
   }
   return invalid;
+}
+
+function isExternalStoreRef(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  const scheme = raw.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1]?.toLowerCase();
+  if (scheme && scheme !== "file") return true;
+  return path.isAbsolute(raw);
+}
+
+function parseEnvUrl(value) {
+  try {
+    return { ok: true, url: new URL(String(value)) };
+  } catch {
+    return { ok: false, reason: "invalid_url" };
+  }
+}
+
+function parseEnvJson(value) {
+  try {
+    return { ok: true, value: JSON.parse(String(value)) };
+  } catch {
+    return { ok: false, reason: "invalid_json" };
+  }
+}
+
+function validateUrlProtocol(url, allowedProtocols) {
+  const allowed = Array.isArray(allowedProtocols)
+    ? allowedProtocols.map((item) => String(item).trim().toLowerCase().replace(/:$/, "")).filter(Boolean)
+    : [];
+  if (allowed.length === 0) return "";
+  const protocol = String(url.protocol || "").toLowerCase().replace(/:$/, "");
+  return allowed.includes(protocol) ? "" : `disallowed_protocol:${protocol || "missing"}`;
+}
+
+function isLoopbackOrLocalBindHost(hostname) {
+  const host = String(hostname || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host) return true;
+  if (host === "localhost" || host === "localhost.localdomain") return true;
+  if (host === "::1" || host === "0:0:0:0:0:0:0:1") return true;
+  if (host === "0.0.0.0" || host === "::") return true;
+  if (/^127(?:\.\d{1,3}){0,3}$/.test(host)) return true;
+  return false;
 }
 
 function inferNpmExtraArgs(gate) {
