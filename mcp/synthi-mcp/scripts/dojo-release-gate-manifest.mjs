@@ -884,6 +884,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
     ],
   },
   {
@@ -2646,6 +2647,12 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     }
     if (!Array.isArray(gate.requires_env) || !gate.requires_env.includes("SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL")) {
       errors.push(`private_tool_host_conformance_missing_target_env:${gate.id}`);
+    }
+    if (
+      gate.id === "private_tool_stdio_host_conformance"
+      && (!Array.isArray(gate.requires_env) || !gate.requires_env.includes("SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND"))
+    ) {
+      errors.push("private_tool_stdio_host_conformance_missing_custom_mcp_command_env");
     }
     const requiredScriptFlags = gate.id === "private_tool_stdio_host_conformance"
       ? ["--require-custom-mcp-command", "--require-non-loopback-runtime", "--require-external-private-tool-store"]
