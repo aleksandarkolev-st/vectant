@@ -1,0 +1,134 @@
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: dojo-mcp-host-backend-config
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  timeoutSec: 3600
+  connectionDraining:
+    drainingTimeoutSec: 30
+  healthCheck:
+    type: HTTP
+    requestPath: /healthz
+    port: 9467
+    checkIntervalSec: 15
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dojo-mcp-host
+  namespace: synthi
+  labels:
+    app: dojo-mcp-host
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dojo-mcp-host
+      app.kubernetes.io/part-of: synthi-ide
+  template:
+    metadata:
+      labels:
+        app: dojo-mcp-host
+        app.kubernetes.io/part-of: synthi-ide
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      containers:
+        - name: dojo-mcp-host
+          image: europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-mcp-http:build-tag-required
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9467
+              name: http-mcp
+          envFrom:
+            - configMapRef:
+                name: synthi-config
+            - secretRef:
+                name: synthi-secrets
+          env:
+            - name: SYNTHI_MCP_HTTP_HOST
+              value: "0.0.0.0"
+            - name: SYNTHI_MCP_HTTP_PORT
+              value: "9467"
+            - name: SYNTHI_MCP_HTTP_PATH
+              value: "/dojo/mcp"
+            - name: SYNTHI_MCP_HTTP_HEALTH_PATH
+              value: "/healthz"
+            - name: SYNTHI_VISION_BACKEND
+              value: "agent_side"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http-mcp
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-mcp
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dojo-mcp-host
+  namespace: synthi
+  labels:
+    app: dojo-mcp-host
+    app.kubernetes.io/part-of: synthi-ide
+  annotations:
+    cloud.google.com/backend-config: '{"ports":{"9467":"dojo-mcp-host-backend-config"}}'
+spec:
+  selector:
+    app: dojo-mcp-host
+    app.kubernetes.io/part-of: synthi-ide
+  ports:
+    - name: http-mcp
+      port: 9467
+      targetPort: http-mcp
+      protocol: TCP
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-dojo-mcp-host
+  namespace: synthi
+  labels:
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  podSelector:
+    matchLabels:
+      app: dojo-mcp-host
+  ingress:
+    - ports:
+        - port: 9467
+          protocol: TCP
+  policyTypes:
+    - Ingress

@@ -23,9 +23,24 @@ resources:
   - ../../pod-disruption-budgets.yaml
   - ../../external-secrets.yaml
   - dojo-release-external-secrets.yaml
+  - dojo-mcp-host.yaml
 
 patches:
   - path: dojo-release-config.yaml
+  - target:
+      kind: Ingress
+      name: synthi-ingress
+    patch: |-
+      - op: add
+        path: /spec/rules/0/http/paths/0
+        value:
+          path: /dojo/mcp
+          pathType: Prefix
+          backend:
+            service:
+              name: dojo-mcp-host
+              port:
+                number: 9467
   - target:
       kind: ConfigMap
       name: synthi-config

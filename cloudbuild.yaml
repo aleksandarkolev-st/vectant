@@ -209,6 +209,18 @@ steps:
       - --cache=true
       - --cache-ttl=168h
 
+  # Agent Dojo HTTP MCP host. Built for the release-gate overlay; the default
+  # beta kustomization does not deploy this image.
+  - id: build-dojo-mcp-host
+    waitFor: ['reject-mutable-images']
+    name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
+    args:
+      - --dockerfile=mcp/synthi-mcp/Dockerfile.http
+      - --context=dir:///workspace
+      - --destination=${_REGISTRY}/synthi-mcp-http:${_IMAGE_TAG}
+      - --cache=true
+      - --cache-ttl=168h
+
   # ── 9. Per-workspace runtime image (rootful dind under Sysbox) ──────────
   # ROOTFUL build (RUNTIME_USER=root, daemon at /var/run/docker.sock): under Sysbox
   # the daemon runs unprivileged-but-rootful — Sysbox supplies the userns isolation.
@@ -274,6 +286,7 @@ steps:
       - build-worker
       - build-prisma-migrate
       - build-browser-workflow-bridge
+      - build-dojo-mcp-host
       - build-runtime-image
       - vulnerability-scan-runtime
 
@@ -344,6 +357,9 @@ steps:
         kubectl rollout status deployment/ai-engine -n $${NS} --timeout=300s
         kubectl rollout status deployment/ai-gateway -n $${NS} --timeout=300s
         kubectl rollout status deployment/signaling-server -n $${NS} --timeout=300s
+        if kubectl get deployment/dojo-mcp-host -n $${NS} >/dev/null 2>&1; then
+          kubectl rollout status deployment/dojo-mcp-host -n $${NS} --timeout=300s
+        fi
 
         echo "=== Deploy complete ==="
     waitFor:

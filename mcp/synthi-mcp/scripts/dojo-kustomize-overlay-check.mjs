@@ -51,6 +51,15 @@ const REQUIRED_EXTERNAL_SECRET_KEYS = [
 ];
 
 const REDIS_DEPLOYMENTS = ["collab-server", "signaling-server"];
+const DOJO_MCP_HOST = {
+  deployment: "dojo-mcp-host",
+  service: "dojo-mcp-host",
+  backendConfig: "dojo-mcp-host-backend-config",
+  networkPolicy: "allow-to-dojo-mcp-host",
+  image: "synthi-mcp-http:build-tag-required",
+  path: "/dojo/mcp",
+  port: "9467",
+};
 
 function parseArgs(argv) {
   const options = {
@@ -260,6 +269,84 @@ function validateRenderedOverlay(rendered) {
     }
   }
 
+  const mcpDeployment = findResource(resources, "Deployment", DOJO_MCP_HOST.deployment);
+  if (!mcpDeployment) {
+    failures.push({
+      code: "missing_dojo_mcp_host_deployment",
+      message: `Deployment/${DOJO_MCP_HOST.deployment} was not rendered.`,
+    });
+  } else {
+    if (!mcpDeployment.doc.includes(DOJO_MCP_HOST.image)) {
+      failures.push({
+        code: "dojo_mcp_host_image_missing",
+        message: `Deployment/${DOJO_MCP_HOST.deployment} must use ${DOJO_MCP_HOST.image}.`,
+      });
+    }
+    if (!hasEnvFromRef(mcpDeployment.doc, "configMapRef", "synthi-config")) {
+      failures.push({
+        code: "dojo_mcp_host_config_not_loaded",
+        message: `Deployment/${DOJO_MCP_HOST.deployment} must load ConfigMap/synthi-config.`,
+      });
+    }
+    if (!hasEnvFromRef(mcpDeployment.doc, "secretRef", "synthi-secrets")) {
+      failures.push({
+        code: "dojo_mcp_host_secret_not_loaded",
+        message: `Deployment/${DOJO_MCP_HOST.deployment} must load Secret/synthi-secrets.`,
+      });
+    }
+    for (const [envName, expectedValue] of [
+      ["SYNTHI_MCP_HTTP_HOST", "0.0.0.0"],
+      ["SYNTHI_MCP_HTTP_PORT", DOJO_MCP_HOST.port],
+      ["SYNTHI_MCP_HTTP_PATH", DOJO_MCP_HOST.path],
+      ["SYNTHI_MCP_HTTP_HEALTH_PATH", "/healthz"],
+    ]) {
+      const blocks = envBlocks(mcpDeployment.doc, envName);
+      if (blocks.length !== 1 || !isLiteralEnvBlock(blocks[0], expectedValue)) {
+        failures.push({
+          code: "dojo_mcp_host_env_invalid",
+          message: `Deployment/${DOJO_MCP_HOST.deployment} must set ${envName}=${expectedValue}.`,
+        });
+      }
+    }
+  }
+
+  const mcpService = findResource(resources, "Service", DOJO_MCP_HOST.service);
+  if (!mcpService) {
+    failures.push({ code: "missing_dojo_mcp_host_service", message: `Service/${DOJO_MCP_HOST.service} was not rendered.` });
+  } else {
+    if (!mcpService.doc.includes(DOJO_MCP_HOST.backendConfig)) {
+      failures.push({
+        code: "dojo_mcp_host_backend_config_not_bound",
+        message: `Service/${DOJO_MCP_HOST.service} must bind BackendConfig/${DOJO_MCP_HOST.backendConfig}.`,
+      });
+    }
+    if (!new RegExp(`port:\\s*${DOJO_MCP_HOST.port}(?:\\s|$)`).test(mcpService.doc)) {
+      failures.push({
+        code: "dojo_mcp_host_service_port_missing",
+        message: `Service/${DOJO_MCP_HOST.service} must expose port ${DOJO_MCP_HOST.port}.`,
+      });
+    }
+  }
+
+  for (const [kind, name, code] of [
+    ["BackendConfig", DOJO_MCP_HOST.backendConfig, "missing_dojo_mcp_host_backend_config"],
+    ["NetworkPolicy", DOJO_MCP_HOST.networkPolicy, "missing_dojo_mcp_host_network_policy"],
+  ]) {
+    if (!findResource(resources, kind, name)) {
+      failures.push({ code, message: `${kind}/${name} was not rendered.` });
+    }
+  }
+
+  const ingress = findResource(resources, "Ingress", "synthi-ingress");
+  if (!ingress) {
+    failures.push({ code: "missing_ingress", message: "Ingress/synthi-ingress was not rendered." });
+  } else if (!ingress.doc.includes(`path: ${DOJO_MCP_HOST.path}`) || !ingress.doc.includes(`name: ${DOJO_MCP_HOST.service}`)) {
+    failures.push({
+      code: "dojo_mcp_host_ingress_missing",
+      message: `Ingress/synthi-ingress must route ${DOJO_MCP_HOST.path} to Service/${DOJO_MCP_HOST.service}.`,
+    });
+  }
+
   return {
     ok: failures.length === 0,
     failures,
@@ -307,6 +394,15 @@ function isSecretBackedEnvBlock(block, secretName, secretKey) {
     !/^\s*value:\s*/m.test(block) &&
     !/configMapKeyRef:\s*\n/.test(block)
   );
+}
+
+function isLiteralEnvBlock(block, expectedValue) {
+  return new RegExp(`^\\s*value:\\s*"?${escapeRegex(expectedValue)}"?(?:\\s|$)`, "m").test(block)
+    && !/valueFrom:\s*\n/.test(block);
+}
+
+function hasEnvFromRef(doc, refKind, name) {
+  return new RegExp(`${escapeRegex(refKind)}:\\s*\\n\\s*name:\\s*${escapeRegex(name)}(?:\\s|$)`).test(doc);
 }
 
 function blockAfter(doc, header) {
@@ -413,6 +509,65 @@ metadata:
 spec:
   data:
 ${REQUIRED_EXTERNAL_SECRET_KEYS.map((key) => `  - secretKey: ${key}\n    remoteRef:\n      key: ${key.toLowerCase()}`).join("\n")}
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: dojo-mcp-host-backend-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dojo-mcp-host
+spec:
+  template:
+    spec:
+      containers:
+      - name: dojo-mcp-host
+        image: europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-mcp-http:build-tag-required
+        envFrom:
+        - configMapRef:
+            name: synthi-config
+        - secretRef:
+            name: synthi-secrets
+        env:
+        - name: SYNTHI_MCP_HTTP_HOST
+          value: "0.0.0.0"
+        - name: SYNTHI_MCP_HTTP_PORT
+          value: "9467"
+        - name: SYNTHI_MCP_HTTP_PATH
+          value: "/dojo/mcp"
+        - name: SYNTHI_MCP_HTTP_HEALTH_PATH
+          value: "/healthz"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dojo-mcp-host
+  annotations:
+    cloud.google.com/backend-config: '{"ports":{"9467":"dojo-mcp-host-backend-config"}}'
+spec:
+  ports:
+  - port: 9467
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-dojo-mcp-host
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: synthi-ingress
+spec:
+  rules:
+  - host: beta.vectant.dev
+    http:
+      paths:
+      - path: /dojo/mcp
+        backend:
+          service:
+            name: dojo-mcp-host
 `;
 
   const valid = validateRenderedOverlay(validRendered);
