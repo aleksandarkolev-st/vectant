@@ -289,6 +289,7 @@ export function buildDojoVivariumGraphInputsForFixture(
   const mutationIsolationAvailable = mutationIsolationAvailableForFixture(fixture);
   const humanReviewReady = workspaceVerified && !fixture.identity_state.permission_downgraded;
   const visualPostconditionsObserved = visualPostconditionsObservedForFixture(fixture);
+  const inputPostconditions = inputPostconditionsForFixture(skill, fixture);
   return {
     entrustment_level: skill.permission_license.entrustment_level,
     workspace_verified: workspaceVerified,
@@ -300,6 +301,7 @@ export function buildDojoVivariumGraphInputsForFixture(
     mutation_isolation_available: mutationIsolationAvailable,
     human_review_ready: humanReviewReady,
     approval_status: humanReviewReady ? "approved" : "denied",
+    ...inputPostconditions,
     assertion_results: Object.fromEntries(
       skill.skill_seed.candidate_success_assertions.map((assertion) => [
         assertion.assertion_id,
@@ -307,6 +309,18 @@ export function buildDojoVivariumGraphInputsForFixture(
       ])
     ),
   };
+}
+
+function inputPostconditionsForFixture(
+  skill: DojoSkill,
+  fixture: DojoMaterializedFixture
+): Record<string, boolean> {
+  const missingFields = new Set(fixture.missing_fields);
+  const invalidFields = new Set(fixture.invalid_values.map((invalidValue) => invalidValue.field));
+  return Object.fromEntries(skill.skill_seed.input_schema.map((input) => [
+    `${input.name}_accepted`,
+    !missingFields.has(input.name) && !invalidFields.has(input.name),
+  ]));
 }
 
 function observedEvidenceForScenario(
@@ -354,7 +368,8 @@ function duplicateDisplayNameCount(fixture: DojoMaterializedFixture): number {
   for (const record of fixture.records) {
     counts.set(record.display_name, (counts.get(record.display_name) ?? 0) + 1);
   }
-  return Math.max(0, ...counts.values());
+  const maxCount = Math.max(0, ...counts.values());
+  return maxCount > 1 ? maxCount : 0;
 }
 
 function lineItemsTotalVerifiedForFixture(fixture: DojoMaterializedFixture): boolean {

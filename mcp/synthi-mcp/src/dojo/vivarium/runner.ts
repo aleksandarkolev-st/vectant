@@ -764,7 +764,8 @@ function duplicateDisplayNameCount(fixture: DojoMaterializedFixture): number {
   for (const record of fixture.records) {
     counts.set(record.display_name, (counts.get(record.display_name) ?? 0) + 1);
   }
-  return Math.max(0, ...counts.values());
+  const maxCount = Math.max(0, ...counts.values());
+  return maxCount > 1 ? maxCount : 0;
 }
 
 function createScenarioRunId(materialized: DojoMaterializedScenario, graph: DojoSkillGraph, startedAt: string): string {
