@@ -440,6 +440,9 @@ function parseJson(value) {
 
 function evaluate(config, inventory, planViolations) {
   const datasets = inventory.datasets || {};
+  const datasetKeys = new Set(Object.keys(datasets));
+  const commandResults = new Map((inventory.commandResults || []).map((result) => [result.id, result]));
+  const hasDataset = (id) => datasetKeys.has(id);
   const enabledApis = namesFrom(datasets.enabled_apis, (item) => item.config?.name || item.name);
   const clusters = namesFrom(datasets.gke_clusters, (item) => item.name);
   const artifactRepos = namesFrom(datasets.artifact_repositories, (item) => item.name?.split("/").pop() || item.repositoryId || item.name);
@@ -455,23 +458,46 @@ function evaluate(config, inventory, planViolations) {
   checks.push(check("gcloud_available", !config.execute || inventory.commandAvailability?.gcloud?.found === true, inventory.commandAvailability?.gcloud || {}, { notConfiguredOk: !config.execute }));
   checks.push(check("kubectl_available", !config.execute || inventory.commandAvailability?.kubectl?.found === true, inventory.commandAvailability?.kubectl || {}, { optional: true, notConfiguredOk: !config.execute }));
 
-  for (const api of REQUIRED_APIS) {
-    checks.push(check(`api:${api}`, !config.execute || enabledApis.has(api), { api }, { notConfiguredOk: !config.execute }));
+  const requiredDatasets = [
+    ["enabled_apis", "enabled API inventory"],
+    ["gke_clusters", "GKE cluster inventory", Boolean(config.cluster)],
+    ["artifact_repositories", "Artifact Registry inventory", Boolean(config.artifactRepository)],
+    ["cloud_sql_instances", "Cloud SQL inventory", Boolean(config.cloudSqlInstance)],
+    ["redis_instances", "Memorystore Redis inventory", Boolean(config.redisInstance)],
+    ["gcs_buckets", "GCS bucket inventory", Boolean(config.gcsBucket)],
+  ];
+  for (const [datasetId, label, required = true] of requiredDatasets) {
+    if (config.execute && required && !hasDataset(datasetId)) {
+      checks.push(check(
+        `inventory_dataset:${datasetId}`,
+        false,
+        inventoryUnavailableDetail(datasetId, label, commandResults.get(datasetId)),
+      ));
+    }
   }
 
-  checks.push(namedResourceCheck("gke_cluster", config.cluster, clusters, { optionalWhenNoExecute: !config.execute }));
-  checks.push(namedResourceCheck("artifact_repository", config.artifactRepository, artifactRepos, { optionalWhenNoExecute: !config.execute }));
-  checks.push(namedResourceCheck("cloud_sql_instance", config.cloudSqlInstance, sqlInstances, { optionalWhenNoExecute: !config.execute }));
-  checks.push(namedResourceCheck("redis_instance", config.redisInstance, redisInstances, { optionalWhenNoExecute: !config.execute }));
-  checks.push(namedResourceCheck("gcs_bucket", config.gcsBucket, buckets, { optionalWhenNoExecute: !config.execute }));
+  for (const api of REQUIRED_APIS) {
+    checks.push(check(
+      `api:${api}`,
+      !config.execute || (hasDataset("enabled_apis") && enabledApis.has(api)),
+      hasDataset("enabled_apis") ? { api } : { api, reason: "enabled_apis_dataset_unavailable" },
+      { notConfiguredOk: !config.execute, optional: config.execute && !hasDataset("enabled_apis") },
+    ));
+  }
+
+  checks.push(namedResourceCheck("gke_cluster", config.cluster, clusters, { optionalWhenNoExecute: !config.execute || !hasDataset("gke_clusters"), unavailableReason: datasetUnavailableReason("gke_clusters", commandResults.get("gke_clusters")) }));
+  checks.push(namedResourceCheck("artifact_repository", config.artifactRepository, artifactRepos, { optionalWhenNoExecute: !config.execute || !hasDataset("artifact_repositories"), unavailableReason: datasetUnavailableReason("artifact_repositories", commandResults.get("artifact_repositories")) }));
+  checks.push(namedResourceCheck("cloud_sql_instance", config.cloudSqlInstance, sqlInstances, { optionalWhenNoExecute: !config.execute || !hasDataset("cloud_sql_instances"), unavailableReason: datasetUnavailableReason("cloud_sql_instances", commandResults.get("cloud_sql_instances")) }));
+  checks.push(namedResourceCheck("redis_instance", config.redisInstance, redisInstances, { optionalWhenNoExecute: !config.execute || !hasDataset("redis_instances"), unavailableReason: datasetUnavailableReason("redis_instances", commandResults.get("redis_instances")) }));
+  checks.push(namedResourceCheck("gcs_bucket", config.gcsBucket, buckets, { optionalWhenNoExecute: !config.execute || !hasDataset("gcs_buckets"), unavailableReason: datasetUnavailableReason("gcs_buckets", commandResults.get("gcs_buckets")) }));
 
   for (const secret of config.expectedSecrets) {
-    checks.push(namedResourceCheck(`k8s_secret:${secret}`, secret, k8sSecrets, { optionalWhenNoExecute: true }));
-    checks.push(namedResourceCheck(`secret_manager:${secret}`, secret, secrets, { optionalWhenNoExecute: true, acceptMissingWhenNameLikelyK8sOnly: true }));
+    checks.push(namedResourceCheck(`k8s_secret:${secret}`, secret, k8sSecrets, { optionalWhenNoExecute: true, unavailableReason: datasetUnavailableReason("k8s_secret_names", commandResults.get("k8s_secret_names")) }));
+    checks.push(namedResourceCheck(`secret_manager:${secret}`, secret, secrets, { optionalWhenNoExecute: true, unavailableReason: datasetUnavailableReason("secret_manager_names", commandResults.get("secret_manager_names")), acceptMissingWhenNameLikelyK8sOnly: true }));
   }
 
   for (const deployment of config.expectedDeployments) {
-    checks.push(namedResourceCheck(`k8s_deployment:${deployment}`, deployment, deployments, { optionalWhenNoExecute: true }));
+    checks.push(namedResourceCheck(`k8s_deployment:${deployment}`, deployment, deployments, { optionalWhenNoExecute: true, unavailableReason: datasetUnavailableReason("k8s_deployments", commandResults.get("k8s_deployments")) }));
   }
 
   const hardFailures = checks.filter((item) => item.status === "failed" && item.optional !== true);
@@ -482,6 +508,32 @@ function evaluate(config, inventory, planViolations) {
     warningCount: warnings.length,
     checks,
   };
+}
+
+function inventoryUnavailableDetail(datasetId, label, commandResult) {
+  return {
+    dataset: datasetId,
+    label,
+    reason: datasetUnavailableReason(datasetId, commandResult),
+    command_exit_code: Number.isInteger(commandResult?.exitCode) ? commandResult.exitCode : null,
+    command_stderr_preview: commandResult?.stderrPreview || "",
+  };
+}
+
+function datasetUnavailableReason(datasetId, commandResult) {
+  if (!commandResult) {
+    return `${datasetId}_not_collected`;
+  }
+  if (commandResult.skipped) {
+    return commandResult.reason || `${datasetId}_collection_skipped`;
+  }
+  if (commandResult.ok !== true) {
+    return `${datasetId}_command_failed`;
+  }
+  if (commandResult.parseOk === false) {
+    return `${datasetId}_parse_failed`;
+  }
+  return `${datasetId}_dataset_unavailable`;
 }
 
 function namesFrom(values, pick) {
@@ -514,7 +566,7 @@ function namedResourceCheck(id, expectedName, names, options = {}) {
       status: "warning",
       ok: false,
       optional: true,
-      detail: { expectedName, reason: "dataset_empty_or_not_executed" },
+      detail: { expectedName, reason: options.unavailableReason || "dataset_empty_or_not_executed" },
     };
   }
   return check(id, names.has(expectedName), { expectedName, observedCount: names.size });
