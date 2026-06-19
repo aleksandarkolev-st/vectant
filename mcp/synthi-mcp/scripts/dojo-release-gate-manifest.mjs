@@ -748,6 +748,11 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       "AI_ENGINE_HOST_PORT",
       "POSTGRES_HOST_PORT",
     ],
+    env_value_requirements: [
+      { env: "NEXT_PUBLIC_SYNTHI_WORKSPACE_AUTH_BYPASS", type: "boolean_true" },
+      { env: "AI_ENGINE_HOST_PORT", type: "number", min: 1, max: 65535 },
+      { env: "POSTGRES_HOST_PORT", type: "number", min: 1, max: 65535 },
+    ],
   },
   {
     id: "dojo_full_visual_proof",
@@ -803,6 +808,14 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       "SYNTHI_HOSTED_BROWSER_CDP_URL",
       "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP",
     ],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["ws", "wss", "http", "https"],
+      },
+      { env: "SYNTHI_WORKFLOW_PIPELINE_VERIFY_FRESH_MCP", type: "boolean_true" },
+    ],
   },
   {
     id: "private_tool_stdio_acceptance",
@@ -821,6 +834,13 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_no_local_attach: true,
     },
     requires_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["ws", "wss", "http", "https"],
+      },
+    ],
   },
   {
     id: "private_tool_codex_acceptance",
@@ -839,6 +859,13 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       require_no_local_attach: true,
     },
     requires_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["ws", "wss", "http", "https"],
+      },
+    ],
   },
   {
     id: "dojo_mcp_host_conformance",
@@ -862,6 +889,18 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       "SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED",
       "SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE",
       "SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING",
+    ],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_DOJO_MCP_HOST_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["http", "https", "ws", "wss"],
+      },
+      { env: "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE", type: "boolean_true" },
+      { env: "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING", type: "boolean_true" },
+      { env: "SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED", type: "boolean_true" },
+      { env: "SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE", type: "boolean_true" },
+      { env: "SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING", type: "boolean_true" },
     ],
   },
   {
@@ -889,6 +928,21 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
     ],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["ws", "wss", "http", "https"],
+      },
+      {
+        env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["http", "https"],
+      },
+      { env: "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE", type: "absolute_path" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON", type: "json_array" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD", type: "absolute_path" },
+    ],
   },
   {
     id: "private_tool_codex_host_conformance",
@@ -915,6 +969,21 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
+    ],
+    env_value_requirements: [
+      {
+        env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["ws", "wss", "http", "https"],
+      },
+      {
+        env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+        type: "non_loopback_url",
+        allowed_protocols: ["http", "https"],
+      },
+      { env: "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE", type: "absolute_path" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON", type: "json_array" },
+      { env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD", type: "absolute_path" },
     ],
   },
   {

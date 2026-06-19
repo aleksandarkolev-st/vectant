@@ -164,6 +164,120 @@ describe("Dojo release gate runner", () => {
     }));
   });
 
+  it("validates typed live-gate environment values before planning execution", () => {
+    const releaseManifest = manifest();
+    const invalidHostPlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "release",
+      gateIds: ["private_tool_stdio_host_conformance"],
+      env: {
+        SYNTHI_HOSTED_BROWSER_CDP_URL: "ws://127.0.0.1:9222/devtools/browser/local",
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: "relative/private-tools.json",
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: "secret-key",
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: "tenant/workspace",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL: "https://app.example.com/workspace",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND: "node",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON: "{\"bad\":true}",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD: "relative/cwd",
+      },
+    });
+
+    expect(invalidHostPlan.gates[0]).toEqual(expect.objectContaining({
+      status: "skipped",
+      skip_reason: "invalid_required_env",
+      missing_env: [],
+      invalid_env: expect.arrayContaining([
+        expect.objectContaining({
+          env: "SYNTHI_HOSTED_BROWSER_CDP_URL",
+          reason: "loopback_or_local_bind_url",
+        }),
+        expect.objectContaining({
+          env: "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
+          reason: "not_absolute_path",
+        }),
+        expect.objectContaining({
+          env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
+          reason: "not_json_array",
+        }),
+        expect.objectContaining({
+          env: "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
+          reason: "not_absolute_path",
+        }),
+      ]),
+    }));
+
+    const readyHostPlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "release",
+      gateIds: ["private_tool_stdio_host_conformance"],
+      env: {
+        SYNTHI_HOSTED_BROWSER_CDP_URL: "wss://runtime.example.com/devtools/browser/remote",
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE: join(tmpdir(), "private-tools.json"),
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY: "secret-key",
+        SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE: "tenant/workspace",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL: "https://app.example.com/workspace",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND: "node",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON: "[\"/opt/synthi/mcp/dist/index.js\"]",
+        SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD: join(tmpdir(), "mcp"),
+      },
+    });
+
+    expect(readyHostPlan.gates[0]).toEqual(expect.objectContaining({
+      status: "planned",
+      missing_env: [],
+      invalid_env: [],
+    }));
+  });
+
+  it("validates explicit boolean release claims for deployed MCP conformance gates", () => {
+    const releaseManifest = manifest();
+    const plan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "release",
+      gateIds: ["dojo_mcp_host_conformance"],
+      env: {
+        SYNTHI_DOJO_MCP_HOST_URL: "https://mcp.example.com",
+        SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING: "false",
+        SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING: "1",
+      },
+    });
+
+    expect(plan.gates[0]).toEqual(expect.objectContaining({
+      status: "skipped",
+      skip_reason: "missing_required_env",
+      missing_env: ["SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING"],
+    }));
+
+    const invalidUrlPlan = buildDojoReleaseGateExecutionPlan({
+      manifest: releaseManifest,
+      scope: "release",
+      gateIds: ["dojo_mcp_host_conformance"],
+      env: {
+        SYNTHI_DOJO_MCP_HOST_URL: "http://localhost:3333",
+        SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE: "1",
+        SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING: "1",
+      },
+    });
+
+    expect(invalidUrlPlan.gates[0]).toEqual(expect.objectContaining({
+      status: "skipped",
+      skip_reason: "invalid_required_env",
+      missing_env: [],
+      invalid_env: [
+        expect.objectContaining({
+          env: "SYNTHI_DOJO_MCP_HOST_URL",
+          reason: "loopback_or_local_bind_url",
+        }),
+      ],
+    }));
+  });
+
   it("represents missing environment requirements as explicit skipped gates by default", () => {
     const plan = buildDojoReleaseGateExecutionPlan({
       manifest: manifest(),
