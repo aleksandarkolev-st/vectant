@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const REQUIRED_APIS = [
@@ -174,28 +174,29 @@ function normalizeBucket(value) {
 }
 
 function buildPlan(config) {
+  const gcloud = (args) => config.project ? [...args, "--project", config.project] : args;
   const commands = [
     command("gcloud", ["config", "list", "--format=json"], "gcloud_config"),
-    command("gcloud", ["services", "list", "--enabled", "--format=json"], "enabled_apis"),
-    command("gcloud", ["container", "clusters", "list", "--format=json"], "gke_clusters"),
-    command("gcloud", ["builds", "triggers", "list", "--format=json"], "cloud_build_triggers", { optional: true }),
-    command("gcloud", ["builds", "list", "--limit=10", "--format=json"], "recent_cloud_builds", { optional: true }),
-    command("gcloud", ["sql", "instances", "list", "--format=json"], "cloud_sql_instances", { optional: true }),
-    command("gcloud", ["storage", "buckets", "list", "--format=json"], "gcs_buckets", { optional: true }),
-    command("gcloud", ["secrets", "list", "--format=json"], "secret_manager_names", { optional: true, redactStdout: false }),
-    command("gcloud", ["compute", "addresses", "list", "--global", "--format=json"], "global_addresses", { optional: true }),
-    command("gcloud", ["compute", "url-maps", "list", "--format=json"], "url_maps", { optional: true }),
-    command("gcloud", ["compute", "target-https-proxies", "list", "--format=json"], "https_proxies", { optional: true }),
-    command("gcloud", ["compute", "ssl-certificates", "list", "--format=json"], "ssl_certificates", { optional: true }),
+    command("gcloud", gcloud(["services", "list", "--enabled", "--format=json"]), "enabled_apis"),
+    command("gcloud", gcloud(["container", "clusters", "list", "--format=json"]), "gke_clusters"),
+    command("gcloud", gcloud(["builds", "triggers", "list", "--format=json"]), "cloud_build_triggers", { optional: true }),
+    command("gcloud", gcloud(["builds", "list", "--limit=10", "--format=json"]), "recent_cloud_builds", { optional: true }),
+    command("gcloud", gcloud(["sql", "instances", "list", "--format=json"]), "cloud_sql_instances", { optional: true }),
+    command("gcloud", gcloud(["storage", "buckets", "list", "--format=json"]), "gcs_buckets", { optional: true }),
+    command("gcloud", gcloud(["secrets", "list", "--format=json"]), "secret_manager_names", { optional: true, redactStdout: false }),
+    command("gcloud", gcloud(["compute", "addresses", "list", "--global", "--format=json"]), "global_addresses", { optional: true }),
+    command("gcloud", gcloud(["compute", "url-maps", "list", "--format=json"]), "url_maps", { optional: true }),
+    command("gcloud", gcloud(["compute", "target-https-proxies", "list", "--format=json"]), "https_proxies", { optional: true }),
+    command("gcloud", gcloud(["compute", "ssl-certificates", "list", "--format=json"]), "ssl_certificates", { optional: true }),
   ];
 
   if (config.region) {
-    commands.push(command("gcloud", ["artifacts", "repositories", "list", "--location", config.region, "--format=json"], "artifact_repositories", { optional: true }));
-    commands.push(command("gcloud", ["redis", "instances", "list", "--region", config.region, "--format=json"], "redis_instances", { optional: true }));
+    commands.push(command("gcloud", gcloud(["artifacts", "repositories", "list", "--location", config.region, "--format=json"]), "artifact_repositories", { optional: true }));
+    commands.push(command("gcloud", gcloud(["redis", "instances", "list", "--region", config.region, "--format=json"]), "redis_instances", { optional: true }));
   }
 
   if (config.cluster && config.zone) {
-    commands.push(command("gcloud", ["container", "clusters", "describe", config.cluster, "--zone", config.zone, "--format=json"], "gke_cluster_describe", { optional: true }));
+    commands.push(command("gcloud", gcloud(["container", "clusters", "describe", config.cluster, "--zone", config.zone, "--format=json"]), "gke_cluster_describe", { optional: true }));
   }
 
   commands.push(command("kubectl", ["config", "current-context"], "kubectl_current_context", { optional: true, parseJson: false }));
@@ -263,13 +264,81 @@ function assertPlanIsReadOnly(plan) {
 }
 
 function findCommand(bin) {
+  const configured = configuredCommandPath(bin);
+  if (configured) {
+    return configured;
+  }
+
   const lookup = process.platform === "win32"
     ? spawnSync("where.exe", [bin], { encoding: "utf8" })
     : spawnSync("which", [bin], { encoding: "utf8" });
+  if (lookup.status === 0) {
+    return {
+      found: true,
+      path: lookup.stdout.trim().split(/\r?\n/)[0],
+      source: "path",
+    };
+  }
+
+  const discovered = discoverCommonCommandPath(bin);
+  if (discovered) {
+    return discovered;
+  }
+
   return {
-    found: lookup.status === 0,
-    path: lookup.status === 0 ? lookup.stdout.trim().split(/\r?\n/)[0] : "",
+    found: false,
+    path: "",
+    source: "not_found",
   };
+}
+
+function configuredCommandPath(bin) {
+  const envName = bin === "gcloud" ? "GCLOUD_BIN" : bin === "kubectl" ? "KUBECTL_BIN" : "";
+  const configured = envName ? process.env[envName] : "";
+  if (!configured) {
+    return null;
+  }
+  if (!existsSync(configured)) {
+    return {
+      found: false,
+      path: configured,
+      source: envName,
+      error: "configured_path_not_found",
+    };
+  }
+  return {
+    found: true,
+    path: configured,
+    source: envName,
+  };
+}
+
+function discoverCommonCommandPath(bin) {
+  if (process.platform !== "win32") {
+    return null;
+  }
+
+  const executable = `${bin}.cmd`;
+  const roots = [
+    process.env.CLOUDSDK_ROOT_DIR,
+    process.env.GOOGLE_CLOUD_SDK_HOME,
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Google", "Cloud SDK", "google-cloud-sdk") : "",
+    process.env.ProgramFiles ? path.join(process.env.ProgramFiles, "Google", "Cloud SDK", "google-cloud-sdk") : "",
+    process.env["ProgramFiles(x86)"] ? path.join(process.env["ProgramFiles(x86)"], "Google", "Cloud SDK", "google-cloud-sdk") : "",
+  ].filter(Boolean);
+
+  for (const root of roots) {
+    const candidate = path.join(root, "bin", executable);
+    if (existsSync(candidate)) {
+      return {
+        found: true,
+        path: candidate,
+        source: "common_windows_cloud_sdk_path",
+      };
+    }
+  }
+
+  return null;
 }
 
 function runInventory(config, plan) {
@@ -307,9 +376,10 @@ function runInventory(config, plan) {
       continue;
     }
 
-    const result = spawnSync(item.bin, item.args, {
+    const launch = buildLaunch(commandAvailability[item.bin].path || item.bin, item.args);
+    const result = spawnSync(launch.bin, launch.args, {
       encoding: "utf8",
-      shell: false,
+      shell: launch.shell,
       timeout: 120000,
       windowsHide: true,
     });
@@ -326,6 +396,7 @@ function runInventory(config, plan) {
       stdoutSha256: stdout ? sha256(stdout) : null,
       stderrSha256: stderr ? sha256(stderr) : null,
       stderrPreview: stderr ? stderr.slice(0, 500) : "",
+      spawnError: result.error ? result.error.message : "",
       parseOk: item.parseJson ? parsed.ok : true,
     });
     if (ok && (!item.parseJson || parsed.ok)) {
@@ -339,6 +410,24 @@ function runInventory(config, plan) {
     commandResults,
     datasets,
   };
+}
+
+function buildLaunch(bin, args) {
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(bin)) {
+    return {
+      bin: [quoteCmdArg(bin), ...args.map(quoteCmdArg)].join(" "),
+      args: [],
+      shell: true,
+    };
+  }
+  return { bin, args, shell: false };
+}
+
+function quoteCmdArg(value) {
+  if (/^[A-Za-z0-9._/:=@{}\\-]+$/.test(value)) {
+    return value;
+  }
+  return `"${value.replace(/(["^&|<>])/g, "^$1")}"`;
 }
 
 function parseJson(value) {
