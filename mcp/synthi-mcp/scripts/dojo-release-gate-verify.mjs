@@ -5127,6 +5127,18 @@ function validateDeployedPrivateToolHostConformance(transcript, {
     if (conformance.custom_mcp_command !== true || transcript?.mcp_server?.default_repo_dist === true) {
       errors.push(`${errorPrefix}_custom_mcp_command_missing`);
     }
+    if (conformance.explicit_mcp_command !== true || transcript?.mcp_server?.explicit_command !== true) {
+      errors.push(`${errorPrefix}_explicit_mcp_command_missing`);
+    }
+    if (conformance.explicit_mcp_args !== true || transcript?.mcp_server?.explicit_args !== true) {
+      errors.push(`${errorPrefix}_explicit_mcp_args_missing`);
+    }
+    if (conformance.explicit_mcp_cwd !== true || transcript?.mcp_server?.explicit_cwd !== true) {
+      errors.push(`${errorPrefix}_explicit_mcp_cwd_missing`);
+    }
+    if (conformance.explicit_mcp_command_spec !== true) {
+      errors.push(`${errorPrefix}_explicit_mcp_command_spec_incomplete`);
+    }
   }
   return errors;
 }
@@ -5974,11 +5986,18 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
       conformance: {
         require_custom_mcp_command: true,
         custom_mcp_command: true,
+        explicit_mcp_command: true,
+        explicit_mcp_args: true,
+        explicit_mcp_cwd: true,
+        explicit_mcp_command_spec: true,
       },
       mcp_server: {
         command: "node",
         cwd: "/opt/synthi/mcp",
         args_count: 2,
+        explicit_command: true,
+        explicit_args: true,
+        explicit_cwd: true,
         default_repo_dist: false,
       },
     }),
@@ -6045,7 +6064,11 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
         require_external_private_tool_store: true,
         external_private_tool_store: false,
         require_custom_mcp_command: true,
-        custom_mcp_command: false,
+        custom_mcp_command: true,
+        explicit_mcp_command: true,
+        explicit_mcp_args: false,
+        explicit_mcp_cwd: false,
+        explicit_mcp_command_spec: false,
       },
       private_tool_store: {
         external: false,
@@ -6056,7 +6079,10 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
         command: "node",
         cwd: MCP_ROOT,
         args_count: 1,
-        default_repo_dist: true,
+        explicit_command: true,
+        explicit_args: false,
+        explicit_cwd: false,
+        default_repo_dist: false,
       },
     },
   });
@@ -6065,7 +6091,9 @@ export async function runDojoReleaseGateVerifierSelfCheck({ outDir }) {
     releaseCandidate: true,
   });
   assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_external_store_missing"));
-  assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_custom_mcp_command_missing"));
+  assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_explicit_mcp_args_missing"));
+  assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_explicit_mcp_cwd_missing"));
+  assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_explicit_mcp_command_spec_incomplete"));
   assert(rejectedStdioHost.errors.includes("private_tool_stdio_host_target_not_remote:loopback"));
 
   const managedKeySigningDir = path.join(outDir, "managed-key-signing");

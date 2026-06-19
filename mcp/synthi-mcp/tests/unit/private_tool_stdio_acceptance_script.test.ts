@@ -58,6 +58,9 @@ describe("private-tool stdio acceptance harness", () => {
       command: "/usr/bin/node",
       args: ["/repo/mcp/synthi-mcp/dist/index.js"],
       cwd: path.resolve("/repo/mcp/synthi-mcp"),
+      explicit_command: false,
+      explicit_args: false,
+      explicit_cwd: false,
       default_repo_dist: true,
     });
   });
@@ -79,6 +82,9 @@ describe("private-tool stdio acceptance harness", () => {
       command: "synthi-mcp",
       args: ["--stdio", "--profile", "prod"],
       cwd: path.resolve("/srv/synthi"),
+      explicit_command: true,
+      explicit_args: true,
+      explicit_cwd: true,
       default_repo_dist: false,
     });
   });
@@ -98,6 +104,17 @@ describe("private-tool stdio acceptance harness", () => {
       defaultArgs: ["/repo/mcp/synthi-mcp/dist/index.js"],
       defaultCwd: "/repo/mcp/synthi-mcp",
     });
+    const completeCustomSpec = resolveMcpServerCommandSpec({
+      args: {
+        "mcp-command": "synthi-mcp",
+        "mcp-args-json": "[\"--connect\",\"https://mcp.example.test/dojo/mcp\"]",
+        "mcp-cwd": "/srv/synthi",
+      },
+      env: {},
+      defaultCommand: "/usr/bin/node",
+      defaultArgs: ["/repo/mcp/synthi-mcp/dist/index.js"],
+      defaultCwd: "/repo/mcp/synthi-mcp",
+    });
 
     expect(mcpCommandConformance({
       commandSpec: defaultSpec,
@@ -106,6 +123,10 @@ describe("private-tool stdio acceptance harness", () => {
       ok: true,
       require_custom_mcp_command: false,
       custom_mcp_command: false,
+      explicit_mcp_command: false,
+      explicit_mcp_args: false,
+      explicit_mcp_cwd: false,
+      explicit_mcp_command_spec: false,
     });
     expect(mcpCommandConformance({
       commandSpec: defaultSpec,
@@ -114,14 +135,34 @@ describe("private-tool stdio acceptance harness", () => {
       ok: false,
       require_custom_mcp_command: true,
       custom_mcp_command: false,
+      explicit_mcp_command: false,
+      explicit_mcp_args: false,
+      explicit_mcp_cwd: false,
+      explicit_mcp_command_spec: false,
     });
     expect(mcpCommandConformance({
       commandSpec: customSpec,
       requireCustomCommand: true,
     })).toEqual({
+      ok: false,
+      require_custom_mcp_command: true,
+      custom_mcp_command: true,
+      explicit_mcp_command: true,
+      explicit_mcp_args: false,
+      explicit_mcp_cwd: false,
+      explicit_mcp_command_spec: false,
+    });
+    expect(mcpCommandConformance({
+      commandSpec: completeCustomSpec,
+      requireCustomCommand: true,
+    })).toEqual({
       ok: true,
       require_custom_mcp_command: true,
       custom_mcp_command: true,
+      explicit_mcp_command: true,
+      explicit_mcp_args: true,
+      explicit_mcp_cwd: true,
+      explicit_mcp_command_spec: true,
     });
   });
 

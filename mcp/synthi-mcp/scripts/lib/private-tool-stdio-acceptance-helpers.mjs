@@ -67,21 +67,27 @@ export function resolveMcpServerCommandSpec({
   defaultArgs = [DIST_INDEX],
   defaultCwd = MCP_ROOT,
 } = {}) {
-  const hasCustomCommand = Boolean(args["mcp-command"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND);
-  const command = String(args["mcp-command"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND || defaultCommand).trim();
+  const commandRaw = args["mcp-command"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND;
+  const explicitCommand = Boolean(commandRaw);
+  const command = String(commandRaw || defaultCommand).trim();
   if (!command) throw new Error("mcp_command_required");
   const argsJson = args["mcp-args-json"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON;
+  const explicitArgs = Boolean(argsJson);
   const commandArgs = argsJson
     ? parseMcpCommandArgsJson(argsJson)
-    : hasCustomCommand
+    : explicitCommand
     ? []
     : [...defaultArgs];
-  const cwdRaw = args["mcp-cwd"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD || defaultCwd;
-  const cwd = path.resolve(String(cwdRaw));
+  const cwdRaw = args["mcp-cwd"] || env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD;
+  const explicitCwd = Boolean(cwdRaw);
+  const cwd = path.resolve(String(explicitCwd ? cwdRaw : defaultCwd));
   return {
     command,
     args: commandArgs,
     cwd,
+    explicit_command: explicitCommand,
+    explicit_args: explicitArgs,
+    explicit_cwd: explicitCwd,
     default_repo_dist: command === defaultCommand
       && commandArgs.length === defaultArgs.length
       && commandArgs.every((item, index) => item === defaultArgs[index])
@@ -91,11 +97,18 @@ export function resolveMcpServerCommandSpec({
 
 export function mcpCommandConformance({ commandSpec, requireCustomCommand = false }) {
   const customMcpCommand = commandSpec?.default_repo_dist === false;
+  const explicitMcpCommandSpec = commandSpec?.explicit_command === true
+    && commandSpec?.explicit_args === true
+    && commandSpec?.explicit_cwd === true;
   const requireCustom = Boolean(requireCustomCommand);
   return {
-    ok: !requireCustom || customMcpCommand,
+    ok: !requireCustom || (customMcpCommand && explicitMcpCommandSpec),
     require_custom_mcp_command: requireCustom,
     custom_mcp_command: customMcpCommand,
+    explicit_mcp_command: commandSpec?.explicit_command === true,
+    explicit_mcp_args: commandSpec?.explicit_args === true,
+    explicit_mcp_cwd: commandSpec?.explicit_cwd === true,
+    explicit_mcp_command_spec: explicitMcpCommandSpec,
   };
 }
 
