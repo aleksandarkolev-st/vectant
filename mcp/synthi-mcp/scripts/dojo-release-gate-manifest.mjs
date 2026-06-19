@@ -902,6 +902,7 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
     default_report_path: "tmp/private-tool-codex-host-conformance/codex-private-tool-acceptance.json",
     release_artifact_requirements: {
       ...DOJO_DEPLOYED_PRIVATE_TOOL_HOST_REQUIREMENTS,
+      require_custom_mcp_command: true,
       require_agent_mcp_only: true,
       require_no_shell_commands: true,
     },
@@ -911,6 +912,9 @@ export const DOJO_RELEASE_GATE_COMMANDS = [
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
       "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
       "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
+      "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
     ],
   },
   {
@@ -2648,13 +2652,16 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
     if (!gate.release_artifact_requirements?.require_private_tool_call) {
       errors.push(`private_tool_host_conformance_missing_private_tool_call:${gate.id}`);
     }
+    if (!gate.release_artifact_requirements?.require_custom_mcp_command) {
+      errors.push(`private_tool_host_conformance_missing_custom_mcp:${gate.id}`);
+    }
     if (!Array.isArray(gate.requires_env) || !gate.requires_env.includes("SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE")) {
       errors.push(`private_tool_host_conformance_missing_store_env:${gate.id}`);
     }
     if (!Array.isArray(gate.requires_env) || !gate.requires_env.includes("SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL")) {
       errors.push(`private_tool_host_conformance_missing_target_env:${gate.id}`);
     }
-    if (gate.id === "private_tool_stdio_host_conformance") {
+    if (gate.id === "private_tool_stdio_host_conformance" || gate.id === "private_tool_codex_host_conformance") {
       const requiredMcpCommandEnv = [
         "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
         "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
@@ -2663,10 +2670,10 @@ export function validateDojoReleaseGateManifest(manifest, { packageScripts = {} 
       const missingMcpCommandEnv = requiredMcpCommandEnv
         .filter((envName) => !Array.isArray(gate.requires_env) || !gate.requires_env.includes(envName));
       if (missingMcpCommandEnv.length > 0) {
-        errors.push(`private_tool_stdio_host_conformance_missing_custom_mcp_command_env:${missingMcpCommandEnv.join(",")}`);
+        errors.push(`${gate.id}_missing_custom_mcp_command_env:${missingMcpCommandEnv.join(",")}`);
       }
     }
-    const requiredScriptFlags = gate.id === "private_tool_stdio_host_conformance"
+    const requiredScriptFlags = gate.id === "private_tool_stdio_host_conformance" || gate.id === "private_tool_codex_host_conformance"
       ? ["--require-custom-mcp-command", "--require-non-loopback-runtime", "--require-external-private-tool-store"]
       : ["--require-non-loopback-runtime", "--require-external-private-tool-store"];
     const missingScriptFlags = missingRequiredPackageScriptTokens(packageScripts, gate, requiredScriptFlags);

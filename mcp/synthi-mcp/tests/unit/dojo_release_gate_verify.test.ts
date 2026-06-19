@@ -2564,6 +2564,30 @@ describe("Dojo release gate artifact verifier", () => {
       errors: [],
     }));
 
+    const weakCodexHost = privateToolCodexAcceptanceFixture(deployedPrivateToolHostFixtureOverrides({
+      conformance: {
+        custom_mcp_command: true,
+        explicit_mcp_command: true,
+        explicit_mcp_args: false,
+        explicit_mcp_cwd: false,
+        explicit_mcp_command_spec: false,
+      },
+      mcp_server: {
+        command: "synthi-mcp-wrapper",
+        cwd: MCP_ROOT,
+        args_count: 0,
+        explicit_command: true,
+        explicit_args: false,
+        explicit_cwd: false,
+        default_repo_dist: false,
+      },
+    }));
+    expect(validateDojoPrivateToolCodexHostConformanceForRelease(weakCodexHost).errors).toEqual(expect.arrayContaining([
+      "private_tool_codex_host_explicit_mcp_args_missing",
+      "private_tool_codex_host_explicit_mcp_cwd_missing",
+      "private_tool_codex_host_explicit_mcp_command_spec_incomplete",
+    ]));
+
     const weakStdio = privateToolStdioAcceptanceFixture({
       target_url: "http://127.0.0.1:3000/private-tool",
       conformance: {
@@ -6200,6 +6224,21 @@ function deployedPrivateToolHostFixtureOverrides(overrides = {}) {
       external_private_tool_store_location_ok: true,
       external_private_tool_store_location_class: "remote_uri",
       external_private_tool_store_location_reasons: ["remote_uri_scheme:gs"],
+      require_custom_mcp_command: true,
+      custom_mcp_command: true,
+      explicit_mcp_command: true,
+      explicit_mcp_args: true,
+      explicit_mcp_cwd: true,
+      explicit_mcp_command_spec: true,
+    },
+    mcp_server: {
+      command: "synthi-mcp-wrapper",
+      cwd: "/opt/synthi/mcp",
+      args_count: 2,
+      explicit_command: true,
+      explicit_args: true,
+      explicit_cwd: true,
+      default_repo_dist: false,
     },
     private_tool_store: {
       external: true,
@@ -6213,6 +6252,10 @@ function deployedPrivateToolHostFixtureOverrides(overrides = {}) {
     conformance: {
       ...base.conformance,
       ...(overrides.conformance || {}),
+    },
+    mcp_server: {
+      ...base.mcp_server,
+      ...(overrides.mcp_server || {}),
     },
     private_tool_store: {
       ...base.private_tool_store,

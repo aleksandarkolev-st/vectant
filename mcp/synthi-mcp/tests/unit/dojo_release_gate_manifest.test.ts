@@ -195,7 +195,7 @@ const PACKAGE_SCRIPTS = {
     "live:browser:private-tool-codex": "node scripts/private-tool-codex-acceptance.mjs",
     "live:dojo:mcp-host-conformance": "node scripts/dojo-mcp-host-conformance.mjs --out-dir tmp/dojo-mcp-host-conformance-live --require-non-loopback-mcp-host --execute-production --require-external-control-plane-store --require-external-proof-signing --require-bridge-token --require-no-local-cdp --require-licensed-skill-filtering",
     "live:browser:private-tool-host-conformance": "node scripts/private-tool-stdio-acceptance.mjs --require-custom-mcp-command --require-non-loopback-runtime --require-external-private-tool-store",
-    "live:browser:private-tool-codex-host-conformance": "node scripts/private-tool-codex-acceptance.mjs --require-non-loopback-runtime --require-external-private-tool-store",
+    "live:browser:private-tool-codex-host-conformance": "node scripts/private-tool-codex-acceptance.mjs --require-custom-mcp-command --require-non-loopback-runtime --require-external-private-tool-store",
     soak: "node tests/soak/soak_loop.mjs",
   },
   "synthi/package.json": {
@@ -661,10 +661,21 @@ describe("Dojo release gate manifest", () => {
           require_external_private_tool_store_location_policy: true,
           require_no_local_attach: true,
           require_private_tool_call: true,
+          require_custom_mcp_command: true,
           require_agent_mcp_only: true,
           require_no_shell_commands: true,
           require_visual_proof: true,
         }),
+        requires_env: expect.arrayContaining([
+          "SYNTHI_HOSTED_BROWSER_CDP_URL",
+          "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
+          "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
+          "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TARGET_URL",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON",
+          "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
+        ]),
       }),
       expect.objectContaining({
         id: "dojo_generated_pr_self_check",
@@ -1391,7 +1402,7 @@ describe("Dojo release gate manifest", () => {
     expect(validateDojoReleaseGateManifest(brokenLiveManifest, { packageScripts: brokenLiveScripts }).errors).toEqual(expect.arrayContaining([
       "mcp_host_conformance_package_script_missing_flags:--out-dir,tmp/dojo-mcp-host-conformance-live,--execute-production,--require-external-control-plane-store,--require-external-proof-signing,--require-bridge-token,--require-no-local-cdp,--require-licensed-skill-filtering",
       "private_tool_host_conformance_package_script_missing_flags:private_tool_stdio_host_conformance:--require-non-loopback-runtime,--require-external-private-tool-store",
-      "private_tool_host_conformance_package_script_missing_flags:private_tool_codex_host_conformance:--require-external-private-tool-store",
+      "private_tool_host_conformance_package_script_missing_flags:private_tool_codex_host_conformance:--require-custom-mcp-command,--require-external-private-tool-store",
     ]));
 
     const brokenFullVisual = JSON.parse(JSON.stringify(manifest));
@@ -1665,6 +1676,19 @@ describe("Dojo release gate manifest", () => {
       "private_tool_host_conformance_missing_no_local_attach:private_tool_stdio_host_conformance",
       "private_tool_host_conformance_missing_private_tool_call:private_tool_stdio_host_conformance",
       "private_tool_stdio_host_conformance_missing_custom_mcp_command_env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON,SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
+    ]));
+
+    const brokenPrivateToolCodexHostConformance = JSON.parse(JSON.stringify(manifest));
+    const privateCodexHostGate = brokenPrivateToolCodexHostConformance.gates
+      .find((gate) => gate.id === "private_tool_codex_host_conformance");
+    privateCodexHostGate.release_artifact_requirements.require_custom_mcp_command = false;
+    privateCodexHostGate.requires_env = privateCodexHostGate.requires_env
+      .filter((envName) => envName !== "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND"
+        && envName !== "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON"
+        && envName !== "SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD");
+    expect(validateDojoReleaseGateManifest(brokenPrivateToolCodexHostConformance, { packageScripts: PACKAGE_SCRIPTS }).errors).toEqual(expect.arrayContaining([
+      "private_tool_host_conformance_missing_custom_mcp:private_tool_codex_host_conformance",
+      "private_tool_codex_host_conformance_missing_custom_mcp_command_env:SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND,SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON,SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD",
     ]));
 
     const brokenGeneratedPr = JSON.parse(JSON.stringify(manifest));

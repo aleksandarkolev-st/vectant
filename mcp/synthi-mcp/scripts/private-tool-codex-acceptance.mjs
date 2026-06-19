@@ -32,10 +32,12 @@ import {
   buildCodexAcceptancePrompt,
   buildCodexConfigToml,
   buildCodexProcessEnv,
+  codexMcpCommandConformance,
   codexExecArgs,
   extractCodexMcpEvidence,
   findPageForVisualProof,
   findPageWithText,
+  resolveCodexMcpServerCommandSpec,
   selectCdpTargetsToClose,
   visualProofScreenshotOptions,
 } from "./lib/private-tool-codex-acceptance-helpers.mjs";
@@ -53,10 +55,12 @@ export {
   buildCodexAcceptancePrompt,
   buildCodexConfigToml,
   buildCodexProcessEnv,
+  codexMcpCommandConformance,
   codexExecArgs,
   extractCodexMcpEvidence,
   findPageForVisualProof,
   findPageWithText,
+  resolveCodexMcpServerCommandSpec,
   selectCdpTargetsToClose,
   visualProofScreenshotOptions,
 } from "./lib/private-tool-codex-acceptance-helpers.mjs";
@@ -85,11 +89,21 @@ const CFG = {
   requireExternalPrivateToolStore: parseBooleanFlag(args["require-external-private-tool-store"]
     ?? process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_REQUIRE_EXTERNAL_PRIVATE_TOOL_STORE
     ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_EXTERNAL_PRIVATE_TOOL_STORE),
+  requireCustomMcpCommand: parseBooleanFlag(args["require-custom-mcp-command"]
+    ?? process.env.SYNTHI_PRIVATE_TOOL_CODEX_ACCEPTANCE_REQUIRE_CUSTOM_MCP_COMMAND
+    ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_REQUIRE_CUSTOM_MCP_COMMAND),
   toolName: args["tool-name"] || process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_NAME || "",
   toolArgs: parseJsonObjectArgument(args["tool-args-json"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_TOOL_ARGS_JSON ?? "{}", "tool_args"),
   expectedText: normalizeOptionalText(args["expected-text"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_TEXT),
   expectedStepsMin: parseNonNegativeInteger(args["expected-steps-min"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_EXPECTED_STEPS_MIN ?? "1", "expected_steps_min"),
   hostedSessionTtlMs: parseNonNegativeInteger(args["hosted-session-ttl-ms"] ?? process.env.SYNTHI_PRIVATE_TOOL_ACCEPTANCE_HOSTED_SESSION_TTL_MS ?? "900000", "hosted_session_ttl_ms"),
+  mcpCommand: resolveCodexMcpServerCommandSpec({
+    args,
+    env: process.env,
+    defaultCommand: "node",
+    defaultArgs: [DIST_INDEX],
+    defaultCwd: MCP_ROOT,
+  }),
 };
 
 function log(kind, message) {
@@ -107,6 +121,10 @@ async function main() {
   const runtimeConformance = assertRuntimeEndpointConformance({
     cdpUrl: CFG.cdpUrl,
     requireNonLoopbackRuntime: CFG.requireNonLoopbackRuntime,
+  });
+  const mcpCommandConformance = assertCodexMcpCommandConformance({
+    commandSpec: CFG.mcpCommand,
+    requireCustomCommand: CFG.requireCustomMcpCommand,
   });
   const authPath = path.join(CFG.codexAuthHome, "auth.json");
   if (!existsSync(authPath)) {
@@ -152,6 +170,21 @@ async function main() {
       external_private_tool_store_location_ok: privateToolStoreConformance.external_private_tool_store_location_ok,
       external_private_tool_store_location_class: privateToolStoreConformance.external_private_tool_store_location_class,
       external_private_tool_store_location_reasons: privateToolStoreConformance.external_private_tool_store_location_reasons,
+      require_custom_mcp_command: mcpCommandConformance.require_custom_mcp_command,
+      custom_mcp_command: mcpCommandConformance.custom_mcp_command,
+      explicit_mcp_command: mcpCommandConformance.explicit_mcp_command,
+      explicit_mcp_args: mcpCommandConformance.explicit_mcp_args,
+      explicit_mcp_cwd: mcpCommandConformance.explicit_mcp_cwd,
+      explicit_mcp_command_spec: mcpCommandConformance.explicit_mcp_command_spec,
+    },
+    mcp_server: {
+      command: CFG.mcpCommand.command,
+      cwd: CFG.mcpCommand.cwd,
+      args_count: CFG.mcpCommand.args.length,
+      explicit_command: CFG.mcpCommand.explicit_command,
+      explicit_args: CFG.mcpCommand.explicit_args,
+      explicit_cwd: CFG.mcpCommand.explicit_cwd,
+      default_repo_dist: CFG.mcpCommand.default_repo_dist,
     },
     private_tool_store: {
       external: privateToolStore.external,
@@ -259,6 +292,7 @@ async function prepareCodexHome({ codexHome, authPath, storeFile, storeKey, stor
     codexReasoning: CFG.codexReasoning,
     codexModel: CFG.codexModel,
     distIndex: DIST_INDEX,
+    mcpCommandSpec: CFG.mcpCommand,
     storeFile,
     storeKey,
     storeScope,
@@ -268,6 +302,14 @@ async function prepareCodexHome({ codexHome, authPath, storeFile, storeKey, stor
     hostedSessionTtlMs: CFG.hostedSessionTtlMs,
   });
   await writeFile(path.join(codexHome, "config.toml"), configText);
+}
+
+function assertCodexMcpCommandConformance({ commandSpec, requireCustomCommand }) {
+  const conformance = codexMcpCommandConformance({ commandSpec, requireCustomCommand });
+  if (!conformance.ok) {
+    throw new Error("custom_mcp_command_required: pass --mcp-command with --mcp-args-json and --mcp-cwd, or set SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_COMMAND, SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_ARGS_JSON, and SYNTHI_PRIVATE_TOOL_ACCEPTANCE_MCP_CWD before using this harness as a deployed-host conformance gate");
+  }
+  return conformance;
 }
 
 async function runCodexAgent({ codexHome, codexWorkdir, targetUrl, toolName, toolArgs }) {

@@ -8,6 +8,7 @@ import {
   buildCodexProcessEnv,
   buildCodexConfigToml,
   buildCodexAcceptancePrompt,
+  codexMcpCommandConformance,
   codexExecArgs,
   extractCodexMcpEvidence,
   findPageForVisualProof,
@@ -16,6 +17,7 @@ import {
   parseJsonObjectArgument,
   privateToolStoreLocationConformance,
   privateToolStoreConformance,
+  resolveCodexMcpServerCommandSpec,
   resolvePrivateToolStoreSpec,
   runtimeEndpointConformance,
   selectCdpTargetsToClose,
@@ -41,11 +43,112 @@ describe("private-tool Codex acceptance harness", () => {
     });
 
     expect(config).toContain('model = "gpt-5.3-codex-spark"');
+    expect(config).toContain('command = "node"');
+    expect(config).toContain('args = ["/repo/mcp/synthi-mcp/dist/index.js"]');
+    expect(config).not.toContain("cwd = ");
     expect(config).toContain("SYNTHI_HOSTED_BROWSER_CDP_URL");
     expect(config).toContain("SYNTHI_HOSTED_BROWSER_WORKSPACE_URL");
     expect(config).toContain("SYNTHI_WORKSPACE_ID");
     expect(config).not.toContain("SYNTHI_BROWSER_CDP_URL");
     expect(config).not.toMatch(/browser-mcp-live|\/port\/\d+|C:\\\\/i);
+  });
+
+  it("can configure Codex acceptance through an explicit deployed MCP wrapper", () => {
+    const commandSpec = resolveCodexMcpServerCommandSpec({
+      args: {
+        "mcp-command": "synthi-mcp-wrapper",
+        "mcp-args-json": "[\"--connect\",\"https://mcp.example.test/dojo/mcp\"]",
+        "mcp-cwd": "/opt/synthi/mcp",
+      },
+      env: {},
+      defaultCommand: "node",
+      defaultArgs: ["/repo/mcp/synthi-mcp/dist/index.js"],
+      defaultCwd: "/repo/mcp/synthi-mcp",
+    });
+    const config = buildCodexConfigToml({
+      codexReasoning: "low",
+      codexModel: DEFAULT_CODEX_ACCEPTANCE_MODEL,
+      distIndex: "/repo/mcp/synthi-mcp/dist/index.js",
+      mcpCommandSpec: commandSpec,
+      storeFile: "gs://release-private-tool-store/private-tools.enc.json",
+      storeKey: "private-tool-key",
+      storeScope: "tenant/workspace/release",
+      cdpUrl: "wss://runtime.example.test/devtools/browser/session",
+      targetUrl: "https://preview.example.test/workspace",
+      workspaceId: "acceptance-workspace",
+    });
+
+    expect(commandSpec).toEqual({
+      command: "synthi-mcp-wrapper",
+      args: ["--connect", "https://mcp.example.test/dojo/mcp"],
+      cwd: path.resolve("/opt/synthi/mcp"),
+      explicit_command: true,
+      explicit_args: true,
+      explicit_cwd: true,
+      default_repo_dist: false,
+    });
+    expect(codexMcpCommandConformance({
+      commandSpec,
+      requireCustomCommand: true,
+    })).toEqual({
+      ok: true,
+      require_custom_mcp_command: true,
+      custom_mcp_command: true,
+      explicit_mcp_command: true,
+      explicit_mcp_args: true,
+      explicit_mcp_cwd: true,
+      explicit_mcp_command_spec: true,
+    });
+    expect(config).toContain('command = "synthi-mcp-wrapper"');
+    expect(config).toContain('args = ["--connect", "https://mcp.example.test/dojo/mcp"]');
+    expect(config).toContain(`cwd = ${JSON.stringify(path.resolve("/opt/synthi/mcp"))}`);
+    expect(config).not.toContain('args = ["/repo/mcp/synthi-mcp/dist/index.js"]');
+  });
+
+  it("rejects incomplete custom Codex MCP command specs for host conformance", () => {
+    const defaultSpec = resolveCodexMcpServerCommandSpec({
+      args: {},
+      env: {},
+      defaultCommand: "node",
+      defaultArgs: ["/repo/mcp/synthi-mcp/dist/index.js"],
+      defaultCwd: "/repo/mcp/synthi-mcp",
+    });
+    const incompleteCustomSpec = resolveCodexMcpServerCommandSpec({
+      args: { "mcp-command": "synthi-mcp-wrapper" },
+      env: {},
+      defaultCommand: "node",
+      defaultArgs: ["/repo/mcp/synthi-mcp/dist/index.js"],
+      defaultCwd: "/repo/mcp/synthi-mcp",
+    });
+
+    expect(defaultSpec).toEqual({
+      command: "node",
+      args: ["/repo/mcp/synthi-mcp/dist/index.js"],
+      cwd: path.resolve("/repo/mcp/synthi-mcp"),
+      explicit_command: false,
+      explicit_args: false,
+      explicit_cwd: false,
+      default_repo_dist: true,
+    });
+    expect(codexMcpCommandConformance({
+      commandSpec: defaultSpec,
+      requireCustomCommand: true,
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      custom_mcp_command: false,
+      explicit_mcp_command_spec: false,
+    }));
+    expect(codexMcpCommandConformance({
+      commandSpec: incompleteCustomSpec,
+      requireCustomCommand: true,
+    })).toEqual(expect.objectContaining({
+      ok: false,
+      custom_mcp_command: true,
+      explicit_mcp_command: true,
+      explicit_mcp_args: false,
+      explicit_mcp_cwd: false,
+      explicit_mcp_command_spec: false,
+    }));
   });
 
   it("writes the configured default model into Codex config", () => {
