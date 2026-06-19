@@ -7,6 +7,9 @@ Agent Dojo enterprise gates without changing the default beta deployment under
 It does three things:
 
 - removes the in-cluster Postgres and Redis resources from the rendered output
+- removes the beta in-cluster Redis URL from the rendered `synthi-config`
+- routes `collab-server` and `signaling-server` Redis through the
+  externally-synced `synthi-secrets/REDIS_URL` value
 - adds fail-closed Dojo production posture values to `synthi-config`
 - merges Dojo release-only Secret Manager values into the existing
   `synthi-secrets` Kubernetes Secret through External Secrets Operator
