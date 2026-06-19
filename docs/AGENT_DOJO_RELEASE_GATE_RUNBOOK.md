@@ -577,7 +577,14 @@ _KUSTOMIZE_LOAD_RESTRICTOR=LoadRestrictionsNone
 ```
 
 Before using that overlay in Cloud Build, render it locally and inspect the
-output:
+output. The checked command writes report and evidence artifacts under
+`tmp/dojo-kustomize-overlay-check`:
+
+```powershell
+node mcp/synthi-mcp/scripts/dojo-kustomize-overlay-check.mjs
+```
+
+The raw render command is:
 
 ```powershell
 kubectl kustomize k8s/overlays/dojo-release-gate --load-restrictor LoadRestrictionsNone |
