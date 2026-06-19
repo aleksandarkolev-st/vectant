@@ -769,16 +769,22 @@ export class BrowserPlaywrightAdapter {
     const page = this.pages.get(tab_id)?.page;
     if (!page || page.isClosed()) return { ok: false, error: "tab_not_found" };
     await this.installTeachCapture(page, tab_id);
-    if (this.workflowOverlayEnabled) {
-      const visible = await this.installWorkflowOverlay(page, tab_id);
-      if (visible) {
-        this.workflowOverlayInstalled.add(page);
-      } else {
-        this.workflowOverlayInstalled.delete(page);
-        return { ok: false, error: "workflow_overlay_install_failed" };
-      }
-    }
+    const overlay = await this.refreshWorkflowOverlay(tab_id);
+    if (!overlay.ok) return overlay;
     return { ok: true };
+  }
+
+  async refreshWorkflowOverlay(tab_id: string): Promise<{ ok: true; visible: boolean } | { ok: false; error: string }> {
+    const page = this.pages.get(tab_id)?.page;
+    if (!page || page.isClosed()) return { ok: false, error: "tab_not_found" };
+    if (!this.workflowOverlayEnabled) return { ok: true, visible: false };
+    const visible = await this.installWorkflowOverlay(page, tab_id);
+    if (!visible) {
+      this.workflowOverlayInstalled.delete(page);
+      return { ok: false, error: "workflow_overlay_install_failed" };
+    }
+    this.workflowOverlayInstalled.add(page);
+    return { ok: true, visible: true };
   }
 
   resetForTests(): void {

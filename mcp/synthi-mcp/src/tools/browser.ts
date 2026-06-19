@@ -1249,6 +1249,13 @@ async function browserObservePreviewTool(args: unknown, options: { userGesture?:
       reason: err instanceof Error ? err.message : String(err),
     });
   }
+  const overlay = await browserPlaywrightAdapter.refreshWorkflowOverlay(target.tab.tab_id);
+  if (!overlay.ok) {
+    return errorResponse(overlay.error, {
+      tab_id: target.tab.tab_id,
+      preview_url: target.tab.url,
+    });
+  }
   let snapshot;
   try {
     snapshot = await browserPlaywrightAdapter.snapshot(target.tab.tab_id);
@@ -1271,6 +1278,7 @@ async function browserObservePreviewTool(args: unknown, options: { userGesture?:
       reason: target.reason,
     },
     snapshot: gated.snapshot,
+    workflow_overlay: overlay,
     tabs,
     hidden_tabs: allTabs.length - tabs.length,
   });
