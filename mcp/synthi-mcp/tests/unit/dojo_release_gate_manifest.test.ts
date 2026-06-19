@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   buildDojoReleaseGateEvidenceManifest,
@@ -151,6 +152,8 @@ import {
   DOJO_TIME_MACHINE_DEBUGGER_TEST_FILES,
 } from "../../scripts/dojo-time-machine-debugger-self-check.mjs";
 
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
 const PACKAGE_SCRIPTS = {
   "mcp/synthi-mcp/package.json": {
     typecheck: "tsc --noEmit",
@@ -209,7 +212,7 @@ const PACKAGE_SCRIPTS = {
 
 describe("Dojo release gate manifest", () => {
   it("keeps the package Postgres control-plane script aligned with the authoritative self-check suite", () => {
-    const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
+    const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
     const script = packageJson.scripts["test:dojo:postgres-control-plane"];
     const scriptFiles = script.split(/\s+/).filter((part) => part.endsWith(".test.ts"));
 
@@ -217,7 +220,7 @@ describe("Dojo release gate manifest", () => {
   });
 
   it("publishes script harnesses used by release-gate package scripts", () => {
-    const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
+    const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
     expect(packageJson.scripts["chaos:dojo:preflight"]).toContain("tests/chaos/runner.mjs");
     expect(packageJson.scripts["chaos:dojo:live"]).toContain("tests/chaos/runner.mjs");
     expect(packageJson.scripts.soak).toContain("tests/soak/soak_loop.mjs");
@@ -615,6 +618,7 @@ describe("Dojo release gate manifest", () => {
         release_artifact_requirements: DOJO_MCP_HOST_CONFORMANCE_REQUIREMENTS,
         requires_env: expect.arrayContaining([
           "SYNTHI_DOJO_MCP_HOST_URL",
+          "SYNTHI_DOJO_MCP_BEARER_TOKEN",
           "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE",
           "SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING",
           "SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED",
