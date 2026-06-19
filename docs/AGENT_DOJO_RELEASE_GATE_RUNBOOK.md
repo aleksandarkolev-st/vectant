@@ -156,6 +156,19 @@ node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
   --cloud-sql-instance=$env:CLOUD_SQL_INSTANCE `
   --redis-instance=$env:REDIS_INSTANCE `
   --domain=$env:DOMAIN `
+  --expected-secret=synthi-database-url `
+  --expected-secret=synthi-redis-url `
+  --expected-secret=synthi-dojo-control-plane-postgres-url `
+  --expected-secret=synthi-dojo-evidence-ledger-postgres-url `
+  --expected-secret=synthi-dojo-proof-signing-key-id `
+  --expected-secret=synthi-dojo-proof-signing-command `
+  --expected-secret=synthi-dojo-proof-signing-command-args `
+  --expected-secret=synthi-dojo-proof-signing-managed-key-uri `
+  --expected-secret=synthi-dojo-proof-signing-public-key-pem `
+  --expected-secret=synthi-dojo-mcp-manifest-key-id `
+  --expected-secret=synthi-dojo-mcp-manifest-private-key-pem `
+  --expected-secret=synthi-dojo-mcp-manifest-public-key-pem `
+  --expected-secret=synthi-dojo-mcp-bearer-token `
   --out-dir=tmp/dojo-gcp-release-inventory
 ```
 
@@ -175,6 +188,19 @@ node mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs `
   --cloud-sql-instance=$env:CLOUD_SQL_INSTANCE `
   --redis-instance=$env:REDIS_INSTANCE `
   --domain=$env:DOMAIN `
+  --expected-secret=synthi-database-url `
+  --expected-secret=synthi-redis-url `
+  --expected-secret=synthi-dojo-control-plane-postgres-url `
+  --expected-secret=synthi-dojo-evidence-ledger-postgres-url `
+  --expected-secret=synthi-dojo-proof-signing-key-id `
+  --expected-secret=synthi-dojo-proof-signing-command `
+  --expected-secret=synthi-dojo-proof-signing-command-args `
+  --expected-secret=synthi-dojo-proof-signing-managed-key-uri `
+  --expected-secret=synthi-dojo-proof-signing-public-key-pem `
+  --expected-secret=synthi-dojo-mcp-manifest-key-id `
+  --expected-secret=synthi-dojo-mcp-manifest-private-key-pem `
+  --expected-secret=synthi-dojo-mcp-manifest-public-key-pem `
+  --expected-secret=synthi-dojo-mcp-bearer-token `
   --out-dir=tmp/dojo-gcp-release-inventory
 ```
 
