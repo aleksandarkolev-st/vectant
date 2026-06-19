@@ -248,12 +248,23 @@ function acceptanceContract(ledger = proofLedger(), overrides: Record<string, un
     fission_report: {
       selected_island: "device-kernel",
       selected_reason: "verified_fission_contract",
+      changed_sources: ["src/gpu/kernel.hip"],
       artifact_hash_before: artifactBeforeHash,
       artifact_hash_after: artifactAfterHash,
+      abi_compatibility_class: "compatible",
       full_device_fallback: false,
       host_relinked: false,
       process_restarted: false,
       full_rebuild_used: false,
+      unaffected_artifacts_hash_unchanged: true,
+      evidence_refs: ["runtime:fission-verifier-report:fixture"],
+      selected_verifier_evidence_id: "runtime:fission-verifier-report:fixture",
+      deterministic_verifier_evidence_refs: ["runtime:fission-verifier-report:fixture"],
+      selection_decision_hash: HASH_C,
+      output_oracle_contract: {
+        kind: "raw_readback",
+        schema_hash: HASH_C,
+      },
     },
     hip_contract: {
       kernel_name: "kernel_main",

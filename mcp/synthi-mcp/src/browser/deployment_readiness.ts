@@ -1,5 +1,41 @@
 import { resolveHostedBrowserRuntime } from "./hosted_runtime.js";
 import { replayIsolationProfiles } from "./safety.js";
+import {
+  configuredDojoEvidenceLedgerEnv,
+  configuredDojoExternalSigningEnv,
+  DOJO_CONTROL_PLANE_POSTGRES_URL_ENV,
+  DOJO_CONTROL_PLANE_STORE_ENV,
+  DOJO_EVIDENCE_LEDGER_POSTGRES_URL_ENV,
+  DOJO_EVIDENCE_LEDGER_STORE_ENV,
+  DOJO_PRODUCTION_ENFORCEMENT_ENV,
+  DOJO_PROOF_SIGNING_COMMAND_ENV,
+  DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV,
+  DOJO_PROOF_SIGNING_KEY_ENV,
+  DOJO_PROOF_SIGNING_KEY_ID_ENV,
+  DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV,
+  DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
+  DOJO_PROOF_SIGNING_PROVIDER_ENV,
+  DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
+  DOJO_REQUIRE_DURABLE_STORE_ENV,
+  DOJO_REQUIRE_EVIDENCE_LEDGER_ENV,
+  DOJO_REQUIRE_EXTERNAL_SIGNING_ENV,
+  DOJO_STORE_FILE_ENV,
+  DOJO_STORE_KEY_ENV,
+  DOJO_STORE_SCOPE_ENV,
+  resolveDojoControlPlaneStoreConfig,
+  resolveDojoEvidenceLedgerStoreConfig,
+  resolveDojoEnforcementConfig,
+  type DojoEnforcementConfig,
+} from "../dojo/config/enforcement.js";
+import {
+  configuredDojoMcpManifestSigningEnv,
+  DOJO_MCP_MANIFEST_ISSUER_ENV,
+  DOJO_MCP_MANIFEST_KEY_ID_ENV,
+  DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM_ENV,
+  DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM_ENV,
+  DOJO_MCP_MANIFEST_SIGNING_ALGORITHM_ENV,
+  dojoMcpManifestSigningReadiness,
+} from "../dojo/mcp/manifest_signing.js";
 
 export type BrowserWorkflowDeploymentMode = "production" | "development";
 export type BrowserWorkflowDeploymentCheckStatus = "pass" | "warn" | "fail";
@@ -31,6 +67,7 @@ export interface BrowserWorkflowDeploymentReadiness {
     failed: number;
   };
   hosted_runtime: ReturnType<typeof resolveHostedBrowserRuntime>;
+  dojo_enforcement: DojoEnforcementConfig;
   replay_isolation_profile: {
     workspace_id: string;
     readiness: string;
@@ -48,10 +85,16 @@ export function browserWorkflowDeploymentReadiness(
   const requireWorkflowBridge = input.require_workflow_bridge !== false;
   const workspaceId = nonEmpty(input.workspace_id) ?? nonEmpty(env["SYNTHI_WORKSPACE_ID"]);
   const hostedRuntime = resolveHostedBrowserRuntime({ workspace_id: workspaceId }, env);
+  const dojoEnforcement = resolveDojoEnforcementConfig(env);
   const profile = replayIsolationProfiles.get(workspaceId);
   const checks: BrowserWorkflowDeploymentCheck[] = [];
 
   checks.push(checkHostedRuntime(hostedRuntime, env, production));
+  checks.push(checkHostedRuntimeEndpointPolicy(hostedRuntime, production));
+  checks.push(checkHostedRuntimeOriginPolicy(hostedRuntime, production));
+  checks.push(checkHostedRuntimeSessionPolicy(hostedRuntime, production));
+  checks.push(checkHostedRuntimeTenantPolicy(hostedRuntime, production));
+  checks.push(checkHostedRuntimeRedactionPolicy(hostedRuntime, env, production));
   checks.push(checkWorkspaceScope(workspaceId, production));
   checks.push(checkStorePair({
     id: "private_workflow_tool_store",
@@ -77,6 +120,7 @@ export function browserWorkflowDeploymentReadiness(
   }));
   checks.push(checkWorkflowBridge(env, production, requireWorkflowBridge));
   checks.push(checkLocalCdpLeak(env, production));
+  checks.push(...checkDojoProductionBoundary(dojoEnforcement, env, production));
 
   const summary = {
     passed: checks.filter((check) => check.status === "pass").length,
@@ -92,12 +136,227 @@ export function browserWorkflowDeploymentReadiness(
     checks,
     summary,
     hosted_runtime: hostedRuntime,
+    dojo_enforcement: dojoEnforcement,
     replay_isolation_profile: {
       workspace_id: profile.workspace_id,
       readiness: profile.readiness,
       can_run_full_mutation_replay: profile.can_run_full_mutation_replay,
       missing: [...profile.missing],
     },
+  };
+}
+
+function checkDojoProductionBoundary(
+  config: DojoEnforcementConfig,
+  env: NodeJS.ProcessEnv,
+  production: boolean
+): BrowserWorkflowDeploymentCheck[] {
+  const checks: BrowserWorkflowDeploymentCheck[] = [];
+  if (config.invalid_env.length > 0) {
+    checks.push({
+      id: "dojo_enforcement_flag_values",
+      status: "fail",
+      message: `Dojo enforcement flags have invalid boolean values: ${config.invalid_env.map((item) => item.name).join(", ")}.`,
+      required_env: [
+        DOJO_PRODUCTION_ENFORCEMENT_ENV,
+        DOJO_REQUIRE_DURABLE_STORE_ENV,
+        DOJO_REQUIRE_EXTERNAL_SIGNING_ENV,
+        DOJO_REQUIRE_EVIDENCE_LEDGER_ENV,
+      ],
+      configured_env: config.configured_env,
+    });
+    return checks;
+  }
+
+  checks.push(checkDojoProductionEnforcement(config, production));
+  checks.push(checkDojoDurableStore(config, env, production));
+  checks.push(checkDojoExternalSigning(config, env, production));
+  checks.push(checkDojoMcpManifestSigning(env, production));
+  checks.push(checkDojoEvidenceLedger(config, env, production));
+  return checks;
+}
+
+function checkDojoProductionEnforcement(
+  config: DojoEnforcementConfig,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  if (config.production_enforcement) {
+    return pass(
+      "dojo_production_enforcement",
+      "Dojo production enforcement flag is enabled.",
+      [DOJO_PRODUCTION_ENFORCEMENT_ENV],
+      [DOJO_PRODUCTION_ENFORCEMENT_ENV]
+    );
+  }
+  return {
+    id: "dojo_production_enforcement",
+    status: production ? "fail" : "warn",
+    message: "Dojo production enforcement is disabled; published competencies may run under development compatibility semantics.",
+    required_env: [DOJO_PRODUCTION_ENFORCEMENT_ENV],
+    configured_env: [],
+  };
+}
+
+function checkDojoDurableStore(
+  config: DojoEnforcementConfig,
+  env: NodeJS.ProcessEnv,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = [
+    DOJO_REQUIRE_DURABLE_STORE_ENV,
+    `${DOJO_CONTROL_PLANE_STORE_ENV}=postgres`,
+    `${DOJO_CONTROL_PLANE_POSTGRES_URL_ENV} when ${DOJO_CONTROL_PLANE_STORE_ENV}=postgres`,
+  ];
+  const optional = [
+    `${DOJO_STORE_FILE_ENV}, ${DOJO_STORE_KEY_ENV}, ${DOJO_STORE_SCOPE_ENV} for local development only`,
+  ];
+  const storeConfig = resolveDojoControlPlaneStoreConfig(env);
+  const configured = [
+    ...(config.require_durable_store ? [DOJO_REQUIRE_DURABLE_STORE_ENV] : []),
+    ...storeConfig.configured_env,
+  ];
+  if (config.require_durable_store && storeConfig.production_capable) {
+    return {
+      ...pass(
+        "dojo_durable_store",
+        "Dojo durable control-plane store is required and configured with a production-capable backend.",
+        required,
+        configured
+      ),
+      optional_env: optional,
+    };
+  }
+  return {
+    id: "dojo_durable_store",
+    status: production ? "fail" : "warn",
+    message: storeConfig.configured
+      ? `Dojo control-plane store is not production-capable; production proof, license, and skill state require a Postgres-backed control plane. Blocked by: ${storeConfig.blocked_by.join(", ")}.`
+      : "Dojo durable control-plane store is not configured; production proof, license, and skill state must not be process-local.",
+    required_env: required,
+    optional_env: optional,
+    configured_env: configured,
+  };
+}
+
+function checkDojoExternalSigning(
+  config: DojoEnforcementConfig,
+  env: NodeJS.ProcessEnv,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = [
+    DOJO_REQUIRE_EXTERNAL_SIGNING_ENV,
+    DOJO_PROOF_SIGNING_PROVIDER_ENV,
+    DOJO_PROOF_SIGNING_KEY_ID_ENV,
+    DOJO_PROOF_SIGNING_KEY_ENV,
+    DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV,
+    DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV,
+    DOJO_PROOF_SIGNING_COMMAND_ENV,
+    DOJO_PROOF_SIGNING_COMMAND_ARGS_ENV,
+    DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV,
+  ];
+  const configured = [
+    ...(config.require_external_signing ? [DOJO_REQUIRE_EXTERNAL_SIGNING_ENV] : []),
+    ...configuredDojoExternalSigningEnv(env),
+  ];
+  const provider = nonEmpty(env[DOJO_PROOF_SIGNING_PROVIDER_ENV]);
+  const keyId = nonEmpty(env[DOJO_PROOF_SIGNING_KEY_ID_ENV]);
+  const command = nonEmpty(env[DOJO_PROOF_SIGNING_COMMAND_ENV]);
+  const publicKey = nonEmpty(env[DOJO_PROOF_SIGNING_PUBLIC_KEY_PEM_ENV]);
+  const managedKeyUri = nonEmpty(env[DOJO_PROOF_SIGNING_MANAGED_KEY_URI_ENV]);
+  const hasExternalCommandSigner = provider === "external-command"
+    && keyId
+    && command
+    && publicKey;
+  const hasManagedKeyServiceSigner = provider === "managed-key-service"
+    && keyId
+    && command
+    && managedKeyUri
+    && publicKey
+    && !nonEmpty(env[DOJO_PROOF_SIGNING_PRIVATE_KEY_PEM_ENV]);
+  if (config.require_external_signing && hasManagedKeyServiceSigner) {
+    return pass("dojo_external_signing", "Dojo proof signing is configured through a managed-key-service provider with public verifier material.", required, configured);
+  }
+  if (config.require_external_signing && hasExternalCommandSigner) {
+    return pass("dojo_external_signing", "Dojo proof signing is configured through an implemented external-command signing provider.", required, configured);
+  }
+  const unsupportedProvider = provider
+    && provider !== "hmac-local"
+    && provider !== "ed25519-local"
+    && provider !== "external-command"
+    && provider !== "managed-key-service";
+  return {
+    id: "dojo_external_signing",
+    status: production ? "fail" : "warn",
+    message: unsupportedProvider
+      ? "Dojo proof signing provider is not supported by the runtime; configure managed-key-service, external-command signing, or a supported provider."
+      : "Dojo proof signing is not production-ready; managed-key-service or external-command signing is required.",
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkDojoEvidenceLedger(
+  config: DojoEnforcementConfig,
+  env: NodeJS.ProcessEnv,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = [
+    DOJO_REQUIRE_EVIDENCE_LEDGER_ENV,
+    DOJO_EVIDENCE_LEDGER_STORE_ENV,
+    `${DOJO_EVIDENCE_LEDGER_POSTGRES_URL_ENV} when ${DOJO_EVIDENCE_LEDGER_STORE_ENV}=postgres`,
+  ];
+  const ledgerEnv = configuredDojoEvidenceLedgerEnv(env);
+  const configured = [
+    ...(config.require_evidence_ledger ? [DOJO_REQUIRE_EVIDENCE_LEDGER_ENV] : []),
+    ...ledgerEnv,
+  ];
+  const ledgerStore = resolveDojoEvidenceLedgerStoreConfig(env);
+  if (config.require_evidence_ledger && ledgerStore.production_capable) {
+    return pass(
+      "dojo_evidence_ledger",
+      "Dojo evidence ledger requirement is enabled and ledger store configuration is present.",
+      required,
+      configured
+    );
+  }
+  return {
+    id: "dojo_evidence_ledger",
+    status: production ? "fail" : "warn",
+    message: ledgerStore.configured
+      ? "Dojo evidence ledger is configured with a development-only inline store; production proof claims require an external evidence ledger."
+      : "Dojo evidence ledger is not configured; production proof claims cannot be treated as evidence-backed.",
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkDojoMcpManifestSigning(
+  env: NodeJS.ProcessEnv,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = [
+    `${DOJO_MCP_MANIFEST_SIGNING_ALGORITHM_ENV}=ed25519`,
+    DOJO_MCP_MANIFEST_ISSUER_ENV,
+    DOJO_MCP_MANIFEST_KEY_ID_ENV,
+    DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM_ENV,
+    DOJO_MCP_MANIFEST_PUBLIC_KEY_PEM_ENV,
+  ];
+  const readiness = dojoMcpManifestSigningReadiness(env);
+  const configured = configuredDojoMcpManifestSigningEnv(env);
+  if (readiness.production_ready) {
+    return pass(
+      "dojo_mcp_manifest_signing",
+      "Dojo MCP skill manifests use Ed25519 signing and public verifier material.",
+      required,
+      configured
+    );
+  }
+  return {
+    id: "dojo_mcp_manifest_signing",
+    status: production ? "fail" : "warn",
+    message: `Dojo MCP skill manifest signing is not production-ready; Ed25519 issuer, key ID, private signer, and public verifier material are required. Blocked by: ${readiness.blocked_by.join(", ")}.`,
+    required_env: required,
+    configured_env: configured,
   };
 }
 
@@ -132,6 +391,119 @@ function checkHostedRuntime(
     id: "hosted_browser_runtime",
     status: production ? "fail" : "warn",
     message: `Hosted browser runtime is missing ${missing.join(", ")}.`,
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkHostedRuntimeEndpointPolicy(
+  runtime: ReturnType<typeof resolveHostedBrowserRuntime>,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = ["SYNTHI_HOSTED_BROWSER_CDP_URL"];
+  const configured = runtime.configured ? required : [];
+  if (runtime.configured && runtime.non_loopback_runtime) {
+    return pass("hosted_browser_runtime_endpoint", "Hosted runtime endpoint is non-loopback.", required, configured);
+  }
+  return {
+    id: "hosted_browser_runtime_endpoint",
+    status: production ? "fail" : "warn",
+    message: runtime.configured
+      ? `Hosted runtime endpoint is ${runtime.runtime_host_class}; production runtime sessions must use a non-loopback endpoint.`
+      : "Hosted runtime endpoint is not configured.",
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkHostedRuntimeOriginPolicy(
+  runtime: ReturnType<typeof resolveHostedBrowserRuntime>,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = ["SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST"];
+  const workspaceOrigin = originForUrl(runtime.workspace_url);
+  const configured = runtime.origin_allowlist.length > 0 ? required : [];
+  if (workspaceOrigin && runtime.origin_allowlist.includes(workspaceOrigin)) {
+    return pass("hosted_browser_origin_policy", "Hosted runtime origin allowlist includes the workspace origin.", required, configured);
+  }
+  return {
+    id: "hosted_browser_origin_policy",
+    status: production ? "fail" : "warn",
+    message: runtime.origin_allowlist.length === 0
+      ? "Hosted runtime origin allowlist is missing; production sessions must be origin-scoped."
+      : `Hosted runtime origin allowlist does not include workspace origin ${workspaceOrigin ?? "unknown"}.`,
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkHostedRuntimeSessionPolicy(
+  runtime: ReturnType<typeof resolveHostedBrowserRuntime>,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = ["SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS"];
+  const configured = runtime.session_ttl_ms ? required : [];
+  const maxTtlMs = 60 * 60 * 1000;
+  if (runtime.session_ttl_ms && runtime.session_ttl_ms <= maxTtlMs) {
+    return pass("hosted_browser_session_policy", "Hosted runtime sessions use short-lived credentials.", required, configured);
+  }
+  return {
+    id: "hosted_browser_session_policy",
+    status: production ? "fail" : "warn",
+    message: runtime.session_ttl_ms
+      ? "Hosted runtime session TTL exceeds the one-hour production maximum."
+      : "Hosted runtime session TTL is missing; production credentials must be short-lived.",
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkHostedRuntimeTenantPolicy(
+  runtime: ReturnType<typeof resolveHostedBrowserRuntime>,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = ["SYNTHI_TENANT_ID", "SYNTHI_AGENT_ID or SYNTHI_ACTOR_ID"];
+  const configured = [
+    ...(runtime.tenant_id ? ["SYNTHI_TENANT_ID"] : []),
+    ...(runtime.actor_id ? ["SYNTHI_AGENT_ID or SYNTHI_ACTOR_ID"] : []),
+  ];
+  const missing = [
+    ...(!runtime.tenant_id ? ["SYNTHI_TENANT_ID"] : []),
+    ...(!runtime.actor_id ? ["SYNTHI_AGENT_ID or SYNTHI_ACTOR_ID"] : []),
+  ];
+  if (missing.length === 0) {
+    return pass("hosted_browser_tenant_policy", "Hosted runtime sessions are tenant- and actor-scoped.", required, configured);
+  }
+  return {
+    id: "hosted_browser_tenant_policy",
+    status: production ? "fail" : "warn",
+    message: `Hosted runtime session scope is missing ${missing.join(", ")}.`,
+    required_env: required,
+    configured_env: configured,
+  };
+}
+
+function checkHostedRuntimeRedactionPolicy(
+  runtime: ReturnType<typeof resolveHostedBrowserRuntime>,
+  env: NodeJS.ProcessEnv,
+  production: boolean
+): BrowserWorkflowDeploymentCheck {
+  const required = ["SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS not false"];
+  const configured = nonEmpty(env["SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS"])
+    ? ["SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS"]
+    : [];
+  if (runtime.redact_screenshots) {
+    return pass(
+      "hosted_browser_redaction_policy",
+      "Hosted runtime screenshot capture uses the privacy filter by default.",
+      required,
+      configured
+    );
+  }
+  return {
+    id: "hosted_browser_redaction_policy",
+    status: production ? "fail" : "warn",
+    message: "Hosted runtime screenshot privacy filtering is disabled; production runtime evidence must be filtered before export or audit.",
     required_env: required,
     configured_env: configured,
   };
@@ -263,4 +635,13 @@ function isLoopbackHost(host: string): boolean {
 
 function nonEmpty(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function originForUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
 }

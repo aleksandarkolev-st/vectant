@@ -57,11 +57,24 @@ export interface BrowserBridgeMessage {
 
 export interface BrowserRuntimeAttachment {
   kind: "hosted" | "local-dev-cdp";
+  tenant_id?: string | null;
   workspace_id: string | null;
+  actor_id?: string | null;
   runtime_id: string | null;
+  session_id?: string | null;
   workspace_url: string | null;
   adapter: string;
   attached_at: number;
+  expires_at?: number | null;
+  revoked_at?: number | null;
+  revoked_reason?: string | null;
+  origin_allowlist?: string[];
+  egress_policy?: {
+    local_network_allowed: boolean;
+  };
+  redaction_policy?: {
+    screenshots: boolean;
+  };
 }
 
 export interface BrowserTeachQuestionAnswer {
@@ -173,6 +186,24 @@ export class BrowserBroker {
 
   runtimeAttachment(): BrowserRuntimeAttachment | null {
     return this.runtime ? { ...this.runtime } : null;
+  }
+
+  revokeRuntimeAttachment(reason: string = "revoked"): { revoked: boolean; runtime: BrowserRuntimeAttachment | null } {
+    if (!this.runtime || this.runtime.kind !== "hosted") {
+      return { revoked: false, runtime: this.runtimeAttachment() };
+    }
+    this.runtime = {
+      ...this.runtime,
+      revoked_at: Date.now(),
+      revoked_reason: reason,
+    };
+    this.revokeLease(`runtime_${reason}`);
+    eventLog.push({
+      kind: "browser",
+      action: "runtime_revoked",
+      payload: { runtime: this.runtime, reason },
+    });
+    return { revoked: true, runtime: this.runtimeAttachment() };
   }
 
   setBridgeToken(token: string | undefined): void {
@@ -753,6 +784,8 @@ export class BrowserBroker {
   }
 
   snapshot(input: BrowserBrokerSnapshotInput): { ok: true; snapshot: BrowserSnapshot } | { ok: false; error: string } {
+    const runtimeGate = this.validateRuntimeSession();
+    if (!runtimeGate.ok) return runtimeGate;
     const origin = normalizeOrigin(input.url).origin;
     if (!this.hasOriginConsent(origin)) return { ok: false, error: "origin_consent_required" };
     if (!this.hasScreenshotConsent(origin)) return { ok: false, error: "screenshot_consent_required" };
@@ -805,6 +838,8 @@ export class BrowserBroker {
   }
 
   validateAction(input: BrowserActionInput): { ok: true; action: BrowserActionInput } | { ok: false; error: string } {
+    const runtimeGate = this.validateRuntimeSession();
+    if (!runtimeGate.ok) return runtimeGate;
     if (!this.activeLease) return { ok: false, error: "browser_lease_required" };
     if (this.activeLease.lease_id !== input.lease_id) return { ok: false, error: "browser_lease_denied" };
     if (this.activeLease.expires_at <= Date.now()) {
@@ -819,6 +854,8 @@ export class BrowserBroker {
   }
 
   validateReplayTarget(input: BrowserReplayTargetInput): { ok: true } | { ok: false; error: string } {
+    const runtimeGate = this.validateRuntimeSession();
+    if (!runtimeGate.ok) return runtimeGate;
     const pageOrigin = normalizeOrigin(input.url).origin;
     if (!this.hasOriginConsent(pageOrigin)) return { ok: false, error: "origin_consent_required" };
     const frameGate = this.requireFrameOriginConsent(pageOrigin, input.detail);
@@ -833,6 +870,26 @@ export class BrowserBroker {
     if (!validation.ok) return validation;
     this.queuedActions.push({ ...input });
     return { ok: true, queued: this.queuedActions.length };
+  }
+
+  private validateRuntimeSession(): { ok: true } | { ok: false; error: string } {
+    if (!this.runtime || this.runtime.kind !== "hosted") return { ok: true };
+    if (this.runtime.revoked_at) return { ok: false, error: "hosted_runtime_session_revoked" };
+    if (this.runtime.expires_at && this.runtime.expires_at <= Date.now()) {
+      this.runtime = {
+        ...this.runtime,
+        revoked_at: Date.now(),
+        revoked_reason: "expired",
+      };
+      this.revokeLease("runtime_expired");
+      eventLog.push({
+        kind: "browser",
+        action: "runtime_expired",
+        payload: { runtime: this.runtime },
+      });
+      return { ok: false, error: "hosted_runtime_session_expired" };
+    }
+    return { ok: true };
   }
 
   traceSnapshot(): BrowserTraceEvent[] {

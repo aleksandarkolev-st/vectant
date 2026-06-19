@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AddressInfo } from "node:net";
 import { browserBroker } from "../../src/browser/broker.js";
+import { dojoSkillRegistry } from "../../src/browser/dojo.js";
 import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
 import { privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
 import { replayIsolationProfiles } from "../../src/browser/safety.js";
@@ -23,6 +24,7 @@ describe("browser workflow bridge", () => {
 
   beforeEach(() => {
     browserBroker.resetForTests();
+    dojoSkillRegistry.resetForTests();
     replayIsolationProfiles.resetForTests();
     privateWorkflowToolRegistry.resetForTests();
     eventLog._resetForTests();
@@ -424,6 +426,122 @@ describe("browser workflow bridge", () => {
     ]);
   });
 
+  it("surfaces Dojo skill-card state and routes the panel publish alias through license-first publishing", async () => {
+    seedSaveWorkflow();
+    const draft = buildBrowserWorkflowPanelState() as {
+      dojo: {
+        status: string;
+        skillId: string;
+        scenarioCount: number;
+        skillCard: { practiced: string };
+        license: { blockedActions: string[] };
+      };
+    };
+    expect(draft.dojo).toEqual(expect.objectContaining({
+      status: "draft",
+      skillId: "dojo_save_settings",
+      scenarioCount: 21,
+      skillCard: expect.objectContaining({ practiced: "21 synthetic cases" }),
+    }));
+    expect(draft.dojo.license.blockedActions).toContain("run_workflow");
+
+    bridge = startBrowserWorkflowBridge({ port: 0 });
+    await bridge.ready;
+    const publish = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool: "synthi_workflow_publish_tool",
+        arguments: {
+          workspace_id: "workspace-a",
+          reason: "unit_test_publish",
+          actor_id: "bridge-publisher",
+          actor_type: "human",
+          evidence_refs: ["evidence:bridge-publish"],
+        },
+      }),
+    });
+
+    expect(publish.status).toBe(200);
+    const body = await publish.json() as {
+      ok: boolean;
+      requested_tool: string;
+      tool: string;
+      result: { skill: { skill_id: string }; private_tool: { tool_name?: string } };
+      state: {
+        dojo: {
+          status: string;
+          published: boolean;
+          skillId: string;
+          publishedToolName: string | null;
+          skillPassport: { proof_required?: boolean };
+        };
+        history: Array<{ label: string; statusLabel: string }>;
+        governanceService: {
+          schema_version?: string;
+          skill_registry?: Array<{ skill_id?: string }>;
+        };
+      };
+    };
+    expect(body.ok).toBe(true);
+    expect(body.requested_tool).toBe("synthi_workflow_publish_tool");
+    expect(body.tool).toBe("synthi_dojo_publish_skill");
+    expect(body.result.skill.skill_id).toBe("dojo_save_settings");
+    expect(body.result.private_tool.tool_name).toBe("synthi_app_save_settings");
+    expect(body.result).toEqual(expect.objectContaining({
+      publication: expect.objectContaining({
+        reason: "unit_test_publish",
+        evidence_refs: ["evidence:bridge-publish"],
+        audit_event: expect.objectContaining({
+          actor: { actor_id: "bridge-publisher", actor_type: "human" },
+        }),
+      }),
+    }));
+    expect(body.state.dojo).toEqual(expect.objectContaining({
+      status: "licensed",
+      published: true,
+      skillId: "dojo_save_settings",
+      publishedToolName: "synthi_app_save_settings",
+    }));
+    expect(body.state.history).toEqual([
+      expect.objectContaining({
+        label: "Dojo skill licensed",
+        statusLabel: "Licensed",
+      }),
+    ]);
+    expect(body.state.governanceService).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.governanceService.v1",
+      skill_registry: expect.arrayContaining([expect.objectContaining({ skill_id: "dojo_save_settings" })]),
+    }));
+
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "fill",
+      tab_id: "tab-a",
+      url: "https://app.example.test/settings",
+    });
+    const rawToolCall = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool: body.result.private_tool.tool_name,
+        arguments: { run_mode: "prefixOnly", email: "agent@example.test" },
+      }),
+    });
+    expect(rawToolCall.status).toBe(200);
+    const rawToolBody = await rawToolCall.json() as {
+      ok: boolean;
+      result?: { error?: string; required_tool?: string; tool_name?: string };
+    };
+    expect(rawToolBody.ok).toBe(false);
+    expect(rawToolBody.result).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_required",
+      required_tool: "synthi_dojo_run_with_proof_capsule",
+      tool_name: body.result.private_tool.tool_name,
+    }));
+    expect(replay).not.toHaveBeenCalled();
+  });
+
   it("lets the workflow bridge fetch a published private tool manifest", async () => {
     seedSaveWorkflow();
     bridge = startBrowserWorkflowBridge({ port: 0 });
@@ -496,18 +614,123 @@ describe("browser workflow bridge", () => {
     expect(call.status).toBe(200);
     const callBody = await call.json() as {
       ok: boolean;
-      result?: { private_tool?: { tool_name?: string; run_mode?: string }; replay?: { status?: string; steps_run?: number } };
+      result?: { error?: string; required_tool?: string; tool_name?: string };
     };
-    expect(callBody.ok).toBe(true);
-    expect(callBody.result?.private_tool).toEqual(expect.objectContaining({
+    expect(callBody.ok).toBe(false);
+    expect(callBody.result).toEqual(expect.objectContaining({
+      error: "dojo_proof_capsule_required",
+      required_tool: "synthi_dojo_run_with_proof_capsule",
       tool_name: toolName,
-      run_mode: "prefixOnly",
     }));
-    expect(callBody.result?.replay).toEqual(expect.objectContaining({
-      status: "stoppedAtMutationBoundary",
-      steps_run: 1,
+    expect(replay).not.toHaveBeenCalled();
+  });
+
+  it("updates panel proof state when a proof capsule is revoked through the bridge", async () => {
+    seedSaveWorkflow();
+    bridge = startBrowserWorkflowBridge({ port: 0 });
+    await bridge.ready;
+
+    const publish = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool: "synthi_workflow_publish_tool",
+        arguments: {
+          workspace_id: "workspace-a",
+          reason: "unit_test_publish_for_revocation",
+          actor_id: "bridge-publisher",
+          actor_type: "human",
+          evidence_refs: ["evidence:bridge-revocation-publish"],
+        },
+      }),
+    });
+    expect(publish.status).toBe(200);
+    const publishBody = await publish.json() as { result: { skill: { skill_id: string } } };
+    const skillId = publishBody.result.skill.skill_id;
+
+    const issue = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool: "synthi_dojo_issue_proof_capsule",
+        arguments: {
+          skill_id: skillId,
+          requested_action: "run_workflow",
+          context_claims: { workspace_verified: true },
+        },
+      }),
+    });
+    expect(issue.status).toBe(200);
+    const issueBody = await issue.json() as {
+      result: { proof_capsule: { capsule_id: string } };
+    };
+    const capsuleId = issueBody.result.proof_capsule.capsule_id;
+    expect(capsuleId).toMatch(/^capsule_/);
+
+    const revoke = await fetch(`${baseUrl(bridge)}/browser-workflows/tool`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool: "synthi_dojo_revoke_proof_capsule",
+        arguments: {
+          capsule_id: capsuleId,
+          reason: "operator requested key rotation",
+          actor_id: "proof-operator-a",
+          actor_type: "human",
+          evidence_refs: ["evidence:bridge-proof-revocation"],
+          now: "2026-06-11T00:01:30.000Z",
+        },
+      }),
+    });
+    expect(revoke.status).toBe(200);
+    const revokeBody = await revoke.json() as {
+      ok: boolean;
+      result: {
+        proof_record: {
+          capsule_id: string;
+          status: string;
+          revoked_reason: string;
+          revoked_by: { actor_id: string; actor_type: string };
+          revocation_evidence_refs: string[];
+        };
+      };
+      state: {
+        dojo: {
+          proof: {
+            capsuleId: string;
+            status: string;
+            replayState: string;
+            revocationReason: string;
+            revocationEvidenceRefs: string[];
+            revokedBy: { actor_id: string; actor_type: string };
+            errorCodes: string[];
+          };
+        };
+        history: Array<{ label: string; statusLabel: string }>;
+      };
+    };
+
+    expect(revokeBody.ok).toBe(true);
+    expect(revokeBody.result.proof_record).toEqual(expect.objectContaining({
+      capsule_id: capsuleId,
+      status: "revoked",
+      revoked_reason: "operator requested key rotation",
+      revoked_by: { actor_id: "proof-operator-a", actor_type: "human" },
+      revocation_evidence_refs: ["evidence:bridge-proof-revocation"],
     }));
-    expect(replay).toHaveBeenCalledTimes(1);
+    expect(revokeBody.state.dojo.proof).toEqual(expect.objectContaining({
+      capsuleId,
+      status: "revoked",
+      replayState: "revoked",
+      revocationReason: "operator requested key rotation",
+      revocationEvidenceRefs: ["evidence:bridge-proof-revocation"],
+      revokedBy: { actor_id: "proof-operator-a", actor_type: "human" },
+      errorCodes: ["proof_capsule_revoked"],
+    }));
+    expect(revokeBody.state.history[0]).toEqual(expect.objectContaining({
+      label: "Proof capsule revoked",
+      statusLabel: "Revoked",
+    }));
   });
 
   it("returns unknown tool errors with the current state snapshot", async () => {

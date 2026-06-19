@@ -1,0 +1,195 @@
+# Agent Dojo Implementation Status
+
+**Status:** source-of-truth maturity baseline  
+**Date:** 2026-06-11  
+**Scope:** current Agent Dojo implementation in `mcp/synthi-mcp`
+
+This document prevents current scaffolded Vivarium Cortex artifacts from being mistaken for mature runtime subsystems. The implementation-status registry lives in:
+
+```text
+mcp/synthi-mcp/src/dojo/status/implementation_status.ts
+```
+
+The compact machine-readable maturity manifest lives in:
+
+```text
+.synthi/dojo/maturity/implementation-status.json
+```
+
+The release-gate operator runbook lives in:
+
+```text
+docs/AGENT_DOJO_RELEASE_GATE_RUNBOOK.md
+```
+
+## Status Classes
+
+| Status | Meaning |
+|---|---|
+| `executable` | The current code executes a real local behavior or enforces a current runtime path. |
+| `deterministic_projection` | The current code builds useful deterministic artifacts from workflow contracts, traces, or stored skill data, but does not execute the mature runtime implied by the product term. |
+| `report_only` | The current code returns a summary, dossier, plan, or view model. It is not an enforcement or execution subsystem. |
+| `planned` | The capability is described in the plan but does not have a current implementation entry. |
+
+## Runtime Scope Fields
+
+Every Dojo MCP response also carries:
+
+- `runtime_scope`
+- `production_runtime`
+
+These fields prevent the broad `executable` status from overclaiming maturity.
+
+Current runtime scopes:
+
+| Runtime Scope | Meaning |
+|---|---|
+| `read_only_projection` | Deterministic artifact or graph/report projection only. |
+| `report_only` | Read-only summary or dashboard view model. |
+| `registry_operation` | Local registry/store operation such as publish, export, revoke, or list. |
+| `control_plane_write` | Approval, review, or governance write that does not itself promote production execution. |
+| `proof_validation` | Proof issue/validate/revoke path with current signing and replay checks. |
+| `proof_gated_dispatch` | Proof-gated dispatch path exists and production mode requires hosted runtime session authorization before proof consumption, but deployed-host release proof is still required. |
+| `hosted_runtime_gateway` | Creates or validates tenant-scoped runtime sessions and short-lived credentials through the current gateway implementation. |
+| `synthetic_fixture_runtime` | Executes against materialized synthetic fixtures, not production app/runtime execution. |
+| `non_mutating_shadow` | Writes shadow evidence and comparisons without production mutations. |
+| `none` | Planned or unknown capability. |
+
+At this baseline, `production_runtime` is `false` for every current Dojo tool. That is intentional. A tool can be executable today without being a mature deployed production runtime path.
+
+## Current Honest Baseline
+
+Agent Dojo currently implements a repo-local proof-gated competency system with several mature foundations:
+
+- workflow demonstration to `SkillSeed`
+- workflow contract to `DojoSkill`
+- executable Skill Cortex graph IR and graph runtime v1
+- materialized synthetic Vivarium fixtures and oracle-backed scenario runs
+- runtime-backed Wind Tunnel, Evil Twin, and checkride runner foundations
+- durable proof replay repository and append-only evidence ledger store modules
+- license and proof capsule issuance/validation with strict evidence-claim mode, Ed25519 signing support, external command signing, managed-key-service signing with explicit key-custody metadata, and a release-observation harness for configured managed-key signers
+- proof-gated backing private workflow tool and raw workflow boundary checks
+- hosted runtime session authorization before production proof-gated execution consumes a proof capsule
+- case-law records that can bind guardrail predicates
+- non-mutating Ghost Mode shadow evidence records with control-plane audit events
+- source/API contract, linter, candidate, substrate, React codemod, and API-backed skill-bus tool foundations
+- dedicated Dojo product UX surfaces and governance view models
+- tenant-scoped governance scheduled-job runner with dry-run semantics, typed handlers, RBAC, and audit persistence for supported non-dry transitions
+- package-readiness release gate that runs `npm pack --dry-run`, verifies packed exports and release harness files, and emits digest-backed evidence
+- managed-key signing release-observation artifact generation from configured signer command/key URI/public verifier material, with redacted config and digest-backed verifier checks
+- hosted-runtime gateway release-observation artifact generation from live workflow/private-tool/MCP-host conformance artifacts, with digest-backed input references and section-scoped release verification
+- privacy-redaction and compliance-export release gates with focused test execution, digest-matched logs/reports, verifier include flags, and local evidence artifacts
+- repo artifact export
+- compact UI status surface plus dedicated Dojo routes
+
+It does not yet prove the full mature Vivarium Cortex universe in production:
+
+- no managed KMS/HSM proof signer configured by default or proven against a real external KMS/HSM provider in deployed-host release gates
+- no externally deployed tenant-aware control plane proven against a production database
+- no live non-loopback MCP host conformance proof in the current validation bundle; hosted-runtime release observation tooling exists, but it requires real live/deployed artifacts to make a release-ready claim
+- no broad arbitrary-app source/API promotion guarantee
+- no complete externally executed chaos, soak, performance, privacy, and compliance release bundle proven against deployed production infrastructure
+- some UI surfaces are read-only governance/inspection views rather than full operator workflows
+
+## Current Tool Classification
+
+| Tool | Status |
+|---|---|
+| `synthi_dojo_list_competencies` | `executable` |
+| `synthi_dojo_get_skill` | `deterministic_projection` |
+| `synthi_dojo_get_skill_cortex` | `deterministic_projection` |
+| `synthi_dojo_get_workspace_organoid` | `deterministic_projection` |
+| `synthi_dojo_get_wind_tunnel_report` | `deterministic_projection` |
+| `synthi_dojo_get_counterfactual_twin` | `deterministic_projection` |
+| `synthi_dojo_get_evil_twin_report` | `deterministic_projection` |
+| `synthi_dojo_get_training_report` | `report_only` |
+| `synthi_dojo_get_skill_passport` | `report_only` |
+| `synthi_dojo_get_skill_genome` | `report_only` |
+| `synthi_dojo_get_antibodies` | `deterministic_projection` |
+| `synthi_dojo_get_agent_ready_ui_contract` | `deterministic_projection` |
+| `synthi_dojo_get_cost_policy` | `report_only` |
+| `synthi_dojo_get_universe_dossier` | `report_only` |
+| `synthi_dojo_get_lifecycle` | `report_only` |
+| `synthi_dojo_get_governance_report` | `report_only` |
+| `synthi_dojo_get_metrics` | `report_only` |
+| `synthi_dojo_capture_source_snapshot` | `executable` |
+| `synthi_dojo_detect_source_drift` | `executable` |
+| `synthi_dojo_apply_source_drift_expiry` | `executable` |
+| `synthi_dojo_get_source_affordance_pr_plan` | `deterministic_projection` |
+| `synthi_dojo_prepare_source_affordance_pr` | `executable` |
+| `synthi_dojo_create_source_affordance_pr_branch` | `executable` |
+| `synthi_dojo_prepare_api_backed_tool` | `executable` |
+| `synthi_dojo_run_api_backed_tool` | `executable` |
+| `synthi_dojo_get_registry` | `report_only` |
+| `synthi_dojo_get_skill_assurance_case` | `report_only` |
+| `synthi_dojo_get_entrustment_level` | `report_only` |
+| `synthi_dojo_get_license` | `executable` |
+| `synthi_dojo_get_guardrails` | `deterministic_projection` |
+| `synthi_dojo_get_case_law` | `report_only` |
+| `synthi_dojo_explain_block` | `report_only` |
+| `synthi_dojo_explain_failure` | `executable` |
+| `synthi_dojo_debug_counterfactual` | `executable` |
+| `synthi_dojo_run_time_machine_debugger` | `executable` |
+| `synthi_dojo_run_ghost_mode` | `executable` |
+| `synthi_dojo_request_permission_upgrade` | `executable` |
+| `synthi_dojo_review_permission_upgrade` | `executable` |
+| `synthi_dojo_review_case_law` | `executable` |
+| `synthi_dojo_run_scheduled_governance_jobs` | `executable` |
+| `synthi_dojo_generate_vivarium_scenarios` | `deterministic_projection` |
+| `synthi_dojo_run_vivarium_scenario` | `executable` |
+| `synthi_dojo_run_wind_tunnel` | `executable` |
+| `synthi_dojo_run_evil_twin` | `executable` |
+| `synthi_dojo_run_checkride` | `executable` |
+| `synthi_dojo_publish_skill` | `executable` |
+| `synthi_dojo_recertify_skill` | `executable` |
+| `synthi_dojo_get_license_health` | `executable` |
+| `synthi_dojo_revoke_license` | `executable` |
+| `synthi_dojo_record_case_law` | `executable` |
+| `synthi_dojo_export_artifacts` | `executable` |
+| `synthi_dojo_export_compliance_pack` | `executable` |
+| `synthi_dojo_issue_proof_capsule` | `executable` |
+| `synthi_dojo_validate_proof_capsule` | `executable` |
+| `synthi_dojo_revoke_proof_capsule` | `executable` |
+| `synthi_dojo_create_hosted_runtime_session` | `executable` |
+| `synthi_dojo_run_with_proof_capsule` | `executable` |
+
+## Current Report Classification
+
+| Report Or Artifact | Status |
+|---|---|
+| `skill_seed` | `deterministic_projection` |
+| `skill_cortex` | `deterministic_projection` |
+| `workspace_organoid` | `deterministic_projection` |
+| `vivarium_scenarios` | `deterministic_projection` |
+| `vivarium_run` | `executable` |
+| `wind_tunnel` | `executable` |
+| `checkride` | `executable` |
+| `case_law` | `report_only` |
+| `guardrails` | `deterministic_projection` |
+| `permission_license` | `executable` |
+| `proof_capsule` | `executable` |
+| `evidence_ledger` | `report_only` |
+| `source_affordance_pr_plan` | `deterministic_projection` |
+| `mcp_manifest` | `executable` |
+| `universe_dossier` | `report_only` |
+
+## Claim Boundary
+
+Safe current claim:
+
+```text
+Agent Dojo implements a repo-local proof-gated competency system with executable graph
+runtime foundations, materialized synthetic Vivarium scenarios, evidence/proof/ledger
+foundations, scoped licenses, repo exports, source/API scaffolding, API-backed skill-bus
+tool execution foundations, governance views, package-readiness release proof, managed-key
+signing and hosted-runtime release-observation harnessing, privacy/compliance release-gate
+proof artifacts, and MCP tool exposure.
+```
+
+Unsafe current claim:
+
+```text
+Agent Dojo has completed production deployment proof for non-loopback hosted MCP,
+managed KMS/HSM signing deployment, broad arbitrary-app source/API graduation, complete governance
+operator workflows, and externally executed chaos/soak/performance/compliance release gates against production infrastructure.
+```

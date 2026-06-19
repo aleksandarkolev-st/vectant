@@ -1,0 +1,184 @@
+import { describe, expect, it } from "vitest";
+import {
+  DOJO_DEFAULT_LOCAL_PROOF_SIGNING_KEY,
+  isDojoDefaultLocalProofSigningKey,
+  resolveDojoControlPlaneStoreConfig,
+  resolveDojoEvidenceLedgerStoreConfig,
+  resolveDojoEnforcementConfig,
+} from "../../src/dojo/config/enforcement.js";
+
+describe("Dojo production enforcement config", () => {
+  it("defaults to development compatibility semantics", () => {
+    expect(resolveDojoEnforcementConfig({})).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.enforcementConfig.v1",
+      enforcement_mode: "development",
+      production_enforcement: false,
+      require_durable_store: false,
+      require_external_signing: false,
+      require_evidence_ledger: false,
+      configured_env: [],
+      invalid_env: [],
+    }));
+  });
+
+  it("parses explicit production flags", () => {
+    expect(resolveDojoEnforcementConfig({
+      SYNTHI_DOJO_PRODUCTION_ENFORCEMENT: "1",
+      SYNTHI_DOJO_REQUIRE_DURABLE_STORE: "true",
+      SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING: "yes",
+      SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER: "on",
+    })).toEqual(expect.objectContaining({
+      enforcement_mode: "production",
+      production_enforcement: true,
+      require_durable_store: true,
+      require_external_signing: true,
+      require_evidence_ledger: true,
+      invalid_env: [],
+    }));
+  });
+
+  it("reports invalid boolean values without silently enabling production", () => {
+    const config = resolveDojoEnforcementConfig({
+      SYNTHI_DOJO_PRODUCTION_ENFORCEMENT: "definitely",
+    });
+
+    expect(config.production_enforcement).toBe(false);
+    expect(config.enforcement_mode).toBe("development");
+    expect(config.invalid_env).toEqual([
+      expect.objectContaining({
+        name: "SYNTHI_DOJO_PRODUCTION_ENFORCEMENT",
+        value: "definitely",
+        accepted_values: expect.arrayContaining(["1", "0", "true", "false"]),
+      }),
+    ]);
+  });
+
+  it("detects the default local proof signing key", () => {
+    expect(isDojoDefaultLocalProofSigningKey({})).toBe(true);
+    expect(isDojoDefaultLocalProofSigningKey({
+      SYNTHI_DOJO_PROOF_SIGNING_KEY: DOJO_DEFAULT_LOCAL_PROOF_SIGNING_KEY,
+    })).toBe(true);
+    expect(isDojoDefaultLocalProofSigningKey({
+      SYNTHI_DOJO_PROOF_SIGNING_KEY: "prod-specific-signing-secret",
+    })).toBe(false);
+  });
+
+  it("classifies inline evidence ledger stores as development-only", () => {
+    expect(resolveDojoEvidenceLedgerStoreConfig({
+      SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "inline",
+    })).toEqual(expect.objectContaining({
+      store_kind: "inline",
+      configured: true,
+      production_capable: false,
+      inline_records_allowed: true,
+      blocked_by: ["evidence_ledger_store_inline_not_production_capable"],
+    }));
+
+    expect(resolveDojoEvidenceLedgerStoreConfig({
+      SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "postgres://dojo-evidence-ledger",
+    })).toEqual(expect.objectContaining({
+      store_kind: "postgres",
+      configured: true,
+      production_capable: true,
+      inline_records_allowed: false,
+      blocked_by: [],
+    }));
+
+    expect(resolveDojoEvidenceLedgerStoreConfig({
+      SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL: "postgres://dojo-evidence-ledger",
+    })).toEqual(expect.objectContaining({
+      store_kind: "postgres",
+      configured: true,
+      production_capable: true,
+      inline_records_allowed: false,
+      configured_env: ["SYNTHI_DOJO_EVIDENCE_LEDGER_POSTGRES_URL"],
+      blocked_by: [],
+    }));
+
+    expect(resolveDojoEvidenceLedgerStoreConfig({
+      SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: "postgres",
+    })).toEqual(expect.objectContaining({
+      store_kind: "postgres",
+      configured: true,
+      production_capable: false,
+      inline_records_allowed: false,
+      blocked_by: ["evidence_ledger_postgres_url_missing"],
+    }));
+  });
+
+  it("classifies Dojo control-plane stores by production readiness", () => {
+    expect(resolveDojoControlPlaneStoreConfig({})).toEqual(expect.objectContaining({
+      schema_version: "synthi.dojo.controlPlaneStoreConfig.v1",
+      store_kind: "unconfigured",
+      configured: false,
+      durable: false,
+      production_capable: false,
+      configured_env: [],
+      blocked_by: ["control_plane_store_unconfigured"],
+    }));
+
+    expect(resolveDojoControlPlaneStoreConfig({
+      SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL: "postgres://dojo-control-plane",
+    })).toEqual(expect.objectContaining({
+      store_kind: "postgres",
+      configured: true,
+      durable: true,
+      production_capable: true,
+      configured_env: ["SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL"],
+      blocked_by: [],
+    }));
+
+    expect(resolveDojoControlPlaneStoreConfig({
+      SYNTHI_DOJO_CONTROL_PLANE_STORE: "postgres",
+    })).toEqual(expect.objectContaining({
+      store_kind: "postgres",
+      configured: true,
+      durable: false,
+      production_capable: false,
+      blocked_by: ["control_plane_postgres_url_missing"],
+    }));
+
+    expect(resolveDojoControlPlaneStoreConfig({
+      SYNTHI_DOJO_CONTROL_PLANE_STORE: "postgres://dojo-control-plane",
+    })).toEqual(expect.objectContaining({
+      store_kind: "postgres",
+      configured: true,
+      durable: true,
+      production_capable: true,
+      configured_env: ["SYNTHI_DOJO_CONTROL_PLANE_STORE"],
+      blocked_by: [],
+    }));
+
+    expect(resolveDojoControlPlaneStoreConfig({
+      SYNTHI_DOJO_CONTROL_PLANE_STORE: "memory",
+    })).toEqual(expect.objectContaining({
+      store_kind: "memory",
+      configured: true,
+      durable: false,
+      production_capable: false,
+      blocked_by: ["control_plane_store_memory_not_durable"],
+    }));
+
+    expect(resolveDojoControlPlaneStoreConfig({
+      SYNTHI_DOJO_STORE_FILE: "/var/lib/synthi/dojo.enc.json",
+      SYNTHI_DOJO_STORE_KEY: "dojo-store-secret",
+      SYNTHI_DOJO_STORE_SCOPE: "tenant-a:workspace-a",
+    })).toEqual(expect.objectContaining({
+      store_kind: "encrypted_file",
+      configured: true,
+      durable: true,
+      production_capable: false,
+      blocked_by: ["control_plane_store_encrypted_file_not_production_capable"],
+    }));
+
+    expect(resolveDojoControlPlaneStoreConfig({
+      SYNTHI_DOJO_STORE_FILE: "/var/lib/synthi/dojo.enc.json",
+    })).toEqual(expect.objectContaining({
+      store_kind: "encrypted_file",
+      configured: false,
+      durable: false,
+      production_capable: false,
+      blocked_by: ["control_plane_store_encrypted_file_incomplete"],
+    }));
+  });
+});

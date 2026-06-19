@@ -21,7 +21,8 @@ import { selectFocusedEditorPaneId } from '../state/layout-slice';
 import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 import EditorPaneHeader from '@/components/EditorPaneHeader';
 import { WORKFLOW_ACTIONS } from '@/components/agent-workflows/AgentWorkflowPanel';
-import { buildAgentWorkflowHandoffFiles, SYNTHI_WORKFLOW_ROOT } from '@/services/agentWorkflowHandoff';
+import { collectDojoAuditEvidenceRefs } from '@/services/agentWorkflowDojoAudit';
+import { buildAgentWorkflowHandoffFiles, buildDojoArtifactFiles, SYNTHI_WORKFLOW_ROOT } from '@/services/agentWorkflowHandoff';
 import {
   callAgentWorkflowTool,
   getAgentWorkflowState,
@@ -29,6 +30,7 @@ import {
   resolveAgentWorkflowBridgeUrl,
 } from '@/services/agentWorkflowClient';
 import { gitClient } from '@/services/gitClient';
+import { getCurrentUser } from '@/services/userIdentity';
 import { getWorkspaceRuntimeIdentity } from '@/services/runtimeScope';
 
 const PREVIEW_WORKFLOW_ERROR_CODES = new Set([
@@ -104,6 +106,14 @@ function runtimeActionDetail(code, fallback) {
     return 'The workspace runtime is still reconnecting. Wait a moment, then try again.';
   }
   return fallback || 'The workspace runtime is not ready yet. Wait a moment, then try again.';
+}
+
+function currentDojoAuditActor() {
+  const user = getCurrentUser();
+  return {
+    actor_id: user?.id || 'guest',
+    actor_type: 'human',
+  };
 }
 
 // ────────────────────────────────────────────────────────
@@ -325,6 +335,9 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
   const [workflowState, setWorkflowState] = useState(null);
   const [busyAction, setBusyAction] = useState(null);
   const latestRequestRef = useRef(0);
+  const inFlightActionRef = useRef(0);
+  const isActionLockedRef = useRef(false);
+  const workflowStateRef = useRef(null);
   const workflowUserId = session?.user?.id || session?.user?.email || null;
   const bridgeConfig = useMemo(() => ({
     url: resolveAgentWorkflowBridgeUrl(),
@@ -541,6 +554,10 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     }
   }, [ctx?.workspaceSlug]);
 
+  useEffect(() => {
+    workflowStateRef.current = workflowState;
+  }, [workflowState]);
+
   const persistWorkflowHandoff = useCallback(async ({ generated, manifest }) => {
     const workspaceId = ctx?.workspaceSlug;
     if (!workspaceId) throw new Error('workflow_handoff_workspace_unavailable');
@@ -557,6 +574,13 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     await gitClient.writeFilesBatch(workspaceId, files, { syncToGcs: true });
   }, [ctx?.workspaceSlug, readWorkspaceFileOrEmpty]);
 
+  const persistDojoArtifacts = useCallback(async (artifacts) => {
+    const workspaceId = ctx?.workspaceSlug;
+    if (!workspaceId) throw new Error('dojo_artifact_workspace_unavailable');
+    const { files } = buildDojoArtifactFiles({ artifacts });
+    await gitClient.writeFilesBatch(workspaceId, files, { syncToGcs: true });
+  }, [ctx?.workspaceSlug]);
+
   const ensureObservedWorkspace = useCallback(async () => {
     const currentUrl = workspaceUrl();
     if (!currentUrl) throw new Error('workspace_url_unavailable');
@@ -570,6 +594,9 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
   const handleWorkflowAction = useCallback(async (detail) => {
     const action = detail?.action;
     if (!action) return;
+    if (isActionLockedRef.current) return;
+    const actionId = ++inFlightActionRef.current;
+    isActionLockedRef.current = true;
     setBusyAction(action);
     try {
       const currentUrl = workspaceUrl();
@@ -588,8 +615,8 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           break;
         case WORKFLOW_ACTIONS.BEGIN_TEACH:
           {
-            const observedState = workflowState?.observe?.status === 'ready'
-              ? { state: workflowState }
+            const observedState = workflowStateRef.current?.observe?.status === 'ready'
+              ? { state: workflowStateRef.current }
               : await ensureObservedWorkspace();
             const selectedTabId = observedState?.state?.observe?.selectedTabId;
             await callWorkflowTool(WORKFLOW_ACTIONS.BEGIN_TEACH, {
@@ -614,6 +641,130 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           break;
         case WORKFLOW_ACTIONS.COMPILE_CONTRACT:
           await callWorkflowTool(WORKFLOW_ACTIONS.COMPILE_CONTRACT, {});
+          break;
+        case WORKFLOW_ACTIONS.RUN_CHECKRIDE:
+          await callWorkflowTool(WORKFLOW_ACTIONS.RUN_CHECKRIDE, {
+            ...(workspaceId ? { workspace_id: workspaceId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.EXPORT_DOJO_ARTIFACTS:
+          {
+            const skillId = workflowState?.dojo?.skillId;
+            const exportBody = await callWorkflowTool(WORKFLOW_ACTIONS.EXPORT_DOJO_ARTIFACTS, {
+              ...(skillId ? { skill_id: skillId } : {}),
+              ...(workspaceId ? { workspace_id: workspaceId } : {}),
+            });
+            await persistDojoArtifacts(exportBody?.result?.artifacts);
+          }
+          break;
+        case WORKFLOW_ACTIONS.ISSUE_PROOF_CAPSULE:
+          await callWorkflowTool(WORKFLOW_ACTIONS.ISSUE_PROOF_CAPSULE, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+            requested_action: 'run_workflow',
+            context_claims: { workspace_verified: true },
+          });
+          break;
+        case WORKFLOW_ACTIONS.RUN_PROOF_DRY_RUN:
+          {
+            const skillId = workflowState?.dojo?.skillId;
+            const capsuleBody = await callWorkflowTool(WORKFLOW_ACTIONS.ISSUE_PROOF_CAPSULE, {
+              ...(skillId ? { skill_id: skillId } : {}),
+              requested_action: 'run_workflow',
+              context_claims: { workspace_verified: true },
+            });
+            await callWorkflowTool(WORKFLOW_ACTIONS.RUN_PROOF_DRY_RUN, {
+              ...(skillId ? { skill_id: skillId } : {}),
+              requested_action: 'run_workflow',
+              proof_capsule: capsuleBody?.result?.proof_capsule,
+              dry_run: true,
+            });
+          }
+          break;
+        case WORKFLOW_ACTIONS.EXPLAIN_BLOCK:
+          await callWorkflowTool(WORKFLOW_ACTIONS.EXPLAIN_BLOCK, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+            requested_action: 'run_workflow',
+          });
+          break;
+        case WORKFLOW_ACTIONS.REQUEST_PERMISSION_UPGRADE:
+          await callWorkflowTool(WORKFLOW_ACTIONS.REQUEST_PERMISSION_UPGRADE, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+            requested_action: 'run_workflow',
+          });
+          break;
+        case WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_UNIVERSE_DOSSIER, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.GET_LIFECYCLE:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_LIFECYCLE, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.GET_GOVERNANCE_REPORT:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_GOVERNANCE_REPORT, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.GET_METRICS:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_METRICS, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.GET_SOURCE_AFFORDANCE_PR_PLAN:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_SOURCE_AFFORDANCE_PR_PLAN, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.RUN_TIME_MACHINE_DEBUGGER:
+          await callWorkflowTool(WORKFLOW_ACTIONS.RUN_TIME_MACHINE_DEBUGGER, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+            question: 'What changes if the active failure variable is removed?',
+          });
+          break;
+        case WORKFLOW_ACTIONS.RUN_VIVARIUM_SCENARIO:
+          await callWorkflowTool(WORKFLOW_ACTIONS.RUN_VIVARIUM_SCENARIO, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.RUN_WIND_TUNNEL:
+          await callWorkflowTool(WORKFLOW_ACTIONS.RUN_WIND_TUNNEL, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+            max_scenarios: 6,
+          });
+          break;
+        case WORKFLOW_ACTIONS.GET_LICENSE_HEALTH:
+          await callWorkflowTool(WORKFLOW_ACTIONS.GET_LICENSE_HEALTH, {
+            ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+          });
+          break;
+        case WORKFLOW_ACTIONS.RECORD_CASE_LAW:
+          {
+            const evidenceRefs = collectDojoAuditEvidenceRefs({ workflowState });
+            await callWorkflowTool(WORKFLOW_ACTIONS.RECORD_CASE_LAW, {
+              ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+              title: 'Operator Review Required',
+              finding: workflowState?.dojo?.blockExplanation?.refusal || 'An operator marked this skill branch for review.',
+              impact: 'Production execution could exceed the currently reviewed license boundary.',
+              rule: 'Require human review and recertification before expanding this skill license.',
+              applies_to: ['workflow_execution'],
+              evidence_refs: evidenceRefs,
+            });
+          }
+          break;
+        case WORKFLOW_ACTIONS.REVOKE_LICENSE:
+          {
+            const actor = currentDojoAuditActor();
+            const evidenceRefs = collectDojoAuditEvidenceRefs({ workflowState });
+            await callWorkflowTool(WORKFLOW_ACTIONS.REVOKE_LICENSE, {
+              ...(workflowState?.dojo?.skillId ? { skill_id: workflowState.dojo.skillId } : {}),
+              reason: 'operator_requested_recertification',
+              actor_id: actor.actor_id,
+              actor_type: actor.actor_type,
+              evidence_refs: evidenceRefs,
+            });
+          }
           break;
         case WORKFLOW_ACTIONS.PREFIX_VALIDATE:
           await callWorkflowTool(WORKFLOW_ACTIONS.PREFIX_VALIDATE, {
@@ -650,7 +801,22 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           await callWorkflowTool(WORKFLOW_ACTIONS.GENERATE_MANIFEST, {});
           break;
         case WORKFLOW_ACTIONS.PUBLISH_TOOL:
-          await callWorkflowTool(WORKFLOW_ACTIONS.PUBLISH_TOOL, {});
+          {
+            const actor = currentDojoAuditActor();
+            const evidenceRefs = collectDojoAuditEvidenceRefs({ workflowState });
+            const publishBody = await callWorkflowTool(WORKFLOW_ACTIONS.PUBLISH_TOOL, {
+              ...(workspaceId ? { workspace_id: workspaceId } : {}),
+              reason: 'operator_requested_license_publish',
+              actor_id: actor.actor_id,
+              actor_type: actor.actor_type,
+              evidence_refs: evidenceRefs,
+            });
+            const skillId = publishBody?.result?.skill?.skill_id;
+            if (skillId) {
+              const exportBody = await callWorkflowTool(WORKFLOW_ACTIONS.EXPORT_DOJO_ARTIFACTS, { skill_id: skillId });
+              await persistDojoArtifacts(exportBody?.result?.artifacts);
+            }
+          }
           break;
         default:
           throw new Error(`Unsupported workflow action: ${action || 'unknown'}`);
@@ -662,9 +828,12 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
           : stateWithBridgeError(err, prev)
       ));
     } finally {
-      setBusyAction(null);
+      if (actionId === inFlightActionRef.current) {
+        isActionLockedRef.current = false;
+        setBusyAction(null);
+      }
     }
-  }, [bridgeConfig.runtime, callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, stateWithBridgeError, stateWithWorkflowActionError, workflowState, workspaceUrl]);
+}, [bridgeConfig.runtime, callWorkflowTool, ctx?.workspaceSlug, ensureObservedWorkspace, persistDojoArtifacts, persistWorkflowHandoff, stateWithBridgeError, stateWithWorkflowActionError, workflowState, workspaceUrl]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -701,6 +870,7 @@ export const AgentWorkflowsPanelWrapper = memo(function AgentWorkflowsPanelWrapp
     >
       <AgentWorkflowPanel
         workspaceSlug={ctx?.workspaceSlug}
+        isBusy={Boolean(busyAction)}
         workflowState={displayedWorkflowState}
         onWorkflowAction={handleWorkflowAction}
       />

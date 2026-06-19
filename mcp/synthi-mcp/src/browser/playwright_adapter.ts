@@ -3742,11 +3742,24 @@ function teachCaptureInitScript(bindingName: string, annotationBindingName: stri
 
 function workflowOverlayBridgeUrl(): string {
   const configured = process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_URL"];
-  if (configured && configured.trim()) return configured.replace(/\/$/, "");
+  if (configured && configured.trim()) return browserReachableBridgeUrl(configured.trim().replace(/\/$/, ""));
   const port = process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT"];
   if (!port || !port.trim()) return "";
   const host = process.env["SYNTHI_BROWSER_WORKFLOW_BRIDGE_HOST"] || "127.0.0.1";
-  return `http://${host}:${port.trim()}`;
+  return browserReachableBridgeUrl(`http://${host}:${port.trim()}`);
+}
+
+function browserReachableBridgeUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    if (host === "0.0.0.0" || host === "::" || host === "[::]") {
+      parsed.hostname = "127.0.0.1";
+    }
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return value.replace(/^http:\/\/0\.0\.0\.0:/i, "http://127.0.0.1:");
+  }
 }
 
 function workflowOverlayBridgeToken(): string {
@@ -3779,14 +3792,11 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
       window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ &&
       window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ === bindingName &&
       window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ === bridgeUrl &&
-      window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ === bridgeToken;
+      window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ === bridgeToken &&
+      document.getElementById('synthi-workflow-toolbox-host');
     if (installedForCurrentRuntime) return;
     const existingHost = document.getElementById('synthi-workflow-toolbox-host');
     if (existingHost) existingHost.remove();
-    window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ = true;
-    window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ = bindingName;
-    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ = bridgeUrl;
-    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ = bridgeToken;
 
     function shouldRender() {
       if (!window[bindingName] && !bridgeUrl) return false;
@@ -3808,6 +3818,10 @@ function workflowOverlayInitScript(bindingName: string, bridgeUrl: string, bridg
     host.style.zIndex = '2147483647';
     host.style.pointerEvents = 'auto';
     document.documentElement.appendChild(host);
+    window.__SYNTHI_WORKFLOW_TOOLBOX_INSTALLED__ = true;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BINDING__ = bindingName;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_URL__ = bridgeUrl;
+    window.__SYNTHI_WORKFLOW_TOOLBOX_BRIDGE_TOKEN__ = bridgeToken;
 
     const root = host.attachShadow({ mode: 'open' });
     root.innerHTML = [

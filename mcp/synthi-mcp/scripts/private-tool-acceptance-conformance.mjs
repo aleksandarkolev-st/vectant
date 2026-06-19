@@ -102,6 +102,18 @@ export function parseNonNegativeInteger(value, label) {
   return parsed;
 }
 
+export function hostedRuntimePolicyEnv({ targetUrl, sessionTtlMs = 900_000 } = {}) {
+  const origin = originForUrl(targetUrl);
+  if (!origin) throw new Error("hosted_runtime_target_origin_required");
+  const ttl = parseNonNegativeInteger(sessionTtlMs, "hosted_session_ttl_ms");
+  if (ttl <= 0) throw new Error("hosted_session_ttl_ms_must_be_positive");
+  return {
+    SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST: origin,
+    SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS: String(ttl),
+    SYNTHI_HOSTED_BROWSER_REDACT_SCREENSHOTS: "1",
+  };
+}
+
 export function runtimeEndpointConformance({ cdpUrl, requireNonLoopbackRuntime = false }) {
   const requireNonLoopback = Boolean(requireNonLoopbackRuntime);
   const host = extractUrlHost(cdpUrl);
@@ -125,6 +137,14 @@ export function assertRuntimeEndpointConformance({ cdpUrl, requireNonLoopbackRun
 function extractUrlHost(value) {
   try {
     return new URL(String(value)).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function originForUrl(value) {
+  try {
+    return new URL(String(value)).origin;
   } catch {
     return null;
   }

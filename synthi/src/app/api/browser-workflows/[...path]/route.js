@@ -6,7 +6,25 @@ export const runtime = 'nodejs';
 
 const DEFAULT_LOCAL_BRIDGE_URL = 'http://127.0.0.1:9466';
 const BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
-const HOSTED_BROWSER_VIEWER_PATH = '/vnc.html?autoconnect=1&resize=scale&reconnect=1';
+const COLLAB_URL_ENV_VARS = [
+  'COLLAB_SERVER_URL',
+  'SYNTHI_COLLAB_SERVER_URL',
+  'NEXT_PUBLIC_COLLAB_SERVER_URL',
+  'COLLAB_URL',
+];
+
+function resolveServerUrl(name) {
+  const value = process.env[name];
+  return typeof value === 'string' && value.trim() ? value.trim().replace(/\/+$/, '') : '';
+}
+
+function resolveCollabServerUrl() {
+  for (const name of COLLAB_URL_ENV_VARS) {
+    const value = resolveServerUrl(name);
+    if (value) return value;
+  }
+  return '';
+}
 
 function hashRuntimeScopePart(value) {
   const text = String(value || 'unknown');
@@ -189,41 +207,6 @@ function workflowBridgeBaseUrl(runtimeScope) {
   return process.env.NODE_ENV === 'production' ? '' : DEFAULT_LOCAL_BRIDGE_URL;
 }
 
-function normalizePathPrefix(value) {
-  const raw = String(value || '').trim();
-  if (!raw || raw === '/') return '';
-  return `/${raw.replace(/^\/+|\/+$/g, '')}`;
-}
-
-function normalizePreviewProtocol(value) {
-  const raw = String(value || '').trim().toLowerCase().replace(/:$/, '');
-  return raw === 'http' ? 'http' : 'https';
-}
-
-function hostedBrowserViewerPort() {
-  const rawPort = String(process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT || '6080').trim();
-  const port = Number(rawPort);
-  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
-}
-
-function hostedBrowserViewerUrl(runtimeScope) {
-  if (!runtimeScope) return null;
-
-  const port = hostedBrowserViewerPort();
-  if (!port) return null;
-
-  const runtimeId = runtimeResourceId(runtimeScope);
-  const publicDomain = String(process.env.SYNTHI_PREVIEW_PUBLIC_DOMAIN || '').trim().toLowerCase().replace(/\.$/, '');
-  const viewerPath = HOSTED_BROWSER_VIEWER_PATH;
-  if (publicDomain) {
-    const protocol = normalizePreviewProtocol(process.env.SYNTHI_PREVIEW_PUBLIC_PROTOCOL || 'https');
-    return `${protocol}://p${port}-${runtimeId}.${publicDomain}${viewerPath}`;
-  }
-
-  const prefix = normalizePathPrefix(process.env.SYNTHI_PREVIEW_PUBLIC_PREFIX || '/collab');
-  return `${prefix}/runtime/${encodeURIComponent(runtimeScope)}/port/${port}${viewerPath}`;
-}
-
 function responseHeaders(upstream) {
   const headers = new Headers();
   const contentType = upstream.headers.get('content-type');
@@ -232,39 +215,180 @@ function responseHeaders(upstream) {
   return headers;
 }
 
-function runtimeToolContextArgs(runtimeContext) {
-  const args = {};
-  if (runtimeContext.workspaceSlug) args.workspace_id = runtimeContext.workspaceSlug;
-  if (runtimeContext.runtimeScope) {
-    args.runtime_scope = runtimeContext.runtimeScope;
-    args.runtime_id = runtimeResourceId(runtimeContext.runtimeScope);
-  }
-  if (runtimeContext.runtimeKind) args.runtime_kind = runtimeContext.runtimeKind;
-  if (runtimeContext.collabSessionId) args.collab_session_id = runtimeContext.collabSessionId;
-  return args;
+function sanitizeErrorDetail(value) {
+  if (!value) return '';
+  const text = String(value);
+  return text.length > 2048 ? `${text.slice(0, 2040)}…` : text;
 }
 
-async function requestBodyForUpstream(request, path, runtimeContext) {
-  if (request.method === 'GET' || request.method === 'HEAD') return undefined;
-  const raw = await request.arrayBuffer();
-  if (path !== 'tool') return raw;
+function isThenable(value) {
+  return typeof value?.then === 'function';
+}
 
+function collectProxyHeaders(request) {
+  const headers = {
+    'accept': request.headers.get('accept') || 'application/json',
+  };
+  const serverToken = process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN;
+  const browserToken = request.headers.get('x-synthi-workflow-token');
+  if (serverToken) {
+    headers['x-synthi-workflow-token'] = serverToken;
+  } else if (browserToken) {
+    headers['x-synthi-workflow-token'] = browserToken;
+  }
+
+  [
+    'x-synthi-runtime-scope',
+    'x-synthi-workspace-slug',
+    'x-synthi-runtime-kind',
+    'x-synthi-filesystem-user-id',
+    'x-synthi-actor-user-id',
+    'x-synthi-collab-session-id',
+  ].forEach((headerName) => {
+    const value = request.headers.get(headerName);
+    if (value) headers[headerName] = value;
+  });
+
+  return headers;
+}
+
+async function readStateFromUpstreamBridge(baseUrl, request) {
+  if (!baseUrl) return null;
+  let target;
   try {
-    const text = new TextDecoder().decode(raw);
-    const body = text ? JSON.parse(text) : {};
-    const currentArgs =
-      body?.arguments && typeof body.arguments === 'object' && !Array.isArray(body.arguments)
-        ? body.arguments
-        : {};
-    return JSON.stringify({
-      ...body,
-      arguments: {
-        ...runtimeToolContextArgs(runtimeContext),
-        ...currentArgs,
-      },
+    target = new URL('/browser-workflows/state', baseUrl);
+    const headers = collectProxyHeaders(request);
+    const response = await fetch(target.href, {
+      method: 'GET',
+      headers,
     });
+    const details = await upstreamErrorPayload(response);
+    const payload = details.payload || {};
+    return payload && typeof payload === 'object' && payload.state && typeof payload.state === 'object'
+      ? payload.state
+      : null;
+  } catch (err) {
+    console.warn('[Workflow Proxy] Failed to fetch fallback state', err);
+    return null;
+  }
+}
+
+function workflowPanelErrorState(detail, code = 'workflow_bridge_error') {
+  const text = sanitizeErrorDetail(detail);
+  const message = text || 'Workflow panel state is temporarily unavailable.';
+  return {
+    bridge: {
+      status: 'error',
+      detail: message,
+      label: 'Workflow bridge unavailable',
+    },
+    runtime: {
+      status: 'notConfigured',
+      detail: message,
+      label: 'Runtime unavailable',
+      readiness: 'notConfigured',
+    },
+    observe: {
+      status: 'needsRuntime',
+      label: 'Runtime reconnect required',
+      detail: message,
+      lastScreenshotAt: null,
+      selectedTabId: null,
+      consent: null,
+    },
+    teach: {
+      state: 'idle',
+      label: 'Ready after reconnect',
+      detail: message,
+      tabId: null,
+    },
+    blockers: [
+      {
+        id: code,
+        label: 'Workflow bridge unavailable',
+        detail: message,
+      },
+    ],
+  };
+}
+
+function statefulWorkflowErrorResponse(payload, stateDetail, code, status = 200) {
+  return NextResponse.json(
+    {
+      ...payload,
+      ok: false,
+      state: workflowPanelErrorState(stateDetail, code),
+    },
+    {
+      status,
+      headers: {
+        'cache-control': 'no-store',
+      },
+    },
+  );
+}
+
+function asStringArrayPath(rawPath) {
+  if (Array.isArray(rawPath)) {
+    return rawPath
+      .filter((segment) => typeof segment === 'string' && segment.trim().length > 0)
+      .map((segment) => segment.trim());
+  }
+
+  if (typeof rawPath === 'string') {
+    return rawPath
+      .split('/')
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+  }
+
+  return [];
+}
+
+function inferWorkflowPathFromUrl(request) {
+  const normalizedPath = new URL(request.url).pathname;
+  const marker = '/browser-workflows/';
+  const markerIndex = normalizedPath.indexOf(marker);
+  if (markerIndex === -1) return '';
+
+  return normalizedPath
+    .slice(markerIndex + marker.length)
+    .replace(/^\/+|\/+$/g, '')
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+    .join('/');
+}
+
+async function resolveWorkflowPath(routeContext, request) {
+  const rawParams = routeContext?.params;
+  const params = isThenable(rawParams) ? await rawParams : rawParams;
+  const fromParams = asStringArrayPath(params?.path).join('/');
+  if (fromParams) return fromParams;
+
+  const fromUrl = inferWorkflowPathFromUrl(request);
+  return fromUrl;
+}
+
+async function upstreamErrorPayload(upstream) {
+  try {
+    const clone = upstream.clone();
+    const contentType = clone.headers.get('content-type') || '';
+    const raw = await clone.text();
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return { contentType, detail: '' };
+    }
+    if (contentType.includes('application/json') || contentType.includes('+json')) {
+      try {
+        return { contentType, payload: JSON.parse(trimmed) };
+      } catch (_) {
+        return { contentType, detail: sanitizeErrorDetail(trimmed) };
+      }
+    }
+    return { contentType, detail: sanitizeErrorDetail(trimmed) };
   } catch (_) {
-    return raw;
+    return { contentType: upstream.headers.get('content-type') || '', detail: '' };
   }
 }
 
@@ -272,135 +396,357 @@ async function ensureRuntimeBridge(context) {
   const runtimeScope = context.runtimeScope;
   if (!runtimeScope) return { ok: true };
 
-  const collabUrl = normalizeBaseUrl(process.env.COLLAB_SERVER_URL);
+  const collabUrl = resolveCollabServerUrl();
   if (!collabUrl) return { ok: true };
 
   const userId = context.actorUserId || context.filesystemUserId || runtimeScope;
-  let res;
   try {
-    res = await fetch(`${collabUrl}/api/spawner/ensure`, {
+    const res = await fetch(`${collabUrl}/api/spawner/ensure`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       cache: 'no-store',
       body: JSON.stringify({
         session_id: runtimeScope,
         user_id: userId,
-        workspaceSlug: context.workspaceSlug || '',
+        workspace_slug: context.workspaceSlug || '',
+        workspaceKind: context.runtimeKind || '',
         runtimeKind: context.runtimeKind || '',
         filesystemUserId: context.filesystemUserId || userId,
       }),
     });
+
+    if (res.ok) return { ok: true };
+    let detail = `HTTP ${res.status}`;
+    try {
+      const data = await res.json();
+      detail = data?.error || data?.message || detail;
+    } catch (_) {
+      // ignore non-JSON errors
+    }
+    return { ok: false, status: res.status, detail };
   } catch (err) {
     return {
       ok: false,
-      status: 503,
-      error: 'workflow_runtime_ensure_unreachable',
-      detail: err?.message || String(err),
+      status: 502,
+      detail: err instanceof Error ? err.message : String(err),
     };
   }
-
-  if (res.ok) return { ok: true };
-  let detail = `HTTP ${res.status}`;
-  try {
-    const data = await res.json();
-    detail = data?.error || data?.message || detail;
-  } catch (_) {
-    // ignore non-JSON errors
-  }
-  return { ok: false, status: res.status, error: 'workflow_runtime_ensure_failed', detail };
 }
 
-export async function proxyWorkflowBridge(request, routeContext) {
-  const authorized = await authorizeRuntimeContext(parseRuntimeContext(request));
-  if (!authorized.ok) {
-    return NextResponse.json(
-      { error: authorized.error },
-      { status: authorized.status || 403 },
-    );
-  }
+async function forwardToBridge(upstreamUrl, request) {
+  const init = {
+    method: request.method,
+    headers: new Headers(),
+    cache: 'no-store',
+  };
 
-  const runtimeContext = authorized.context;
-  const baseUrl = workflowBridgeBaseUrl(runtimeContext.runtimeScope);
-  if (!baseUrl) {
-    return NextResponse.json(
-      {
-        error: runtimeContext.runtimeScope
-          ? 'workflow_bridge_route_not_configured'
-          : 'workflow_runtime_scope_required',
-      },
-      { status: 503 },
-    );
-  }
-
-  const params = await routeContext.params;
-  const path = Array.isArray(params?.path) ? params.path.join('/') : '';
-  const incomingUrl = new URL(request.url);
-  const upstreamUrl = new URL(`/browser-workflows/${path}`, baseUrl);
-  upstreamUrl.search = incomingUrl.search;
-
-  if (path !== 'state') {
-    const ensure = await ensureRuntimeBridge(runtimeContext);
-    if (!ensure.ok) {
-      return NextResponse.json(
-        { error: ensure.error || 'workflow_runtime_unavailable', detail: ensure.detail },
-        { status: ensure.status || 503 },
-      );
-    }
-  }
-
-  const headers = new Headers();
   const contentType = request.headers.get('content-type');
-  if (contentType) headers.set('content-type', contentType);
+  if (contentType) init.headers.set('content-type', contentType);
   const accept = request.headers.get('accept');
-  if (accept) headers.set('accept', accept);
+  if (accept) init.headers.set('accept', accept);
 
   const serverToken = process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN;
   const browserToken = request.headers.get('x-synthi-workflow-token');
   if (serverToken) {
-    headers.set('x-synthi-workflow-token', serverToken);
+    init.headers.set('x-synthi-workflow-token', serverToken);
   } else if (browserToken) {
-    headers.set('x-synthi-workflow-token', browserToken);
+    init.headers.set('x-synthi-workflow-token', browserToken);
   }
 
-  const init = {
-    method: request.method,
-    headers,
-    cache: 'no-store',
-  };
-  const upstreamBody = await requestBodyForUpstream(request, path, runtimeContext);
-  if (upstreamBody !== undefined) {
-    init.body = upstreamBody;
+  [
+    'x-synthi-runtime-scope',
+    'x-synthi-workspace-slug',
+    'x-synthi-runtime-kind',
+    'x-synthi-filesystem-user-id',
+    'x-synthi-actor-user-id',
+    'x-synthi-collab-session-id',
+  ].forEach((headerName) => {
+    const value = request.headers.get(headerName);
+    if (value) init.headers.set(headerName, value);
+  });
+
+  const propagatedHeaders = Object.fromEntries(init.headers.entries());
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    init.body = await request.arrayBuffer();
+    init.headers.set('content-length', `${(init.body?.byteLength || 0)}`);
+    propagatedHeaders['content-length'] = `${(init.body?.byteLength || 0)}`;
   }
 
+  const upstream = await fetch(upstreamUrl, init);
+  return { upstream, propagatedHeaders };
+}
+
+export async function proxyWorkflowBridge(request, routeContext) {
   try {
-    const upstream = await fetch(upstreamUrl, init);
-    if (path === 'open-external' && request.method === 'POST') {
-      const body = await upstream.json().catch(() => ({}));
-      const viewerUrl = hostedBrowserViewerUrl(runtimeContext.runtimeScope);
+    let authorized;
+    try {
+      authorized = await authorizeRuntimeContext(parseRuntimeContext(request));
+    } catch (err) {
       return NextResponse.json(
-        viewerUrl
-          ? {
-              ...body,
-              workspaceBrowser: {
-                kind: 'novnc',
-                url: viewerUrl,
-                port: hostedBrowserViewerPort(),
-                runtimeScope: runtimeContext.runtimeScope,
-                runtimeId: runtimeResourceId(runtimeContext.runtimeScope),
-              },
-            }
-          : body,
-        { status: upstream.status },
+        {
+          error: 'workflow_access_check_failed',
+          detail: err instanceof Error ? err.message : String(err),
+        },
+        { status: 503 },
       );
     }
+    if (!authorized.ok) {
+      return NextResponse.json(
+        { error: authorized.error },
+        { status: authorized.status || 403 },
+      );
+    }
+
+    const runtimeContext = authorized.context;
+    const baseUrl = workflowBridgeBaseUrl(runtimeContext.runtimeScope);
+    if (!baseUrl) {
+      return NextResponse.json(
+        {
+          error: runtimeContext.runtimeScope
+            ? 'workflow_bridge_route_not_configured'
+            : 'workflow_runtime_scope_required',
+        },
+        { status: 503 },
+      );
+    }
+
+    const path = await resolveWorkflowPath(routeContext, request);
+    if (!path) {
+      return NextResponse.json(
+        {
+          error: 'workflow_unknown_path',
+          path,
+        },
+        { status: 400 },
+      );
+    }
+    const isStatePath = path === 'state' || path === 'state/';
+    const isToolPath = path === 'tool' || path === 'tool/';
+    const isStatefulPath = isStatePath || isToolPath;
+    if (!isStatePath) {
+      const ensure = await ensureRuntimeBridge(runtimeContext);
+      if (!ensure.ok) {
+        if (isToolPath) {
+          return statefulWorkflowErrorResponse(
+            {
+              error: 'workflow_runtime_unavailable',
+              status: ensure.status || 503,
+              detail: ensure.detail,
+              action: `${request.method || 'GET'}:${path}`,
+              path,
+            },
+            `workflow_runtime_unavailable: ${ensure.detail || 'runtime could not be prepared'}`,
+            'workflow_runtime_unavailable',
+          );
+        }
+        return NextResponse.json(
+          { error: 'workflow_runtime_unavailable', detail: ensure.detail },
+          { status: ensure.status || 503 },
+        );
+      }
+    }
+
+    const incomingUrl = new URL(request.url);
+    let upstreamUrl;
+    try {
+      upstreamUrl = new URL(`/browser-workflows/${path}`, baseUrl);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      if (isStatefulPath) {
+        return statefulWorkflowErrorResponse(
+          {
+            error: 'workflow_bridge_url_invalid',
+            status: 502,
+            detail,
+            action: `${request.method || 'GET'}:${path}`,
+            path,
+          },
+          `workflow_bridge_url_invalid: ${detail}`,
+          'workflow_bridge_url_invalid',
+        );
+      }
+      return NextResponse.json(
+        {
+          error: 'workflow_bridge_url_invalid',
+          detail,
+          action: `${request.method || 'GET'}:${path}`,
+          path,
+        },
+        {
+          status: 502,
+          headers: {
+            'cache-control': 'no-store',
+          },
+        },
+      );
+    }
+    upstreamUrl.search = incomingUrl.search;
+
+    let upstream;
+    let propagatedHeaders;
+    try {
+      ({ upstream, propagatedHeaders } = await forwardToBridge(upstreamUrl, request));
+    } catch (err) {
+      let fallbackState;
+      if (isStatefulPath) {
+        fallbackState = await readStateFromUpstreamBridge(baseUrl, request);
+      }
+
+      if (fallbackState) {
+        return NextResponse.json(
+          {
+            error: 'workflow_bridge_unreachable',
+            status: 502,
+            detail: err instanceof Error ? err.message : String(err),
+            action: `${request.method || 'GET'}:${path}`,
+            path,
+            upstream_url: upstreamUrl.toString(),
+            headers: propagatedHeaders,
+            state: fallbackState,
+            ok: false,
+          },
+          {
+            status: 200,
+            headers: {
+              'cache-control': 'no-store',
+            },
+          },
+        );
+      }
+
+      if (isStatefulPath) {
+        return statefulWorkflowErrorResponse(
+          {
+            error: 'workflow_bridge_unreachable',
+            status: 502,
+            detail: err instanceof Error ? err.message : String(err),
+            action: `${request.method || 'GET'}:${path}`,
+            path,
+            upstream_url: upstreamUrl.toString(),
+            headers: propagatedHeaders,
+          },
+          `workflow_bridge_unreachable: ${err instanceof Error ? err.message : String(err)}`,
+          'workflow_bridge_unreachable',
+        );
+      }
+
+      return NextResponse.json(
+        {
+          error: 'workflow_bridge_unreachable',
+          detail: err instanceof Error ? err.message : String(err),
+          action: `${request.method || 'GET'}:${path}`,
+          path,
+          upstream_url: upstreamUrl.toString(),
+          headers: propagatedHeaders,
+        },
+        {
+          status: 502,
+          headers: {
+            'cache-control': 'no-store',
+          },
+        },
+      );
+    }
+
+    if (!upstream.ok) {
+      const details = await upstreamErrorPayload(upstream);
+      const sourcePayload = details.payload && typeof details.payload === 'object' && !Array.isArray(details.payload)
+        ? details.payload
+        : {};
+      const isToolPath = path === 'tool' || path === 'tool/';
+      const merged = {
+        error: details.payload?.error || 'workflow_bridge_upstream_error',
+        status: upstream.status,
+        upstream_status: upstream.status,
+        upstream_content_type: details.contentType || undefined,
+        ...(sourcePayload || {}),
+      };
+      if (!Object.prototype.hasOwnProperty.call(merged, 'detail') && typeof details.detail === 'string' && details.detail) {
+        merged.detail = details.detail;
+      }
+
+      const hasWorkflowState = merged.state && typeof merged.state === 'object';
+      const shouldFallbackState = path === 'tool' || path === 'tool/' || isStatePath;
+      if ((isToolPath || isStatePath) && hasWorkflowState) {
+        if (!Object.prototype.hasOwnProperty.call(merged, 'ok')) {
+          merged.ok = false;
+        }
+        return NextResponse.json(merged, {
+          status: 200,
+          headers: {
+            'cache-control': 'no-store',
+          },
+        });
+      }
+
+      if (shouldFallbackState) {
+        const fallbackState = await readStateFromUpstreamBridge(baseUrl, request);
+        if (fallbackState) {
+          return NextResponse.json({
+            ...merged,
+            ok: false,
+            state: {
+              ...(merged.state || {}),
+              ...fallbackState,
+            },
+          }, {
+            status: 200,
+            headers: {
+              'cache-control': 'no-store',
+            },
+          });
+        }
+
+        return statefulWorkflowErrorResponse(
+          {
+            ...merged,
+          },
+          `${merged.error}: ${merged.detail || 'workflow bridge returned a non-state response.'}`,
+          merged.error || 'workflow_bridge_upstream_error',
+        );
+      }
+
+      return NextResponse.json(merged, {
+        status: upstream.status,
+        headers: {
+          'cache-control': 'no-store',
+        },
+      });
+    }
+
     return new NextResponse(upstream.body, {
       status: upstream.status,
       headers: responseHeaders(upstream),
     });
   } catch (err) {
     return NextResponse.json(
-      { error: 'workflow_bridge_unreachable', detail: err?.message || String(err) },
-      { status: 502 },
+      {
+        error: 'workflow_internal_error',
+        detail: err instanceof Error ? err.message : String(err),
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request, routeContext) {
+  try {
+    return await proxyWorkflowBridge(request, routeContext);
+  } catch (err) {
+    return NextResponse.json(
+      { error: 'workflow_internal_error', detail: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request, routeContext) {
+  try {
+    return await proxyWorkflowBridge(request, routeContext);
+  } catch (err) {
+    return NextResponse.json(
+      { error: 'workflow_internal_error', detail: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
     );
   }
 }
@@ -424,6 +770,3 @@ export function OPTIONS() {
     },
   });
 }
-
-export const GET = proxyWorkflowBridge;
-export const POST = proxyWorkflowBridge;

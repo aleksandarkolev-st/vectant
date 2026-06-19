@@ -22,6 +22,17 @@
 
 import http from "node:http";
 import { browserBroker, type BrowserRecordingIssue } from "../browser/broker.js";
+import { buildDojoSkill, dojoSkillRegistry } from "../browser/dojo.js";
+import {
+  buildDojoGovernanceReport,
+  buildDojoLifecycleReport,
+  buildDojoSourceAffordancePrPlan,
+  buildDojoUniverseDossier,
+  buildDojoUniverseMetrics,
+} from "../browser/dojo_universe.js";
+import { buildDojoGovernanceServiceView } from "../dojo/governance/service.js";
+import { resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
+import { generatePrivateWorkflowToolManifest } from "../browser/private_tool_manifest.js";
 import { attachHostedBrowserRuntime, resolveHostedBrowserRuntime } from "../browser/hosted_runtime.js";
 import { browserPlaywrightAdapter } from "../browser/playwright_adapter.js";
 import {
@@ -29,9 +40,10 @@ import {
   replayIsolationProfileManifestFor,
   replayIsolationProfiles,
 } from "../browser/safety.js";
-import type { WorkflowStepContractV7 } from "../browser/workflow.js";
+import type { WorkflowContractV7, WorkflowStepContractV7 } from "../browser/workflow.js";
 import { AUTH_TOOL_NAMES, dispatchAuthTool } from "../tools/auth.js";
 import { BROWSER_TOOL_NAMES, browserWorkflowOverlayAction, dispatchBrowserTool } from "../tools/browser.js";
+import { DOJO_TOOL_NAMES, dispatchDojoTool } from "../tools/dojo.js";
 import { SAFETY_TOOL_NAMES, dispatchSafetyTool } from "../tools/safety.js";
 import { SOURCE_TOOL_NAMES, dispatchSourceTool } from "../tools/source.js";
 import type { ToolResponse } from "../tools/shared.js";
@@ -61,6 +73,24 @@ interface BrowserWorkflowBridgeState {
   publishedAt?: string;
   lastTool?: string;
   lastToolAt?: string;
+  latestCheckride?: Record<string, unknown>;
+  latestDojoArtifactExport?: Record<string, unknown>;
+  latestProof?: Record<string, unknown>;
+  latestProofDryRun?: Record<string, unknown>;
+  latestProofRevocation?: Record<string, unknown>;
+  latestBlockExplanation?: Record<string, unknown>;
+  latestPermissionUpgrade?: Record<string, unknown>;
+  latestDojoUniverse?: Record<string, unknown>;
+  latestDojoLifecycle?: Record<string, unknown>;
+  latestDojoGovernance?: Record<string, unknown>;
+  latestDojoMetrics?: Record<string, unknown>;
+  latestDojoSourcePlan?: Record<string, unknown>;
+  latestDojoTimeMachine?: Record<string, unknown>;
+  latestDojoVivariumRun?: Record<string, unknown>;
+  latestDojoWindTunnel?: Record<string, unknown>;
+  latestDojoLicenseHealth?: Record<string, unknown>;
+  latestDojoCaseLawRecord?: Record<string, unknown>;
+  latestDojoLicenseRevocation?: Record<string, unknown>;
   history: BridgeHistoryEntry[];
 }
 
@@ -84,6 +114,30 @@ const MAX_HISTORY = 8;
 const PREVIEW_DISCOVERY_TIMEOUT_MS = 5000;
 const EXTERNAL_OPEN_BODY_LIMIT_BYTES = parsePositiveInt(process.env["SYNTHI_BROWSER_EXTERNAL_OPEN_BODY_LIMIT_BYTES"], 20_000);
 const EXTERNAL_OPEN_TIMEOUT_MS = parsePositiveInt(process.env["SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS"], 15_000);
+const PREVIEW_DISCOVERY_PROBE_TIMEOUT_MS = 1000;
+const PREVIEW_DISCOVERY_MAX_CONCURRENCY = 4;
+const DEFAULT_PREVIEW_DISCOVERY_PORTS = [
+  3000,
+  3001,
+  4173,
+  4200,
+  5000,
+  5173,
+  8000,
+  8080,
+];
+
+const PREVIEW_DISCOVERY_PORTS = parsePortList(
+  process.env["SYNTHI_PREVIEW_DISCOVERY_PORTS"] ||
+  process.env["SYNTHI_PREVIEW_SCAN_PORTS"] ||
+  process.env["SYNTHI_WORKFLOW_PREVIEW_PORTS"] ||
+  ""
+);
+
+const FALLBACK_PREVIEW_DISCOVERY_PORTS = PREVIEW_DISCOVERY_PORTS.length > 0
+  ? PREVIEW_DISCOVERY_PORTS
+  : DEFAULT_PREVIEW_DISCOVERY_PORTS;
+
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -100,6 +154,15 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "600",
 };
 
+interface RuntimeHeaderContext {
+  runtimeScope?: string;
+  workspaceSlug?: string;
+  runtimeKind?: string;
+  filesystemUserId?: string;
+  actorUserId?: string;
+  collabSessionId?: string;
+}
+
 const TOOL_ALIASES: Record<string, string> = {
   synthi_browser_configure_auth: "synthi_auth_get_tool_auth_readiness",
   synthi_source_identity_open: "synthi_source_get_mapping_status",
@@ -108,11 +171,12 @@ const TOOL_ALIASES: Record<string, string> = {
   synthi_workflow_ci_replay: "synthi_safety_run_ci_isolated_replay",
   synthi_workflow_generate_playwright: "synthi_browser_generate_script",
   synthi_workflow_generate_tool_manifest: "synthi_browser_generate_private_tool_manifest",
-  synthi_workflow_publish_tool: "synthi_browser_publish_private_tool",
+  synthi_workflow_publish_tool: "synthi_dojo_publish_skill",
 };
 
 const WORKFLOW_BRIDGE_ALLOWED_TOOLS = new Set<string>([
   ...BROWSER_TOOL_NAMES,
+  ...DOJO_TOOL_NAMES,
   ...AUTH_TOOL_NAMES,
   ...SOURCE_TOOL_NAMES,
   ...SAFETY_TOOL_NAMES,
@@ -192,6 +256,7 @@ async function dispatchWorkflowTool(toolName: string, args: unknown): Promise<To
   if (!WORKFLOW_BRIDGE_ALLOWED_TOOLS.has(toolName) && !toolName.startsWith("synthi_app_")) return null;
   return (
     (await dispatchBrowserTool(toolName, args)) ??
+    (await dispatchDojoTool(toolName, args)) ??
     (await dispatchSafetyTool(toolName, args)) ??
     (await dispatchSourceTool(toolName, args)) ??
     (await dispatchAuthTool(toolName, args))
@@ -259,25 +324,15 @@ function normalizeExternalBrowserUrl(value: unknown): string | null {
   }
 }
 
-async function ensureHostedRuntimeAttached(input: {
-  workspace_id?: string;
-  workspace_url?: string;
-  runtime_id?: string;
-} = {}): Promise<
+async function ensureHostedRuntimeForExternalOpen(): Promise<
   { ok: true } | { ok: false; status: number; error: string; detail?: unknown }
 > {
-  const runtime = browserBroker.runtimeAttachment();
-  if (browserPlaywrightAdapter.isAttached() && runtime?.kind === "hosted") {
+  if (browserPlaywrightAdapter.isAttached() && browserBroker.runtimeAttachment()) {
     return { ok: true };
   }
 
   const attached = await attachHostedBrowserRuntime(
-    {
-      workspace_id: input.workspace_id,
-      workspace_url: input.workspace_url,
-      runtime_id: input.runtime_id,
-      open_workspace: false,
-    },
+    { open_workspace: false },
     browserPlaywrightAdapter,
     browserBroker
   );
@@ -318,19 +373,6 @@ async function enrichToolArgs(toolName: string, args: unknown): Promise<Record<s
     !stringOpt(base["preferred_url"]) &&
     !stringOpt(base["preview_url"])
   ) {
-    const runtime = await ensureHostedRuntimeAttached({
-      workspace_id: stringOpt(base["workspace_id"]) ?? workspaceSlugFromArgs(base),
-      workspace_url: stringOpt(base["workspace_url"]) ?? defaultWorkspaceUrl(base),
-      runtime_id: stringOpt(base["runtime_id"]),
-    });
-    if (!runtime.ok) {
-      throw new BridgeToolInputError(runtime.error, {
-        tool: toolName,
-        runtime: runtime.detail,
-        required_action: "attach_hosted_browser_runtime",
-      }, runtime.status);
-    }
-
     const preview = await discoverWorkspacePreviewUrl(base);
     if (preview.ok && preview.url) {
       return { ...base, preferred_url: preview.url, preview_url: preview.url };
@@ -345,6 +387,35 @@ async function enrichToolArgs(toolName: string, args: unknown): Promise<Record<s
   return base;
 }
 
+function requestRuntimeContext(req: http.IncomingMessage): RuntimeHeaderContext {
+  return {
+    runtimeScope: stringHeader(req.headers["x-synthi-runtime-scope"]),
+    workspaceSlug: stringHeader(req.headers["x-synthi-workspace-slug"]),
+    runtimeKind: stringHeader(req.headers["x-synthi-runtime-kind"]),
+    filesystemUserId: stringHeader(req.headers["x-synthi-filesystem-user-id"]),
+    actorUserId: stringHeader(req.headers["x-synthi-actor-user-id"]),
+    collabSessionId: stringHeader(req.headers["x-synthi-collab-session-id"]),
+  };
+}
+
+function withRuntimeToolDefaults(args: unknown, context: RuntimeHeaderContext = {}): Record<string, unknown> {
+  const base = objectArgs(args);
+  return {
+    ...base,
+    ...(context.runtimeScope && !stringOpt(base["runtime_scope"]) && !stringOpt(base["runtimeScope"]) ? { runtime_scope: context.runtimeScope } : {}),
+    ...(context.workspaceSlug && !stringOpt(base["workspace_id"]) && !stringOpt(base["workspace"]) ? { workspace_id: context.workspaceSlug } : {}),
+    ...(context.runtimeKind && !stringOpt(base["runtime_kind"]) && !stringOpt(base["runtimeKind"]) ? { runtime_kind: context.runtimeKind } : {}),
+    ...(context.filesystemUserId && !stringOpt(base["filesystem_user_id"]) && !stringOpt(base["filesystemUserId"]) ? { filesystem_user_id: context.filesystemUserId } : {}),
+    ...(context.actorUserId && !stringOpt(base["actor_user_id"]) && !stringOpt(base["actorUserId"]) ? { actor_user_id: context.actorUserId } : {}),
+    ...(context.collabSessionId && !stringOpt(base["collab_session_id"]) && !stringOpt(base["collabSessionId"]) ? { collab_session_id: context.collabSessionId } : {}),
+  };
+}
+
+async function enrichToolArgsForBridge(toolName: string, args: unknown, context: RuntimeHeaderContext = {}): Promise<Record<string, unknown>> {
+  const merged = withRuntimeToolDefaults(args, context);
+  return enrichToolArgs(toolName, merged);
+}
+
 async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promise<PreviewDiscoveryResult> {
   const slug = workspaceSlugFromArgs(args);
   if (!slug) return { ok: true };
@@ -353,27 +424,6 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
     stringOpt(args["runtime_scope"]) ??
     stringOpt(args["runtimeScope"]) ??
     stringOpt(process.env["SYNTHI_WORKFLOW_RUNTIME_SCOPE"]);
-
-  const centralPreview = collab
-    ? await discoverCollabPreviewUrl(slug, runtimeScope, collab)
-    : null;
-  if (centralPreview?.ok && centralPreview.url) return centralPreview;
-
-  const runtimePreview = await discoverRuntimeSidecarPreviewUrl(runtimeScope, collab?.url);
-  if (runtimePreview.ok && runtimePreview.url) return runtimePreview;
-  if (!runtimePreview.ok && centralPreview?.ok === false) {
-    return {
-      ok: false,
-      error: runtimePreview.error ?? centralPreview.error ?? "preview_discovery_failed",
-      detail: {
-        workspace: slug,
-        runtimeScope,
-        central: centralPreview.detail,
-        runtime: runtimePreview.detail,
-      },
-    };
-  }
-
   if (!collab) {
     return {
       ok: false,
@@ -384,34 +434,9 @@ async function discoverWorkspacePreviewUrl(args: Record<string, unknown>): Promi
       },
     };
   }
-
-  if (!centralPreview?.ok) {
-    return {
-      ok: false,
-      error: centralPreview?.error ?? "preview_not_found",
-      detail: {
-        workspace: slug,
-        runtimeScope,
-        central: centralPreview?.detail,
-        runtime: runtimePreview.detail,
-      },
-    };
-  }
-
-  return {
-    ok: false,
-    error: "preview_not_found",
-    detail: { workspace: slug, runtimeScope, collab_url: collab.url, collab_url_source: collab.source },
-  };
-}
-
-async function discoverCollabPreviewUrl(
-  slug: string,
-  runtimeScope: string | undefined,
-  collab: { url: string; source: string }
-): Promise<PreviewDiscoveryResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PREVIEW_DISCOVERY_TIMEOUT_MS);
+  const timeoutMessage = `discovery timed out after ${PREVIEW_DISCOVERY_TIMEOUT_MS}ms`;
   try {
     const portsUrl = new URL("ports", `${collab.url}/`);
     portsUrl.searchParams.set("workspace", slug);
@@ -427,14 +452,38 @@ async function discoverCollabPreviewUrl(
       };
     }
     const payload = await response.json() as Record<string, unknown>;
-    const preview = previewUrlFromPortsPayload(payload, collab.url, runtimeScope);
+    const preview = previewUrlFromPortsPayload(payload, collab.url);
     if (preview) return { ok: true, url: preview };
+
+    if (runtimeScope) {
+      const runtimeFallback = await discoverRuntimeScopePreviewViaProxy(
+        collab.url,
+        runtimeScope,
+        extractPortCandidatesFromPayload(payload),
+        PREVIEW_DISCOVERY_TIMEOUT_MS,
+      );
+      if (runtimeFallback) return { ok: true, url: runtimeFallback };
+    }
+
     return {
       ok: false,
       error: "preview_not_found",
       detail: { workspace: slug, runtimeScope, collab_url: collab.url, collab_url_source: collab.source },
     };
   } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return {
+        ok: false,
+        error: "preview_discovery_timeout",
+        detail: {
+          workspace: slug,
+          runtimeScope,
+          collab_url: collab.url,
+          collab_url_source: collab.source,
+          message: timeoutMessage,
+        },
+      };
+    }
     return {
       ok: false,
       error: "preview_discovery_failed",
@@ -451,48 +500,95 @@ async function discoverCollabPreviewUrl(
   }
 }
 
-async function discoverRuntimeSidecarPreviewUrl(
-  runtimeScope: string | undefined,
-  collabUrl: string | undefined
-): Promise<PreviewDiscoveryResult> {
-  if (!runtimeScope) {
-    return {
-      ok: false,
-      error: "runtime_scope_required",
-      detail: { reason: "sidecar preview discovery requires runtime scope" },
-    };
+function extractPortCandidatesFromPayload(payload: Record<string, unknown>): number[] {
+  const ports = Array.isArray(payload["activePorts"]) ? payload["activePorts"] : [];
+  const previews = Array.isArray(payload["previews"]) ? payload["previews"] : [];
+  const fromPayload = [
+    ...ports,
+    ...previews
+      .map((item) => Number(item && typeof item === "object" ? (item as Record<string, unknown>)["port"] : undefined))
+      .filter((value) => Number.isInteger(value) && value > 0 && value <= 65_535),
+  ]
+    .map((port) => Number(port))
+    .filter((port) => Number.isInteger(port) && port > 0 && port <= 65_535)
+    .sort((a, b) => a - b);
+
+  return [...new Set(fromPayload.concat(FALLBACK_PREVIEW_DISCOVERY_PORTS))];
+}
+
+async function discoverRuntimeScopePreviewViaProxy(
+  collabUrl: string,
+  runtimeScope: string,
+  candidates: ReadonlyArray<number>,
+  timeoutMs: number
+): Promise<string | null> {
+  if (!runtimeScope) return null;
+
+  const deadline = Date.now() + timeoutMs;
+  const nowRemaining = () => deadline - Date.now();
+
+  const orderedCandidates = dedupeNumbers(candidates).filter((port) => port > 0 && port <= 65_535);
+  if (orderedCandidates.length === 0) return null;
+
+  let nextIndex = 0;
+  let remaining = orderedCandidates.length;
+
+  while (remaining > 0) {
+    const remainingMs = nowRemaining();
+    if (remainingMs <= 0) return null;
+
+    const batchTimeout = Math.max(
+      1,
+      Math.min(PREVIEW_DISCOVERY_PROBE_TIMEOUT_MS, remainingMs)
+    );
+
+    const batch = orderedCandidates
+      .slice(nextIndex, nextIndex + PREVIEW_DISCOVERY_MAX_CONCURRENCY)
+      .map((port) => probePortPreview(collabUrl, runtimeScope, port, batchTimeout));
+    if (batch.length === 0) break;
+
+    const results = await Promise.all(batch);
+    for (const result of results) {
+      if (result) return result;
+    }
+
+    nextIndex += PREVIEW_DISCOVERY_MAX_CONCURRENCY;
+    if (remainingMs <= 0) return null;
+    remaining = orderedCandidates.length - nextIndex;
   }
 
-  const sidecarUrl = previewSidecarPortsUrl();
+  return null;
+}
+
+async function probePortPreview(
+  collabUrl: string,
+  runtimeScope: string,
+  port: number,
+  timeoutMs: number
+): Promise<string | null> {
+  const candidateUrl = resolvePreviewUrl(`/runtime/${encodeURIComponent(runtimeScope)}/port/${port}/`, collabUrl);
+  if (!candidateUrl) return null;
+
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PREVIEW_DISCOVERY_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(sidecarUrl, { signal: controller.signal });
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: "preview_sidecar_discovery_failed",
-        detail: { sidecar_url: sidecarUrl, status: response.status, runtimeScope },
-      };
+    let response = await fetch(candidateUrl, {
+      method: "HEAD",
+      redirect: "manual",
+      signal: controller.signal,
+    });
+
+    if (response.status === 405 || response.status === 501) {
+      response = await fetch(candidateUrl, {
+        method: "GET",
+        redirect: "manual",
+        signal: controller.signal,
+      });
     }
-    const payload = await response.json() as Record<string, unknown>;
-    const preview = previewUrlFromPortsPayload(payload, collabUrl, runtimeScope);
-    if (preview) return { ok: true, url: preview };
-    return {
-      ok: false,
-      error: "preview_not_found",
-      detail: { sidecar_url: sidecarUrl, runtimeScope, source: payload["source"] },
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      error: "preview_sidecar_discovery_failed",
-      detail: {
-        sidecar_url: sidecarUrl,
-        runtimeScope,
-        message: err instanceof Error ? err.message : String(err),
-      },
-    };
+
+    return response.status >= 200 && response.status < 400 ? candidateUrl : null;
+  } catch {
+    return null;
   } finally {
     clearTimeout(timer);
   }
@@ -526,11 +622,7 @@ function envUrl(name: string): { url: string; source: string } | null {
   return value ? { url: value.replace(/\/$/, ""), source: name } : null;
 }
 
-function previewUrlFromPortsPayload(
-  payload: Record<string, unknown>,
-  collabUrl: string | undefined,
-  runtimeScope?: string
-): string | null {
+function previewUrlFromPortsPayload(payload: Record<string, unknown>, collabUrl: string): string | null {
   const previews = Array.isArray(payload["previews"]) ? payload["previews"] : [];
   for (const item of previews) {
     if (!item || typeof item !== "object") continue;
@@ -543,57 +635,51 @@ function previewUrlFromPortsPayload(
     .map((port) => Number(port))
     .filter((port) => Number.isInteger(port) && port > 0 && port <= 65_535)
     .sort((a, b) => a - b);
-  if (!ports[0]) return null;
-  const publicUrl = previewPublicUrl(ports[0], runtimeScope);
-  if (publicUrl) return publicUrl;
-  const path = runtimeScope
-    ? `/runtime/${encodeURIComponent(runtimeScope)}/port/${ports[0]}/`
-    : `/port/${ports[0]}/`;
-  return resolvePreviewUrl(path, collabUrl);
+  return ports[0] ? resolvePreviewUrl(`/port/${ports[0]}/`, collabUrl) : null;
 }
 
-function resolvePreviewUrl(url: string | undefined, collabUrl: string | undefined): string | null {
+function resolvePreviewUrl(url: string | undefined, collabUrl: string): string | null {
   if (!url) return null;
-  if (!collabUrl && !/^https?:\/\//i.test(url)) return null;
   try {
-    const parsed = new URL(url, collabUrl ? `${collabUrl}/` : undefined);
+    const parsed = new URL(url, `${collabUrl}/`);
     return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
   } catch {
     return null;
   }
 }
 
-function previewSidecarPortsUrl(): string {
-  const port = parsePositiveInt(process.env["SYNTHI_PREVIEW_SIDECAR_PORT"], 18_080);
-  const prefix = normalizePathPrefix(process.env["SYNTHI_PREVIEW_SIDECAR_PREFIX"] || "/__synthi_preview") || "/__synthi_preview";
-  return `http://127.0.0.1:${port}${prefix}/ports`;
+function clearDojoUniverseState(state: BrowserWorkflowBridgeState): void {
+  state.latestDojoUniverse = undefined;
+  state.latestDojoLifecycle = undefined;
+  state.latestDojoGovernance = undefined;
+  state.latestDojoMetrics = undefined;
+  state.latestDojoSourcePlan = undefined;
+  state.latestDojoTimeMachine = undefined;
+  state.latestDojoVivariumRun = undefined;
+  state.latestDojoWindTunnel = undefined;
+  state.latestDojoLicenseHealth = undefined;
+  state.latestDojoCaseLawRecord = undefined;
+  state.latestDojoLicenseRevocation = undefined;
 }
 
-function previewPublicUrl(port: number, runtimeScope: string | undefined): string | null {
-  const runtimeId = stringOpt(process.env["SYNTHI_HOSTED_BROWSER_RUNTIME_ID"]);
-  const publicDomain = normalizeHostname(process.env["SYNTHI_PREVIEW_PUBLIC_DOMAIN"]);
-  if (!runtimeScope || !runtimeId || !publicDomain) return null;
-  const protocol = normalizePreviewProtocol(process.env["SYNTHI_PREVIEW_PUBLIC_PROTOCOL"]);
-  return `${protocol}://p${port}-${runtimeId}.${publicDomain}/`;
-}
-
-function normalizePathPrefix(value: unknown): string {
-  const raw = String(value || "").trim();
-  if (!raw || raw === "/") return "";
-  return `/${raw.replace(/^\/+|\/+$/g, "")}`;
-}
-
-function normalizeHostname(value: unknown): string {
-  return String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/\/.*$/, "")
-    .replace(/\.$/, "");
-}
-
-function normalizePreviewProtocol(value: unknown): "http" | "https" {
-  return String(value || "").trim().toLowerCase().replace(/:$/, "") === "http" ? "http" : "https";
+function pushBridgeHistory(
+  state: BrowserWorkflowBridgeState,
+  startedAt: string,
+  label: string,
+  detail: string,
+  status: string,
+  statusLabel: string,
+  tone: BridgeHistoryEntry["tone"]
+): void {
+  state.history = [{
+    id: `${label.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_${Date.now()}`,
+    label,
+    detail,
+    status,
+    statusLabel,
+    tone,
+    startedAt,
+  }, ...state.history].slice(0, MAX_HISTORY);
 }
 
 function updateBridgeState(
@@ -611,6 +697,14 @@ function updateBridgeState(
     state.scriptGeneratedAt = undefined;
     state.manifestGeneratedAt = undefined;
     state.publishedAt = undefined;
+    state.latestCheckride = undefined;
+    state.latestDojoArtifactExport = undefined;
+    state.latestProof = undefined;
+    state.latestProofDryRun = undefined;
+    state.latestProofRevocation = undefined;
+    state.latestBlockExplanation = undefined;
+    state.latestPermissionUpgrade = undefined;
+    clearDojoUniverseState(state);
     state.history = [];
   }
   if (ok && toolName === "synthi_browser_begin_teach") {
@@ -618,6 +712,14 @@ function updateBridgeState(
     state.scriptGeneratedAt = undefined;
     state.manifestGeneratedAt = undefined;
     state.publishedAt = undefined;
+    state.latestCheckride = undefined;
+    state.latestDojoArtifactExport = undefined;
+    state.latestProof = undefined;
+    state.latestProofDryRun = undefined;
+    state.latestProofRevocation = undefined;
+    state.latestBlockExplanation = undefined;
+    state.latestPermissionUpgrade = undefined;
+    clearDojoUniverseState(state);
     state.history = [];
   }
   if (ok && toolName === "synthi_browser_observe") state.lastObserveAt = now;
@@ -627,6 +729,20 @@ function updateBridgeState(
   }
   if (ok && toolName === "synthi_browser_generate_script") state.scriptGeneratedAt = now;
   if (ok && toolName === "synthi_browser_generate_private_tool_manifest") state.manifestGeneratedAt = now;
+  if (ok && toolName === "synthi_dojo_run_checkride") {
+    state.latestCheckride = payload;
+    const checkride = payload["checkride"] as Record<string, unknown> | undefined;
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_checkride_${Date.now()}`,
+      label: "Dojo checkride",
+      detail: stringOpt(checkride?.["entrustment_recommendation"]) ?? "Checkride completed",
+      status: "passed",
+      statusLabel: "Checked",
+      tone: Number(checkride?.["critical_failures"] ?? 0) > 0 ? "warn" : "ok",
+      startedAt: now,
+    };
+    state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
   if (ok && toolName === "synthi_browser_publish_private_tool") {
     state.manifestGeneratedAt = state.manifestGeneratedAt ?? now;
     state.publishedAt = now;
@@ -644,6 +760,229 @@ function updateBridgeState(
       entry,
       ...state.history,
     ].slice(0, MAX_HISTORY);
+  }
+  if (ok && toolName === "synthi_dojo_publish_skill") {
+    state.manifestGeneratedAt = state.manifestGeneratedAt ?? now;
+    state.publishedAt = now;
+    const skill = payload["skill"] as Record<string, unknown> | undefined;
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_publish_${Date.now()}`,
+      label: "Dojo skill licensed",
+      detail: stringOpt(skill?.["skill_id"]) ?? stringOpt(skill?.["name"]) ?? "Licensed competency",
+      status: "passed",
+      statusLabel: "Licensed",
+      tone: "ok",
+      startedAt: now,
+    };
+    state.history = [
+      entry,
+      ...state.history,
+    ].slice(0, MAX_HISTORY);
+  }
+  if (ok && toolName === "synthi_dojo_export_artifacts") {
+    state.latestDojoArtifactExport = payload;
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_export_${Date.now()}`,
+      label: "Dojo artifacts exported",
+      detail: `${Number(payload["artifact_count"] ?? 0)} files`,
+      status: "passed",
+      statusLabel: "Exported",
+      tone: "ok",
+      startedAt: now,
+    };
+    state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
+  if (ok && toolName === "synthi_dojo_issue_proof_capsule") {
+    state.latestProof = payload;
+    state.latestProofRevocation = undefined;
+    const capsule = payload["proof_capsule"] as Record<string, unknown> | undefined;
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_proof_${Date.now()}`,
+      label: "Proof capsule issued",
+      detail: stringOpt(capsule?.["capsule_id"]) ?? "Proof capsule",
+      status: "passed",
+      statusLabel: "Issued",
+      tone: "ok",
+      startedAt: now,
+    };
+    state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
+  if (toolName === "synthi_dojo_run_with_proof_capsule") {
+    state.latestProofDryRun = payload;
+    const validation = payload["validation"] as Record<string, unknown> | undefined;
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_proof_run_${Date.now()}`,
+      label: boolPayload(payload["dry_run"]) ? "Proof dry-run" : "Proof-gated run",
+      detail: stringOpt(validation?.["status"]) ?? (ok ? "Validated" : "Blocked"),
+      status: ok ? "passed" : "blocked",
+      statusLabel: ok ? "Proof" : "Blocked",
+      tone: ok ? "ok" : "warn",
+      startedAt: now,
+    };
+    state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
+  if (ok && toolName === "synthi_dojo_revoke_proof_capsule") {
+    state.latestProofRevocation = payload;
+    const record = payload["proof_record"] as Record<string, unknown> | undefined;
+    const previousCapsule = state.latestProof?.["proof_capsule"] as Record<string, unknown> | undefined;
+    const previousMatches = stringOpt(previousCapsule?.["capsule_id"]) === stringOpt(record?.["capsule_id"]);
+    state.latestProof = {
+      ...(previousMatches && state.latestProof ? state.latestProof : {}),
+      ...payload,
+      proof_capsule: {
+        ...(previousMatches ? previousCapsule : {}),
+        capsule_id: stringOpt(record?.["capsule_id"]) ?? stringOpt(previousCapsule?.["capsule_id"]) ?? "",
+        requested_action: stringOpt(record?.["requested_action"]) ?? stringOpt(previousCapsule?.["requested_action"]) ?? "",
+        issued_at: stringOpt(record?.["issued_at"]) ?? stringOpt(previousCapsule?.["issued_at"]) ?? "",
+        expires_at: stringOpt(record?.["expires_at"]) ?? stringOpt(previousCapsule?.["expires_at"]) ?? "",
+        nonce: stringOpt(record?.["nonce"]) ?? stringOpt(previousCapsule?.["nonce"]) ?? "",
+        status: stringOpt(record?.["status"]) ?? "revoked",
+        revocation_reason: stringOpt(record?.["revoked_reason"]) ?? "",
+        revocation_evidence_refs: Array.isArray(record?.["revocation_evidence_refs"]) ? record?.["revocation_evidence_refs"] : [],
+        revoked_at: stringOpt(record?.["revoked_at"]) ?? "",
+        revoked_by: record?.["revoked_by"] ?? null,
+      },
+      validation: {
+        status: "blocked",
+        blocked_by: ["proof_capsule_revoked"],
+        error_codes: ["proof_capsule_revoked"],
+      },
+    };
+    pushBridgeHistory(
+      state,
+      now,
+      "Proof capsule revoked",
+      stringOpt(record?.["capsule_id"]) ?? "Proof capsule",
+      "blocked",
+      "Revoked",
+      "warn"
+    );
+  }
+  if (toolName === "synthi_dojo_explain_block") {
+    state.latestBlockExplanation = payload;
+    const validation = payload["validation"] as Record<string, unknown> | undefined;
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_block_${Date.now()}`,
+      label: "Dojo block explained",
+      detail: stringOpt(payload["refusal"]) ?? stringOpt(validation?.["error"]) ?? "License explanation",
+      status: "blocked",
+      statusLabel: "Explained",
+      tone: "warn",
+      startedAt: now,
+    };
+    state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
+  if (ok && toolName === "synthi_dojo_request_permission_upgrade") {
+    state.latestPermissionUpgrade = payload;
+    const steps = Array.isArray(payload["required_steps"]) ? payload["required_steps"] : [];
+    const entry: BridgeHistoryEntry = {
+      id: `dojo_upgrade_${Date.now()}`,
+      label: "Dojo upgrade path",
+      detail: steps.slice(0, 2).join(", ") || "No upgrade required",
+      status: "passed",
+      statusLabel: "Scoped",
+      tone: steps.includes("no_upgrade_required_for_current_license") ? "ok" : "warn",
+      startedAt: now,
+    };
+    state.history = [entry, ...state.history].slice(0, MAX_HISTORY);
+  }
+  if (ok && toolName === "synthi_dojo_get_universe_dossier") {
+    state.latestDojoUniverse = payload;
+    pushBridgeHistory(state, now, "Dojo universe", "Vivarium Cortex dossier", "passed", "Dossier", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_get_lifecycle") {
+    state.latestDojoLifecycle = payload;
+    const lifecycle = payload["lifecycle"] as Record<string, unknown> | undefined;
+    pushBridgeHistory(state, now, "Dojo lifecycle", stringOpt(lifecycle?.["status"]) ?? "Lifecycle report", "passed", "Lifecycle", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_get_governance_report") {
+    state.latestDojoGovernance = payload;
+    pushBridgeHistory(state, now, "Dojo governance", "Policy gates and audit report", "passed", "Governed", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_export_compliance_pack") {
+    state.latestDojoGovernance = payload;
+    const pack = recordAt(payload, "pack");
+    pushBridgeHistory(
+      state,
+      now,
+      "Compliance pack exported",
+      stringOpt(pack?.["export_id"]) ?? stringOpt(payload["export_id"]) ?? "Evidence pack",
+      "passed",
+      "Exported",
+      "ok"
+    );
+  }
+  if (ok && toolName === "synthi_dojo_get_metrics") {
+    state.latestDojoMetrics = payload;
+    pushBridgeHistory(state, now, "Dojo metrics", "Universe metrics refreshed", "passed", "Metrics", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_get_source_affordance_pr_plan") {
+    state.latestDojoSourcePlan = payload;
+    const plan = payload["source_affordance_pr_plan"] as Record<string, unknown> | undefined;
+    pushBridgeHistory(state, now, "Agent-ready UI plan", `${Number(plan?.["patch_count"] ?? 0)} patches`, "passed", "Source", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_run_time_machine_debugger") {
+    state.latestDojoTimeMachine = payload;
+    pushBridgeHistory(state, now, "Dojo time machine", "Counterfactual branch replayed", "passed", "Debugged", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_run_vivarium_scenario") {
+    state.latestDojoVivariumRun = payload;
+    const run = payload["vivarium_run"] as Record<string, unknown> | undefined;
+    const scenario = run?.["scenario"] as Record<string, unknown> | undefined;
+    pushBridgeHistory(state, now, "Vivarium scenario", stringOpt(scenario?.["mutation_kind"]) ?? "Synthetic run", "passed", "Practiced", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_run_wind_tunnel") {
+    state.latestDojoWindTunnel = payload;
+    const tunnel = payload["wind_tunnel_execution"] as Record<string, unknown> | undefined;
+    pushBridgeHistory(state, now, "Workflow wind tunnel", `${Number(tunnel?.["run_count"] ?? 0)} runs`, "passed", "Practiced", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_get_license_health") {
+    state.latestDojoLicenseHealth = payload;
+    const health = payload["license_health"] as Record<string, unknown> | undefined;
+    pushBridgeHistory(state, now, "License health", stringOpt(health?.["status"]) ?? "Health report", "passed", "Health", "ok");
+  }
+  if (ok && toolName === "synthi_dojo_recertify_skill") {
+    state.latestCheckride = payload;
+    state.latestDojoLicenseHealth = payload;
+    state.latestDojoGovernance = payload;
+    const skill = recordAt(payload, "skill");
+    const recertification = recordAt(payload, "recertification");
+    pushBridgeHistory(
+      state,
+      now,
+      "Dojo recertified",
+      stringOpt(skill?.["name"]) ?? stringOpt(skill?.["skill_id"]) ?? stringOpt(recertification?.["skill_id"]) ?? "Checkride complete",
+      "passed",
+      "Recertified",
+      "ok"
+    );
+  }
+  if (ok && toolName === "synthi_dojo_record_case_law") {
+    state.latestDojoCaseLawRecord = payload;
+    const caseLaw = payload["case_law"] as Record<string, unknown> | undefined;
+    pushBridgeHistory(state, now, "Case law recorded", stringOpt(caseLaw?.["title"]) ?? "Binding guardrail", "passed", "Case law", "warn");
+  }
+  if (ok && toolName === "synthi_dojo_review_case_law") {
+    state.latestDojoCaseLawRecord = payload;
+    state.latestDojoGovernance = payload;
+    const record = recordAt(payload, "case_law_record");
+    const review = recordAt(payload, "review");
+    const status = stringOpt(record?.["status"]) ?? stringOpt(review?.["decision"]) ?? "reviewed";
+    const title = stringOpt(record?.["title"]) ?? stringOpt(record?.["case_id"]) ?? "Case law";
+    pushBridgeHistory(
+      state,
+      now,
+      status === "deprecated" ? "Case law deprecated" : "Case law reviewed",
+      title,
+      status === "deprecated" ? "blocked" : "passed",
+      status === "deprecated" ? "Deprecated" : "Reviewed",
+      status === "deprecated" ? "warn" : "ok"
+    );
+  }
+  if (ok && toolName === "synthi_dojo_revoke_license") {
+    state.latestDojoLicenseRevocation = payload;
+    state.latestDojoLicenseHealth = payload;
+    pushBridgeHistory(state, now, "Dojo license revoked", stringOpt(payload["reason"]) ?? "Recertification required", "blocked", "Revoked", "warn");
   }
   if (toolName === "synthi_safety_run_prefix_validation" || toolName === "synthi_browser_run_workflow" || toolName === "synthi_safety_run_ci_isolated_replay") {
     const validation = payload["validation"] as Record<string, unknown> | undefined;
@@ -700,6 +1039,7 @@ export function buildBrowserWorkflowPanelState(
   const sourceCoverage = workflow.contract.sourceIdentityCoverage;
   const publish = workflow.contract.publishPlan;
   const recordingIssues = browserBroker.recordingIssueSnapshot();
+  const dojoState = dojoPanelStateFor(workflow.contract, workspaceId, bridgeState);
 
   return {
     workspaceLabel: workspaceId ?? "Current workspace",
@@ -791,6 +1131,8 @@ export function buildBrowserWorkflowPanelState(
       workflowId: workflow.contract.workflowId,
       publishReadiness: publish.readiness,
     },
+    dojo: dojoState,
+    governanceService: dojoState.governanceService ?? null,
     steps: workflow.contract.steps.map(panelStepForContract),
     unresolvedSteps: workflow.contract.steps
       .filter((step) => step.limitations.some((limitation) => REVIEW_LIMITATIONS.has(limitation)))
@@ -827,6 +1169,64 @@ export function buildBrowserWorkflowPanelState(
   };
 }
 
+function fallbackBrowserWorkflowPanelState(bridgeState: Partial<BrowserWorkflowBridgeState>, detail: string): Record<string, unknown> {
+  return {
+    workspaceLabel: stringOpt(process.env["SYNTHI_WORKSPACE_ID"]) || "Current workspace",
+    bridge: {
+      status: "error",
+      lastTool: bridgeState.lastTool ?? null,
+      lastToolAt: bridgeState.lastToolAt ?? null,
+      detail,
+    },
+    runtime: {
+      status: "notConfigured",
+      label: "Panel state unavailable",
+      detail,
+      readiness: resolveHostedBrowserRuntime(),
+    },
+    observe: {
+      status: "needsRuntime",
+      label: "Attach workflow runtime",
+      detail,
+      lastScreenshotAt: bridgeState.lastObserveAt ?? null,
+      selectedTabId: null,
+    },
+    teach: {
+      state: "idle",
+      label: "Ready",
+      detail,
+      tabId: null,
+    },
+    workflow: {
+      stepCount: 0,
+      contractStatus: "notCompiled",
+      scriptStatus: "notGenerated",
+      unresolvedCount: 0,
+    },
+    blockers: [
+      {
+        id: "panel_state_generation_failed",
+        label: "Panel state generation failed",
+        detail,
+      },
+    ],
+  };
+}
+
+function safeBuildBrowserWorkflowPanelState(
+  bridgeState: Partial<BrowserWorkflowBridgeState>,
+  detail: string = "Temporary panel state issue."
+): Record<string, unknown> {
+  try {
+    return buildBrowserWorkflowPanelState(bridgeState);
+  } catch (err) {
+    return fallbackBrowserWorkflowPanelState(
+      bridgeState,
+      detail || (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
 export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): {
   server: http.Server;
   ready: Promise<void>;
@@ -839,180 +1239,263 @@ export function startBrowserWorkflowBridge(opts: BrowserWorkflowBridgeOptions): 
     const url = req.url ?? "/";
     const method = req.method ?? "GET";
 
-    if (method === "OPTIONS") {
-      res.writeHead(204, CORS_HEADERS);
-      res.end();
-      return;
-    }
+    try {
 
-    if (url === "/healthz" && method === "GET") {
-      res.writeHead(200, { "Content-Type": "text/plain", ...CORS_HEADERS });
-      res.end("ok\n");
-      return;
-    }
-
-    if (url.startsWith("/browser-workflows/")) {
-      const auth = authorizeBridgeRequest(req, opts, host);
-      if (!auth.ok) {
-        writeJson(res, auth.status, { error: auth.error });
-        return;
-      }
-    }
-
-    if (url === "/browser-workflows/state" && method === "GET") {
-      writeJson(res, 200, { ok: true, state: buildBrowserWorkflowPanelState(bridgeState) });
-      return;
-    }
-
-    if (url === "/browser-workflows/overlay" && method === "POST") {
-      let body: BrowserWorkflowOverlayBody;
-      try {
-        body = await readJsonBody(req, 20_000);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        writeJson(res, 400, { ok: false, status: "error", label: "Overlay failed", error: "invalid_body", detail: msg });
-        return;
-      }
-      const action = body.action;
-      if (action !== "state" && action !== "observe" && action !== "teach" && action !== "stop") {
-        writeJson(res, 400, { ok: false, status: "error", label: "Overlay failed", error: "invalid_overlay_action" });
-        return;
-      }
-      const pageUrl = typeof body.url === "string" ? body.url : "";
-      const selected = browserBroker.selectedTab();
-      const tabId = action === "observe" ? "" : selected?.tab_id ?? "";
-      const result = await browserWorkflowOverlayAction({
-        action,
-        ...(pageUrl ? { url: pageUrl } : {}),
-        tab_id: tabId,
-        page_url: pageUrl,
-      });
-      writeJson(res, result.ok ? 200 : 400, result);
-      return;
-    }
-
-    if (url === "/browser-workflows/open-external" && method === "POST") {
-      let body: BrowserWorkflowExternalOpenBody;
-      try {
-        body = await readJsonBody(req, EXTERNAL_OPEN_BODY_LIMIT_BYTES);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        writeJson(res, 400, { ok: false, error: "invalid_body", detail: msg });
+      if (method === "OPTIONS") {
+        res.writeHead(204, CORS_HEADERS);
+        res.end();
         return;
       }
 
-      const openUrl = normalizeExternalBrowserUrl(body.url);
-      if (!openUrl) {
-        writeJson(res, 400, { ok: false, error: "invalid_url" });
+      if (url === "/healthz" && method === "GET") {
+        res.writeHead(200, { "Content-Type": "text/plain", ...CORS_HEADERS });
+        res.end("ok\n");
         return;
       }
 
-      const runtime = await ensureHostedRuntimeAttached();
-      if (!runtime.ok) {
-        writeJson(res, runtime.status, { ok: false, error: runtime.error, detail: runtime.detail });
-        return;
+      if (url.startsWith("/browser-workflows/")) {
+        const auth = authorizeBridgeRequest(req, opts, host);
+        if (!auth.ok) {
+          writeJson(res, auth.status, { error: auth.error });
+          return;
+        }
       }
 
-      try {
-        const opened = await browserPlaywrightAdapter.openExternal(openUrl, { timeoutMs: EXTERNAL_OPEN_TIMEOUT_MS });
+      if (url === "/browser-workflows/state" && method === "GET") {
         writeJson(res, 200, {
           ok: true,
-          opened: {
-            tab_id: opened.tab_id,
-            navigation_started: opened.navigation_started,
-          },
+          state: safeBuildBrowserWorkflowPanelState(
+            bridgeState,
+            "Unable to build the workflow state from the current runtime."
+          ),
         });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        writeJson(res, 502, { ok: false, error: "browser_open_failed", detail: msg });
-      }
-      return;
-    }
-
-    if (url === "/browser-workflows/tool" && method === "POST") {
-      let body: { tool?: unknown; arguments?: unknown };
-      try {
-        body = await readJsonBody(req);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        writeJson(res, 400, { error: "invalid_body", detail: msg, state: buildBrowserWorkflowPanelState(bridgeState) });
         return;
       }
 
-      if (typeof body.tool !== "string" || body.tool.length === 0) {
-        writeJson(res, 400, { error: "invalid_args", field: "tool", state: buildBrowserWorkflowPanelState(bridgeState) });
-        return;
-      }
-
-      const requestedTool = body.tool;
-      const tool = normalizeToolName(requestedTool);
-      let args: Record<string, unknown>;
-      try {
-        args = await enrichToolArgs(tool, body.arguments);
-      } catch (err) {
-        if (err instanceof BridgeToolInputError) {
-          writeJson(res, 200, {
+      if (url === "/browser-workflows/overlay" && method === "POST") {
+        let body: BrowserWorkflowOverlayBody;
+        try {
+          body = await readJsonBody(req, 20_000);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          writeJson(res, 400, {
             ok: false,
-            error: err.code,
-            status: err.status,
-            requested_tool: requestedTool,
-            tool,
-            ...err.detail,
-            state: buildBrowserWorkflowPanelState(bridgeState),
+            status: "error",
+            label: "Overlay failed",
+            error: "invalid_body",
+            detail: msg,
           });
           return;
         }
-        const msg = err instanceof Error ? err.message : String(err);
-        writeJson(res, 500, {
-          ok: false,
-          error: "workflow_tool_prepare_failed",
-          requested_tool: requestedTool,
-          tool,
-          detail: msg,
-          state: buildBrowserWorkflowPanelState(bridgeState),
-        });
-        return;
-      }
-      let result;
-      try {
-        result = await dispatchWorkflowTool(tool, args);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        writeJson(res, 500, {
-          ok: false,
-          error: "workflow_tool_dispatch_failed",
-          requested_tool: requestedTool,
-          tool,
-          detail: msg,
-          state: buildBrowserWorkflowPanelState(bridgeState),
-        });
-        return;
-      }
-      if (!result) {
-        writeJson(res, 404, {
-          error: "unknown_workflow_tool",
-          tool,
-          requested_tool: requestedTool,
-          state: buildBrowserWorkflowPanelState(bridgeState),
-        });
+        const action = body.action;
+        if (
+          action !== "state" &&
+          action !== "observe" &&
+          action !== "teach" &&
+          action !== "stop"
+        ) {
+          writeJson(res, 400, {
+            ok: false,
+            status: "error",
+            label: "Overlay failed",
+            error: "invalid_overlay_action",
+          });
+          return;
+        }
+        const pageUrl = typeof body.url === "string" ? body.url : "";
+        const selected = browserBroker.selectedTab();
+        const tabId = action === "observe" ? "" : selected?.tab_id ?? "";
+        try {
+          const result = await browserWorkflowOverlayAction({
+            action,
+            ...(pageUrl ? { url: pageUrl } : {}),
+            tab_id: tabId,
+            page_url: pageUrl,
+          });
+          writeJson(res, result.ok ? 200 : 400, result);
+        } catch (err) {
+          writeJson(res, 500, {
+            ok: false,
+            status: "error",
+            label: "Overlay failed",
+            error: "overlay_action_failed",
+            detail: err instanceof Error ? err.message : String(err),
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "Overlay action failed while processing the current page."
+            ),
+          });
+        }
         return;
       }
 
-      const payload = structuredPayload(result);
-      const ok = result.isError !== true && payload["ok"] !== false;
-      updateBridgeState(bridgeState, tool, ok, payload);
-      writeJson(res, 200, {
-        ok,
-        requested_tool: requestedTool,
-        tool,
-        is_error: result.isError === true,
-        result: payload,
-        state: buildBrowserWorkflowPanelState(bridgeState),
+      if (url === "/browser-workflows/open-external" && method === "POST") {
+        let body: BrowserWorkflowExternalOpenBody;
+        try {
+          body = await readJsonBody(req, EXTERNAL_OPEN_BODY_LIMIT_BYTES);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          writeJson(res, 400, { ok: false, error: "invalid_body", detail: msg });
+          return;
+        }
+
+        const openUrl = normalizeExternalBrowserUrl(body.url);
+        if (!openUrl) {
+          writeJson(res, 400, { ok: false, error: "invalid_url" });
+          return;
+        }
+
+        const runtime = await ensureHostedRuntimeForExternalOpen();
+        if (!runtime.ok) {
+          writeJson(res, runtime.status, { ok: false, error: runtime.error, detail: runtime.detail });
+          return;
+        }
+
+        try {
+          const opened = await browserPlaywrightAdapter.openExternal(openUrl, { timeoutMs: EXTERNAL_OPEN_TIMEOUT_MS });
+          writeJson(res, 200, {
+            ok: true,
+            workspaceBrowser: {
+              url: openUrl,
+              tab_id: opened.tab_id,
+              navigation_started: opened.navigation_started,
+              tabId: opened.tab_id,
+              navigationStarted: opened.navigation_started,
+            },
+            opened: {
+              url: openUrl,
+              tab_id: opened.tab_id,
+              navigation_started: opened.navigation_started,
+              tabId: opened.tab_id,
+              navigationStarted: opened.navigation_started,
+            },
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          writeJson(res, 502, { ok: false, error: "browser_open_failed", detail: msg });
+        }
+        return;
+      }
+
+      if (url === "/browser-workflows/tool" && method === "POST") {
+        let body: { tool?: unknown; arguments?: unknown };
+        try {
+          body = await readJsonBody(req);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          writeJson(res, 400, {
+            error: "invalid_body",
+            detail: msg,
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "The request body could not be parsed as JSON."
+            ),
+          });
+          return;
+        }
+
+        if (typeof body.tool !== "string" || body.tool.length === 0) {
+          writeJson(res, 400, {
+            error: "invalid_args",
+            field: "tool",
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "A workflow tool name is required to invoke this endpoint."
+            ),
+          });
+          return;
+        }
+
+        const requestedTool = body.tool;
+        const tool = normalizeToolName(requestedTool);
+        let args: Record<string, unknown>;
+        try {
+          const runtimeContext = requestRuntimeContext(req);
+          args = await enrichToolArgsForBridge(tool, body.arguments, runtimeContext);
+        } catch (err) {
+          if (err instanceof BridgeToolInputError) {
+            writeJson(res, err.status, {
+              ok: false,
+              error: err.code,
+              requested_tool: requestedTool,
+              tool,
+              ...err.detail,
+              state: safeBuildBrowserWorkflowPanelState(
+                bridgeState,
+                err.message || "Workflow tool arguments are missing required values for this action."
+              ),
+            });
+            return;
+          }
+          writeJson(res, 500, {
+            ok: false,
+            error: "tool_preprocess_failed",
+            requested_tool: requestedTool,
+            tool,
+            detail: err instanceof Error ? err.message : String(err),
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "Failed to prepare the workflow tool arguments."
+            ),
+          });
+          return;
+        }
+
+        try {
+          const result = await dispatchWorkflowTool(tool, args);
+          if (!result) {
+            writeJson(res, 404, {
+              error: "unknown_workflow_tool",
+              tool,
+              requested_tool: requestedTool,
+              state: safeBuildBrowserWorkflowPanelState(
+                bridgeState,
+                "This workflow tool is not currently supported by this runtime."
+              ),
+            });
+            return;
+          }
+
+          const payload = structuredPayload(result);
+          const ok = result.isError !== true && payload["ok"] !== false;
+          updateBridgeState(bridgeState, tool, ok, payload);
+          writeJson(res, 200, {
+            ok,
+            requested_tool: requestedTool,
+            tool,
+            is_error: result.isError === true,
+            result: payload,
+            state: safeBuildBrowserWorkflowPanelState(bridgeState),
+          });
+          return;
+        } catch (err) {
+          writeJson(res, 500, {
+            ok: false,
+            error: "tool_execution_failed",
+            requested_tool: requestedTool,
+            tool,
+            detail: err instanceof Error ? err.message : String(err),
+            state: safeBuildBrowserWorkflowPanelState(
+              bridgeState,
+              "Workflow tool execution failed while processing this action."
+            ),
+          });
+        }
+        return;
+      }
+
+      writeJson(res, 404, { error: "not_found", url, method });
+    } catch (err) {
+      writeJson(res, 500, {
+        error: "bridge_internal_error",
+        detail: err instanceof Error ? err.message : String(err),
+        state: safeBuildBrowserWorkflowPanelState(
+          bridgeState,
+          "An unexpected browser workflow bridge error occurred."
+        ),
       });
-      return;
     }
 
-    writeJson(res, 404, { error: "not_found", url, method });
   });
 
   const ready = new Promise<void>((resolve, reject) => {
@@ -1120,10 +1603,321 @@ function limitationDetail(limitation: string): string {
   }
 }
 
+function dojoPanelStateFor(
+  contract: WorkflowContractV7,
+  workspaceId: string | undefined,
+  bridgeState: Partial<BrowserWorkflowBridgeState> = {}
+): Record<string, unknown> {
+  const published = dojoSkillRegistry.getByWorkflowId(contract.workflowId);
+  const skill = published ?? (contract.steps.length > 0
+    ? buildDojoSkill(contract, {
+        workspace_id: workspaceId,
+        private_tool_manifest: generatePrivateWorkflowToolManifest(contract),
+        now: "1970-01-01T00:00:00.000Z",
+      })
+    : null);
+
+  if (!skill) {
+    return {
+      status: "notStarted",
+      label: "No Dojo skill",
+      detail: "Teach a workflow before Dojo can create a skill seed.",
+      published: false,
+    };
+  }
+
+  const lifecycle = recordAt(bridgeState.latestDojoLifecycle, "lifecycle") ?? buildDojoLifecycleReport(skill) as unknown as Record<string, unknown>;
+  const governance = recordAt(bridgeState.latestDojoGovernance, "governance_report") ?? buildDojoGovernanceReport(skill) as unknown as Record<string, unknown>;
+  const governanceService = recordAt(bridgeState.latestDojoGovernance, "governance_service")
+    ?? buildDojoGovernanceServiceView({
+      skills: dojoSkillRegistry.list(),
+    }) as unknown as Record<string, unknown>;
+  const metrics = recordAt(bridgeState.latestDojoMetrics, "metrics") ?? buildDojoUniverseMetrics([skill]) as unknown as Record<string, unknown>;
+  const sourcePlan = recordAt(bridgeState.latestDojoSourcePlan, "source_affordance_pr_plan")
+    ?? buildDojoSourceAffordancePrPlan(skill) as unknown as Record<string, unknown>;
+  const universe = recordAt(bridgeState.latestDojoUniverse, "universe_dossier")
+    ?? buildDojoUniverseDossier(skill, dojoSkillRegistry.list()) as unknown as Record<string, unknown>;
+
+  return {
+    status: published ? "licensed" : "draft",
+    label: published ? skill.skill_card.status : "Checkride preview",
+    detail: published
+      ? "This workflow has a licensed Dojo competency."
+      : "Dojo can run a checkride and issue a scoped license from this taught workflow.",
+    published: Boolean(published),
+    skillId: skill.skill_id,
+    workflowId: skill.workflow_id,
+    skillCard: skill.skill_card,
+    skillPassport: skill.skill_passport,
+    entrustmentLevel: skill.entrustment_level,
+    readinessLevel: skill.skill_readiness_level,
+    proofRequired: skill.skill_passport.proof_required,
+    artifactCount: Number(bridgeState.latestDojoArtifactExport?.["artifact_count"] ?? 0),
+    licenseExpiresAt: skill.license_expires_at,
+    attackSuccessRate: skill.attack_success_rate,
+    proof: proofPanelState(bridgeState.latestProof),
+    proofDryRun: proofRunPanelState(bridgeState.latestProofDryRun),
+    blockExplanation: blockExplanationPanelState(bridgeState.latestBlockExplanation),
+    permissionUpgrade: permissionUpgradePanelState(bridgeState.latestPermissionUpgrade),
+    universe: universePanelState(universe),
+    lifecycle: lifecyclePanelState(lifecycle),
+    governance: governancePanelState(governance),
+    governanceService,
+    metrics: metricsPanelState(metrics),
+    sourceAffordancePrPlan: sourceAffordancePanelState(sourcePlan),
+    timeMachine: timeMachinePanelState(bridgeState.latestDojoTimeMachine),
+    vivariumRun: vivariumRunPanelState(bridgeState.latestDojoVivariumRun),
+    windTunnel: windTunnelPanelState(bridgeState.latestDojoWindTunnel),
+    licenseHealth: licenseHealthPanelState(bridgeState.latestDojoLicenseHealth, lifecycle),
+    caseLawRecord: caseLawRecordPanelState(bridgeState.latestDojoCaseLawRecord),
+    publishedToolName: skill.published_tool_name ?? null,
+    checkride: {
+      checkrideId: skill.checkride.checkride_id,
+      coverageScore: skill.checkride.coverage_score,
+      criticalFailures: skill.checkride.critical_failures,
+      blockedScenarios: skill.checkride.blocked_scenarios,
+      knowledge: skill.checkride.knowledge,
+      risk: skill.checkride.risk,
+      skill: skill.checkride.skill,
+    },
+    license: {
+      licenseId: skill.permission_license.license_id,
+      allowedActions: skill.permission_license.allowed_actions.map((action) => action.action),
+      gatedActions: skill.permission_license.gated_actions.map((action) => action.action),
+      blockedActions: skill.permission_license.blocked_actions.map((action) => action.action),
+    },
+    guardrails: skill.guardrails.slice(0, 4).map((guardrail) => ({
+      id: guardrail.guardrail_id,
+      title: guardrail.title,
+      rule: guardrail.rule,
+      severity: guardrail.severity,
+    })),
+    caseLawCount: skill.case_law.length,
+    scenarioCount: skill.scenarios.length,
+  };
+}
+
+function proofPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!payload) return null;
+  const capsule = payload["proof_capsule"] as Record<string, unknown> | undefined;
+  const record = payload["proof_record"] as Record<string, unknown> | undefined;
+  const validation = payload["validation"] as Record<string, unknown> | undefined;
+  const proofSource = capsule ?? record ?? payload;
+  return {
+    capsuleId: stringOpt(proofSource?.["capsule_id"]) ?? stringOpt(payload["capsule_id"]) ?? null,
+    requestedAction: stringOpt(payload["requested_action"]) ?? stringOpt(proofSource?.["requested_action"]) ?? null,
+    status: stringOpt(proofSource?.["status"]) ?? stringOpt(validation?.["status"]) ?? null,
+    replayState: stringOpt(proofSource?.["status"]) ?? null,
+    revokedAt: stringOpt(record?.["revoked_at"]) ?? stringOpt(proofSource?.["revoked_at"]) ?? null,
+    revokedBy: record?.["revoked_by"] ?? proofSource?.["revoked_by"] ?? null,
+    revocationReason: stringOpt(record?.["revoked_reason"]) ?? stringOpt(proofSource?.["revocation_reason"]) ?? null,
+    revocationEvidenceRefs: Array.isArray(record?.["revocation_evidence_refs"])
+      ? record?.["revocation_evidence_refs"]
+      : Array.isArray(proofSource?.["revocation_evidence_refs"])
+      ? proofSource?.["revocation_evidence_refs"]
+      : [],
+    blockedBy: Array.isArray(validation?.["blocked_by"]) ? validation?.["blocked_by"] : [],
+    errorCodes: Array.isArray(validation?.["error_codes"]) ? validation?.["error_codes"] : [],
+  };
+}
+
+function proofRunPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!payload) return null;
+  const validation = payload["validation"] as Record<string, unknown> | undefined;
+  return {
+    dryRun: boolPayload(payload["dry_run"]),
+    status: stringOpt(validation?.["status"]) ?? (payload["ok"] === true ? "allowed" : null),
+  };
+}
+
+function blockExplanationPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!payload) return null;
+  const validation = payload["validation"] as Record<string, unknown> | undefined;
+  return {
+    status: stringOpt(validation?.["status"]) ?? null,
+    refusal: stringOpt(payload["refusal"]) ?? null,
+  };
+}
+
+function permissionUpgradePanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!payload) return null;
+  return {
+    requiredSteps: Array.isArray(payload["required_steps"]) ? payload["required_steps"].filter((item): item is string => typeof item === "string") : [],
+  };
+}
+
+function universePanelState(dossier: Record<string, unknown>): Record<string, unknown> {
+  const packages = dossier["package_readiness"] as Record<string, unknown> | undefined;
+  const enterprise = Array.isArray(packages?.["enterprise"]) ? packages?.["enterprise"] as Array<Record<string, unknown>> : [];
+  const personal = Array.isArray(packages?.["personal"]) ? packages?.["personal"] as Array<Record<string, unknown>> : [];
+  return {
+    status: stringOpt(recordAt(dossier, "lifecycle")?.["status"]) ?? "draft",
+    enterpriseReady: enterprise.filter((item) => item["status"] === "ready").length,
+    enterpriseTotal: enterprise.length,
+    personalReady: personal.filter((item) => item["status"] === "ready").length,
+    personalTotal: personal.length,
+  };
+}
+
+function lifecyclePanelState(lifecycle: Record<string, unknown>): Record<string, unknown> {
+  const recertification = recordAt(lifecycle, "recertification");
+  return {
+    status: stringOpt(lifecycle["status"]) ?? "draft",
+    daysUntilExpiry: numberOpt(lifecycle["days_until_expiry"]),
+    recertificationRequired: recertification?.["required"] === true,
+    gates: Array.isArray(lifecycle["release_gates"]) ? lifecycle["release_gates"] : [],
+  };
+}
+
+function governancePanelState(governance: Record<string, unknown>): Record<string, unknown> {
+  const audit = recordAt(governance, "audit_report");
+  return {
+    approvalCount: Array.isArray(governance["approval_queue"]) ? governance["approval_queue"].length : 0,
+    policyGateCount: Array.isArray(governance["policy_gates"]) ? governance["policy_gates"].length : 0,
+    evidenceClaims: Array.isArray(audit?.["evidence_claims"]) ? audit?.["evidence_claims"] : [],
+    blockedActions: Array.isArray(audit?.["blocked_actions"]) ? audit?.["blocked_actions"] : [],
+  };
+}
+
+function metricsPanelState(metrics: Record<string, unknown>): Record<string, unknown> {
+  const technical = recordAt(metrics, "technical");
+  const business = recordAt(metrics, "business");
+  const trust = recordAt(metrics, "trust");
+  return {
+    skillCount: numberOpt(metrics["skill_count"]) ?? 0,
+    coverage: numberOpt(technical?.["average_coverage_score"]) ?? 0,
+    attackSuccessRate: numberOpt(technical?.["average_attack_success_rate"]) ?? 0,
+    mcpBackedSkillCount: numberOpt(business?.["mcp_backed_skill_count"]) ?? 0,
+    proofRequiredPercent: numberOpt(trust?.["proof_required_percent"]) ?? 0,
+    staleLicenseCount: numberOpt(trust?.["stale_or_expired_license_count"]) ?? 0,
+  };
+}
+
+function sourceAffordancePanelState(plan: Record<string, unknown>): Record<string, unknown> {
+  return {
+    readiness: stringOpt(plan["readiness"]) ?? "not_ready",
+    patchCount: numberOpt(plan["patch_count"]) ?? 0,
+    generatedTests: Array.isArray(plan["generated_tests"]) ? plan["generated_tests"] : [],
+  };
+}
+
+function timeMachinePanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  const report = recordAt(payload, "time_machine_debugger");
+  if (!report) return null;
+  const baseline = recordAt(report, "baseline");
+  const counterfactual = recordAt(report, "counterfactual");
+  return {
+    baselineStatus: stringOpt(baseline?.["status"]) ?? null,
+    mutationKind: stringOpt(baseline?.["mutation_kind"]) ?? null,
+    changedVariable: stringOpt(counterfactual?.["changed_variable"]) ?? null,
+    expectedStatusAfterChange: stringOpt(counterfactual?.["expected_status_after_change"]) ?? null,
+  };
+}
+
+function vivariumRunPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  const run = recordAt(payload, "vivarium_run");
+  if (!run) return null;
+  const scenario = recordAt(run, "scenario");
+  const result = recordAt(run, "result");
+  return {
+    scenarioTitle: stringOpt(scenario?.["title"]) ?? null,
+    mutationKind: stringOpt(scenario?.["mutation_kind"]) ?? null,
+    status: stringOpt(result?.["status"]) ?? null,
+    syntheticDataOnly: recordAt(run, "materialized_fixture")?.["synthetic_data_only"] === true,
+  };
+}
+
+function windTunnelPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  const tunnel = recordAt(payload, "wind_tunnel_execution");
+  if (!tunnel) return null;
+  return {
+    runCount: numberOpt(tunnel["run_count"]) ?? 0,
+    passCount: numberOpt(tunnel["pass_count"]) ?? 0,
+    failCount: numberOpt(tunnel["fail_count"]) ?? 0,
+    blockedCount: numberOpt(tunnel["blocked_count"]) ?? 0,
+    stopReason: stringOpt(tunnel["stop_reason"]) ?? null,
+  };
+}
+
+function licenseHealthPanelState(payload: Record<string, unknown> | undefined, lifecycle: Record<string, unknown>): Record<string, unknown> {
+  const health = recordAt(payload, "license_health") ?? payload;
+  const proofRecords = recordAt(health, "proof_records");
+  return {
+    status: stringOpt(health?.["status"]) ?? stringOpt(lifecycle["status"]) ?? "draft",
+    daysUntilExpiry: numberOpt(health?.["days_until_expiry"]) ?? numberOpt(lifecycle["days_until_expiry"]),
+    proofRecords: proofRecords ?? {},
+  };
+}
+
+function caseLawRecordPanelState(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  const caseLaw = recordAt(payload, "case_law") ?? recordAt(payload, "case_law_record");
+  const guardrail = recordAt(payload, "guardrail");
+  if (!caseLaw && !guardrail) return null;
+  return {
+    title: stringOpt(caseLaw?.["title"]) ?? null,
+    status: stringOpt(caseLaw?.["status"]) ?? null,
+    guardrailTitle: stringOpt(guardrail?.["title"]) ?? null,
+  };
+}
+
+function recordAt(value: unknown, key: string): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const child = (value as Record<string, unknown>)[key];
+  return child && typeof child === "object" && !Array.isArray(child) ? child as Record<string, unknown> : undefined;
+}
+
 function objectArgs(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function stringOpt(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function boolPayload(value: unknown): boolean {
+  return value === true;
+}
+
+function numberOpt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+function dedupeNumbers(values: ReadonlyArray<number | string>): number[] {
+  const normalized = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value > 0 && value <= 65_535);
+  return [...new Set(normalized)].sort((a, b) => a - b);
+}
+
+function parsePortList(value: string | undefined): number[] {
+  if (!value) return [];
+
+  const output = new Set<number>();
+
+  for (const item of value.split(",")) {
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+
+    const rangeMatch = /^(\d+)\s*-\s*(\d+)$/.exec(trimmed);
+    if (rangeMatch) {
+      const start = Number(rangeMatch[1]);
+      const end = Number(rangeMatch[2]);
+      if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+
+      const min = Math.min(start, end);
+      const max = Math.max(start, end);
+      const lower = Math.max(1, Math.min(min, 65_535));
+      const upper = Math.max(1, Math.min(max, 65_535));
+
+      for (let port = lower; port <= upper; port += 1) {
+        output.add(port);
+      }
+      continue;
+    }
+
+    const parsed = Number(trimmed);
+    if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535) {
+      output.add(parsed);
+    }
+  }
+
+  return [...output].sort((a, b) => a - b);
 }

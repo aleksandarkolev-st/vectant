@@ -13,6 +13,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
@@ -21,6 +22,12 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { chromium } from "playwright-core";
+import { freshMcpProcessEnv } from "./lib/workflow-pipeline-e2e-helpers.mjs";
+import { runtimeEndpointConformance } from "./private-tool-acceptance-conformance.mjs";
+
+export { freshMcpProcessEnv } from "./lib/workflow-pipeline-e2e-helpers.mjs";
+
+const WORKFLOW_PIPELINE_SUMMARY_SCHEMA_VERSION = "synthi.dojo.workflowPipelineE2E.v1";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,6 +56,7 @@ const CFG = {
 
 const artifactRoot = path.resolve(REPO_ROOT, "tmp", "workflow-pipeline-e2e");
 const results = [];
+const visualArtifacts = [];
 
 function log(kind, message) {
   const tag = kind === "ok" ? "[ok]" : kind === "fail" ? "[fail]" : kind === "warn" ? "[warn]" : "[info]";
@@ -230,7 +238,7 @@ async function main() {
 
     await writeFile(
       path.join(artifactRoot, "summary.json"),
-      JSON.stringify({ generated_at: new Date().toISOString(), results }, null, 2)
+      JSON.stringify(buildWorkflowPipelineSummary({ selectedCases }), null, 2)
     );
     log("ok", `workflow pipeline passed ${selectedCases.length} seeded project(s)`);
     console.log(`artifacts=${artifactRoot}`);
@@ -239,6 +247,42 @@ async function main() {
     // Closing the Playwright Browser can terminate that runtime; let process
     // teardown release the client connection instead.
     if (ownedBridge) await ownedBridge.close().catch(() => undefined);
+  }
+}
+
+function buildWorkflowPipelineSummary({ selectedCases }) {
+  return {
+    schema_version: WORKFLOW_PIPELINE_SUMMARY_SCHEMA_VERSION,
+    generated_at: new Date().toISOString(),
+    ok: results.every((result) => result?.ok === true),
+    case_count: selectedCases.length,
+    hosted_runtime: {
+      cdp_url: redactUrl(CFG.cdpUrl),
+      cdp_url_configured: Boolean(CFG.cdpUrl),
+      ...runtimeEndpointConformance({
+        cdpUrl: CFG.cdpUrl,
+        requireNonLoopbackRuntime: true,
+      }),
+    },
+    fresh_mcp: {
+      verify_fresh_mcp: CFG.verifyFreshMcp === true,
+      bridge_url: redactUrl(CFG.bridgeUrl),
+      private_workflow_store_env_configured: Boolean(CFG.privateWorkflowStoreEnv),
+    },
+    visual_artifact_count: visualArtifacts.length,
+    visual_artifacts: visualArtifacts,
+    results,
+  };
+}
+
+function redactUrl(value) {
+  try {
+    const parsed = new URL(String(value));
+    if (parsed.username) parsed.username = "redacted";
+    if (parsed.password) parsed.password = "redacted";
+    return parsed.toString();
+  } catch {
+    return "invalid";
   }
 }
 
@@ -380,7 +424,13 @@ async function runCase({ testCase, container, context, runner }) {
     }
 
     await previewPage.bringToFront().catch(() => undefined);
-    await previewPage.screenshot({ path: path.join(caseDir, "observed-preview.png"), fullPage: true });
+    await captureWorkflowScreenshot({
+      page: previewPage,
+      caseId: testCase.id,
+      caseDir,
+      filename: "observed-preview.png",
+      stage: "observed_preview",
+    });
 
     const beginState = await clickWorkflowOverlay(previewPage, "teach");
     record(testCase.id, "click overlay teach", beginState.ok === true && beginState.recording === true, beginState.status || "");
@@ -405,7 +455,13 @@ async function runCase({ testCase, container, context, runner }) {
     const taughtVisualPage = await testCase.teach(previewPage, { caseDir });
     await previewPage.waitForTimeout(800);
     const afterTeachScreenshotPage = isScreenshotPage(taughtVisualPage) ? taughtVisualPage : previewPage;
-    await afterTeachScreenshotPage.screenshot({ path: path.join(caseDir, "after-teach-actions.png"), fullPage: true });
+    await captureWorkflowScreenshot({
+      page: afterTeachScreenshotPage,
+      caseId: testCase.id,
+      caseDir,
+      filename: "after-teach-actions.png",
+      stage: "after_teach_actions",
+    });
 
     const endState = await clickWorkflowOverlay(previewPage, "stop", "", {
       allowZeroSteps: Boolean(testCase.expectedRecordingIssue),
@@ -434,7 +490,13 @@ async function runCase({ testCase, container, context, runner }) {
       await writeJson(caseDir, "denied-origin-state.json", state);
       await idePage.bringToFront().catch(() => undefined);
       await focusRecordingIssuePanel(idePage, testCase.expectedRecordingIssue);
-      await idePage.screenshot({ path: path.join(caseDir, "after-denied-origin-panel.png"), fullPage: true });
+      await captureWorkflowScreenshot({
+        page: idePage,
+        caseId: testCase.id,
+        caseDir,
+        filename: "after-denied-origin-panel.png",
+        stage: "after_denied_origin_panel",
+      });
       return;
     }
 
@@ -606,7 +668,7 @@ async function runCase({ testCase, container, context, runner }) {
       }
     }
 
-    const publishBody = await clickWorkflowButton(idePage, /^Publish$/);
+    const publishBody = await clickWorkflowButton(idePage, /^(Publish|License)$/);
     const publishedToolName = publishBody.result?.tool_name;
     record(
       testCase.id,
@@ -616,7 +678,13 @@ async function runCase({ testCase, container, context, runner }) {
     );
     await writeJson(caseDir, "publish.json", publishBody.result);
     await idePage.bringToFront().catch(() => undefined);
-    await idePage.screenshot({ path: path.join(caseDir, "after-publish-panel.png"), fullPage: true });
+    await captureWorkflowScreenshot({
+      page: idePage,
+      caseId: testCase.id,
+      caseDir,
+      filename: "after-publish-panel.png",
+      stage: "after_publish_panel",
+    });
 
     const privateManifestLookup = typeof publishedToolName === "string"
       ? await workflowBridgeTool("synthi_browser_get_private_tool_manifest", { tool_name: publishedToolName })
@@ -682,7 +750,13 @@ async function runCase({ testCase, container, context, runner }) {
     );
     await writeJson(caseDir, "validation.json", validation);
     await idePage.bringToFront().catch(() => undefined);
-    await idePage.screenshot({ path: path.join(caseDir, "after-validate-panel.png"), fullPage: true });
+    await captureWorkflowScreenshot({
+      page: idePage,
+      caseId: testCase.id,
+      caseDir,
+      filename: "after-validate-panel.png",
+      stage: "after_validate_panel",
+    });
     if (testCase.liveReplayMode) {
       const liveReplay = await runLiveWorkflowReplay({
         caseId: testCase.id,
@@ -700,7 +774,7 @@ async function runCase({ testCase, container, context, runner }) {
           : `error=${liveReplay.replay?.error || liveReplay.error || "unknown"}`
       );
       if (liveReplay.ok === true) {
-        const replaySnapshots = await collectReplaySnapshots(liveReplay, caseDir);
+        const replaySnapshots = await collectReplaySnapshots(liveReplay, caseDir, testCase.id);
         await writeJson(caseDir, "live-replay-snapshots.json", {
           tab_ids: replaySnapshots.tab_ids,
           snapshots: replaySnapshots.snapshots.map((entry) => ({
@@ -774,7 +848,12 @@ async function runCase({ testCase, container, context, runner }) {
           ? `status=${ciReplay.replay?.status} mutation=${ciReplay.replay?.mutation_executed}`
           : `status=${ciReplay.replay?.status || "missing"} error=${ciReplay.replay?.failure_class || ciReplay.error || "unknown"}`
       );
-      const proof = await verifyVisualProofDir(ciReplay.replay?.artifacts?.visual_proof_dir, path.join(caseDir, "after-ci-isolated-replay.png"));
+      const proof = await verifyVisualProofDir({
+        proofDir: ciReplay.replay?.artifacts?.visual_proof_dir,
+        copyTarget: path.join(caseDir, "after-ci-isolated-replay.png"),
+        caseId: testCase.id,
+        stage: "after_ci_isolated_replay",
+      });
       record(testCase.id, "CI replay visual proof", proof.ok, proof.detail);
     }
   } finally {
@@ -1053,25 +1132,6 @@ async function workflowBridgeTool(tool, args) {
 
 async function workflowBridgeState() {
   return await httpJson("GET", `${CFG.bridgeUrl}/browser-workflows/state`);
-}
-
-export function freshMcpProcessEnv({
-  baseEnv = process.env,
-  privateWorkflowStoreEnv,
-  cdpUrl,
-  previewUrl,
-  workspaceId,
-}) {
-  const env = {
-    ...baseEnv,
-    ...privateWorkflowStoreEnv,
-    SYNTHI_HOSTED_BROWSER_CDP_URL: cdpUrl,
-    SYNTHI_HOSTED_BROWSER_WORKSPACE_URL: previewUrl,
-    SYNTHI_WORKSPACE_ID: workspaceId,
-    SYNTHI_AGENT_ID: "workflow_pipeline_fresh_mcp_acceptance",
-  };
-  delete env.SYNTHI_BROWSER_CDP_URL;
-  return env;
 }
 
 async function verifyFreshMcpPrivateTool({
@@ -1904,6 +1964,7 @@ async function runExportedPlaywright({ runner, specPath, previewUrl, caseDir, ca
       PLAYWRIGHT_CHROMIUM_EXECUTABLE: executablePath,
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1",
     },
+    shell: process.platform === "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
   const output = await collectProcess(proc, CFG.timeoutMs);
@@ -1953,9 +2014,11 @@ async function ensurePlaywrightTestRunner() {
   ].join("\n"));
   if (!existsSync(path.join(root, "node_modules", "@playwright", "test"))) {
     log("info", "installing temporary @playwright/test runner");
-    const install = spawn("npm", ["install", "--no-audit", "--no-fund", "--silent"], {
+    const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+    const install = spawn(npmBin, ["install", "--no-audit", "--no-fund", "--silent"], {
       cwd: root,
       env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1" },
+      shell: process.platform === "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
     const output = await collectProcess(install, CFG.timeoutMs);
@@ -2043,10 +2106,13 @@ async function writeSnapshotScreenshot(snapshot, filePath) {
   if (typeof screenshot !== "string" || screenshot.length === 0) {
     throw new Error("snapshot_missing_screenshot_base64");
   }
-  await writeFile(filePath, Buffer.from(screenshot, "base64"));
+  const bytes = Buffer.from(screenshot, "base64");
+  if (!isPngBytes(bytes)) throw new Error("snapshot_screenshot_not_png");
+  await writeFile(filePath, bytes);
+  return bytes;
 }
 
-async function collectReplaySnapshots(liveReplay, caseDir) {
+async function collectReplaySnapshots(liveReplay, caseDir, caseId) {
   const tabIds = replaySnapshotTabIds(liveReplay);
   const snapshots = [];
   const errors = [];
@@ -2059,8 +2125,23 @@ async function collectReplaySnapshots(liveReplay, caseDir) {
     }
     const screenshotPath = path.join(caseDir, `after-live-replay-${artifactNamePart(tabId)}.png`);
     await writeSnapshotScreenshot(snapshot, screenshotPath);
+    await recordWorkflowVisualArtifact({
+      caseId,
+      stage: "after_live_replay_snapshot",
+      filePath: screenshotPath,
+      source: "mcp_snapshot",
+      tabId,
+    });
     if (snapshots.length === 0) {
-      await writeSnapshotScreenshot(snapshot, path.join(caseDir, "after-live-replay.png"));
+      const primaryPath = path.join(caseDir, "after-live-replay.png");
+      await writeSnapshotScreenshot(snapshot, primaryPath);
+      await recordWorkflowVisualArtifact({
+        caseId,
+        stage: "after_live_replay",
+        filePath: primaryPath,
+        source: "mcp_snapshot",
+        tabId,
+      });
     }
     snapshots.push({ tab_id: tabId, snapshot, screenshot_path: screenshotPath });
   }
@@ -2090,7 +2171,55 @@ function artifactNamePart(value) {
   return String(value).replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "artifact";
 }
 
-async function verifyVisualProofDir(proofDir, copyTarget) {
+async function captureWorkflowScreenshot({ page, caseId, caseDir, filename, stage }) {
+  const filePath = path.join(caseDir, filename);
+  await page.screenshot({ path: filePath, fullPage: true });
+  await recordWorkflowVisualArtifact({
+    caseId,
+    stage,
+    filePath,
+    source: "playwright_screenshot",
+  });
+  return filePath;
+}
+
+async function recordWorkflowVisualArtifact({ caseId, stage, filePath, source, tabId }) {
+  const absolutePath = path.resolve(filePath);
+  const info = await stat(absolutePath);
+  const bytes = await readFile(absolutePath);
+  if (!info.isFile() || info.size <= 0) throw new Error(`workflow_visual_artifact_empty:${absolutePath}`);
+  if (!isPngBytes(bytes)) throw new Error(`workflow_visual_artifact_not_png:${absolutePath}`);
+  visualArtifacts.push({
+    case_id: caseId,
+    stage,
+    source,
+    path: path.relative(artifactRoot, absolutePath).replace(/\\/g, "/"),
+    bytes: info.size,
+    screenshot_sha256: sha256(bytes),
+    mime_type: "image/png",
+    png_verified: true,
+    ...(typeof tabId === "string" ? { tab_id: tabId } : {}),
+  });
+}
+
+function isPngBytes(bytes) {
+  return Buffer.isBuffer(bytes) &&
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a;
+}
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function verifyVisualProofDir({ proofDir, copyTarget, caseId, stage }) {
   if (typeof proofDir !== "string" || proofDir.length === 0) return { ok: false, detail: "missing proof dir" };
   let entries;
   try {
@@ -2109,6 +2238,12 @@ async function verifyVisualProofDir(proofDir, copyTarget) {
         header[4] === 0x0d && header[5] === 0x0a && header[6] === 0x1a && header[7] === 0x0a;
       if (!isPng) continue;
       await copyFile(filePath, copyTarget);
+      await recordWorkflowVisualArtifact({
+        caseId,
+        stage,
+        filePath: copyTarget,
+        source: "ci_isolated_visual_proof",
+      });
       return { ok: true, detail: `${entry.name} ${info.size} bytes` };
     } catch {
       continue;

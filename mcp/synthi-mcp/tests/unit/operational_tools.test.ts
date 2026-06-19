@@ -25,10 +25,20 @@ describe("synthi_get_usage", () => {
 
   it("returns zero counters when no events emitted", async () => {
     const res = await getUsageTool({});
-    const body = res.structuredContent as { counters: Record<string, number>; vision_cost_usd_estimate: number };
+    const body = res.structuredContent as {
+      counters: Record<string, number>;
+      vision_cost_usd_estimate: number;
+      runtime_session_diagnostics: Record<string, unknown>;
+    };
     expect(body.counters.tool_call).toBe(0);
     expect(body.counters.screenshot).toBe(0);
     expect(body.vision_cost_usd_estimate).toBe(0);
+    expect(body.runtime_session_diagnostics).toEqual(expect.objectContaining({
+      session_state: "detached",
+      active_session_count: 0,
+      active_frame_sink_count: 0,
+      attached_session_id: null,
+    }));
   });
 
   it("aggregates usage events", async () => {

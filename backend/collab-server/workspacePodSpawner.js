@@ -357,6 +357,57 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
   ];
 }
 
+function runtimeSharedVolumes() {
+  return [
+    { name: 'dshm', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } },
+    { name: 'tmp', emptyDir: { sizeLimit: '2Gi' } },
+    ...(WORKSPACE_DATA_PVC ? [{ name: 'workspace-data', persistentVolumeClaim: { claimName: WORKSPACE_DATA_PVC } }] : []),
+  ];
+}
+
+function stableTemplateAnnotations(annotations = {}) {
+  const stable = { ...annotations };
+  delete stable['synthi/lastActive'];
+  delete stable['synthi/runtimeKind'];
+  return stable;
+}
+
+function reconciledTemplateAnnotations(annotations = {}) {
+  return {
+    ...stableTemplateAnnotations(annotations),
+    'synthi/lastActive': null,
+    'synthi/runtimeKind': null,
+  };
+}
+
+function runtimeDeploymentReconcilePatch(sessionId, userId, metadata = {}, labels = {}, annotations = {}) {
+  const filesystemUserId = metadata.filesystemUserId || metadata.filesystem_user_id || userId;
+  const workflowContainers = workflowBridgeContainers(sessionId, { ...metadata, filesystemUserId });
+  const patch = {
+    metadata: {
+      labels,
+      annotations,
+    },
+  };
+
+  if (workflowContainers.length > 0) {
+    patch.spec = {
+      template: {
+        metadata: {
+          labels,
+          annotations: reconciledTemplateAnnotations(annotations),
+        },
+        spec: {
+          containers: workflowContainers,
+          volumes: runtimeSharedVolumes(),
+        },
+      },
+    };
+  }
+
+  return patch;
+}
+
 function previewSidecarScript() {
   return [
     "'use strict';",
@@ -680,6 +731,48 @@ async function getPodSnapshotForSession(sessionId) {
 
 // ── Dynamic Service per workspace ─────────────────────────────────────────
 
+function normalizeServicePort(port = {}) {
+  return {
+    name: String(port.name || ''),
+    port: Number(port.port),
+    targetPort: String(port.targetPort ?? port.port ?? ''),
+    protocol: String(port.protocol || 'TCP'),
+  };
+}
+
+function sameStringMap(left = {}, right = {}) {
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key, index) => key === rightKeys[index] && String(left[key]) === String(right[key]));
+}
+
+function serviceNeedsReconcile(existing, selector, ports) {
+  if (!existing?.spec) return true;
+  if (!sameStringMap(existing.spec.selector || {}, selector)) return true;
+
+  const existingPorts = (existing.spec.ports || []).map(normalizeServicePort);
+  const desiredPorts = (ports || []).map(normalizeServicePort);
+  if (existingPorts.length !== desiredPorts.length) return true;
+
+  const byName = new Map(existingPorts.map((port) => [port.name, port]));
+  return desiredPorts.some((desired) => {
+    const current = byName.get(desired.name);
+    return !current ||
+      current.port !== desired.port ||
+      current.targetPort !== desired.targetPort ||
+      current.protocol !== desired.protocol;
+  });
+}
+
+function k8sErrorMessage(err) {
+  return err?.body?.message ||
+    err?.response?.body?.message ||
+    err?.response?.body?.error ||
+    err?.message ||
+    String(err);
+}
+
 /**
  * Create a ClusterIP Service pointing at the workspace pod.
  * Idempotent — 409 Conflict means it already exists.
@@ -687,6 +780,17 @@ async function getPodSnapshotForSession(sessionId) {
 async function ensureService(sessionId) {
   const name = serviceName(sessionId);
   const labels = runtimeLabels(sessionId, null);
+  const annotations = {
+    'synthi/runtimeScopeFull': sessionId,
+  };
+  const selector = {
+    app: 'workspace',
+    'synthi/runtime-id': runtimeResourceId(sessionId),
+  };
+  const ports = [
+    { name: 'preview-proxy', port: PREVIEW_SIDECAR_PORT, targetPort: PREVIEW_SIDECAR_PORT },
+    ...(WORKFLOW_BRIDGE_IMAGE ? [{ name: 'workflow', port: WORKFLOW_BRIDGE_PORT, targetPort: WORKFLOW_BRIDGE_PORT }] : []),
+  ];
   const service = {
     apiVersion: 'v1',
     kind: 'Service',
@@ -694,21 +798,13 @@ async function ensureService(sessionId) {
       name,
       namespace: NAMESPACE,
       labels,
-      annotations: {
-        'synthi/runtimeScopeFull': sessionId,
-      },
+      annotations,
     },
     spec: {
       type: 'ClusterIP',
       clusterIP: 'None',
-      selector: {
-        app: 'workspace',
-        'synthi/runtime-id': runtimeResourceId(sessionId),
-      },
-      ports: [
-        { name: 'preview-proxy', port: PREVIEW_SIDECAR_PORT, targetPort: PREVIEW_SIDECAR_PORT },
-        ...(WORKFLOW_BRIDGE_IMAGE ? [{ name: 'workflow', port: WORKFLOW_BRIDGE_PORT, targetPort: WORKFLOW_BRIDGE_PORT }] : []),
-      ],
+      selector,
+      ports,
     },
   };
 
@@ -717,9 +813,33 @@ async function ensureService(sessionId) {
     console.log(`[Spawner] Created Service: ${name}`);
   } catch (err) {
     if (err.response?.statusCode === 409) {
-      // Already exists — fine
+      try {
+        const { body: existingService } = await coreApi.readNamespacedService(name, NAMESPACE);
+        if (!serviceNeedsReconcile(existingService, selector, ports)) {
+          return;
+        }
+        await coreApi.patchNamespacedService(
+          name,
+          NAMESPACE,
+          {
+            metadata: { labels, annotations },
+            spec: { selector, ports },
+          },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
+          },
+        );
+        console.log(`[Spawner] Reconciled Service: ${name}`);
+      } catch (patchErr) {
+        console.error(`[Spawner] Service reconciliation failed for ${name}:`, k8sErrorMessage(patchErr));
+      }
     } else {
-      console.error(`[Spawner] Service creation failed for ${name}:`, err.message);
+      console.error(`[Spawner] Service creation failed for ${name}:`, k8sErrorMessage(err));
     }
   }
 }
@@ -798,10 +918,13 @@ async function ensurePod(sessionId, userId, metadata = {}) {
   try {
     const { body: existing } = await appsApi.readNamespacedDeployment(name, NAMESPACE);
     await hydrateAndPinRuntimeFs();
-    // Bump activity timestamp.
-    existing.metadata.annotations = existing.metadata.annotations || {};
-    existing.metadata.annotations['synthi/lastActive'] = String(Date.now());
-    await appsApi.patchNamespacedDeployment(name, NAMESPACE, existing, undefined, undefined, undefined, undefined, undefined, {
+    await appsApi.patchNamespacedDeployment(name, NAMESPACE, runtimeDeploymentReconcilePatch(
+      sessionId,
+      userId,
+      { ...metadata, filesystemUserId },
+      labels,
+      annotations,
+    ), undefined, undefined, undefined, undefined, undefined, {
       headers: { 'Content-Type': 'application/strategic-merge-patch+json' },
     });
     activeSessions.add(sessionId);
@@ -854,7 +977,7 @@ async function ensurePod(sessionId, userId, metadata = {}) {
       template: {
         metadata: {
           labels,
-          annotations,
+          annotations: stableTemplateAnnotations(annotations),
         },
         spec: {
           terminationGracePeriodSeconds: 15,
@@ -985,9 +1108,7 @@ exec worker`,
             ...workflowBridgeContainers(sessionId, { ...metadata, filesystemUserId }),
           ],
           volumes: [
-            { name: 'dshm', emptyDir: { medium: 'Memory', sizeLimit: '512Mi' } },
-            { name: 'tmp', emptyDir: { sizeLimit: '2Gi' } },
-            ...(WORKSPACE_DATA_PVC ? [{ name: 'workspace-data', persistentVolumeClaim: { claimName: WORKSPACE_DATA_PVC } }] : []),
+            ...runtimeSharedVolumes(),
           ],
         },
       },
