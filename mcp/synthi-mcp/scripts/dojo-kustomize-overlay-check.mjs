@@ -57,7 +57,9 @@ const DOJO_MCP_HOST = {
   backendConfig: "dojo-mcp-host-backend-config",
   networkPolicy: "allow-to-dojo-mcp-host",
   image: "synthi-mcp-http:build-tag-required",
+  host: "beta.vectant.dev",
   path: "/dojo/mcp",
+  pathType: "Prefix",
   port: "9467",
 };
 
@@ -326,24 +328,48 @@ function validateRenderedOverlay(rendered) {
         message: `Service/${DOJO_MCP_HOST.service} must expose port ${DOJO_MCP_HOST.port}.`,
       });
     }
+    if (!serviceHasIngressNeg(mcpService.doc)) {
+      failures.push({
+        code: "dojo_mcp_host_neg_not_enabled",
+        message: `Service/${DOJO_MCP_HOST.service} must enable a GKE ingress NEG.`,
+      });
+    }
+    if (!new RegExp(`^\\s*type:\\s*NodePort(?:\\s|$)`, "m").test(mcpService.doc)) {
+      failures.push({
+        code: "dojo_mcp_host_service_type_invalid",
+        message: `Service/${DOJO_MCP_HOST.service} must be type NodePort for the GKE ingress backend.`,
+      });
+    }
   }
 
-  for (const [kind, name, code] of [
-    ["BackendConfig", DOJO_MCP_HOST.backendConfig, "missing_dojo_mcp_host_backend_config"],
-    ["NetworkPolicy", DOJO_MCP_HOST.networkPolicy, "missing_dojo_mcp_host_network_policy"],
-  ]) {
-    if (!findResource(resources, kind, name)) {
-      failures.push({ code, message: `${kind}/${name} was not rendered.` });
-    }
+  const mcpBackendConfig = findResource(resources, "BackendConfig", DOJO_MCP_HOST.backendConfig);
+  if (!mcpBackendConfig) {
+    failures.push({
+      code: "missing_dojo_mcp_host_backend_config",
+      message: `BackendConfig/${DOJO_MCP_HOST.backendConfig} was not rendered.`,
+    });
+  } else if (!backendConfigIapEnabled(mcpBackendConfig.doc)) {
+    failures.push({
+      code: "dojo_mcp_host_iap_not_enabled",
+      message: `BackendConfig/${DOJO_MCP_HOST.backendConfig} must enable IAP for the public MCP backend.`,
+    });
+  }
+
+  const mcpNetworkPolicy = findResource(resources, "NetworkPolicy", DOJO_MCP_HOST.networkPolicy);
+  if (!mcpNetworkPolicy) {
+    failures.push({
+      code: "missing_dojo_mcp_host_network_policy",
+      message: `NetworkPolicy/${DOJO_MCP_HOST.networkPolicy} was not rendered.`,
+    });
   }
 
   const ingress = findResource(resources, "Ingress", "synthi-ingress");
   if (!ingress) {
     failures.push({ code: "missing_ingress", message: "Ingress/synthi-ingress was not rendered." });
-  } else if (!ingress.doc.includes(`path: ${DOJO_MCP_HOST.path}`) || !ingress.doc.includes(`name: ${DOJO_MCP_HOST.service}`)) {
+  } else if (!ingressRoutesToService(ingress.doc, DOJO_MCP_HOST)) {
     failures.push({
       code: "dojo_mcp_host_ingress_missing",
-      message: `Ingress/synthi-ingress must route ${DOJO_MCP_HOST.path} to Service/${DOJO_MCP_HOST.service}.`,
+      message: `Ingress/synthi-ingress must route ${DOJO_MCP_HOST.host}${DOJO_MCP_HOST.path} to Service/${DOJO_MCP_HOST.service}:${DOJO_MCP_HOST.port}.`,
     });
   }
 
@@ -403,6 +429,70 @@ function isLiteralEnvBlock(block, expectedValue) {
 
 function hasEnvFromRef(doc, refKind, name) {
   return new RegExp(`${escapeRegex(refKind)}:\\s*\\n\\s*name:\\s*${escapeRegex(name)}(?:\\s|$)`).test(doc);
+}
+
+function backendConfigIapEnabled(doc) {
+  return /iap:\s*\n\s*enabled:\s*true(?:\s|$)/.test(doc);
+}
+
+function serviceHasIngressNeg(doc) {
+  return /cloud\.google\.com\/neg:\s*['"]?\{"ingress":\s*true\}['"]?/.test(doc);
+}
+
+function ingressRoutesToService(doc, expected) {
+  const hostBlock = listItemBlock(doc, "host", expected.host);
+  if (!hostBlock) return false;
+  return listBlocksAfterHeader(hostBlock, "paths").some((pathBlock) => {
+    return new RegExp(`^\\s*(?:-\\s+)?path:\\s*${escapeRegex(expected.path)}(?:\\s|$)`, "m").test(pathBlock)
+    && new RegExp(`^\\s*pathType:\\s*${escapeRegex(expected.pathType)}(?:\\s|$)`, "m").test(pathBlock)
+    && new RegExp(`^\\s*name:\\s*${escapeRegex(expected.service)}(?:\\s|$)`, "m").test(pathBlock)
+    && new RegExp(`^\\s*number:\\s*${escapeRegex(expected.port)}(?:\\s|$)`, "m").test(pathBlock);
+  });
+}
+
+function listItemBlock(doc, key, value) {
+  const lines = doc.split(/\r?\n/);
+  const matcher = new RegExp(`^(\\s*)-\\s+${escapeRegex(key)}:\\s*"?${escapeRegex(value)}"?(?:\\s|$)`);
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = matcher.exec(lines[index]);
+    if (!match) continue;
+    const indent = match[1].length;
+    const block = [lines[index]];
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const line = lines[cursor];
+      if (line && leadingSpaces(line) <= indent && !/^\s*$/.test(line)) break;
+      block.push(line);
+    }
+    return block.join("\n");
+  }
+  return "";
+}
+
+function listBlocksAfterHeader(doc, headerKey) {
+  const lines = doc.split(/\r?\n/);
+  const header = new RegExp(`^(\\s*)${escapeRegex(headerKey)}:\\s*$`);
+  const headerIndex = lines.findIndex((line) => header.test(line));
+  if (headerIndex < 0) return [];
+  const headerIndent = leadingSpaces(lines[headerIndex]);
+  const blocks = [];
+  let itemIndent = null;
+  for (let index = headerIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line && leadingSpaces(line) < headerIndent && !/^\s*$/.test(line)) break;
+    if (!/^\s*-\s+/.test(line)) continue;
+    const indent = leadingSpaces(line);
+    if (indent < headerIndent) break;
+    if (itemIndent === null) itemIndent = indent;
+    if (indent !== itemIndent) continue;
+    const block = [line];
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const candidate = lines[cursor];
+      if (candidate && leadingSpaces(candidate) <= indent && !/^\s*$/.test(candidate)) break;
+      block.push(candidate);
+    }
+    blocks.push(block.join("\n"));
+  }
+  return blocks;
 }
 
 function blockAfter(doc, header) {
@@ -514,6 +604,9 @@ apiVersion: cloud.google.com/v1
 kind: BackendConfig
 metadata:
   name: dojo-mcp-host-backend-config
+spec:
+  iap:
+    enabled: true
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -546,7 +639,9 @@ metadata:
   name: dojo-mcp-host
   annotations:
     cloud.google.com/backend-config: '{"ports":{"9467":"dojo-mcp-host-backend-config"}}'
+    cloud.google.com/neg: '{"ingress": true}'
 spec:
+  type: NodePort
   ports:
   - port: 9467
 ---
@@ -565,9 +660,12 @@ spec:
     http:
       paths:
       - path: /dojo/mcp
+        pathType: Prefix
         backend:
           service:
             name: dojo-mcp-host
+            port:
+              number: 9467
 `;
 
   const valid = validateRenderedOverlay(validRendered);
@@ -578,6 +676,21 @@ spec:
   const invalid = validateRenderedOverlay(`${validRendered}\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: redis\n`);
   if (invalid.ok || !invalid.failures.some((failure) => failure.code === "forbidden_resource_rendered")) {
     throw new Error("invalid self-check fixture did not detect forbidden Redis deployment");
+  }
+
+  const invalidIngress = validateRenderedOverlay(validRendered.replace("host: beta.vectant.dev", "host: preview.vectant.dev"));
+  if (invalidIngress.ok || !invalidIngress.failures.some((failure) => failure.code === "dojo_mcp_host_ingress_missing")) {
+    throw new Error("invalid self-check fixture did not detect MCP host ingress on the wrong host");
+  }
+
+  const invalidService = validateRenderedOverlay(validRendered.replace("    cloud.google.com/neg: '{\"ingress\": true}'\n", ""));
+  if (invalidService.ok || !invalidService.failures.some((failure) => failure.code === "dojo_mcp_host_neg_not_enabled")) {
+    throw new Error("invalid self-check fixture did not detect missing MCP host NEG annotation");
+  }
+
+  const invalidBackend = validateRenderedOverlay(validRendered.replace("  iap:\n    enabled: true\n", ""));
+  if (invalidBackend.ok || !invalidBackend.failures.some((failure) => failure.code === "dojo_mcp_host_iap_not_enabled")) {
+    throw new Error("invalid self-check fixture did not detect missing MCP host IAP");
   }
 
   return {

@@ -32,6 +32,7 @@ substitutions:
   _IMAGE_TAG: ${BUILD_ID}
   _KUSTOMIZE_DIR: k8s
   _KUSTOMIZE_LOAD_RESTRICTOR: ""
+  _DOJO_RELEASE_KUSTOMIZE_DIR: k8s/overlays/dojo-release-gate
 
   # NEXT_PUBLIC_* build args baked into the frontend client bundle.
   # Override these per environment via trigger substitutions.
@@ -66,7 +67,7 @@ steps:
       - |
         set -euo pipefail
         if grep -RInE '(^[[:space:]]*(FROM|image:|name:)|--destination=).*:latest([^@]|$)' \
-          --include='Dockerfile' --include='*.yaml' --include='*.yml' \
+          --include='Dockerfile*' --include='*.yaml' --include='*.yml' \
           --exclude='*.backup' --exclude='cloudbuild.yaml' .; then
           echo "Mutable :latest image references must be pinned by digest or replaced with an immutable build tag." >&2
           exit 1
@@ -213,13 +214,27 @@ steps:
   # beta kustomization does not deploy this image.
   - id: build-dojo-mcp-host
     waitFor: ['reject-mutable-images']
-    name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
+    name: gcr.io/kaniko-project/executor:debug@sha256:2562c4fe551399514277ffff7dcca9a3b1628c4ea38cb017d7286dc6ea52f4cd
+    entrypoint: /busybox/sh
+    env:
+      - KUSTOMIZE_DIR=${_KUSTOMIZE_DIR}
+      - DOJO_RELEASE_KUSTOMIZE_DIR=${_DOJO_RELEASE_KUSTOMIZE_DIR}
+      - REGISTRY=${_REGISTRY}
+      - IMAGE_TAG=${_IMAGE_TAG}
     args:
-      - --dockerfile=mcp/synthi-mcp/Dockerfile.http
-      - --context=dir:///workspace
-      - --destination=${_REGISTRY}/synthi-mcp-http:${_IMAGE_TAG}
-      - --cache=true
-      - --cache-ttl=168h
+      - -c
+      - |
+        set -eu
+        if [ "$${KUSTOMIZE_DIR}" != "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]; then
+          echo "Skipping Dojo MCP host image build for kustomize dir: $${KUSTOMIZE_DIR}"
+          exit 0
+        fi
+        exec /kaniko/executor \
+          --dockerfile=mcp/synthi-mcp/Dockerfile.http \
+          --context=dir:///workspace \
+          --destination="$${REGISTRY}/synthi-mcp-http:$${IMAGE_TAG}" \
+          --cache=true \
+          --cache-ttl=168h
 
   # ── 9. Per-workspace runtime image (rootful dind under Sysbox) ──────────
   # ROOTFUL build (RUNTIME_USER=root, daemon at /var/run/docker.sock): under Sysbox
