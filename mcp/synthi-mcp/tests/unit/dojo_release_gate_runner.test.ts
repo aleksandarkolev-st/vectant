@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   buildDojoReleaseGateManifest,
@@ -23,9 +24,12 @@ import {
   selectDojoReleaseGateIds,
 } from "../../scripts/dojo-release-gate-runner.mjs";
 
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const repoRoot = resolve(packageRoot, "../..");
+
 function realPackageScripts() {
-  const mcpPackage = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
-  const frontendPackage = JSON.parse(readFileSync(join(process.cwd(), "..", "..", "synthi", "package.json"), "utf8"));
+  const mcpPackage = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+  const frontendPackage = JSON.parse(readFileSync(join(repoRoot, "synthi", "package.json"), "utf8"));
   return {
     "mcp/synthi-mcp/package.json": mcpPackage.scripts,
     "synthi/package.json": frontendPackage.scripts,
@@ -245,6 +249,7 @@ describe("Dojo release gate runner", () => {
       gateIds: ["dojo_mcp_host_conformance"],
       env: {
         SYNTHI_DOJO_MCP_HOST_URL: "https://mcp.example.com",
+        SYNTHI_DOJO_MCP_BEARER_TOKEN: "release-token",
         SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE: "1",
         SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING: "false",
         SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED: "1",
@@ -265,6 +270,7 @@ describe("Dojo release gate runner", () => {
       gateIds: ["dojo_mcp_host_conformance"],
       env: {
         SYNTHI_DOJO_MCP_HOST_URL: "http://localhost:3333",
+        SYNTHI_DOJO_MCP_BEARER_TOKEN: "release-token",
         SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_CONTROL_PLANE_STORE: "1",
         SYNTHI_DOJO_MCP_CONFORMANCE_EXTERNAL_PROOF_SIGNING: "1",
         SYNTHI_DOJO_MCP_CONFORMANCE_BRIDGE_TOKEN_REQUIRED: "1",
