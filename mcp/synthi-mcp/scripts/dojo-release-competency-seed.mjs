@@ -70,6 +70,8 @@ export async function runDojoReleaseCompetencySeed({
     manifest,
   });
   if (reusablePublication) {
+    const reusableArtifact = reusablePublication.artifact ?? artifact;
+    const reusableManifest = reusablePublication.private_tool_manifest ?? manifest;
     const proofEvidenceRefs = await appendReleaseProofEvidence({
       runtime,
       config,
@@ -79,8 +81,8 @@ export async function runDojoReleaseCompetencySeed({
     });
     const report = buildDojoReleaseCompetencySeedReport({
       config,
-      artifact,
-      manifest,
+      artifact: reusableArtifact,
+      manifest: reusableManifest,
       candidateSkill: reusablePublication.skill,
       evidenceRefs: [],
       proofEvidenceRefs,
@@ -315,14 +317,15 @@ async function loadReusableReleaseSeedPublication({ runtime, config, artifact, c
   const content = objectOrNull(response?.structuredContent);
   if (!response || response.isError || content?.ok === false) return null;
   const skill = objectOrNull(content?.skill);
-  if (!isReusableReleaseSeedSkill({ skill, candidateSkill })) return null;
+  const reusableArtifact = reusableReleaseSeedArtifactForSkill({ runtime, config, skill, candidateArtifact: artifact });
+  if (!isReusableReleaseSeedSkill({ skill, candidateSkill, artifact: reusableArtifact })) return null;
   const privateManifest = objectOrNull(skill.private_tool_manifest);
   const toolName = stringOpt(skill.published_tool_name ?? privateManifest?.tool_name) ?? manifest.tool_name;
   const registryRepair = ensureReusableReleaseSeedPrivateTool({
     runtime,
     skill,
     manifest,
-    artifact,
+    artifact: reusableArtifact,
     toolName,
   });
   const publication = {
@@ -358,6 +361,8 @@ async function loadReusableReleaseSeedPublication({ runtime, config, artifact, c
       published_tool_name: toolName,
       publication,
     },
+    artifact: reusableArtifact,
+    private_tool_manifest: privateManifest,
   };
 }
 
@@ -375,16 +380,53 @@ function selectReusableReleaseSeedCompetency({ competencies, candidateSkill, man
   return items[0] ?? null;
 }
 
-function isReusableReleaseSeedSkill({ skill, candidateSkill }) {
+function isReusableReleaseSeedSkill({ skill, candidateSkill, artifact }) {
   const record = objectOrNull(skill);
   if (!record) return false;
   if (record.workspace_id !== candidateSkill.workspace_id) return false;
-  if (record.workflow_id !== candidateSkill.workflow_id) return false;
+  if (record.workflow_id !== artifact.workflow_id) return false;
   const license = objectOrNull(record.permission_license);
   if (!license || license.autonomy_level === "blocked") return false;
   if (record.entrustment_level === "EX") return false;
   const privateManifest = objectOrNull(record.private_tool_manifest);
   return Boolean(stringOpt(record.published_tool_name) || stringOpt(privateManifest?.tool_name));
+}
+
+function reusableReleaseSeedArtifactForSkill({ runtime, config, skill, candidateArtifact }) {
+  const record = objectOrNull(skill);
+  if (!record) return candidateArtifact;
+  if (record.workflow_id === candidateArtifact.workflow_id) return candidateArtifact;
+  const privateManifest = objectOrNull(record.private_tool_manifest);
+  const toolName = stringOpt(record.published_tool_name ?? privateManifest?.tool_name);
+  if (!toolName || stringOpt(privateManifest?.workflow_id) !== record.workflow_id) return candidateArtifact;
+  const appOrigin = stringOpt(record.app_origin ?? record.skill_seed?.observed_trace?.app_origin) ?? config.workflow.origin;
+  const name = stringOpt(record.name) ?? stringOpt(privateManifest?.title);
+  if (!appOrigin || !name) return candidateArtifact;
+  const routePattern = stringOpt(record.skill_seed?.observed_trace?.route_pattern);
+  const route = routePattern ? routePattern.replace(/\?\.\.\.$/, "") : "/dojo-release-seed";
+  const url = `${appOrigin.replace(/\/+$/, "")}/${route.replace(/^\/+/, "")}`;
+  const sourceAnchor = Array.isArray(record.source_links)
+    ? record.source_links.map(objectOrNull).find((anchor) => stringOpt(anchor?.source_id))
+    : null;
+  const workflowConfig = {
+    ...config,
+    workflow: {
+      ...config.workflow,
+      origin: appOrigin,
+      url,
+      name,
+      stable_entity_label: name,
+      source_id: stringOpt(sourceAnchor?.source_id) ?? `${toolName}.action`,
+      source_file_path: stringOpt(sourceAnchor?.file_path) ?? config.workflow.source_file_path,
+      source_line: typeof sourceAnchor?.line === "number" ? sourceAnchor.line : config.workflow.source_line,
+    },
+  };
+  const artifact = recordReleaseSeedWorkflowArtifact({
+    runtime,
+    browserBroker: runtime.browserBroker,
+    config: workflowConfig,
+  });
+  return artifact.workflow_id === record.workflow_id ? artifact : candidateArtifact;
 }
 
 function ensureReusableReleaseSeedPrivateTool({ runtime, skill, manifest, artifact, toolName }) {
