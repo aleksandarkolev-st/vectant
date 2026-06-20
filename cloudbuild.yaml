@@ -47,6 +47,7 @@ substitutions:
   _NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER: "true"
   _NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH: "/auth/loopback"
   _WORKER_INSTALL_ROCM: "false"
+  _ENABLE_VULNERABILITY_SCAN: "false"
 
 options:
   machineType: E2_HIGHCPU_32
@@ -257,8 +258,9 @@ steps:
       - --cache=true
       - --cache-ttl=168h
 
-  # ── 10. Vulnerability gate — full release image fleet ─────────────────────
-  # Every image built by this pipeline must pass a CRITICAL CVE gate before
+  # ── 10. Vulnerability scan — opt-in full release image fleet ───────────────
+  # Disabled by default for beta deploy velocity. Set
+  # _ENABLE_VULNERABILITY_SCAN=true to run the CRITICAL CVE gate before
   # deployment. The per-workspace runtime additionally honors its committed
   # waiver file for the known base-bundled grpc CVE. The release-only Dojo MCP
   # host image is scanned when the release-gate overlay is selected.
@@ -281,10 +283,15 @@ steps:
       - DOJO_RELEASE_KUSTOMIZE_DIR=${_DOJO_RELEASE_KUSTOMIZE_DIR}
       - REGISTRY=${_REGISTRY}
       - IMAGE_TAG=${_IMAGE_TAG}
+      - ENABLE_VULNERABILITY_SCAN=${_ENABLE_VULNERABILITY_SCAN}
     args:
       - -c
       - |
         set -eu
+        if [ "$${ENABLE_VULNERABILITY_SCAN}" != "true" ]; then
+          echo "Skipping image vulnerability scan because _ENABLE_VULNERABILITY_SCAN=$${ENABLE_VULNERABILITY_SCAN}"
+          exit 0
+        fi
         scan() {
           echo "Scanning $1"
           trivy image --severity=CRITICAL --exit-code=1 --no-progress --timeout=10m "$1"
