@@ -68,6 +68,7 @@ import { BROWSER_TOOLS, browserPrivateWorkflowTools, dispatchBrowserTool } from 
 import { privateWorkflowToolRegistry } from "./browser/private_tool_registry.js";
 import { SOURCE_TOOLS, dispatchSourceTool } from "./tools/source.js";
 import { SAFETY_TOOLS, dispatchSafetyTool } from "./tools/safety.js";
+import { PROGRAM_TOOLS, dispatchProgramTool } from "./tools/programs.js";
 import type { ToolContext } from "./tools/shared.js";
 import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
 import { isExternalToolName, callExternalTool, type ExternalTools } from "./external/index.js";
@@ -83,6 +84,7 @@ const TOOLS = [
   ...AUTH_TOOLS,
   ...SOURCE_TOOLS,
   ...SAFETY_TOOLS,
+  ...PROGRAM_TOOLS,
   {
     name: "synthi_attach",
     description:
@@ -1248,6 +1250,8 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
     if (sourceResponse) return sourceResponse as CallToolResult;
     const safetyResponse = await dispatchSafetyTool(toolName, args);
     if (safetyResponse) return safetyResponse as CallToolResult;
+    const programResponse = await dispatchProgramTool(toolName, args);
+    if (programResponse) return programResponse as CallToolResult;
     switch (toolName) {
       case "synthi_attach":
         return (await attachTool(args, ctx)) as CallToolResult;
