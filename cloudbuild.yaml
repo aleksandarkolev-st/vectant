@@ -420,6 +420,46 @@ steps:
           kubectl apply -f "$${SECRET_PREREQS}"
           kubectl wait --for=condition=Ready externalsecret/synthi-secrets -n $${NS} --timeout=180s
           kubectl wait --for=condition=Ready externalsecret/synthi-dojo-release-secrets -n $${NS} --timeout=180s
+
+          echo "=== Running Dojo Postgres migrations ==="
+          kubectl delete job dojo-postgres-migrate -n $${NS} --ignore-not-found
+          cat <<EOF | sed 's/^          //' | kubectl apply -f -
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: dojo-postgres-migrate
+            namespace: $${NS}
+            labels:
+              app.kubernetes.io/part-of: synthi-ide
+          spec:
+            backoffLimit: 0
+            template:
+              metadata:
+                labels:
+                  app: dojo-postgres-migrate
+                  app.kubernetes.io/part-of: synthi-ide
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: migrate
+                    image: $${REGISTRY}/synthi-mcp-http:$${TAG}
+                    imagePullPolicy: IfNotPresent
+                    command:
+                      - sh
+                      - -lc
+                    args:
+                      - npm run proof:dojo:postgres:migrate -- --out-dir /tmp/dojo-postgres-migrate
+                    envFrom:
+                      - secretRef:
+                          name: synthi-secrets
+                      - secretRef:
+                          name: synthi-dojo-release-secrets
+          EOF
+          if ! kubectl wait --for=condition=complete job/dojo-postgres-migrate -n $${NS} --timeout=300s; then
+            kubectl logs job/dojo-postgres-migrate -n $${NS} -c migrate || true
+            exit 1
+          fi
+          kubectl logs job/dojo-postgres-migrate -n $${NS} -c migrate --tail=100 || true
         fi
 
         echo "=== Running Prisma migrations ==="
