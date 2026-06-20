@@ -39,6 +39,29 @@ Command/CLI AI control over the program domain, over the PAT-gated `/api/integra
       RESIDUAL: faithful per-user-filesystem launch for non-container (cli/web) programs still needs the
       PAT→workspaceUserId resolution (persist the OAuth provider id) — deferred.
 
+### Group A — GUI images (done, built+validated locally)
+- [x] `@vectant/gui-base` (`backend/gui-images/gui-base`) — debian-slim + KasmVNC 1.4.0 + matchbox (no
+      menu/panel); no DE/terminal/file-manager/browser; per-session credential; plain HTTP+WS. 409MB.
+- [x] `@vectant/dbeaver` (`backend/gui-images/dbeaver`) — gui-base + DBeaver CE (bundled JRE 21). 668MB.
+      Verified: KasmVNC serves (401→200), DBeaver GUI launches under matchbox fullscreen, no escape binaries.
+
+### Group F — recipe (done)
+- [x] `@vectant/dbeaver` in `defaultPrograms.js` (runtimeType container, webGui, port 6901, env-driven image).
+
+### Group G — verification + wrap
+- [x] Local: images build+run+kiosk-validated; backend/synthi/mcp suites green; node --check clean.
+- [ ] **G1 live GKE gate (NOT run — billable/outward).** Spin scratch Sysbox cluster + push images to AR
+      digest-pinned + launch DBeaver in-pod → stream in App tab → kiosk-escape check → MCP exec_in_runtime →
+      teardown. Run only on explicit go-ahead.
+
+### Hardcoded-values audit (Slice 3, A+F)
+- DBeaver .deb pinned to **`latest`** (`dbeaver-ce_latest_amd64.deb`) — NOT reproducible. **Pin a version for
+  prod** (DBEAVER_URL is an ARG, so override at build). Acceptable for dev.
+- `debian:bookworm-slim` base + KasmVNC `1.4.0` (KASMVNC_VERSION ARG) — KasmVNC pinned ✓; base image not
+  digest-pinned (minor; digest-pin + trivy-gate for prod, like backend/runtime-image).
+- Recipe image/port are env-driven (VECTANT_DBEAVER_IMAGE / VECTANT_DBEAVER_PORT) ✓; KASM_PASSWORD generated ✓;
+  KASM_PORT/GEOMETRY/user all env-overridable ✓. No improper hardcoding in the runtime path.
+
 # Task 7: AI Chat redesign — "The Living Orb" 2026-05-25
 
 Direction A approved (living gradient orb identity). Scope: visual + IA restructure across floating / docked / mobile (one component system). Personality: expressive but calm — motion is purposeful, never twitchy. Diagnostics (Code Intel, Shadow verify, Regression) collapse into one drawer.
