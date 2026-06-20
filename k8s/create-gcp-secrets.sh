@@ -17,31 +17,38 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-PROJECT_ID="vectant-proj"
+PROJECT_ID="${PROJECT_ID:-vectant-proj}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-SECRETS=(
-  synthi-database-url
-  synthi-postgres-user
-  synthi-postgres-password
-  synthi-postgres-db
-  synthi-auth-secret
-  synthi-nextauth-secret
-  synthi-google-client-id
-  synthi-google-client-secret
-  synthi-github-id
-  synthi-github-secret
-  synthi-gcp-client-email
-  synthi-gcp-private-key
-  synthi-cloudflare-turn-token-id
-  synthi-cloudflare-turn-api-token
-  synthi-runtime-id-secret
-  synthi-google-ai-api-key
-  synthi-openai-api-key
-  synthi-ysweet-auth-key
+SECRET_MANIFESTS=(
+  "${SCRIPT_DIR}/external-secrets.yaml"
+  "${SCRIPT_DIR}/overlays/dojo-release-gate/dojo-release-external-secrets.yaml"
 )
+
+mapfile -t SECRETS < <(
+  awk '
+    /^[[:space:]]*remoteRef:[[:space:]]*$/ { in_remote_ref = 1; next }
+    in_remote_ref && /^[[:space:]]*key:[[:space:]]*/ {
+      value = $0
+      sub(/^[[:space:]]*key:[[:space:]]*/, "", value)
+      gsub(/["'\''"]/, "", value)
+      if (value != "") print value
+      in_remote_ref = 0
+      next
+    }
+    /^[^[:space:]-]/ { in_remote_ref = 0 }
+  ' "${SECRET_MANIFESTS[@]}" | sort -u
+)
+
+if [[ ${#SECRETS[@]} -eq 0 ]]; then
+  echo "No Secret Manager remoteRef keys found in ExternalSecret manifests." >&2
+  exit 1
+fi
 
 echo "=== Creating ${#SECRETS[@]} secrets in GCP Secret Manager ==="
 echo "Project: ${PROJECT_ID}"
+echo "Source manifests:"
+printf "  %s\n" "${SECRET_MANIFESTS[@]}"
 echo ""
 
 for secret in "${SECRETS[@]}"; do

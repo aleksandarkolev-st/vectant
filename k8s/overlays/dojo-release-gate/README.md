@@ -45,6 +45,10 @@ Required Secret Manager names added by this overlay:
 
 ```text
 synthi-redis-url
+synthi-dojo-release-agent-id
+synthi-dojo-release-workspace-id
+synthi-auth-checkpoint-scope
+synthi-auth-checkpoint-store-file
 synthi-dojo-control-plane-postgres-url
 synthi-dojo-evidence-ledger-postgres-url
 synthi-dojo-proof-signing-key-id
@@ -56,6 +60,10 @@ synthi-dojo-mcp-manifest-key-id
 synthi-dojo-mcp-manifest-private-key-pem
 synthi-dojo-mcp-manifest-public-key-pem
 synthi-dojo-mcp-bearer-token
+synthi-dojo-hosted-browser-cdp-url
+synthi-dojo-hosted-browser-workspace-url
+synthi-private-workflow-tool-scope
+synthi-private-workflow-tool-store-file
 ```
 
 The proof-signing private key env is deliberately not included. Production proof
