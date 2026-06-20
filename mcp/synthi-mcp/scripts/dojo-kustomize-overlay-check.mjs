@@ -290,10 +290,10 @@ function validateRenderedOverlay(rendered, dojoMcpHost = defaultDojoMcpHost()) {
       });
       continue;
     }
-    if (!isSecretBackedEnvBlock(redisBlocks[0], "synthi-secrets", "REDIS_URL")) {
+    if (!isSecretBackedEnvBlock(redisBlocks[0], "synthi-dojo-release-secrets", "REDIS_URL")) {
       failures.push({
         code: "redis_env_not_secret_backed",
-        message: `Deployment/${deploymentName} REDIS_URL must read from synthi-secrets/REDIS_URL.`,
+        message: `Deployment/${deploymentName} REDIS_URL must read from synthi-dojo-release-secrets/REDIS_URL.`,
       });
     }
   }
@@ -338,6 +338,12 @@ function validateRenderedOverlay(rendered, dojoMcpHost = defaultDojoMcpHost()) {
       failures.push({
         code: "dojo_mcp_host_secret_not_loaded",
         message: `Deployment/${dojoMcpHost.deployment} must load Secret/synthi-secrets.`,
+      });
+    }
+    if (!hasEnvFromRef(mcpDeployment.doc, "secretRef", "synthi-dojo-release-secrets")) {
+      failures.push({
+        code: "dojo_mcp_host_release_secret_not_loaded",
+        message: `Deployment/${dojoMcpHost.deployment} must load Secret/synthi-dojo-release-secrets.`,
       });
     }
     for (const [envName, expectedValue] of [
@@ -628,7 +634,7 @@ spec:
           valueFrom:
             secretKeyRef:
               key: REDIS_URL
-              name: synthi-secrets
+              name: synthi-dojo-release-secrets
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -644,7 +650,7 @@ spec:
           valueFrom:
             secretKeyRef:
               key: REDIS_URL
-              name: synthi-secrets
+              name: synthi-dojo-release-secrets
 ---
 apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
@@ -677,6 +683,8 @@ spec:
             name: synthi-config
         - secretRef:
             name: synthi-secrets
+        - secretRef:
+            name: synthi-dojo-release-secrets
         env:
         - name: SYNTHI_MCP_HTTP_HOST
           value: "0.0.0.0"

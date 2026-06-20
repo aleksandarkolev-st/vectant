@@ -445,7 +445,9 @@ Acceptance:
 - External Secrets Operator is installed
 - `SecretStore` can read from GCP Secret Manager
 - `synthi-secrets` exists
-- `synthi-dojo-release-secrets` merges required Dojo keys into `synthi-secrets`
+- `synthi-dojo-release-secrets` syncs required Dojo keys into a dedicated
+  Kubernetes Secret, so the base `synthi-secrets` ExternalSecret does not
+  overwrite Dojo release-only keys during refresh
 
 ### 8. Deploy The Dojo Release Overlay
 

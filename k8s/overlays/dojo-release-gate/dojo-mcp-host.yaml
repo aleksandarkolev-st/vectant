@@ -67,6 +67,8 @@ spec:
                 name: synthi-config
             - secretRef:
                 name: synthi-secrets
+            - secretRef:
+                name: synthi-dojo-release-secrets
           env:
             - name: SYNTHI_MCP_HTTP_HOST
               value: "0.0.0.0"

@@ -10,7 +10,7 @@ RUN NODE_ENV=development npm ci --workspaces=false --include=dev --production=fa
 COPY mcp/synthi-mcp/tsconfig.json ./
 COPY mcp/synthi-mcp/src ./src
 COPY mcp/synthi-mcp/scripts ./scripts
-RUN npm run build
+RUN npm run build && test -s dist/http.js
 
 ENV SYNTHI_MCP_HTTP_HOST=0.0.0.0
 ENV SYNTHI_MCP_HTTP_PORT=9467

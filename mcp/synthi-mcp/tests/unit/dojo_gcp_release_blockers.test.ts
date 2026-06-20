@@ -157,7 +157,7 @@ describe("Dojo GCP release blocker summarizer", () => {
   it("categorizes kubectl and gcloud availability checks as release evidence categories", () => {
     expect(categoryForCheck({ id: "kubectl_available", detail: {} })).toBe("kubernetes_context");
     expect(categoryForCheck({ id: "gcloud_available", detail: {} })).toBe("inventory_access");
-    expect(categoryForCheck({ id: "externalsecret_binding:synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url", detail: {} })).toBe("secret_inventory");
+    expect(categoryForCheck({ id: "externalsecret_binding:synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL=synthi-redis-url", detail: {} })).toBe("secret_inventory");
   });
 
   it("distinguishes unconfigured expected cloud resource names from missing cloud resources", () => {

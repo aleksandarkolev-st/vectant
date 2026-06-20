@@ -9,10 +9,11 @@ It does three things:
 - removes the in-cluster Postgres and Redis resources from the rendered output
 - removes the beta in-cluster Redis URL from the rendered `synthi-config`
 - routes `collab-server` and `signaling-server` Redis through the
-  externally-synced `synthi-secrets/REDIS_URL` value
+  externally-synced `synthi-dojo-release-secrets/REDIS_URL` value
 - adds fail-closed Dojo production posture values to `synthi-config`
-- merges Dojo release-only Secret Manager values into the existing
-  `synthi-secrets` Kubernetes Secret through External Secrets Operator
+- syncs Dojo release-only Secret Manager values into a dedicated
+  `synthi-dojo-release-secrets` Kubernetes Secret through External Secrets
+  Operator
 
 Render locally before any deploy:
 
