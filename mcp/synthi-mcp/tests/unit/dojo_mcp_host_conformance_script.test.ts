@@ -8,6 +8,7 @@ import {
   buildRuntimeSessionConfig,
   buildMcpHttpHeaders,
   classifyMcpHost,
+  conformanceProofContextClaimsForSkill,
   conformanceToolArgsForSkill,
   deploymentObservationsFromReadiness,
   DOJO_MCP_CONFORMANCE_TENANT_CONTEXT_FIELDS,
@@ -414,6 +415,17 @@ describe("Dojo MCP host conformance harness", () => {
     expect(guardrailContextDefaultsForSkill(skill)).toEqual({
       client_id_verified: true,
       invalid_value_count: 0,
+    });
+    expect(conformanceProofContextClaimsForSkill({
+      skill,
+      baseContextClaims: {
+        client_id_verified: false,
+        workspace_verified: true,
+      },
+    })).toEqual({
+      client_id_verified: false,
+      invalid_value_count: 0,
+      workspace_verified: true,
     });
     expect(conformanceToolArgsForSkill({
       skill,

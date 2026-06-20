@@ -222,6 +222,10 @@ async function main() {
       ? selectedSkillCall.parsed.skill
       : competency;
     const derivedGuardrailContext = guardrailContextDefaultsForSkill(selectedSkill);
+    const proofContextClaims = conformanceProofContextClaimsForSkill({
+      baseContextClaims: config.contextClaims,
+      skill: selectedSkill,
+    });
     const toolArgs = conformanceToolArgsForSkill({
       baseToolArgs: config.toolArgs,
       skill: selectedSkill,
@@ -231,6 +235,7 @@ async function main() {
       ok: true,
       skill_id: selectedSkill.skill_id ?? competency.skill_id,
       derived_guardrail_context_keys: Object.keys(derivedGuardrailContext).sort(),
+      effective_context_claim_keys: Object.keys(proofContextClaims).sort(),
       explicit_tool_arg_keys: Object.keys(config.toolArgs).sort(),
       effective_tool_arg_keys: Object.keys(toolArgs).sort(),
     });
@@ -240,7 +245,7 @@ async function main() {
       ...config.tenantContextArgs,
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
-      context_claims: config.contextClaims,
+      context_claims: proofContextClaims,
       ...(config.evidenceClaims ? { evidence_claims: config.evidenceClaims } : {}),
       ...(config.evidenceRecordIds.length ? { evidence_record_ids: config.evidenceRecordIds } : {}),
       ...(config.ledgerCheckpointHash ? { ledger_checkpoint_hash: config.ledgerCheckpointHash } : {}),
@@ -847,6 +852,16 @@ export function selectDojoCompetencyForConformance(
 export function conformanceToolArgsForSkill({ baseToolArgs = {}, skill = {} } = {}) {
   const base = baseToolArgs && typeof baseToolArgs === "object" && !Array.isArray(baseToolArgs)
     ? baseToolArgs
+    : {};
+  return {
+    ...guardrailContextDefaultsForSkill(skill),
+    ...base,
+  };
+}
+
+export function conformanceProofContextClaimsForSkill({ baseContextClaims = {}, skill = {} } = {}) {
+  const base = baseContextClaims && typeof baseContextClaims === "object" && !Array.isArray(baseContextClaims)
+    ? baseContextClaims
     : {};
   return {
     ...guardrailContextDefaultsForSkill(skill),
