@@ -145,6 +145,14 @@ describe("Dojo release competency seed harness", () => {
         close: async () => undefined,
       }),
       dispatchDojoTool: async (tool, args) => {
+        if (tool === "synthi_dojo_list_competencies") {
+          return {
+            structuredContent: {
+              ok: true,
+              competencies: [],
+            },
+          };
+        }
         if (tool === "synthi_dojo_get_skill") {
           return {
             isError: true,
@@ -362,6 +370,17 @@ describe("Dojo release competency seed harness", () => {
       }),
       dispatchDojoTool: async (tool) => {
         calls.push(tool);
+        if (tool === "synthi_dojo_list_competencies") {
+          return {
+            structuredContent: {
+              ok: true,
+              competencies: [{
+                skill_id: "skill-release-seed",
+                published_tool_name: "synthi_app_release_seed",
+              }],
+            },
+          };
+        }
         if (tool === "synthi_dojo_get_skill") {
           return {
             structuredContent: {
@@ -386,7 +405,7 @@ describe("Dojo release competency seed harness", () => {
       modules,
     });
 
-    expect(calls).toEqual(["synthi_dojo_get_skill"]);
+    expect(calls).toEqual(["synthi_dojo_list_competencies", "synthi_dojo_get_skill"]);
     expect(ledgerEvents).toEqual(["append:skill-release-seed"]);
     const report = JSON.parse(await readFile(result.report_path, "utf8"));
     expect(report.skill.skill_id).toBe("skill-release-seed");

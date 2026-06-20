@@ -428,10 +428,25 @@ async function listDurableDojoSkillsForTenantIfRequired(
   }
   try {
     const skills = await resolution.skill_store.listSkills({ status: "published" });
-    return { ok: true, skills, source: "postgres" };
+    const licensedSkills: DojoSkill[] = [];
+    for (const skill of skills) {
+      const licenseId = skill.permission_license?.license_id;
+      const license = licenseId ? await resolution.license_store.getLicense(licenseId) : null;
+      if (durableLicenseRecordMatchesSkill(skill, license)) licensedSkills.push(skill);
+    }
+    return { ok: true, skills: licensedSkills, source: "postgres" };
   } finally {
     await resolution.close?.();
   }
+}
+
+function durableLicenseRecordMatchesSkill(skill: DojoSkill, license: DojoPermissionLicenseRecord | null | undefined): boolean {
+  if (!license || typeof license !== "object") return false;
+  return license.skill_id === skill.skill_id
+    && license.workspace_id === skill.workspace_id
+    && license.license_id === skill.permission_license.license_id
+    && license.license_version === skill.permission_license.license_version
+    && license.status === "active";
 }
 
 async function persistPublishedSkillToDurableControlPlaneIfRequired(input: {

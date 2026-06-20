@@ -279,9 +279,35 @@ export function registerReleaseSeedSourceIdentity({ runtime = {}, browserBroker,
 
 export async function findReusableReleaseSeedPublication({ runtime, config, candidateSkill, manifest }) {
   if (typeof runtime.dispatchDojoTool !== "function") return null;
+  const listed = await runtime.dispatchDojoTool("synthi_dojo_list_competencies", config.tenant);
+  const visibleCompetencies = objectOrNull(listed?.structuredContent)?.competencies;
+  const reusableCompetency = selectReusableReleaseSeedCompetency({
+    competencies: Array.isArray(visibleCompetencies) ? visibleCompetencies : [],
+    candidateSkill,
+    manifest,
+  });
+  if (reusableCompetency) {
+    return await loadReusableReleaseSeedPublication({
+      runtime,
+      config,
+      candidateSkill,
+      manifest,
+      skillId: reusableCompetency.skill_id,
+    });
+  }
+  return await loadReusableReleaseSeedPublication({
+    runtime,
+    config,
+    candidateSkill,
+    manifest,
+    skillId: candidateSkill.skill_id,
+  });
+}
+
+async function loadReusableReleaseSeedPublication({ runtime, config, candidateSkill, manifest, skillId }) {
   const response = await runtime.dispatchDojoTool("synthi_dojo_get_skill", {
     ...config.tenant,
-    skill_id: candidateSkill.skill_id,
+    skill_id: skillId,
   });
   const content = objectOrNull(response?.structuredContent);
   if (!response || response.isError || content?.ok === false) return null;
@@ -324,10 +350,23 @@ export async function findReusableReleaseSeedPublication({ runtime, config, cand
   };
 }
 
+function selectReusableReleaseSeedCompetency({ competencies, candidateSkill, manifest }) {
+  const items = competencies
+    .map((item) => objectOrNull(item))
+    .filter(Boolean)
+    .filter((item) => {
+      if (item.skill_id === candidateSkill.skill_id) return true;
+      const toolName = stringOpt(item.published_tool_name);
+      if (toolName && toolName.startsWith(`${manifest.tool_name}_`)) return true;
+      const skillId = stringOpt(item.skill_id);
+      return Boolean(skillId && skillId.startsWith(`${candidateSkill.skill_id}_`));
+    });
+  return items[0] ?? null;
+}
+
 function isReusableReleaseSeedSkill({ skill, candidateSkill }) {
   const record = objectOrNull(skill);
   if (!record) return false;
-  if (record.skill_id !== candidateSkill.skill_id) return false;
   if (record.workspace_id !== candidateSkill.workspace_id) return false;
   const license = objectOrNull(record.permission_license);
   if (!license || license.autonomy_level === "blocked") return false;
