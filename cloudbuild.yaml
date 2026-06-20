@@ -444,6 +444,10 @@ steps:
 
         echo "=== Applying Kubernetes manifests ==="
         kubectl apply -f "$${RENDERED}"
+        if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then
+          echo "=== Removing in-cluster beta Redis/Postgres workloads from Dojo release namespace ==="
+          kubectl delete deployment/redis service/redis statefulset/postgres service/postgres -n $${NS} --ignore-not-found
+        fi
 
         echo "=== Waiting for rollouts ==="
         kubectl rollout status deployment/frontend -n $${NS} --timeout=300s
