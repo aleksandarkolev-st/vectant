@@ -803,6 +803,13 @@ describe("Dojo MCP skill bus", () => {
         ok: false,
         error_codes: ["dojo_mcp_skill_executor_failed"],
       }),
+      result: {
+        error: "dojo_mcp_skill_executor_failed",
+        executor_error: {
+          name: "Error",
+          message: "executor unavailable",
+        },
+      },
       audit_event_id: "audit-1",
     }));
     expect(auditEvents).toEqual([
@@ -815,6 +822,10 @@ describe("Dojo MCP skill bus", () => {
             ok: false,
             error_codes: ["dojo_mcp_skill_executor_failed"],
           }),
+          executor_error: {
+            name: "Error",
+            message: "executor unavailable",
+          },
         }),
       }),
     ]);
