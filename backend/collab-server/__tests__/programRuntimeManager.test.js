@@ -155,6 +155,20 @@ test('recomputeRuntimeScopePorts drops infra ports (dockerd 2376) before attribu
   assert.deepEqual(mgr.getManagedSession('p1').activePorts, [8080]);
 });
 
+// Slice 3 (GUI dev-tool streaming): a container program's webGui flag rides onto
+// the session so the panel renders the interactive KasmVNC surface.
+test('launchManagedSession carries webGui onto the public session', async () => {
+  const mgr = makeManager();
+  const s = await mgr.launchManagedSession({ sessionId: 'g1', workspaceSlug: 'w', command: 'docker run x', runtimeType: 'container', webGui: true });
+  assert.equal(s.webGui, true);
+});
+
+test('launchManagedSession defaults webGui to false', async () => {
+  const mgr = makeManager();
+  const s = await mgr.launchManagedSession({ sessionId: 'g2', workspaceSlug: 'w', command: 'x', runtimeType: 'container' });
+  assert.equal(s.webGui, false);
+});
+
 test('kills orphaned headless sessions after the TTL', () => {
   const activeSessions = new Map();
   const timers = createTimerHarness();
