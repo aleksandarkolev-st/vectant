@@ -510,8 +510,10 @@ synthi-dojo-release-workspace-id -> SYNTHI_WORKSPACE_ID
 synthi-dojo-release-agent-id -> SYNTHI_AGENT_ID
 synthi-private-workflow-tool-store-file -> SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE
 synthi-private-workflow-tool-scope -> SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE
+synthi-private-workflow-tool-store-key -> SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY
 synthi-auth-checkpoint-store-file -> SYNTHI_AUTH_CHECKPOINT_STORE_FILE
 synthi-auth-checkpoint-scope -> SYNTHI_AUTH_CHECKPOINT_SCOPE
+synthi-auth-checkpoint-store-key -> SYNTHI_AUTH_CHECKPOINT_STORE_KEY
 ```
 
 Do not store a production proof private key or default local signing key in
@@ -874,10 +876,21 @@ $env:SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING = "1"
 ```
 
 For IAP-protected hosts, generate `SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN` for the
-release IAP OAuth client ID, for example:
+same backend and audience that the deployed load balancer accepts. The common
+IAP path is an identity token whose audience is the IAP OAuth client ID:
 
 ```powershell
 $env:SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN = gcloud auth print-identity-token --audiences="<iap-oauth-client-id>" --include-email
+```
+
+If the beta backend rejects that token with an audience error, use the release
+service account to sign a short-lived JWT whose `aud` is the exact deployed MCP
+URL. Keep the app bearer token separate in `X-Synthi-Dojo-Mcp-Token`; the signed
+JWT still goes in `Authorization`.
+
+```powershell
+$env:SYNTHI_DOJO_MCP_HOST_URL = "https://$env:DOMAIN/dojo/mcp"
+$env:SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN = "<service-account-signed-jwt-for-$env:SYNTHI_DOJO_MCP_HOST_URL>"
 ```
 
 For a non-IAP host, omit `SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN` and either omit
@@ -1166,6 +1179,11 @@ $env:SYNTHI_DOJO_MCP_CONFORMANCE_NO_LOCAL_CDP_LEAKAGE='1'
 $env:SYNTHI_DOJO_MCP_CONFORMANCE_LICENSED_SKILL_FILTERING='1'
 npm --prefix mcp/synthi-mcp run live:dojo:mcp-host-conformance
 ```
+
+When IAP is enabled, `SYNTHI_DOJO_MCP_IAP_BEARER_TOKEN` is sent as the HTTP
+`Authorization` bearer token. Therefore `SYNTHI_DOJO_MCP_BEARER_HEADER` must be
+a separate application header such as `X-Synthi-Dojo-Mcp-Token`; otherwise the
+harness fails fast with `dojo_mcp_bearer_header_conflicts_with_iap_authorization`.
 
 **Expected evidence:**
 

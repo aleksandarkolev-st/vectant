@@ -416,8 +416,10 @@ synthi-dojo-release-workspace-id
 synthi-dojo-release-agent-id
 synthi-private-workflow-tool-store-file
 synthi-private-workflow-tool-scope
+synthi-private-workflow-tool-store-key
 synthi-auth-checkpoint-store-file
 synthi-auth-checkpoint-scope
+synthi-auth-checkpoint-store-key
 ```
 
 Do not commit secret payloads. Do not print secret payloads in logs. Inventory
@@ -619,6 +621,13 @@ Dojo MCP host must enforce both:
 
 The IAP token and MCP bearer token are different controls and should remain
 separate.
+
+When IAP is enabled, the release conformance client sends the IAP credential in
+the HTTP `Authorization` bearer header. The Dojo application bearer token must
+therefore use a distinct header such as `X-Synthi-Dojo-Mcp-Token`. The accepted
+IAP token audience must be verified against the deployed backend before
+archiving release evidence; the beta load balancer has previously required the
+exact deployed MCP URL audience for service-account signed JWT access.
 
 ---
 
