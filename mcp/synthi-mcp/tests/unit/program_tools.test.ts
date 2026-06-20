@@ -32,9 +32,9 @@ describe("isProgramToolName", () => {
 });
 
 describe("synthi_exec_in_runtime", () => {
-  it("posts the command to the PAT-gated runtime-exec endpoint and returns output/exitCode", async () => {
+  it("posts the command to the PAT-gated runtime-exec endpoint and returns stdout/stderr/exitCode", async () => {
     const { calls, fetchImpl } = captureFetch(
-      jsonRes(200, { sessionId: "ai-1", output: "hello\n", exitCode: 0, timedOut: false }),
+      jsonRes(200, { runtimeScope: "scope-1", stdout: "hello\n", stderr: "", exitCode: 0, timedOut: false }),
     );
     const res = await dispatchProgramTool(
       "synthi_exec_in_runtime",
@@ -44,7 +44,7 @@ describe("synthi_exec_in_runtime", () => {
     );
     expect(res).not.toBeNull();
     expect(res!.isError).toBeFalsy();
-    expect(res!.structuredContent).toMatchObject({ output: "hello\n", exitCode: 0, timedOut: false, sessionId: "ai-1" });
+    expect(res!.structuredContent).toMatchObject({ stdout: "hello\n", stderr: "", exitCode: 0, timedOut: false, runtimeScope: "scope-1" });
     expect(calls[0].url).toBe("https://app.example/api/integrations/mcp/runtime-exec");
     expect(calls[0].init.method).toBe("POST");
     expect(calls[0].init.headers.authorization).toBe("Bearer synthi_pat_x");
@@ -52,7 +52,7 @@ describe("synthi_exec_in_runtime", () => {
   });
 
   it("accepts an explicit workspaceSlug arg over the env default", async () => {
-    const { calls, fetchImpl } = captureFetch(jsonRes(200, { output: "", exitCode: 0 }));
+    const { calls, fetchImpl } = captureFetch(jsonRes(200, { stdout: "", exitCode: 0 }));
     await dispatchProgramTool(
       "synthi_exec_in_runtime",
       { command: "ls", workspaceSlug: "other" },

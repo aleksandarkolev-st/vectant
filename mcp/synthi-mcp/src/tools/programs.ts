@@ -33,10 +33,10 @@ export const PROGRAM_TOOLS: ProgramToolDescriptor[] = [
   {
     name: EXEC_TOOL,
     description:
-      "Run a shell command in the workspace's runtime sandbox — where docker and the workspace's programs run. " +
-      "Use for tasks like 'open docker and run all containers' or running database/CLI tools. " +
-      "Returns combined output (stdout+stderr merged by the runtime), exitCode, and timedOut. " +
-      "Requires the workspace to have granted program.launch consent; returns error 'consent_required' otherwise.",
+      "Run a shell command inside the workspace's Sysbox runtime — where the workspace's own docker and its " +
+      "programs run. Use for tasks like 'open docker and run all containers' or running database/CLI tools. " +
+      "Returns stdout, stderr, exitCode, and timedOut. Requires the workspace to have granted program.launch " +
+      "consent (returns error 'consent_required' otherwise) and a ready runtime (else 'runtime_pod_not_ready').",
     inputSchema: {
       type: "object",
       properties: {
@@ -125,10 +125,11 @@ async function execInRuntime(
   if (!res.ok) return errorFromResponse(res, data, "exec_failed");
 
   return jsonResponse({
-    sessionId: data["sessionId"] ?? null,
-    output: data["output"] ?? "",
+    stdout: data["stdout"] ?? "",
+    stderr: data["stderr"] ?? "",
     exitCode: data["exitCode"] ?? null,
     timedOut: Boolean(data["timedOut"]),
+    runtimeScope: data["runtimeScope"] ?? null,
   });
 }
 

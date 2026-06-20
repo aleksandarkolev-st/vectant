@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
-import { randomUUID } from 'node:crypto';
 import { authenticatePat } from '@/lib/integrations/patAuth';
 import { canWriteScope } from '@/lib/integrations/scope';
 import { listPermissionGrants } from '@/lib/programs/store';
-import { launchProgramRuntime } from '@/lib/programs/runtimeClient';
+import { execInWorkspaceRuntime } from '@/lib/programs/runtimeClient';
 import { PROGRAM_LAUNCH_SCOPE } from '@/lib/programs/routeHelpers';
 import { checkLimit, RATE_LIMITS } from '@/lib/integrations/rateLimit';
 
@@ -13,11 +12,11 @@ export const runtime = 'nodejs';
  * PAT-gated runtime command exec for the MCP `synthi_exec_in_runtime` tool
  * (GUI dev-tool streaming, Slice 3 / Group E).
  *
- * Runs a one-shot command in the workspace's runtime sandbox — where docker and
- * the workspace's programs live — and returns its combined output. Unlike the
- * cookie-authenticated program-sessions POST, this is transient: it does NOT
- * persist a ProgramSession row (so AI execs don't pollute the session list); it
- * launches under an ephemeral `ai-*` runtime session id.
+ * Runs a one-shot command INSIDE the workspace's Sysbox runtime pod — where the
+ * workspace's own dockerd and its programs live — and returns stdout/stderr/
+ * exitCode. Routing is by workspaceSlug → runtimeScope on the collab-server
+ * (never a user id), so this reaches docker and needs no per-user filesystem
+ * identity. Transient: no ProgramSession row is persisted.
  *
  * Security: owner/admin scope (canWriteScope) + an existing `program.launch`
  * consent grant is required. A PAT never self-grants consent — a workspace must
@@ -55,24 +54,20 @@ export async function POST(req) {
   }
 
   const timeout = Number.isFinite(Number(body.timeout)) ? Number(body.timeout) : undefined;
-  const sessionId = `ai-${randomUUID().slice(0, 8)}`;
 
   try {
-    const result = await launchProgramRuntime({
-      workspaceSlug,
-      sessionId,
-      command,
-      userId: actor.userId,
-      title: 'ai-exec',
-      ...(timeout !== undefined ? { timeout } : {}),
-    });
+    const result = await execInWorkspaceRuntime(workspaceSlug, { command, timeout });
     return NextResponse.json({
-      sessionId: result.sessionId || sessionId,
-      output: result.output || '',
+      runtimeScope: result.runtimeScope ?? null,
+      stdout: result.stdout || '',
+      stderr: result.stderr || '',
       exitCode: result.exitCode ?? null,
       timedOut: Boolean(result.timedOut),
     });
   } catch (error) {
+    if (error?.status === 409) {
+      return NextResponse.json({ error: error?.payload?.error || 'runtime_not_ready' }, { status: 409 });
+    }
     return NextResponse.json(
       { error: 'runtime_exec_failed', message: error?.message || 'runtime exec failed' },
       { status: 502 },

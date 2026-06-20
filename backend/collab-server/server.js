@@ -15,7 +15,7 @@ const { createRuntimeManager, runtimeContainerHost } = require('./workspaceRunti
 const { handleEnsureRuntime } = require('./ensureRuntime');
 const { createContainerPortMonitor } = require('./containerPortMonitor');
 const { isSysboxRuntimeEnabled } = require('./runtimePodSpec');
-const { runtimeRunOnce, createRuntimePodProgram, programRuntimeTarget, pickRuntimeScopeForSlug } = require('./runtimePodTerminal');
+const { runtimeRunOnce, runtimeExecOnce, createRuntimePodProgram, programRuntimeTarget, pickRuntimeScopeForSlug } = require('./runtimePodTerminal');
 const { createContainerPortProxy } = require('./containerPortProxy');
 const config = require('./config');
 const gitService = require('./gitService');
@@ -1954,6 +1954,51 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message || 'Program launch failed' }));
+    }
+    return;
+  }
+
+  // POST /program-runtime/:slug/exec  { command, timeout? }
+  // One-shot, non-interactive command exec inside the workspace's Sysbox runtime
+  // pod (where its own dockerd lives, so `docker ...` works). Routed by
+  // workspaceSlug → runtimeScope (never a user id). Returns
+  // { runtimeScope, stdout, stderr, exitCode, timedOut }. Used by the PAT-gated
+  // MCP `synthi_exec_in_runtime` tool (the in-app AI's command control).
+  const execRuntimeMatch = /^\/program-runtime\/([^/]+)\/exec$/.exec(programRuntimeUrl.pathname);
+  if (execRuntimeMatch && req.method === 'POST') {
+    const slug = decodeURIComponent(execRuntimeMatch[1]);
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let parsed;
+    try { parsed = JSON.parse(body); } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    const command = String(parsed.command || '').trim();
+    if (!command) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing command' }));
+      return;
+    }
+    try {
+      const sessions = typeof spawner.listActiveRuntimeSessions === 'function'
+        ? await spawner.listActiveRuntimeSessions()
+        : [];
+      const runtimeScope = pickRuntimeScopeForSlug(sessions, slug);
+      if (!runtimeScope) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'runtime_pod_not_ready' }));
+        return;
+      }
+      const result = await runtimeExecOnce(runtimeScope, command, { timeoutMs: Number(parsed.timeout) || 30000 });
+      console.log(`[RuntimeExec] slug=${slug} runtimeScope=${runtimeScope} exit=${result.exitCode} timedOut=${result.timedOut} cmd=${command.slice(0, 120)}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ runtimeScope, ...result }));
+    } catch (err) {
+      const notReady = err && err.message === 'runtime_pod_not_ready';
+      res.writeHead(notReady ? 409 : 500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'runtime exec failed' }));
     }
     return;
   }
