@@ -235,8 +235,7 @@ steps:
           --dockerfile=mcp/synthi-mcp/Dockerfile.http \
           --context=dir:///workspace \
           --destination="$${REGISTRY}/synthi-mcp-http:$${IMAGE_TAG}" \
-          --cache=true \
-          --cache-ttl=168h
+          --cache=false
 
   # ── 9. Per-workspace runtime image (rootful dind under Sysbox) ──────────
   # ROOTFUL build (RUNTIME_USER=root, daemon at /var/run/docker.sock): under Sysbox

@@ -5,6 +5,7 @@ WORKDIR /workspace/mcp/synthi-mcp
 COPY packages/mcp-hub /workspace/packages/mcp-hub
 COPY mcp/synthi-mcp/.npmrc mcp/synthi-mcp/package.json mcp/synthi-mcp/package-lock.json ./
 RUN NODE_ENV=development npm ci --workspaces=false --include=dev --production=false \
+  && test -x ./node_modules/.bin/tsc \
   && ./node_modules/.bin/tsc --version
 
 COPY mcp/synthi-mcp/tsconfig.json ./
