@@ -6029,6 +6029,7 @@ function productionRuntimeEvidenceFixture(overrides = {}) {
       ok: true,
       status: "authorized",
       session_id: "dojo_runtime_session_fixture",
+      runtime_id: "dojo_runtime_fixture",
       action_kind: "proof_gated_tool",
       blocked_by: [],
       audit_event_id: "audit-runtime-action",

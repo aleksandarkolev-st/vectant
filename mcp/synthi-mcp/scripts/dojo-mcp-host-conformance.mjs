@@ -1316,6 +1316,8 @@ function summarizeDeploymentReadiness(readiness) {
     hosted_runtime: readiness.hosted_runtime && typeof readiness.hosted_runtime === "object"
       ? {
           configured: readiness.hosted_runtime.configured === true,
+          cdp_endpoint_source: readiness.hosted_runtime.cdp_endpoint_source ?? null,
+          cdp_topology: readiness.hosted_runtime.cdp_topology ?? null,
           runtime_host_class: readiness.hosted_runtime.runtime_host_class ?? null,
           non_loopback_runtime: readiness.hosted_runtime.non_loopback_runtime === true,
           origin_allowlist_count: Array.isArray(readiness.hosted_runtime.origin_allowlist)

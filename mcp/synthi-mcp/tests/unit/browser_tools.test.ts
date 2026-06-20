@@ -1396,7 +1396,7 @@ describe("browser MCP tool surface", () => {
     }).runtime).toEqual(expect.objectContaining({
       configured: false,
       ignored_local_dev_env: ["SYNTHI_BROWSER_CDP_URL"],
-      required_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
+      required_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL or SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE"],
     }));
     expect(browserBroker.runtimeAttachment()).toBeNull();
   });
@@ -1436,7 +1436,7 @@ describe("browser MCP tool surface", () => {
       selector: "button",
     });
 
-    expect(attach).toHaveBeenCalledWith("ws://hosted-runtime.example.test/devtools/browser/session");
+    expect(attach).toHaveBeenCalledWith("ws://hosted-runtime.example.test/devtools/browser/session", { headers: {} });
     expect(attached?.isError).toBeUndefined();
     expect(revoked?.isError).toBeUndefined();
     expect(revoked?.structuredContent).toEqual(expect.objectContaining({

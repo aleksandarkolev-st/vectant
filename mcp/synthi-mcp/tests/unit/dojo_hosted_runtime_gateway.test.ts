@@ -129,6 +129,7 @@ describe("Dojo hosted runtime gateway", () => {
       ok: false,
       status: "blocked",
       session_id: "dojo_runtime_session_session-id",
+      runtime_id: null,
       action_kind: "graph_action",
       blocked_by: expectedBlockedBy,
       evidence_record_ids: [],

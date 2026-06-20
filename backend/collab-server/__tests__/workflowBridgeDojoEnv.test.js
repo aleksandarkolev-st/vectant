@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 
 process.env.SPAWNER_MODE = 'local';
 process.env.SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE = 'example.invalid/synthi-browser-workflow-bridge:test';
@@ -76,7 +78,15 @@ test('workflow bridge container includes Dojo env refs and runtime actor scope',
 
   assert.equal(env.get('SYNTHI_ACTOR_ID').value, 'user-42');
   assert.equal(env.get('SYNTHI_WORKSPACE_ID').value, 'alpha');
+  assert.equal(env.get('SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY').value, 'same-pod');
   assert.equal(env.get('SYNTHI_DOJO_PRODUCTION_ENFORCEMENT').valueFrom.configMapKeyRef.optional, true);
   assert.equal(env.get('SYNTHI_DOJO_CONTROL_PLANE_POSTGRES_URL').valueFrom.secretKeyRef.optional, true);
   assert.equal(env.get('SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM').valueFrom.secretKeyRef.optional, true);
+});
+
+test('workspace service exposes workflow bridge and hosted browser CDP only when sidecar image is configured', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'workspacePodSpawner.js'), 'utf8');
+
+  assert.match(source, /\{ name: 'workflow', port: WORKFLOW_BRIDGE_PORT, targetPort: WORKFLOW_BRIDGE_PORT \}/);
+  assert.match(source, /\{ name: 'cdp', port: HOSTED_BROWSER_CDP_PORT, targetPort: HOSTED_BROWSER_CDP_PORT \}/);
 });

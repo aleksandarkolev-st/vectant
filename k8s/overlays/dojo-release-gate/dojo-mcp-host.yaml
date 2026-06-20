@@ -82,6 +82,17 @@ spec:
               value: "X-Synthi-Dojo-Mcp-Token"
             - name: SYNTHI_VISION_BACKEND
               value: "agent_side"
+            - name: SYNTHI_HOSTED_BROWSER_CDP_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_HOSTED_BROWSER_CDP_PORT
+            - name: SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE
+              value: ""
+            - name: SYNTHI_HOSTED_BROWSER_CDP_URL
+              value: "http://127.0.0.1:$(SYNTHI_HOSTED_BROWSER_CDP_PORT)"
+            - name: SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY
+              value: "same-pod"
           readinessProbe:
             httpGet:
               path: /healthz
@@ -113,10 +124,103 @@ spec:
             capabilities:
               drop:
                 - ALL
+        - name: hosted-browser
+          image: europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-browser-workflow-bridge:build-tag-required
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+          args:
+            - |
+              set -euo pipefail
+              export DISPLAY="${DISPLAY:-:99}"
+              BROWSER="$(node -e "const { chromium } = require('playwright-core'); process.stdout.write(chromium.executablePath())")"
+              VIEW_SIZE="${SYNTHI_HOSTED_BROWSER_VIEW_SIZE:-1366x768x24}"
+              WINDOW_SIZE="${SYNTHI_HOSTED_BROWSER_WINDOW_SIZE:-1366,768}"
+              rm -f /tmp/.X99-lock
+              Xvfb "$DISPLAY" -screen 0 "$VIEW_SIZE" -ac +extension GLX +render -noreset &
+              XVFB_PID="$!"
+              sleep 0.5
+              x11vnc -display "$DISPLAY" -localhost -nopw -shared -forever -rfbport "$SYNTHI_HOSTED_BROWSER_VNC_PORT" -quiet &
+              VNC_PID="$!"
+              websockify --web=/usr/share/novnc "$SYNTHI_HOSTED_BROWSER_VIEW_PORT" "127.0.0.1:$SYNTHI_HOSTED_BROWSER_VNC_PORT" &
+              NOVNC_PID="$!"
+              "$BROWSER" \
+                --no-sandbox \
+                --disable-dev-shm-usage \
+                --disable-gpu \
+                --remote-debugging-address=0.0.0.0 \
+                --remote-debugging-port="$SYNTHI_HOSTED_BROWSER_CDP_PORT" \
+                --user-data-dir=/tmp/synthi-chrome-profile \
+                --window-size="$WINDOW_SIZE" \
+                --start-maximized \
+                about:blank &
+              BROWSER_PID="$!"
+              trap 'kill "$BROWSER_PID" "$NOVNC_PID" "$VNC_PID" "$XVFB_PID" 2>/dev/null || true' EXIT TERM INT
+              wait "$BROWSER_PID"
+          env:
+            - name: SYNTHI_HOSTED_BROWSER_CDP_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_HOSTED_BROWSER_CDP_PORT
+            - name: SYNTHI_HOSTED_BROWSER_VIEW_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_HOSTED_BROWSER_VIEW_PORT
+            - name: SYNTHI_HOSTED_BROWSER_VNC_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: synthi-config
+                  key: SYNTHI_HOSTED_BROWSER_VNC_PORT
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -lc
+                - node -e "const cdp=process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT; const view=process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT; Promise.all([fetch(`http://127.0.0.1:${cdp}/json/version`), fetch(`http://127.0.0.1:${view}/vnc.html`)]).then((rs)=>process.exit(rs.every((r)=>r.ok)?0:1)).catch(()=>process.exit(1))"
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -lc
+                - node -e "const cdp=process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT; const view=process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT; Promise.all([fetch(`http://127.0.0.1:${cdp}/json/version`), fetch(`http://127.0.0.1:${view}/vnc.html`)]).then((rs)=>process.exit(rs.every((r)=>r.ok)?0:1)).catch(()=>process.exit(1))"
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: true
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: dojo-mcp-data
           persistentVolumeClaim:
             claimName: dojo-mcp-data-pvc
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

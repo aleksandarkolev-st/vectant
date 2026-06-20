@@ -59,6 +59,11 @@ require_text "Dojo MCP bearer secret binding" "key: synthi-dojo-mcp-bearer-token
 require_text "managed proof signing command secret binding" "key: synthi-dojo-proof-signing-command"
 require_text "managed proof signing URI secret binding" "key: synthi-dojo-proof-signing-managed-key-uri"
 require_text "hosted browser CDP secret binding" "key: synthi-dojo-hosted-browser-cdp-url"
+require_text "hosted browser sidecar" "name: hosted-browser"
+require_text "hosted browser same-pod CDP URL" 'value: http://127.0.0.1:$(SYNTHI_HOSTED_BROWSER_CDP_PORT)'
+require_text "hosted browser same-pod topology" "value: same-pod"
+require_text "runtime hosted browser CDP target template" "SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE: http://{runtimeId}.synthi.svc.cluster.local:{cdpPort}"
+require_text "runtime hosted browser CDP topology" "SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY: runtime-service"
 require_text "private workflow tool store secret binding" "key: synthi-private-workflow-tool-store-file"
 require_text "private workflow tool store key secret binding" "key: synthi-private-workflow-tool-store-key"
 require_text "auth checkpoint store key secret binding" "key: synthi-auth-checkpoint-store-key"

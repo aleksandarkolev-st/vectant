@@ -20,11 +20,14 @@ export interface HostedBrowserRuntimeConfig {
   workspace_url: string | null;
   runtime_id: string | null;
   runtime_session_id: string | null;
+  cdp_endpoint_source: "runtime-template" | "env-url" | "not-configured";
+  cdp_topology: "same-pod" | "runtime-service" | "external" | "unspecified";
   runtime_host_class: "remote" | "loopback" | "local-bind" | "invalid";
   non_loopback_runtime: boolean;
   adapter: "hosted-playwright-cdp" | "not-configured";
   required_env: string[];
   ignored_local_dev_env: string[];
+  cdp_header_names: string[];
   origin_allowlist: string[];
   session_ttl_ms: number | null;
   local_network_allowed: boolean;
@@ -32,8 +35,12 @@ export interface HostedBrowserRuntimeConfig {
   product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser";
 }
 
+export interface HostedBrowserAttachOptions {
+  headers?: Record<string, string>;
+}
+
 export interface HostedBrowserAttachDeps {
-  attach(cdpUrl: string): Promise<BrowserTab[]>;
+  attach(cdpUrl: string, options?: HostedBrowserAttachOptions): Promise<BrowserTab[]>;
   listTabs(): Promise<BrowserTab[]>;
   open(url: string): Promise<BrowserTab>;
   setWorkflowOverlayEnabled?(enabled: boolean): void;
@@ -61,9 +68,14 @@ export type HostedBrowserAttachResult = {
 
 interface HostedBrowserRuntimeResolvedConfig extends HostedBrowserRuntimeConfig {
   cdpUrl: string | null;
+  cdpHeaders: Record<string, string>;
 }
 
 const HOSTED_CDP_ENV = "SYNTHI_HOSTED_BROWSER_CDP_URL";
+const HOSTED_CDP_TARGET_TEMPLATE_ENV = "SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE";
+const HOSTED_CDP_PORT_ENV = "SYNTHI_HOSTED_BROWSER_CDP_PORT";
+const HOSTED_CDP_TOPOLOGY_ENV = "SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY";
+const HOSTED_CDP_HEADERS_JSON_ENV = "SYNTHI_HOSTED_BROWSER_CDP_HEADERS_JSON";
 const TENANT_ID_ENV = "SYNTHI_TENANT_ID";
 const WORKSPACE_ID_ENV = "SYNTHI_WORKSPACE_ID";
 const AGENT_ID_ENV = "SYNTHI_AGENT_ID";
@@ -106,7 +118,7 @@ export async function attachHostedBrowserRuntime(
   }
 
   deps.setWorkflowOverlayEnabled?.(true);
-  let allTabs = await deps.attach(config.cdpUrl);
+  let allTabs = await deps.attach(config.cdpUrl, { headers: config.cdpHeaders });
   let openedWorkspaceUrl: string | null = null;
   if (config.workspace_url && input.open_workspace !== false) {
     await deps.open(config.workspace_url);
@@ -149,30 +161,48 @@ function resolveHostedBrowserRuntimeInternal(
   input: HostedBrowserRuntimeInput,
   env: NodeJS.ProcessEnv
 ): HostedBrowserRuntimeResolvedConfig {
-  const cdpUrl = nonEmpty(env[HOSTED_CDP_ENV]);
-  const runtimeHostClass = classifyRuntimeEndpoint(cdpUrl);
   const tenantId = nonEmpty(input.tenant_id) ?? nonEmpty(env[TENANT_ID_ENV]) ?? null;
   const workspaceId = nonEmpty(input.workspace_id) ?? nonEmpty(env[WORKSPACE_ID_ENV]) ?? "default";
   const actorId = nonEmpty(input.actor_id) ?? nonEmpty(env[AGENT_ID_ENV]) ?? nonEmpty(env[ACTOR_ID_ENV]) ?? null;
   const workspaceUrl = nonEmpty(input.workspace_url) ?? nonEmpty(env[WORKSPACE_URL_ENV]) ?? nonEmpty(env[HOSTED_WORKSPACE_URL_ENV]) ?? null;
   const runtimeId = nonEmpty(input.runtime_id) ?? nonEmpty(env[RUNTIME_ID_ENV]) ?? null;
   const runtimeSessionId = nonEmpty(input.runtime_session_id) ?? nonEmpty(env[RUNTIME_SESSION_ID_ENV]) ?? null;
+  const templatedCdpUrl = renderHostedRuntimeCdpTemplate({
+    template: nonEmpty(env[HOSTED_CDP_TARGET_TEMPLATE_ENV]),
+    runtime_id: runtimeId,
+    runtime_session_id: runtimeSessionId,
+    workspace_id: workspaceId,
+    tenant_id: tenantId,
+    cdp_port: nonEmpty(env[HOSTED_CDP_PORT_ENV]) ?? "9222",
+  });
+  const cdpUrl = templatedCdpUrl ?? nonEmpty(env[HOSTED_CDP_ENV]);
+  const cdpHeaders = parseCdpHeaders(env[HOSTED_CDP_HEADERS_JSON_ENV]);
+  const runtimeHostClass = classifyRuntimeEndpoint(cdpUrl);
   const ignoredLocalDevEnv = nonEmpty(env["SYNTHI_BROWSER_CDP_URL"]) ? ["SYNTHI_BROWSER_CDP_URL"] : [];
   const originAllowlist = parseOriginAllowlist(env[ORIGIN_ALLOWLIST_ENV]);
+  const cdpEndpointSource = templatedCdpUrl
+    ? "runtime-template"
+    : cdpUrl
+    ? "env-url"
+    : "not-configured";
   return {
     configured: Boolean(cdpUrl),
     cdpUrl: cdpUrl ?? null,
+    cdpHeaders,
     tenant_id: tenantId,
     workspace_id: workspaceId,
     actor_id: actorId,
     workspace_url: workspaceUrl,
     runtime_id: runtimeId,
     runtime_session_id: runtimeSessionId,
+    cdp_endpoint_source: cdpEndpointSource,
+    cdp_topology: normalizeCdpTopology(env[HOSTED_CDP_TOPOLOGY_ENV]),
     runtime_host_class: runtimeHostClass,
     non_loopback_runtime: runtimeHostClass === "remote",
     adapter: cdpUrl ? "hosted-playwright-cdp" : "not-configured",
-    required_env: [HOSTED_CDP_ENV],
+    required_env: [`${HOSTED_CDP_ENV} or ${HOSTED_CDP_TARGET_TEMPLATE_ENV}`],
     ignored_local_dev_env: ignoredLocalDevEnv,
+    cdp_header_names: Object.keys(cdpHeaders).sort(),
     origin_allowlist: originAllowlist,
     session_ttl_ms: parsePositiveInteger(env[SESSION_TTL_MS_ENV]),
     local_network_allowed: parseBoolean(env[ALLOW_LOCAL_NETWORK_ENV]),
@@ -182,7 +212,7 @@ function resolveHostedBrowserRuntimeInternal(
 }
 
 function publicConfig(config: HostedBrowserRuntimeResolvedConfig): HostedBrowserRuntimeConfig {
-  const { cdpUrl: _cdpUrl, ...publicFields } = config;
+  const { cdpUrl: _cdpUrl, cdpHeaders: _cdpHeaders, ...publicFields } = config;
   return publicFields;
 }
 
@@ -220,6 +250,67 @@ function parsePositiveInteger(value: unknown): number | null {
 function parseBoolean(value: unknown): boolean {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function normalizeCdpTopology(value: unknown): HostedBrowserRuntimeConfig["cdp_topology"] {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (raw === "same-pod" || raw === "runtime-service" || raw === "external") return raw;
+  return "unspecified";
+}
+
+function renderHostedRuntimeCdpTemplate(input: {
+  template?: string;
+  runtime_id: string | null;
+  runtime_session_id: string | null;
+  workspace_id: string;
+  tenant_id: string | null;
+  cdp_port: string;
+}): string | null {
+  const template = nonEmpty(input.template);
+  if (!template) return null;
+  const runtimeId = safeDnsLabel(input.runtime_id);
+  if (template.includes("{runtimeId}") && !runtimeId) return null;
+  const cdpPort = safePort(input.cdp_port);
+  if (template.includes("{cdpPort}") && !cdpPort) return null;
+  const rendered = template
+    .replaceAll("{runtimeId}", runtimeId ?? "")
+    .replaceAll("{runtimeSessionId}", encodeURIComponent(input.runtime_session_id ?? ""))
+    .replaceAll("{workspaceId}", encodeURIComponent(input.workspace_id))
+    .replaceAll("{tenantId}", encodeURIComponent(input.tenant_id ?? ""))
+    .replaceAll("{cdpPort}", cdpPort ?? "");
+  return nonEmpty(rendered) ?? null;
+}
+
+function safeDnsLabel(value: unknown): string | null {
+  const raw = nonEmpty(value);
+  if (!raw) return null;
+  return /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/.test(raw) ? raw : null;
+}
+
+function safePort(value: unknown): string | null {
+  const raw = nonEmpty(value);
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? String(parsed) : null;
+}
+
+function parseCdpHeaders(value: unknown): Record<string, string> {
+  const raw = nonEmpty(value);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const headers: Record<string, string> = {};
+    for (const [name, headerValue] of Object.entries(parsed)) {
+      const headerName = String(name || "").trim();
+      if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(headerName)) continue;
+      if (typeof headerValue !== "string") continue;
+      headers[headerName] = headerValue;
+    }
+    return headers;
+  } catch {
+    return {};
+  }
 }
 
 function classifyRuntimeEndpoint(value: unknown): HostedBrowserRuntimeConfig["runtime_host_class"] {

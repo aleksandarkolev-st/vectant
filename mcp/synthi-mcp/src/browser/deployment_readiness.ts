@@ -366,12 +366,12 @@ function checkHostedRuntime(
   production: boolean
 ): BrowserWorkflowDeploymentCheck {
   const required = [
-    "SYNTHI_HOSTED_BROWSER_CDP_URL",
+    "SYNTHI_HOSTED_BROWSER_CDP_URL or SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE",
     "SYNTHI_WORKSPACE_ID",
     "SYNTHI_HOSTED_BROWSER_WORKSPACE_URL or SYNTHI_WORKSPACE_URL",
   ];
   const configured = [
-    ...(runtime.configured ? ["SYNTHI_HOSTED_BROWSER_CDP_URL"] : []),
+    ...configuredHostedRuntimeEndpointEnv(runtime),
     ...(nonEmpty(env["SYNTHI_WORKSPACE_ID"]) ? ["SYNTHI_WORKSPACE_ID"] : []),
     ...(nonEmpty(env["SYNTHI_HOSTED_BROWSER_WORKSPACE_URL"])
       ? ["SYNTHI_HOSTED_BROWSER_WORKSPACE_URL"]
@@ -380,7 +380,7 @@ function checkHostedRuntime(
       : []),
   ];
   const missing = [
-    ...(!runtime.configured ? ["SYNTHI_HOSTED_BROWSER_CDP_URL"] : []),
+    ...(!runtime.configured ? ["SYNTHI_HOSTED_BROWSER_CDP_URL or SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE"] : []),
     ...(!nonEmpty(env["SYNTHI_WORKSPACE_ID"]) ? ["SYNTHI_WORKSPACE_ID"] : []),
     ...(!runtime.workspace_url ? ["SYNTHI_HOSTED_BROWSER_WORKSPACE_URL or SYNTHI_WORKSPACE_URL"] : []),
   ];
@@ -400,20 +400,46 @@ function checkHostedRuntimeEndpointPolicy(
   runtime: ReturnType<typeof resolveHostedBrowserRuntime>,
   production: boolean
 ): BrowserWorkflowDeploymentCheck {
-  const required = ["SYNTHI_HOSTED_BROWSER_CDP_URL"];
-  const configured = runtime.configured ? required : [];
+  const required = [
+    "SYNTHI_HOSTED_BROWSER_CDP_URL or SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE",
+    "SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY when endpoint is loopback",
+  ];
+  const configured = configuredHostedRuntimeEndpointEnv(runtime);
   if (runtime.configured && runtime.non_loopback_runtime) {
     return pass("hosted_browser_runtime_endpoint", "Hosted runtime endpoint is non-loopback.", required, configured);
+  }
+  if (
+    runtime.configured
+    && runtime.runtime_host_class === "loopback"
+    && runtime.cdp_topology === "same-pod"
+  ) {
+    return pass(
+      "hosted_browser_runtime_endpoint",
+      "Hosted runtime endpoint is loopback-scoped to the MCP pod by explicit same-pod topology.",
+      required,
+      configured
+    );
   }
   return {
     id: "hosted_browser_runtime_endpoint",
     status: production ? "fail" : "warn",
     message: runtime.configured
-      ? `Hosted runtime endpoint is ${runtime.runtime_host_class}; production runtime sessions must use a non-loopback endpoint.`
+      ? `Hosted runtime endpoint is ${runtime.runtime_host_class}; production runtime sessions must use a non-loopback endpoint or explicit same-pod topology.`
       : "Hosted runtime endpoint is not configured.",
     required_env: required,
     configured_env: configured,
   };
+}
+
+function configuredHostedRuntimeEndpointEnv(
+  runtime: ReturnType<typeof resolveHostedBrowserRuntime>
+): string[] {
+  return [
+    ...(runtime.cdp_endpoint_source === "env-url" ? ["SYNTHI_HOSTED_BROWSER_CDP_URL"] : []),
+    ...(runtime.cdp_endpoint_source === "runtime-template" ? ["SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE"] : []),
+    ...(runtime.cdp_topology !== "unspecified" ? ["SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY"] : []),
+    ...(runtime.cdp_header_names.length > 0 ? ["SYNTHI_HOSTED_BROWSER_CDP_HEADERS_JSON"] : []),
+  ];
 }
 
 function checkHostedRuntimeOriginPolicy(

@@ -140,6 +140,58 @@ describe("browser workflow deployment readiness", () => {
     expect(JSON.stringify(readiness)).not.toMatch(/127\.0\.0\.1:9222/);
   });
 
+  it("passes production readiness for explicit same-pod loopback hosted runtime topology", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_HOSTED_BROWSER_CDP_URL: "http://127.0.0.1:9222",
+      SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY: "same-pod",
+    });
+
+    expect(readiness.ok).toBe(true);
+    expect(readiness.hosted_runtime).toEqual(expect.objectContaining({
+      cdp_endpoint_source: "env-url",
+      cdp_topology: "same-pod",
+      runtime_host_class: "loopback",
+      non_loopback_runtime: false,
+    }));
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "hosted_browser_runtime_endpoint",
+        status: "pass",
+        configured_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL", "SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY"],
+      }),
+    ]));
+    expect(JSON.stringify(readiness)).not.toMatch(/127\.0\.0\.1:9222/);
+  });
+
+  it("passes production readiness with a runtime Service CDP target template", () => {
+    const readiness = browserWorkflowDeploymentReadiness({}, {
+      ...productionReadyEnv(),
+      SYNTHI_HOSTED_BROWSER_CDP_URL: undefined,
+      SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{cdpPort}",
+      SYNTHI_HOSTED_BROWSER_CDP_PORT: "9222",
+      SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY: "runtime-service",
+      SYNTHI_HOSTED_BROWSER_RUNTIME_ID: "rt-unit-a",
+    });
+
+    expect(readiness.ok).toBe(true);
+    expect(readiness.hosted_runtime).toEqual(expect.objectContaining({
+      runtime_id: "rt-unit-a",
+      cdp_endpoint_source: "runtime-template",
+      cdp_topology: "runtime-service",
+      runtime_host_class: "remote",
+      non_loopback_runtime: true,
+    }));
+    expect(readiness.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "hosted_browser_runtime_endpoint",
+        status: "pass",
+        configured_env: ["SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE", "SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY"],
+      }),
+    ]));
+    expect(JSON.stringify(readiness)).not.toMatch(/rt-unit-a\.synthi\.svc\.cluster\.local/);
+  });
+
   it("fails production readiness when Dojo proof signing falls back to the default local key", () => {
     const readiness = browserWorkflowDeploymentReadiness({}, {
       ...productionReadyEnv(),
