@@ -393,6 +393,9 @@ steps:
         fi
 
         if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then
+          echo "=== Validating Dojo release render contract ==="
+          bash scripts/validate-dojo-release-render.sh "$${RENDERED}"
+
           echo "=== Applying Dojo secret prerequisites ==="
           SECRET_PREREQS="/workspace/.cloudbuild/synthi-secret-prereqs.yaml"
           awk '
