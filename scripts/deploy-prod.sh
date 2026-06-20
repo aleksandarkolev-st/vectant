@@ -14,9 +14,10 @@ Options:
   --zone ZONE          GKE cluster zone/location. Default: europe-west10-a
   --registry REGISTRY  Artifact Registry repo. Default: <region>-docker.pkg.dev/<project>/synthi
   --tag TAG            Immutable image tag. Default: prod-<UTC timestamp>-<git sha>
-  --kustomize-dir DIR  Kustomize render directory. Default: k8s
+  --kustomize-dir DIR  Kustomize render directory. Default: k8s/overlays/dojo-release-gate
   --kustomize-load-restrictor VALUE
-                       Optional Kustomize load restrictor. Only LoadRestrictionsNone is accepted.
+                       Kustomize load restrictor. Default: LoadRestrictionsNone.
+                       Only LoadRestrictionsNone is accepted when set.
   --branch BRANCH      Branch to push when --push is used. Default: main
   --push               Push HEAD to origin/<branch> before submitting Cloud Build
   --allow-dirty        Allow deploying a dirty local checkout
@@ -40,8 +41,8 @@ GKE_CLUSTER="synthi-beta-cluster"
 GKE_ZONE="europe-west10-a"
 REGISTRY=""
 IMAGE_TAG=""
-KUSTOMIZE_DIR="k8s"
-KUSTOMIZE_LOAD_RESTRICTOR=""
+KUSTOMIZE_DIR="k8s/overlays/dojo-release-gate"
+KUSTOMIZE_LOAD_RESTRICTOR="LoadRestrictionsNone"
 DEPLOY_BRANCH="main"
 PUSH_FIRST="false"
 ALLOW_DIRTY="false"

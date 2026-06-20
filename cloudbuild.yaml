@@ -31,8 +31,8 @@ substitutions:
   _REGISTRY: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/synthi
   _MANIFEST_SOURCE_REGISTRY: europe-west10-docker.pkg.dev/vectant-proj/synthi
   _IMAGE_TAG: ${BUILD_ID}
-  _KUSTOMIZE_DIR: k8s
-  _KUSTOMIZE_LOAD_RESTRICTOR: ""
+  _KUSTOMIZE_DIR: k8s/overlays/dojo-release-gate
+  _KUSTOMIZE_LOAD_RESTRICTOR: LoadRestrictionsNone
   _DOJO_RELEASE_KUSTOMIZE_DIR: k8s/overlays/dojo-release-gate
 
   # NEXT_PUBLIC_* build args baked into the frontend client bundle.
