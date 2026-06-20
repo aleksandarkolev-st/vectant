@@ -5,7 +5,11 @@ import { InMemoryDojoSkillStore } from "../../src/browser/dojo_store.js";
 import { browserPlaywrightAdapter } from "../../src/browser/playwright_adapter.js";
 import { InMemoryPrivateWorkflowToolStore, privateWorkflowToolRegistry } from "../../src/browser/private_tool_registry.js";
 import { sourceIdentityRegistry } from "../../src/browser/source_identity.js";
-import { dispatchBrowserPrivateWorkflowToolAfterDojoProof, dispatchBrowserTool } from "../../src/tools/browser.js";
+import {
+  dispatchBrowserPrivateWorkflowToolAfterDojoProof,
+  dispatchBrowserTool,
+  dojoValidatedReplayContextArgsForBrowserWorkflow,
+} from "../../src/tools/browser.js";
 
 const originalEnv = { ...process.env };
 
@@ -25,6 +29,34 @@ afterEach(() => {
 });
 
 describe("Dojo raw browser workflow replay gate", () => {
+  it("forwards only validated Dojo graph context into browser workflow replay args", () => {
+    expect(dojoValidatedReplayContextArgsForBrowserWorkflow({
+      proof_capsule_id: "proof_123",
+      skill_id: "skill_123",
+      requested_action: "run_workflow",
+      validated_graph_inputs: {
+        client_id_verified: true,
+        source_anchor_current: true,
+        durable_state_evidence: true,
+        assertion_results: { assert_details_opened: true },
+        guardrail_f2a7c5e1c9ab: true,
+        lease_id: "attacker-lease",
+        workflow_id: "attacker-workflow",
+        mode: "ciIsolated",
+        tab_id: "attacker-tab",
+        selector: "button",
+        value: "mutated",
+        unsupported: undefined,
+      },
+    })).toEqual({
+      client_id_verified: true,
+      source_anchor_current: true,
+      durable_state_evidence: true,
+      assertion_results: { assert_details_opened: true },
+      guardrail_f2a7c5e1c9ab: true,
+    });
+  });
+
   it("blocks raw replay for Dojo-published workflows in production", async () => {
     process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
     const workflowId = teachWorkflow();
@@ -379,6 +411,88 @@ describe("Dojo raw browser workflow replay gate", () => {
         run_mode: "sameSession",
       }),
     }));
+    expect(replay).toHaveBeenCalledTimes(1);
+  });
+
+  it("attaches and selects the authorized hosted runtime target for proof-backed replay", async () => {
+    process.env.SYNTHI_HOSTED_BROWSER_CDP_URL = "wss://browser.example.test/devtools/runtime-a";
+    process.env.SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST = "https://app.example.test";
+    const workflowId = teachWorkflow();
+    const privateTool = await dispatchBrowserTool("synthi_browser_publish_private_tool", {});
+    expect(privateTool?.isError).toBeUndefined();
+    const publishedPrivateTool = privateTool?.structuredContent as {
+      tool_name: string;
+      dojo_skill: { skill_id: string };
+    };
+    const toolName = publishedPrivateTool.tool_name;
+    const runtimeUrl = "https://app.example.test/settings";
+    browserBroker.forgetTab("app");
+    process.env.SYNTHI_DOJO_PRODUCTION_ENFORCEMENT = "1";
+
+    const runtimeTab = { tab_id: "runtime-tab", url: runtimeUrl, active: true };
+    const attach = vi.spyOn(browserPlaywrightAdapter, "attach").mockResolvedValue([]);
+    const open = vi.spyOn(browserPlaywrightAdapter, "open").mockResolvedValue(runtimeTab);
+    const listTabs = vi.spyOn(browserPlaywrightAdapter, "listTabs").mockResolvedValue([runtimeTab]);
+    const selectTab = vi.spyOn(browserPlaywrightAdapter, "selectTab").mockResolvedValue(runtimeTab);
+    const replay = vi.spyOn(browserPlaywrightAdapter, "replayActionEvent").mockResolvedValue({
+      ok: true,
+      action: "click",
+      tab_id: "runtime-tab",
+      url: runtimeUrl,
+    });
+
+    const dojoReplay = await dispatchBrowserPrivateWorkflowToolAfterDojoProof(
+      toolName,
+      {
+        run_mode: "sameSession",
+        client_id_verified: true,
+      },
+      {
+        proof_capsule_id: "proof_123",
+        skill_id: publishedPrivateTool.dojo_skill.skill_id,
+        requested_action: "run_workflow",
+        run_id: "dojo_run_123",
+        tenant_id: "tenant-a",
+        workspace_id: "workspace-a",
+        runtime_session_id: "session-a",
+        runtime_action_url: runtimeUrl,
+        validated_graph_inputs: {
+          tenant_id: "tenant-a",
+          workspace_id: "workspace-a",
+          client_id_verified: true,
+          source_anchor_current: true,
+          durable_state_evidence: true,
+        },
+        verified_runtime_attachment: {
+          kind: "hosted",
+          tenant_id: "tenant-a",
+          workspace_id: "workspace-a",
+          actor_id: "agent-a",
+          runtime_id: "runtime-a",
+          session_id: "session-a",
+          workspace_url: runtimeUrl,
+          adapter: "dojo-hosted-runtime-gateway",
+          attached_at: Date.now(),
+          origin_allowlist: ["https://app.example.test"],
+          egress_policy: { local_network_allowed: false },
+          redaction_policy: { screenshots: true },
+        },
+      }
+    );
+
+    expect(dojoReplay?.isError).toBeUndefined();
+    expect(dojoReplay?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
+      workflow_id: workflowId,
+      replay: expect.objectContaining({
+        steps_run: 1,
+        tab_id: "runtime-tab",
+      }),
+    }));
+    expect(attach).toHaveBeenCalledWith("wss://browser.example.test/devtools/runtime-a");
+    expect(open).toHaveBeenCalledWith(runtimeUrl);
+    expect(listTabs).toHaveBeenCalled();
+    expect(selectTab).toHaveBeenCalledWith("runtime-tab");
     expect(replay).toHaveBeenCalledTimes(1);
   });
 });

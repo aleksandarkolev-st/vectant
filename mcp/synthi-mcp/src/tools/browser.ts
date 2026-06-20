@@ -53,6 +53,7 @@ export interface DojoValidatedBrowserWorkflowContext {
   skill_id: string;
   requested_action: string;
   run_id?: string;
+  validated_graph_inputs?: Record<string, unknown>;
   tenant_id?: string;
   workspace_id?: string;
   runtime_session_id?: string;
@@ -2384,6 +2385,8 @@ async function browserRunPublishedPrivateTool(
 
   const hostedRuntimeGate = privateWorkflowHostedRuntimeGate(toolName, effectiveManifest, a, dojoContext);
   if (hostedRuntimeGate) return hostedRuntimeGate;
+  const dojoReplayTarget = await ensureDojoBrowserReplayTargetForProof(a, dojoContext);
+  if (!dojoReplayTarget.ok) return dojoReplayTarget.error;
 
   const lease = browserBroker.acquireLease(
     process.env["SYNTHI_AGENT_ID"] ?? "private_workflow_tool",
@@ -2391,14 +2394,20 @@ async function browserRunPublishedPrivateTool(
     `private_tool:${toolName}`
   );
   try {
-    const response = await browserRunWorkflowTool({
-      lease_id: lease.lease_id,
-      workflow_id: registration.workflow_id,
-      mode,
-      parameters,
-      ...dojoTenantReplayArgs(a),
-      ...(stringOpt(a["tab_id"]) ? { tab_id: stringOpt(a["tab_id"]) } : {}),
-    }, dojoContext);
+    let response: ToolResponse;
+    try {
+      response = await browserRunWorkflowTool({
+        lease_id: lease.lease_id,
+        workflow_id: registration.workflow_id,
+        mode,
+        parameters,
+        ...dojoTenantReplayArgs(a),
+        ...dojoValidatedReplayContextArgsForBrowserWorkflow(dojoContext),
+        ...(dojoReplayTarget.tab_id ? { tab_id: dojoReplayTarget.tab_id } : {}),
+      }, dojoContext);
+    } catch (err) {
+      response = errorFromException("private_workflow_replay_failed", err);
+    }
     const structuredContent = {
       ...(response.structuredContent ?? {}),
       private_tool: {
@@ -2416,6 +2425,141 @@ async function browserRunPublishedPrivateTool(
   } finally {
     browserBroker.releaseLease(lease.lease_id, `private_tool:${toolName}:complete`);
   }
+}
+
+type DojoBrowserReplayTarget =
+  | { ok: true; tab_id?: string }
+  | { ok: false; error: ToolResponse };
+
+async function ensureDojoBrowserReplayTargetForProof(
+  args: Record<string, unknown>,
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): Promise<DojoBrowserReplayTarget> {
+  const requestedTabId = stringOpt(args["tab_id"]);
+  if (requestedTabId && browserBroker.selectTab(requestedTabId)) {
+    return { ok: true, tab_id: requestedTabId };
+  }
+
+  const runtime = dojoContext?.verified_runtime_attachment;
+  if (!dojoContext || runtime?.kind !== "hosted") {
+    return requestedTabId ? { ok: true, tab_id: requestedTabId } : { ok: true };
+  }
+
+  const targetUrl = dojoRuntimeReplayTargetUrl(args, dojoContext);
+  const selected = browserBroker.selectedTab();
+  if (selected && browserReplayTabMatchesRuntimeTarget(selected.url, targetUrl)) {
+    return { ok: true, tab_id: selected.tab_id };
+  }
+
+  if (!targetUrl) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_replay_target_required", {
+        skill_id: dojoContext.skill_id,
+        proof_capsule_id: dojoContext.proof_capsule_id,
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? null,
+        required_field: "runtime_action_url",
+      }),
+    };
+  }
+
+  let attachment: Awaited<ReturnType<typeof attachHostedBrowserRuntime>>;
+  try {
+    attachment = await attachHostedBrowserRuntime(
+      {
+        tenant_id: dojoContext.tenant_id ?? runtime.tenant_id ?? stringOpt(args["tenant_id"]),
+        workspace_id: dojoContext.workspace_id ?? runtime.workspace_id ?? stringOpt(args["workspace_id"]),
+        actor_id: runtime.actor_id ?? stringOpt(args["actor_id"]),
+        workspace_url: targetUrl,
+        runtime_id: runtime.runtime_id ?? stringOpt(args["runtime_id"]),
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? stringOpt(args["runtime_session_id"]),
+        open_workspace: true,
+      },
+      browserPlaywrightAdapter,
+      browserBroker
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      error: errorFromException("dojo_hosted_runtime_browser_attach_failed", err),
+    };
+  }
+
+  if (!attachment.ok) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_browser_attach_failed", {
+        skill_id: dojoContext.skill_id,
+        proof_capsule_id: dojoContext.proof_capsule_id,
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? null,
+        target_origin: originForUrl(targetUrl),
+        attachment_error: attachment.error,
+        runtime: attachment.runtime,
+      }),
+    };
+  }
+
+  const tab = selectDojoRuntimeReplayTab(attachment.tabs, targetUrl);
+  if (!tab) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_browser_tab_not_authorized", {
+        skill_id: dojoContext.skill_id,
+        proof_capsule_id: dojoContext.proof_capsule_id,
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? null,
+        target_origin: originForUrl(targetUrl),
+        authorized_tab_count: attachment.tabs.length,
+        consent: browserBroker.getConsent(targetUrl)[0],
+        required_tool: "synthi_browser_request_consent",
+      }),
+    };
+  }
+
+  const selectedTab = browserBroker.selectTab(tab.tab_id);
+  if (!selectedTab) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_browser_tab_not_authorized", {
+        skill_id: dojoContext.skill_id,
+        proof_capsule_id: dojoContext.proof_capsule_id,
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? null,
+        target_origin: originForUrl(targetUrl),
+        tab_id: tab.tab_id,
+      }),
+    };
+  }
+
+  try {
+    await browserPlaywrightAdapter.selectTab(tab.tab_id);
+  } catch (err) {
+    return {
+      ok: false,
+      error: errorFromException("dojo_hosted_runtime_browser_select_failed", err),
+    };
+  }
+
+  return { ok: true, tab_id: selectedTab.tab_id };
+}
+
+function dojoRuntimeReplayTargetUrl(
+  args: Record<string, unknown>,
+  dojoContext: DojoValidatedBrowserWorkflowContext
+): string | undefined {
+  return stringOpt(args["runtime_action_url"])
+    ?? dojoContext.runtime_action_url
+    ?? stringOpt(dojoContext.verified_runtime_attachment?.workspace_url);
+}
+
+function browserReplayTabMatchesRuntimeTarget(tabUrl: string, targetUrl?: string): boolean {
+  if (!targetUrl) return true;
+  return originForUrl(tabUrl) === originForUrl(targetUrl);
+}
+
+function selectDojoRuntimeReplayTab(tabs: Array<{ tab_id: string; url: string }>, targetUrl: string): { tab_id: string; url: string } | null {
+  const targetOrigin = originForUrl(targetUrl);
+  return tabs.find((tab) => tab.url === targetUrl)
+    ?? tabs.find((tab) => originForUrl(tab.url) === targetOrigin)
+    ?? null;
 }
 
 function browserDirectPrivateToolRequiresDojoProof(
@@ -2655,6 +2799,33 @@ function dojoTenantReplayArgs(args: Record<string, unknown>): Record<string, unk
     "data_region",
   ]) {
     if (args[key] !== undefined) replayArgs[key] = args[key];
+  }
+  return replayArgs;
+}
+
+const DOJO_REPLAY_CONTEXT_RESERVED_ARGS = new Set([
+  "lease_id",
+  "workflow_id",
+  "mode",
+  "run_mode",
+  "parameters",
+  "tab_id",
+  "action",
+  "selector",
+  "value",
+  "url",
+]);
+
+export function dojoValidatedReplayContextArgsForBrowserWorkflow(
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): Record<string, unknown> {
+  const replayArgs: Record<string, unknown> = {};
+  const inputs = dojoContext?.validated_graph_inputs;
+  if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) return replayArgs;
+  for (const [key, value] of Object.entries(inputs)) {
+    if (!key || DOJO_REPLAY_CONTEXT_RESERVED_ARGS.has(key)) continue;
+    if (typeof value === "undefined" || typeof value === "function" || typeof value === "symbol" || typeof value === "bigint") continue;
+    replayArgs[key] = value;
   }
   return replayArgs;
 }

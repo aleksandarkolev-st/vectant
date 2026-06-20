@@ -7730,6 +7730,10 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       now,
     });
     if (!graphRuntimePreflight.ok) return graphRuntimePreflight.error;
+    browserRuntimeExecutionContext = {
+      ...browserRuntimeExecutionContext,
+      validated_graph_inputs: graphRuntimePreflight.graph_runtime_inputs,
+    };
     const graphRuntimePersistence = await persistDurableGraphRuntimePreflightForProofRun({
       context: durableProofRegistry.context,
       tenant,
@@ -7923,6 +7927,7 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
   graph: DojoSkillGraph;
   graph_validation: ReturnType<typeof validateDojoSkillGraph>;
   graph_runtime_preflight: DojoGraphRunResult;
+  graph_runtime_inputs: Record<string, unknown>;
 } | { ok: false; error: ToolResponse }> {
   const compiled = compileDojoSkillGraphForSkill(input.skill, { mode: "production", created_at: input.now });
   if (!compiled.validation.ok) {
@@ -7957,6 +7962,7 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
       }),
     };
   }
+  const graphRuntimeInputs = dojoGraphRuntimeInputsForProofRun(input);
   if (!dojoGraphRepresentsRequestedAction(compiled.graph, input.requested_action)) {
     return {
       ok: true,
@@ -7978,6 +7984,7 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
           }))}`,
         ],
       },
+      graph_runtime_inputs: graphRuntimeInputs,
     };
   }
 
@@ -7988,7 +7995,7 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
     run_id: `${input.run_id}_graph_preflight`,
     mode: "production",
     preflight_only: true,
-    inputs: dojoGraphRuntimeInputsForProofRun(input),
+    inputs: graphRuntimeInputs,
     proof_capsule: input.proof_capsule,
     proof_validator: ({ proof_capsule }) => {
       const proof = objectOpt(proof_capsule);
@@ -8061,6 +8068,7 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
     graph: compiled.graph,
     graph_validation: compiled.validation,
     graph_runtime_preflight: graphRuntimePreflight,
+    graph_runtime_inputs: graphRuntimeInputs,
   };
 }
 
