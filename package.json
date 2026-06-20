@@ -1,4 +1,5 @@
 {
+  "name": "vectant-ade",
   "private": true,
   "workspaces": ["synthi", "mcp/synthi-mcp", "packages/*"],
   "scripts": {
