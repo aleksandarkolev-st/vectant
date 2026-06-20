@@ -70,6 +70,7 @@ describe("Dojo release competency seed harness", () => {
     const outDir = await mkdtemp(path.join(os.tmpdir(), "dojo-release-seed-"));
     tmpDirs.push(outDir);
     const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const ledgerEvents: string[] = [];
     const artifact = {
       workflow_id: "workflow-release-seed",
       workflow: {
@@ -98,16 +99,27 @@ describe("Dojo release competency seed harness", () => {
         workflow_id: "workflow-release-seed",
         workspace_id: options.workspace_id,
       }),
+      PostgresDojoSkillStore: class FakePostgresDojoSkillStore {
+        async saveSkill(skill, options) {
+          ledgerEvents.push(`save:${skill.skill_id}:${options.status}`);
+          return { skill_id: skill.skill_id };
+        }
+      },
       resolveDojoEvidenceLedgerAppendStore: async () => ({
         ok: true,
+        queryable: {},
         evidence_ledger: {
-          append: async (input) => ({
-            record_id: input.record_id,
-          }),
+          append: async (input) => {
+            ledgerEvents.push(`append:${input.skill_id}`);
+            return {
+              record_id: input.record_id,
+            };
+          },
         },
         close: async () => undefined,
       }),
       dispatchDojoTool: async (tool, args) => {
+        ledgerEvents.push(`publish:${args.workflow_id}`);
         calls.push({ tool, args });
         return {
           structuredContent: {
@@ -151,6 +163,11 @@ describe("Dojo release competency seed harness", () => {
     });
 
     expect(calls).toHaveLength(1);
+    expect(ledgerEvents).toEqual([
+      "save:skill-release-seed:draft",
+      "append:skill-release-seed",
+      "publish:workflow-release-seed",
+    ]);
     expect(calls[0].tool).toBe("synthi_dojo_publish_skill");
     expect(calls[0].args).toEqual(expect.objectContaining({
       workflow_id: "workflow-release-seed",

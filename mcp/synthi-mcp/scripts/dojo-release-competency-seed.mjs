@@ -219,11 +219,50 @@ export async function appendReleasePublicationEvidence({ runtime, config, artifa
     throw new Error(`dojo_release_competency_seed_evidence_ledger_required:${(resolution.blocked_by ?? []).join(",")}`);
   }
   try {
+    await ensureReleasePublicationEvidenceSkillAnchor({
+      runtime,
+      resolution,
+      config,
+      candidateSkill,
+    });
     const appended = await resolution.evidence_ledger.append(record);
     return appended.record_id;
   } finally {
     await resolution.close?.().catch(() => undefined);
   }
+}
+
+export async function ensureReleasePublicationEvidenceSkillAnchor({ runtime, resolution, config, candidateSkill }) {
+  if (!resolution.queryable) {
+    throw new Error("dojo_release_competency_seed_evidence_ledger_queryable_required");
+  }
+  if (typeof runtime.PostgresDojoSkillStore !== "function") {
+    throw new Error("dojo_release_competency_seed_skill_store_required");
+  }
+  const store = new runtime.PostgresDojoSkillStore({
+    tenant_id: config.tenant.tenant_id,
+    workspace_id: config.tenant.workspace_id,
+    queryable: resolution.queryable,
+    audit_actor: {
+      actor_id: config.tenant.actor_id,
+      actor_type: config.tenant.actor_type,
+    },
+    request_id: config.tenant.request_id,
+    correlation_id: config.tenant.correlation_id,
+  });
+  await store.saveSkill(candidateSkill, {
+    status: "draft",
+    created_by: {
+      actor_id: config.tenant.actor_id,
+      actor_type: config.tenant.actor_type,
+    },
+    now: config.now,
+  });
+  return {
+    ok: true,
+    skill_id: candidateSkill.skill_id,
+    workspace_id: config.tenant.workspace_id,
+  };
 }
 
 export function buildReleasePublicationEvidenceInput({ config, artifact, candidateSkill }) {
@@ -321,12 +360,14 @@ async function loadRuntimeModules() {
     dojoModule,
     manifestModule,
     ledgerResolverModule,
+    skillStoreModule,
     dojoToolsModule,
   ] = await Promise.all([
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "browser", "broker.js")).href),
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "browser", "dojo.js")).href),
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "browser", "private_tool_manifest.js")).href),
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "evidence", "ledger_resolver.js")).href),
+    import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "store", "postgres_skill_store.js")).href),
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "tools", "dojo.js")).href),
   ]);
   return {
@@ -334,6 +375,7 @@ async function loadRuntimeModules() {
     buildDojoSkill: dojoModule.buildDojoSkill,
     generatePrivateWorkflowToolManifest: manifestModule.generatePrivateWorkflowToolManifest,
     resolveDojoEvidenceLedgerAppendStore: ledgerResolverModule.resolveDojoEvidenceLedgerAppendStore,
+    PostgresDojoSkillStore: skillStoreModule.PostgresDojoSkillStore,
     dispatchDojoTool: dojoToolsModule.dispatchDojoTool,
   };
 }
