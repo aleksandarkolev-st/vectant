@@ -1,3 +1,22 @@
+> ⚠️⚠️ **RECURRING REMINDER — READ WHENEVER TOUCHING "PROGRAMS" / GUI DEV TOOLS** ⚠️⚠️
+> The current programs work (KasmVNC GUI dev-tool streaming, real-programs **Slice 3**) ships
+> **command/CLI** AI control ONLY. The **NEXT STEP is VISUAL GUI DRIVING** — the AI seeing +
+> clicking/typing inside the streamed GUI. Any time programs are designed, extended, or discussed,
+> raise this planned follow-up. Spec §10: `docs/superpowers/specs/2026-06-20-gui-dev-tool-streaming-design.md`.
+>
+> **NEXT SLICE — Visual GUI driving (MCP):**
+> - **Observe:** capture frames from the KasmVNC stream (or the container's X display) → feed the vision
+>   model (the MCP already uses Gemini vision for the worker preview; adapt the frame source to KasmVNC).
+> - **Drive:** inject pointer/keyboard via the KasmVNC input protocol or XTest in the container's X
+>   display; reuse the MCP input-lease/broker concepts.
+> - **Loop:** vision → plan action → inject → re-observe (computer-use style); bounded + cancellable.
+> - **MCP tools:** `gui_screenshot`, `gui_click`, `gui_type`, `gui_key` scoped to a program session.
+> - **Security:** same Sysbox isolation; AI input is a controlled channel separate from the user's kiosk
+>   stream; rate/scope limits; never re-enables a desktop/launcher.
+> - **Sequencing:** ship after the command-level loop + the streaming surface (Slice 3) are solid.
+>
+> ---
+
 # Task 7: AI Chat redesign — "The Living Orb" 2026-05-25
 
 Direction A approved (living gradient orb identity). Scope: visual + IA restructure across floating / docked / mobile (one component system). Personality: expressive but calm — motion is purposeful, never twitchy. Diagnostics (Code Intel, Shadow verify, Regression) collapse into one drawer.
