@@ -193,6 +193,8 @@
     "scripts/dojo-gcp-release-inventory.mjs",
     "scripts/dojo-gcp-release-blockers.mjs",
     "scripts/dojo-kustomize-overlay-check.mjs",
+    "scripts/dojo-postgres-migrate.mjs",
+    "scripts/dojo-release-competency-seed.mjs",
     "scripts/dojo-hosted-runtime-gateway-release-observation.mjs",
     "scripts/dojo-hosted-runtime-gateway-self-check.mjs",
     "scripts/dojo-implementation-status-self-check.mjs",
