@@ -1199,10 +1199,19 @@ function namesFrom(values, pick) {
   for (const value of values) {
     const name = pick(value);
     if (typeof name === "string" && name.trim()) {
-      result.add(name.trim());
+      addNameVariants(result, name);
     }
   }
   return result;
+}
+
+function addNameVariants(result, name) {
+  const trimmed = name.trim();
+  result.add(trimmed);
+  const shortName = trimmed.split("/").filter(Boolean).pop();
+  if (shortName) {
+    result.add(shortName);
+  }
 }
 
 function ingressHostsFrom(values) {

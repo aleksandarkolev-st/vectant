@@ -624,6 +624,23 @@ resources: []
     expect(result.checks.find((check) => check.id === "k8s_ingress_host:beta.vectant.dev")).toEqual(expect.objectContaining({ status: "failed" }));
   });
 
+  it("matches short expected resource names against fully-qualified Google resource names", () => {
+    const config = resolveConfig(parseArgs([
+      "--execute",
+      "--redis-instance=synthi-prod-redis",
+    ]));
+    const inventory = inventoryWithSecrets();
+    inventory.commandResults.push({ id: "redis_instances", ok: true, parseOk: true });
+    inventory.datasets.redis_instances = [{
+      name: "projects/vectant-proj/locations/europe-west10/instances/synthi-prod-redis",
+    }];
+
+    const result = evaluate(config, inventory, []);
+
+    expect(result.ok).toBe(true);
+    expect(result.checks.find((check) => check.id === "redis_instance")).toEqual(expect.objectContaining({ status: "passed" }));
+  });
+
   it("keeps self-check import-safe and runnable through buildReport", () => {
     const raw = parseArgs(["--self-check"]);
     const config = resolveConfig(raw);
