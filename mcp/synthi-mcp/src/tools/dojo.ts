@@ -182,7 +182,9 @@ import type { WorkflowContractV7 } from "../browser/workflow.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import {
   dispatchBrowserPrivateWorkflowToolAfterDojoProof,
+  ensureBrowserPrivateWorkflowToolForDojoProof,
   validateBrowserRuntimeAttachmentForDojoProof,
+  type DojoPrivateWorkflowToolHydration,
   type DojoValidatedBrowserWorkflowContext,
 } from "./browser.js";
 import { dispatchSafetyTool } from "./safety.js";
@@ -7596,6 +7598,16 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
               error_codes: normalizeDojoProofErrorCodes(blockedBy),
             });
           }
+          const backingToolReadiness = ensureBackingPrivateWorkflowToolReadyForDojoProof(resolvedSkill);
+          if (!backingToolReadiness.ok) {
+            const blockedBy = [...(decision?.blocked_by ?? []), ...backingToolReadiness.blocked_by];
+            return blockDojoMcpSkillBusExecution(blockedBy, {
+              ok: false,
+              status: "blocked",
+              blocked_by: blockedBy,
+              error_codes: normalizeDojoProofErrorCodes(blockedBy),
+            }, backingToolReadiness.error.structuredContent ?? {});
+          }
         }
         proofConsume = durableProofRegistry.context.required
           ? await durableProofRegistry.context.proof_store.markProofCapsuleUsed(proofCapsule.capsule_id, runId, now)
@@ -8346,8 +8358,63 @@ async function dispatchBackingSkillTool(
   args: Record<string, unknown>,
   dojoContext: DojoValidatedBrowserWorkflowContext
 ): Promise<ToolResponse | null> {
-  if (!skill.published_tool_name) return null;
-  return await dispatchBrowserPrivateWorkflowToolAfterDojoProof(skill.published_tool_name, args, dojoContext);
+  const toolName = backingPrivateWorkflowToolNameForSkill(skill);
+  if (!toolName) return null;
+  return await dispatchBrowserPrivateWorkflowToolAfterDojoProof(
+    toolName,
+    args,
+    dojoContext,
+    backingPrivateWorkflowHydrationForSkill(skill)
+  );
+}
+
+function ensureBackingPrivateWorkflowToolReadyForDojoProof(
+  skill: DojoSkill
+): { ok: true } | { ok: false; blocked_by: string[]; error: ToolResponse } {
+  const toolName = backingPrivateWorkflowToolNameForSkill(skill);
+  if (!toolName) {
+    const error = errorResponse("dojo_backing_private_workflow_tool_missing", {
+      skill_id: skill.skill_id,
+      workflow_id: skill.workflow_id,
+      proof_not_consumed: true,
+    });
+    return { ok: false, blocked_by: ["dojo_backing_private_workflow_tool_missing"], error };
+  }
+  const readiness = ensureBrowserPrivateWorkflowToolForDojoProof(
+    toolName,
+    backingPrivateWorkflowHydrationForSkill(skill)
+  );
+  if (readiness.ok) return { ok: true };
+  const detail = objectOpt(readiness.error.structuredContent) ?? {};
+  const errorCode = stringOpt(detail["error"]) ?? "dojo_backing_private_workflow_tool_unavailable";
+  return {
+    ok: false,
+    blocked_by: [errorCode],
+    error: {
+      ...readiness.error,
+      structuredContent: {
+        ...detail,
+        skill_id: skill.skill_id,
+        workflow_id: skill.workflow_id,
+        published_tool_name: toolName,
+        proof_not_consumed: true,
+      },
+    },
+  };
+}
+
+function backingPrivateWorkflowToolNameForSkill(skill: DojoSkill): string | undefined {
+  return skill.published_tool_name ?? skill.private_tool_manifest?.tool_name;
+}
+
+function backingPrivateWorkflowHydrationForSkill(skill: DojoSkill): DojoPrivateWorkflowToolHydration | undefined {
+  const manifest = skill.private_tool_manifest;
+  if (!manifest) return undefined;
+  const brokerArtifact = browserBroker.workflowArtifact(manifest.workflow_id);
+  return {
+    manifest,
+    ...(brokerArtifact.ok ? { workflow_artifact: brokerArtifact.artifact } : {}),
+  };
 }
 
 function publishBackingPrivateTool(

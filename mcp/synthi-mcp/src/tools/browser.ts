@@ -1,5 +1,5 @@
 import { authCheckpointManager, type AuthBrowserStorageState, type AuthReadiness, type AuthStorageArtifactMetadata } from "../browser/auth.js";
-import { browserBroker, type BrowserRuntimeAttachment } from "../browser/broker.js";
+import { browserBroker, type BrowserRuntimeAttachment, type BrowserWorkflowArtifact } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { browserWorkflowDeploymentReadiness } from "../browser/deployment_readiness.js";
 import { buildDojoSkill, dojoSkillRegistry } from "../browser/dojo.js";
@@ -61,6 +61,15 @@ export interface DojoValidatedBrowserWorkflowContext {
   verified_runtime_attachment?: BrowserRuntimeAttachment | null;
   now?: string;
 }
+
+export interface DojoPrivateWorkflowToolHydration {
+  manifest: PrivateWorkflowToolManifestV7;
+  workflow_artifact?: BrowserWorkflowArtifact;
+}
+
+export type DojoPrivateWorkflowToolReadiness =
+  | { ok: true; registration: PrivateWorkflowToolRegistration; workflow_artifact: BrowserWorkflowArtifact }
+  | { ok: false; error: ToolResponse };
 
 export type DojoBrowserRuntimeBindingValidation =
   | { ok: true; binding?: Record<string, unknown> }
@@ -955,9 +964,112 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
 export async function dispatchBrowserPrivateWorkflowToolAfterDojoProof(
   toolName: string,
   args: unknown,
-  dojoContext: DojoValidatedBrowserWorkflowContext
+  dojoContext: DojoValidatedBrowserWorkflowContext,
+  hydration?: DojoPrivateWorkflowToolHydration
 ): Promise<ToolResponse> {
+  const readiness = ensureBrowserPrivateWorkflowToolForDojoProof(toolName, hydration);
+  if (!readiness.ok) return readiness.error;
   return await browserRunPublishedPrivateTool(toolName, args, dojoContext);
+}
+
+export function ensureBrowserPrivateWorkflowToolForDojoProof(
+  toolName: string,
+  hydration?: DojoPrivateWorkflowToolHydration
+): DojoPrivateWorkflowToolReadiness {
+  let registration = privateWorkflowToolRegistry.get(toolName);
+  if (!registration && hydration) {
+    const hydrated = hydrateDojoPrivateWorkflowTool(toolName, hydration);
+    if (!hydrated.ok) return hydrated;
+    registration = hydrated.registration;
+  }
+  if (!registration) {
+    return { ok: false, error: errorResponse("private_workflow_tool_not_found", { tool_name: toolName }) };
+  }
+  if (registration.workflow_id !== registration.manifest.workflow_id) {
+    return {
+      ok: false,
+      error: errorResponse("private_workflow_registration_mismatch", {
+        tool_name: toolName,
+        workflow_id: registration.workflow_id,
+        manifest_workflow_id: registration.manifest.workflow_id,
+      }),
+    };
+  }
+  if (registration.manifest.status === "blocked") {
+    return {
+      ok: false,
+      error: errorResponse("private_workflow_tool_blocked", {
+        tool_name: toolName,
+        workflow_id: registration.manifest.workflow_id,
+        blockers: registration.manifest.safety.blockers,
+      }),
+    };
+  }
+  let artifact = browserBroker.workflowArtifact(registration.workflow_id);
+  if (!artifact.ok && registration.workflow_artifact) {
+    artifact = browserBroker.registerWorkflowArtifact(registration.workflow_artifact);
+  }
+  if (!artifact.ok) {
+    return {
+      ok: false,
+      error: errorResponse(artifact.error, {
+        tool_name: toolName,
+        workflow_id: registration.workflow_id,
+        hydration_source: hydration ? "dojo_durable_skill" : "private_workflow_registry",
+      }),
+    };
+  }
+  return { ok: true, registration, workflow_artifact: artifact.artifact };
+}
+
+function hydrateDojoPrivateWorkflowTool(
+  toolName: string,
+  hydration: DojoPrivateWorkflowToolHydration
+): DojoPrivateWorkflowToolReadiness {
+  if (hydration.manifest.tool_name !== toolName) {
+    return {
+      ok: false,
+      error: errorResponse("private_workflow_tool_hydration_mismatch", {
+        tool_name: toolName,
+        hydrated_tool_name: hydration.manifest.tool_name,
+        workflow_id: hydration.manifest.workflow_id,
+      }),
+    };
+  }
+  let workflowArtifact = hydration.workflow_artifact;
+  if (!workflowArtifact) {
+    const brokerArtifact = browserBroker.workflowArtifact(hydration.manifest.workflow_id);
+    if (brokerArtifact.ok) workflowArtifact = brokerArtifact.artifact;
+  }
+  if (!workflowArtifact) {
+    return {
+      ok: false,
+      error: errorResponse("private_workflow_artifact_not_found", {
+        tool_name: toolName,
+        workflow_id: hydration.manifest.workflow_id,
+        hydration_source: "dojo_durable_skill",
+      }),
+    };
+  }
+  const published = privateWorkflowToolRegistry.publish(hydration.manifest, {
+    reservedToolNames: ADVERTISED_TOOLS,
+    workflowArtifact,
+  });
+  if (!published.ok) {
+    return {
+      ok: false,
+      error: errorResponse(published.error, {
+        tool_name: published.tool_name,
+        workflow_id: hydration.manifest.workflow_id,
+        hydration_source: "dojo_durable_skill",
+      }),
+    };
+  }
+  return {
+    ok: true,
+    registration: published.registration,
+    workflow_artifact: workflowArtifact,
+  };
 }
 
 async function browserDirectPrivateWorkflowTool(
