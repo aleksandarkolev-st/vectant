@@ -7,7 +7,7 @@ describe('buildDefaultPrograms', () => {
 
   it('builds one valid @vectant/<name> program per recipe', () => {
     expect(built.length).toBe(DEFAULT_PROGRAM_RECIPES.length);
-    expect(built.length).toBe(7);
+    expect(built.length).toBe(8);
     for (const { packageId, config } of built) {
       expect(packageId).toMatch(/^@vectant\/[a-z0-9._-]+$/);
       expect(SUPPORTED_RUNTIME_TYPES).toContain(config.runtimeType);
@@ -26,6 +26,15 @@ describe('buildDefaultPrograms', () => {
     expect(byId['@vectant/node-worker'].ports).toEqual([]);
     expect(byId['@vectant/lazygit'].runtimeType).toBe('tui');
     expect(byId['@vectant/lazygit'].ports).toEqual([]);
+  });
+
+  it('ships @vectant/dbeaver as a webGui container program (KasmVNC)', () => {
+    const dbeaver = built.find((b) => b.packageId === '@vectant/dbeaver').config;
+    expect(dbeaver.runtimeType).toBe('container');
+    expect(dbeaver.webGui).toBe(true);
+    expect(dbeaver.ports).toEqual([6901]);
+    expect(dbeaver.launch).toMatch(/^docker run .*-p 6901:6901/);
+    expect(dbeaver.permissions).toContain('ports.expose');
   });
 
   it('builds the Dev Container default via the devcontainer importer', () => {
@@ -65,9 +74,10 @@ describe('ensureDefaultPrograms', () => {
     const seeded = await ensureDefaultPrograms(prisma);
 
     expect(seeded).toContain('@vectant/nextjs-dev');
-    expect(seeded.length).toBe(7);
-    expect(prisma.marketplaceProgram.upsert).toHaveBeenCalledTimes(7);
-    expect(prisma.programVersion.upsert).toHaveBeenCalledTimes(7);
+    expect(seeded).toContain('@vectant/dbeaver');
+    expect(seeded.length).toBe(8);
+    expect(prisma.marketplaceProgram.upsert).toHaveBeenCalledTimes(8);
+    expect(prisma.programVersion.upsert).toHaveBeenCalledTimes(8);
 
     const arg = prisma.marketplaceProgram.upsert.mock.calls.find(
       (c) => c[0].where.packageId === '@vectant/nextjs-dev',

@@ -14,6 +14,12 @@ import { importDevcontainer } from './devcontainer';
 
 const WEB_SCOPES = ['program.launch', 'network.outbound', 'ports.expose'];
 
+// GUI dev-tool streaming (Slice 3): the curated DBeaver image (KasmVNC kiosk).
+// The image ref is env-driven so prod can pin the digest-pinned Artifact Registry
+// image; defaults to the locally-built dev tag. The web port is the KasmVNC port.
+const DBEAVER_IMAGE = process.env.VECTANT_DBEAVER_IMAGE || 'vectant-dbeaver:dev';
+const DBEAVER_PORT = Number(process.env.VECTANT_DBEAVER_PORT) || 6901;
+
 /**
  * @typedef {{ name: string, kind: 'manifest'|'devcontainer', recipe: object, description?: string }} DefaultRecipe
  */
@@ -88,6 +94,25 @@ export const DEFAULT_PROGRAM_RECIPES = [
       description: 'lazygit terminal UI for Git.',
       runtimeType: 'tui', install: [], launch: 'lazygit',
       ports: [], permissions: ['program.launch'],
+    },
+  },
+  {
+    name: 'dbeaver',
+    kind: 'manifest',
+    recipe: {
+      packageId: 'dbeaver', version: '1.0.0',
+      displayName: 'DBeaver',
+      description: 'DBeaver Community database GUI, streamed to your workspace via KasmVNC.',
+      // Container GUI program: runs the curated KasmVNC kiosk image in the
+      // per-workspace Sysbox runtime; webGui ⇒ rendered as an interactive
+      // floating surface (not a plain web iframe). The launch command is run
+      // inside the runtime pod's docker; the published KasmVNC port is detected
+      // by the runtime port monitor and surfaced via the slice-1 proxy.
+      runtimeType: 'container', webGui: true,
+      install: [],
+      launch: `docker run --rm --name vectant-dbeaver -p ${DBEAVER_PORT}:${DBEAVER_PORT} ${DBEAVER_IMAGE}`,
+      ports: [DBEAVER_PORT],
+      permissions: ['program.launch', 'network.outbound', 'ports.expose'],
     },
   },
   {
