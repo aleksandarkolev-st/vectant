@@ -188,6 +188,8 @@ export function buildDojoReleaseCompetencySeedConfig({ args = {}, env = process.
   const url = stringOpt(args.url ?? env.SYNTHI_DOJO_RELEASE_SEED_URL) ?? `${appOrigin}/dojo-release-seed`;
   const evidenceRefs = parseStringList(args["evidence-refs"] ?? env.SYNTHI_DOJO_RELEASE_SEED_EVIDENCE_REFS);
   const name = stringOpt(args.name ?? env.SYNTHI_DOJO_RELEASE_SEED_NAME) ?? "Open release details";
+  const stableEntityLabel = stringOpt(args["stable-entity-label"] ?? env.SYNTHI_DOJO_RELEASE_SEED_STABLE_ENTITY_LABEL)
+    ?? `${slugLabel(name)} slug`;
   return {
     now,
     reason: stringOpt(args.reason ?? env.SYNTHI_DOJO_RELEASE_SEED_REASON) ?? "seed release Dojo competency for deployed MCP conformance",
@@ -208,7 +210,7 @@ export function buildDojoReleaseCompetencySeedConfig({ args = {}, env = process.
       action: stringOpt(args.action ?? env.SYNTHI_DOJO_RELEASE_SEED_ACTION) ?? "click",
       role: stringOpt(args.role ?? env.SYNTHI_DOJO_RELEASE_SEED_ROLE) ?? "button",
       name,
-      stable_entity_label: stringOpt(args["stable-entity-label"] ?? env.SYNTHI_DOJO_RELEASE_SEED_STABLE_ENTITY_LABEL) ?? name,
+      stable_entity_label: stableEntityLabel,
       source_id: stringOpt(args["source-id"] ?? env.SYNTHI_DOJO_RELEASE_SEED_SOURCE_ID) ?? "dojo.release.seed.action",
       source_file_path: stringOpt(args["source-file-path"] ?? env.SYNTHI_DOJO_RELEASE_SEED_SOURCE_FILE_PATH) ?? "dojo/release-seed.tsx",
       source_line: parsePositiveInteger(args["source-line"] ?? env.SYNTHI_DOJO_RELEASE_SEED_SOURCE_LINE, "source_line") ?? 1,
@@ -368,6 +370,7 @@ function isReusableReleaseSeedSkill({ skill, candidateSkill }) {
   const record = objectOrNull(skill);
   if (!record) return false;
   if (record.workspace_id !== candidateSkill.workspace_id) return false;
+  if (record.workflow_id !== candidateSkill.workflow_id) return false;
   const license = objectOrNull(record.permission_license);
   if (!license || license.autonomy_level === "blocked") return false;
   if (record.entrustment_level === "EX") return false;
@@ -828,6 +831,17 @@ function parseArgs(argv) {
     }
   }
   return parsed;
+}
+
+function slugLabel(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/^synthi_app_/, "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    || "workflow";
 }
 
 function originFromOptionalUrl(value) {

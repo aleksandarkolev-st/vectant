@@ -37,7 +37,7 @@ describe("Dojo release competency seed harness", () => {
     }));
     expect(config.workflow.origin).toBe("https://beta.vectant.dev");
     expect(config.workflow.url).toBe("https://beta.vectant.dev/dojo-release-seed");
-    expect(config.workflow.stable_entity_label).toBe("Open release details");
+    expect(config.workflow.stable_entity_label).toBe("open_release_details slug");
     expect(config.workflow.source_file_path).toBe("dojo/release-seed.tsx");
   });
 
@@ -238,7 +238,7 @@ describe("Dojo release competency seed harness", () => {
     expect(recordedActions).toEqual([
       expect.objectContaining({
         element: expect.objectContaining({
-          label: "Open release details",
+          label: "open_release_details slug",
           source_id: "dojo.release.seed.action",
         }),
       }),
@@ -414,5 +414,163 @@ describe("Dojo release competency seed harness", () => {
     expect(report.proof.aggregate_evidence_record_ids).toEqual([
       expect.stringMatching(/^dojo_release_proof_[a-f0-9]{24}$/),
     ]);
+  });
+
+  it("does not reuse an existing release competency for a different workflow", async () => {
+    const outDir = await mkdtemp(path.join(os.tmpdir(), "dojo-release-seed-"));
+    tmpDirs.push(outDir);
+    const calls: string[] = [];
+    const artifact = {
+      workflow_id: "workflow-new",
+      workflow: {
+        contract: { workflowId: "workflow-new" },
+        card: { stepCount: 1 },
+      },
+      events: [{ event_id: "event-a" }],
+    };
+    const staleSkill = {
+      skill_id: "skill-release-seed",
+      workflow_id: "workflow-old",
+      workspace_id: "workspace-a",
+      published_tool_name: "synthi_app_release_seed",
+      private_tool_manifest: {
+        status: "available",
+        tool_name: "synthi_app_release_seed",
+      },
+      entrustment_level: "E3",
+      permission_license: {
+        license_id: "license-release-seed",
+        license_version: "1.0.0",
+        autonomy_level: "submit_limited",
+        proof_requirements: {
+          required_evidence_claims: [],
+          required_context_claims: [],
+          required_guardrails: [],
+        },
+      },
+    };
+    const modules = {
+      browserBroker: {
+        resetForTests: () => undefined,
+        requestConsent: () => undefined,
+        registerTabs: () => undefined,
+        selectTab: () => undefined,
+        startTeachMode: () => ({ ok: true }),
+        recordHumanAction: () => undefined,
+        workflowArtifact: () => ({ ok: true, artifact }),
+      },
+      sourceIdentityRegistry: {
+        register: (input) => ({
+          workspace_id: input.workspaceId,
+          token_count: input.tokens.length,
+        }),
+      },
+      generatePrivateWorkflowToolManifest: () => ({
+        status: "available",
+        tool_name: "synthi_app_release_seed",
+        workflow_id: "workflow-new",
+      }),
+      buildDojoSkill: (_contract, options) => ({
+        skill_id: "skill-release-seed",
+        workflow_id: "workflow-new",
+        workspace_id: options.workspace_id,
+        permission_license: {
+          proof_requirements: {
+            required_evidence_claims: [],
+            required_context_claims: [],
+          },
+        },
+      }),
+      PostgresDojoSkillStore: class FakePostgresDojoSkillStore {
+        async getSkillRecord() {
+          return null;
+        }
+
+        async saveSkill() {
+          return {};
+        }
+      },
+      resolveDojoEvidenceLedgerAppendStore: async () => ({
+        ok: true,
+        queryable: {},
+        evidence_ledger: {
+          append: async (input) => ({
+            record_id: input.record_id,
+          }),
+        },
+        close: async () => undefined,
+      }),
+      dispatchDojoTool: async (tool, args) => {
+        calls.push(`${tool}:${args?.workflow_id ?? ""}`);
+        if (tool === "synthi_dojo_list_competencies") {
+          return {
+            structuredContent: {
+              ok: true,
+              competencies: [{
+                skill_id: "skill-release-seed",
+                published_tool_name: "synthi_app_release_seed",
+              }],
+            },
+          };
+        }
+        if (tool === "synthi_dojo_get_skill") {
+          return {
+            structuredContent: {
+              ok: true,
+              skill: staleSkill,
+            },
+          };
+        }
+        if (tool === "synthi_dojo_publish_skill") {
+          return {
+            structuredContent: {
+              ok: true,
+              skill: {
+                skill_id: "skill-release-seed",
+                workflow_id: "workflow-new",
+                readiness_level: "SRL3",
+                entrustment_level: "E1",
+              },
+              private_tool: {
+                ok: true,
+                tool_name: "synthi_app_release_seed",
+                manifest_status: "available",
+              },
+              publication: {
+                ok: true,
+                control_plane_persistence: {
+                  ok: true,
+                  store_kind: "postgres",
+                  skill_id: "skill-release-seed",
+                  workflow_id: "workflow-new",
+                  status: "published",
+                },
+              },
+            },
+          };
+        }
+        throw new Error(`unexpected tool call:${tool}`);
+      },
+    };
+
+    const result = await runDojoReleaseCompetencySeed({
+      env: {
+        SYNTHI_TENANT_ID: "tenant-a",
+        SYNTHI_WORKSPACE_ID: "workspace-a",
+        SYNTHI_AGENT_ID: "agent-a",
+        FRONTEND_URL: "https://app.example.test",
+      },
+      outDir,
+      now: "2026-06-20T00:00:00.000Z",
+      modules,
+    });
+
+    expect(calls).toEqual([
+      "synthi_dojo_list_competencies:",
+      "synthi_dojo_get_skill:",
+      "synthi_dojo_publish_skill:workflow-new",
+    ]);
+    const report = JSON.parse(await readFile(result.report_path, "utf8"));
+    expect(report.publication.control_plane_persistence.workflow_id).toBe("workflow-new");
   });
 });
