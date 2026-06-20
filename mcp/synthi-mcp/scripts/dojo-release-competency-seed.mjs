@@ -62,6 +62,36 @@ export async function runDojoReleaseCompetencySeed({
     private_tool_manifest: manifest,
     ...(manifest.status !== "blocked" ? { published_tool_name: manifest.tool_name } : {}),
   });
+  const reusablePublication = await findReusableReleaseSeedPublication({
+    runtime,
+    config,
+    candidateSkill,
+    manifest,
+  });
+  if (reusablePublication) {
+    const proofEvidenceRefs = await appendReleaseProofEvidence({
+      runtime,
+      config,
+      candidateSkill: reusablePublication.skill,
+      publishContent: reusablePublication.publishContent,
+      publicationEvidenceRefs: [],
+    });
+    const report = buildDojoReleaseCompetencySeedReport({
+      config,
+      artifact,
+      manifest,
+      candidateSkill: reusablePublication.skill,
+      evidenceRefs: [],
+      proofEvidenceRefs,
+      publishContent: reusablePublication.publishContent,
+      skill: reusablePublication.skill,
+      privateTool: reusablePublication.privateTool,
+      publication: reusablePublication.publication,
+    });
+    const reportPath = path.join(outputDir, "dojo-release-competency-seed.json");
+    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+    return { report_path: reportPath, report };
+  }
   const evidenceRefs = config.evidence_refs.length > 0
     ? config.evidence_refs
     : [await appendReleasePublicationEvidence({
@@ -157,6 +187,7 @@ export function buildDojoReleaseCompetencySeedConfig({ args = {}, env = process.
   const appOrigin = resolveAppOrigin({ args, env });
   const url = stringOpt(args.url ?? env.SYNTHI_DOJO_RELEASE_SEED_URL) ?? `${appOrigin}/dojo-release-seed`;
   const evidenceRefs = parseStringList(args["evidence-refs"] ?? env.SYNTHI_DOJO_RELEASE_SEED_EVIDENCE_REFS);
+  const name = stringOpt(args.name ?? env.SYNTHI_DOJO_RELEASE_SEED_NAME) ?? "Open release details";
   return {
     now,
     reason: stringOpt(args.reason ?? env.SYNTHI_DOJO_RELEASE_SEED_REASON) ?? "seed release Dojo competency for deployed MCP conformance",
@@ -176,8 +207,8 @@ export function buildDojoReleaseCompetencySeedConfig({ args = {}, env = process.
       url,
       action: stringOpt(args.action ?? env.SYNTHI_DOJO_RELEASE_SEED_ACTION) ?? "click",
       role: stringOpt(args.role ?? env.SYNTHI_DOJO_RELEASE_SEED_ROLE) ?? "button",
-      name: stringOpt(args.name ?? env.SYNTHI_DOJO_RELEASE_SEED_NAME) ?? "Open release details",
-      stable_entity_label: stringOpt(args["stable-entity-label"] ?? env.SYNTHI_DOJO_RELEASE_SEED_STABLE_ENTITY_LABEL) ?? "release slug",
+      name,
+      stable_entity_label: stringOpt(args["stable-entity-label"] ?? env.SYNTHI_DOJO_RELEASE_SEED_STABLE_ENTITY_LABEL) ?? name,
       source_id: stringOpt(args["source-id"] ?? env.SYNTHI_DOJO_RELEASE_SEED_SOURCE_ID) ?? "dojo.release.seed.action",
       source_file_path: stringOpt(args["source-file-path"] ?? env.SYNTHI_DOJO_RELEASE_SEED_SOURCE_FILE_PATH) ?? "dojo/release-seed.tsx",
       source_line: parsePositiveInteger(args["source-line"] ?? env.SYNTHI_DOJO_RELEASE_SEED_SOURCE_LINE, "source_line") ?? 1,
@@ -244,6 +275,65 @@ export function registerReleaseSeedSourceIdentity({ runtime = {}, browserBroker,
     workspace_id: status.workspace_id,
     token_count: status.token_count,
   };
+}
+
+export async function findReusableReleaseSeedPublication({ runtime, config, candidateSkill, manifest }) {
+  if (typeof runtime.dispatchDojoTool !== "function") return null;
+  const response = await runtime.dispatchDojoTool("synthi_dojo_get_skill", {
+    ...config.tenant,
+    skill_id: candidateSkill.skill_id,
+  });
+  const content = objectOrNull(response?.structuredContent);
+  if (!response || response.isError || content?.ok === false) return null;
+  const skill = objectOrNull(content?.skill);
+  if (!isReusableReleaseSeedSkill({ skill, candidateSkill })) return null;
+  const privateManifest = objectOrNull(skill.private_tool_manifest);
+  const toolName = stringOpt(skill.published_tool_name ?? privateManifest?.tool_name) ?? manifest.tool_name;
+  const publication = {
+    ok: true,
+    reused_existing: true,
+    control_plane_persistence: {
+      ok: true,
+      store_kind: "postgres",
+      status: "published",
+      skill_id: skill.skill_id,
+      workflow_id: skill.workflow_id,
+      workspace_id: skill.workspace_id,
+      license_id: objectOrNull(skill.permission_license)?.license_id ?? null,
+      license_version: objectOrNull(skill.permission_license)?.license_version ?? null,
+    },
+    executable_checkride: objectOrNull(skill.executable_entrustment) ?? objectOrNull(skill.checkride) ?? null,
+  };
+  const privateTool = {
+    ok: true,
+    tool_name: toolName,
+    manifest_status: stringOpt(privateManifest?.status) ?? manifest.status,
+  };
+  return {
+    skill,
+    privateTool,
+    publication,
+    publishContent: {
+      ok: true,
+      reused_existing: true,
+      skill,
+      private_tool: privateTool,
+      published_tool_name: toolName,
+      publication,
+    },
+  };
+}
+
+function isReusableReleaseSeedSkill({ skill, candidateSkill }) {
+  const record = objectOrNull(skill);
+  if (!record) return false;
+  if (record.skill_id !== candidateSkill.skill_id) return false;
+  if (record.workspace_id !== candidateSkill.workspace_id) return false;
+  const license = objectOrNull(record.permission_license);
+  if (!license || license.autonomy_level === "blocked") return false;
+  if (record.entrustment_level === "EX") return false;
+  const privateManifest = objectOrNull(record.private_tool_manifest);
+  return Boolean(stringOpt(record.published_tool_name) || stringOpt(privateManifest?.tool_name));
 }
 
 export async function appendReleasePublicationEvidence({ runtime, config, artifact, candidateSkill }) {

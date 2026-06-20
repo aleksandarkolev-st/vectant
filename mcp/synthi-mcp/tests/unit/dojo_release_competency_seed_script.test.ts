@@ -37,7 +37,7 @@ describe("Dojo release competency seed harness", () => {
     }));
     expect(config.workflow.origin).toBe("https://beta.vectant.dev");
     expect(config.workflow.url).toBe("https://beta.vectant.dev/dojo-release-seed");
-    expect(config.workflow.stable_entity_label).toBe("release slug");
+    expect(config.workflow.stable_entity_label).toBe("Open release details");
     expect(config.workflow.source_file_path).toBe("dojo/release-seed.tsx");
   });
 
@@ -145,6 +145,15 @@ describe("Dojo release competency seed harness", () => {
         close: async () => undefined,
       }),
       dispatchDojoTool: async (tool, args) => {
+        if (tool === "synthi_dojo_get_skill") {
+          return {
+            isError: true,
+            structuredContent: {
+              ok: false,
+              error: "dojo_skill_not_found",
+            },
+          };
+        }
         ledgerEvents.push(`publish:${args.workflow_id}`);
         calls.push({ tool, args });
         publishedSkillIds.add("skill-release-seed");
@@ -221,7 +230,7 @@ describe("Dojo release competency seed harness", () => {
     expect(recordedActions).toEqual([
       expect.objectContaining({
         element: expect.objectContaining({
-          label: "release slug",
+          label: "Open release details",
           source_id: "dojo.release.seed.action",
         }),
       }),
@@ -257,5 +266,134 @@ describe("Dojo release competency seed harness", () => {
     ]);
     expect(report.proof.required_evidence_claims).toEqual(["checkride_passed", "guardrails_active"]);
     expect(report.proof.required_context_claims).toEqual(["workspace_verified"]);
+  });
+
+  it("reuses an existing published release competency instead of republishing", async () => {
+    const outDir = await mkdtemp(path.join(os.tmpdir(), "dojo-release-seed-"));
+    tmpDirs.push(outDir);
+    const calls: string[] = [];
+    const ledgerEvents: string[] = [];
+    const artifact = {
+      workflow_id: "workflow-release-seed",
+      workflow: {
+        contract: { workflowId: "workflow-release-seed" },
+        card: { stepCount: 1 },
+      },
+      events: [{ event_id: "event-a" }],
+    };
+    const existingSkill = {
+      skill_id: "skill-release-seed",
+      workflow_id: "workflow-release-seed",
+      workspace_id: "workspace-a",
+      published_tool_name: "synthi_app_release_seed",
+      private_tool_manifest: {
+        status: "available",
+        tool_name: "synthi_app_release_seed",
+      },
+      entrustment_level: "E3",
+      skill_readiness_level: "SRL3",
+      permission_license: {
+        license_id: "license-release-seed",
+        license_version: "1.0.0",
+        autonomy_level: "supervised",
+        proof_requirements: {
+          required_evidence_claims: ["checkride_passed"],
+          required_context_claims: ["workspace_verified"],
+          required_guardrails: [],
+        },
+      },
+      executable_entrustment: {
+        checkride_id: "checkride-release-seed",
+        scenario_count: 2,
+        passed_scenarios: 2,
+        failed_scenarios: 0,
+        blocked_scenarios: 0,
+        production_recommendation: "constrained",
+        evidence_refs: ["ledger:existing_evidence:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+      },
+    };
+    const modules = {
+      browserBroker: {
+        resetForTests: () => undefined,
+        requestConsent: () => undefined,
+        registerTabs: () => undefined,
+        selectTab: () => undefined,
+        startTeachMode: () => ({ ok: true }),
+        recordHumanAction: () => undefined,
+        workflowArtifact: () => ({ ok: true, artifact }),
+      },
+      sourceIdentityRegistry: {
+        register: (input) => ({
+          workspace_id: input.workspaceId,
+          token_count: input.tokens.length,
+        }),
+      },
+      generatePrivateWorkflowToolManifest: () => ({
+        status: "available",
+        tool_name: "synthi_app_release_seed",
+        workflow_id: "workflow-release-seed",
+      }),
+      buildDojoSkill: (_contract, options) => ({
+        ...existingSkill,
+        workspace_id: options.workspace_id,
+      }),
+      PostgresDojoSkillStore: class FakePostgresDojoSkillStore {
+        async getSkillRecord(skillId) {
+          return { skill_id: skillId, status: "published" };
+        }
+
+        async saveSkill(skill, options) {
+          ledgerEvents.push(`save:${skill.skill_id}:${options.status}`);
+          return { skill_id: skill.skill_id };
+        }
+      },
+      resolveDojoEvidenceLedgerAppendStore: async () => ({
+        ok: true,
+        queryable: {},
+        evidence_ledger: {
+          append: async (input) => {
+            ledgerEvents.push(`append:${input.skill_id}`);
+            return {
+              record_id: input.record_id,
+            };
+          },
+        },
+        close: async () => undefined,
+      }),
+      dispatchDojoTool: async (tool) => {
+        calls.push(tool);
+        if (tool === "synthi_dojo_get_skill") {
+          return {
+            structuredContent: {
+              ok: true,
+              skill: existingSkill,
+            },
+          };
+        }
+        throw new Error(`unexpected tool call:${tool}`);
+      },
+    };
+
+    const result = await runDojoReleaseCompetencySeed({
+      env: {
+        SYNTHI_TENANT_ID: "tenant-a",
+        SYNTHI_WORKSPACE_ID: "workspace-a",
+        SYNTHI_AGENT_ID: "agent-a",
+        FRONTEND_URL: "https://app.example.test",
+      },
+      outDir,
+      now: "2026-06-20T00:00:00.000Z",
+      modules,
+    });
+
+    expect(calls).toEqual(["synthi_dojo_get_skill"]);
+    expect(ledgerEvents).toEqual(["append:skill-release-seed"]);
+    const report = JSON.parse(await readFile(result.report_path, "utf8"));
+    expect(report.skill.skill_id).toBe("skill-release-seed");
+    expect(report.private_tool.tool_name).toBe("synthi_app_release_seed");
+    expect(report.publication.evidence_ref_count).toBe(0);
+    expect(report.proof.aggregate_evidence_record_ids).toEqual([
+      expect.stringMatching(/^dojo_release_proof_[a-f0-9]{24}$/),
+    ]);
   });
 });
