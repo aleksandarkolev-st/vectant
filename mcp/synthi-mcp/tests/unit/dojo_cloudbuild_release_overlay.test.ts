@@ -67,7 +67,12 @@ describe("Dojo Cloud Build release overlay contract", () => {
     const yaml = cloudbuildYaml();
 
     expect(yaml).toContain('if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then');
-    expect(yaml).toContain("kubectl delete deployment/redis service/redis statefulset/postgres service/postgres -n $${NS} --ignore-not-found");
+    expect(yaml).toContain("deployment/redis");
+    expect(yaml).toContain("service/redis");
+    expect(yaml).toContain("statefulset/postgres");
+    expect(yaml).toContain("service/postgres");
+    expect(yaml).toContain("networkpolicy/allow-to-redis");
+    expect(yaml).toContain("networkpolicy/allow-to-postgres");
     expect(yaml).not.toContain("persistentvolumeclaim/postgres");
     expect(yaml).not.toContain("persistentvolumeclaim/redis");
   });
@@ -80,6 +85,23 @@ describe("Dojo Cloud Build release overlay contract", () => {
     expect(script).toContain('reject_resource "Service" "redis"');
     expect(script).toContain('reject_resource "StatefulSet" "postgres"');
     expect(script).toContain('reject_resource "Service" "postgres"');
+    expect(script).toContain('reject_resource "NetworkPolicy" "allow-to-redis"');
+    expect(script).toContain('reject_resource "NetworkPolicy" "allow-to-postgres"');
+  });
+
+  it("keeps Dojo release workflow and checkpoint state secrets self-contained", () => {
+    const renderGuard = renderGuardScript();
+    const releaseSecrets = readFileSync("../../k8s/overlays/dojo-release-gate/dojo-release-external-secrets.yaml", "utf8");
+
+    expect(releaseSecrets).toContain("secretKey: SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE");
+    expect(releaseSecrets).toContain("secretKey: SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE");
+    expect(releaseSecrets).toContain("secretKey: SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY");
+    expect(releaseSecrets).toContain("key: synthi-private-workflow-tool-store-key");
+    expect(releaseSecrets).toContain("secretKey: SYNTHI_AUTH_CHECKPOINT_STORE_FILE");
+    expect(releaseSecrets).toContain("secretKey: SYNTHI_AUTH_CHECKPOINT_SCOPE");
+    expect(releaseSecrets).toContain("secretKey: SYNTHI_AUTH_CHECKPOINT_STORE_KEY");
+    expect(releaseSecrets).toContain("key: synthi-auth-checkpoint-store-key");
+    expect(renderGuard).toContain("Dojo release render guard");
   });
 
   it("parameterizes the source registry used for rendered manifest substitution", () => {

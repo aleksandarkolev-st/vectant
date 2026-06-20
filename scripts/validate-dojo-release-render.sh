@@ -74,5 +74,7 @@ reject_resource "Deployment" "redis"
 reject_resource "Service" "redis"
 reject_resource "StatefulSet" "postgres"
 reject_resource "Service" "postgres"
+reject_resource "NetworkPolicy" "allow-to-redis"
+reject_resource "NetworkPolicy" "allow-to-postgres"
 
 echo "Dojo release render guard passed for ${RENDERED}"
