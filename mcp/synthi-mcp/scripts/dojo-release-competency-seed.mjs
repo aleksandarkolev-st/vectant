@@ -290,6 +290,18 @@ export async function ensureReleasePublicationEvidenceSkillAnchor({ runtime, res
     request_id: config.tenant.request_id,
     correlation_id: config.tenant.correlation_id,
   });
+  if (typeof store.getSkillRecord === "function") {
+    const existing = await store.getSkillRecord(candidateSkill.skill_id);
+    if (existing?.status === "published") {
+      return {
+        ok: true,
+        skill_id: candidateSkill.skill_id,
+        workspace_id: config.tenant.workspace_id,
+        existing_status: existing.status,
+        skipped_draft_anchor: true,
+      };
+    }
+  }
   await store.saveSkill(candidateSkill, {
     status: "draft",
     created_by: {

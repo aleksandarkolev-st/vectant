@@ -75,6 +75,7 @@ describe("Dojo release competency seed harness", () => {
     const ledgerEvents: string[] = [];
     const recordedActions: unknown[] = [];
     const sourceRegistrations: unknown[] = [];
+    const publishedSkillIds = new Set<string>();
     const artifact = {
       workflow_id: "workflow-release-seed",
       workflow: {
@@ -121,6 +122,10 @@ describe("Dojo release competency seed harness", () => {
         },
       }),
       PostgresDojoSkillStore: class FakePostgresDojoSkillStore {
+        async getSkillRecord(skillId) {
+          return publishedSkillIds.has(skillId) ? { skill_id: skillId, status: "published" } : null;
+        }
+
         async saveSkill(skill, options) {
           ledgerEvents.push(`save:${skill.skill_id}:${options.status}`);
           return { skill_id: skill.skill_id };
@@ -142,6 +147,7 @@ describe("Dojo release competency seed harness", () => {
       dispatchDojoTool: async (tool, args) => {
         ledgerEvents.push(`publish:${args.workflow_id}`);
         calls.push({ tool, args });
+        publishedSkillIds.add("skill-release-seed");
         return {
           structuredContent: {
             ok: true,
@@ -225,7 +231,6 @@ describe("Dojo release competency seed harness", () => {
       "save:skill-release-seed:draft",
       "append:skill-release-seed",
       "publish:workflow-release-seed",
-      "save:skill-release-seed:draft",
       "append:skill-release-seed",
     ]);
     expect(calls[0].tool).toBe("synthi_dojo_publish_skill");
