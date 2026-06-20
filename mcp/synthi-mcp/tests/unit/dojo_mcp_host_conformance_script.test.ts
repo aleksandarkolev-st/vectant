@@ -5,6 +5,7 @@ import {
   buildConformanceReleaseGateSummary,
   buildDojoMcpHostConformanceConfig,
   buildDojoMcpHostConformanceTenantContextArgs,
+  buildRuntimeSessionConfig,
   buildMcpHttpHeaders,
   classifyMcpHost,
   deploymentObservationsFromReadiness,
@@ -16,7 +17,10 @@ import {
   mcpHostConformance,
   observesLicensedSkillFiltering,
   redactConformanceReport,
+  resolveRuntimeActionUrl,
+  resolveRuntimeOriginAllowlist,
   resolveMcpCommandSpec,
+  runtimeSessionRunArgs,
   selectDojoCompetencyForConformance,
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
 
@@ -171,6 +175,14 @@ describe("Dojo MCP host conformance harness", () => {
         "ledger-checkpoint-hash": "a".repeat(64),
         "evidence-max-age-ms": "60000",
         "require-verified-evidence": "1",
+        "runtime-session-id": "runtime-session-a",
+        "runtime-credential-id": "runtime-credential-a",
+        "runtime-workspace-url": "https://app.example.test/workspace",
+        "runtime-action-url": "https://app.example.test/workspace/settings",
+        "runtime-origin-allowlist": "https://app.example.test,https://static.example.test",
+        "runtime-ttl-ms": "600000",
+        "runtime-credential-ttl-ms": "300000",
+        "runtime-redact-screenshots": "1",
         "require-external-control-plane-store": "1",
         "external-control-plane-store": "1",
         "require-external-proof-signing": "1",
@@ -214,6 +226,16 @@ describe("Dojo MCP host conformance harness", () => {
     expect(config.ledgerCheckpointHash).toBe("a".repeat(64));
     expect(config.evidenceMaxAgeMs).toBe(60000);
     expect(config.requireVerifiedEvidence).toBe(true);
+    expect(config.runtime).toEqual(expect.objectContaining({
+      sessionId: "runtime-session-a",
+      credentialId: "runtime-credential-a",
+      workspaceUrl: "https://app.example.test/workspace",
+      actionUrl: "https://app.example.test/workspace/settings",
+      originAllowlist: ["https://app.example.test", "https://static.example.test"],
+      ttlMs: 600000,
+      credentialTtlMs: 300000,
+      redactScreenshots: true,
+    }));
     expect(config.requireExternalControlPlaneStore).toBe(true);
     expect(config.externalControlPlaneStore).toBe(true);
     expect(config.requireExternalProofSigning).toBe(true);
@@ -268,6 +290,64 @@ describe("Dojo MCP host conformance harness", () => {
       args: { "tenant-context-json": "{\"roles\":[\"\"]}" },
       env: {},
     })).toThrow("tenant_context.roles_must_be_non_empty_strings");
+  });
+
+  it("builds hosted runtime session inputs without embedding provider-specific defaults", () => {
+    const runtimeConfig = buildRuntimeSessionConfig({
+      args: {},
+      env: {
+        SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_SESSION_ID: "session-env",
+        SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_CREDENTIAL_ID: "credential-env",
+        SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_CREDENTIAL_SECRET: "secret-env",
+        SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_WORKSPACE_URL: "https://workspace.example.test/app",
+        SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_ORIGIN_ALLOWLIST: "https://workspace.example.test,https://assets.example.test",
+        SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_LOCAL_NETWORK_ALLOWED: "0",
+      },
+    });
+    expect(runtimeConfig).toEqual(expect.objectContaining({
+      sessionId: "session-env",
+      credentialId: "credential-env",
+      credentialSecret: "secret-env",
+      workspaceUrl: "https://workspace.example.test/app",
+      originAllowlist: ["https://workspace.example.test", "https://assets.example.test"],
+      localNetworkAllowed: false,
+    }));
+
+    const config = {
+      host: { mcpHostUrl: "https://mcp.example.test/dojo/mcp" },
+      runtime: {
+        ...runtimeConfig,
+        actionUrl: "",
+        workspaceUrl: "",
+        originAllowlist: ["https://allowed.example.test"],
+      },
+    };
+    const competency = {
+      mcp_skill_manifest: {
+        skill: {
+          app_origin: "https://app.example.test",
+        },
+      },
+    };
+    const actionUrl = resolveRuntimeActionUrl({ config, competency });
+    expect(actionUrl).toBe("https://app.example.test");
+    expect(resolveRuntimeOriginAllowlist({ config, competency, actionUrl, workspaceUrl: actionUrl })).toEqual([
+      "https://allowed.example.test",
+      "https://app.example.test",
+    ]);
+    expect(runtimeSessionRunArgs({
+      session_id: "session-a",
+      credential_id: "credential-a",
+      credential_secret: "secret-a",
+      run_id: "run-a",
+      action_url: "https://app.example.test",
+    })).toEqual({
+      runtime_session_id: "session-a",
+      runtime_credential_id: "credential-a",
+      runtime_credential_secret: "secret-a",
+      run_id: "run-a",
+      runtime_action_url: "https://app.example.test",
+    });
   });
 
   it("requires a separate app bearer header when IAP also uses Authorization", () => {
@@ -392,7 +472,7 @@ describe("Dojo MCP host conformance harness", () => {
 
   it("summarizes release-gate steps and skipped raw backing checks", () => {
     const requiredGate = buildConformanceReleaseGateSummary({
-      config: { raw_backing_tool_required: true },
+      config: { raw_backing_tool_required: true, execute_production: true },
       deployment_claims: fullDeploymentClaims(),
       deployment_observations: fullDeploymentObservations(),
       steps: [
@@ -402,6 +482,7 @@ describe("Dojo MCP host conformance harness", () => {
         { name: "select published Dojo competency", ok: true },
         { name: "issue proof capsule", ok: true },
         { name: "validate proof capsule", ok: true },
+        { name: "create hosted runtime session", ok: true },
         { name: "dry-run proof-gated Dojo skill", ok: true },
         { name: "raw backing tool blocked outside Dojo proof path", ok: true },
         { name: "revoke proof capsule", ok: true },
@@ -417,7 +498,7 @@ describe("Dojo MCP host conformance harness", () => {
     }));
 
     const skippedGate = buildConformanceReleaseGateSummary({
-      config: { raw_backing_tool_required: false },
+      config: { raw_backing_tool_required: false, execute_production: true },
       deployment_claims: fullDeploymentClaims(),
       deployment_observations: fullDeploymentObservations(),
       steps: requiredGate.checks
@@ -452,6 +533,7 @@ describe("Dojo MCP host conformance harness", () => {
         { name: "select published Dojo competency", ok: true },
         { name: "issue proof capsule", ok: true },
         { name: "validate proof capsule", ok: true },
+        { name: "create hosted runtime session", ok: true },
         { name: "execute proof-gated Dojo skill", ok: true },
         { name: "raw backing tool blocked outside Dojo proof path", ok: true },
         { name: "revoke proof capsule", ok: true },
@@ -539,6 +621,7 @@ function nameForGateCheck(id: string): string {
     proof_capsule_issued: "issue proof capsule",
     proof_capsule_validated: "validate proof capsule",
     proof_gated_run: "dry-run proof-gated Dojo skill",
+    hosted_runtime_session_bound: "create hosted runtime session",
     raw_backing_tool_blocked: "raw backing tool blocked outside Dojo proof path",
     proof_capsule_revoked: "revoke proof capsule",
     revoked_proof_validation_blocked: "revoked proof validation blocked",

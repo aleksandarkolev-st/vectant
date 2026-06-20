@@ -123,6 +123,13 @@ async function main() {
       requested_published_tool_name: config.publishedToolName || null,
       requested_action: config.requestedAction,
       execute_production: config.executeProduction,
+      runtime_session: {
+        provided_session: Boolean(config.runtime.sessionId),
+        auto_create_session: config.executeProduction && !config.runtime.sessionId,
+        workspace_url_configured: Boolean(config.runtime.workspaceUrl),
+        action_url_configured: Boolean(config.runtime.actionUrl),
+        origin_allowlist_count: config.runtime.originAllowlist.length,
+      },
       raw_backing_tool_required: !config.skipRawBackingToolCheck,
       evidence_record_count: config.evidenceRecordIds.length,
       ledger_checkpoint_hash_configured: Boolean(config.ledgerCheckpointHash),
@@ -243,12 +250,33 @@ async function main() {
     });
     log("ok", "validate proof capsule");
 
+    const runtimeSession = await resolveHostedRuntimeSessionForProductionRun({
+      client,
+      config,
+      competency,
+    });
+    if (runtimeSession) {
+      report.steps.push({
+        name: runtimeSession.created ? "create hosted runtime session" : "use hosted runtime session",
+        ok: true,
+        session_id: runtimeSession.session_id,
+        credential_id: runtimeSession.credential_id || null,
+        runtime_id: runtimeSession.runtime_id || null,
+        run_id: runtimeSession.run_id,
+        workspace_url: runtimeSession.workspace_url,
+        action_url: runtimeSession.action_url,
+        origin_allowlist: runtimeSession.origin_allowlist,
+      });
+      log("ok", `${runtimeSession.created ? "create" : "use"} hosted runtime session - session=${runtimeSession.session_id}`);
+    }
+
     const runCall = await client.toolCall("synthi_dojo_run_with_proof_capsule", {
       ...config.tenantContextArgs,
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
       tool_args: config.toolArgs,
+      ...runtimeSessionRunArgs(runtimeSession),
       dry_run: !config.executeProduction,
     });
     assertToolOk(runCall, config.executeProduction ? "execute proof-gated Dojo skill" : "dry-run proof-gated Dojo skill");
@@ -389,6 +417,7 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
     evidenceMaxAgeMs: parseOptionalNonNegativeInteger(args["evidence-max-age-ms"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EVIDENCE_MAX_AGE_MS, "evidence_max_age_ms"),
     requireVerifiedEvidence: parseOptionalBooleanFlag(args["require-verified-evidence"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUIRE_VERIFIED_EVIDENCE),
     toolArgs: parseJsonObjectArgument(args["tool-args-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_TOOL_ARGS_JSON || "{}", "tool_args"),
+    runtime: buildRuntimeSessionConfig({ args, env }),
     rawToolArgs: parseJsonObjectArgument(args["raw-tool-args-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_RAW_TOOL_ARGS_JSON || "{}", "raw_tool_args"),
     executeProduction: parseBooleanFlag(args["execute-production"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EXECUTE_PRODUCTION),
     skipRawBackingToolCheck: parseBooleanFlag(args["skip-raw-backing-tool-check"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_SKIP_RAW_BACKING_TOOL_CHECK),
@@ -406,6 +435,24 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
     revocationActorId: normalizeOptionalText(args["revocation-actor-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_ACTOR_ID) || "dojo-mcp-host-conformance",
     revocationActorType: normalizeActorType(args["revocation-actor-type"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_ACTOR_TYPE) || "service",
     revocationEvidenceRefs: parseStringList(args["revocation-evidence-refs"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REVOCATION_EVIDENCE_REFS),
+  };
+}
+
+export function buildRuntimeSessionConfig({ args = {}, env = process.env } = {}) {
+  return {
+    sessionId: normalizeOptionalText(args["runtime-session-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_SESSION_ID),
+    credentialId: normalizeOptionalText(args["runtime-credential-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_CREDENTIAL_ID),
+    credentialSecret: normalizeOptionalText(args["runtime-credential-secret"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_CREDENTIAL_SECRET),
+    workspaceUrl: normalizeOptionalText(args["runtime-workspace-url"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_WORKSPACE_URL),
+    actionUrl: normalizeOptionalText(args["runtime-action-url"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_ACTION_URL),
+    runId: normalizeOptionalText(args["runtime-run-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_RUN_ID),
+    runtimeId: normalizeOptionalText(args["runtime-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_ID),
+    originAllowlist: parseStringList(args["runtime-origin-allowlist"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_ORIGIN_ALLOWLIST),
+    ttlMs: parseOptionalNonNegativeInteger(args["runtime-ttl-ms"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_TTL_MS, "runtime_ttl_ms"),
+    credentialTtlMs: parseOptionalNonNegativeInteger(args["runtime-credential-ttl-ms"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_CREDENTIAL_TTL_MS, "runtime_credential_ttl_ms"),
+    localNetworkAllowed: parseOptionalBooleanFlag(args["runtime-local-network-allowed"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_LOCAL_NETWORK_ALLOWED),
+    redactScreenshots: parseOptionalBooleanFlag(args["runtime-redact-screenshots"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_REDACT_SCREENSHOTS),
+    sensitiveWorkspace: parseOptionalBooleanFlag(args["runtime-sensitive-workspace"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_SENSITIVE_WORKSPACE),
   };
 }
 
@@ -441,6 +488,120 @@ export function buildDojoMcpHostConformanceTenantContextArgs({ args = {}, env = 
   setTenantContextString(tenantContext, "correlation_id", args["correlation-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_CORRELATION_ID);
 
   return tenantContext;
+}
+
+export async function resolveHostedRuntimeSessionForProductionRun({ client, config, competency }) {
+  if (!config.executeProduction) return null;
+  const runtime = config.runtime;
+  const runId = runtime.runId || normalizeOptionalText(config.tenantContextArgs.request_id) || `dojo_mcp_conformance_run_${Date.now()}`;
+  const actionUrl = resolveRuntimeActionUrl({ config, competency });
+  const workspaceUrl = runtime.workspaceUrl || actionUrl;
+  const originAllowlist = resolveRuntimeOriginAllowlist({ config, competency, actionUrl, workspaceUrl });
+
+  if (runtime.sessionId) {
+    return {
+      created: false,
+      session_id: runtime.sessionId,
+      credential_id: runtime.credentialId,
+      credential_secret: runtime.credentialSecret,
+      runtime_id: runtime.runtimeId,
+      run_id: runId,
+      workspace_url: workspaceUrl,
+      action_url: actionUrl,
+      origin_allowlist: originAllowlist,
+    };
+  }
+
+  const createArgs = {
+    ...config.tenantContextArgs,
+    skill_id: competency.skill_id,
+    run_id: runId,
+    workspace_url: workspaceUrl,
+    origin_allowlist: originAllowlist,
+    ...(runtime.runtimeId ? { runtime_id: runtime.runtimeId } : {}),
+    ...(runtime.ttlMs !== undefined ? { ttl_ms: runtime.ttlMs } : {}),
+    ...(runtime.credentialTtlMs !== undefined ? { credential_ttl_ms: runtime.credentialTtlMs } : {}),
+    ...(runtime.localNetworkAllowed !== undefined ? { local_network_allowed: runtime.localNetworkAllowed } : {}),
+    ...(runtime.redactScreenshots !== undefined ? { redact_screenshots: runtime.redactScreenshots } : {}),
+    ...(runtime.sensitiveWorkspace !== undefined ? { sensitive_workspace: runtime.sensitiveWorkspace } : {}),
+  };
+  const sessionCall = await client.toolCall("synthi_dojo_create_hosted_runtime_session", createArgs);
+  assertToolOk(sessionCall, "create hosted runtime session");
+  const session = sessionCall.parsed?.runtime_session;
+  const credentials = sessionCall.parsed?.credentials;
+  assert(session && typeof session === "object", "hosted runtime session creation did not return runtime_session");
+  assert(credentials && typeof credentials === "object", "hosted runtime session creation did not return credentials");
+  const sessionId = normalizeOptionalText(session.session_id);
+  const credentialId = normalizeOptionalText(credentials.credential_id ?? session.credential_id);
+  const credentialSecret = normalizeOptionalText(credentials.credential_secret);
+  assert(sessionId, "hosted runtime session creation returned empty session_id");
+  assert(credentialId, "hosted runtime session creation returned empty credential_id");
+  assert(credentialSecret, "hosted runtime session creation returned empty credential_secret");
+  return {
+    created: true,
+    session_id: sessionId,
+    credential_id: credentialId,
+    credential_secret: credentialSecret,
+    runtime_id: normalizeOptionalText(session.runtime_id),
+    run_id: runId,
+    workspace_url: workspaceUrl,
+    action_url: actionUrl,
+    origin_allowlist: originAllowlist,
+    audit_event_id: normalizeOptionalText(sessionCall.parsed?.audit_event_id),
+  };
+}
+
+export function runtimeSessionRunArgs(runtimeSession) {
+  if (!runtimeSession) return {};
+  return {
+    run_id: runtimeSession.run_id,
+    runtime_session_id: runtimeSession.session_id,
+    runtime_credential_id: runtimeSession.credential_id,
+    runtime_credential_secret: runtimeSession.credential_secret,
+    runtime_action_url: runtimeSession.action_url,
+  };
+}
+
+export function resolveRuntimeActionUrl({ config, competency }) {
+  const configured = config.runtime.actionUrl || config.runtime.workspaceUrl;
+  if (configured) return configured;
+  const competencyUrl = normalizeOptionalText(competency?.workflow_url)
+    || normalizeOptionalText(competency?.url)
+    || normalizeOptionalText(competency?.mcp_skill_manifest?.skill?.workflow_url)
+    || normalizeOptionalText(competency?.private_tool_manifest?.workflow?.url);
+  if (competencyUrl) return competencyUrl;
+  const origin = resolveCompetencyOrigin(competency) || originForUrl(config.host.mcpHostUrl);
+  if (!origin) throw new Error("dojo_mcp_conformance_runtime_action_url_required");
+  return origin;
+}
+
+export function resolveRuntimeOriginAllowlist({ config, competency, actionUrl, workspaceUrl }) {
+  const origins = [
+    ...config.runtime.originAllowlist,
+    originForUrl(actionUrl),
+    originForUrl(workspaceUrl),
+    resolveCompetencyOrigin(competency),
+  ].filter(Boolean);
+  const unique = [...new Set(origins)];
+  if (unique.length === 0) throw new Error("dojo_mcp_conformance_runtime_origin_allowlist_required");
+  return unique;
+}
+
+function resolveCompetencyOrigin(competency) {
+  return normalizeOptionalText(competency?.app_origin)
+    || normalizeOptionalText(competency?.origin)
+    || normalizeOptionalText(competency?.mcp_skill_manifest?.skill?.app_origin)
+    || originForUrl(competency?.mcp_skill_manifest?.skill?.app_url);
+}
+
+function originForUrl(value) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return "";
+  try {
+    return new URL(normalized).origin;
+  } catch {
+    return "";
+  }
 }
 
 function normalizeHttpHeaderName(value) {
@@ -962,6 +1123,7 @@ export function buildConformanceReleaseGateSummary(report) {
   const steps = Array.isArray(report?.steps) ? report.steps : [];
   const hasStep = (name) => steps.some((step) => step?.name === name && step?.ok === true);
   const rawBackingRequired = report?.config?.raw_backing_tool_required !== false;
+  const productionExecution = report?.config?.execute_production === true;
   const deploymentClaims = report?.deployment_claims && typeof report.deployment_claims === "object"
     ? report.deployment_claims
     : {};
@@ -979,6 +1141,9 @@ export function buildConformanceReleaseGateSummary(report) {
       id: "proof_gated_run",
       ok: hasStep("dry-run proof-gated Dojo skill") || hasStep("execute proof-gated Dojo skill"),
     },
+    productionExecution
+      ? { id: "hosted_runtime_session_bound", ok: hasStep("create hosted runtime session") || hasStep("use hosted runtime session") }
+      : { id: "hosted_runtime_session_bound", ok: true, skipped: true },
     rawBackingRequired
       ? { id: "raw_backing_tool_blocked", ok: hasStep("raw backing tool blocked outside Dojo proof path") }
       : { id: "raw_backing_tool_blocked", ok: true, skipped: true },
