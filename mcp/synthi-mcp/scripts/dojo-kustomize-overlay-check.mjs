@@ -16,6 +16,8 @@ const FORBIDDEN_RESOURCES = [
   { kind: "Deployment", name: "redis" },
   { kind: "Service", name: "postgres" },
   { kind: "Service", name: "redis" },
+  { kind: "NetworkPolicy", name: "allow-to-postgres" },
+  { kind: "NetworkPolicy", name: "allow-to-redis" },
 ];
 
 const FORBIDDEN_LITERALS = [
@@ -54,8 +56,10 @@ const REQUIRED_EXTERNAL_SECRET_KEYS = [
   "SYNTHI_AGENT_ID",
   "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
   "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
+  "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
   "SYNTHI_AUTH_CHECKPOINT_STORE_FILE",
   "SYNTHI_AUTH_CHECKPOINT_SCOPE",
+  "SYNTHI_AUTH_CHECKPOINT_STORE_KEY",
 ];
 
 const REDIS_DEPLOYMENTS = ["collab-server", "signaling-server"];

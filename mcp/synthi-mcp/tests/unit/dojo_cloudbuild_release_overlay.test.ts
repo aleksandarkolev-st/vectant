@@ -18,6 +18,10 @@ function renderGuardScript() {
   return readFileSync("../../scripts/validate-dojo-release-render.sh", "utf8");
 }
 
+function overlayCheckScript() {
+  return readFileSync("../../mcp/synthi-mcp/scripts/dojo-kustomize-overlay-check.mjs", "utf8");
+}
+
 describe("Dojo Cloud Build release overlay contract", () => {
   it("defaults every production deploy entrypoint to the Dojo release overlay", () => {
     const cloudbuild = cloudbuildYaml();
@@ -49,8 +53,21 @@ describe("Dojo Cloud Build release overlay contract", () => {
     expect(yaml).toContain("id: build-dojo-mcp-host");
     expect(yaml).toContain("KUSTOMIZE_DIR=${_KUSTOMIZE_DIR}");
     expect(yaml).toContain("DOJO_RELEASE_KUSTOMIZE_DIR=${_DOJO_RELEASE_KUSTOMIZE_DIR}");
+    expect(yaml).toContain("normalize_kustomize_dir()");
+    expect(yaml).toContain('KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${KUSTOMIZE_DIR}")"');
+    expect(yaml).toContain('DOJO_RELEASE_KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${DOJO_RELEASE_KUSTOMIZE_DIR}")"');
     expect(yaml).toContain('if [ "$${KUSTOMIZE_DIR}" != "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]; then');
     expect(yaml).toContain("--dockerfile=mcp/synthi-mcp/Dockerfile.http");
+  });
+
+  it("normalizes kustomize directory variants before production deploy submission", () => {
+    const workflow = deployWorkflowYaml();
+    const script = deployScript();
+
+    expect(workflow).toContain("normalize_kustomize_dir()");
+    expect(workflow).toContain('KUSTOMIZE_DIR="$(normalize_kustomize_dir "${KUSTOMIZE_DIR}")"');
+    expect(script).toContain("normalize_kustomize_dir()");
+    expect(script).toContain('KUSTOMIZE_DIR="$(normalize_kustomize_dir "$KUSTOMIZE_DIR")"');
   });
 
   it("fails closed on Dojo MCP host rollout when the release-gate overlay is selected", () => {
@@ -61,6 +78,14 @@ describe("Dojo Cloud Build release overlay contract", () => {
     expect(yaml).toContain("kubectl rollout status deployment/dojo-mcp-host -n $${NS} --timeout=300s");
     expect(yaml).toContain("npm run live:dojo:seed-release-competency");
     expect(yaml).toContain("elif kubectl get deployment/dojo-mcp-host -n $${NS} >/dev/null 2>&1; then");
+  });
+
+  it("smoke tests kubectl auth before rendering and applying manifests", () => {
+    const yaml = cloudbuildYaml();
+
+    expect(yaml).toContain("id: verify-kubectl-auth");
+    expect(yaml).toContain("kubectl get namespace synthi");
+    expect(yaml).toContain("- verify-kubectl-auth");
   });
 
   it("cleans stale in-cluster beta stores only for Dojo release deploys", () => {
@@ -80,6 +105,12 @@ describe("Dojo Cloud Build release overlay contract", () => {
   it("fails the Dojo render guard when beta Redis or Postgres resources leak back in", () => {
     const script = renderGuardScript();
 
+    expect(script).toContain('require_text "Dojo production enforcement" "SYNTHI_DOJO_PRODUCTION_ENFORCEMENT: \\"1\\""');
+    expect(script).toContain('require_text "Dojo durable store requirement" "SYNTHI_DOJO_REQUIRE_DURABLE_STORE: \\"1\\""');
+    expect(script).toContain('require_text "Dojo external control-plane store" "SYNTHI_DOJO_CONTROL_PLANE_STORE: postgres"');
+    expect(script).toContain('require_text "Dojo external signing requirement" "SYNTHI_DOJO_REQUIRE_EXTERNAL_SIGNING: \\"1\\""');
+    expect(script).toContain('require_text "Dojo evidence ledger requirement" "SYNTHI_DOJO_REQUIRE_EVIDENCE_LEDGER: \\"1\\""');
+    expect(script).toContain('require_text "Dojo external evidence ledger store" "SYNTHI_DOJO_EVIDENCE_LEDGER_STORE: postgres"');
     expect(script).toContain('reject_text "in-cluster Redis URL" "redis://redis.synthi.svc.cluster.local:6379"');
     expect(script).toContain('reject_resource "Deployment" "redis"');
     expect(script).toContain('reject_resource "Service" "redis"');
@@ -91,6 +122,7 @@ describe("Dojo Cloud Build release overlay contract", () => {
 
   it("keeps Dojo release workflow and checkpoint state secrets self-contained", () => {
     const renderGuard = renderGuardScript();
+    const overlayCheck = overlayCheckScript();
     const releaseSecrets = readFileSync("../../k8s/overlays/dojo-release-gate/dojo-release-external-secrets.yaml", "utf8");
 
     expect(releaseSecrets).toContain("secretKey: SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE");
@@ -102,6 +134,12 @@ describe("Dojo Cloud Build release overlay contract", () => {
     expect(releaseSecrets).toContain("secretKey: SYNTHI_AUTH_CHECKPOINT_STORE_KEY");
     expect(releaseSecrets).toContain("key: synthi-auth-checkpoint-store-key");
     expect(renderGuard).toContain("Dojo release render guard");
+    expect(renderGuard).toContain("key: synthi-private-workflow-tool-store-key");
+    expect(renderGuard).toContain("key: synthi-auth-checkpoint-store-key");
+    expect(overlayCheck).toContain('"SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY"');
+    expect(overlayCheck).toContain('"SYNTHI_AUTH_CHECKPOINT_STORE_KEY"');
+    expect(overlayCheck).toContain('{ kind: "NetworkPolicy", name: "allow-to-postgres" }');
+    expect(overlayCheck).toContain('{ kind: "NetworkPolicy", name: "allow-to-redis" }');
   });
 
   it("parameterizes the source registry used for rendered manifest substitution", () => {

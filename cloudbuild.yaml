@@ -226,6 +226,11 @@ steps:
       - -c
       - |
         set -eu
+        normalize_kustomize_dir() {
+          printf '%s' "$$1" | sed -e 's#//*#/#g' -e 's#^\./##' -e 's#/\./#/#g' -e 's#/$##'
+        }
+        KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${KUSTOMIZE_DIR}")"
+        DOJO_RELEASE_KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${DOJO_RELEASE_KUSTOMIZE_DIR}")"
         if [ "$${KUSTOMIZE_DIR}" != "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]; then
           echo "Skipping Dojo MCP host image build for kustomize dir: $${KUSTOMIZE_DIR}"
           exit 0
@@ -286,6 +291,11 @@ steps:
       - -c
       - |
         set -eu
+        normalize_kustomize_dir() {
+          printf '%s' "$$1" | sed -e 's#//*#/#g' -e 's#^\./##' -e 's#/\./#/#g' -e 's#/$##'
+        }
+        KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${KUSTOMIZE_DIR}")"
+        DOJO_RELEASE_KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${DOJO_RELEASE_KUSTOMIZE_DIR}")"
         if [ "$${ENABLE_VULNERABILITY_SCAN}" != "true" ]; then
           echo "Skipping image vulnerability scan because _ENABLE_VULNERABILITY_SCAN=$${ENABLE_VULNERABILITY_SCAN}"
           exit 0
@@ -339,6 +349,17 @@ steps:
       - build-runtime-image
       - vulnerability-scan-images
 
+  - id: verify-kubectl-auth
+    name: gcr.io/cloud-builders/kubectl:latest@sha256:0001d965b1fd2d41ef80cb94cc7dfb39d65adbb8ab3855370524b424d897c078
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        kubectl get namespace synthi
+    waitFor:
+      - get-gke-credentials
+
   - id: deploy-to-gke
     name: gcr.io/cloud-builders/kubectl:latest@sha256:0001d965b1fd2d41ef80cb94cc7dfb39d65adbb8ab3855370524b424d897c078
     entrypoint: bash
@@ -353,6 +374,12 @@ steps:
         DOJO_RELEASE_KUSTOMIZE_DIR="${_DOJO_RELEASE_KUSTOMIZE_DIR}"
         KUSTOMIZE_LOAD_RESTRICTOR="${_KUSTOMIZE_LOAD_RESTRICTOR}"
         NS="synthi"
+
+        normalize_kustomize_dir() {
+          printf '%s' "$$1" | sed -e 's#//*#/#g' -e 's#^\./##' -e 's#/\./#/#g' -e 's#/$##'
+        }
+        KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${KUSTOMIZE_DIR}")"
+        DOJO_RELEASE_KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${DOJO_RELEASE_KUSTOMIZE_DIR}")"
 
         echo "=== Deploying tag: $${TAG} ==="
         echo "=== Region: ${_REGION} ==="
@@ -474,6 +501,6 @@ steps:
 
         echo "=== Deploy complete ==="
     waitFor:
-      - get-gke-credentials
+      - verify-kubectl-auth
 
 timeout: 3600s

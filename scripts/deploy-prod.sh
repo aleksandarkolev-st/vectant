@@ -134,6 +134,12 @@ if [[ ! "$IMAGE_TAG" =~ ^[A-Za-z0-9_.-]+$ ]]; then
   exit 1
 fi
 
+normalize_kustomize_dir() {
+  printf '%s' "$1" | sed -e 's#//*#/#g' -e 's#^\./##' -e 's#/\./#/#g' -e 's#/$##'
+}
+
+KUSTOMIZE_DIR="$(normalize_kustomize_dir "$KUSTOMIZE_DIR")"
+
 if [[ "$KUSTOMIZE_DIR" = /* || "$KUSTOMIZE_DIR" == *..* ]]; then
   echo "Kustomize dir must be a relative repo path without '..': $KUSTOMIZE_DIR" >&2
   exit 1
