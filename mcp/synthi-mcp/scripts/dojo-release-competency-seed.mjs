@@ -65,6 +65,7 @@ export async function runDojoReleaseCompetencySeed({
   const reusablePublication = await findReusableReleaseSeedPublication({
     runtime,
     config,
+    artifact,
     candidateSkill,
     manifest,
   });
@@ -277,7 +278,7 @@ export function registerReleaseSeedSourceIdentity({ runtime = {}, browserBroker,
   };
 }
 
-export async function findReusableReleaseSeedPublication({ runtime, config, candidateSkill, manifest }) {
+export async function findReusableReleaseSeedPublication({ runtime, config, artifact, candidateSkill, manifest }) {
   if (typeof runtime.dispatchDojoTool !== "function") return null;
   const listed = await runtime.dispatchDojoTool("synthi_dojo_list_competencies", config.tenant);
   const visibleCompetencies = objectOrNull(listed?.structuredContent)?.competencies;
@@ -290,6 +291,7 @@ export async function findReusableReleaseSeedPublication({ runtime, config, cand
     return await loadReusableReleaseSeedPublication({
       runtime,
       config,
+      artifact,
       candidateSkill,
       manifest,
       skillId: reusableCompetency.skill_id,
@@ -298,13 +300,14 @@ export async function findReusableReleaseSeedPublication({ runtime, config, cand
   return await loadReusableReleaseSeedPublication({
     runtime,
     config,
+    artifact,
     candidateSkill,
     manifest,
     skillId: candidateSkill.skill_id,
   });
 }
 
-async function loadReusableReleaseSeedPublication({ runtime, config, candidateSkill, manifest, skillId }) {
+async function loadReusableReleaseSeedPublication({ runtime, config, artifact, candidateSkill, manifest, skillId }) {
   const response = await runtime.dispatchDojoTool("synthi_dojo_get_skill", {
     ...config.tenant,
     skill_id: skillId,
@@ -315,6 +318,13 @@ async function loadReusableReleaseSeedPublication({ runtime, config, candidateSk
   if (!isReusableReleaseSeedSkill({ skill, candidateSkill })) return null;
   const privateManifest = objectOrNull(skill.private_tool_manifest);
   const toolName = stringOpt(skill.published_tool_name ?? privateManifest?.tool_name) ?? manifest.tool_name;
+  const registryRepair = ensureReusableReleaseSeedPrivateTool({
+    runtime,
+    skill,
+    manifest,
+    artifact,
+    toolName,
+  });
   const publication = {
     ok: true,
     reused_existing: true,
@@ -332,8 +342,9 @@ async function loadReusableReleaseSeedPublication({ runtime, config, candidateSk
   };
   const privateTool = {
     ok: true,
-    tool_name: toolName,
+    tool_name: registryRepair.tool_name,
     manifest_status: stringOpt(privateManifest?.status) ?? manifest.status,
+    registry_status: registryRepair.repaired ? "repaired" : "present",
   };
   return {
     skill,
@@ -374,6 +385,38 @@ function isReusableReleaseSeedSkill({ skill, candidateSkill }) {
   if (record.entrustment_level === "EX") return false;
   const privateManifest = objectOrNull(record.private_tool_manifest);
   return Boolean(stringOpt(record.published_tool_name) || stringOpt(privateManifest?.tool_name));
+}
+
+function ensureReusableReleaseSeedPrivateTool({ runtime, skill, manifest, artifact, toolName }) {
+  const registry = runtime.privateWorkflowToolRegistry;
+  if (!registry || typeof registry.get !== "function" || typeof registry.publish !== "function") {
+    throw new Error("dojo_release_competency_seed_private_tool_registry_required");
+  }
+  const existing = registry.get(toolName);
+  if (existing) {
+    if (existing.workflow_id !== artifact.workflow_id) {
+      throw new Error("dojo_release_competency_seed_private_tool_registry_workflow_mismatch");
+    }
+    return { tool_name: toolName, repaired: false };
+  }
+  const privateManifest = objectOrNull(skill.private_tool_manifest);
+  if (!privateManifest) {
+    throw new Error("dojo_release_competency_seed_private_tool_manifest_required");
+  }
+  if (stringOpt(privateManifest.tool_name) !== toolName) {
+    throw new Error("dojo_release_competency_seed_private_tool_manifest_name_mismatch");
+  }
+  if (stringOpt(privateManifest.workflow_id) !== artifact.workflow_id) {
+    throw new Error("dojo_release_competency_seed_private_tool_manifest_workflow_mismatch");
+  }
+  const published = registry.publish(privateManifest, { workflowArtifact: artifact });
+  if (!published?.ok) {
+    throw new Error(`dojo_release_competency_seed_private_tool_publish_failed:${stringOpt(published?.error) ?? "unknown"}`);
+  }
+  return {
+    tool_name: stringOpt(published.registration?.tool_name) ?? toolName,
+    repaired: true,
+  };
 }
 
 export async function appendReleasePublicationEvidence({ runtime, config, artifact, candidateSkill }) {
@@ -624,6 +667,7 @@ export function buildDojoReleaseCompetencySeedReport({
       tool_name: stringOpt(privateTool?.tool_name ?? publishContent?.published_tool_name ?? publishContent?.tool_name) ?? manifest.tool_name,
       ok: privateTool?.ok !== false,
       manifest_status: stringOpt(privateTool?.manifest_status) ?? manifest.status,
+      ...(stringOpt(privateTool?.registry_status) ? { registry_status: stringOpt(privateTool.registry_status) } : {}),
     },
     publication: {
       ok: publication?.ok !== false,
@@ -650,6 +694,7 @@ async function loadRuntimeModules() {
     ledgerResolverModule,
     skillStoreModule,
     dojoToolsModule,
+    privateToolRegistryModule,
   ] = await Promise.all([
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "browser", "broker.js")).href),
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "browser", "dojo.js")).href),
@@ -658,6 +703,7 @@ async function loadRuntimeModules() {
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "evidence", "ledger_resolver.js")).href),
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "store", "postgres_skill_store.js")).href),
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "tools", "dojo.js")).href),
+    import(pathToFileURL(path.join(MCP_ROOT, "dist", "browser", "private_tool_registry.js")).href),
   ]);
   return {
     browserBroker: brokerModule.browserBroker,
@@ -667,6 +713,7 @@ async function loadRuntimeModules() {
     resolveDojoEvidenceLedgerAppendStore: ledgerResolverModule.resolveDojoEvidenceLedgerAppendStore,
     PostgresDojoSkillStore: skillStoreModule.PostgresDojoSkillStore,
     dispatchDojoTool: dojoToolsModule.dispatchDojoTool,
+    privateWorkflowToolRegistry: privateToolRegistryModule.privateWorkflowToolRegistry,
   };
 }
 

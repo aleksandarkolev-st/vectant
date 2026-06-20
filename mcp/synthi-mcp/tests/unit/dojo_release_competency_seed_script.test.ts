@@ -281,6 +281,7 @@ describe("Dojo release competency seed harness", () => {
     tmpDirs.push(outDir);
     const calls: string[] = [];
     const ledgerEvents: string[] = [];
+    const privateToolRegistry = new Map<string, unknown>();
     const artifact = {
       workflow_id: "workflow-release-seed",
       workflow: {
@@ -297,6 +298,7 @@ describe("Dojo release competency seed harness", () => {
       private_tool_manifest: {
         status: "available",
         tool_name: "synthi_app_release_seed",
+        workflow_id: "workflow-release-seed",
       },
       entrustment_level: "E3",
       skill_readiness_level: "SRL3",
@@ -368,6 +370,20 @@ describe("Dojo release competency seed harness", () => {
         },
         close: async () => undefined,
       }),
+      privateWorkflowToolRegistry: {
+        get: (toolName) => privateToolRegistry.get(toolName) ?? null,
+        publish: (manifest, options) => {
+          const registration = {
+            tool_name: manifest.tool_name,
+            workflow_id: manifest.workflow_id,
+            manifest,
+            workflow_artifact: options.workflowArtifact,
+            registered_at: Date.parse("2026-06-20T00:00:00.000Z"),
+          };
+          privateToolRegistry.set(manifest.tool_name, registration);
+          return { ok: true, registration };
+        },
+      },
       dispatchDojoTool: async (tool) => {
         calls.push(tool);
         if (tool === "synthi_dojo_list_competencies") {
@@ -407,9 +423,14 @@ describe("Dojo release competency seed harness", () => {
 
     expect(calls).toEqual(["synthi_dojo_list_competencies", "synthi_dojo_get_skill"]);
     expect(ledgerEvents).toEqual(["append:skill-release-seed"]);
+    expect(privateToolRegistry.get("synthi_app_release_seed")).toEqual(expect.objectContaining({
+      workflow_id: "workflow-release-seed",
+      workflow_artifact: artifact,
+    }));
     const report = JSON.parse(await readFile(result.report_path, "utf8"));
     expect(report.skill.skill_id).toBe("skill-release-seed");
     expect(report.private_tool.tool_name).toBe("synthi_app_release_seed");
+    expect(report.private_tool.registry_status).toBe("repaired");
     expect(report.publication.evidence_ref_count).toBe(0);
     expect(report.proof.aggregate_evidence_record_ids).toEqual([
       expect.stringMatching(/^dojo_release_proof_[a-f0-9]{24}$/),
