@@ -1321,11 +1321,15 @@ function writeReport(config, report) {
   const reportPath = path.join(config.outDir, "dojo-gcp-release-inventory.json");
   const evidencePath = path.join(config.outDir, "dojo-gcp-release-inventory.evidence.json");
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  const reportCanonicalJsonSha256 = fileSha256(reportPath);
+  const reportFileSha256 = sha256(readFileSync(reportPath, "utf8"));
   const evidence = {
     schema_version: "synthi.dojo.gcpReleaseInventoryEvidence.v1",
     created_at: report.created_at,
     report_path: reportPath,
-    report_sha256: fileSha256(reportPath),
+    report_sha256: reportCanonicalJsonSha256,
+    report_canonical_json_sha256: reportCanonicalJsonSha256,
+    report_file_sha256: reportFileSha256,
     mode: report.mode,
     execute: report.config.execute,
     command_count: report.command_plan.length,
