@@ -1,6 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 const { buildRuntimeDeployment, buildRuntimeService, isSysboxRuntimeEnabled } = require('../runtimePodSpec');
 const { runtimeResourceId } = require('../runtimeIdentity');
 
@@ -170,6 +172,15 @@ test('buildRuntimeService is a headless Service for the runtime pod on the previ
   const port = (svc.spec.ports || []).find((p) => p.name === 'preview-proxy');
   assert.ok(port, 'exposes the preview-proxy port');
   assert.ok(Number.isInteger(port.port) && port.port > 0, 'preview-proxy port is a valid port');
+});
+
+test('production preview target template routes to the runtime Service', () => {
+  const configmapPath = path.resolve(__dirname, '../../../k8s/configmap.yaml');
+  const configmap = fs.readFileSync(configmapPath, 'utf8');
+  const match = configmap.match(/SYNTHI_PREVIEW_TARGET_TEMPLATE:\s*"([^"]+)"/);
+  assert.ok(match, 'SYNTHI_PREVIEW_TARGET_TEMPLATE is defined');
+  assert.match(match[1], /\{runtimeId\}-rt\.synthi\.svc\.cluster\.local/, 'preview template targets runtime Service');
+  assert.doesNotMatch(match[1], /^http:\/\/\{runtimeId\}\.synthi\.svc\.cluster\.local/, 'preview template must not target worker Service');
 });
 
 // S4-T2 — DEFERRED (written + skipped): ports opened inside the runtime pod are
