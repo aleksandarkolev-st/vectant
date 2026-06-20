@@ -400,10 +400,10 @@ steps:
           awk '
             BEGIN { doc = "" }
             function flush() {
-              if (doc ~ /\nkind:[[:space:]]*ExternalSecret([[:space:]]|\n)/ ||
-                  doc ~ /\nkind:[[:space:]]*SecretStore([[:space:]]|\n)/ ||
-                  (doc ~ /\nkind:[[:space:]]*ServiceAccount([[:space:]]|\n)/ &&
-                   doc ~ /\nname:[[:space:]]*eso-service-account([[:space:]]|\n)/)) {
+              if (doc ~ /(^|\n)[[:space:]]*kind:[[:space:]]*ExternalSecret([[:space:]]|\n)/ ||
+                  doc ~ /(^|\n)[[:space:]]*kind:[[:space:]]*SecretStore([[:space:]]|\n)/ ||
+                  (doc ~ /(^|\n)[[:space:]]*kind:[[:space:]]*ServiceAccount([[:space:]]|\n)/ &&
+                   doc ~ /(^|\n)[[:space:]]*name:[[:space:]]*eso-service-account([[:space:]]|\n)/)) {
                 printf "%s---\n", doc
               }
               doc = ""
