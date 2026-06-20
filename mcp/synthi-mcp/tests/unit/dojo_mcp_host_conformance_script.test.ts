@@ -26,6 +26,7 @@ import {
   resolveRuntimeActionUrl,
   resolveRuntimeOriginAllowlist,
   resolveMcpCommandSpec,
+  revocationEvidenceRefsForProofRun,
   runtimeSessionRunArgs,
   selectDojoCompetencyForConformance,
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
@@ -534,6 +535,41 @@ describe("Dojo MCP host conformance harness", () => {
     }, ["proof_capsule_revoked"])).toBe(false);
   });
 
+  it("uses verified evidence records as proof revocation evidence", () => {
+    expect(revocationEvidenceRefsForProofRun({
+      config: { evidenceRecordIds: ["configured-evidence"] },
+      proofCapsule: { capsule_id: "capsule-a" },
+      issueCall: {
+        parsed: {
+          proof_capsule: {
+            evidence_record_ids: ["issue-evidence"],
+          },
+        },
+      },
+      runCall: {
+        parsed: {
+          proof_record: {
+            evidence_record_ids: ["evidence:runtime-evidence", "aggregate-evidence"],
+          },
+          license_kernel: {
+            proof_record: {
+              evidence_record_ids: ["aggregate-evidence"],
+            },
+          },
+        },
+      },
+    })).toEqual([
+      "runtime-evidence",
+      "aggregate-evidence",
+      "issue-evidence",
+      "configured-evidence",
+    ]);
+
+    expect(revocationEvidenceRefsForProofRun({
+      proofCapsule: { capsule_id: "capsule-fallback" },
+    })).toEqual(["proof:capsule-fallback"]);
+  });
+
   it("derives deployment observations from host readiness instead of deployment claims", () => {
     const readiness = {
       ok: true,
@@ -590,16 +626,30 @@ describe("Dojo MCP host conformance harness", () => {
     ])).toBe(false);
   });
 
-  it("refuses to write reports containing proof secret material", () => {
-    expect(() => redactConformanceReport({
+  it("redacts report secret material before evidence artifacts are written", () => {
+    expect(redactConformanceReport({
       proof_capsule: { signature: "hmac-sha256:deadbeef" },
-    })).toThrow("dojo_mcp_host_conformance_report_contains_secret_material");
+      headers: { authorization: "Bearer live-token" },
+      nested: {
+        credential_secret: "runtime-secret",
+        message: "backend rejected Bearer another-token",
+      },
+    })).toEqual({
+      proof_capsule: "[redacted]",
+      headers: { authorization: "[redacted]" },
+      nested: {
+        credential_secret: "[redacted]",
+        message: "backend rejected Bearer [redacted]",
+      },
+    });
     expect(redactConformanceReport({
       proof_capsule_id: "capsule_123",
       conformance: { ok: true },
+      checks: [{ configured_env: ["SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM"] }],
     })).toEqual({
       proof_capsule_id: "capsule_123",
       conformance: { ok: true },
+      checks: [{ configured_env: ["SYNTHI_DOJO_MCP_MANIFEST_PRIVATE_KEY_PEM"] }],
     });
   });
 

@@ -370,7 +370,7 @@ async function main() {
       actor_type: config.revocationActorType,
       evidence_refs: config.revocationEvidenceRefs.length
         ? config.revocationEvidenceRefs
-        : [`proof:${proofCapsule.capsule_id}`],
+        : revocationEvidenceRefsForProofRun({ config, proofCapsule, issueCall, runCall }),
     });
     assertToolOk(revokeCall, "revoke proof capsule");
     report.steps.push({
@@ -432,6 +432,17 @@ async function main() {
   } finally {
     await client.close().catch(() => undefined);
   }
+}
+
+export function revocationEvidenceRefsForProofRun({ config = {}, proofCapsule = {}, issueCall = {}, runCall = {} } = {}) {
+  const refs = [
+    ...stringList(runCall?.parsed?.proof_record?.evidence_record_ids),
+    ...stringList(runCall?.parsed?.license_kernel?.proof_record?.evidence_record_ids),
+    ...stringList(issueCall?.parsed?.proof_capsule?.evidence_record_ids),
+    ...stringList(config?.evidenceRecordIds),
+  ].map(normalizeEvidenceRefForRevocation).filter(Boolean);
+  const unique = [...new Set(refs)];
+  return unique.length > 0 ? unique : [`proof:${proofCapsule?.capsule_id ?? "unknown"}`];
 }
 
 export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env } = {}) {
@@ -705,6 +716,17 @@ function parseTenantRoles(value, label) {
     if (!normalized) throw new Error(`${label}_must_be_non_empty_strings`);
     return normalized;
   });
+}
+
+function stringList(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => normalizeOptionalText(item)).filter(Boolean);
+}
+
+function normalizeEvidenceRefForRevocation(value) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return "";
+  return normalized.startsWith("evidence:") ? normalized.slice("evidence:".length) : normalized;
 }
 
 function parseStringList(value) {
@@ -1359,12 +1381,68 @@ export function observesLicensedSkillFiltering(competencies) {
 }
 
 export function redactConformanceReport(report) {
-  const clone = JSON.parse(JSON.stringify(report));
-  const text = JSON.stringify(clone);
-  if (/hmac-sha256:|-----BEGIN|private[_-]?key|bearer\s+[a-z0-9._-]+/i.test(text)) {
+  const clone = redactConformanceSecrets(JSON.parse(JSON.stringify(report)));
+  if (conformanceReportContainsSecretMaterial(clone)) {
     throw new Error("dojo_mcp_host_conformance_report_contains_secret_material");
   }
   return clone;
+}
+
+function conformanceReportContainsSecretMaterial(value) {
+  if (Array.isArray(value)) return value.some((item) => conformanceReportContainsSecretMaterial(item));
+  if (value && typeof value === "object") {
+    return Object.values(value).some((item) => conformanceReportContainsSecretMaterial(item));
+  }
+  if (typeof value !== "string") return false;
+  return /hmac-sha256:|-----BEGIN|private[_-]?key\s*[:=]|bearer\s+[a-z0-9._-]+/i.test(value);
+}
+
+function redactConformanceSecrets(value, key = "") {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactConformanceSecrets(item));
+  }
+  if (value && typeof value === "object") {
+    if (isSensitiveConformanceField(key)) return "[redacted]";
+    return Object.fromEntries(
+      Object.entries(value).map(([entryKey, entryValue]) => [
+        entryKey,
+        redactConformanceSecrets(entryValue, entryKey),
+      ]),
+    );
+  }
+  if (typeof value === "string") {
+    if (isSensitiveConformanceField(key)) return "[redacted]";
+    return redactConformanceSecretString(value);
+  }
+  return value;
+}
+
+function isSensitiveConformanceField(key = "") {
+  const normalized = String(key || "").toLowerCase().replace(/-/g, "_");
+  return [
+    "access_token",
+    "authorization",
+    "bearer_token",
+    "client_secret",
+    "cookie",
+    "credential_secret",
+    "id_token",
+    "private_key",
+    "proof_capsule",
+    "refresh_token",
+    "secret",
+    "set_cookie",
+    "signature",
+    "token",
+  ].includes(normalized);
+}
+
+function redactConformanceSecretString(value) {
+  return value
+    .replace(/hmac-sha256:[a-z0-9._:-]+/gi, "[redacted-hmac-signature]")
+    .replace(/-----BEGIN[\s\S]*?-----END[^-]*-----/g, "[redacted-private-key]")
+    .replace(/private[_-]?key\s*[:=]\s*[^\s"'}`]+/gi, "[redacted-private-key-reference]")
+    .replace(/bearer\s+[a-z0-9._-]+/gi, "Bearer [redacted]");
 }
 
 export function buildConformanceReleaseGateSummary(report) {
