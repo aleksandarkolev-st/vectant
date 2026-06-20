@@ -72,6 +72,14 @@ const DOJO_MCP_HOST = {
   bearerHeader: "X-Synthi-Dojo-Mcp-Token",
 };
 
+const REQUIRED_INGRESS_ROUTES = [
+  { host: "beta.vectant.dev", path: "/collab", pathType: "Prefix", service: "collab-server", port: "1234" },
+  { host: "beta.vectant.dev", path: "/signal", pathType: "Prefix", service: "signaling-server", port: "9000" },
+  { host: "beta.vectant.dev", path: "/gateway", pathType: "Prefix", service: "ai-gateway", port: "7070" },
+  { host: "beta.vectant.dev", path: "/", pathType: "Prefix", service: "frontend", port: "3000" },
+  { host: "*.preview.vectant.dev", path: "/", pathType: "Prefix", service: "collab-preview", port: "1234" },
+];
+
 function defaultDojoMcpHost(env = process.env) {
   return {
     ...DOJO_MCP_HOST,
@@ -408,6 +416,15 @@ function validateRenderedOverlay(rendered, dojoMcpHost = defaultDojoMcpHost()) {
       code: "dojo_mcp_host_ingress_missing",
       message: `Ingress/synthi-ingress must route ${dojoMcpHost.host}${dojoMcpHost.path} to Service/${dojoMcpHost.service}:${dojoMcpHost.port}.`,
     });
+  } else {
+    for (const route of REQUIRED_INGRESS_ROUTES) {
+      if (!ingressRoutesToService(ingress.doc, route)) {
+        failures.push({
+          code: "base_ingress_route_missing",
+          message: `Ingress/synthi-ingress must preserve ${route.host}${route.path} to Service/${route.service}:${route.port}.`,
+        });
+      }
+    }
   }
 
   return {
@@ -489,7 +506,7 @@ function ingressRoutesToService(doc, expected) {
 
 function listItemBlock(doc, key, value) {
   const lines = doc.split(/\r?\n/);
-  const matcher = new RegExp(`^(\\s*)-\\s+${escapeRegex(key)}:\\s*"?${escapeRegex(value)}"?(?:\\s|$)`);
+  const matcher = new RegExp(`^(\\s*)-\\s+${escapeRegex(key)}:\\s*["']?${escapeRegex(value)}["']?(?:\\s|$)`);
   for (let index = 0; index < lines.length; index += 1) {
     const match = matcher.exec(lines[index]);
     if (!match) continue;
@@ -705,6 +722,44 @@ spec:
             name: dojo-mcp-host
             port:
               number: 9467
+      - path: /collab
+        pathType: Prefix
+        backend:
+          service:
+            name: collab-server
+            port:
+              number: 1234
+      - path: /signal
+        pathType: Prefix
+        backend:
+          service:
+            name: signaling-server
+            port:
+              number: 9000
+      - path: /gateway
+        pathType: Prefix
+        backend:
+          service:
+            name: ai-gateway
+            port:
+              number: 7070
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 3000
+  - host: "*.preview.vectant.dev"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: collab-preview
+            port:
+              number: 1234
 `;
 
   const valid = validateRenderedOverlay(validRendered);
@@ -716,8 +771,39 @@ spec:
     ...defaultDojoMcpHost(),
     host: "preview.example.com",
   };
+  const customHostRendered = validRendered.replace(`  - host: "*.preview.vectant.dev"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: collab-preview
+            port:
+              number: 1234
+`, `  - host: preview.example.com
+    http:
+      paths:
+      - path: /dojo/mcp
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
+  - host: "*.preview.vectant.dev"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: collab-preview
+            port:
+              number: 1234
+`);
   const customHostValid = validateRenderedOverlay(
-    validRendered.replace("host: beta.vectant.dev", "host: preview.example.com"),
+    customHostRendered,
     customHost,
   );
   if (!customHostValid.ok) {
@@ -732,6 +818,18 @@ spec:
   const invalidIngress = validateRenderedOverlay(validRendered.replace("host: beta.vectant.dev", "host: preview.vectant.dev"));
   if (invalidIngress.ok || !invalidIngress.failures.some((failure) => failure.code === "dojo_mcp_host_ingress_missing")) {
     throw new Error("invalid self-check fixture did not detect MCP host ingress on the wrong host");
+  }
+
+  const invalidPreservedRoute = validateRenderedOverlay(validRendered.replace(
+    `name: collab-server
+            port:
+              number: 1234`,
+    `name: wrong-collab-service
+            port:
+              number: 1234`,
+  ));
+  if (invalidPreservedRoute.ok || !invalidPreservedRoute.failures.some((failure) => failure.code === "base_ingress_route_missing")) {
+    throw new Error("invalid self-check fixture did not detect missing preserved ingress route");
   }
 
   const invalidService = validateRenderedOverlay(validRendered.replace("    cloud.google.com/neg: '{\"ingress\": true}'\n", ""));
