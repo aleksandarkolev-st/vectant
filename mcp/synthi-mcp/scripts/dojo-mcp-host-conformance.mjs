@@ -299,6 +299,34 @@ async function main() {
       log("ok", `${runtimeSession.created ? "create" : "use"} hosted runtime session - session=${runtimeSession.session_id}`);
     }
 
+    const consentRequests = config.executeProduction
+      ? conformanceBrowserConsentRequestsForSkill(selectedSkill)
+      : [];
+    if (consentRequests.length > 0) {
+      const grants = [];
+      for (const request of consentRequests) {
+        const consentCall = await client.toolCall("synthi_browser_request_consent", {
+          url: request.url,
+          status: "granted",
+          reason: "dojo_mcp_host_conformance",
+          screenshot: request.screenshot,
+          diagnostics: request.diagnostics,
+        });
+        assertToolOk(consentCall, `grant workflow origin consent for ${request.url}`);
+        grants.push({
+          origin: request.origin,
+          screenshot: request.screenshot,
+          diagnostics: request.diagnostics,
+        });
+      }
+      report.steps.push({
+        name: "grant workflow origin consent",
+        ok: true,
+        grants,
+      });
+      log("ok", `grant workflow origin consent - origins=${grants.length}`);
+    }
+
     const runCall = await client.toolCall("synthi_dojo_run_with_proof_capsule", {
       ...config.tenantContextArgs,
       skill_id: competency.skill_id,
@@ -867,6 +895,50 @@ export function conformanceProofContextClaimsForSkill({ baseContextClaims = {}, 
     ...guardrailContextDefaultsForSkill(skill),
     ...base,
   };
+}
+
+export function conformanceBrowserConsentRequestsForSkill(skill = {}) {
+  const merged = new Map();
+  const addRequest = ({ origin, screenshot = false, diagnostics = false }) => {
+    if (typeof origin !== "string" || origin.trim().length === 0) return;
+    let normalizedOrigin;
+    try {
+      normalizedOrigin = new URL(origin).origin;
+    } catch {
+      return;
+    }
+    const existing = merged.get(normalizedOrigin);
+    merged.set(normalizedOrigin, {
+      origin: normalizedOrigin,
+      url: normalizedOrigin,
+      screenshot: Boolean(existing?.screenshot || screenshot),
+      diagnostics: Boolean(existing?.diagnostics || diagnostics),
+    });
+  };
+
+  const manifest = skill?.private_tool_manifest && typeof skill.private_tool_manifest === "object"
+    ? skill.private_tool_manifest
+    : null;
+  const targets = Array.isArray(manifest?.target_origins) ? manifest.target_origins : [];
+  for (const target of targets) {
+    if (!target || typeof target !== "object") continue;
+    addRequest({
+      origin: target.origin,
+      screenshot: target.screenshot_consent_required === true,
+      diagnostics: target.diagnostics_consent_required === true,
+    });
+  }
+
+  if (merged.size === 0) {
+    const fallbackOrigin = typeof skill?.app_origin === "string"
+      ? skill.app_origin
+      : typeof skill?.skill_seed?.observed_trace?.app_origin === "string"
+        ? skill.skill_seed.observed_trace.app_origin
+        : "";
+    addRequest({ origin: fallbackOrigin });
+  }
+
+  return [...merged.values()].sort((a, b) => a.origin.localeCompare(b.origin));
 }
 
 export function guardrailContextDefaultsForSkill(skill = {}) {

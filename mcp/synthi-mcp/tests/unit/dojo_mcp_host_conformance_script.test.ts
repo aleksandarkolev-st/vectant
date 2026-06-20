@@ -8,6 +8,7 @@ import {
   buildRuntimeSessionConfig,
   buildMcpHttpHeaders,
   classifyMcpHost,
+  conformanceBrowserConsentRequestsForSkill,
   conformanceProofContextClaimsForSkill,
   conformanceToolArgsForSkill,
   deploymentObservationsFromReadiness,
@@ -438,6 +439,52 @@ describe("Dojo MCP host conformance harness", () => {
       invalid_value_count: 0,
       workspace_id: "workspace-a",
     });
+  });
+
+  it("derives exact-origin consent grants from private tool manifests", () => {
+    expect(conformanceBrowserConsentRequestsForSkill({
+      private_tool_manifest: {
+        target_origins: [
+          {
+            origin: "https://app.example.test/path",
+            screenshot_consent_required: true,
+            diagnostics_consent_required: false,
+          },
+          {
+            origin: "https://app.example.test/other",
+            screenshot_consent_required: false,
+            diagnostics_consent_required: true,
+          },
+          {
+            origin: "https://idp.example.test/login",
+            screenshot_consent_required: false,
+            diagnostics_consent_required: false,
+          },
+        ],
+      },
+    })).toEqual([
+      {
+        origin: "https://app.example.test",
+        url: "https://app.example.test",
+        screenshot: true,
+        diagnostics: true,
+      },
+      {
+        origin: "https://idp.example.test",
+        url: "https://idp.example.test",
+        screenshot: false,
+        diagnostics: false,
+      },
+    ]);
+
+    expect(conformanceBrowserConsentRequestsForSkill({
+      app_origin: "https://fallback.example.test/workspace",
+    })).toEqual([{
+      origin: "https://fallback.example.test",
+      url: "https://fallback.example.test",
+      screenshot: false,
+      diagnostics: false,
+    }]);
   });
 
   it("detects expected blocks for raw backing calls and revoked proofs", () => {
