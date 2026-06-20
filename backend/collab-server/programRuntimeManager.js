@@ -77,6 +77,30 @@ function normalizePorts(value) {
   return [...new Set(ports.filter((port) => Number.isInteger(port) && port > 0))].sort((left, right) => left - right);
 }
 
+// dockerd's TLS API port — the per-workspace daemon inside the Sysbox runtime
+// pod always listens here. It's infra, never a user program's "app port".
+const DOCKERD_TLS_PORT = 2376;
+const DEFAULT_PREVIEW_SIDECAR_PORT = 18080;
+
+function parseInfraPortList(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  const ports = raw
+    .split(',')
+    .map((part) => Number.parseInt(part.trim(), 10))
+    .filter((port) => Number.isInteger(port) && port > 0);
+  return ports.length ? ports : null;
+}
+
+// Runtime-pod infra ports to exclude from program port attribution. Env-driven
+// (RUNTIME_INFRA_PORTS, comma-separated) so it tracks the runtime image as it
+// evolves; defaults to dockerd's 2376 + the preview sidecar port.
+function resolveRuntimeInfraPorts(env = process.env) {
+  const configured = parseInfraPortList(env.RUNTIME_INFRA_PORTS);
+  if (configured) return configured;
+  const sidecarPort = Number.parseInt(env.SYNTHI_PREVIEW_SIDECAR_PORT, 10);
+  return [DOCKERD_TLS_PORT, Number.isInteger(sidecarPort) && sidecarPort > 0 ? sidecarPort : DEFAULT_PREVIEW_SIDECAR_PORT];
+}
+
 const RUNNING_STATES = ['starting', 'running', 'unhealthy'];
 
 function samePorts(a = [], b = []) {
@@ -230,12 +254,14 @@ function createProgramRuntimeManager(options = {}) {
     launchRuntime = null,
     getActivePorts = () => [],
     baseEnv = process.env,
+    infraPorts = resolveRuntimeInfraPorts(baseEnv),
     probeHost = process.env.PROXY_TARGET_HOST || '127.0.0.1',
     httpProbe = defaultHttpProbe,
     setIntervalFn = setInterval,
     clearIntervalFn = clearInterval,
   } = options;
   const managedSessions = new Map();
+  const infraPortSet = new Set(normalizePorts(infraPorts));
 
   if (!activeSessions || typeof activeSessions.get !== 'function' || typeof activeSessions.delete !== 'function') {
     throw new TypeError('activeSessions map is required');
@@ -652,6 +678,9 @@ function createProgramRuntimeManager(options = {}) {
    */
   function recomputeRuntimeScopePorts(runtimeScope, detectedPorts) {
     if (!runtimeScope) return [];
+    // Strip runtime infra ports (e.g. dockerd 2376) before attribution so they
+    // never surface as a program's app port. See resolveRuntimeInfraPorts.
+    const appPorts = (Array.isArray(detectedPorts) ? detectedPorts : []).filter((port) => !infraPortSet.has(port));
     const scoped = [...managedSessions.values()].filter((record) => record.runtimeScope === runtimeScope);
     const attribution = attributeSessionPorts({
       sessions: scoped.map((record) => ({
@@ -659,7 +688,7 @@ function createProgramRuntimeManager(options = {}) {
         state: record.state,
         declaredPorts: record.declaredPorts || [],
       })),
-      detectedPorts,
+      detectedPorts: appPorts,
     });
     const updated = [];
 

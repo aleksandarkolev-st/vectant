@@ -143,6 +143,18 @@ test('recomputeRuntimeScopePorts attributes pod ports only to same-scope session
   assert.deepEqual(mgr.getManagedSession('p2').activePorts, []);
 });
 
+// Convergence win (merge): the per-workspace dockerd inside the Sysbox pod
+// listens on 2376 (TLS). It must never be attributed to a program as an "app
+// port", so infra ports are filtered out of the pod scan before attribution.
+test('recomputeRuntimeScopePorts drops infra ports (dockerd 2376) before attribution', async () => {
+  const mgr = makeManager({
+    launchRuntime: async () => ({ ...createManagedRuntimeHandle(), runtimeScope: 'scope-1' }),
+  });
+  await mgr.launchManagedSession({ sessionId: 'p1', workspaceSlug: 'w', command: 'x', runtimeType: 'container' });
+  mgr.recomputeRuntimeScopePorts('scope-1', [2376, 8080]);
+  assert.deepEqual(mgr.getManagedSession('p1').activePorts, [8080]);
+});
+
 test('kills orphaned headless sessions after the TTL', () => {
   const activeSessions = new Map();
   const timers = createTimerHarness();
