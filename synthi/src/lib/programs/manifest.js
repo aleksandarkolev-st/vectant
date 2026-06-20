@@ -222,6 +222,10 @@ export function parseProgramManifest(input) {
   const health = normalizeHealth(obj.health);
   const displayName = normalizeDisplayName(obj.displayName, packageId);
   const description = normalizeDescription(obj.description);
+  // GUI dev-tool streaming (slice 3): a container program whose published web port
+  // is a KasmVNC client, rendered as an interactive full-panel surface rather than
+  // a plain web iframe. Strict boolean, container-only (ignored for other types).
+  const webGui = obj.webGui === true && runtimeType === 'container';
 
   return {
     packageId,
@@ -229,6 +233,7 @@ export function parseProgramManifest(input) {
     displayName,
     description,
     runtimeType,
+    webGui,
     workingDir,
     install,
     launch,
