@@ -71,10 +71,14 @@ forward HTTP **Upgrade** for websockets. Verify the current runtime proxy path i
 `backend/collab-server/proxyService.js`; add WS-upgrade handling if missing. (Unit/integration test the
 upgrade path.)
 
-### 4.5 App-tab GUI surface (frontend)
-A full-panel KasmVNC client in `ProgramSessionPanel`'s App tab when `webGui`: an iframe of the KasmVNC
-web client (via `getProgramSessionAppUrl(runtimeScope)`), with **keyboard-focus capture** and a
-**fullscreen** toggle. KasmVNC handles input, clipboard, and resize internally, so the new UI is thin.
+### 4.5 GUI surface — FLOATING window (frontend)
+`webGui` sessions **pop up as a floating, movable, dockable window** (NOT a docked tab above the editor).
+New docking-WM reducer `openFloatingPanel` (createTab + `floatTab`) opens the `PROGRAM_SESSION` panel
+directly as a floating window; `ProgramsPanel.openProgramSession` branches on `session.webGui` →
+`openFloatingPanel` (else the existing docked `openTab`), and re-opening a live GUI session brings its
+float to front. The floating window hosts `ProgramSessionPanel`, whose App tab renders the KasmVNC client
+via `getProgramSessionAppUrl(runtimeScope)`; KasmVNC handles input, clipboard, and resize internally.
+(Refinements — focus capture / fullscreen / default-to-App-tab — are thin follow-ups.)
 
 ### 4.6 MCP command-level tools (`mcp/synthi-mcp`)
 New tools exposing existing collab-server capabilities to the external AI:

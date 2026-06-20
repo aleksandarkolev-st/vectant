@@ -27,7 +27,7 @@ import {
   formatProgramSessionPorts,
   isActiveProgramSession,
 } from './programSessionSections';
-import { activateTabAction, openTab, selectNodes, selectTabs, setFocusedTabGroup } from '@/components/docking-wm/state/layout-slice';
+import { activateTabAction, openTab, openFloatingPanel, bringFloatToFrontAction, selectNodes, selectTabs, selectFloating, setFocusedTabGroup } from '@/components/docking-wm/state/layout-slice';
 import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
 
 function sessionLabel(session) {
@@ -59,6 +59,16 @@ function findProgramSessionTab(nodes, tabs, programSessionId) {
       if (tab?.panelType === IDE_PANEL.PROGRAM_SESSION && tab?.data?.programSessionId === programSessionId) {
         return { groupId, tabId, tab };
       }
+    }
+  }
+  return null;
+}
+
+function findProgramSessionFloat(floating, tabs, programSessionId) {
+  for (const fw of Object.values(floating || {})) {
+    const tab = tabs?.[fw.tabId];
+    if (tab?.panelType === IDE_PANEL.PROGRAM_SESSION && tab?.data?.programSessionId === programSessionId) {
+      return fw;
     }
   }
   return null;
@@ -264,6 +274,7 @@ export default function ProgramsPanel() {
   const workspaceRole = useSelector((state) => state.workspace?.role || null);
   const nodes = useSelector(selectNodes);
   const tabs = useSelector(selectTabs);
+  const floating = useSelector(selectFloating);
   const [command, setCommand] = useState('npm run dev');
   const [sessions, setSessions] = useState([]);
   const [installs, setInstalls] = useState([]);
@@ -319,6 +330,7 @@ export default function ProgramsPanel() {
   const openProgramSession = useCallback((session) => {
     if (!session?.id) return;
 
+    // Already open as a docked tab → focus it.
     const existing = findProgramSessionTab(nodes, tabs, session.id);
     if (existing) {
       dispatch(setFocusedTabGroup(existing.groupId));
@@ -326,6 +338,31 @@ export default function ProgramsPanel() {
       return;
     }
 
+    // Already open as a floating window → bring it to front.
+    const existingFloat = findProgramSessionFloat(floating, tabs, session.id);
+    if (existingFloat) {
+      dispatch(bringFloatToFrontAction({ floatId: existingFloat.id }));
+      return;
+    }
+
+    const data = {
+      programSessionId: session.id,
+      workspaceSlug,
+      title: sessionLabel(session),
+    };
+
+    // GUI dev-tool sessions pop up as a FLOATING, movable/dockable window
+    // (not a docked tab above the editor).
+    if (session.webGui) {
+      dispatch(openFloatingPanel({
+        panelType: IDE_PANEL.PROGRAM_SESSION,
+        title: sessionLabel(session),
+        data,
+      }));
+      return;
+    }
+
+    // Default: a docked tab in the editor group.
     const targetTabGroupId = findEditorGroupId(nodes, tabs);
     if (!targetTabGroupId) return;
 
@@ -333,14 +370,10 @@ export default function ProgramsPanel() {
       panelType: IDE_PANEL.PROGRAM_SESSION,
       title: sessionLabel(session),
       targetTabGroupId,
-      data: {
-        programSessionId: session.id,
-        workspaceSlug,
-        title: sessionLabel(session),
-      },
+      data,
     }));
     dispatch(setFocusedTabGroup(targetTabGroupId));
-  }, [dispatch, nodes, tabs, workspaceSlug]);
+  }, [dispatch, nodes, tabs, floating, workspaceSlug]);
 
   const handleLaunch = useCallback(async (event) => {
     event.preventDefault();

@@ -133,6 +133,31 @@ const layoutSlice = createSlice({
     },
 
     /**
+     * Open a panel directly as a FLOATING, movable/dockable window (not a docked
+     * tab). Used for GUI dev-tool surfaces that should pop up floating.
+     * Payload: { panelType, title, icon, data, closable?, x?, y?, width?, height? }
+     */
+    openFloatingPanel(state, action) {
+      const {
+        panelType,
+        title,
+        icon,
+        data,
+        closable = true,
+        x = 140,
+        y = 120,
+        width = 1000,
+        height = 680,
+      } = action.payload;
+
+      const tab = createTab({ panelType, title, icon, closable, data });
+      const withTab = { ...state, tabs: { ...state.tabs, [tab.id]: tab } };
+      // floatTab no-ops the group removal for an ungrouped tab, then creates the
+      // floating-window descriptor (reusing its z-index + singleton dedup).
+      return floatTab(withTab, tab.id, { x, y, width, height });
+    },
+
+    /**
      * Close a tab by ID.
      * Payload: { tabId, removeDefinition? }
      */
@@ -444,6 +469,7 @@ export const {
   resizeSplitAction,
   toggleMaximizeAction,
   floatTabAction,
+  openFloatingPanel,
   dockFloatAction,
   updateFloatAction,
   bringFloatToFrontAction,

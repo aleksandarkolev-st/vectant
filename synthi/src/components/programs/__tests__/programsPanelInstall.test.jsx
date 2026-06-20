@@ -52,6 +52,9 @@ vi.mock('@/components/docking-wm/state/layout-slice', () => ({
   openTab: (p) => ({ type: 'openTab', payload: p }),
   activateTabAction: (p) => ({ type: 'activate', payload: p }),
   setFocusedTabGroup: (p) => ({ type: 'focus', payload: p }),
+  selectFloating: (s) => s.floating,
+  openFloatingPanel: (p) => ({ type: 'openFloatingPanel', payload: p }),
+  bringFloatToFrontAction: (p) => ({ type: 'bringFloatToFront', payload: p }),
 }));
 
 import ProgramsPanel from '../ProgramsPanel';
