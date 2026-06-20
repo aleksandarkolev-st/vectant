@@ -31,6 +31,27 @@ reject_text() {
   fi
 }
 
+reject_resource() {
+  local kind="$1"
+  local name="$2"
+  if awk -v kind="${kind}" -v name="${name}" '
+    BEGIN { doc = ""; found = 0 }
+    function flush() {
+      if (doc ~ "(^|\n)[[:space:]]*kind:[[:space:]]*" kind "([[:space:]]|\n)" &&
+          doc ~ "(^|\n)[[:space:]]*name:[[:space:]]*" name "([[:space:]]|\n)") {
+        found = 1
+      }
+      doc = ""
+    }
+    /^---[[:space:]]*$/ { flush(); next }
+    { doc = doc $0 "\n" }
+    END { flush(); exit found ? 0 : 1 }
+  ' "${RENDERED}"; then
+    echo "Dojo release render contains forbidden ${kind}/${name}" >&2
+    exit 1
+  fi
+}
+
 require_text "Dojo MCP deployment/service/backend" "name: dojo-mcp-host"
 require_text "Dojo MCP ingress path" "path: /dojo/mcp"
 require_text "Dojo release ExternalSecret" "name: synthi-dojo-release-secrets"
@@ -48,5 +69,10 @@ require_text "preview wildcard ingress host" "host: '*.preview.vectant.dev'"
 require_text "preview service route" "name: collab-preview"
 
 reject_text "placeholder image tag" "build-tag-required"
+reject_text "in-cluster Redis URL" "redis://redis.synthi.svc.cluster.local:6379"
+reject_resource "Deployment" "redis"
+reject_resource "Service" "redis"
+reject_resource "StatefulSet" "postgres"
+reject_resource "Service" "postgres"
 
 echo "Dojo release render guard passed for ${RENDERED}"

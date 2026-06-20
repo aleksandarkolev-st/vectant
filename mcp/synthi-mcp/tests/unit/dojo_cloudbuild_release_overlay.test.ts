@@ -6,7 +6,34 @@ function cloudbuildYaml() {
   return readFileSync("../../cloudbuild.yaml", "utf8");
 }
 
+function deployWorkflowYaml() {
+  return readFileSync("../../.github/workflows/deploy-prod.yml", "utf8");
+}
+
+function deployScript() {
+  return readFileSync("../../scripts/deploy-prod.sh", "utf8");
+}
+
+function renderGuardScript() {
+  return readFileSync("../../scripts/validate-dojo-release-render.sh", "utf8");
+}
+
 describe("Dojo Cloud Build release overlay contract", () => {
+  it("defaults every production deploy entrypoint to the Dojo release overlay", () => {
+    const cloudbuild = cloudbuildYaml();
+    const workflow = deployWorkflowYaml();
+    const script = deployScript();
+
+    expect(cloudbuild).toContain("_KUSTOMIZE_DIR: k8s/overlays/dojo-release-gate");
+    expect(cloudbuild).toContain("_KUSTOMIZE_LOAD_RESTRICTOR: LoadRestrictionsNone");
+    expect(workflow).toContain('default: "k8s/overlays/dojo-release-gate"');
+    expect(workflow).toContain('default: "LoadRestrictionsNone"');
+    expect(workflow).toContain("github.event.inputs.kustomize_dir || 'k8s/overlays/dojo-release-gate'");
+    expect(workflow).toContain("github.event.inputs.kustomize_load_restrictor || 'LoadRestrictionsNone'");
+    expect(script).toContain('KUSTOMIZE_DIR="k8s/overlays/dojo-release-gate"');
+    expect(script).toContain('KUSTOMIZE_LOAD_RESTRICTOR="LoadRestrictionsNone"');
+  });
+
   it("scans every Dockerfile variant for mutable images", () => {
     const yaml = cloudbuildYaml();
 
@@ -31,7 +58,28 @@ describe("Dojo Cloud Build release overlay contract", () => {
 
     expect(yaml).toContain('DOJO_RELEASE_KUSTOMIZE_DIR="${_DOJO_RELEASE_KUSTOMIZE_DIR}"');
     expect(yaml).toContain('if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then');
-    expect(yaml).toMatch(/if \[\[ "\$\$\{KUSTOMIZE_DIR\}" == "\$\$\{DOJO_RELEASE_KUSTOMIZE_DIR\}" \]\]; then\s+kubectl rollout status deployment\/dojo-mcp-host -n \$\$\{NS\} --timeout=300s\s+elif kubectl get deployment\/dojo-mcp-host/);
+    expect(yaml).toContain("kubectl rollout status deployment/dojo-mcp-host -n $${NS} --timeout=300s");
+    expect(yaml).toContain("npm run live:dojo:seed-release-competency");
+    expect(yaml).toContain("elif kubectl get deployment/dojo-mcp-host -n $${NS} >/dev/null 2>&1; then");
+  });
+
+  it("cleans stale in-cluster beta stores only for Dojo release deploys", () => {
+    const yaml = cloudbuildYaml();
+
+    expect(yaml).toContain('if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then');
+    expect(yaml).toContain("kubectl delete deployment/redis service/redis statefulset/postgres service/postgres -n $${NS} --ignore-not-found");
+    expect(yaml).not.toContain("persistentvolumeclaim/postgres");
+    expect(yaml).not.toContain("persistentvolumeclaim/redis");
+  });
+
+  it("fails the Dojo render guard when beta Redis or Postgres resources leak back in", () => {
+    const script = renderGuardScript();
+
+    expect(script).toContain('reject_text "in-cluster Redis URL" "redis://redis.synthi.svc.cluster.local:6379"');
+    expect(script).toContain('reject_resource "Deployment" "redis"');
+    expect(script).toContain('reject_resource "Service" "redis"');
+    expect(script).toContain('reject_resource "StatefulSet" "postgres"');
+    expect(script).toContain('reject_resource "Service" "postgres"');
   });
 
   it("parameterizes the source registry used for rendered manifest substitution", () => {
