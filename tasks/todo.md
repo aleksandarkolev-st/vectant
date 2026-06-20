@@ -50,9 +50,17 @@ Command/CLI AI control over the program domain, over the PAT-gated `/api/integra
 
 ### Group G — verification + wrap
 - [x] Local: images build+run+kiosk-validated; backend/synthi/mcp suites green; node --check clean.
-- [ ] **G1 live GKE gate (NOT run — billable/outward).** Spin scratch Sysbox cluster + push images to AR
-      digest-pinned + launch DBeaver in-pod → stream in App tab → kiosk-escape check → MCP exec_in_runtime →
-      teardown. Run only on explicit go-ahead.
+- [x] **G1 live GKE gate — PASSED (2026-06-21), cluster torn down.** Scratch Sysbox cluster
+      (`synthi-sysbox-scratch`, 1.35.3) + sysbox-pool; Sysbox v0.7.0 installed (`sysbox-runtime=running`);
+      ran `vectant-dbeaver` (from AR) in a `sysbox-runc` pod's dockerd. Validated: **non-privileged**
+      (`privileged=false`) + **root-in-userns** (`uid_map 0→2348417024`) + own docker.sock; **KasmVNC streams**
+      (no-auth 401 → per-session-cred 200 on `/vnc.html`); **DBeaver GUI process alive**; **kiosk-clean**
+      (no terminal/browser/file-manager/desktop binaries); **exec into the runtime works** (exec_in_runtime
+      capability). Teardown: cluster deleted (async), gate AR images deleted, prod untouched.
+      - FOLLOW-UP (pre-existing): the committed `sysbox-install.yaml` digest `c7859de…` was deleted from AR by
+        the LG4/G1 teardown; a `docker pull`+push re-host yields a *different* (single-arch) digest. To restore
+        the exact committed (multi-arch index) digest for the next run/prod, re-host with **`crane copy`**
+        (daemon-free, preserves the index digest) per lesson #27 — don't `docker push` (re-pins to a new digest).
 
 ### Hardcoded-values audit (Slice 3, A+F)
 - DBeaver .deb pinned to **`latest`** (`dbeaver-ce_latest_amd64.deb`) — NOT reproducible. **Pin a version for
