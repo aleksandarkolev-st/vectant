@@ -82,6 +82,17 @@ export const DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS = [
   },
 ];
 
+export const DOJO_MCP_CONFORMANCE_TENANT_CONTEXT_FIELDS = [
+  "tenant_id",
+  "organization_id",
+  "workspace_id",
+  "actor_id",
+  "actor_type",
+  "roles",
+  "request_id",
+  "correlation_id",
+];
+
 const args = parseArgs(process.argv.slice(2));
 
 if (isDirectRun()) {
@@ -118,6 +129,7 @@ async function main() {
       require_verified_evidence: config.requireVerifiedEvidence,
       app_bearer_header: config.host.bearerToken ? config.host.bearerHeader : null,
       iap_authorization_configured: Boolean(config.host.iapBearerToken),
+      tenant_context_configured_fields: Object.keys(config.tenantContextArgs).sort(),
     },
     deployment_claims: {
       require_external_control_plane_store: config.requireExternalControlPlaneStore,
@@ -173,7 +185,7 @@ async function main() {
     });
     log("ok", "observe production deployment readiness");
 
-    const competenciesCall = await client.toolCall("synthi_dojo_list_competencies", {});
+    const competenciesCall = await client.toolCall("synthi_dojo_list_competencies", config.tenantContextArgs);
     assertToolOk(competenciesCall, "list Dojo competencies");
     const competencies = Array.isArray(competenciesCall.parsed?.competencies)
       ? competenciesCall.parsed.competencies
@@ -194,6 +206,7 @@ async function main() {
     log("ok", `select published Dojo competency - skill=${competency.skill_id}`);
 
     const issueCall = await client.toolCall("synthi_dojo_issue_proof_capsule", {
+      ...config.tenantContextArgs,
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       context_claims: config.contextClaims,
@@ -216,6 +229,7 @@ async function main() {
     log("ok", `issue proof capsule - capsule=${proofCapsule.capsule_id}`);
 
     const validateCall = await client.toolCall("synthi_dojo_validate_proof_capsule", {
+      ...config.tenantContextArgs,
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
@@ -230,6 +244,7 @@ async function main() {
     log("ok", "validate proof capsule");
 
     const runCall = await client.toolCall("synthi_dojo_run_with_proof_capsule", {
+      ...config.tenantContextArgs,
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
@@ -248,7 +263,7 @@ async function main() {
     if (!config.skipRawBackingToolCheck) {
       const toolName = String(competency.published_tool_name || "");
       assert(toolName, "selected competency has no published_tool_name for raw backing-tool block check");
-      const rawCall = await client.toolCall(toolName, config.rawToolArgs);
+      const rawCall = await client.toolCall(toolName, { ...config.tenantContextArgs, ...config.rawToolArgs });
       assert(
         isExpectedBlockedToolCall(rawCall, RAW_BACKING_BLOCK_MARKERS),
         `raw backing tool was not blocked as expected: ${JSON.stringify(summarizeCall(rawCall))}`,
@@ -263,6 +278,7 @@ async function main() {
     }
 
     const revokeCall = await client.toolCall("synthi_dojo_revoke_proof_capsule", {
+      ...config.tenantContextArgs,
       capsule_id: proofCapsule.capsule_id,
       reason: config.revocationReason,
       actor_id: config.revocationActorId,
@@ -281,6 +297,7 @@ async function main() {
     log("ok", "revoke proof capsule");
 
     const validateRevokedCall = await client.toolCall("synthi_dojo_validate_proof_capsule", {
+      ...config.tenantContextArgs,
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
@@ -298,6 +315,7 @@ async function main() {
     log("ok", "revoked proof validation blocked");
 
     const runRevokedCall = await client.toolCall("synthi_dojo_run_with_proof_capsule", {
+      ...config.tenantContextArgs,
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
@@ -363,6 +381,7 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
     publishedToolName: args["published-tool-name"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_PUBLISHED_TOOL_NAME || "",
     requestedAction: args["requested-action"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUESTED_ACTION || "run_workflow",
     substrateClaim: args["substrate-claim"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_SUBSTRATE_CLAIM || "mcp",
+    tenantContextArgs: buildDojoMcpHostConformanceTenantContextArgs({ args, env }),
     contextClaims: parseJsonObjectArgument(args["context-claims-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_CONTEXT_CLAIMS_JSON || "{\"workspace_verified\":true}", "context_claims"),
     evidenceClaims: parseOptionalJsonArray(args["evidence-claims-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_EVIDENCE_CLAIMS_JSON, "evidence_claims"),
     evidenceRecordIds: parseStringList(args["evidence-record-ids"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EVIDENCE_RECORD_IDS),
@@ -390,6 +409,40 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
   };
 }
 
+export function buildDojoMcpHostConformanceTenantContextArgs({ args = {}, env = process.env } = {}) {
+  const fromJson = parseJsonObjectArgument(
+    args["tenant-context-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_TENANT_CONTEXT_JSON || "{}",
+    "tenant_context",
+  );
+  const tenantContext = {};
+  for (const field of DOJO_MCP_CONFORMANCE_TENANT_CONTEXT_FIELDS) {
+    if (field === "roles") {
+      const roles = parseTenantRoles(fromJson[field], "tenant_context.roles");
+      if (roles.length > 0) tenantContext.roles = roles;
+      continue;
+    }
+    const normalized = field === "actor_type"
+      ? normalizeTenantActorType(fromJson[field], "tenant_context.actor_type")
+      : normalizeOptionalText(fromJson[field]);
+    if (normalized) tenantContext[field] = normalized;
+  }
+
+  setTenantContextString(tenantContext, "tenant_id", args["tenant-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_TENANT_ID);
+  setTenantContextString(tenantContext, "organization_id", args["organization-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_ORGANIZATION_ID);
+  setTenantContextString(tenantContext, "workspace_id", args["workspace-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_WORKSPACE_ID);
+  setTenantContextString(tenantContext, "actor_id", args["actor-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_ACTOR_ID);
+  setTenantContextActorType(tenantContext, args["actor-type"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_ACTOR_TYPE);
+  const roles = parseTenantRolesFromInputs({
+    rolesJson: args["roles-json"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_ROLES_JSON,
+    rolesList: args.roles ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_ROLES,
+  });
+  if (roles.length > 0) tenantContext.roles = roles;
+  setTenantContextString(tenantContext, "request_id", args["request-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUEST_ID);
+  setTenantContextString(tenantContext, "correlation_id", args["correlation-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_CORRELATION_ID);
+
+  return tenantContext;
+}
+
 function normalizeHttpHeaderName(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (!normalized || !/^[!#$%&'*+\-.^_`|~0-9a-z]+$/.test(normalized)) {
@@ -401,6 +454,39 @@ function normalizeHttpHeaderName(value) {
 function normalizeActorType(value) {
   const normalized = normalizeOptionalText(value);
   return normalized === "human" || normalized === "agent" || normalized === "service" ? normalized : "";
+}
+
+function normalizeTenantActorType(value, label) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return "";
+  if (normalized === "human" || normalized === "agent" || normalized === "service") return normalized;
+  throw new Error(`${label}_invalid`);
+}
+
+function setTenantContextString(target, field, value) {
+  const normalized = normalizeOptionalText(value);
+  if (normalized) target[field] = normalized;
+}
+
+function setTenantContextActorType(target, value) {
+  const normalized = normalizeTenantActorType(value, "tenant_context.actor_type");
+  if (normalized) target.actor_type = normalized;
+}
+
+function parseTenantRolesFromInputs({ rolesJson, rolesList }) {
+  const normalizedJson = normalizeOptionalText(rolesJson);
+  if (normalizedJson) return parseTenantRoles(parseJsonStringArray(normalizedJson, "tenant_context.roles_json"), "tenant_context.roles_json");
+  return parseStringList(rolesList);
+}
+
+function parseTenantRoles(value, label) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error(`${label}_must_be_string_array`);
+  return value.map((item) => {
+    const normalized = normalizeOptionalText(item);
+    if (!normalized) throw new Error(`${label}_must_be_non_empty_strings`);
+    return normalized;
+  });
 }
 
 function parseStringList(value) {

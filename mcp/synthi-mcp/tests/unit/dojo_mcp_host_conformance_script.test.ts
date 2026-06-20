@@ -4,9 +4,11 @@ import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
   buildDojoMcpHostConformanceConfig,
+  buildDojoMcpHostConformanceTenantContextArgs,
   buildMcpHttpHeaders,
   classifyMcpHost,
   deploymentObservationsFromReadiness,
+  DOJO_MCP_CONFORMANCE_TENANT_CONTEXT_FIELDS,
   DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS,
   HttpJsonRpcClient,
   isExpectedBlockedToolCall,
@@ -158,6 +160,11 @@ describe("Dojo MCP host conformance harness", () => {
     const config = buildDojoMcpHostConformanceConfig({
       args: {
         "tool-args-json": "{\"workspace_id\":\"acme\"}",
+        "tenant-context-json": "{\"tenant_id\":\"tenant-a\",\"workspace_id\":\"workspace-a\",\"roles\":[\"dojo_operator\"]}",
+        "actor-id": "actor-a",
+        "actor-type": "service",
+        "request-id": "request-a",
+        "correlation-id": "correlation-a",
         "context-claims-json": "{\"workspace_verified\":true}",
         "evidence-claims-json": "[{\"claim\":\"checkride_passed\",\"satisfied\":true}]",
         "evidence-record-ids": "evidence-a,evidence-b",
@@ -194,6 +201,15 @@ describe("Dojo MCP host conformance harness", () => {
     expect(config.contextClaims).toEqual({ workspace_verified: true });
     expect(config.toolArgs).toEqual({ workspace_id: "acme" });
     expect(config.evidenceClaims).toEqual([{ claim: "checkride_passed", satisfied: true }]);
+    expect(config.tenantContextArgs).toEqual({
+      tenant_id: "tenant-a",
+      workspace_id: "workspace-a",
+      actor_id: "actor-a",
+      actor_type: "service",
+      roles: ["dojo_operator"],
+      request_id: "request-a",
+      correlation_id: "correlation-a",
+    });
     expect(config.evidenceRecordIds).toEqual(["evidence-a", "evidence-b"]);
     expect(config.ledgerCheckpointHash).toBe("a".repeat(64));
     expect(config.evidenceMaxAgeMs).toBe(60000);
@@ -211,6 +227,47 @@ describe("Dojo MCP host conformance harness", () => {
     expect(config.revocationActorId).toBe("host-conformance-operator");
     expect(config.revocationActorType).toBe("service");
     expect(config.revocationEvidenceRefs).toEqual(["evidence-a", "evidence-b"]);
+  });
+
+  it("builds tenant context args without forwarding unknown fields", () => {
+    expect(DOJO_MCP_CONFORMANCE_TENANT_CONTEXT_FIELDS).toEqual([
+      "tenant_id",
+      "organization_id",
+      "workspace_id",
+      "actor_id",
+      "actor_type",
+      "roles",
+      "request_id",
+      "correlation_id",
+    ]);
+    expect(buildDojoMcpHostConformanceTenantContextArgs({
+      args: {
+        "tenant-context-json": "{\"tenant_id\":\"tenant-json\",\"ignored\":\"nope\"}",
+        roles: "dojo_operator,release_runner",
+      },
+      env: {
+        SYNTHI_DOJO_MCP_CONFORMANCE_ORGANIZATION_ID: "org-env",
+        SYNTHI_DOJO_MCP_CONFORMANCE_WORKSPACE_ID: "workspace-env",
+        SYNTHI_DOJO_MCP_CONFORMANCE_ACTOR_ID: "actor-env",
+        SYNTHI_DOJO_MCP_CONFORMANCE_ACTOR_TYPE: "agent",
+        SYNTHI_DOJO_MCP_CONFORMANCE_REQUEST_ID: "request-env",
+        SYNTHI_DOJO_MCP_CONFORMANCE_CORRELATION_ID: "correlation-env",
+      },
+    })).toEqual({
+      tenant_id: "tenant-json",
+      organization_id: "org-env",
+      workspace_id: "workspace-env",
+      actor_id: "actor-env",
+      actor_type: "agent",
+      roles: ["dojo_operator", "release_runner"],
+      request_id: "request-env",
+      correlation_id: "correlation-env",
+    });
+
+    expect(() => buildDojoMcpHostConformanceTenantContextArgs({
+      args: { "tenant-context-json": "{\"roles\":[\"\"]}" },
+      env: {},
+    })).toThrow("tenant_context.roles_must_be_non_empty_strings");
   });
 
   it("requires a separate app bearer header when IAP also uses Authorization", () => {
