@@ -1,12 +1,14 @@
 # Agent Dojo Release-Gate Overlay
 
-This overlay is intentionally opt-in. It prepares a release-candidate render for
-Agent Dojo enterprise gates without changing the default beta deployment under
-`k8s/`.
+This overlay is the production deploy default for the beta environment. It
+prepares a release-candidate render for Agent Dojo enterprise gates while the
+base `k8s/` kustomization remains available for beta-compatible rollback or
+manual debugging deploys.
 
 It does three things:
 
 - removes the in-cluster Postgres and Redis resources from the rendered output
+- removes the in-cluster Postgres and Redis NetworkPolicies from the rendered output
 - removes the beta in-cluster Redis URL from the rendered `synthi-config`
 - routes `collab-server` and `signaling-server` Redis through the
   externally-synced `synthi-dojo-release-secrets/REDIS_URL` value
@@ -33,13 +35,13 @@ node mcp/synthi-mcp/scripts/dojo-kustomize-overlay-check.mjs `
 
 The load-restrictor flag is required because the current repository keeps the
 base manifests directly under `k8s/` rather than under a nested `k8s/base/`
-directory. Do not use this overlay from automation unless that flag is part of
-the render command or the Kubernetes tree has been moved to a conventional
-base/overlay layout.
+directory. Production automation must pass that flag, as the included Cloud
+Build and GitHub Actions deploy paths do.
 
-Do not apply this overlay until the Google Cloud inventory preflight passes for
-Cloud SQL, Memorystore, Cloud KMS or the managed signing service, Secret Manager,
-External Secrets Operator, and the deployed MCP host release candidate.
+Do not claim Dojo enterprise production readiness until the Google Cloud
+inventory preflight passes for Cloud SQL, Memorystore, Cloud KMS or the managed
+signing service, Secret Manager, External Secrets Operator, deployed MCP host
+conformance, and hosted runtime evidence.
 
 Required Secret Manager names added by this overlay:
 
@@ -64,6 +66,8 @@ synthi-dojo-hosted-browser-cdp-url
 synthi-dojo-hosted-browser-workspace-url
 synthi-private-workflow-tool-scope
 synthi-private-workflow-tool-store-file
+synthi-private-workflow-tool-store-key
+synthi-auth-checkpoint-store-key
 ```
 
 The proof-signing private key env is deliberately not included. Production proof

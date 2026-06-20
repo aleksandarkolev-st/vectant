@@ -83,7 +83,7 @@ The repository already contains the primary Google Cloud deployment shape:
 - GKE for the core application, MCP runtime, worker control, collaboration
   services, AI gateway, and signaling.
 - Artifact Registry for container images.
-- Cloud Build for image builds, vulnerability scans, and GKE rollout.
+- Cloud Build for image builds, opt-in vulnerability scans, and GKE rollout.
 - Workload Identity for GKE service account access to Google Cloud APIs.
 - Secret Manager plus External Secrets Operator for runtime secrets.
 - Cloud SQL for production Postgres state.
@@ -637,35 +637,10 @@ will use.
 
 ### Cloud Build Deployment
 
-The repository includes `cloudbuild.yaml`. A standard deployment uses Cloud
-Build to build images, scan them, apply the Kubernetes kustomization, run Prisma
-migrations, and roll deployments.
-
-```powershell
-gcloud builds submit `
-  --config cloudbuild.yaml `
-  --substitutions `
-_REGION=$env:REGION,`
-_GKE_CLUSTER=$env:CLUSTER,`
-_GKE_ZONE=$env:ZONE,`
-_NEXT_PUBLIC_COLLAB_SERVER_URL=https://$env:DOMAIN/collab,`
-_NEXT_PUBLIC_YSWEET_URL=https://$env:DOMAIN/collab,`
-_NEXT_PUBLIC_COLLAB_PORT=443,`
-_NEXT_PUBLIC_COMPILE_SIGNAL_URL=wss://$env:DOMAIN/signal,`
-_NEXT_PUBLIC_GATEWAY_WS_URL=wss://$env:DOMAIN/gateway/ws,`
-_NEXT_PUBLIC_CODE_INTEL_URL=https://$env:DOMAIN,`
-_NEXT_PUBLIC_AI_ENGINE_URL=https://$env:DOMAIN,`
-_NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=true,`
-_NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH=/auth/loopback,`
-_KUSTOMIZE_DIR=k8s,`
-_KUSTOMIZE_LOAD_RESTRICTOR=
-```
-
-The base kustomization is the safe default for the already-hosted application.
-It does not claim the Dojo enterprise release gate by itself. After the Cloud
-SQL, Memorystore, External Secrets, managed proof-signing, hosted runtime, and
-MCP host blockers are closed, the approved Dojo release-gate rollout should use
-the opt-in overlay:
+The repository includes `cloudbuild.yaml`. A standard production deployment uses
+Cloud Build to build images, apply the Dojo release overlay, run migrations, and
+roll deployments. Critical vulnerability scanning is available as an opt-in
+Cloud Build gate with `_ENABLE_VULNERABILITY_SCAN=true`.
 
 ```powershell
 gcloud builds submit `
@@ -688,8 +663,32 @@ _DOJO_RELEASE_KUSTOMIZE_DIR=k8s/overlays/dojo-release-gate,`
 _KUSTOMIZE_LOAD_RESTRICTOR=LoadRestrictionsNone
 ```
 
-Before using that overlay in Cloud Build, render it locally and inspect the
-output. The checked command writes report and evidence artifacts under
+The base `k8s/` kustomization remains available for rollback or beta-compatible
+debug deploys. It does not claim the Dojo enterprise release gate by itself.
+Use it only intentionally:
+
+```powershell
+gcloud builds submit `
+  --config cloudbuild.yaml `
+  --substitutions `
+_REGION=$env:REGION,`
+_GKE_CLUSTER=$env:CLUSTER,`
+_GKE_ZONE=$env:ZONE,`
+_NEXT_PUBLIC_COLLAB_SERVER_URL=https://$env:DOMAIN/collab,`
+_NEXT_PUBLIC_YSWEET_URL=https://$env:DOMAIN/collab,`
+_NEXT_PUBLIC_COLLAB_PORT=443,`
+_NEXT_PUBLIC_COMPILE_SIGNAL_URL=wss://$env:DOMAIN/signal,`
+_NEXT_PUBLIC_GATEWAY_WS_URL=wss://$env:DOMAIN/gateway/ws,`
+_NEXT_PUBLIC_CODE_INTEL_URL=https://$env:DOMAIN,`
+_NEXT_PUBLIC_AI_ENGINE_URL=https://$env:DOMAIN,`
+_NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=true,`
+_NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH=/auth/loopback,`
+_KUSTOMIZE_DIR=k8s,`
+_KUSTOMIZE_LOAD_RESTRICTOR=
+```
+
+Before a manual or automated Dojo release rollout, render the production overlay
+locally and inspect the output. The checked command writes report and evidence artifacts under
 `tmp/dojo-kustomize-overlay-check`:
 
 ```powershell
@@ -768,7 +767,7 @@ kubectl -n $env:K8S_NAMESPACE describe externalsecret synthi-secrets
 kubectl -n $env:K8S_NAMESPACE rollout status deployment/frontend
 ```
 
-For an approved Dojo release-gate rollout, first render the opt-in overlay,
+For a manual Dojo release-gate rollout, first render the production overlay,
 replace the `build-tag-required` image placeholders with the exact release tag
 or image digest, then apply the rendered result. Cloud Build performs this
 replacement automatically; manual rollout must do the same before `kubectl
@@ -907,9 +906,9 @@ Run this sequence for a release candidate:
 
 1. Run the read-only hosted inventory and compare it with the expected
    production resources.
-2. Run the strict GCP blocker report. Do not deploy or collect external release
+2. Run the strict GCP blocker report. Do not claim or archive external release
    evidence until `release_ready` is true.
-3. Build and deploy with Cloud Build only after explicit deployment approval.
+3. Build and deploy with Cloud Build after explicit deployment approval.
 4. Verify Kubernetes rollouts and external HTTPS endpoints.
 5. Verify External Secrets synced from Secret Manager.
 6. Run database migrations against Cloud SQL.
