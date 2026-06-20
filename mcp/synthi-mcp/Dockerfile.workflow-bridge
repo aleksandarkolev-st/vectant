@@ -12,7 +12,8 @@ RUN apt-get update \
 
 COPY packages/mcp-hub /workspace/packages/mcp-hub
 COPY mcp/synthi-mcp/.npmrc mcp/synthi-mcp/package.json mcp/synthi-mcp/package-lock.json ./
-RUN npm ci --workspaces=false --include=dev
+RUN npm ci --workspaces=false --include=dev \
+  && npm exec -- tsc --version
 
 COPY mcp/synthi-mcp/tsconfig.json ./
 COPY mcp/synthi-mcp/src ./src
