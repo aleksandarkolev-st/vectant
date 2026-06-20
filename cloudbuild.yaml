@@ -209,8 +209,7 @@ steps:
       # file dependency, matching the frontend workspace image pattern.
       - --context=dir:///workspace
       - --destination=${_REGISTRY}/synthi-browser-workflow-bridge:${_IMAGE_TAG}
-      - --cache=true
-      - --cache-ttl=168h
+      - --cache=false
 
   # Agent Dojo HTTP MCP host. Built for the release-gate overlay; the default
   # beta kustomization does not deploy this image.
