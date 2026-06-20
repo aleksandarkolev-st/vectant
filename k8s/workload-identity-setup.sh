@@ -18,6 +18,9 @@ set -euo pipefail
 PROJECT_ID="vectant-proj"
 K8S_NAMESPACE="synthi"
 WORKSPACE_BUCKET="vectant-synthi-cloud-storage"
+KMS_LOCATION="${KMS_LOCATION:-europe-west10}"
+DOJO_KMS_KEYRING="${DOJO_KMS_KEYRING:-synthi-dojo}"
+DOJO_KMS_KEY="${DOJO_KMS_KEY:-dojo-proof-signing}"
 
 echo "=== Synthi IDE — Workload Identity Setup ==="
 echo "Project: ${PROJECT_ID}"
@@ -36,6 +39,11 @@ gcloud iam service-accounts create synthi-gcs-sa \
 gcloud iam service-accounts create synthi-eso-sa \
   --display-name="Synthi External Secrets" \
   --project="${PROJECT_ID}" 2>/dev/null || echo "  synthi-eso-sa already exists"
+
+# SA for Agent Dojo MCP host managed signing and hosted release checks
+gcloud iam service-accounts create synthi-dojo-mcp-sa \
+  --display-name="Synthi Dojo MCP Host" \
+  --project="${PROJECT_ID}" 2>/dev/null || echo "  synthi-dojo-mcp-sa already exists"
 
 echo ""
 
@@ -58,6 +66,16 @@ gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --quiet
 
 echo "  synthi-eso-sa → roles/secretmanager.secretAccessor"
+
+# Dojo MCP host: sign with the managed proof-signing key and read release secrets.
+gcloud kms keys add-iam-policy-binding "${DOJO_KMS_KEY}" \
+  --location="${KMS_LOCATION}" \
+  --keyring="${DOJO_KMS_KEYRING}" \
+  --member="serviceAccount:synthi-dojo-mcp-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/cloudkms.signerVerifier" \
+  --quiet
+
+echo "  synthi-dojo-mcp-sa → roles/cloudkms.signerVerifier on ${DOJO_KMS_KEYRING}/${DOJO_KMS_KEY}"
 echo ""
 
 # ── 3. Workload Identity Bindings ─────────────────────────────────────────
@@ -84,6 +102,15 @@ gcloud iam service-accounts add-iam-policy-binding \
   --quiet
 
 echo "  eso-service-account → synthi-eso-sa"
+
+# dojo-mcp-host-sa (K8s) → synthi-dojo-mcp-sa (GCP)
+gcloud iam service-accounts add-iam-policy-binding \
+  "synthi-dojo-mcp-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="serviceAccount:${PROJECT_ID}.svc.id.goog[${K8S_NAMESPACE}/dojo-mcp-host-sa]" \
+  --quiet
+
+echo "  dojo-mcp-host-sa → synthi-dojo-mcp-sa"
 echo ""
 
 # ── 4. Verify ────────────────────────────────────────────────────────────
