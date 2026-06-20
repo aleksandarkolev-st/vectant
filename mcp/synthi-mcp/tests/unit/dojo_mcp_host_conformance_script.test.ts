@@ -485,6 +485,38 @@ describe("Dojo MCP host conformance harness", () => {
       screenshot: false,
       diagnostics: false,
     }]);
+
+    expect(conformanceBrowserConsentRequestsForSkill({
+      private_tool_manifest: {
+        target_origins: [
+          {
+            origin: "https://public.example.test/app",
+            screenshot_consent_required: false,
+            diagnostics_consent_required: false,
+          },
+        ],
+      },
+    }, {
+      action_url: "http://frontend.synthi.svc.cluster.local:3000/dojo-release-seed",
+      workspace_url: "http://frontend.synthi.svc.cluster.local:3000/workspace/release",
+      origin_allowlist: [
+        "https://public.example.test",
+        "http://frontend.synthi.svc.cluster.local:3000",
+      ],
+    })).toEqual([
+      {
+        origin: "http://frontend.synthi.svc.cluster.local:3000",
+        url: "http://frontend.synthi.svc.cluster.local:3000",
+        screenshot: true,
+        diagnostics: true,
+      },
+      {
+        origin: "https://public.example.test",
+        url: "https://public.example.test",
+        screenshot: true,
+        diagnostics: true,
+      },
+    ]);
   });
 
   it("detects expected blocks for raw backing calls and revoked proofs", () => {

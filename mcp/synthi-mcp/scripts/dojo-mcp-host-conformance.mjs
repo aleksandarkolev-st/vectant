@@ -300,7 +300,7 @@ async function main() {
     }
 
     const consentRequests = config.executeProduction
-      ? conformanceBrowserConsentRequestsForSkill(selectedSkill)
+      ? conformanceBrowserConsentRequestsForSkill(selectedSkill, runtimeSession)
       : [];
     if (consentRequests.length > 0) {
       const grants = [];
@@ -897,7 +897,7 @@ export function conformanceProofContextClaimsForSkill({ baseContextClaims = {}, 
   };
 }
 
-export function conformanceBrowserConsentRequestsForSkill(skill = {}) {
+export function conformanceBrowserConsentRequestsForSkill(skill = {}, runtimeSession = null) {
   const merged = new Map();
   const addRequest = ({ origin, screenshot = false, diagnostics = false }) => {
     if (typeof origin !== "string" || origin.trim().length === 0) return;
@@ -936,6 +936,14 @@ export function conformanceBrowserConsentRequestsForSkill(skill = {}) {
         ? skill.skill_seed.observed_trace.app_origin
         : "";
     addRequest({ origin: fallbackOrigin });
+  }
+
+  if (runtimeSession && typeof runtimeSession === "object") {
+    addRequest({ origin: runtimeSession.action_url, screenshot: true, diagnostics: true });
+    addRequest({ origin: runtimeSession.workspace_url, screenshot: true, diagnostics: true });
+    for (const origin of Array.isArray(runtimeSession.origin_allowlist) ? runtimeSession.origin_allowlist : []) {
+      addRequest({ origin, screenshot: true, diagnostics: true });
+    }
   }
 
   return [...merged.values()].sort((a, b) => a.origin.localeCompare(b.origin));
