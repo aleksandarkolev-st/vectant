@@ -187,6 +187,8 @@ describe("Dojo release competency seed harness", () => {
       "save:skill-release-seed:draft",
       "append:skill-release-seed",
       "publish:workflow-release-seed",
+      "save:skill-release-seed:draft",
+      "append:skill-release-seed",
     ]);
     expect(calls[0].tool).toBe("synthi_dojo_publish_skill");
     expect(calls[0].args).toEqual(expect.objectContaining({
@@ -201,7 +203,11 @@ describe("Dojo release competency seed harness", () => {
     expect(report.skill.skill_id).toBe("skill-release-seed");
     expect(report.private_tool.tool_name).toBe("synthi_app_release_seed");
     expect(report.publication.control_plane_persistence.store_kind).toBe("postgres");
+    expect(report.proof.aggregate_evidence_record_ids).toEqual([
+      expect.stringMatching(/^dojo_release_proof_[a-f0-9]{24}$/),
+    ]);
     expect(report.proof.evidence_record_ids).toEqual([
+      report.proof.aggregate_evidence_record_ids[0],
       "dojo_checkride_record_c",
       "dojo_checkride_record_a",
       "dojo_inline_record_b",

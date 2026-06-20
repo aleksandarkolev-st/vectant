@@ -85,12 +85,20 @@ export async function runDojoReleaseCompetencySeed({
   const skill = objectOrNull(content?.skill);
   const privateTool = objectOrNull(content?.private_tool);
   const publication = objectOrNull(content?.publication);
+  const proofEvidenceRefs = await appendReleaseProofEvidence({
+    runtime,
+    config,
+    candidateSkill,
+    publishContent: content,
+    publicationEvidenceRefs: evidenceRefs,
+  });
   const report = buildDojoReleaseCompetencySeedReport({
     config,
     artifact,
     manifest,
     candidateSkill,
     evidenceRefs,
+    proofEvidenceRefs,
     publishContent: content,
     skill,
     privateTool,
@@ -305,12 +313,112 @@ export function buildReleasePublicationEvidenceInput({ config, artifact, candida
   };
 }
 
+export async function appendReleaseProofEvidence({
+  runtime,
+  config,
+  candidateSkill,
+  publishContent,
+  publicationEvidenceRefs = [],
+}) {
+  const requiredClaims = requiredProofClaimsForSkill(candidateSkill);
+  if (requiredClaims.length === 0) return [];
+  const publication = objectOrNull(publishContent?.publication);
+  const executableCheckride = objectOrNull(publication?.executable_checkride);
+  const checkrideEvidenceRefs = Array.isArray(executableCheckride?.evidence_refs)
+    ? executableCheckride.evidence_refs.filter((item) => typeof item === "string")
+    : [];
+  const record = buildReleaseProofEvidenceInput({
+    config,
+    candidateSkill,
+    requiredClaims,
+    publicationEvidenceRefs,
+    checkrideEvidenceRefs,
+    executableCheckride,
+  });
+  const resolution = await runtime.resolveDojoEvidenceLedgerAppendStore({
+    tenant_id: config.tenant.tenant_id,
+    workspace_id: config.tenant.workspace_id,
+    tenant_context: config.tenant,
+    app_origin: config.workflow.origin,
+  });
+  if (!resolution.ok || !resolution.evidence_ledger) {
+    await resolution.close?.().catch(() => undefined);
+    throw new Error(`dojo_release_competency_seed_proof_evidence_ledger_required:${(resolution.blocked_by ?? []).join(",")}`);
+  }
+  try {
+    await ensureReleasePublicationEvidenceSkillAnchor({
+      runtime,
+      resolution,
+      config,
+      candidateSkill,
+    });
+    const appended = await resolution.evidence_ledger.append(record);
+    return [appended.record_id];
+  } finally {
+    await resolution.close?.().catch(() => undefined);
+  }
+}
+
+export function buildReleaseProofEvidenceInput({
+  config,
+  candidateSkill,
+  requiredClaims,
+  publicationEvidenceRefs = [],
+  checkrideEvidenceRefs = [],
+  executableCheckride,
+}) {
+  const checkride = objectOrNull(executableCheckride);
+  const artifactPayload = {
+    schema_version: "synthi.dojo.releaseCompetencyProofEvidenceArtifact.v1",
+    skill_id: candidateSkill.skill_id,
+    workflow_id: candidateSkill.workflow_id,
+    checkride_id: stringOpt(checkride?.checkride_id) ?? null,
+    required_claims: requiredClaims,
+    publication_evidence_refs: publicationEvidenceRefs,
+    checkride_evidence_refs: checkrideEvidenceRefs,
+    generated_at: config.now,
+  };
+  const artifactSha = sha256(JSON.stringify(artifactPayload));
+  const recordId = `dojo_release_proof_${hashId([
+    config.tenant.tenant_id,
+    config.tenant.workspace_id,
+    candidateSkill.skill_id,
+    candidateSkill.workflow_id,
+    config.now,
+  ].join(":")).slice(0, 24)}`;
+  return {
+    record_id: recordId,
+    skill_id: candidateSkill.skill_id,
+    run_id: `release_proof_${hashId(`${candidateSkill.workflow_id}:${config.now}`).slice(0, 16)}`,
+    kind: "checkride",
+    artifact_uri: `dojo://release-competency-proof/${encodeURIComponent(candidateSkill.workflow_id)}/${encodeURIComponent(recordId)}`,
+    artifact_sha256: artifactSha,
+    redaction_manifest_sha256: sha256(JSON.stringify({
+      artifact_sha256: artifactSha,
+      raw_payload_stored: false,
+      redaction_policy: "digest_only",
+    })),
+    claim_ids: requiredClaims,
+    created_at: config.now,
+    created_by: config.tenant.actor_id,
+    retention_class: "standard",
+    source_refs: [
+      "dojo-release-competency-seed",
+      `workflow:${candidateSkill.workflow_id}`,
+      `skill:${candidateSkill.skill_id}`,
+      ...publicationEvidenceRefs.map((ref) => `publication_evidence:${ref}`),
+      ...checkrideEvidenceRefs.map((ref) => `checkride_evidence:${ref}`),
+    ],
+  };
+}
+
 export function buildDojoReleaseCompetencySeedReport({
   config,
   artifact,
   manifest,
   candidateSkill,
   evidenceRefs,
+  proofEvidenceRefs = [],
   publishContent,
   skill,
   privateTool,
@@ -354,6 +462,7 @@ export function buildDojoReleaseCompetencySeedReport({
     proof: summarizeProofEvidenceForConformance({
       candidateSkill,
       executableCheckride: publication?.executable_checkride,
+      proofEvidenceRefs,
     }),
   };
 }
@@ -457,7 +566,7 @@ function summarizeExecutableCheckride(value) {
   };
 }
 
-function summarizeProofEvidenceForConformance({ candidateSkill, executableCheckride }) {
+function summarizeProofEvidenceForConformance({ candidateSkill, executableCheckride, proofEvidenceRefs = [] }) {
   const checkride = objectOrNull(executableCheckride);
   const evidenceRefs = Array.isArray(checkride?.evidence_refs)
     ? checkride.evidence_refs.filter((item) => typeof item === "string")
@@ -473,7 +582,8 @@ function summarizeProofEvidenceForConformance({ candidateSkill, executableCheckr
     .filter(Boolean);
   const proofRequirements = objectOrNull(objectOrNull(candidateSkill?.permission_license)?.proof_requirements);
   return {
-    evidence_record_ids: [...new Set([...resultLedgerIds, ...parsedLedgerIds])],
+    evidence_record_ids: [...new Set([...proofEvidenceRefs, ...resultLedgerIds, ...parsedLedgerIds])],
+    aggregate_evidence_record_ids: [...proofEvidenceRefs],
     evidence_refs: evidenceRefs,
     ledger_checkpoint_hashes: Array.isArray(checkride?.ledger_checkpoint_hashes)
       ? checkride.ledger_checkpoint_hashes.filter((item) => typeof item === "string")
@@ -485,6 +595,18 @@ function summarizeProofEvidenceForConformance({ candidateSkill, executableCheckr
       ? proofRequirements.required_context_claims.filter((item) => typeof item === "string")
       : [],
   };
+}
+
+function requiredProofClaimsForSkill(skill) {
+  const proofRequirements = objectOrNull(objectOrNull(skill?.permission_license)?.proof_requirements);
+  return [...new Set([
+    ...(Array.isArray(proofRequirements?.required_evidence_claims)
+      ? proofRequirements.required_evidence_claims.filter((item) => typeof item === "string")
+      : []),
+    ...(Array.isArray(proofRequirements?.required_context_claims)
+      ? proofRequirements.required_context_claims.filter((item) => typeof item === "string")
+      : []),
+  ])];
 }
 
 function evidenceRecordIdFromReference(value) {
