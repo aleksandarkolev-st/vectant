@@ -419,6 +419,37 @@ steps:
           exit 1
         fi
 
+        apply_rendered_manifest() {
+          local apply_output apply_status deployment
+          set +e
+          apply_output="$$(kubectl apply -f "$${RENDERED}" 2>&1)"
+          apply_status=$$?
+          set -e
+          printf '%s\n' "$${apply_output}"
+          if [[ "$${apply_status}" -eq 0 ]]; then
+            return 0
+          fi
+
+          mapfile -t selector_drift_deployments < <(
+            printf '%s\n' "$${apply_output}" \
+              | sed -n 's/.*Deployment\.apps "\([^"]\+\)" is invalid: spec\.selector:.*/\1/p' \
+              | sort -u
+          )
+          if [[ "$${#selector_drift_deployments[@]}" -eq 0 ]]; then
+            return "$${apply_status}"
+          fi
+
+          echo "=== Recreating Deployments with immutable selector drift ==="
+          for deployment in "$${selector_drift_deployments[@]}"; do
+            echo "Deleting Deployment/$${deployment} so Kubernetes can accept the rendered selector."
+            kubectl delete deployment "$${deployment}" -n "$${NS}" --ignore-not-found
+          done
+          for deployment in "$${selector_drift_deployments[@]}"; do
+            kubectl wait --for=delete "deployment/$${deployment}" -n "$${NS}" --timeout=180s || true
+          done
+          kubectl apply -f "$${RENDERED}"
+        }
+
         if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then
           echo "=== Validating Dojo release render contract ==="
           bash scripts/validate-dojo-release-render.sh "$${RENDERED}"
@@ -470,7 +501,7 @@ steps:
         kubectl logs job/prisma-migrate -n $${NS} -c migrate --tail=100 || true
 
         echo "=== Applying Kubernetes manifests ==="
-        kubectl apply -f "$${RENDERED}"
+        apply_rendered_manifest
         if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then
           echo "=== Removing in-cluster beta Redis/Postgres workloads from Dojo release namespace ==="
           kubectl delete \

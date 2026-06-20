@@ -88,6 +88,17 @@ describe("Dojo Cloud Build release overlay contract", () => {
     expect(yaml).toContain("- verify-kubectl-auth");
   });
 
+  it("recovers generically from immutable Deployment selector drift", () => {
+    const yaml = cloudbuildYaml();
+
+    expect(yaml).toContain("apply_rendered_manifest()");
+    expect(yaml).toContain('Deployment\\.apps "\\([^"]\\+\\)" is invalid: spec\\.selector:');
+    expect(yaml).toContain("selector_drift_deployments");
+    expect(yaml).toContain('kubectl delete deployment "$${deployment}" -n "$${NS}" --ignore-not-found');
+    expect(yaml).toContain('kubectl wait --for=delete "deployment/$${deployment}" -n "$${NS}" --timeout=180s || true');
+    expect(yaml).toContain("apply_rendered_manifest");
+  });
+
   it("cleans stale in-cluster beta stores only for Dojo release deploys", () => {
     const yaml = cloudbuildYaml();
 
