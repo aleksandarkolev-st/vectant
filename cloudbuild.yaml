@@ -394,6 +394,33 @@ steps:
           exit 1
         fi
 
+        if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then
+          echo "=== Applying Dojo secret prerequisites ==="
+          SECRET_PREREQS="/workspace/.cloudbuild/synthi-secret-prereqs.yaml"
+          awk '
+            BEGIN { doc = "" }
+            function flush() {
+              if (doc ~ /\nkind:[[:space:]]*ExternalSecret([[:space:]]|\n)/ ||
+                  doc ~ /\nkind:[[:space:]]*SecretStore([[:space:]]|\n)/ ||
+                  (doc ~ /\nkind:[[:space:]]*ServiceAccount([[:space:]]|\n)/ &&
+                   doc ~ /\nname:[[:space:]]*eso-service-account([[:space:]]|\n)/)) {
+                printf "%s---\n", doc
+              }
+              doc = ""
+            }
+            /^---[[:space:]]*$/ { flush(); next }
+            { doc = doc $0 "\n" }
+            END { flush() }
+          ' "$${RENDERED}" > "$${SECRET_PREREQS}"
+          if [[ ! -s "$${SECRET_PREREQS}" ]]; then
+            echo "Dojo overlay did not render External Secrets prerequisites." >&2
+            exit 1
+          fi
+          kubectl apply -f "$${SECRET_PREREQS}"
+          kubectl wait --for=condition=Ready externalsecret/synthi-secrets -n $${NS} --timeout=180s
+          kubectl wait --for=condition=Ready externalsecret/synthi-dojo-release-secrets -n $${NS} --timeout=180s
+        fi
+
         echo "=== Running Prisma migrations ==="
         kubectl delete job prisma-migrate -n $${NS} --ignore-not-found
         sed "s|$${MANIFEST_SOURCE_REGISTRY}|$${REGISTRY}|g; s|build-tag-required|$${TAG}|g" \
