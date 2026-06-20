@@ -119,11 +119,12 @@ export async function attachHostedBrowserRuntime(
 
   deps.setWorkflowOverlayEnabled?.(true);
   let allTabs = await deps.attach(config.cdpUrl, { headers: config.cdpHeaders });
+  let openedWorkspaceTab: BrowserTab | null = null;
   let openedWorkspaceUrl: string | null = null;
   if (config.workspace_url && input.open_workspace !== false) {
-    await deps.open(config.workspace_url);
+    openedWorkspaceTab = await deps.open(config.workspace_url);
     openedWorkspaceUrl = config.workspace_url;
-    allTabs = await deps.listTabs();
+    allTabs = mergeTabsById(await deps.listTabs(), openedWorkspaceTab);
   }
 
   const runtime = broker.setRuntimeAttachment({
@@ -144,7 +145,7 @@ export async function attachHostedBrowserRuntime(
       screenshots: config.redact_screenshots,
     },
   });
-  allTabs = await deps.listTabs();
+  allTabs = mergeTabsById(await deps.listTabs(), openedWorkspaceTab);
   const tabs = broker.registerTabs(allTabs);
   return {
     ok: true,
@@ -155,6 +156,14 @@ export async function attachHostedBrowserRuntime(
     consent_required_for: config.workspace_url,
     permission_tiers: ["attached", "origin_consent", "snapshot", "teach", "control"],
   };
+}
+
+function mergeTabsById(tabs: BrowserTab[], openedTab: BrowserTab | null): BrowserTab[] {
+  if (!openedTab) return tabs;
+  const merged = new Map<string, BrowserTab>();
+  for (const tab of tabs) merged.set(tab.tab_id, tab);
+  merged.set(openedTab.tab_id, openedTab);
+  return [...merged.values()];
 }
 
 function resolveHostedBrowserRuntimeInternal(

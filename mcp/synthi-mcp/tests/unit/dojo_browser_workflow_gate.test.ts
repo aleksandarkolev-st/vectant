@@ -489,7 +489,7 @@ describe("Dojo raw browser workflow replay gate", () => {
         tab_id: "runtime-tab",
       }),
     }));
-    expect(attach).toHaveBeenCalledWith("wss://browser.example.test/devtools/runtime-a");
+    expect(attach).toHaveBeenCalledWith("wss://browser.example.test/devtools/runtime-a", { headers: {} });
     expect(open).toHaveBeenCalledWith(runtimeUrl);
     expect(listTabs).toHaveBeenCalled();
     expect(selectTab).toHaveBeenCalledWith("runtime-tab");

@@ -100,6 +100,48 @@ describe("hosted browser runtime resolver", () => {
     expect(broker.runtimeAttachment()).toEqual(expect.objectContaining({ kind: "hosted" }));
   });
 
+  it("keeps the opened workspace tab when runtime tab enumeration is stale", async () => {
+    const broker = new BrowserBroker();
+    broker.requestConsent("https://workspace.example.test", "granted", "unit", { screenshot: true });
+    const deps: HostedBrowserAttachDeps = {
+      async attach() {
+        return [{ tab_id: "bootstrap", url: "about:blank", active: true }];
+      },
+      async open(url: string) {
+        return { tab_id: "target", url, active: true };
+      },
+      async listTabs() {
+        return [{ tab_id: "bootstrap", url: "about:blank", active: false }];
+      },
+    };
+
+    const result = await attachHostedBrowserRuntime(
+      {
+        workspace_id: "workspace-a",
+        workspace_url: "https://workspace.example.test/workspace/browser",
+      },
+      deps,
+      broker,
+      {
+        SYNTHI_HOSTED_BROWSER_CDP_URL: "ws://hosted-runtime/devtools",
+        SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST: "https://workspace.example.test",
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected_hosted_attach_success");
+    expect(result.tabs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tab_id: "target",
+        url: "https://workspace.example.test/workspace/browser",
+      }),
+    ]));
+    expect(broker.selectTab("target")).toEqual(expect.objectContaining({
+      tab_id: "target",
+      url: "https://workspace.example.test/workspace/browser",
+    }));
+  });
+
   it("renders runtime-scoped CDP templates and forwards sanitized attach headers", async () => {
     const broker = new BrowserBroker();
     broker.requestConsent("https://workspace.example.test", "granted", "unit", { screenshot: true });
