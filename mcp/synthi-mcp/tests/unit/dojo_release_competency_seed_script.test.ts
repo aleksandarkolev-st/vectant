@@ -37,7 +37,7 @@ describe("Dojo release competency seed harness", () => {
     }));
     expect(config.workflow.origin).toBe("https://beta.vectant.dev");
     expect(config.workflow.url).toBe("https://beta.vectant.dev/dojo-release-seed");
-    expect(config.workflow.stable_entity_label).toBe("open_release_details slug");
+    expect(config.workflow.stable_entity_label).toBe("Open release details");
     expect(config.workflow.source_file_path).toBe("dojo/release-seed.tsx");
   });
 
@@ -238,7 +238,7 @@ describe("Dojo release competency seed harness", () => {
     expect(recordedActions).toEqual([
       expect.objectContaining({
         element: expect.objectContaining({
-          label: "open_release_details slug",
+          label: "Open release details",
           source_id: "dojo.release.seed.action",
         }),
       }),

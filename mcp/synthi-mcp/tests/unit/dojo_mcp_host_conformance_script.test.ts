@@ -8,14 +8,18 @@ import {
   buildRuntimeSessionConfig,
   buildMcpHttpHeaders,
   classifyMcpHost,
+  conformanceToolArgsForSkill,
   deploymentObservationsFromReadiness,
   DOJO_MCP_CONFORMANCE_TENANT_CONTEXT_FIELDS,
   DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS,
+  guardrailContextDefaultsForSkill,
   HttpJsonRpcClient,
   isExpectedBlockedToolCall,
   MCP_STREAMABLE_HTTP_ACCEPT,
   mcpHostConformance,
+  normalizeConformanceGuardrailPredicate,
   observesLicensedSkillFiltering,
+  passingValueForGuardrailPredicate,
   redactConformanceReport,
   resolveRuntimeActionUrl,
   resolveRuntimeOriginAllowlist,
@@ -384,6 +388,44 @@ describe("Dojo MCP host conformance harness", () => {
     expect(selectDojoCompetencyForConformance(competencies, { publishedToolName: "synthi_app_b" }).skill_id).toBe("skill_b");
     expect(() => selectDojoCompetencyForConformance(competencies, {})).toThrow("dojo_competency_ambiguous");
     expect(() => selectDojoCompetencyForConformance([{ skill_id: "draft" }], {})).toThrow("dojo_competency_missing");
+  });
+
+  it("derives passing tool args from selected skill guardrail predicates", () => {
+    const skill = {
+      guardrails: [
+        {
+          guardrail_id: "guard-stable-entity",
+          title: "Stable entity identity",
+          rule: "Require stable entity id verification before action.",
+        },
+        {
+          guardrail_id: "guard-invalid-value",
+          title: "Input validation",
+          rule: "invalid_value_count == 0",
+        },
+      ],
+    };
+
+    expect(normalizeConformanceGuardrailPredicate(skill.guardrails[0]).predicate).toBe("client_id_verified == true");
+    expect(passingValueForGuardrailPredicate("run_mode in [\"sameSession\",\"prefixOnly\"]")).toEqual({
+      key: "run_mode",
+      value: "sameSession",
+    });
+    expect(guardrailContextDefaultsForSkill(skill)).toEqual({
+      client_id_verified: true,
+      invalid_value_count: 0,
+    });
+    expect(conformanceToolArgsForSkill({
+      skill,
+      baseToolArgs: {
+        client_id_verified: false,
+        workspace_id: "workspace-a",
+      },
+    })).toEqual({
+      client_id_verified: false,
+      invalid_value_count: 0,
+      workspace_id: "workspace-a",
+    });
   });
 
   it("detects expected blocks for raw backing calls and revoked proofs", () => {

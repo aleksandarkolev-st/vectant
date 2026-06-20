@@ -33,6 +33,7 @@ const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
 export const REQUIRED_DOJO_HOST_TOOLS = [
   "synthi_browser_get_deployment_readiness",
   "synthi_dojo_list_competencies",
+  "synthi_dojo_get_skill",
   "synthi_dojo_issue_proof_capsule",
   "synthi_dojo_validate_proof_capsule",
   "synthi_dojo_run_with_proof_capsule",
@@ -212,6 +213,29 @@ async function main() {
     report.deployment_observations.licensed_skill_filtering = observesLicensedSkillFiltering(competencies);
     log("ok", `select published Dojo competency - skill=${competency.skill_id}`);
 
+    const selectedSkillCall = await client.toolCall("synthi_dojo_get_skill", {
+      ...config.tenantContextArgs,
+      skill_id: competency.skill_id,
+    });
+    assertToolOk(selectedSkillCall, "load selected Dojo skill");
+    const selectedSkill = selectedSkillCall.parsed?.skill && typeof selectedSkillCall.parsed.skill === "object"
+      ? selectedSkillCall.parsed.skill
+      : competency;
+    const derivedGuardrailContext = guardrailContextDefaultsForSkill(selectedSkill);
+    const toolArgs = conformanceToolArgsForSkill({
+      baseToolArgs: config.toolArgs,
+      skill: selectedSkill,
+    });
+    report.steps.push({
+      name: "load selected Dojo skill",
+      ok: true,
+      skill_id: selectedSkill.skill_id ?? competency.skill_id,
+      derived_guardrail_context_keys: Object.keys(derivedGuardrailContext).sort(),
+      explicit_tool_arg_keys: Object.keys(config.toolArgs).sort(),
+      effective_tool_arg_keys: Object.keys(toolArgs).sort(),
+    });
+    log("ok", "load selected Dojo skill");
+
     const issueCall = await client.toolCall("synthi_dojo_issue_proof_capsule", {
       ...config.tenantContextArgs,
       skill_id: competency.skill_id,
@@ -240,7 +264,7 @@ async function main() {
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
-      tool_args: config.toolArgs,
+      tool_args: toolArgs,
     });
     assertToolOk(validateCall, "validate proof capsule");
     report.steps.push({
@@ -275,7 +299,7 @@ async function main() {
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
-      tool_args: config.toolArgs,
+      tool_args: toolArgs,
       ...runtimeSessionRunArgs(runtimeSession),
       dry_run: !config.executeProduction,
     });
@@ -329,7 +353,7 @@ async function main() {
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
-      tool_args: config.toolArgs,
+      tool_args: toolArgs,
     });
     assert(
       isExpectedBlockedToolCall(validateRevokedCall, REVOKED_PROOF_BLOCK_MARKERS),
@@ -347,7 +371,7 @@ async function main() {
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
-      tool_args: config.toolArgs,
+      tool_args: toolArgs,
       dry_run: true,
     });
     assert(
@@ -818,6 +842,133 @@ export function selectDojoCompetencyForConformance(
   }
   if (skillId || workflowId || publishedToolName || filtered.length === 1) return filtered[0];
   throw new Error(`dojo_competency_ambiguous: pass --skill-id (${filtered.map((item) => item.skill_id).join(", ")})`);
+}
+
+export function conformanceToolArgsForSkill({ baseToolArgs = {}, skill = {} } = {}) {
+  const base = baseToolArgs && typeof baseToolArgs === "object" && !Array.isArray(baseToolArgs)
+    ? baseToolArgs
+    : {};
+  return {
+    ...guardrailContextDefaultsForSkill(skill),
+    ...base,
+  };
+}
+
+export function guardrailContextDefaultsForSkill(skill = {}) {
+  const defaults = {};
+  const guardrails = Array.isArray(skill?.guardrails) ? skill.guardrails : [];
+  for (const guardrail of guardrails) {
+    const normalized = normalizeConformanceGuardrailPredicate({
+      rule: typeof guardrail?.rule === "string" ? guardrail.rule : "",
+      title: typeof guardrail?.title === "string" ? guardrail.title : "",
+      guardrail_id: typeof guardrail?.guardrail_id === "string" ? guardrail.guardrail_id : "",
+    });
+    const passValue = passingValueForGuardrailPredicate(normalized.predicate);
+    if (!passValue) continue;
+    defaults[passValue.key] = passValue.value;
+  }
+  return defaults;
+}
+
+export function normalizeConformanceGuardrailPredicate({ rule = "", title = "", guardrail_id = "" } = {}) {
+  const originalRule = String(rule || "").trim();
+  if (isParseableConformanceGuardrailPredicate(originalRule)) {
+    return { predicate: originalRule, source: "native", original_rule: originalRule };
+  }
+  const fallbackRule = originalRule || String(title || "").trim() || String(guardrail_id || "").trim() || "guardrail";
+  const normalizedText = `${title || ""} ${rule || ""} ${guardrail_id || ""}`.toLowerCase();
+  const knownPredicate = predicateForKnownConformanceGuardrailText(normalizedText);
+  if (knownPredicate) {
+    return { predicate: knownPredicate, source: "normalized", original_rule: fallbackRule };
+  }
+  const generatedKey = `guardrail_${createHash("sha256").update(fallbackRule).digest("hex").slice(0, 12)}`;
+  return {
+    predicate: `${generatedKey} == true`,
+    source: "generated_key",
+    original_rule: fallbackRule,
+  };
+}
+
+export function passingValueForGuardrailPredicate(predicate = "") {
+  const trimmed = String(predicate || "").trim();
+  if (!trimmed) return null;
+  const membership = trimmed.match(/^([a-zA-Z0-9_.-]+)\s+in\s+(\[.*\])$/);
+  if (membership?.[1] && membership?.[2]) {
+    try {
+      const values = JSON.parse(membership[2]);
+      if (Array.isArray(values) && values.length > 0) {
+        return { key: membership[1], value: values[0] };
+      }
+    } catch {
+      return null;
+    }
+  }
+  const comparison = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*(==|<=|>=|<|>)\s*(.+)$/);
+  if (comparison?.[1] && comparison?.[2] && comparison?.[3]) {
+    const value = parseGuardrailLiteral(comparison[3]);
+    return { key: comparison[1], value };
+  }
+  if (/^[a-zA-Z0-9_.-]+$/.test(trimmed)) return { key: trimmed, value: true };
+  return null;
+}
+
+function isParseableConformanceGuardrailPredicate(predicate) {
+  const trimmed = String(predicate || "").trim();
+  if (!trimmed) return false;
+  const membership = trimmed.match(/^([a-zA-Z0-9_.-]+)\s+in\s+(\[.*\])$/);
+  if (membership?.[2]) {
+    try {
+      return Array.isArray(JSON.parse(membership[2]));
+    } catch {
+      return false;
+    }
+  }
+  const comparison = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*(==|!=|<=|>=|<|>)\s*(.+)$/);
+  if (comparison?.[3]) return !/^[<>=!]/.test(comparison[3].trim());
+  return /^[a-zA-Z0-9_.-]+$/.test(trimmed);
+}
+
+function predicateForKnownConformanceGuardrailText(text) {
+  if (
+    text.includes("stable")
+      && (text.includes("entity") || text.includes("identifier") || text.includes(" id") || text.includes("client") || text.includes("record"))
+  ) {
+    return "client_id_verified == true";
+  }
+  if (
+    (text.includes("invalid") || text.includes("validation"))
+      && (text.includes("value") || text.includes("input") || text.includes("field"))
+  ) {
+    return "invalid_value_count == 0";
+  }
+  if (text.includes("source") && (text.includes("anchor") || text.includes("affordance") || text.includes("backed") || text.includes("contract"))) {
+    return "source_anchor_current == true";
+  }
+  if (text.includes("durable") || text.includes("success assertion") || text.includes("postcondition") || text.includes("state evidence")) {
+    return "durable_state_evidence == true";
+  }
+  if (
+    (text.includes("mutation") || text.includes("write") || text.includes("replay"))
+      && (text.includes("isolated") || text.includes("isolation") || text.includes("ci"))
+  ) {
+    return "mutation_isolation_available == true";
+  }
+  if (text.includes("approval") || text.includes("review") || text.includes("human")) {
+    return "human_review_ready == true";
+  }
+  return null;
+}
+
+function parseGuardrailLiteral(raw) {
+  const text = String(raw ?? "").trim();
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text.replace(/^['"]|['"]$/g, "");
+  }
 }
 
 export function isExpectedBlockedToolCall(call, markers = []) {
