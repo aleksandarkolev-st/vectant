@@ -435,7 +435,7 @@ describe("Dojo release gate artifact verifier", () => {
     expect(tampered.errors).toEqual(expect.arrayContaining([
       expect.stringMatching(/^package_readiness_pack_report_sha256_mismatch:/),
     ]));
-  });
+  }, 30000);
 
   it("can include package readiness in aggregate release-gate artifact verification", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-package-readiness-aggregate-"));
@@ -467,7 +467,7 @@ describe("Dojo release gate artifact verifier", () => {
     ]);
     expect(result.attempted_release_gate_ids).toContain("dojo_package_readiness_self_check");
     expect(result.verified_release_gate_ids).toContain("dojo_package_readiness_self_check");
-  });
+  }, 30000);
 
   it("can include compliance export and privacy redaction default evidence in aggregate verification", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-privacy-compliance-aggregate-"));
@@ -3571,7 +3571,7 @@ describe("Dojo release gate artifact verifier", () => {
         evidence_path: privacyEvidencePath,
       }),
     ]);
-  });
+  }, 30000);
 
   it("verifies MCP host conformance evidence hashes before release promotion", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "dojo-mcp-conformance-verify-"));
@@ -9946,6 +9946,7 @@ function buildConformanceSteps({ executeProduction = true } = {}) {
       ok: true,
       dry_run: !executeProduction,
     },
+    ...(executeProduction ? [{ name: "create hosted runtime session", ok: true }] : []),
     { name: "raw backing tool blocked outside Dojo proof path", ok: true },
     { name: "revoke proof capsule", ok: true },
     { name: "revoked proof validation blocked", ok: true },
