@@ -37,6 +37,8 @@ describe("Dojo release competency seed harness", () => {
     }));
     expect(config.workflow.origin).toBe("https://beta.vectant.dev");
     expect(config.workflow.url).toBe("https://beta.vectant.dev/dojo-release-seed");
+    expect(config.workflow.stable_entity_label).toBe("release slug");
+    expect(config.workflow.source_file_path).toBe("dojo/release-seed.tsx");
   });
 
   it("builds scoped publication evidence for the candidate skill", () => {
@@ -71,6 +73,8 @@ describe("Dojo release competency seed harness", () => {
     tmpDirs.push(outDir);
     const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
     const ledgerEvents: string[] = [];
+    const recordedActions: unknown[] = [];
+    const sourceRegistrations: unknown[] = [];
     const artifact = {
       workflow_id: "workflow-release-seed",
       workflow: {
@@ -86,8 +90,19 @@ describe("Dojo release competency seed harness", () => {
         registerTabs: () => undefined,
         selectTab: () => undefined,
         startTeachMode: () => ({ ok: true }),
-        recordHumanAction: () => undefined,
+        recordHumanAction: (action) => {
+          recordedActions.push(action);
+        },
         workflowArtifact: () => ({ ok: true, artifact }),
+      },
+      sourceIdentityRegistry: {
+        register: (input) => {
+          sourceRegistrations.push(input);
+          return {
+            workspace_id: input.workspaceId,
+            token_count: input.tokens.length,
+          };
+        },
       },
       generatePrivateWorkflowToolManifest: () => ({
         status: "available",
@@ -182,6 +197,29 @@ describe("Dojo release competency seed harness", () => {
       modules,
     });
 
+    expect(sourceRegistrations).toEqual([
+      expect.objectContaining({
+        workspaceId: "workspace-a",
+        filePath: "dojo/release-seed.tsx",
+        tokens: [
+          expect.objectContaining({
+            token: "dojo.release.seed.action",
+            file: "dojo/release-seed.tsx",
+            line: 1,
+            column: 1,
+            tag: "button",
+          }),
+        ],
+      }),
+    ]);
+    expect(recordedActions).toEqual([
+      expect.objectContaining({
+        element: expect.objectContaining({
+          label: "release slug",
+          source_id: "dojo.release.seed.action",
+        }),
+      }),
+    ]);
     expect(calls).toHaveLength(1);
     expect(ledgerEvents).toEqual([
       "save:skill-release-seed:draft",

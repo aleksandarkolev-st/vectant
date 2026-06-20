@@ -53,7 +53,7 @@ export async function runDojoReleaseCompetencySeed({
   await mkdir(outputDir, { recursive: true });
   const runtime = modules ?? await loadRuntimeModules();
   const config = buildDojoReleaseCompetencySeedConfig({ args: inputArgs, env, now });
-  const artifact = recordReleaseSeedWorkflowArtifact({ browserBroker: runtime.browserBroker, config });
+  const artifact = recordReleaseSeedWorkflowArtifact({ runtime, browserBroker: runtime.browserBroker, config });
   const manifest = runtime.generatePrivateWorkflowToolManifest(artifact.workflow.contract);
   const candidateSkill = runtime.buildDojoSkill(artifact.workflow.contract, {
     workspace_id: config.tenant.workspace_id,
@@ -177,14 +177,20 @@ export function buildDojoReleaseCompetencySeedConfig({ args = {}, env = process.
       action: stringOpt(args.action ?? env.SYNTHI_DOJO_RELEASE_SEED_ACTION) ?? "click",
       role: stringOpt(args.role ?? env.SYNTHI_DOJO_RELEASE_SEED_ROLE) ?? "button",
       name: stringOpt(args.name ?? env.SYNTHI_DOJO_RELEASE_SEED_NAME) ?? "Open release details",
+      stable_entity_label: stringOpt(args["stable-entity-label"] ?? env.SYNTHI_DOJO_RELEASE_SEED_STABLE_ENTITY_LABEL) ?? "release slug",
       source_id: stringOpt(args["source-id"] ?? env.SYNTHI_DOJO_RELEASE_SEED_SOURCE_ID) ?? "dojo.release.seed.action",
+      source_file_path: stringOpt(args["source-file-path"] ?? env.SYNTHI_DOJO_RELEASE_SEED_SOURCE_FILE_PATH) ?? "dojo/release-seed.tsx",
+      source_line: parsePositiveInteger(args["source-line"] ?? env.SYNTHI_DOJO_RELEASE_SEED_SOURCE_LINE, "source_line") ?? 1,
+      source_column: parsePositiveInteger(args["source-column"] ?? env.SYNTHI_DOJO_RELEASE_SEED_SOURCE_COLUMN, "source_column") ?? 1,
+      source_tag: stringOpt(args["source-tag"] ?? env.SYNTHI_DOJO_RELEASE_SEED_SOURCE_TAG) ?? "button",
     },
     evidence_refs: evidenceRefs,
   };
 }
 
-export function recordReleaseSeedWorkflowArtifact({ browserBroker, config }) {
+export function recordReleaseSeedWorkflowArtifact({ runtime = {}, browserBroker, config }) {
   browserBroker.resetForTests?.();
+  registerReleaseSeedSourceIdentity({ runtime, browserBroker, config });
   browserBroker.requestConsent(config.workflow.url);
   browserBroker.registerTabs([{ tab_id: config.workflow.tab_id, url: config.workflow.url, active: true }]);
   browserBroker.selectTab(config.workflow.tab_id);
@@ -198,6 +204,7 @@ export function recordReleaseSeedWorkflowArtifact({ browserBroker, config }) {
     element: {
       role: config.workflow.role,
       name: config.workflow.name,
+      label: config.workflow.stable_entity_label,
       source_id: config.workflow.source_id,
     },
     locator_candidates: [
@@ -212,6 +219,31 @@ export function recordReleaseSeedWorkflowArtifact({ browserBroker, config }) {
   const artifact = browserBroker.workflowArtifact();
   if (!artifact?.ok) throw new Error(`dojo_release_competency_seed_workflow_missing:${artifact?.error ?? "unknown"}`);
   return artifact.artifact;
+}
+
+export function registerReleaseSeedSourceIdentity({ runtime = {}, browserBroker, config }) {
+  const registry = runtime.sourceIdentityRegistry ?? browserBroker.sourceIdentityRegistry;
+  if (!registry || typeof registry.register !== "function") {
+    return { ok: false, reason: "source_identity_registry_unavailable" };
+  }
+  const sourceId = config.workflow.source_id;
+  if (!sourceId) return { ok: false, reason: "source_identity_token_missing" };
+  const status = registry.register({
+    workspaceId: config.tenant.workspace_id,
+    filePath: config.workflow.source_file_path,
+    tokens: [{
+      token: sourceId,
+      file: config.workflow.source_file_path,
+      line: config.workflow.source_line,
+      column: config.workflow.source_column,
+      tag: config.workflow.source_tag,
+    }],
+  });
+  return {
+    ok: true,
+    workspace_id: status.workspace_id,
+    token_count: status.token_count,
+  };
 }
 
 export async function appendReleasePublicationEvidence({ runtime, config, artifact, candidateSkill }) {
@@ -472,6 +504,7 @@ async function loadRuntimeModules() {
     brokerModule,
     dojoModule,
     manifestModule,
+    sourceIdentityModule,
     ledgerResolverModule,
     skillStoreModule,
     dojoToolsModule,
@@ -479,12 +512,14 @@ async function loadRuntimeModules() {
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "browser", "broker.js")).href),
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "browser", "dojo.js")).href),
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "browser", "private_tool_manifest.js")).href),
+    import(pathToFileURL(path.join(MCP_ROOT, "dist", "browser", "source_identity.js")).href),
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "evidence", "ledger_resolver.js")).href),
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "dojo", "store", "postgres_skill_store.js")).href),
     import(pathToFileURL(path.join(MCP_ROOT, "dist", "tools", "dojo.js")).href),
   ]);
   return {
     browserBroker: brokerModule.browserBroker,
+    sourceIdentityRegistry: sourceIdentityModule.sourceIdentityRegistry,
     buildDojoSkill: dojoModule.buildDojoSkill,
     generatePrivateWorkflowToolManifest: manifestModule.generatePrivateWorkflowToolManifest,
     resolveDojoEvidenceLedgerAppendStore: ledgerResolverModule.resolveDojoEvidenceLedgerAppendStore,
@@ -526,6 +561,16 @@ function parseStringList(value) {
     .map((item) => item.trim())
     .filter(Boolean)
     .filter((item, index, list) => list.indexOf(item) === index);
+}
+
+function parsePositiveInteger(value, label) {
+  const normalized = stringOpt(value);
+  if (!normalized) return undefined;
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || String(parsed) !== normalized) {
+    throw new Error(`dojo_release_competency_seed_${label}_invalid`);
+  }
+  return parsed;
 }
 
 function summarizeControlPlanePersistence(value) {
