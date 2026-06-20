@@ -22,6 +22,10 @@ function overlayCheckScript() {
   return readFileSync("../../mcp/synthi-mcp/scripts/dojo-kustomize-overlay-check.mjs", "utf8");
 }
 
+function dojoMcpHostYaml() {
+  return readFileSync("../../k8s/overlays/dojo-release-gate/dojo-mcp-host.yaml", "utf8");
+}
+
 describe("Dojo Cloud Build release overlay contract", () => {
   it("defaults every production deploy entrypoint to the Dojo release overlay", () => {
     const cloudbuild = cloudbuildYaml();
@@ -182,5 +186,13 @@ describe("Dojo Cloud Build release overlay contract", () => {
     expect(yaml).toContain("- vulnerability-scan-images");
     expect(yaml).not.toContain("id: vulnerability-scan-runtime");
     expect(yaml).not.toContain("First-party images aren't the untrusted surface");
+  });
+
+  it("keeps hosted browser probe commands shell-safe", () => {
+    const yaml = dojoMcpHostYaml();
+
+    expect(yaml).not.toContain("fetch(`http://127.0.0.1:");
+    expect(yaml).toContain("fetch('http://127.0.0.1:'+cdp+'/json/version')");
+    expect(yaml).toContain("fetch('http://127.0.0.1:'+view+'/vnc.html')");
   });
 });

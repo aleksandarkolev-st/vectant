@@ -179,7 +179,7 @@ spec:
               command:
                 - /bin/bash
                 - -lc
-                - node -e "const cdp=process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT; const view=process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT; Promise.all([fetch(`http://127.0.0.1:${cdp}/json/version`), fetch(`http://127.0.0.1:${view}/vnc.html`)]).then((rs)=>process.exit(rs.every((r)=>r.ok)?0:1)).catch(()=>process.exit(1))"
+                - node -e "const cdp=process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT; const view=process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT; Promise.all([fetch('http://127.0.0.1:'+cdp+'/json/version'), fetch('http://127.0.0.1:'+view+'/vnc.html')]).then((rs)=>process.exit(rs.every((r)=>r.ok)?0:1)).catch(()=>process.exit(1))"
             initialDelaySeconds: 3
             periodSeconds: 5
             timeoutSeconds: 3
@@ -189,7 +189,7 @@ spec:
               command:
                 - /bin/bash
                 - -lc
-                - node -e "const cdp=process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT; const view=process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT; Promise.all([fetch(`http://127.0.0.1:${cdp}/json/version`), fetch(`http://127.0.0.1:${view}/vnc.html`)]).then((rs)=>process.exit(rs.every((r)=>r.ok)?0:1)).catch(()=>process.exit(1))"
+                - node -e "const cdp=process.env.SYNTHI_HOSTED_BROWSER_CDP_PORT; const view=process.env.SYNTHI_HOSTED_BROWSER_VIEW_PORT; Promise.all([fetch('http://127.0.0.1:'+cdp+'/json/version'), fetch('http://127.0.0.1:'+view+'/vnc.html')]).then((rs)=>process.exit(rs.every((r)=>r.ok)?0:1)).catch(()=>process.exit(1))"
             initialDelaySeconds: 15
             periodSeconds: 20
             timeoutSeconds: 5
