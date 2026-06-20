@@ -105,11 +105,33 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
+          volumeMounts:
+            - name: dojo-mcp-data
+              mountPath: /var/lib/synthi/dojo
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
+      volumes:
+        - name: dojo-mcp-data
+          persistentVolumeClaim:
+            claimName: dojo-mcp-data-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dojo-mcp-data-pvc
+  namespace: synthi
+  labels:
+    app: dojo-mcp-host
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  storageClassName: standard-rwo
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
 ---
 apiVersion: v1
 kind: Service
