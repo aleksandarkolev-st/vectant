@@ -23,6 +23,7 @@ export interface ProgramToolDescriptor {
 const EXEC_TOOL = "synthi_exec_in_runtime";
 const LIST_TOOL = "synthi_list_programs";
 const READ_TOOL = "synthi_read_session";
+const LAUNCH_TOOL = "synthi_launch_program";
 
 const SLUG_PROP = {
   type: "string",
@@ -70,6 +71,22 @@ export const PROGRAM_TOOLS: ProgramToolDescriptor[] = [
         workspaceSlug: SLUG_PROP,
       },
       required: ["sessionId"],
+    },
+  },
+  {
+    name: LAUNCH_TOOL,
+    description:
+      "Launch an installed program by its install id (from synthi_list_programs → installed[].id). " +
+      "Use to open a containerized dev tool — e.g. 'manage my database' → launch the DBeaver program. " +
+      "Only container programs are launchable this way (others must be launched from the workspace UI); " +
+      "returns the new program session. Requires owner/admin + program.launch consent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        installId: { type: "string", description: "The installed-program id to launch (see synthi_list_programs)." },
+        workspaceSlug: SLUG_PROP,
+      },
+      required: ["installId"],
     },
   },
 ];
@@ -165,6 +182,25 @@ function readSession(
   return getJson(url, cfg, fetchImpl, "read_failed");
 }
 
+async function launchProgram(
+  args: Args,
+  slug: string,
+  cfg: ExternalConfig,
+  fetchImpl: FetchLike,
+): Promise<ToolResponse> {
+  const installId = typeof args["installId"] === "string" ? (args["installId"] as string).trim() : "";
+  if (!installId) return errorResponse("install_required", { hint: "Pass an installId (see synthi_list_programs)." });
+
+  const res = await fetchImpl(`${cfg.apiUrl}/api/integrations/mcp/programs/launch`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${cfg.pat}`, "content-type": "application/json" },
+    body: JSON.stringify({ workspaceSlug: slug, installId }),
+  });
+  const data = await readJson(res);
+  if (!res.ok) return errorFromResponse(res, data, "launch_failed");
+  return jsonResponse({ session: data["session"] ?? null });
+}
+
 /**
  * Dispatch a program command-control tool. Returns null when `toolName` is not a
  * program tool (so the server's switch can fall through), else a ToolResponse.
@@ -197,6 +233,8 @@ export async function dispatchProgramTool(
         return await listPrograms(slug, cfg, deps.fetch);
       case READ_TOOL:
         return await readSession(a, slug, cfg, deps.fetch);
+      case LAUNCH_TOOL:
+        return await launchProgram(a, slug, cfg, deps.fetch);
       default:
         return null;
     }

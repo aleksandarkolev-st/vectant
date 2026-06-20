@@ -136,9 +136,41 @@ describe("synthi_read_session", () => {
   });
 });
 
+describe("synthi_launch_program", () => {
+  it("requires an installId", async () => {
+    const { fetchImpl } = captureFetch(jsonRes(200, {}));
+    const res = await dispatchProgramTool("synthi_launch_program", {}, cfg, { fetch: fetchImpl });
+    expect(res!.isError).toBe(true);
+    expect(res!.structuredContent).toMatchObject({ error: "install_required" });
+  });
+
+  it("POSTs the launch with the bearer pat and returns the session", async () => {
+    const { calls, fetchImpl } = captureFetch(jsonRes(200, { session: { id: "ps-9", state: "starting" } }));
+    const res = await dispatchProgramTool(
+      "synthi_launch_program",
+      { installId: "i1" },
+      cfg,
+      { fetch: fetchImpl },
+    );
+    expect(res!.isError).toBeFalsy();
+    expect(res!.structuredContent).toMatchObject({ session: { id: "ps-9" } });
+    expect(calls[0].url).toBe("https://app.example/api/integrations/mcp/programs/launch");
+    expect(calls[0].init.method).toBe("POST");
+    expect(calls[0].init.headers.authorization).toBe("Bearer synthi_pat_x");
+    expect(JSON.parse(calls[0].init.body)).toMatchObject({ workspaceSlug: "team", installId: "i1" });
+  });
+
+  it("surfaces unsupported_program_type (422) for non-container programs", async () => {
+    const { fetchImpl } = captureFetch(jsonRes(422, { error: "unsupported_program_type" }));
+    const res = await dispatchProgramTool("synthi_launch_program", { installId: "i1" }, cfg, { fetch: fetchImpl });
+    expect(res!.isError).toBe(true);
+    expect(res!.structuredContent).toMatchObject({ error: "unsupported_program_type", status: 422 });
+  });
+});
+
 describe("PROGRAM_TOOLS", () => {
-  it("advertises the three command-control tools with object input schemas", () => {
-    for (const name of ["synthi_exec_in_runtime", "synthi_list_programs", "synthi_read_session"]) {
+  it("advertises the four command-control tools with object input schemas", () => {
+    for (const name of ["synthi_exec_in_runtime", "synthi_list_programs", "synthi_read_session", "synthi_launch_program"]) {
       const t = PROGRAM_TOOLS.find((x) => x.name === name);
       expect(t, name).toBeTruthy();
       expect(t!.inputSchema).toMatchObject({ type: "object" });
