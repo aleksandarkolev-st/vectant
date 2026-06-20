@@ -95,10 +95,53 @@ describe("synthi_exec_in_runtime", () => {
   });
 });
 
+describe("synthi_list_programs", () => {
+  it("GETs the programs inventory (sessions + installed) with the bearer pat", async () => {
+    const { calls, fetchImpl } = captureFetch(
+      jsonRes(200, { sessions: [{ id: "ps-1", state: "running" }], installed: [{ id: "i1" }] }),
+    );
+    const res = await dispatchProgramTool("synthi_list_programs", {}, cfg, { fetch: fetchImpl });
+    expect(res!.isError).toBeFalsy();
+    expect(res!.structuredContent).toMatchObject({ sessions: [{ id: "ps-1" }], installed: [{ id: "i1" }] });
+    expect(calls[0].url).toBe("https://app.example/api/integrations/mcp/programs?workspaceSlug=team");
+    expect(calls[0].init.method).toBe("GET");
+    expect(calls[0].init.headers.authorization).toBe("Bearer synthi_pat_x");
+  });
+
+  it("surfaces forbidden (403) from the endpoint", async () => {
+    const { fetchImpl } = captureFetch(jsonRes(403, { error: "forbidden" }));
+    const res = await dispatchProgramTool("synthi_list_programs", {}, cfg, { fetch: fetchImpl });
+    expect(res!.isError).toBe(true);
+    expect(res!.structuredContent).toMatchObject({ error: "forbidden", status: 403 });
+  });
+});
+
+describe("synthi_read_session", () => {
+  it("requires a sessionId", async () => {
+    const { fetchImpl } = captureFetch(jsonRes(200, {}));
+    const res = await dispatchProgramTool("synthi_read_session", {}, cfg, { fetch: fetchImpl });
+    expect(res!.isError).toBe(true);
+    expect(res!.structuredContent).toMatchObject({ error: "session_required" });
+  });
+
+  it("GETs a single session + its events", async () => {
+    const { calls, fetchImpl } = captureFetch(
+      jsonRes(200, { session: { id: "ps-1", state: "running" }, events: [{ type: "launch_ack" }] }),
+    );
+    const res = await dispatchProgramTool("synthi_read_session", { sessionId: "ps-1" }, cfg, { fetch: fetchImpl });
+    expect(res!.isError).toBeFalsy();
+    expect(res!.structuredContent).toMatchObject({ session: { id: "ps-1" }, events: [{ type: "launch_ack" }] });
+    expect(calls[0].url).toBe("https://app.example/api/integrations/mcp/programs/ps-1?workspaceSlug=team");
+    expect(calls[0].init.method).toBe("GET");
+  });
+});
+
 describe("PROGRAM_TOOLS", () => {
-  it("advertises synthi_exec_in_runtime with an object input schema", () => {
-    const t = PROGRAM_TOOLS.find((x) => x.name === "synthi_exec_in_runtime");
-    expect(t).toBeTruthy();
-    expect(t!.inputSchema).toMatchObject({ type: "object" });
+  it("advertises the three command-control tools with object input schemas", () => {
+    for (const name of ["synthi_exec_in_runtime", "synthi_list_programs", "synthi_read_session"]) {
+      const t = PROGRAM_TOOLS.find((x) => x.name === name);
+      expect(t, name).toBeTruthy();
+      expect(t!.inputSchema).toMatchObject({ type: "object" });
+    }
   });
 });

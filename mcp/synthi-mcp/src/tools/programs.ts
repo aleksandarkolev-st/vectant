@@ -21,6 +21,13 @@ export interface ProgramToolDescriptor {
 }
 
 const EXEC_TOOL = "synthi_exec_in_runtime";
+const LIST_TOOL = "synthi_list_programs";
+const READ_TOOL = "synthi_read_session";
+
+const SLUG_PROP = {
+  type: "string",
+  description: "Workspace slug. Defaults to the attached workspace (SYNTHI_WORKSPACE_SLUG).",
+} as const;
 
 export const PROGRAM_TOOLS: ProgramToolDescriptor[] = [
   {
@@ -34,13 +41,35 @@ export const PROGRAM_TOOLS: ProgramToolDescriptor[] = [
       type: "object",
       properties: {
         command: { type: "string", description: "The shell command to run in the workspace runtime." },
-        workspaceSlug: {
-          type: "string",
-          description: "Workspace slug. Defaults to the attached workspace (SYNTHI_WORKSPACE_SLUG).",
-        },
+        workspaceSlug: SLUG_PROP,
         timeout: { type: "number", description: "Optional timeout in ms (capped server-side, max 60000)." },
       },
       required: ["command"],
+    },
+  },
+  {
+    name: LIST_TOOL,
+    description:
+      "List the workspace's programs: running/recent program sessions (with state and active ports) and " +
+      "installed programs (the catalog the workspace can launch). Use to discover what is running or available " +
+      "before running commands against it.",
+    inputSchema: {
+      type: "object",
+      properties: { workspaceSlug: SLUG_PROP },
+    },
+  },
+  {
+    name: READ_TOOL,
+    description:
+      "Read a single program session's current state plus its recent (redacted) runtime events/logs. " +
+      "Use to check whether a program started, crashed, or what it reported.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string", description: "The program session id to read." },
+        workspaceSlug: SLUG_PROP,
+      },
+      required: ["sessionId"],
     },
   },
 ];
@@ -103,6 +132,38 @@ async function execInRuntime(
   });
 }
 
+async function getJson(
+  url: string,
+  cfg: ExternalConfig,
+  fetchImpl: FetchLike,
+  fallback: string,
+): Promise<ToolResponse> {
+  const res = await fetchImpl(url, {
+    method: "GET",
+    headers: { authorization: `Bearer ${cfg.pat}` },
+  });
+  const data = await readJson(res);
+  if (!res.ok) return errorFromResponse(res, data, fallback);
+  return jsonResponse(data);
+}
+
+function listPrograms(slug: string, cfg: ExternalConfig, fetchImpl: FetchLike): Promise<ToolResponse> {
+  const url = `${cfg.apiUrl}/api/integrations/mcp/programs?workspaceSlug=${encodeURIComponent(slug)}`;
+  return getJson(url, cfg, fetchImpl, "list_failed");
+}
+
+function readSession(
+  args: Args,
+  slug: string,
+  cfg: ExternalConfig,
+  fetchImpl: FetchLike,
+): Promise<ToolResponse> {
+  const sessionId = typeof args["sessionId"] === "string" ? (args["sessionId"] as string).trim() : "";
+  if (!sessionId) return Promise.resolve(errorResponse("session_required", { hint: "Pass a sessionId." }));
+  const url = `${cfg.apiUrl}/api/integrations/mcp/programs/${encodeURIComponent(sessionId)}?workspaceSlug=${encodeURIComponent(slug)}`;
+  return getJson(url, cfg, fetchImpl, "read_failed");
+}
+
 /**
  * Dispatch a program command-control tool. Returns null when `toolName` is not a
  * program tool (so the server's switch can fall through), else a ToolResponse.
@@ -131,6 +192,10 @@ export async function dispatchProgramTool(
     switch (toolName) {
       case EXEC_TOOL:
         return await execInRuntime(a, slug, cfg, deps.fetch);
+      case LIST_TOOL:
+        return await listPrograms(slug, cfg, deps.fetch);
+      case READ_TOOL:
+        return await readSession(a, slug, cfg, deps.fetch);
       default:
         return null;
     }

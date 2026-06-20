@@ -17,6 +17,25 @@
 >
 > ---
 
+## Slice 3 / Group E — MCP command control (status 2026-06-20)
+
+Command/CLI AI control over the program domain, over the PAT-gated `/api/integrations/mcp/*` boundary
+(SYNTHI_API_URL + SYNTHI_PAT [+ SYNTHI_WORKSPACE_SLUG]). All tools registered in `mcp/synthi-mcp/src/server.ts`.
+
+- [x] **`synthi_exec_in_runtime`** — run a command in the workspace runtime (docker + programs live there).
+      Backend `POST /api/integrations/mcp/runtime-exec`: owner/admin + existing `program.launch` consent;
+      transient (ephemeral `ai-*` session, no DB row); uses the Prisma `User.id` the cookie path already uses.
+- [x] **`synthi_list_programs`** — member-read inventory: merged sessions + installed catalog (`GET .../programs`).
+- [x] **`synthi_read_session`** — member-read single session + redacted events (`GET .../programs/[sessionId]`).
+- [ ] **`synthi_launch_program` — DEFERRED (identity blocker).** AI-launching an installed program needs the
+      **`workspaceUserId`** (the OAuth provider id), because collab-server `launch-program` calls
+      `flushWorkspaceDocsToDisk(slug, userId)` to flush the editor's Y-Sweet docs to the workspaceUserId-keyed
+      disk path before building. A PAT only yields the **Prisma `User.id`** (auth uses JWT strategy, no adapter →
+      `session.user.id` is the provider id, **distinct** from `User.id`), so the flush would target the wrong/empty
+      path. Unblock by resolving PAT→workspaceUserId (the deferred "faithful per-user filesystem" option — needs a
+      schema change to persist the provider id), **or** by reworking launch to runtimeScope-only targeting.
+      Until then the user launches programs from the catalog UI and the AI exec/observes them.
+
 # Task 7: AI Chat redesign — "The Living Orb" 2026-05-25
 
 Direction A approved (living gradient orb identity). Scope: visual + IA restructure across floating / docked / mobile (one component system). Personality: expressive but calm — motion is purposeful, never twitchy. Diagnostics (Code Intel, Shadow verify, Regression) collapse into one drawer.
