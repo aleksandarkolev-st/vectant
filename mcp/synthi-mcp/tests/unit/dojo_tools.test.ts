@@ -6169,7 +6169,7 @@ describe("Agent Dojo MCP tools", () => {
       egress_policy: { local_network_allowed: false },
       redaction_policy: { screenshots: true },
     });
-    const mismatchedRuntimeRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+    const authorizedWorkflowRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
       skill_id: skillId,
       requested_action: "run_workflow",
       proof_capsule: workflowCapsule,
@@ -6185,23 +6185,21 @@ describe("Agent Dojo MCP tools", () => {
         correlation_id: "corr-hosted-runtime-mismatch-run",
       }),
     });
-    expect(mismatchedRuntimeRun?.isError).toBe(true);
-    expect(mismatchedRuntimeRun?.structuredContent).toEqual(expect.objectContaining({
-      proof_consume: null,
+    expect(authorizedWorkflowRun?.isError).toBeUndefined();
+    expect(authorizedWorkflowRun?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
       runtime_authorization: expect.objectContaining({
         ok: true,
         session_id: runtimeSession.session_id,
       }),
-      skill_bus: expect.objectContaining({
-        ok: false,
-        blocked_by: expect.arrayContaining(["runtime_session_attachment_mismatch"]),
-      }),
-      validation: expect.objectContaining({
-        blocked_by: expect.arrayContaining(["runtime_session_attachment_mismatch"]),
+      proof_consume: expect.objectContaining({ ok: true, status: "used" }),
+      proof_record: expect.objectContaining({
+        status: "used",
+        first_used_at: "2026-06-11T00:02:00.000Z",
       }),
     }));
     expect(dojoSkillRegistry.getProofRecord(workflowCapsule.capsule_id)).toEqual(expect.objectContaining({
-      status: "issued",
+      status: "used",
     }));
 
     const authorizedRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {

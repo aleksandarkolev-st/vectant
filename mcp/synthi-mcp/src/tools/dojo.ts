@@ -177,7 +177,7 @@ import {
   type DojoToolResolution,
 } from "../dojo/mcp/skill_bus.js";
 import type { DojoTenantContext } from "../dojo/mcp/execution_policy_gate.js";
-import type { BrowserWorkflowArtifact } from "../browser/broker.js";
+import type { BrowserRuntimeAttachment, BrowserWorkflowArtifact } from "../browser/broker.js";
 import type { WorkflowContractV7 } from "../browser/workflow.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import {
@@ -7696,6 +7696,13 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       runtime_session_id: runtimeAuthorization.decision?.session_id,
       runtime_action_url: stringOpt(a["runtime_action_url"]),
       runtime_authorization_evidence_record_ids: runtimeAuthorization.decision?.evidence_record_ids ?? [],
+      verified_runtime_attachment: browserRuntimeAttachmentForAuthorizedDojoRun({
+        args: a,
+        tenant,
+        skill: skill.skill,
+        runtime_authorization: runtimeAuthorization.decision,
+        now,
+      }),
       now,
     };
     const graphRuntimePreflight = await runDojoGraphRuntimePreflightForProofRun({
@@ -8176,6 +8183,48 @@ function allowedSubstratesForProofRun(skill: DojoSkill, requestedAction: string)
     ? actionRequirements.allowed_substrates
     : skill.execution_substrates;
   return [...new Set(allowed)];
+}
+
+function browserRuntimeAttachmentForAuthorizedDojoRun(input: {
+  args: Record<string, unknown>;
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  runtime_authorization?: DojoHostedRuntimeActionDecision;
+  now?: string;
+}): BrowserRuntimeAttachment | null {
+  const authorization = input.runtime_authorization;
+  if (!authorization?.ok) return null;
+  const actionUrl = stringOpt(input.args["runtime_action_url"]) ?? input.skill.app_origin ?? null;
+  const actionOrigin = originForRuntimeUrl(actionUrl);
+  return {
+    kind: "hosted",
+    tenant_id: input.tenant.tenant_id,
+    workspace_id: input.tenant.workspace_id,
+    actor_id: input.tenant.actor_id,
+    runtime_id: stringOpt(input.args["runtime_id"]) ?? authorization.session_id,
+    session_id: authorization.session_id,
+    workspace_url: actionUrl,
+    adapter: "dojo-hosted-runtime-gateway",
+    attached_at: timestampMsForRuntimeAttachment(input.now),
+    origin_allowlist: actionOrigin ? [actionOrigin] : [],
+    egress_policy: { local_network_allowed: false },
+    redaction_policy: { screenshots: true },
+  };
+}
+
+function timestampMsForRuntimeAttachment(now?: string): number {
+  const parsed = now ? Date.parse(now) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function originForRuntimeUrl(value: string | null | undefined): string {
+  const normalized = stringOpt(value);
+  if (!normalized) return "";
+  try {
+    return new URL(normalized).origin;
+  } catch {
+    return "";
+  }
 }
 
 async function authorizeHostedRuntimeForProductionRun(input: {

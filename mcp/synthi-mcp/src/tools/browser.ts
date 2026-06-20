@@ -1,5 +1,5 @@
 import { authCheckpointManager, type AuthBrowserStorageState, type AuthReadiness, type AuthStorageArtifactMetadata } from "../browser/auth.js";
-import { browserBroker } from "../browser/broker.js";
+import { browserBroker, type BrowserRuntimeAttachment } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { browserWorkflowDeploymentReadiness } from "../browser/deployment_readiness.js";
 import { buildDojoSkill, dojoSkillRegistry } from "../browser/dojo.js";
@@ -58,6 +58,7 @@ export interface DojoValidatedBrowserWorkflowContext {
   runtime_session_id?: string;
   runtime_action_url?: string;
   runtime_authorization_evidence_record_ids?: string[];
+  verified_runtime_attachment?: BrowserRuntimeAttachment | null;
   now?: string;
 }
 
@@ -2269,7 +2270,7 @@ async function browserRunPublishedPrivateTool(
     });
   }
 
-  const hostedRuntimeGate = privateWorkflowHostedRuntimeGate(toolName, effectiveManifest, a);
+  const hostedRuntimeGate = privateWorkflowHostedRuntimeGate(toolName, effectiveManifest, a, dojoContext);
   if (hostedRuntimeGate) return hostedRuntimeGate;
 
   const lease = browserBroker.acquireLease(
@@ -2446,7 +2447,7 @@ export function validateBrowserRuntimeAttachmentForDojoProof(
   const blockedBy: string[] = [];
   if (!dojoContext.runtime_session_id) blockedBy.push("runtime_session_context_missing");
 
-  const runtime = browserBroker.runtimeAttachment();
+  const runtime = dojoContext.verified_runtime_attachment ?? browserBroker.runtimeAttachment();
   if (!runtime) {
     blockedBy.push("runtime_attachment_missing");
   } else if (runtime.kind !== "hosted") {
@@ -2657,9 +2658,10 @@ function bindingResolutionSummary(resolution: DojoPublishedWorkflowBindingResolu
 function privateWorkflowHostedRuntimeGate(
   toolName: string,
   manifest: PrivateWorkflowToolManifestV7,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  dojoContext?: DojoValidatedBrowserWorkflowContext
 ): ToolResponse | null {
-  const runtime = browserBroker.runtimeAttachment();
+  const runtime = dojoContext?.verified_runtime_attachment ?? browserBroker.runtimeAttachment();
   if (runtime?.kind === "hosted") return null;
   const workspaceId = stringOpt(args["workspace_id"]);
   const readiness = resolveHostedBrowserRuntime({
