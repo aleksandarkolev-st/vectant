@@ -142,6 +142,50 @@ describe("hosted browser runtime resolver", () => {
     }));
   });
 
+  it("merges per-session runtime origins into the hosted browser allowlist", async () => {
+    const broker = new BrowserBroker();
+    broker.requestConsent("http://frontend.synthi.svc.cluster.local:3000", "granted", "unit", { screenshot: true });
+    const deps: HostedBrowserAttachDeps = {
+      async attach() {
+        return [];
+      },
+      async open(url: string) {
+        return { tab_id: "runtime-target", url, active: true };
+      },
+      async listTabs() {
+        return [];
+      },
+    };
+
+    const result = await attachHostedBrowserRuntime(
+      {
+        workspace_id: "workspace-a",
+        workspace_url: "http://frontend.synthi.svc.cluster.local:3000/dojo-release-seed",
+        origin_allowlist: ["http://frontend.synthi.svc.cluster.local:3000"],
+        local_network_allowed: true,
+      },
+      deps,
+      broker,
+      {
+        SYNTHI_HOSTED_BROWSER_CDP_URL: "ws://hosted-runtime/devtools",
+        SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST: "https://workspace.example.test",
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected_hosted_attach_success");
+    expect(result.runtime).toEqual(expect.objectContaining({
+      origin_allowlist: [
+        "http://frontend.synthi.svc.cluster.local:3000",
+        "https://workspace.example.test",
+      ],
+      egress_policy: { local_network_allowed: true },
+    }));
+    expect(result.tabs).toEqual([
+      expect.objectContaining({ tab_id: "runtime-target" }),
+    ]);
+  });
+
   it("renders runtime-scoped CDP templates and forwards sanitized attach headers", async () => {
     const broker = new BrowserBroker();
     broker.requestConsent("https://workspace.example.test", "granted", "unit", { screenshot: true });

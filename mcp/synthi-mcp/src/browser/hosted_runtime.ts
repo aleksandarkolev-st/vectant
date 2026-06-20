@@ -9,6 +9,9 @@ export interface HostedBrowserRuntimeInput {
   workspace_url?: string;
   runtime_id?: string;
   runtime_session_id?: string;
+  origin_allowlist?: string[];
+  local_network_allowed?: boolean;
+  redact_screenshots?: boolean;
   open_workspace?: boolean;
 }
 
@@ -188,7 +191,10 @@ function resolveHostedBrowserRuntimeInternal(
   const cdpHeaders = parseCdpHeaders(env[HOSTED_CDP_HEADERS_JSON_ENV]);
   const runtimeHostClass = classifyRuntimeEndpoint(cdpUrl);
   const ignoredLocalDevEnv = nonEmpty(env["SYNTHI_BROWSER_CDP_URL"]) ? ["SYNTHI_BROWSER_CDP_URL"] : [];
-  const originAllowlist = parseOriginAllowlist(env[ORIGIN_ALLOWLIST_ENV]);
+  const originAllowlist = mergeOriginAllowlists(
+    parseOriginAllowlist(env[ORIGIN_ALLOWLIST_ENV]),
+    parseOriginAllowlist(input.origin_allowlist?.join(","))
+  );
   const cdpEndpointSource = templatedCdpUrl
     ? "runtime-template"
     : cdpUrl
@@ -214,10 +220,14 @@ function resolveHostedBrowserRuntimeInternal(
     cdp_header_names: Object.keys(cdpHeaders).sort(),
     origin_allowlist: originAllowlist,
     session_ttl_ms: parsePositiveInteger(env[SESSION_TTL_MS_ENV]),
-    local_network_allowed: parseBoolean(env[ALLOW_LOCAL_NETWORK_ENV]),
-    redact_screenshots: env[REDACT_SCREENSHOTS_ENV] === undefined ? true : parseBoolean(env[REDACT_SCREENSHOTS_ENV]),
+    local_network_allowed: input.local_network_allowed ?? parseBoolean(env[ALLOW_LOCAL_NETWORK_ENV]),
+    redact_screenshots: input.redact_screenshots ?? (env[REDACT_SCREENSHOTS_ENV] === undefined ? true : parseBoolean(env[REDACT_SCREENSHOTS_ENV])),
     product_path: "agent_client_to_synthi_mcp_to_broker_to_hosted_browser",
   };
+}
+
+function mergeOriginAllowlists(...lists: string[][]): string[] {
+  return [...new Set(lists.flat())].sort();
 }
 
 function publicConfig(config: HostedBrowserRuntimeResolvedConfig): HostedBrowserRuntimeConfig {
