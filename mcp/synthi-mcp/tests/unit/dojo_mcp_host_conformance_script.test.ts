@@ -1,13 +1,16 @@
 // @ts-nocheck
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildConformanceEvidenceManifest,
   buildConformanceReleaseGateSummary,
   buildDojoMcpHostConformanceConfig,
+  buildMcpHttpHeaders,
   classifyMcpHost,
   deploymentObservationsFromReadiness,
   DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS,
+  HttpJsonRpcClient,
   isExpectedBlockedToolCall,
+  MCP_STREAMABLE_HTTP_ACCEPT,
   mcpHostConformance,
   observesLicensedSkillFiltering,
   redactConformanceReport,
@@ -16,6 +19,50 @@ import {
 } from "../../scripts/dojo-mcp-host-conformance.mjs";
 
 describe("Dojo MCP host conformance harness", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("requests both JSON and event-stream for MCP Streamable HTTP", () => {
+    expect(MCP_STREAMABLE_HTTP_ACCEPT).toBe("application/json, text/event-stream");
+    expect(buildMcpHttpHeaders({ mcpSessionId: "session-123" })).toEqual({
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "mcp-session-id": "session-123",
+    });
+  });
+
+  it("reuses the MCP Streamable HTTP session returned by initialize", async () => {
+    const seenHeaders: Record<string, string>[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_endpoint, init) => {
+      seenHeaders.push(init.headers);
+      if (seenHeaders.length === 1) {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { serverInfo: { name: "test" } } }), {
+          status: 200,
+          headers: { "mcp-session-id": "session-123" },
+        });
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { tools: [] } }), { status: 200 });
+    });
+
+    const client = new HttpJsonRpcClient({
+      endpoint: "https://mcp.example.test/dojo/mcp",
+      bearerToken: "app-token",
+      bearerHeader: "X-Synthi-Dojo-Mcp-Token",
+      iapBearerToken: "iap-token",
+      timeoutMs: 1000,
+    });
+
+    await client.request("initialize", {});
+    await client.request("tools/list", {});
+
+    expect(seenHeaders).toHaveLength(2);
+    expect(seenHeaders[0]["mcp-session-id"]).toBeUndefined();
+    expect(seenHeaders[1]["mcp-session-id"]).toBe("session-123");
+    expect(seenHeaders[1].authorization).toBe("Bearer iap-token");
+    expect(seenHeaders[1]["x-synthi-dojo-mcp-token"]).toBe("Bearer app-token");
+  });
+
   it("classifies MCP host URLs without treating loopback as deployed", () => {
     expect(classifyMcpHost("http://127.0.0.1:3000/mcp")).toBe("loopback");
     expect(classifyMcpHost("http://localhost:3000/mcp")).toBe("loopback");

@@ -39,6 +39,8 @@ export const REQUIRED_DOJO_HOST_TOOLS = [
   "synthi_dojo_revoke_proof_capsule",
 ];
 
+export const MCP_STREAMABLE_HTTP_ACCEPT = "application/json, text/event-stream";
+
 const RAW_BACKING_BLOCK_MARKERS = [
   "dojo_proof_capsule_required",
   "proof_capsule_missing",
@@ -605,7 +607,7 @@ async function createMcpClient(config) {
   throw new Error(`unsupported_mcp_transport:${config.host.transport}`);
 }
 
-class HttpJsonRpcClient {
+export class HttpJsonRpcClient {
   constructor({ endpoint, bearerToken, bearerHeader, iapBearerToken, timeoutMs }) {
     this.endpoint = endpoint;
     this.bearerToken = bearerToken;
@@ -613,27 +615,36 @@ class HttpJsonRpcClient {
     this.iapBearerToken = iapBearerToken || "";
     this.timeoutMs = timeoutMs;
     this.nextId = 1;
+    this.mcpSessionId = "";
   }
 
   async request(method, params = {}) {
     const id = this.nextId++;
-    const response = await fetchWithTimeout(this.endpoint, {
+    const response = await this.send({
       timeoutMs: this.timeoutMs,
-      bearerToken: this.bearerToken,
-      bearerHeader: this.bearerHeader,
-      iapBearerToken: this.iapBearerToken,
       body: { jsonrpc: "2.0", id, method, params },
     });
     if (response.error) throw new Error(`${response.error.code ?? "json_rpc_error"}: ${response.error.message ?? "unknown"}`);
     return response.result;
   }
 
-  notify(method, params = {}) {
+  send({ timeoutMs, body }) {
     return fetchWithTimeout(this.endpoint, {
-      timeoutMs: Math.min(this.timeoutMs, 10_000),
+      timeoutMs,
       bearerToken: this.bearerToken,
       bearerHeader: this.bearerHeader,
       iapBearerToken: this.iapBearerToken,
+      mcpSessionId: this.mcpSessionId,
+      body,
+    }).then(({ message, mcpSessionId }) => {
+      if (mcpSessionId) this.mcpSessionId = mcpSessionId;
+      return message;
+    });
+  }
+
+  notify(method, params = {}) {
+    return this.send({
+      timeoutMs: Math.min(this.timeoutMs, 10_000),
       body: { jsonrpc: "2.0", method, params },
     }).catch(() => undefined);
   }
@@ -1083,24 +1094,11 @@ async function runSelfCheck({ outDir }) {
   return { report_path: artifacts.report_path, manifest_path: artifacts.manifest_path, report: artifacts.report, manifest: artifacts.manifest };
 }
 
-async function fetchWithTimeout(endpoint, { timeoutMs, bearerToken, bearerHeader = "authorization", iapBearerToken = "", body }) {
+async function fetchWithTimeout(endpoint, { timeoutMs, bearerToken, bearerHeader = "authorization", iapBearerToken = "", mcpSessionId = "", body }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const headers = {
-      "content-type": "application/json",
-      accept: "application/json",
-    };
-    if (iapBearerToken) {
-      headers.authorization = `Bearer ${iapBearerToken}`;
-    }
-    if (bearerToken) {
-      const normalizedBearerHeader = normalizeHttpHeaderName(bearerHeader);
-      if (headers[normalizedBearerHeader] && normalizedBearerHeader === "authorization") {
-        throw new Error("dojo_mcp_bearer_header_conflicts_with_iap_authorization");
-      }
-      headers[normalizedBearerHeader] = `Bearer ${bearerToken}`;
-    }
+    const headers = buildMcpHttpHeaders({ bearerToken, bearerHeader, iapBearerToken, mcpSessionId });
     const response = await fetch(endpoint, {
       method: "POST",
       signal: controller.signal,
@@ -1112,13 +1110,38 @@ async function fetchWithTimeout(endpoint, { timeoutMs, bearerToken, bearerHeader
       throw new Error(`mcp_http_error:${response.status}:${text.slice(0, 500)}`);
     }
     try {
-      return JSON.parse(text);
+      return {
+        message: JSON.parse(text),
+        mcpSessionId: normalizeOptionalText(response.headers.get("mcp-session-id")) || "",
+      };
     } catch {
       throw new Error(`mcp_http_invalid_json:${text.slice(0, 500)}`);
     }
   } finally {
     clearTimeout(timer);
   }
+}
+
+export function buildMcpHttpHeaders({ bearerToken, bearerHeader = "authorization", iapBearerToken = "", mcpSessionId = "" } = {}) {
+  const headers = {
+    "content-type": "application/json",
+    accept: MCP_STREAMABLE_HTTP_ACCEPT,
+  };
+  const normalizedSessionId = normalizeOptionalText(mcpSessionId);
+  if (normalizedSessionId) {
+    headers["mcp-session-id"] = normalizedSessionId;
+  }
+  if (iapBearerToken) {
+    headers.authorization = `Bearer ${iapBearerToken}`;
+  }
+  if (bearerToken) {
+    const normalizedBearerHeader = normalizeHttpHeaderName(bearerHeader);
+    if (headers[normalizedBearerHeader] && normalizedBearerHeader === "authorization") {
+      throw new Error("dojo_mcp_bearer_header_conflicts_with_iap_authorization");
+    }
+    headers[normalizedBearerHeader] = `Bearer ${bearerToken}`;
+  }
+  return headers;
 }
 
 function parseArgs(argv) {
