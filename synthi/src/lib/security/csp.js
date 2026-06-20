@@ -5,7 +5,7 @@
  * @param {string} collabUrl - e.g. NEXT_PUBLIC_COLLAB_SERVER_URL
  * @returns {string} CSP header value
  */
-export function buildContentSecurityPolicy(collabUrl) {
+function buildContentSecurityPolicy(collabUrl) {
   let collabOrigin = null;
   try {
     if (collabUrl) collabOrigin = new URL(collabUrl).origin;
@@ -29,3 +29,7 @@ export function buildContentSecurityPolicy(collabUrl) {
     "media-src 'self' blob: data:",
   ].join('; ');
 }
+
+module.exports = {
+  buildContentSecurityPolicy,
+};
