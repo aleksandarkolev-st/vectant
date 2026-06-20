@@ -98,6 +98,12 @@ describe("Dojo release competency seed harness", () => {
         skill_id: "skill-release-seed",
         workflow_id: "workflow-release-seed",
         workspace_id: options.workspace_id,
+        permission_license: {
+          proof_requirements: {
+            required_evidence_claims: ["checkride_passed", "guardrails_active"],
+            required_context_claims: ["workspace_verified"],
+          },
+        },
       }),
       PostgresDojoSkillStore: class FakePostgresDojoSkillStore {
         async saveSkill(skill, options) {
@@ -144,6 +150,20 @@ describe("Dojo release competency seed harness", () => {
                 workflow_id: "workflow-release-seed",
                 status: "published",
               },
+              executable_checkride: {
+                evidence_refs: [
+                  "ledger:dojo_checkride_record_a:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "evidence:dojo_inline_record_b",
+                ],
+                ledger_checkpoint_hashes: ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+                results: [
+                  {
+                    ledger_record: {
+                      record_id: "dojo_checkride_record_c",
+                    },
+                  },
+                ],
+              },
             },
           },
         };
@@ -181,5 +201,12 @@ describe("Dojo release competency seed harness", () => {
     expect(report.skill.skill_id).toBe("skill-release-seed");
     expect(report.private_tool.tool_name).toBe("synthi_app_release_seed");
     expect(report.publication.control_plane_persistence.store_kind).toBe("postgres");
+    expect(report.proof.evidence_record_ids).toEqual([
+      "dojo_checkride_record_c",
+      "dojo_checkride_record_a",
+      "dojo_inline_record_b",
+    ]);
+    expect(report.proof.required_evidence_claims).toEqual(["checkride_passed", "guardrails_active"]);
+    expect(report.proof.required_context_claims).toEqual(["workspace_verified"]);
   });
 });

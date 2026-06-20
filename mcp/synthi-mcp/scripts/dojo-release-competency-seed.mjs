@@ -351,6 +351,10 @@ export function buildDojoReleaseCompetencySeedReport({
       evidence_ledger_validation: summarizeEvidenceLedgerValidation(publication?.evidence_ledger_validation),
       executable_checkride: summarizeExecutableCheckride(publication?.executable_checkride),
     },
+    proof: summarizeProofEvidenceForConformance({
+      candidateSkill,
+      executableCheckride: publication?.executable_checkride,
+    }),
   };
 }
 
@@ -451,6 +455,46 @@ function summarizeExecutableCheckride(value) {
     blocked_scenarios: numberOrNull(record.blocked_scenarios),
     production_recommendation: stringOpt(record.production_recommendation) ?? null,
   };
+}
+
+function summarizeProofEvidenceForConformance({ candidateSkill, executableCheckride }) {
+  const checkride = objectOrNull(executableCheckride);
+  const evidenceRefs = Array.isArray(checkride?.evidence_refs)
+    ? checkride.evidence_refs.filter((item) => typeof item === "string")
+    : [];
+  const resultLedgerIds = Array.isArray(checkride?.results)
+    ? checkride.results
+      .map((result) => objectOrNull(result)?.ledger_record)
+      .map((record) => objectOrNull(record)?.record_id)
+      .filter((item) => typeof item === "string" && item.trim().length > 0)
+    : [];
+  const parsedLedgerIds = evidenceRefs
+    .map((ref) => evidenceRecordIdFromReference(ref))
+    .filter(Boolean);
+  const proofRequirements = objectOrNull(objectOrNull(candidateSkill?.permission_license)?.proof_requirements);
+  return {
+    evidence_record_ids: [...new Set([...resultLedgerIds, ...parsedLedgerIds])],
+    evidence_refs: evidenceRefs,
+    ledger_checkpoint_hashes: Array.isArray(checkride?.ledger_checkpoint_hashes)
+      ? checkride.ledger_checkpoint_hashes.filter((item) => typeof item === "string")
+      : [],
+    required_evidence_claims: Array.isArray(proofRequirements?.required_evidence_claims)
+      ? proofRequirements.required_evidence_claims.filter((item) => typeof item === "string")
+      : [],
+    required_context_claims: Array.isArray(proofRequirements?.required_context_claims)
+      ? proofRequirements.required_context_claims.filter((item) => typeof item === "string")
+      : [],
+  };
+}
+
+function evidenceRecordIdFromReference(value) {
+  const text = stringOpt(value);
+  if (!text) return null;
+  const ledger = /^ledger:([^:]+):[A-Fa-f0-9]{64}$/.exec(text);
+  if (ledger) return ledger[1];
+  const evidence = /^evidence:([^:]+)$/.exec(text);
+  if (evidence) return evidence[1];
+  return null;
 }
 
 function parseArgs(argv) {
