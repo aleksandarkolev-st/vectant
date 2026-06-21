@@ -315,6 +315,36 @@
   background: linear-gradient(var(--bg-panel), var(--bg-panel)) padding-box, var(--brand-gradient-horizontal) border-box;
 }
 
+.genome-card__learned,
+.genome-card__ambiguity,
+.genome-card__policy {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-elevated) 48%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.genome-card__learned {
+  border-color: color-mix(in srgb, var(--attention-purple) 40%, var(--border-subtle));
+  color: var(--text-primary);
+}
+
+.genome-card__learned strong {
+  color: var(--text-primary);
+}
+
+.genome-card__ambiguity {
+  border-color: color-mix(in srgb, var(--accent-warning, #f6c177) 36%, var(--border-subtle));
+}
+
+.genome-card__policy {
+  color: var(--text-muted);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .vx-rail, .vx-rail-scrim { transition: none !important; }
 }
