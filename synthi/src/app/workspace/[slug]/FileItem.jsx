@@ -30,6 +30,9 @@ function fileItemAreEqual(prev, next) {
     prev.onFileSelect !== next.onFileSelect ||
     prev.activeFile !== next.activeFile ||
     prev.onAction !== next.onAction ||
+    prev.onExternalFilesDrop !== next.onExternalFilesDrop ||
+    prev.onExternalFolderDragTarget !== next.onExternalFolderDragTarget ||
+    prev.isExternalFolderDropTarget !== next.isExternalFolderDropTarget ||
     prev.uiActionState !== next.uiActionState ||
     prev.dispatch !== next.dispatch ||
     prev.handleKeyDown !== next.handleKeyDown ||
@@ -61,6 +64,9 @@ const FileItem = memo(({
   activeFile,
   onAction,
   onRightMouseButtonClick,
+  onExternalFilesDrop,
+  onExternalFolderDragTarget,
+  isExternalFolderDropTarget = false,
   uiActionState,
   dispatch,
   handleKeyDown,
@@ -439,6 +445,10 @@ useEffect(() => {
   };
 
   const [isDropTarget, setIsDropTarget] = useState(false);
+  const [isExternalDropTarget, setIsExternalDropTarget] = useState(false);
+  const showExternalDropLine = item.isFolder && (isExternalDropTarget || isExternalFolderDropTarget);
+
+  const hasExternalFiles = (e) => Array.from(e.dataTransfer?.types || []).includes("Files");
 
   const isValidDropSource = (e) => {
     if (!item.isFolder) return null;
@@ -462,6 +472,14 @@ useEffect(() => {
 
   const handleDragOver = (e) => {
     if (!item.isFolder) return;
+    if (hasExternalFiles(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      if (!isExternalDropTarget) setIsExternalDropTarget(true);
+      onExternalFolderDragTarget?.(item.path);
+      return;
+    }
     // We can't read dataTransfer payload during dragover (browser locks it),
     // so accept the drop optimistically and re-validate on drop.
     e.preventDefault();
@@ -472,10 +490,19 @@ useEffect(() => {
 
   const handleDragLeave = () => {
     if (isDropTarget) setIsDropTarget(false);
+    if (isExternalDropTarget) setIsExternalDropTarget(false);
   };
 
   const handleDrop = async (e) => {
     if (!item.isFolder) return;
+    if (hasExternalFiles(e)) {
+      setIsExternalDropTarget(false);
+      onExternalFolderDragTarget?.("");
+      if (typeof onExternalFilesDrop === "function") {
+        await onExternalFilesDrop(e, item.path);
+      }
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     setIsDropTarget(false);
@@ -533,6 +560,25 @@ useEffect(() => {
             style={{
               background: 'var(--brand-gradient)',
               boxShadow: '0 0 10px -2px color-mix(in srgb, var(--brand-stop-3) 55%, transparent)',
+            }}
+          />
+        )}
+        {showExternalDropLine && (
+          <span
+            data-testid="workspace-folder-drop-line"
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-0 left-2.5 right-2.5 h-[2px] rounded-t-full"
+            style={{
+              backgroundImage: [
+                'var(--brand-gradient-horizontal)',
+                'linear-gradient(90deg, color-mix(in srgb, var(--text-muted) 72%, transparent), color-mix(in srgb, var(--text-muted) 72%, transparent))',
+              ].join(', '),
+              backgroundRepeat: 'no-repeat, no-repeat',
+              backgroundPosition: 'left bottom, left bottom',
+              backgroundSize: '100% 100%, 100% 100%',
+              boxShadow: '0 0 8px -2px color-mix(in srgb, var(--brand-stop-3) 55%, transparent)',
+              transformOrigin: 'left center',
+              animation: 'file-folder-drop-line 160ms cubic-bezier(0.25, 1, 0.5, 1) both',
             }}
           />
         )}
