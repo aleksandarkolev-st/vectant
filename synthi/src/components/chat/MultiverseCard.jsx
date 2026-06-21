@@ -126,7 +126,7 @@ export function MultiverseCard({ jobId }) {
                 ))
             )}
             {verify.convergence || verify.arbiter ? (
-                <ArbiterCard jobId={jobId} />
+                <ArbiterCard jobId={jobId} verify={verify} />
             ) : null}
             {verify.finished && verify.winner ? (
                 <footer className="genome-card__foot">winner: Universe {verify.winner}</footer>

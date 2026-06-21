@@ -57,6 +57,75 @@ def test_capture_counterfactual_evidence_filters_failed_proof_branch():
     assert job.selection_verdict["winner"] == "B"
 
 
+def test_capture_counterfactual_evidence_returns_empty_when_all_branches_fail_proof():
+    job = events.JobState("job", "standard", "ws", None)
+    job.counterfactual_base_hash = "base"
+    results = [
+        FakeUniverseResult(
+            "A",
+            0.99,
+            {
+                "style": "safe",
+                "diagnostics": {"lint": "clean", "types": "clean", "tests": "1/2 passed", "runtime": "clean"},
+                "attacks": {"tested": 0, "survived": 0, "failed": []},
+                "loc": "+1 −0",
+                "score": 0.99,
+            },
+        ),
+        FakeUniverseResult(
+            "B",
+            0.8,
+            {
+                "style": "idiomatic",
+                "diagnostics": {"lint": "clean", "types": "clean", "tests": "0/1 passed", "runtime": "clean"},
+                "attacks": {"tested": 0, "survived": 0, "failed": []},
+                "loc": "+3 −0",
+                "score": 0.8,
+            },
+        ),
+    ]
+
+    eligible = _capture_counterfactual_evidence(job=job, valid=results)
+
+    assert eligible == []
+    assert job.proof_verdict["eligible_universe_ids"] == []
+    assert job.selection_verdict["winner"] is None
+
+
+def test_capture_counterfactual_evidence_includes_appended_child_universe():
+    job = events.JobState("job", "deep", "ws", None)
+    job.counterfactual_base_hash = "base"
+    results = [
+        FakeUniverseResult(
+            "A",
+            0.8,
+            {
+                "style": "safe",
+                "diagnostics": {"lint": "clean", "types": "clean", "tests": "2/2 passed", "runtime": "clean"},
+                "attacks": {"tested": 0, "survived": 0, "failed": []},
+                "loc": "+4 −0",
+                "score": 0.8,
+            },
+        ),
+        FakeUniverseResult(
+            "X",
+            0.9,
+            {
+                "style": "synthesis",
+                "diagnostics": {"lint": "clean", "types": "clean", "tests": "3/3 passed", "runtime": "clean"},
+                "attacks": {"tested": 0, "survived": 0, "failed": []},
+                "loc": "+6 −1",
+                "score": 0.9,
+            },
+        ),
+    ]
+
+    _capture_counterfactual_evidence(job=job, valid=results)
+
+    assert {trace.universe_id for trace in job.branch_traces} == {"A", "X"}
+    assert job.selection_verdict["winner"] == "X"
+
+
 def test_active_policy_delta_changes_next_run_plan():
     STORE.clear()
     delta = make_policy_delta(

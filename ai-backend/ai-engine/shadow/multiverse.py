@@ -166,7 +166,9 @@ async def run_job(
         )
         winner = result.universe_id if result else None
         if result:
-            _capture_counterfactual_evidence(job=job, valid=[result])
+            eligible = _capture_counterfactual_evidence(job=job, valid=[result])
+            if not eligible:
+                winner = None
         await job.emit(events.all_done(winner=winner))
         await job.emit_done()
         return winner
@@ -189,7 +191,9 @@ async def run_job(
     if convergence is not None:
         await job.emit(events.convergence_detected(downgrading_to=1))
         winner = convergence.consensus_universe_id
-        _capture_counterfactual_evidence(job=job, valid=valid)
+        eligible = _capture_counterfactual_evidence(job=job, valid=valid)
+        if not eligible:
+            winner = None
         # Skip Arbiter — consensus is its own answer.
         await job.emit(events.all_done(winner=winner))
         await job.emit_done()
@@ -229,6 +233,22 @@ async def run_job(
     # overriding the Arbiter when it was a particular provider, skip
     # that provider on the next rotation.
     valid = _capture_counterfactual_evidence(job=job, valid=valid)
+    if not valid:
+        verdict = Verdict(
+            winner="",
+            confidence=0.0,
+            rationale="No universe survived proof gates.",
+            ranking=[],
+            tradeoffs=[],
+            warnings=["all candidate branches failed proof gates"],
+            synthesis={"recommended": False, "explanation": None, "instruction": None},
+            source="proof-arbiter",
+        )
+        job.last_verdict = verdict.to_dict()
+        await job.emit(events.arbiter_verdict(verdict.to_dict()))
+        await job.emit(events.all_done(winner=None))
+        await job.emit_done()
+        return None
 
     avoided = set()
     try:
@@ -267,6 +287,7 @@ async def run_job(
             ]
             await job.emit(events.universe_done(ch.universe_id, ch.evidence))
             valid.append(ch)
+        valid = _capture_counterfactual_evidence(job=job, valid=valid)
 
     # Cache bundle + verdict for the [Why?] follow-up route (master plan §22).
     job.bundle = bundle
@@ -305,9 +326,8 @@ def _capture_counterfactual_evidence(*, job: events.JobState, valid: List[Univer
 def _proof_eligible_results(job: events.JobState, valid: List[UniverseResult]) -> List[UniverseResult]:
     eligible = set((job.proof_verdict or {}).get("eligible_universe_ids") or [])
     if not eligible:
-        return valid
-    filtered = [r for r in valid if r.universe_id in eligible]
-    return filtered or valid
+        return []
+    return [r for r in valid if r.universe_id in eligible]
 
 
 def _base_state_hash(snapshot_dict: Dict[str, Any]) -> str:
