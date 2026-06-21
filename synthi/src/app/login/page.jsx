@@ -5,16 +5,17 @@ import { signIn, useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
-  ArrowRight,
-  CheckCircle2,
-  Code2,
-  Command,
-  GitBranch,
-  Loader2,
-  LockKeyhole,
-  ShieldCheck,
-  Sparkles,
-} from "lucide-react";
+  PiArrowRight as ArrowRight,
+  PiCodeSimple as Code2,
+  PiCommand as Command,
+  PiDatabase as Database,
+  PiGitBranch as GitBranch,
+  PiKey as KeyRound,
+  PiLockKey as LockKeyhole,
+  PiNetwork as Network,
+  PiShieldCheck as ShieldCheck,
+  PiSpinner as Loader2,
+} from "react-icons/pi";
 import { FcGoogle } from "react-icons/fc";
 import { FaGithub } from "react-icons/fa";
 
@@ -33,16 +34,18 @@ const authMethods = [
   },
 ];
 
-const trustItems = [
-  "Workspace membership",
-  "Repository credentials",
-  "Runtime file operations",
+const controlRows = [
+  { icon: KeyRound, label: "Provider claims", value: "OAuth verified" },
+  { icon: GitBranch, label: "Repository scope", value: "Token isolated" },
+  { icon: Database, label: "Workspace state", value: "Membership gated" },
+  { icon: Network, label: "Runtime channel", value: "Session bound" },
 ];
 
-const activityRows = [
-  { icon: GitBranch, label: "Repo import", value: "Scoped clone" },
-  { icon: Sparkles, label: "Agent setup", value: "Ready after sign in" },
-  { icon: LockKeyhole, label: "Identity", value: "Provider session" },
+const auditLines = [
+  ["identity.resolve", "after provider"],
+  ["workspace.acl", "after sign-in"],
+  ["runtime.scope", "session gated"],
+  ["repo.token", "provider scoped"],
 ];
 
 export default function LoginPage() {
@@ -64,7 +67,7 @@ export default function LoginPage() {
       <div className="flex min-h-[100dvh] items-center justify-center bg-[var(--bg-app)] text-[var(--text-secondary)]">
         <div className="flex items-center gap-3 text-sm">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Loading session...
+          Loading session
         </div>
       </div>
     );
@@ -75,7 +78,7 @@ export default function LoginPage() {
       <div className="flex min-h-[100dvh] items-center justify-center bg-[var(--bg-app)] text-[var(--text-secondary)]">
         <div className="flex items-center gap-3 text-sm">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Redirecting...
+          Redirecting
         </div>
       </div>
     );
@@ -85,79 +88,67 @@ export default function LoginPage() {
     <main className="relative min-h-[100dvh] overflow-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(circle at 17% 18%, color-mix(in srgb, var(--brand-stop-3) 24%, transparent), transparent 31%), radial-gradient(circle at 86% 12%, color-mix(in srgb, var(--brand-stop-4) 18%, transparent), transparent 30%), linear-gradient(135deg, color-mix(in srgb, var(--bg-app) 82%, var(--brand-stop-1)) 0%, var(--bg-app) 44%, color-mix(in srgb, var(--bg-app) 84%, var(--brand-stop-4)) 100%)",
-        }}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 opacity-[0.17]"
+        className="pointer-events-none absolute inset-0 opacity-[0.06]"
         style={{
           backgroundImage:
-            "linear-gradient(color-mix(in srgb, var(--text-primary) 12%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--text-primary) 12%, transparent) 1px, transparent 1px)",
-          backgroundSize: "44px 44px",
-          maskImage: "linear-gradient(90deg, transparent, black 16%, black 84%, transparent)",
+            "linear-gradient(color-mix(in srgb, var(--text-primary) 10%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--text-primary) 10%, transparent) 1px, transparent 1px)",
+          backgroundSize: "40px 40px",
+          maskImage: "linear-gradient(to bottom, black, transparent 86%)",
         }}
       />
 
-      <section className="relative mx-auto grid min-h-[100dvh] w-full max-w-7xl items-center gap-7 px-5 py-6 md:px-8 lg:grid-cols-[minmax(0,1fr)_430px]">
+      <section className="relative mx-auto grid min-h-[100dvh] w-full max-w-7xl items-center gap-6 px-5 py-6 md:px-8 lg:grid-cols-[minmax(0,1fr)_410px]">
         <motion.div
-          initial={{ opacity: 0, y: 14 }}
+          initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.28 }}
-          className="hidden min-h-[660px] flex-col justify-between rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_72%,transparent)] p-6 shadow-[0_24px_80px_-48px_color-mix(in_srgb,var(--brand-stop-3)_70%,transparent)] backdrop-blur-xl lg:flex"
+          transition={{ duration: 0.22 }}
+          className="hidden min-h-[560px] flex-col justify-between rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_88%,transparent)] p-5 lg:flex"
         >
-          <div className="flex items-center justify-between">
-            <img src="/vectant-dark-theme.png" alt="Vectant" className="h-9 w-auto" />
-            <div className="flex items-center gap-2 rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_58%,transparent)] px-3 py-2 text-xs text-[var(--text-muted)]">
-              <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-success)]" />
-              Auth gateway
+          <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-4">
+            <img src="/vectant-dark-theme.png" alt="Vectant" className="h-8 w-auto" />
+            <div className="flex items-center gap-2 rounded-md border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_70%,transparent)] px-2.5 py-1.5 text-[11px] text-[var(--text-muted)]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--text-muted)]" />
+              Sign-in required
             </div>
           </div>
 
           <div className="max-w-3xl">
-            <div className="mb-5 inline-flex items-center gap-2 rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_52%,transparent)] px-3 py-2 text-xs font-medium text-[var(--text-muted)]">
+            <div className="mb-4 inline-flex items-center gap-2 rounded-md border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_56%,transparent)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)]">
               <Command className="h-3.5 w-3.5 text-[var(--attention-purple)]" />
-              Agent workspace access
+              Auth boundary
             </div>
-            <h1 className="max-w-4xl text-5xl font-semibold leading-[0.98] tracking-normal">
-              Sign in to the workspace where agents can actually work.
+            <h1 className="max-w-3xl text-3xl font-semibold leading-tight tracking-normal">
+              Workspace access starts at the identity boundary.
             </h1>
-            <p className="mt-6 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
-              Connect an identity, open a repo, and keep file operations tied to the same Vectant session.
+            <p className="mt-5 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
+              Vectant attaches repository tokens, workspace membership, runtime channels, and file operations only after provider authentication.
             </p>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-[1.08fr_0.92fr]">
-            <div className="rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_54%,transparent)] p-4">
-              <div className="mb-4 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full bg-[var(--brand-stop-1)]" />
-                  <span className="h-2.5 w-2.5 rounded-full bg-[var(--brand-stop-2)]" />
-                  <span className="h-2.5 w-2.5 rounded-full bg-[var(--brand-stop-4)]" />
+          <div className="grid gap-3 md:grid-cols-[1fr_0.92fr]">
+            <div className="rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_56%,transparent)] p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-semibold text-[var(--text-secondary)]">
+                  <Code2 className="h-3.5 w-3.5 text-[var(--attention-purple)]" />
+                  Access checks
                 </div>
-                <span className="font-mono text-[11px] text-[var(--text-dim)]">auth.vectant</span>
+                <span className="font-mono text-[11px] text-[var(--text-dim)]">pending</span>
               </div>
-              <div className="space-y-2 font-mono text-xs">
-                {["resolve provider", "hydrate membership", "open recent workspaces"].map((line, index) => (
-                  <motion.div
-                    key={line}
-                    initial={{ opacity: 0.45, x: -4 }}
-                    animate={{ opacity: [0.45, 1, 0.68], x: 0 }}
-                    transition={{ duration: 1.8, delay: index * 0.22, repeat: Infinity, repeatDelay: 3 }}
-                    className="flex items-center gap-2 rounded-md border border-[var(--border-subtle)] px-3 py-2 text-[var(--text-secondary)]"
+              <div className="space-y-1.5 font-mono text-[11px]">
+                {auditLines.map(([event, state]) => (
+                  <div
+                    key={event}
+                    className="grid grid-cols-[minmax(0,1fr)_104px] gap-3 rounded-md border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_42%,transparent)] px-3 py-2"
                   >
-                    <span className="text-[var(--attention-purple)]">$</span>
-                    <span>{line}</span>
-                  </motion.div>
+                    <span className="truncate text-[var(--text-secondary)]">{event}</span>
+                    <span className="truncate text-right text-[var(--text-muted)]">{state}</span>
+                  </div>
                 ))}
               </div>
             </div>
 
-            <div className="grid gap-3">
-              {activityRows.map((item) => {
+            <div className="grid gap-2">
+              {controlRows.map((item) => {
                 const Icon = item.icon;
                 return (
                   <div key={item.label} className="rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_48%,transparent)] p-3">
@@ -165,7 +156,7 @@ export default function LoginPage() {
                       <Icon className="h-3.5 w-3.5 text-[var(--attention-purple)]" />
                       {item.label}
                     </div>
-                    <div className="mt-1 text-[11px] text-[var(--text-muted)]">{item.value}</div>
+                    <div className="mt-1 font-mono text-[11px] text-[var(--text-muted)]">{item.value}</div>
                   </div>
                 );
               })}
@@ -174,27 +165,27 @@ export default function LoginPage() {
         </motion.div>
 
         <motion.aside
-          initial={{ opacity: 0, y: 16 }}
+          initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.24, delay: 0.04 }}
-          className="mx-auto w-full max-w-[430px] rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_92%,transparent)] p-6 shadow-[0_24px_80px_-46px_color-mix(in_srgb,var(--brand-stop-4)_72%,transparent)] backdrop-blur-xl"
+          transition={{ duration: 0.2, delay: 0.04 }}
+          className="mx-auto w-full max-w-[410px] rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_94%,transparent)] p-5"
         >
-          <div className="mb-8 flex items-start justify-between gap-5">
+          <div className="mb-6 flex items-start justify-between gap-5 border-b border-[var(--border-subtle)] pb-5">
             <div>
-              <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-lg border border-[var(--border-medium)] bg-[var(--bg-surface)]">
+              <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--border-medium)] bg-[var(--bg-surface)]">
                 <ShieldCheck className="h-5 w-5 text-[var(--attention-purple)]" />
               </div>
-              <h1 className="text-3xl font-semibold tracking-normal">Sign in to Vectant</h1>
-              <p className="mt-3 text-sm leading-6 text-[var(--text-muted)]">
-                Choose a provider to enter your development workspace.
+              <h1 className="text-2xl font-semibold tracking-normal">Authenticate</h1>
+              <p className="mt-2 text-sm leading-6 text-[var(--text-muted)]">
+                Establish identity before workspace access.
               </p>
             </div>
             <button
               type="button"
               onClick={() => router.push("/")}
-              className="rounded-lg border border-[var(--border-subtle)] px-3 py-2 text-xs font-medium text-[var(--text-muted)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+              className="rounded-md border border-[var(--border-subtle)] px-3 py-2 text-xs font-medium text-[var(--text-muted)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
             >
-              Start
+              Launcher
             </button>
           </div>
 
@@ -208,9 +199,7 @@ export default function LoginPage() {
                   type="button"
                   onClick={() => handleSignIn(method.id)}
                   disabled={signingIn !== null}
-                  whileHover={{ y: signingIn ? 0 : -1 }}
-                  whileTap={{ scale: signingIn ? 1 : 0.99 }}
-                  className="flex h-12 w-full items-center justify-between rounded-lg px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
+                  className="flex h-12 w-full items-center justify-between rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
                   style={{
                     background: method.primary ? "var(--text-primary)" : "var(--bg-app)",
                     color: method.primary ? "var(--bg-app)" : "var(--text-primary)",
@@ -219,7 +208,7 @@ export default function LoginPage() {
                 >
                   <span className="flex items-center gap-3">
                     <Icon className="h-4 w-4" />
-                    {busy ? "Redirecting..." : method.label}
+                    {busy ? "Redirecting" : method.label}
                   </span>
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
                 </motion.button>
@@ -227,23 +216,23 @@ export default function LoginPage() {
             })}
           </div>
 
-          <div className="mt-6 rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_52%,transparent)] p-4">
+          <div className="mt-5 rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_54%,transparent)] p-4">
             <div className="flex items-center gap-3 text-sm font-medium">
-              <Code2 className="h-4 w-4 text-[var(--text-secondary)]" />
-              Session scope
+              <LockKeyhole className="h-4 w-4 text-[var(--text-secondary)]" />
+              Granted after sign-in
             </div>
             <div className="mt-3 space-y-2 text-xs text-[var(--text-muted)]">
-              {trustItems.map((item) => (
-                <div key={item} className="flex items-center gap-2">
-                  <CheckCircle2 className="h-3.5 w-3.5 text-[var(--accent-success)]" />
-                  {item}
+              {["Workspace ACL", "Repository token access", "Runtime file operations"].map((item) => (
+                <div key={item} className="flex items-center justify-between gap-3">
+                  <span>{item}</span>
+                  <LockKeyhole className="h-3.5 w-3.5 shrink-0 text-[var(--text-dim)]" />
                 </div>
               ))}
             </div>
           </div>
 
           <p className="mt-5 text-xs leading-5 text-[var(--text-dim)]">
-            Continuing creates an authenticated Vectant session for development workspaces.
+            Authentication is required before Vectant provisions or opens user-scoped workspaces.
           </p>
         </motion.aside>
       </section>

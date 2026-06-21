@@ -5,27 +5,31 @@ import { useSession, signIn, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  AlertCircle,
-  ArrowRight,
-  CheckCircle2,
-  Clock,
-  Code2,
-  Command,
-  FileArchive,
-  FolderGit2,
-  FolderOpen,
-  FolderPlus,
-  Github,
-  Globe,
-  Home,
-  Layers3,
-  Loader2,
-  Lock,
-  LogOut,
-  Sparkles,
-  UploadCloud,
-  X,
-} from "lucide-react";
+  PiArrowRight as ArrowRight,
+  PiCheckCircle as CheckCircle2,
+  PiClock as Clock,
+  PiCloudArrowUp as UploadCloud,
+  PiCodeSimple as Code2,
+  PiCommand as Command,
+  PiDatabase as Database,
+  PiFileArchive as FileArchive,
+  PiFolderOpen as FolderOpen,
+  PiFolderPlus as FolderPlus,
+  PiGitBranch as FolderGit2,
+  PiGithubLogo as Github,
+  PiGlobe as Globe,
+  PiHardDrives as Server,
+  PiHouse as Home,
+  PiKey as KeyRound,
+  PiLock as Lock,
+  PiNetwork as Network,
+  PiPulse as Activity,
+  PiSignOut as LogOut,
+  PiSpinner as Loader2,
+  PiStackSimple as Layers3,
+  PiWarningCircle as AlertCircle,
+  PiX as X,
+} from "react-icons/pi";
 import AIJumpstartSection from "@/components/dashboard/AIJumpstartSection";
 import { storeJumpstartPayload } from "@/lib/ai-jumpstart-session";
 import { resolveCollabHttpUrl } from "@/lib/collab-url";
@@ -202,16 +206,23 @@ function modeTitle(mode) {
     case "local":
       return "Import files from disk";
     case "create":
-      return "Create with agents";
+      return "Initialize from brief";
     default:
       return "Import repository";
   }
 }
 
-const workspaceHighlights = [
-  { icon: FolderOpen, label: "Local files", detail: "Drop a folder or pick files" },
-  { icon: Github, label: "GitHub repo", detail: "Clone and keep it recent" },
-  { icon: Sparkles, label: "AI brief", detail: "Create a repo with context" },
+const workspaceSignals = [
+  { icon: Server, label: "Runtime isolation", detail: "Scoped container worktrees" },
+  { icon: Database, label: "State registry", detail: "Imports, uploads, creates saved" },
+  { icon: KeyRound, label: "Access boundary", detail: "User-scoped file operations" },
+];
+
+const launcherStatusRows = [
+  ["source.ingest", "repo/folder/files"],
+  ["runtime.mode", "local container"],
+  ["agent.context", "optional brief"],
+  ["recents.write", "enabled"],
 ];
 
 export default function Dashboard() {
@@ -602,7 +613,7 @@ export default function Dashboard() {
       <div className="flex min-h-[100dvh] items-center justify-center bg-[var(--bg-app)] text-[var(--text-secondary)]">
         <div className="flex items-center gap-3 text-sm">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Loading...
+          Loading session
         </div>
       </div>
     );
@@ -611,41 +622,74 @@ export default function Dashboard() {
   if (!session) {
     return (
       <main className="min-h-[100dvh] overflow-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
-        <div className="absolute inset-0 opacity-60" style={{
-          background:
-            "radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--brand-stop-3) 16%, transparent), transparent 36%), linear-gradient(135deg, color-mix(in srgb, var(--bg-app) 72%, var(--brand-stop-4)), var(--bg-app) 58%)",
-        }} />
         <section className="relative mx-auto flex min-h-[100dvh] w-full max-w-6xl items-center px-6 py-12">
-          <div className="grid w-full gap-8 lg:grid-cols-[1fr_420px] lg:items-center">
-            <div className="max-w-3xl">
-              <img src="/vectant-dark-theme.png" alt="Vectant" className="mb-10 h-10 w-auto" />
-              <h1 className="max-w-4xl text-5xl font-semibold leading-[0.95] tracking-normal md:text-7xl">
-                Vectant ADE
-              </h1>
-              <p className="mt-6 max-w-2xl text-lg leading-8 text-[var(--text-secondary)]">
-                Open cloud workspaces, import existing code, or start from an AI-generated project brief.
-              </p>
+          <div className="grid w-full gap-6 lg:grid-cols-[minmax(0,1fr)_390px] lg:items-stretch">
+            <div className="flex min-h-[500px] flex-col justify-between rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_88%,transparent)] p-5">
+              <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-4">
+                <img src="/vectant-dark-theme.png" alt="Vectant" className="h-8 w-auto" />
+                <span className="rounded-md border border-[var(--border-subtle)] px-2.5 py-1.5 font-mono text-[11px] text-[var(--text-muted)]">
+                  auth required
+                </span>
+              </div>
+
+              <div className="max-w-2xl">
+                <div className="mb-4 inline-flex items-center gap-2 rounded-md border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_58%,transparent)] px-3 py-1.5 text-xs text-[var(--text-muted)]">
+                  <Network className="h-3.5 w-3.5 text-[var(--attention-purple)]" />
+                  Workspace control plane
+                </div>
+                <h1 className="max-w-2xl text-3xl font-semibold leading-tight tracking-normal md:text-4xl">
+                  Provision workspaces behind an identity boundary.
+                </h1>
+                <p className="mt-5 max-w-xl text-sm leading-6 text-[var(--text-secondary)]">
+                  Import repositories, local files, or agent briefs only after Vectant can attach ownership, runtime scope, and file operation permissions.
+                </p>
+              </div>
+
+              <div className="grid gap-2 md:grid-cols-3">
+                {workspaceSignals.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <div key={item.label} className="rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_50%,transparent)] p-3">
+                      <Icon className="mb-2 h-4 w-4 text-[var(--attention-purple)]" />
+                      <div className="text-xs font-semibold">{item.label}</div>
+                      <div className="mt-1 text-[11px] text-[var(--text-muted)]">{item.detail}</div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            <div className="rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_88%,transparent)] p-6 shadow-2xl">
-              <div className="mb-6">
-                <h2 className="text-xl font-semibold">Sign in</h2>
-                <p className="mt-2 text-sm text-[var(--text-muted)]">
-                  Connect your identity to create and open workspaces.
+
+            <div className="rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_92%,transparent)] p-5">
+              <div className="mb-5 border-b border-[var(--border-subtle)] pb-5">
+                <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--border-medium)] bg-[var(--bg-surface)]">
+                  <KeyRound className="h-5 w-5 text-[var(--attention-purple)]" />
+                </div>
+                <h2 className="text-2xl font-semibold">Authenticate</h2>
+                <p className="mt-2 text-sm leading-6 text-[var(--text-muted)]">
+                  Sign in to unlock workspace provisioning.
                 </p>
               </div>
               <button
                 onClick={() => signIn("github", { callbackUrl: "/" })}
-                className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
+                className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
               >
                 <Github className="h-4 w-4" />
                 Continue with GitHub
               </button>
               <button
                 onClick={() => router.push("/login")}
-                className="mt-3 flex h-10 w-full items-center justify-center rounded-lg border border-[var(--border-medium)] text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+                className="mt-3 flex h-10 w-full items-center justify-center rounded-md border border-[var(--border-medium)] text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
               >
-                More sign-in options
+                More auth options
               </button>
+              <div className="mt-5 rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_52%,transparent)] p-3 font-mono text-[11px] text-[var(--text-muted)]">
+                {launcherStatusRows.slice(0, 3).map(([event, state]) => (
+                  <div key={event} className="flex items-center justify-between gap-3 py-1">
+                    <span>{event}</span>
+                    <span>{state}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </section>
@@ -656,44 +700,36 @@ export default function Dashboard() {
   const modes = [
     { id: "local", icon: UploadCloud, label: "Files", detail: "Drop or browse" },
     { id: "import", icon: Github, label: "Repo", detail: "Clone from URL" },
-    { id: "create", icon: Sparkles, label: "Create", detail: "Agent brief" },
+    { id: "create", icon: Command, label: "Agent", detail: "Brief to repo" },
   ];
 
   return (
     <main className="min-h-[100dvh] overflow-x-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
       <div
         aria-hidden="true"
-        className="pointer-events-none fixed inset-0"
-        style={{
-          background:
-            "linear-gradient(115deg, color-mix(in srgb, var(--bg-app) 82%, var(--brand-stop-4)) 0%, var(--bg-app) 48%, color-mix(in srgb, var(--bg-app) 88%, var(--brand-stop-1)) 100%)",
-        }}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none fixed inset-0 opacity-[0.18]"
+        className="pointer-events-none fixed inset-0 opacity-[0.055]"
         style={{
           backgroundImage:
             "linear-gradient(color-mix(in srgb, var(--text-primary) 10%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--text-primary) 10%, transparent) 1px, transparent 1px)",
-          backgroundSize: "48px 48px",
-          maskImage: "linear-gradient(to bottom, black, transparent 78%)",
+          backgroundSize: "40px 40px",
+          maskImage: "linear-gradient(to bottom, black, transparent 84%)",
         }}
       />
 
-      <header className="relative z-10 border-b border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_84%,transparent)] backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5 md:px-8">
+      <header className="relative z-10 border-b border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_88%,transparent)]">
+        <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-5 md:px-8">
           <div className="flex items-center gap-3">
-            <img src="/vectant/the_V.png" alt="" className="h-8 w-8 object-contain" draggable={false} />
+            <img src="/vectant/the_V.png" alt="" className="h-7 w-7 object-contain" draggable={false} />
             <div>
               <div className="text-sm font-semibold">Vectant ADE</div>
-              <div className="text-xs text-[var(--text-muted)]">Workspace start</div>
+              <div className="text-xs text-[var(--text-muted)]">Control plane</div>
             </div>
           </div>
           <div className="flex items-center gap-3">
             {lastWorkspace?.slug && (
               <button
                 onClick={() => router.push(`/${lastWorkspace.slug}`)}
-                className="hidden h-9 items-center gap-2 rounded-lg border border-[var(--border-medium)] px-3 text-sm text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)] sm:flex"
+                className="hidden h-8 items-center gap-2 rounded-md border border-[var(--border-medium)] px-3 text-xs font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)] sm:flex"
               >
                 <Home className="h-4 w-4" />
                 Return to workspace
@@ -708,7 +744,7 @@ export default function Dashboard() {
             )}
             <button
               onClick={() => signOut()}
-              className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
               aria-label="Sign out"
               title="Sign out"
             >
@@ -718,24 +754,27 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <div className="relative z-10 mx-auto grid max-w-7xl gap-8 px-5 py-8 md:px-8 lg:grid-cols-[minmax(0,1fr)_370px]">
+      <div className="relative z-10 mx-auto grid max-w-7xl gap-5 px-5 py-5 md:px-8 lg:grid-cols-[minmax(0,1fr)_370px]">
         <section className="min-w-0">
-          <div className="mb-7 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <p className="mb-3 inline-flex items-center gap-2 rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-editor)_58%,transparent)] px-3 py-2 text-xs font-medium text-[var(--text-muted)]">
+          <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-stretch">
+            <div className="rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_84%,transparent)] p-4">
+              <p className="mb-3 inline-flex items-center gap-2 rounded-md border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_70%,transparent)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)]">
                 <Command className="h-3.5 w-3.5 text-[var(--attention-purple)]" />
-                Workspace launcher
+                Workspace control plane
               </p>
-              <h1 className="max-w-5xl text-4xl font-semibold leading-[1.02] tracking-normal md:text-6xl">
-                Start from a repo, files, or an agent brief.
+              <h1 className="max-w-3xl text-2xl font-semibold leading-tight tracking-normal md:text-3xl">
+                Provision a source workspace.
               </h1>
-              <div className="mt-5 grid max-w-3xl gap-2 sm:grid-cols-3">
-                {workspaceHighlights.map((item) => {
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
+                Attach a repository, local folder, or agent brief to an owned worktree before the editor runtime opens.
+              </p>
+              <div className="mt-4 grid max-w-3xl gap-2 sm:grid-cols-3">
+                {workspaceSignals.map((item) => {
                   const Icon = item.icon;
                   return (
                     <div
                       key={item.label}
-                      className="rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-editor)_50%,transparent)] px-3 py-3"
+                      className="rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_50%,transparent)] px-3 py-3"
                     >
                       <div className="flex items-center gap-2 text-xs font-semibold text-[var(--text-secondary)]">
                         <Icon className="h-3.5 w-3.5 text-[var(--attention-purple)]" />
@@ -747,7 +786,29 @@ export default function Dashboard() {
                 })}
               </div>
             </div>
-            <div className="flex rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_72%,transparent)] p-1 shadow-[0_18px_70px_-48px_color-mix(in_srgb,var(--brand-stop-3)_90%,transparent)]">
+
+            <div className="rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_88%,transparent)] p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs font-semibold text-[var(--text-secondary)]">
+                  <Activity className="h-3.5 w-3.5 text-[var(--attention-purple)]" />
+                  Provisioning state
+                </div>
+                <span className="rounded-md border border-[var(--border-subtle)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)]">
+                  configured
+                </span>
+              </div>
+              <div className="space-y-1.5 font-mono text-[11px]">
+                {launcherStatusRows.map(([event, state]) => (
+                  <div key={event} className="grid grid-cols-[minmax(0,1fr)_124px] gap-3 rounded-md border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_46%,transparent)] px-3 py-2">
+                    <span className="truncate text-[var(--text-secondary)]">{event}</span>
+                    <span className="whitespace-nowrap text-right text-[10px] text-[var(--text-muted)]">{state}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="mb-3 flex w-full rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_90%,transparent)] p-1">
               {modes.map((mode) => {
                 const Icon = mode.icon;
                 const active = activeTab === mode.id;
@@ -756,25 +817,24 @@ export default function Dashboard() {
                     key={mode.id}
                     type="button"
                     onClick={() => setActiveTab(mode.id)}
-                    className="relative flex h-14 min-w-0 items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition active:scale-[0.99]"
+                    className="relative flex h-12 flex-1 min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-left text-sm transition"
                     style={{ color: active ? "var(--text-primary)" : "var(--text-muted)" }}
                   >
                     {active && (
                       <motion.span
                         layoutId="workspace-mode-active"
                         className="absolute inset-0 rounded-md bg-[var(--bg-surface)]"
-                        transition={{ type: "spring", stiffness: 420, damping: 34 }}
+                        transition={{ duration: 0.16 }}
                       />
                     )}
                     <Icon className="relative h-4 w-4 shrink-0" />
-                    <span className="relative hidden min-w-[64px] flex-col sm:flex">
+                    <span className="relative hidden min-w-[76px] flex-col sm:flex">
                       <span className="text-xs font-semibold">{mode.label}</span>
                       <span className="text-[10px] opacity-70">{mode.detail}</span>
                     </span>
                   </button>
                 );
               })}
-            </div>
           </div>
 
           {feedback && (
@@ -800,7 +860,7 @@ export default function Dashboard() {
             </div>
           )}
 
-          <div className="overflow-hidden rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_88%,transparent)] shadow-[0_28px_90px_-56px_color-mix(in_srgb,var(--brand-stop-4)_85%,transparent)]">
+          <div className="overflow-hidden rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_91%,transparent)]">
             <div className="border-b border-[var(--border-subtle)] px-5 py-4">
               <div className="flex items-center justify-between gap-4">
                 <div className="flex min-w-0 items-start gap-3">
@@ -808,7 +868,7 @@ export default function Dashboard() {
                     {activeTab === "local" ? (
                       <UploadCloud className="h-4 w-4 text-[var(--attention-purple)]" />
                     ) : activeTab === "create" ? (
-                      <Sparkles className="h-4 w-4 text-[var(--attention-purple)]" />
+                      <Command className="h-4 w-4 text-[var(--attention-purple)]" />
                     ) : (
                       <Github className="h-4 w-4 text-[var(--attention-purple)]" />
                     )}
@@ -819,8 +879,8 @@ export default function Dashboard() {
                       {activeTab === "local"
                         ? "Selected files are written into a fresh workspace and saved in recents."
                         : activeTab === "create"
-                          ? "Created workspaces are saved to your recent list."
-                          : "Imported repositories open immediately and stay in recents."}
+                          ? "A validated brief creates a repository, then opens it inside a scoped runtime."
+                          : "Cloned repositories open immediately and stay in recents."}
                     </p>
                   </div>
                 </div>
@@ -874,14 +934,13 @@ export default function Dashboard() {
                       if (!event.currentTarget.contains(event.relatedTarget)) setIsDraggingFiles(false);
                     }}
                     onDrop={handleDrop}
-                    className="relative flex min-h-[300px] flex-col items-center justify-center overflow-hidden rounded-lg border border-dashed p-6 text-center transition"
+                    className="relative flex min-h-[240px] flex-col items-start justify-center overflow-hidden rounded-md border border-dashed p-5 text-left transition"
                     style={{
                       borderColor: isDraggingFiles ? "var(--attention-purple)" : "var(--border-strong)",
                       background: isDraggingFiles
                         ? "color-mix(in srgb, var(--attention-purple) 12%, transparent)"
                         : "color-mix(in srgb, var(--bg-app) 54%, transparent)",
                     }}
-                    whileHover={{ scale: 1.005 }}
                   >
                     <div
                       aria-hidden="true"
@@ -891,19 +950,19 @@ export default function Dashboard() {
                           "linear-gradient(90deg, transparent, color-mix(in srgb, var(--attention-purple) 70%, transparent), transparent)",
                       }}
                     />
-                    <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-lg border border-[var(--border-medium)] bg-[var(--bg-surface)]">
-                      <UploadCloud className="h-7 w-7 text-[var(--text-primary)]" />
+                    <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-md border border-[var(--border-medium)] bg-[var(--bg-surface)]">
+                      <UploadCloud className="h-5 w-5 text-[var(--text-primary)]" />
                     </div>
-                    <h3 className="text-xl font-semibold">Drop files into a new workspace</h3>
+                    <h3 className="text-lg font-semibold">Ingest local source files</h3>
                     <p className="mt-2 max-w-xl text-sm leading-6 text-[var(--text-muted)]">
-                      Drag files or folders here. Vectant skips generated directories and writes the rest into a fresh worktree.
+                      Drag a project folder or selected files. Generated directories are skipped before the workspace is written.
                     </p>
-                    <div className="mt-6 flex flex-wrap justify-center gap-3">
+                    <div className="mt-5 flex flex-wrap gap-3">
                       <button
                         type="button"
                         data-testid="workspace-local-browse-files"
                         onClick={() => fileInputRef.current?.click()}
-                        className="flex h-10 items-center gap-2 rounded-lg bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
+                        className="flex h-10 items-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
                       >
                         <FolderOpen className="h-4 w-4" />
                         Browse files
@@ -912,7 +971,7 @@ export default function Dashboard() {
                         type="button"
                         data-testid="workspace-local-browse-folder"
                         onClick={() => folderInputRef.current?.click()}
-                        className="flex h-10 items-center gap-2 rounded-lg border border-[var(--border-medium)] px-4 text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+                        className="flex h-10 items-center gap-2 rounded-md border border-[var(--border-medium)] px-4 text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
                       >
                         <FolderPlus className="h-4 w-4" />
                         Browse folder
@@ -922,7 +981,7 @@ export default function Dashboard() {
 
                   <div className="mt-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
                     <label className="block">
-                      <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                      <span className="mb-2 block text-xs font-medium text-[var(--text-muted)]">
                         Workspace name
                       </span>
                       <input
@@ -930,13 +989,13 @@ export default function Dashboard() {
                         onChange={(event) => setLocalWorkspaceName(event.target.value)}
                         disabled={isActionLoading}
                         placeholder="uploaded-workspace"
-                        className="h-11 w-full rounded-lg border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
+                        className="h-11 w-full rounded-md border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
                       />
                     </label>
                     <button
                       type="submit"
                       disabled={uploadingLocal || !localUploadFiles.length}
-                      className="mt-auto flex h-11 items-center justify-center gap-2 rounded-lg bg-[var(--attention-purple)] px-4 text-sm font-semibold text-[var(--text-primary)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="mt-auto flex h-11 items-center justify-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {uploadingLocal ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileArchive className="h-4 w-4" />}
                       Open workspace
@@ -993,11 +1052,14 @@ export default function Dashboard() {
                   transition={{ duration: 0.18 }}
                   className="p-5"
                 >
-                  <div className="grid min-h-[280px] gap-5 md:grid-cols-[minmax(0,1fr)_260px]">
-                    <div className="flex flex-col justify-center rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_52%,transparent)] p-5">
-                      <Github className="mb-6 h-8 w-8 text-[var(--text-secondary)]" />
+                  <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_240px]">
+                    <div className="rounded-md border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_52%,transparent)] p-4">
+                      <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-[var(--text-secondary)]">
+                        <Github className="h-4 w-4" />
+                        Clone repository
+                      </div>
                       <label>
-                        <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                        <span className="mb-2 block text-xs font-medium text-[var(--text-muted)]">
                           Repository URL
                         </span>
                         <input
@@ -1007,27 +1069,32 @@ export default function Dashboard() {
                           value={repoUrl}
                           onChange={(event) => setRepoUrl(event.target.value)}
                           disabled={isActionLoading}
-                          className="h-12 w-full rounded-lg border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
+                          className="h-12 w-full rounded-md border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
                         />
                       </label>
                       <button
                         type="submit"
                         data-testid="workspace-repo-import-button"
                         disabled={importing || !repoUrl.trim()}
-                        className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                        className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
                         Import and open
                       </button>
+                      <p className="mt-3 text-xs leading-5 text-[var(--text-dim)]">
+                        The repository is cloned into a scoped workspace and added to recents.
+                      </p>
                     </div>
-                    <div className="rounded-lg border border-[var(--border-subtle)] p-5">
-                      <div className="mb-5 flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--bg-surface)]">
+                    <div className="rounded-md border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_34%,transparent)] p-4">
+                      <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
                         <Code2 className="h-5 w-5 text-[var(--text-secondary)]" />
                       </div>
-                      <h3 className="font-semibold">Imported workspaces stay close.</h3>
-                      <p className="mt-3 text-sm leading-6 text-[var(--text-muted)]">
-                        Repositories open in the editor after clone and appear in your recent workspace list.
-                      </p>
+                      <h3 className="text-sm font-semibold">Import scope</h3>
+                      <div className="mt-3 space-y-2 font-mono text-[11px] text-[var(--text-muted)]">
+                        <div className="flex justify-between gap-3"><span>recents.write</span><span>enabled</span></div>
+                        <div className="flex justify-between gap-3"><span>source.type</span><span>git</span></div>
+                        <div className="flex justify-between gap-3"><span>runtime.open</span><span>after clone</span></div>
+                      </div>
                     </div>
                   </div>
                 </motion.form>
@@ -1045,20 +1112,20 @@ export default function Dashboard() {
                 >
                   <div className="grid gap-4 md:grid-cols-2">
                     <label>
-                      <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                      <span className="mb-2 block text-xs font-medium text-[var(--text-muted)]">
                         Repository name
                       </span>
                       <input
                         type="text"
-                        placeholder="my-ai-project"
+                        placeholder="infra-runtime-gateway"
                         value={newRepoName}
                         onChange={(event) => setNewRepoName(event.target.value)}
                         disabled={isActionLoading}
-                        className="h-11 w-full rounded-lg border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
+                        className="h-11 w-full rounded-md border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
                       />
                     </label>
                     <div>
-                      <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                      <span className="mb-2 block text-xs font-medium text-[var(--text-muted)]">
                         Visibility
                       </span>
                       <div className="grid h-11 grid-cols-2 gap-2">
@@ -1066,7 +1133,7 @@ export default function Dashboard() {
                           type="button"
                           onClick={() => setNewRepoPrivate(true)}
                           disabled={isActionLoading}
-                          className="flex items-center justify-center gap-2 rounded-lg border text-sm font-medium transition disabled:opacity-40"
+                          className="flex items-center justify-center gap-2 rounded-md border text-sm font-medium transition disabled:opacity-40"
                           style={{
                             borderColor: newRepoPrivate ? "var(--attention-purple)" : "var(--border-medium)",
                             background: newRepoPrivate
@@ -1082,7 +1149,7 @@ export default function Dashboard() {
                           type="button"
                           onClick={() => setNewRepoPrivate(false)}
                           disabled={isActionLoading}
-                          className="flex items-center justify-center gap-2 rounded-lg border text-sm font-medium transition disabled:opacity-40"
+                          className="flex items-center justify-center gap-2 rounded-md border text-sm font-medium transition disabled:opacity-40"
                           style={{
                             borderColor: !newRepoPrivate ? "var(--attention-purple)" : "var(--border-medium)",
                             background: !newRepoPrivate
@@ -1099,7 +1166,7 @@ export default function Dashboard() {
                   </div>
 
                   <label className="block">
-                    <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                    <span className="mb-2 block text-xs font-medium text-[var(--text-muted)]">
                       Description
                     </span>
                     <input
@@ -1108,7 +1175,7 @@ export default function Dashboard() {
                       value={newRepoDesc}
                       onChange={(event) => setNewRepoDesc(event.target.value)}
                       disabled={isActionLoading}
-                      className="h-11 w-full rounded-lg border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
+                      className="h-11 w-full rounded-md border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
                     />
                   </label>
 
@@ -1131,10 +1198,10 @@ export default function Dashboard() {
                     <button
                       type="submit"
                       disabled={creating || !newRepoName.trim() || (aiJumpstart && (!aiProjectType || !aiPrompt.trim()))}
-                      className="flex h-11 items-center gap-2 rounded-lg bg-[var(--attention-purple)] px-5 text-sm font-semibold text-[var(--text-primary)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="flex h-11 items-center gap-2 rounded-md bg-[var(--text-primary)] px-5 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                      {aiJumpstart ? "Create AI workspace" : "Create and open"}
+                      {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Command className="h-4 w-4" />}
+                      {aiJumpstart ? "Provision with agent" : "Create and open"}
                     </button>
                   </div>
                 </motion.form>
@@ -1145,12 +1212,10 @@ export default function Dashboard() {
 
         <aside className="space-y-5">
           {lastWorkspace?.slug && (
-            <motion.button
+            <button
               type="button"
               onClick={() => router.push(`/${lastWorkspace.slug}`)}
-              className="w-full rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_86%,transparent)] p-4 text-left shadow-xl"
-              whileHover={{ y: -2 }}
-              transition={{ duration: 0.16 }}
+              className="w-full rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_90%,transparent)] p-4 text-left transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface)]"
             >
               <div className="mb-3 flex items-center justify-between">
                 <div className="flex items-center gap-2 text-sm font-semibold">
@@ -1163,10 +1228,10 @@ export default function Dashboard() {
                 {lastWorkspace.name || lastWorkspace.slug}
               </div>
               <div className="mt-1 font-mono text-xs text-[var(--text-dim)]">{lastWorkspace.slug}</div>
-            </motion.button>
+            </button>
           )}
 
-          <section className="rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_86%,transparent)] p-4 shadow-xl">
+          <section className="rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_90%,transparent)] p-4">
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="flex items-center gap-2 text-sm font-semibold">
@@ -1194,12 +1259,11 @@ export default function Dashboard() {
             ) : (
               <div className="space-y-2">
                 {workspaces.map((workspace) => (
-                  <motion.button
+                  <button
                     key={workspace.slug}
                     type="button"
                     onClick={() => router.push(`/${workspace.slug}`)}
-                    className="group w-full rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_46%,transparent)] p-3 text-left transition hover:border-[var(--attention-purple)]"
-                    whileHover={{ x: 2 }}
+                    className="group w-full rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_46%,transparent)] p-3 text-left transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface)]"
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
@@ -1214,7 +1278,7 @@ export default function Dashboard() {
                       <Clock className="h-3.5 w-3.5" />
                       {workspace.createdAt ? relativeTime(workspace.createdAt) : "Unknown"}
                     </div>
-                  </motion.button>
+                  </button>
                 ))}
               </div>
             )}
