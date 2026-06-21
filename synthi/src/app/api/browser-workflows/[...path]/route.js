@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { NextResponse } from 'next/server';
-import { requireWorkspaceAccess } from '@/lib/workspaceAccess';
+import { requireRuntimeWorkspaceAccess } from '@/lib/workspaceAccess';
 
 export const runtime = 'nodejs';
 
@@ -143,7 +143,7 @@ async function authorizeRuntimeContext(context) {
     return { ok: true, context };
   }
 
-  const access = await requireWorkspaceAccess(context.workspaceSlug);
+  const access = await requireRuntimeWorkspaceAccess(context.workspaceSlug);
   if (!access.ok) {
     return { ok: false, status: access.status || 403, error: access.error || 'workspace_access_denied' };
   }
