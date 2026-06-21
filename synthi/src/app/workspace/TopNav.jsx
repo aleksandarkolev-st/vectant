@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useState, useMemo } from 'react';
-import { Search, TerminalSquare, Play, Settings, MessageSquare, Square, RotateCw } from 'lucide-react';
+import { Home, Search, TerminalSquare, Play, Settings, MessageSquare, Square, RotateCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
@@ -32,6 +32,7 @@ function TopNav({
   onUndo,  
   onRedo, 
   onCommandPalette,
+  onOpenWorkspaceStart,
   onToggleChat, 
   chatVisible,
   onNewFile,
@@ -113,6 +114,16 @@ function TopNav({
           draggable={false}
         />
       </div>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="hidden sm:inline-flex h-7 w-7 p-0 th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 transition-all rounded-md"
+        onClick={onOpenWorkspaceStart}
+        aria-label="Open workspace start"
+        title="Open workspace start (Ctrl+R)"
+      >
+        <Home className="w-3.5 h-3.5" strokeWidth={2} />
+      </Button>
       <div
         className="topnav-search relative transition-all duration-200 hidden sm:block min-w-0"
         style={{ width: searchOpen ? '420px' : '240px', maxWidth: '100%' }}
