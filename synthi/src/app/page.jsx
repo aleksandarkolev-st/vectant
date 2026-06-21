@@ -9,14 +9,16 @@ import {
   ArrowRight,
   CheckCircle2,
   Clock,
+  Code2,
+  Command,
   FileArchive,
   FolderGit2,
   FolderOpen,
   FolderPlus,
   Github,
-  GitBranch,
   Globe,
   Home,
+  Layers3,
   Loader2,
   Lock,
   LogOut,
@@ -198,13 +200,19 @@ async function fileToBatchEntry(entry) {
 function modeTitle(mode) {
   switch (mode) {
     case "local":
-      return "Upload a worktree";
+      return "Import files from disk";
     case "create":
-      return "Create with AI";
+      return "Create with agents";
     default:
       return "Import repository";
   }
 }
+
+const workspaceHighlights = [
+  { icon: FolderOpen, label: "Local files", detail: "Drop a folder or pick files" },
+  { icon: Github, label: "GitHub repo", detail: "Clone and keep it recent" },
+  { icon: Sparkles, label: "AI brief", detail: "Create a repo with context" },
+];
 
 export default function Dashboard() {
   const { data: session, status } = useSession();
@@ -591,7 +599,7 @@ export default function Dashboard() {
 
   if (status === "loading") {
     return (
-      <div className="flex h-screen items-center justify-center bg-[var(--bg-app)] text-[var(--text-secondary)]">
+      <div className="flex min-h-[100dvh] items-center justify-center bg-[var(--bg-app)] text-[var(--text-secondary)]">
         <div className="flex items-center gap-3 text-sm">
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading...
@@ -602,12 +610,12 @@ export default function Dashboard() {
 
   if (!session) {
     return (
-      <main className="min-h-screen overflow-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
+      <main className="min-h-[100dvh] overflow-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
         <div className="absolute inset-0 opacity-60" style={{
           background:
             "radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--brand-stop-3) 16%, transparent), transparent 36%), linear-gradient(135deg, color-mix(in srgb, var(--bg-app) 72%, var(--brand-stop-4)), var(--bg-app) 58%)",
         }} />
-        <section className="relative mx-auto flex min-h-screen w-full max-w-6xl items-center px-6 py-12">
+        <section className="relative mx-auto flex min-h-[100dvh] w-full max-w-6xl items-center px-6 py-12">
           <div className="grid w-full gap-8 lg:grid-cols-[1fr_420px] lg:items-center">
             <div className="max-w-3xl">
               <img src="/vectant-dark-theme.png" alt="Vectant" className="mb-10 h-10 w-auto" />
@@ -646,13 +654,13 @@ export default function Dashboard() {
   }
 
   const modes = [
-    { id: "local", icon: UploadCloud, label: "Upload", detail: "Drop files or pick from disk" },
-    { id: "import", icon: Github, label: "Import", detail: "Clone an existing repo" },
-    { id: "create", icon: Sparkles, label: "Create", detail: "Generate with AI tools" },
+    { id: "local", icon: UploadCloud, label: "Files", detail: "Drop or browse" },
+    { id: "import", icon: Github, label: "Repo", detail: "Clone from URL" },
+    { id: "create", icon: Sparkles, label: "Create", detail: "Agent brief" },
   ];
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
+    <main className="min-h-[100dvh] overflow-x-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
       <div
         aria-hidden="true"
         className="pointer-events-none fixed inset-0"
@@ -710,16 +718,36 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <div className="relative z-10 mx-auto grid max-w-7xl gap-8 px-5 py-8 md:px-8 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="relative z-10 mx-auto grid max-w-7xl gap-8 px-5 py-8 md:px-8 lg:grid-cols-[minmax(0,1fr)_370px]">
         <section className="min-w-0">
           <div className="mb-7 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <p className="mb-3 text-sm font-medium text-[var(--text-muted)]">Workspace control</p>
+              <p className="mb-3 inline-flex items-center gap-2 rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-editor)_58%,transparent)] px-3 py-2 text-xs font-medium text-[var(--text-muted)]">
+                <Command className="h-3.5 w-3.5 text-[var(--attention-purple)]" />
+                Workspace launcher
+              </p>
               <h1 className="max-w-5xl text-4xl font-semibold leading-[1.02] tracking-normal md:text-6xl">
-                Choose a workspace entry point.
+                Start from a repo, files, or an agent brief.
               </h1>
+              <div className="mt-5 grid max-w-3xl gap-2 sm:grid-cols-3">
+                {workspaceHighlights.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <div
+                      key={item.label}
+                      className="rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-editor)_50%,transparent)] px-3 py-3"
+                    >
+                      <div className="flex items-center gap-2 text-xs font-semibold text-[var(--text-secondary)]">
+                        <Icon className="h-3.5 w-3.5 text-[var(--attention-purple)]" />
+                        {item.label}
+                      </div>
+                      <div className="mt-1 text-[11px] text-[var(--text-muted)]">{item.detail}</div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            <div className="flex rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_72%,transparent)] p-1">
+            <div className="flex rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_72%,transparent)] p-1 shadow-[0_18px_70px_-48px_color-mix(in_srgb,var(--brand-stop-3)_90%,transparent)]">
               {modes.map((mode) => {
                 const Icon = mode.icon;
                 const active = activeTab === mode.id;
@@ -728,7 +756,7 @@ export default function Dashboard() {
                     key={mode.id}
                     type="button"
                     onClick={() => setActiveTab(mode.id)}
-                    className="relative flex h-11 min-w-0 items-center gap-2 rounded-md px-3 text-left text-sm transition"
+                    className="relative flex h-14 min-w-0 items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition active:scale-[0.99]"
                     style={{ color: active ? "var(--text-primary)" : "var(--text-muted)" }}
                   >
                     {active && (
@@ -739,7 +767,10 @@ export default function Dashboard() {
                       />
                     )}
                     <Icon className="relative h-4 w-4 shrink-0" />
-                    <span className="relative hidden sm:inline">{mode.label}</span>
+                    <span className="relative hidden min-w-[64px] flex-col sm:flex">
+                      <span className="text-xs font-semibold">{mode.label}</span>
+                      <span className="text-[10px] opacity-70">{mode.detail}</span>
+                    </span>
                   </button>
                 );
               })}
@@ -769,18 +800,29 @@ export default function Dashboard() {
             </div>
           )}
 
-          <div className="overflow-hidden rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_86%,transparent)] shadow-2xl">
+          <div className="overflow-hidden rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_88%,transparent)] shadow-[0_28px_90px_-56px_color-mix(in_srgb,var(--brand-stop-4)_85%,transparent)]">
             <div className="border-b border-[var(--border-subtle)] px-5 py-4">
               <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-lg font-semibold">{modeTitle(activeTab)}</h2>
-                  <p className="mt-1 text-sm text-[var(--text-muted)]">
-                    {activeTab === "local"
-                      ? "Selected files are written into a new workspace worktree."
-                      : activeTab === "create"
-                      ? "Created workspaces are saved to your recent list."
-                        : "Imported repositories open immediately and stay in recents."}
-                  </p>
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_58%,transparent)]">
+                    {activeTab === "local" ? (
+                      <UploadCloud className="h-4 w-4 text-[var(--attention-purple)]" />
+                    ) : activeTab === "create" ? (
+                      <Sparkles className="h-4 w-4 text-[var(--attention-purple)]" />
+                    ) : (
+                      <Github className="h-4 w-4 text-[var(--attention-purple)]" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="text-lg font-semibold">{modeTitle(activeTab)}</h2>
+                    <p className="mt-1 text-sm text-[var(--text-muted)]">
+                      {activeTab === "local"
+                        ? "Selected files are written into a fresh workspace and saved in recents."
+                        : activeTab === "create"
+                          ? "Created workspaces are saved to your recent list."
+                          : "Imported repositories open immediately and stay in recents."}
+                    </p>
+                  </div>
                 </div>
                 <span className="hidden rounded-md border border-[var(--border-subtle)] px-2.5 py-1 text-xs text-[var(--text-muted)] sm:inline-flex">
                   {activeTab === "local" ? localUploadSummary.label : isActionLoading ? "Working" : "Ready"}
@@ -799,9 +841,17 @@ export default function Dashboard() {
                   transition={{ duration: 0.18 }}
                   className="p-5"
                 >
-                  <input ref={fileInputRef} type="file" multiple className="sr-only" onChange={handleFileInputChange} />
+                  <input
+                    ref={fileInputRef}
+                    data-testid="workspace-local-file-input"
+                    type="file"
+                    multiple
+                    className="sr-only"
+                    onChange={handleFileInputChange}
+                  />
                   <input
                     ref={folderInputRef}
+                    data-testid="workspace-local-folder-input"
                     type="file"
                     multiple
                     webkitdirectory="true"
@@ -810,6 +860,7 @@ export default function Dashboard() {
                   />
 
                   <motion.div
+                    data-testid="workspace-local-dropzone"
                     onDragEnter={(event) => {
                       event.preventDefault();
                       setIsDraggingFiles(true);
@@ -823,7 +874,7 @@ export default function Dashboard() {
                       if (!event.currentTarget.contains(event.relatedTarget)) setIsDraggingFiles(false);
                     }}
                     onDrop={handleDrop}
-                    className="flex min-h-[280px] flex-col items-center justify-center rounded-lg border border-dashed p-6 text-center transition"
+                    className="relative flex min-h-[300px] flex-col items-center justify-center overflow-hidden rounded-lg border border-dashed p-6 text-center transition"
                     style={{
                       borderColor: isDraggingFiles ? "var(--attention-purple)" : "var(--border-strong)",
                       background: isDraggingFiles
@@ -832,16 +883,25 @@ export default function Dashboard() {
                     }}
                     whileHover={{ scale: 1.005 }}
                   >
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-x-8 top-0 h-px"
+                      style={{
+                        background:
+                          "linear-gradient(90deg, transparent, color-mix(in srgb, var(--attention-purple) 70%, transparent), transparent)",
+                      }}
+                    />
                     <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-lg border border-[var(--border-medium)] bg-[var(--bg-surface)]">
                       <UploadCloud className="h-7 w-7 text-[var(--text-primary)]" />
                     </div>
-                    <h3 className="text-xl font-semibold">Drop files into the worktree</h3>
+                    <h3 className="text-xl font-semibold">Drop files into a new workspace</h3>
                     <p className="mt-2 max-w-xl text-sm leading-6 text-[var(--text-muted)]">
-                      Drag files or folders here. Vectant skips heavy generated directories and writes the rest into a fresh workspace.
+                      Drag files or folders here. Vectant skips generated directories and writes the rest into a fresh worktree.
                     </p>
                     <div className="mt-6 flex flex-wrap justify-center gap-3">
                       <button
                         type="button"
+                        data-testid="workspace-local-browse-files"
                         onClick={() => fileInputRef.current?.click()}
                         className="flex h-10 items-center gap-2 rounded-lg bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
                       >
@@ -850,6 +910,7 @@ export default function Dashboard() {
                       </button>
                       <button
                         type="button"
+                        data-testid="workspace-local-browse-folder"
                         onClick={() => folderInputRef.current?.click()}
                         className="flex h-10 items-center gap-2 rounded-lg border border-[var(--border-medium)] px-4 text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
                       >
@@ -940,6 +1001,7 @@ export default function Dashboard() {
                           Repository URL
                         </span>
                         <input
+                          data-testid="workspace-repo-url-input"
                           type="text"
                           placeholder="https://github.com/owner/repo.git"
                           value={repoUrl}
@@ -950,6 +1012,7 @@ export default function Dashboard() {
                       </label>
                       <button
                         type="submit"
+                        data-testid="workspace-repo-import-button"
                         disabled={importing || !repoUrl.trim()}
                         className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                       >
@@ -959,7 +1022,7 @@ export default function Dashboard() {
                     </div>
                     <div className="rounded-lg border border-[var(--border-subtle)] p-5">
                       <div className="mb-5 flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--bg-surface)]">
-                        <GitBranch className="h-5 w-5 text-[var(--text-secondary)]" />
+                        <Code2 className="h-5 w-5 text-[var(--text-secondary)]" />
                       </div>
                       <h3 className="font-semibold">Imported workspaces stay close.</h3>
                       <p className="mt-3 text-sm leading-6 text-[var(--text-muted)]">
@@ -1106,7 +1169,10 @@ export default function Dashboard() {
           <section className="rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_86%,transparent)] p-4 shadow-xl">
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <h2 className="text-sm font-semibold">Recent workspaces</h2>
+                <h2 className="flex items-center gap-2 text-sm font-semibold">
+                  <Layers3 className="h-4 w-4 text-[var(--attention-purple)]" />
+                  Recent workspaces
+                </h2>
                 <p className="mt-1 text-xs text-[var(--text-muted)]">Repos, uploads, and created workspaces</p>
               </div>
               <span className="rounded-md border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-muted)]">
