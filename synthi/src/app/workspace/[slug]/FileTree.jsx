@@ -707,20 +707,29 @@ const FileTreeView = ({ onToggleOrientation }) => {
           {isExternalDropActive && !externalDropTargetFolder && (
             <div
               data-testid="workspace-file-drop-overlay"
-              className="pointer-events-none absolute inset-2 z-[2] flex items-center justify-center rounded-lg border border-dashed px-4 text-center"
+              className="pointer-events-none absolute inset-1 z-[2] rounded-lg border border-dashed"
               style={{
-                borderColor: "color-mix(in srgb, var(--attention-purple) 66%, transparent)",
-                background: "color-mix(in srgb, var(--bg-sidebar) 82%, var(--attention-purple) 18%)",
-                boxShadow: "inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent)",
+                borderColor: "color-mix(in srgb, var(--attention-purple) 56%, transparent)",
+                background: "transparent",
+                boxShadow: "inset 0 0 0 1px color-mix(in srgb, var(--attention-purple) 12%, transparent)",
               }}
             >
-              <div>
-                <Upload className="mx-auto mb-2 h-5 w-5" style={{ color: "var(--attention-purple)" }} />
-                <div className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
-                  {externalDropTargetFolder ? `Drop files into ${externalDropTargetFolder}` : "Drop files into workspace root"}
-                </div>
-                <div className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                  They will be written into this worktree.
+              <div
+                className="absolute bottom-2 left-2 right-2 flex items-center gap-2 rounded-md border px-2.5 py-2 text-left"
+                style={{
+                  borderColor: "color-mix(in srgb, var(--attention-purple) 24%, var(--border-subtle))",
+                  background: "color-mix(in srgb, var(--bg-sidebar) 94%, var(--attention-purple) 6%)",
+                  boxShadow: "0 8px 18px -16px color-mix(in srgb, var(--attention-purple) 42%, transparent)",
+                }}
+              >
+                <Upload className="h-3.5 w-3.5 flex-shrink-0" style={{ color: "var(--attention-purple)" }} />
+                <div className="min-w-0">
+                  <div className="truncate text-[11px] font-semibold" style={{ color: "var(--text-primary)" }}>
+                    Drop on a folder to upload there
+                  </div>
+                  <div className="truncate text-[10px]" style={{ color: "var(--text-muted)" }}>
+                    Empty space uploads to workspace root.
+                  </div>
                 </div>
               </div>
             </div>
