@@ -2,6 +2,7 @@
 import { useState, useRef, useEffect, useCallback, memo, useMemo } from "react";
 import { toast } from "sonner";
 import { Virtuoso } from "react-virtuoso";
+import { motion, useReducedMotion } from "framer-motion";
 import { useAppDispatch, useAppSelector } from "@/redux/hooks";
 import {
   selectFilesTree,
@@ -32,7 +33,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { PanelLeftClose, PanelRightClose, FolderOpen, Loader2, Upload } from "lucide-react";
+import { FilePlus2, FolderPlus, PanelLeftClose, PanelRightClose, FolderOpen, Loader2, Upload } from "lucide-react";
 import { getFileIcon, FolderIcon } from "@/utils/fileIcons";
 import FileItem from "./FileItem";
 import { useVirtualizedTree } from "@/hooks/useVirtualizedTree";
@@ -181,6 +182,107 @@ async function fileToBatchEntry(entry) {
     encoding: "base64",
     content: arrayBufferToBase64(buffer),
   };
+}
+
+function ExplorerEmptyState({ isUploading, onUpload, onNewFile, onNewFolder }) {
+  const reduceMotion = useReducedMotion();
+  const motionProps = reduceMotion
+    ? {}
+    : {
+        initial: { opacity: 0, y: 8 },
+        animate: { opacity: 1, y: 0 },
+        transition: { duration: 0.18, ease: [0.16, 1, 0.3, 1] },
+      };
+  const tapProps = reduceMotion ? {} : { whileTap: { scale: 0.98 } };
+
+  return (
+    <motion.div
+      {...motionProps}
+      className="flex h-full min-h-[220px] items-center px-3 py-5"
+      data-testid="workspace-explorer-empty-state"
+    >
+      <div
+        className="w-full rounded-lg border px-3 py-3.5"
+        style={{
+          borderColor: "color-mix(in srgb, var(--border-medium) 78%, transparent)",
+          background: "color-mix(in srgb, var(--bg-sidebar) 82%, var(--bg-editor) 18%)",
+        }}
+      >
+        <div className="flex items-start gap-2.5">
+          <div
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
+            style={{
+              borderColor: "color-mix(in srgb, var(--attention-purple) 26%, var(--border-medium))",
+              color: "var(--attention-purple)",
+              background: "color-mix(in srgb, var(--attention-purple) 8%, transparent)",
+            }}
+          >
+            <FolderOpen className="h-4 w-4" strokeWidth={1.5} />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[12px] font-semibold" style={{ color: "var(--text-primary)" }}>
+              Workspace is empty
+            </div>
+            <p className="mt-1 text-[11px] leading-5" style={{ color: "var(--text-muted)" }}>
+              Upload files, create a folder, or start from a file template.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-3 grid gap-1.5">
+          <motion.button
+            {...tapProps}
+            type="button"
+            onClick={onUpload}
+            disabled={isUploading}
+            className="flex h-8 items-center gap-2 rounded-md border px-2.5 text-left text-[11px] font-semibold transition-colors hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
+            style={{
+              color: "var(--text-primary)",
+              borderColor: "color-mix(in srgb, var(--attention-purple) 28%, var(--border-subtle))",
+              background: "color-mix(in srgb, var(--attention-purple) 7%, transparent)",
+            }}
+          >
+            {isUploading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.5} />
+            ) : (
+              <Upload className="h-3.5 w-3.5" strokeWidth={1.5} />
+            )}
+            Upload files
+          </motion.button>
+          <div className="grid grid-cols-2 gap-1.5">
+            <motion.button
+              {...tapProps}
+              type="button"
+              onClick={onNewFile}
+              className="flex h-8 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors hover:bg-white/[0.05]"
+              style={{
+                color: "var(--text-secondary)",
+                borderColor: "var(--border-subtle)",
+                background: "transparent",
+              }}
+            >
+              <FilePlus2 className="h-3.5 w-3.5" strokeWidth={1.5} />
+              New file
+            </motion.button>
+            <motion.button
+              {...tapProps}
+              type="button"
+              onClick={onNewFolder}
+              className="flex h-8 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-colors hover:bg-white/[0.05]"
+              style={{
+                color: "var(--text-secondary)",
+                borderColor: "var(--border-subtle)",
+                background: "transparent",
+              }}
+            >
+              <FolderPlus className="h-3.5 w-3.5" strokeWidth={1.5} />
+              New folder
+            </motion.button>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
 }
 
 const FileTreeView = ({ onToggleOrientation }) => {
@@ -535,6 +637,22 @@ const FileTreeView = ({ onToggleOrientation }) => {
 
   // Flatten the recursive tree into a virtualised flat list
   const flatNodes = useVirtualizedTree(files, uiActionState);
+  const hasExplorerRows = flatNodes.length > 0;
+
+  const handleUploadButtonClick = useCallback((event) => {
+    event?.stopPropagation?.();
+    uploadInputRef.current?.click();
+  }, []);
+
+  const handleEmptyNewFile = useCallback((event) => {
+    event?.stopPropagation?.();
+    handleTreeAction("new-file-root");
+  }, [handleTreeAction]);
+
+  const handleEmptyNewFolder = useCallback((event) => {
+    event?.stopPropagation?.();
+    handleTreeAction("new-folder-root");
+  }, [handleTreeAction]);
 
   // Stable row renderer for Virtuoso
   const renderRow = useCallback((index) => {
@@ -657,10 +775,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
             >
               <button
                 data-testid="workspace-file-upload-button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  uploadInputRef.current?.click();
-                }}
+                onClick={handleUploadButtonClick}
                 disabled={isUploading}
                 title="Upload files"
                 className="p-1.5 rounded-lg transition-all hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-50"
@@ -694,14 +809,23 @@ const FileTreeView = ({ onToggleOrientation }) => {
               target) is injected as a synthetic Virtuoso row by
               useVirtualizedTree and rendered by renderRow above. */}
           <div className="flex-1 py-0.5" style={{ minHeight: 0 }}>
-            <Virtuoso
-              totalCount={flatNodes.length}
-              overscan={200}
-              itemContent={renderRow}
-              computeItemKey={(index) => flatNodes[index]?.key ?? index}
-              style={{ height: '100%' }}
-              increaseViewportBy={{ top: 200, bottom: 200 }}
-            />
+            {hasExplorerRows ? (
+              <Virtuoso
+                totalCount={flatNodes.length}
+                overscan={200}
+                itemContent={renderRow}
+                computeItemKey={(index) => flatNodes[index]?.key ?? index}
+                style={{ height: '100%' }}
+                increaseViewportBy={{ top: 200, bottom: 200 }}
+              />
+            ) : (
+              <ExplorerEmptyState
+                isUploading={isUploading}
+                onUpload={handleUploadButtonClick}
+                onNewFile={handleEmptyNewFile}
+                onNewFolder={handleEmptyNewFolder}
+              />
+            )}
           </div>
 
           {isExternalDropActive && !externalDropTargetFolder && (
