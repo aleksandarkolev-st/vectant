@@ -1328,12 +1328,12 @@ function TerminalUtilityRail({ state, stoppingRuntime, canStop, onStopRuntime, o
       initial={{ opacity: 0, y: -8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18, ease: TERMINAL_MOTION_EASE }}
-      className="absolute right-2 top-2 z-10 flex items-center gap-1.5 rounded-lg border px-1.5 py-1 shadow-xl"
+      className="absolute right-2 top-2 z-10 flex items-center gap-1.5 rounded-lg border px-1.5 py-1 shadow-none"
       style={{
         background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 88%, var(--bg-app, #0a0b10))',
         borderColor: 'var(--border-subtle, #2a2b38)',
         color: 'var(--text-secondary, #a1a1aa)',
-        boxShadow: '0 10px 34px -24px rgba(0,0,0,0.9)',
+        boxShadow: 'none',
       }}
     >
       <div
@@ -1380,7 +1380,7 @@ function TerminalOAuthPrompt({ prompt, onOpen, onDismiss }) {
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 12, scale: 0.98 }}
           transition={{ duration: 0.22, ease: TERMINAL_MOTION_EASE }}
-          className="absolute bottom-4 left-4 z-20 w-[390px] max-w-[calc(100%-32px)] overflow-hidden rounded-lg border shadow-2xl"
+          className="absolute bottom-4 left-4 z-20 w-[390px] max-w-[calc(100%-32px)] overflow-hidden rounded-lg border shadow-none"
           style={{
             background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 91%, var(--bg-app, #0a0b10))',
             borderColor: 'color-mix(in srgb, var(--accent-primary, #6c6885) 34%, var(--border-medium, #3f3f46))',
@@ -1605,7 +1605,7 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 8, scale: 0.98 }}
         transition={{ duration: 0.18, ease: TERMINAL_MOTION_EASE }}
-        className="flex max-h-[calc(100vh-16px)] flex-col overflow-hidden rounded-lg border shadow-2xl"
+        className="flex max-h-[calc(100vh-16px)] flex-col overflow-hidden rounded-lg border shadow-none"
         style={{
           background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 92%, var(--bg-app, #0a0b10))',
           borderColor: 'var(--border-medium, #3f3f46)',
@@ -1789,7 +1789,7 @@ function TerminalColorPanel({ baseTheme, overrides, onClose }) {
   return createPortal(
     <div
       ref={panelRef}
-      className="fixed rounded-lg border shadow-2xl flex flex-col"
+      className="fixed rounded-lg border shadow-none flex flex-col"
       style={{
         ...placement,
         width: 460,
@@ -1937,7 +1937,7 @@ function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepair
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.985 }}
         transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: TERMINAL_MOTION_EASE }}
-        className="flex flex-col overflow-hidden rounded-lg border shadow-2xl"
+        className="flex flex-col overflow-hidden rounded-lg border shadow-none"
         style={{
           background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 94%, var(--bg-app, #0a0b10))',
           borderColor: 'var(--border-medium, #3f3f46)',
