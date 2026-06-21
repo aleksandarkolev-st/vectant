@@ -183,7 +183,7 @@ export default function LoginPage() {
             <button
               type="button"
               onClick={() => router.push("/")}
-              className="rounded-md border border-[var(--border-subtle)] px-3 py-2 text-xs font-medium text-[var(--text-muted)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+              className="th-focus-ring rounded-md border border-[var(--border-subtle)] px-3 py-2 text-xs font-medium text-[var(--text-muted)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
             >
               Launcher
             </button>
@@ -199,7 +199,7 @@ export default function LoginPage() {
                   type="button"
                   onClick={() => handleSignIn(method.id)}
                   disabled={signingIn !== null}
-                  className="flex h-12 w-full items-center justify-between rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
+                  className="th-focus-ring flex h-12 w-full items-center justify-between rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
                   style={{
                     background: method.primary ? "var(--text-primary)" : "var(--bg-app)",
                     color: method.primary ? "var(--bg-app)" : "var(--text-primary)",

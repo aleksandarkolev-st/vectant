@@ -670,15 +670,17 @@ export default function Dashboard() {
                 </p>
               </div>
               <button
+                type="button"
                 onClick={() => signIn("github", { callbackUrl: "/" })}
-                className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
+                className="th-focus-ring flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
               >
                 <Github className="h-4 w-4" />
                 Continue with GitHub
               </button>
               <button
+                type="button"
                 onClick={() => router.push("/login")}
-                className="mt-3 flex h-10 w-full items-center justify-center rounded-md border border-[var(--border-medium)] text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+                className="th-focus-ring mt-3 flex h-10 w-full items-center justify-center rounded-md border border-[var(--border-medium)] text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
               >
                 More auth options
               </button>
@@ -702,6 +704,19 @@ export default function Dashboard() {
     { id: "import", icon: Github, label: "Repo", detail: "Clone from URL" },
     { id: "create", icon: Command, label: "Agent", detail: "Brief to repo" },
   ];
+  const handleModeKeyDown = (event, index) => {
+    const lastIndex = modes.length - 1;
+    let nextIndex = index;
+
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = index === lastIndex ? 0 : index + 1;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = index === 0 ? lastIndex : index - 1;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = lastIndex;
+    else return;
+
+    event.preventDefault();
+    setActiveTab(modes[nextIndex].id);
+  };
 
   return (
     <main className="min-h-[100dvh] overflow-x-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
@@ -728,8 +743,10 @@ export default function Dashboard() {
           <div className="flex items-center gap-3">
             {lastWorkspace?.slug && (
               <button
+                type="button"
                 onClick={() => router.push(`/${lastWorkspace.slug}`)}
-                className="hidden h-8 items-center gap-2 rounded-md border border-[var(--border-medium)] px-3 text-xs font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)] sm:flex"
+                aria-label={`Return to workspace ${lastWorkspace.name || lastWorkspace.slug}`}
+                className="th-focus-ring hidden h-8 items-center gap-2 rounded-md border border-[var(--border-medium)] px-3 text-xs font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)] sm:flex"
               >
                 <Home className="h-4 w-4" />
                 Return to workspace
@@ -743,8 +760,9 @@ export default function Dashboard() {
               />
             )}
             <button
+              type="button"
               onClick={() => signOut()}
-              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+              className="th-focus-ring flex h-8 w-8 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
               aria-label="Sign out"
               title="Sign out"
             >
@@ -808,16 +826,26 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className="mb-3 flex w-full rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_90%,transparent)] p-1">
-              {modes.map((mode) => {
+          <div
+            className="mb-3 flex w-full rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_90%,transparent)] p-1"
+            role="tablist"
+            aria-label="Workspace source mode"
+          >
+              {modes.map((mode, index) => {
                 const Icon = mode.icon;
                 const active = activeTab === mode.id;
                 return (
                   <button
                     key={mode.id}
+                    id={`workspace-mode-tab-${mode.id}`}
                     type="button"
+                    role="tab"
+                    aria-selected={active}
+                    aria-controls={`workspace-mode-panel-${mode.id}`}
+                    tabIndex={active ? 0 : -1}
                     onClick={() => setActiveTab(mode.id)}
-                    className="relative flex h-12 flex-1 min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-left text-sm transition"
+                    onKeyDown={(event) => handleModeKeyDown(event, index)}
+                    className="th-focus-ring relative flex h-12 flex-1 min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2 text-left text-sm transition"
                     style={{ color: active ? "var(--text-primary)" : "var(--text-muted)" }}
                   >
                     {active && (
@@ -854,7 +882,12 @@ export default function Dashboard() {
             >
               {feedback.type === "error" ? <AlertCircle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
               <span className="flex-1">{feedback.message}</span>
-              <button onClick={() => setFeedback(null)} aria-label="Dismiss" className="opacity-70 hover:opacity-100">
+              <button
+                type="button"
+                onClick={() => setFeedback(null)}
+                aria-label="Dismiss"
+                className="th-focus-ring rounded-sm opacity-70 hover:opacity-100"
+              >
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -894,6 +927,9 @@ export default function Dashboard() {
               {activeTab === "local" && (
                 <motion.form
                   key="local"
+                  id="workspace-mode-panel-local"
+                  role="tabpanel"
+                  aria-labelledby="workspace-mode-tab-local"
                   onSubmit={handleLocalUpload}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -906,6 +942,7 @@ export default function Dashboard() {
                     data-testid="workspace-local-file-input"
                     type="file"
                     multiple
+                    aria-label="Select files for workspace import"
                     className="sr-only"
                     onChange={handleFileInputChange}
                   />
@@ -915,12 +952,16 @@ export default function Dashboard() {
                     type="file"
                     multiple
                     webkitdirectory="true"
+                    aria-label="Select folder for workspace import"
                     className="sr-only"
                     onChange={handleFileInputChange}
                   />
 
                   <motion.div
                     data-testid="workspace-local-dropzone"
+                    role="button"
+                    tabIndex={0}
+                    aria-label="Drop files here or press Enter to browse files"
                     onDragEnter={(event) => {
                       event.preventDefault();
                       setIsDraggingFiles(true);
@@ -934,7 +975,12 @@ export default function Dashboard() {
                       if (!event.currentTarget.contains(event.relatedTarget)) setIsDraggingFiles(false);
                     }}
                     onDrop={handleDrop}
-                    className="relative flex min-h-[240px] flex-col items-start justify-center overflow-hidden rounded-md border border-dashed p-5 text-left transition"
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      fileInputRef.current?.click();
+                    }}
+                    className="th-focus-ring relative flex min-h-[240px] flex-col items-start justify-center overflow-hidden rounded-md border border-dashed p-5 text-left transition"
                     style={{
                       borderColor: isDraggingFiles ? "var(--attention-purple)" : "var(--border-strong)",
                       background: isDraggingFiles
@@ -962,7 +1008,8 @@ export default function Dashboard() {
                         type="button"
                         data-testid="workspace-local-browse-files"
                         onClick={() => fileInputRef.current?.click()}
-                        className="flex h-10 items-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
+                        aria-label="Browse files to import"
+                        className="th-focus-ring flex h-10 items-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
                       >
                         <FolderOpen className="h-4 w-4" />
                         Browse files
@@ -971,7 +1018,8 @@ export default function Dashboard() {
                         type="button"
                         data-testid="workspace-local-browse-folder"
                         onClick={() => folderInputRef.current?.click()}
-                        className="flex h-10 items-center gap-2 rounded-md border border-[var(--border-medium)] px-4 text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+                        aria-label="Browse a folder to import"
+                        className="th-focus-ring flex h-10 items-center gap-2 rounded-md border border-[var(--border-medium)] px-4 text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
                       >
                         <FolderPlus className="h-4 w-4" />
                         Browse folder
@@ -989,13 +1037,13 @@ export default function Dashboard() {
                         onChange={(event) => setLocalWorkspaceName(event.target.value)}
                         disabled={isActionLoading}
                         placeholder="uploaded-workspace"
-                        className="h-11 w-full rounded-md border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
+                        className="th-focus-ring h-11 w-full rounded-md border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
                       />
                     </label>
                     <button
                       type="submit"
                       disabled={uploadingLocal || !localUploadFiles.length}
-                      className="mt-auto flex h-11 items-center justify-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="th-focus-ring mt-auto flex h-11 items-center justify-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {uploadingLocal ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileArchive className="h-4 w-4" />}
                       Open workspace
@@ -1012,7 +1060,7 @@ export default function Dashboard() {
                             setLocalUploadFiles([]);
                             setLocalUploadSkipped([]);
                           }}
-                          className="text-xs text-[var(--text-muted)] transition hover:text-[var(--text-primary)]"
+                          className="th-focus-ring rounded-sm text-xs text-[var(--text-muted)] transition hover:text-[var(--text-primary)]"
                         >
                           Clear
                         </button>
@@ -1045,6 +1093,9 @@ export default function Dashboard() {
               {activeTab === "import" && (
                 <motion.form
                   key="import"
+                  id="workspace-mode-panel-import"
+                  role="tabpanel"
+                  aria-labelledby="workspace-mode-tab-import"
                   onSubmit={handleImport}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -1069,14 +1120,14 @@ export default function Dashboard() {
                           value={repoUrl}
                           onChange={(event) => setRepoUrl(event.target.value)}
                           disabled={isActionLoading}
-                          className="h-12 w-full rounded-md border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
+                          className="th-focus-ring h-12 w-full rounded-md border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
                         />
                       </label>
                       <button
                         type="submit"
                         data-testid="workspace-repo-import-button"
                         disabled={importing || !repoUrl.trim()}
-                        className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                        className="th-focus-ring mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
                         Import and open
@@ -1103,6 +1154,9 @@ export default function Dashboard() {
               {activeTab === "create" && (
                 <motion.form
                   key="create"
+                  id="workspace-mode-panel-create"
+                  role="tabpanel"
+                  aria-labelledby="workspace-mode-tab-create"
                   onSubmit={handleCreateRepo}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -1121,7 +1175,7 @@ export default function Dashboard() {
                         value={newRepoName}
                         onChange={(event) => setNewRepoName(event.target.value)}
                         disabled={isActionLoading}
-                        className="h-11 w-full rounded-md border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
+                        className="th-focus-ring h-11 w-full rounded-md border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
                       />
                     </label>
                     <div>
@@ -1131,9 +1185,10 @@ export default function Dashboard() {
                       <div className="grid h-11 grid-cols-2 gap-2">
                         <button
                           type="button"
+                          aria-pressed={newRepoPrivate}
                           onClick={() => setNewRepoPrivate(true)}
                           disabled={isActionLoading}
-                          className="flex items-center justify-center gap-2 rounded-md border text-sm font-medium transition disabled:opacity-40"
+                          className="th-focus-ring flex items-center justify-center gap-2 rounded-md border text-sm font-medium transition disabled:opacity-40"
                           style={{
                             borderColor: newRepoPrivate ? "var(--attention-purple)" : "var(--border-medium)",
                             background: newRepoPrivate
@@ -1147,9 +1202,10 @@ export default function Dashboard() {
                         </button>
                         <button
                           type="button"
+                          aria-pressed={!newRepoPrivate}
                           onClick={() => setNewRepoPrivate(false)}
                           disabled={isActionLoading}
-                          className="flex items-center justify-center gap-2 rounded-md border text-sm font-medium transition disabled:opacity-40"
+                          className="th-focus-ring flex items-center justify-center gap-2 rounded-md border text-sm font-medium transition disabled:opacity-40"
                           style={{
                             borderColor: !newRepoPrivate ? "var(--attention-purple)" : "var(--border-medium)",
                             background: !newRepoPrivate
@@ -1175,7 +1231,7 @@ export default function Dashboard() {
                       value={newRepoDesc}
                       onChange={(event) => setNewRepoDesc(event.target.value)}
                       disabled={isActionLoading}
-                      className="h-11 w-full rounded-md border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
+                      className="th-focus-ring h-11 w-full rounded-md border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
                     />
                   </label>
 
@@ -1198,7 +1254,7 @@ export default function Dashboard() {
                     <button
                       type="submit"
                       disabled={creating || !newRepoName.trim() || (aiJumpstart && (!aiProjectType || !aiPrompt.trim()))}
-                      className="flex h-11 items-center gap-2 rounded-md bg-[var(--text-primary)] px-5 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="th-focus-ring flex h-11 items-center gap-2 rounded-md bg-[var(--text-primary)] px-5 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Command className="h-4 w-4" />}
                       {aiJumpstart ? "Provision with agent" : "Create and open"}
@@ -1215,7 +1271,8 @@ export default function Dashboard() {
             <button
               type="button"
               onClick={() => router.push(`/${lastWorkspace.slug}`)}
-              className="w-full rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_90%,transparent)] p-4 text-left transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface)]"
+              aria-label={`Return to workspace ${lastWorkspace.name || lastWorkspace.slug}`}
+              className="th-focus-ring w-full rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_90%,transparent)] p-4 text-left transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface)]"
             >
               <div className="mb-3 flex items-center justify-between">
                 <div className="flex items-center gap-2 text-sm font-semibold">
@@ -1263,7 +1320,8 @@ export default function Dashboard() {
                     key={workspace.slug}
                     type="button"
                     onClick={() => router.push(`/${workspace.slug}`)}
-                    className="group w-full rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_46%,transparent)] p-3 text-left transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface)]"
+                    aria-label={`Open workspace ${workspace.name || workspace.slug}`}
+                    className="th-focus-ring group w-full rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_46%,transparent)] p-3 text-left transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface)]"
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">

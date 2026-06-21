@@ -244,6 +244,12 @@ export default function AIJumpstartSection({
     [handleFiles],
   );
 
+  const handleAttachmentZoneKeyDown = useCallback((e) => {
+    if (disabled || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+    fileInputRef.current?.click();
+  }, [disabled]);
+
   /* ── render ── */
   return (
     <div className="space-y-3" role="group" aria-label="Agent initialization options">
@@ -332,7 +338,7 @@ export default function AIJumpstartSection({
                   type="button"
                   onClick={handleClearType}
                   disabled={disabled}
-                  className="text-xs underline transition-opacity hover:opacity-80 disabled:opacity-50"
+                  className="th-focus-ring rounded-sm text-xs underline transition-opacity hover:opacity-80 disabled:opacity-50"
                   style={{ color: "var(--text-secondary)" }}
                 >
                   Change
@@ -437,9 +443,13 @@ export default function AIJumpstartSection({
 
             {/* Drop zone / attach button */}
             <div
+              role="button"
+              tabIndex={disabled ? -1 : 0}
+              aria-label="Attach files to the agent brief"
               onDragOver={handleDragOver}
               onDrop={disabled ? undefined : handleDrop}
-              className="flex items-center justify-center gap-2 rounded-md py-3 px-4 cursor-pointer transition-colors"
+              onKeyDown={handleAttachmentZoneKeyDown}
+              className="th-focus-ring flex items-center justify-center gap-2 rounded-md py-3 px-4 cursor-pointer transition-colors"
               style={{
                 border: "1px dashed var(--border-medium)",
                 background: "var(--bg-editor)",
@@ -463,6 +473,7 @@ export default function AIJumpstartSection({
                 ref={fileInputRef}
                 type="file"
                 multiple
+                aria-label="Attach files to the agent brief"
                 className="hidden"
                 onChange={handleFileInputChange}
                 disabled={disabled}
@@ -512,7 +523,8 @@ export default function AIJumpstartSection({
                       type="button"
                       onClick={() => removeAttachment(att.id)}
                       disabled={disabled}
-                      className="p-0.5 rounded hover:bg-white/10 transition-colors cursor-pointer"
+                      aria-label={`Remove ${att.name}`}
+                      className="th-focus-ring p-0.5 rounded hover:bg-white/10 transition-colors cursor-pointer"
                       style={{ color: "var(--text-dim)" }}
                       title="Remove"
                     >
