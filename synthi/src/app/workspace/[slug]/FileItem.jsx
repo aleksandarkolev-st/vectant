@@ -30,6 +30,7 @@ function fileItemAreEqual(prev, next) {
     prev.onFileSelect !== next.onFileSelect ||
     prev.activeFile !== next.activeFile ||
     prev.onAction !== next.onAction ||
+    prev.onExternalFilesDrop !== next.onExternalFilesDrop ||
     prev.uiActionState !== next.uiActionState ||
     prev.dispatch !== next.dispatch ||
     prev.handleKeyDown !== next.handleKeyDown ||
@@ -61,6 +62,7 @@ const FileItem = memo(({
   activeFile,
   onAction,
   onRightMouseButtonClick,
+  onExternalFilesDrop,
   uiActionState,
   dispatch,
   handleKeyDown,
@@ -439,6 +441,9 @@ useEffect(() => {
   };
 
   const [isDropTarget, setIsDropTarget] = useState(false);
+  const [isExternalDropTarget, setIsExternalDropTarget] = useState(false);
+
+  const hasExternalFiles = (e) => Array.from(e.dataTransfer?.types || []).includes("Files");
 
   const isValidDropSource = (e) => {
     if (!item.isFolder) return null;
@@ -462,6 +467,13 @@ useEffect(() => {
 
   const handleDragOver = (e) => {
     if (!item.isFolder) return;
+    if (hasExternalFiles(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      if (!isExternalDropTarget) setIsExternalDropTarget(true);
+      return;
+    }
     // We can't read dataTransfer payload during dragover (browser locks it),
     // so accept the drop optimistically and re-validate on drop.
     e.preventDefault();
@@ -472,10 +484,18 @@ useEffect(() => {
 
   const handleDragLeave = () => {
     if (isDropTarget) setIsDropTarget(false);
+    if (isExternalDropTarget) setIsExternalDropTarget(false);
   };
 
   const handleDrop = async (e) => {
     if (!item.isFolder) return;
+    if (hasExternalFiles(e)) {
+      setIsExternalDropTarget(false);
+      if (typeof onExternalFilesDrop === "function") {
+        await onExternalFilesDrop(e, item.path);
+      }
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     setIsDropTarget(false);
@@ -517,6 +537,9 @@ useEffect(() => {
             : {}),
           ...(isDropTarget
             ? { background: 'color-mix(in srgb, var(--attention-purple) 18%, transparent)', outline: '1px solid var(--attention-purple)' }
+            : {}),
+          ...(isExternalDropTarget
+            ? { background: 'color-mix(in srgb, var(--accent-success) 14%, transparent)', outline: '1px solid color-mix(in srgb, var(--accent-success) 70%, transparent)' }
             : {}),
         }}
         onClick={handleClick}
