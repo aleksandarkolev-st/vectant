@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { WifiOff, RefreshCw, Terminal, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw, Power } from 'lucide-react';
+import { WifiOff, RefreshCw, Terminal, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw, Power, Wrench } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
@@ -1136,6 +1136,42 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     }
   }, [cleanup, stoppingRuntime, workspaceSlug]);
 
+  const handleRepairRuntime = useCallback(async () => {
+    if (stoppingRuntime) return;
+    const termUserId = authSessionRef.current?.user?.id || authSessionRef.current?.user?.email || '';
+
+    setStoppingRuntime(true);
+    try {
+      const response = await fetch(`${TERMINAL_HTTP_URL}/program-runtime/${encodeURIComponent(workspaceSlug)}/ensure-runtime`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: termUserId }),
+      });
+      if (!response.ok) {
+        let message = '';
+        try {
+          const payload = await response.json();
+          message = payload?.error || '';
+        } catch (_) {
+          message = await response.text().catch(() => '');
+        }
+        throw new Error(message || `Runtime repair failed (${response.status})`);
+      }
+
+      cleanup();
+      reconnectCountRef.current = 0;
+      setState('connecting');
+      toast.success('Runtime repair started. Opening a fresh terminal.');
+      window.setTimeout(() => window.location.reload(), 350);
+    } catch (err) {
+      console.error('[Terminal] Runtime repair failed:', err);
+      setState('error');
+      toast.error('Runtime repair could not start. Rebuild the Docker runtime, then try again.');
+    } finally {
+      setStoppingRuntime(false);
+    }
+  }, [cleanup, stoppingRuntime, workspaceSlug]);
+
   // ─── Multi-line paste confirmation actions ────────────────────────────
   const confirmPaste = useCallback((opts) => {
     const pending = pasteConfirm;
@@ -1229,7 +1265,9 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           <ConnectionStatusPanel
             key={`terminal-status-${state}`}
             state={state}
+            repairing={stoppingRuntime}
             onReconnect={handleReconnect}
+            onRepairRuntime={handleRepairRuntime}
           />
         )}
       </AnimatePresence>
@@ -1852,7 +1890,7 @@ function TerminalColorPanel({ baseTheme, overrides, onClose }) {
  * shown when the terminal disconnects or the shell exits. No backdrop, so
  * the rest of the IDE stays usable; draggable by the titlebar.
  */
-function ConnectionStatusPanel({ state, onReconnect }) {
+function ConnectionStatusPanel({ state, repairing = false, onReconnect, onRepairRuntime }) {
   const { pos, panelRef, onTitleMouseDown } = useDraggableViewportPanel();
   const reduceMotion = useReducedMotion();
 
@@ -1866,16 +1904,17 @@ function ConnectionStatusPanel({ state, onReconnect }) {
   const title = isClosed ? 'Terminal session ended' : 'Runtime terminal unavailable';
   const body = isClosed
     ? 'The shell process exited. Workspace files are preserved.'
-    : 'The editor is still usable, but the terminal could not attach to the local runtime.';
-  const actionLabel = isClosed ? 'New session' : 'Retry terminal';
+    : 'The editor is still usable. The workspace runtime is unavailable, so terminal commands cannot start yet.';
+  const actionLabel = isClosed ? 'New session' : repairing ? 'Repairing runtime' : 'Repair runtime';
+  const actionHandler = isClosed ? onReconnect : onRepairRuntime;
   const statusItems = isClosed
     ? [
         ['Session', 'Exited'],
         ['Workspace', 'Files preserved'],
       ]
     : [
-        ['Transport', 'WebSocket disconnected'],
-        ['Runtime', 'Check collab-server and image'],
+        ['Runtime', 'Unavailable'],
+        ['Repair path', 'Restart workspace runtime'],
         ['Workspace', 'Files preserved'],
       ];
   const iconColor = isClosed ? 'var(--text-secondary, #a1a1aa)' : 'var(--accent-warning, #d89b2b)';
@@ -1972,14 +2011,22 @@ function ConnectionStatusPanel({ state, onReconnect }) {
           <motion.button
             type="button"
             whileTap={reduceMotion ? undefined : { scale: 0.97 }}
-            onClick={onReconnect}
-            className="flex h-8 items-center gap-2 rounded-md px-3 text-xs font-semibold transition-opacity hover:opacity-90"
+            onClick={actionHandler}
+            disabled={repairing}
+            aria-label={actionLabel}
+            className="th-focus-ring flex h-8 items-center gap-2 rounded-md px-3 text-xs font-semibold transition-opacity hover:opacity-90 disabled:cursor-wait disabled:opacity-70"
             style={{
               background: 'var(--text-primary, #f4f5f8)',
               color: 'var(--bg-app, #0a0b10)',
             }}
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            {repairing ? (
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+            ) : isClosed ? (
+              <RefreshCw className="h-3.5 w-3.5" />
+            ) : (
+              <Wrench className="h-3.5 w-3.5" />
+            )}
             {actionLabel}
           </motion.button>
         </div>
