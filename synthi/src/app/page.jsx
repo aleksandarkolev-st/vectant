@@ -394,7 +394,7 @@ export default function Dashboard() {
           owner: session?.user?.email,
           name,
           source: "import",
-          showInRecent: false,
+          showInRecent: true,
         }),
       });
 
@@ -434,7 +434,12 @@ export default function Dashboard() {
           "Content-Type": "application/json",
           "x-user-id": userId,
         },
-        body: JSON.stringify({ source: "local-upload" }),
+        body: JSON.stringify({
+          owner: session?.user?.email,
+          name,
+          source: "local-upload",
+          showInRecent: true,
+        }),
       });
 
       if (!initRes.ok) {
@@ -453,7 +458,7 @@ export default function Dashboard() {
           files,
           syncToGcs: true,
           source: "local-upload",
-          showInRecent: false,
+          showInRecent: true,
         }),
       });
 
@@ -525,7 +530,7 @@ export default function Dashboard() {
       const repo = await createRes.json();
       const slug = createSlug("ai");
       const userId = session?.user?.id || session?.user?.email;
-      const showInRecent = Boolean(aiJumpstart);
+      const showInRecent = true;
 
       const cloneRes = await fetch(`${collabServerUrl}/git/${slug}/clone`, {
         method: "POST",
@@ -538,7 +543,7 @@ export default function Dashboard() {
           token: session?.accessToken,
           owner: session?.user?.email,
           name: repo.name,
-          source: showInRecent ? "ai" : "create",
+          source: aiJumpstart ? "ai" : "create",
           showInRecent,
         }),
       });
@@ -773,8 +778,8 @@ export default function Dashboard() {
                     {activeTab === "local"
                       ? "Selected files are written into a new workspace worktree."
                       : activeTab === "create"
-                        ? "AI-created workspaces are the only ones added to recents."
-                        : "Imported repositories open immediately and stay out of recents."}
+                      ? "Created workspaces are saved to your recent list."
+                        : "Imported repositories open immediately and stay in recents."}
                   </p>
                 </div>
                 <span className="hidden rounded-md border border-[var(--border-subtle)] px-2.5 py-1 text-xs text-[var(--text-muted)] sm:inline-flex">
@@ -956,9 +961,9 @@ export default function Dashboard() {
                       <div className="mb-5 flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--bg-surface)]">
                         <GitBranch className="h-5 w-5 text-[var(--text-secondary)]" />
                       </div>
-                      <h3 className="font-semibold">Imported workspaces are temporary entries.</h3>
+                      <h3 className="font-semibold">Imported workspaces stay close.</h3>
                       <p className="mt-3 text-sm leading-6 text-[var(--text-muted)]">
-                        They open in the editor after clone, but the dashboard recent list only tracks AI-created workspaces.
+                        Repositories open in the editor after clone and appear in your recent workspace list.
                       </p>
                     </div>
                   </div>
@@ -1102,7 +1107,7 @@ export default function Dashboard() {
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-semibold">Recent workspaces</h2>
-                <p className="mt-1 text-xs text-[var(--text-muted)]">AI-created only</p>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">Repos, uploads, and created workspaces</p>
               </div>
               <span className="rounded-md border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-muted)]">
                 {workspaces.length}
@@ -1118,7 +1123,7 @@ export default function Dashboard() {
             ) : workspaces.length === 0 ? (
               <div className="rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_50%,transparent)] p-4">
                 <FolderGit2 className="mb-3 h-5 w-5 text-[var(--text-muted)]" />
-                <p className="text-sm text-[var(--text-secondary)]">No recent AI workspaces yet.</p>
+                <p className="text-sm text-[var(--text-secondary)]">No recent workspaces yet.</p>
               </div>
             ) : (
               <div className="space-y-2">

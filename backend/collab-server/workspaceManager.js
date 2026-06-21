@@ -27,10 +27,10 @@ class WorkspaceManager {
      */
     addWorkspace(slug, repoUrl, owner, name, options = {}) {
         const existing = this.workspaces.get(slug);
-        const showInRecent = options.showInRecent === true;
+        const showInRecent = options.showInRecent !== false;
         const source = typeof options.source === 'string' && options.source.trim()
             ? options.source.trim()
-            : (showInRecent ? 'ai' : 'import');
+            : 'workspace';
 
         if (existing) {
             this.workspaces.set(slug, {

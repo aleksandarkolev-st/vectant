@@ -9,23 +9,35 @@ test.beforeEach(() => {
   workspaceManager.workspaces.clear();
 });
 
-test('hides imported workspaces from recent-only queries', () => {
+test('shows imported workspaces in recent-only queries by default', () => {
   workspaceManager.addWorkspace('repo-1', 'https://github.com/acme/app.git', 'owner@example.com', 'Imported app', {
     source: 'import',
-    showInRecent: false,
   });
-  workspaceManager.addWorkspace('ai-1', 'https://github.com/acme/ai-app.git', 'owner@example.com', 'AI app', {
-    source: 'ai',
-    showInRecent: true,
+  workspaceManager.addWorkspace('created-1', 'https://github.com/acme/app-created.git', 'owner@example.com', 'Created app');
+
+  assert.deepEqual(
+    workspaceManager.getWorkspaces('owner@example.com', { recentOnly: true }).map((workspace) => workspace.slug),
+    ['repo-1', 'created-1'],
+  );
+  assert.deepEqual(
+    workspaceManager.getWorkspaces('owner@example.com').map((workspace) => workspace.slug),
+    ['repo-1', 'created-1'],
+  );
+});
+
+test('can explicitly hide short-lived workspaces from recent-only queries', () => {
+  workspaceManager.addWorkspace('scratch-1', null, 'owner@example.com', 'Scratch app', {
+    source: 'scratch',
+    showInRecent: false,
   });
 
   assert.deepEqual(
     workspaceManager.getWorkspaces('owner@example.com', { recentOnly: true }).map((workspace) => workspace.slug),
-    ['ai-1'],
+    [],
   );
   assert.deepEqual(
     workspaceManager.getWorkspaces('owner@example.com').map((workspace) => workspace.slug),
-    ['repo-1', 'ai-1'],
+    ['scratch-1'],
   );
 });
 
