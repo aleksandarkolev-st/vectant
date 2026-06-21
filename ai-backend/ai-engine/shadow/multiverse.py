@@ -22,13 +22,19 @@ from .arbiter import (
     model_for_arbiter,
     select_arbiter_provider,
 )
+from .branch_trace import normalize_universe_result
 from .closure_crossover import is_enabled as closure_crossover_enabled
 from .closure_crossover import run_fragment_children
 from .convergence import detect_convergence
 from .crossover import run_children as run_crossover_children
+from .execution_niche_map import build_execution_niche_map
 from .generator import PatchBlock
+from .policy_delta import STORE as POLICY_STORE
+from .proof_arbiter import adjudicate_proof
 from .project_signals import ProjectSignals, detect as detect_signals
+from .selection_arbiter import rank_selection
 from .universe import Universe, UniverseSpec, UniverseResult
+from .universe_planner import apply_policy_deltas, direction_forecast
 from .worktree import WorktreePool, get_pool
 
 logger = logging.getLogger("shadow.multiverse")
@@ -126,12 +132,25 @@ async def run_job(
     snap = snapshot.create(repo, rel_paths)
     job.snapshot = {"hashes": snap.hashes(), "files": rel_paths}
     job.snapshot_obj = snap
+    job.counterfactual_run_id = job.job_id
+    job.counterfactual_base_hash = _base_state_hash(job.snapshot)
     await job.emit(events.snapshot_taken(rel_paths))
 
     pool = await get_pool(repo, size=max(2, n))
 
     specs = _make_specs(n, intent=intent, models=job.models or {})
+    active_deltas = POLICY_STORE.list_active(str(repo), intent)
+    niche = build_execution_niche_map(str(repo), intent, active_deltas)
+    specs = apply_policy_deltas(specs, active_deltas)
+    job.policy_hints = niche.policy_hints
+    job.direction_forecast = direction_forecast(specs, active_deltas)
     job.estimated_cost_usd = estimate_cost(specs, tier)
+    if active_deltas:
+        await job.emit(events.counterfactual_policy({
+            "policy_hints": job.policy_hints,
+            "execution_niche_map": niche.to_dict(),
+            "direction_forecast": job.direction_forecast,
+        }))
 
     # Detect project signals once on the seed worktree. Cheap (best-effort
     # walk capped at 4k files); shared across all universes for
@@ -146,6 +165,8 @@ async def run_job(
             signals=signals, repo=repo, user_id=job.user_id,
         )
         winner = result.universe_id if result else None
+        if result:
+            _capture_counterfactual_evidence(job=job, valid=[result])
         await job.emit(events.all_done(winner=winner))
         await job.emit_done()
         return winner
@@ -168,6 +189,7 @@ async def run_job(
     if convergence is not None:
         await job.emit(events.convergence_detected(downgrading_to=1))
         winner = convergence.consensus_universe_id
+        _capture_counterfactual_evidence(job=job, valid=valid)
         # Skip Arbiter — consensus is its own answer.
         await job.emit(events.all_done(winner=winner))
         await job.emit_done()
@@ -206,6 +228,8 @@ async def run_job(
     # Wave 4 (§22): override-driven rotation — if the user has been
     # overriding the Arbiter when it was a particular provider, skip
     # that provider on the next rotation.
+    valid = _capture_counterfactual_evidence(job=job, valid=valid)
+
     avoided = set()
     try:
         from . import preference as _pref
@@ -222,7 +246,7 @@ async def run_job(
         signals=signals, universes=valid,
     )
     verdict = await adjudicate(
-        bundle=bundle, universes=valid,
+        bundle=bundle, universes=_proof_eligible_results(job, valid),
         provider=arb_provider, api_key=arb_key, model=arb_model,
     )
     await job.emit(events.arbiter_verdict(verdict.to_dict()))
@@ -256,6 +280,41 @@ async def run_job(
     await job.emit(events.all_done(winner=winner))
     await job.emit_done()
     return winner
+
+
+def _capture_counterfactual_evidence(*, job: events.JobState, valid: List[UniverseResult]) -> List[UniverseResult]:
+    traces = []
+    detectors = []
+    for result in valid:
+        trace, branch_detectors = normalize_universe_result(
+            run_id=job.counterfactual_run_id or job.job_id,
+            universe_result=result,
+            start_state_hash=job.counterfactual_base_hash or _base_state_hash(job.snapshot or {}),
+        )
+        traces.append(trace)
+        detectors.extend(branch_detectors)
+    proof = adjudicate_proof(traces, detectors)
+    selection = rank_selection(traces, proof)
+    job.branch_traces = traces
+    job.detector_results = detectors
+    job.proof_verdict = proof.to_dict()
+    job.selection_verdict = selection.to_dict()
+    return _proof_eligible_results(job, valid)
+
+
+def _proof_eligible_results(job: events.JobState, valid: List[UniverseResult]) -> List[UniverseResult]:
+    eligible = set((job.proof_verdict or {}).get("eligible_universe_ids") or [])
+    if not eligible:
+        return valid
+    filtered = [r for r in valid if r.universe_id in eligible]
+    return filtered or valid
+
+
+def _base_state_hash(snapshot_dict: Dict[str, Any]) -> str:
+    import hashlib
+    import json
+
+    return hashlib.sha1(json.dumps(snapshot_dict or {}, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 async def _run_single(
