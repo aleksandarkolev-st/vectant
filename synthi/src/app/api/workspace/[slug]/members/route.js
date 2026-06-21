@@ -9,8 +9,8 @@ function normalizeEmail(value) {
 }
 
 export async function GET(_request, { params }) {
-  const { workspaceId } = await params;
-  const access = await requireWorkspaceAccess(workspaceId);
+  const { slug } = await params;
+  const access = await requireWorkspaceAccess(slug);
   if (!access.ok) {
     return NextResponse.json({ error: access.error }, { status: access.status || 403 });
   }
@@ -46,8 +46,8 @@ export async function GET(_request, { params }) {
 }
 
 export async function POST(request, { params }) {
-  const { workspaceId } = await params;
-  const access = await requireWorkspaceManageAccess(workspaceId);
+  const { slug } = await params;
+  const access = await requireWorkspaceManageAccess(slug);
   if (!access.ok) {
     return NextResponse.json({ error: access.error }, { status: access.status || 403 });
   }

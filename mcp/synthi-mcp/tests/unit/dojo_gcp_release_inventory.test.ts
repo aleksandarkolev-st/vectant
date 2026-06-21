@@ -95,7 +95,7 @@ function releaseExternalSecret() {
     metadata: { name: "synthi-dojo-release-secrets" },
     spec: {
       target: {
-        name: "synthi-secrets",
+        name: "synthi-dojo-release-secrets",
       },
       data: [
         {
@@ -439,20 +439,21 @@ resources: []
   it("parses secret manager, Kubernetes Secret, and ExternalSecret expectations separately", () => {
     const raw = parseArgs([
       "--expected-k8s-secret=synthi-secrets",
+      "--expected-k8s-secret=synthi-dojo-release-secrets",
       "--expected-secret-manager-secret=synthi-redis-url",
       "--expected-external-secret=synthi-dojo-release-secrets",
-      "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url",
+      "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL=synthi-redis-url",
     ]);
 
     const config = resolveConfig(raw);
 
-    expect(config.expectedK8sSecrets).toEqual(["synthi-secrets"]);
+    expect(config.expectedK8sSecrets).toEqual(["synthi-secrets", "synthi-dojo-release-secrets"]);
     expect(config.expectedSecretManagerSecrets).toEqual(["synthi-redis-url"]);
     expect(config.expectedExternalSecrets).toEqual(["synthi-dojo-release-secrets"]);
     expect(config.expectedExternalSecretBindings).toEqual([
       {
         externalSecretName: "synthi-dojo-release-secrets",
-        targetSecretName: "synthi-secrets",
+        targetSecretName: "synthi-dojo-release-secrets",
         targetKey: "REDIS_URL",
         remoteSecret: "synthi-redis-url",
       },
@@ -470,55 +471,58 @@ resources: []
     const inventory = externalSecretInventoryFrom([releaseExternalSecret()]);
 
     expect(inventory.names.has("synthi-dojo-release-secrets")).toBe(true);
-    expect(inventory.targetSecretNames.has("synthi-secrets")).toBe(true);
-    expect(inventory.targetKeys.has("synthi-dojo-release-secrets:synthi-secrets:REDIS_URL")).toBe(true);
-    expect(inventory.remoteKeys.has("synthi-dojo-release-secrets:synthi-secrets:synthi-redis-url")).toBe(true);
-    expect(inventory.bindings.has("synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url")).toBe(true);
-    expect(externalSecretBindingId(parseExternalSecretBinding("synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url"))).toBe("synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url");
+    expect(inventory.targetSecretNames.has("synthi-dojo-release-secrets")).toBe(true);
+    expect(inventory.targetKeys.has("synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL")).toBe(true);
+    expect(inventory.remoteKeys.has("synthi-dojo-release-secrets:synthi-dojo-release-secrets:synthi-redis-url")).toBe(true);
+    expect(inventory.bindings.has("synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL=synthi-redis-url")).toBe(true);
+    expect(externalSecretBindingId(parseExternalSecretBinding("synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL=synthi-redis-url"))).toBe("synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL=synthi-redis-url");
   });
 
   it("rejects malformed ExternalSecret binding arguments", () => {
     expect(() => parseExternalSecretBinding("REDIS_URL")).toThrow(/targetKey=remoteSecretName/);
     expect(() => parseExternalSecretBinding("synthi-dojo-release-secrets: :REDIS_URL=synthi-redis-url")).toThrow(/targetKey=remoteSecretName/);
-    expect(() => parseExternalSecretBinding("synthi-dojo-release-secrets:synthi-secrets:REDIS_URL= ")).toThrow(/targetKey=remoteSecretName/);
+    expect(() => parseExternalSecretBinding("synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL= ")).toThrow(/targetKey=remoteSecretName/);
   });
 
   it("passes when each secret layer is present in its own inventory source", () => {
     const config = resolveConfig(parseArgs([
       "--execute",
       "--expected-k8s-secret=synthi-secrets",
+      "--expected-k8s-secret=synthi-dojo-release-secrets",
       "--expected-secret-manager-secret=synthi-redis-url",
       "--expected-external-secret=synthi-dojo-release-secrets",
-      "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url",
+      "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL=synthi-redis-url",
     ]));
 
     const result = evaluate(config, inventoryWithSecrets({
       remoteSecrets: ["synthi-redis-url"],
-      k8sSecrets: ["synthi-secrets"],
+      k8sSecrets: ["synthi-secrets", "synthi-dojo-release-secrets"],
       externalSecrets: [releaseExternalSecret()],
     }), []);
 
     expect(result.ok).toBe(true);
     expect(result.checks.find((check) => check.id === "k8s_secret:synthi-secrets")?.status).toBe("passed");
+    expect(result.checks.find((check) => check.id === "k8s_secret:synthi-dojo-release-secrets")?.status).toBe("passed");
     expect(result.checks.find((check) => check.id === "secret_manager:synthi-redis-url")?.status).toBe("passed");
-    expect(result.checks.find((check) => check.id === "externalsecret_binding:synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url")?.status).toBe("passed");
+    expect(result.checks.find((check) => check.id === "externalsecret_binding:synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL=synthi-redis-url")?.status).toBe("passed");
   });
 
   it("fails when an ExternalSecret target key points at the wrong remote secret", () => {
     const config = resolveConfig(parseArgs([
       "--execute",
       "--expected-k8s-secret=synthi-secrets",
+      "--expected-k8s-secret=synthi-dojo-release-secrets",
       "--expected-secret-manager-secret=synthi-redis-url",
       "--expected-external-secret=synthi-dojo-release-secrets",
-      "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url",
+      "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL=synthi-redis-url",
     ]));
     const result = evaluate(config, inventoryWithSecrets({
       remoteSecrets: ["synthi-redis-url"],
-      k8sSecrets: ["synthi-secrets"],
+      k8sSecrets: ["synthi-secrets", "synthi-dojo-release-secrets"],
       externalSecrets: [{
         metadata: { name: "synthi-dojo-release-secrets" },
         spec: {
-          target: { name: "synthi-secrets" },
+          target: { name: "synthi-dojo-release-secrets" },
           data: [{
             secretKey: "REDIS_URL",
             remoteRef: { key: "wrong-redis-secret" },
@@ -527,7 +531,7 @@ resources: []
       }],
     }), []);
 
-    const failedBinding = result.checks.find((check) => check.id === "externalsecret_binding:synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url");
+    const failedBinding = result.checks.find((check) => check.id === "externalsecret_binding:synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL=synthi-redis-url");
     expect(result.ok).toBe(false);
     expect(failedBinding).toEqual(expect.objectContaining({ status: "failed" }));
   });
@@ -536,13 +540,14 @@ resources: []
     const config = resolveConfig(parseArgs([
       "--execute",
       "--expected-k8s-secret=synthi-secrets",
+      "--expected-k8s-secret=synthi-dojo-release-secrets",
       "--expected-secret-manager-secret=synthi-redis-url",
       "--expected-external-secret=synthi-dojo-release-secrets",
-      "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url",
+      "--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL=synthi-redis-url",
     ]));
     const result = evaluate(config, inventoryWithSecrets({
       remoteSecrets: ["synthi-redis-url"],
-      k8sSecrets: ["synthi-secrets"],
+      k8sSecrets: ["synthi-secrets", "synthi-dojo-release-secrets"],
       externalSecrets: [{
         metadata: { name: "synthi-dojo-release-secrets" },
         spec: {
@@ -556,7 +561,7 @@ resources: []
     }), []);
 
     expect(result.ok).toBe(false);
-    expect(result.checks.find((check) => check.id === "externalsecret_binding:synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url")).toEqual(expect.objectContaining({ status: "failed" }));
+    expect(result.checks.find((check) => check.id === "externalsecret_binding:synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL=synthi-redis-url")).toEqual(expect.objectContaining({ status: "failed" }));
   });
 
   it("fails expected resources when execute mode collected an empty dataset", () => {
@@ -624,6 +629,23 @@ resources: []
     expect(result.checks.find((check) => check.id === "k8s_ingress_host:beta.vectant.dev")).toEqual(expect.objectContaining({ status: "failed" }));
   });
 
+  it("matches short expected resource names against fully-qualified Google resource names", () => {
+    const config = resolveConfig(parseArgs([
+      "--execute",
+      "--redis-instance=synthi-prod-redis",
+    ]));
+    const inventory = inventoryWithSecrets();
+    inventory.commandResults.push({ id: "redis_instances", ok: true, parseOk: true });
+    inventory.datasets.redis_instances = [{
+      name: "projects/vectant-proj/locations/europe-west10/instances/synthi-prod-redis",
+    }];
+
+    const result = evaluate(config, inventory, []);
+
+    expect(result.ok).toBe(true);
+    expect(result.checks.find((check) => check.id === "redis_instance")).toEqual(expect.objectContaining({ status: "passed" }));
+  });
+
   it("keeps self-check import-safe and runnable through buildReport", () => {
     const raw = parseArgs(["--self-check"]);
     const config = resolveConfig(raw);
@@ -658,7 +680,7 @@ resources: []
     expect(runbook).toContain("@dojoReleaseOverlayInventoryFlags");
     expect(runbook).not.toContain("--expected-secrets-from-kustomization=k8s/overlays/dojo-release-gate");
     expect(runbook).not.toContain("--expected-secret-manager-secret=synthi-redis-url");
-    expect(runbook).not.toContain("--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-secrets:REDIS_URL=synthi-redis-url");
+    expect(runbook).not.toContain("--expected-external-secret-binding=synthi-dojo-release-secrets:synthi-dojo-release-secrets:REDIS_URL=synthi-redis-url");
     expect(runbook).not.toContain("--expected-secret=synthi-redis-url");
     expect(runbook).not.toContain("--expected-secret=synthi-database-url");
   });

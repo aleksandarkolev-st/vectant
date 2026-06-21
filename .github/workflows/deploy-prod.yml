@@ -11,15 +11,15 @@ on:
         required: false
         type: string
       kustomize_dir:
-        description: "Kustomize render directory. Defaults to k8s."
+        description: "Kustomize render directory. Defaults to the Dojo production release overlay."
         required: false
         type: string
-        default: "k8s"
+        default: "k8s/overlays/dojo-release-gate"
       kustomize_load_restrictor:
         description: "Optional Kustomize load restrictor. Use LoadRestrictionsNone only for reviewed overlays."
         required: false
         type: string
-        default: ""
+        default: "LoadRestrictionsNone"
 
 permissions:
   contents: read
@@ -58,8 +58,8 @@ jobs:
       - name: Submit production Cloud Build
         env:
           REQUESTED_IMAGE_TAG: ${{ github.event.inputs.image_tag || '' }}
-          REQUESTED_KUSTOMIZE_DIR: ${{ github.event.inputs.kustomize_dir || 'k8s' }}
-          REQUESTED_KUSTOMIZE_LOAD_RESTRICTOR: ${{ github.event.inputs.kustomize_load_restrictor || '' }}
+          REQUESTED_KUSTOMIZE_DIR: ${{ github.event.inputs.kustomize_dir || 'k8s/overlays/dojo-release-gate' }}
+          REQUESTED_KUSTOMIZE_LOAD_RESTRICTOR: ${{ github.event.inputs.kustomize_load_restrictor || 'LoadRestrictionsNone' }}
         run: |
           set -euo pipefail
           if [[ -n "${REQUESTED_IMAGE_TAG}" ]]; then
@@ -75,6 +75,10 @@ jobs:
 
           KUSTOMIZE_DIR="${REQUESTED_KUSTOMIZE_DIR}"
           KUSTOMIZE_LOAD_RESTRICTOR="${REQUESTED_KUSTOMIZE_LOAD_RESTRICTOR}"
+          normalize_kustomize_dir() {
+            printf '%s' "$1" | sed -e 's#//*#/#g' -e 's#^\./##' -e 's#/\./#/#g' -e 's#/$##'
+          }
+          KUSTOMIZE_DIR="$(normalize_kustomize_dir "${KUSTOMIZE_DIR}")"
           if [[ "${KUSTOMIZE_DIR}" = /* || "${KUSTOMIZE_DIR}" == *..* ]]; then
             echo "Kustomize dir must be a relative repo path without '..': ${KUSTOMIZE_DIR}" >&2
             exit 1

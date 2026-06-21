@@ -177,12 +177,14 @@ import {
   type DojoToolResolution,
 } from "../dojo/mcp/skill_bus.js";
 import type { DojoTenantContext } from "../dojo/mcp/execution_policy_gate.js";
-import type { BrowserWorkflowArtifact } from "../browser/broker.js";
+import type { BrowserRuntimeAttachment, BrowserWorkflowArtifact } from "../browser/broker.js";
 import type { WorkflowContractV7 } from "../browser/workflow.js";
 import { ADVERTISED_TOOLS } from "../tool_registry.js";
 import {
   dispatchBrowserPrivateWorkflowToolAfterDojoProof,
+  ensureBrowserPrivateWorkflowToolForDojoProof,
   validateBrowserRuntimeAttachmentForDojoProof,
+  type DojoPrivateWorkflowToolHydration,
   type DojoValidatedBrowserWorkflowContext,
 } from "./browser.js";
 import { dispatchSafetyTool } from "./safety.js";
@@ -428,10 +430,25 @@ async function listDurableDojoSkillsForTenantIfRequired(
   }
   try {
     const skills = await resolution.skill_store.listSkills({ status: "published" });
-    return { ok: true, skills, source: "postgres" };
+    const licensedSkills: DojoSkill[] = [];
+    for (const skill of skills) {
+      const licenseId = skill.permission_license?.license_id;
+      const license = licenseId ? await resolution.license_store.getLicense(licenseId) : null;
+      if (durableLicenseRecordMatchesSkill(skill, license)) licensedSkills.push(skill);
+    }
+    return { ok: true, skills: licensedSkills, source: "postgres" };
   } finally {
     await resolution.close?.();
   }
+}
+
+function durableLicenseRecordMatchesSkill(skill: DojoSkill, license: DojoPermissionLicenseRecord | null | undefined): boolean {
+  if (!license || typeof license !== "object") return false;
+  return license.skill_id === skill.skill_id
+    && license.workspace_id === skill.workspace_id
+    && license.license_id === skill.permission_license.license_id
+    && license.license_version === skill.permission_license.license_version
+    && license.status === "active";
 }
 
 async function persistPublishedSkillToDurableControlPlaneIfRequired(input: {
@@ -7581,6 +7598,16 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
               error_codes: normalizeDojoProofErrorCodes(blockedBy),
             });
           }
+          const backingToolReadiness = ensureBackingPrivateWorkflowToolReadyForDojoProof(resolvedSkill);
+          if (!backingToolReadiness.ok) {
+            const blockedBy = [...(decision?.blocked_by ?? []), ...backingToolReadiness.blocked_by];
+            return blockDojoMcpSkillBusExecution(blockedBy, {
+              ok: false,
+              status: "blocked",
+              blocked_by: blockedBy,
+              error_codes: normalizeDojoProofErrorCodes(blockedBy),
+            }, backingToolReadiness.error.structuredContent ?? {});
+          }
         }
         proofConsume = durableProofRegistry.context.required
           ? await durableProofRegistry.context.proof_store.markProofCapsuleUsed(proofCapsule.capsule_id, runId, now)
@@ -7681,6 +7708,13 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       runtime_session_id: runtimeAuthorization.decision?.session_id,
       runtime_action_url: stringOpt(a["runtime_action_url"]),
       runtime_authorization_evidence_record_ids: runtimeAuthorization.decision?.evidence_record_ids ?? [],
+      verified_runtime_attachment: browserRuntimeAttachmentForAuthorizedDojoRun({
+        args: a,
+        tenant,
+        skill: skill.skill,
+        runtime_authorization: runtimeAuthorization.decision,
+        now,
+      }),
       now,
     };
     const graphRuntimePreflight = await runDojoGraphRuntimePreflightForProofRun({
@@ -7696,6 +7730,10 @@ async function dojoRunWithProofCapsuleTool(args: unknown): Promise<ToolResponse>
       now,
     });
     if (!graphRuntimePreflight.ok) return graphRuntimePreflight.error;
+    browserRuntimeExecutionContext = {
+      ...browserRuntimeExecutionContext,
+      validated_graph_inputs: graphRuntimePreflight.graph_runtime_inputs,
+    };
     const graphRuntimePersistence = await persistDurableGraphRuntimePreflightForProofRun({
       context: durableProofRegistry.context,
       tenant,
@@ -7889,6 +7927,7 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
   graph: DojoSkillGraph;
   graph_validation: ReturnType<typeof validateDojoSkillGraph>;
   graph_runtime_preflight: DojoGraphRunResult;
+  graph_runtime_inputs: Record<string, unknown>;
 } | { ok: false; error: ToolResponse }> {
   const compiled = compileDojoSkillGraphForSkill(input.skill, { mode: "production", created_at: input.now });
   if (!compiled.validation.ok) {
@@ -7923,6 +7962,7 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
       }),
     };
   }
+  const graphRuntimeInputs = dojoGraphRuntimeInputsForProofRun(input);
   if (!dojoGraphRepresentsRequestedAction(compiled.graph, input.requested_action)) {
     return {
       ok: true,
@@ -7944,6 +7984,7 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
           }))}`,
         ],
       },
+      graph_runtime_inputs: graphRuntimeInputs,
     };
   }
 
@@ -7954,7 +7995,7 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
     run_id: `${input.run_id}_graph_preflight`,
     mode: "production",
     preflight_only: true,
-    inputs: dojoGraphRuntimeInputsForProofRun(input),
+    inputs: graphRuntimeInputs,
     proof_capsule: input.proof_capsule,
     proof_validator: ({ proof_capsule }) => {
       const proof = objectOpt(proof_capsule);
@@ -8027,6 +8068,7 @@ async function runDojoGraphRuntimePreflightForProofRun(input: {
     graph: compiled.graph,
     graph_validation: compiled.validation,
     graph_runtime_preflight: graphRuntimePreflight,
+    graph_runtime_inputs: graphRuntimeInputs,
   };
 }
 
@@ -8163,6 +8205,48 @@ function allowedSubstratesForProofRun(skill: DojoSkill, requestedAction: string)
   return [...new Set(allowed)];
 }
 
+function browserRuntimeAttachmentForAuthorizedDojoRun(input: {
+  args: Record<string, unknown>;
+  tenant: DojoTenantContext;
+  skill: DojoSkill;
+  runtime_authorization?: DojoHostedRuntimeActionDecision;
+  now?: string;
+}): BrowserRuntimeAttachment | null {
+  const authorization = input.runtime_authorization;
+  if (!authorization?.ok) return null;
+  const actionUrl = stringOpt(input.args["runtime_action_url"]) ?? input.skill.app_origin ?? null;
+  const actionOrigin = originForRuntimeUrl(actionUrl);
+  return {
+    kind: "hosted",
+    tenant_id: input.tenant.tenant_id,
+    workspace_id: input.tenant.workspace_id,
+    actor_id: input.tenant.actor_id,
+    runtime_id: stringOpt(input.args["runtime_id"]) ?? authorization.runtime_id ?? authorization.session_id,
+    session_id: authorization.session_id,
+    workspace_url: actionUrl,
+    adapter: "dojo-hosted-runtime-gateway",
+    attached_at: timestampMsForRuntimeAttachment(input.now),
+    origin_allowlist: actionOrigin ? [actionOrigin] : [],
+    egress_policy: { local_network_allowed: false },
+    redaction_policy: { screenshots: true },
+  };
+}
+
+function timestampMsForRuntimeAttachment(now?: string): number {
+  const parsed = now ? Date.parse(now) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function originForRuntimeUrl(value: string | null | undefined): string {
+  const normalized = stringOpt(value);
+  if (!normalized) return "";
+  try {
+    return new URL(normalized).origin;
+  } catch {
+    return "";
+  }
+}
+
 async function authorizeHostedRuntimeForProductionRun(input: {
   args: Record<string, unknown>;
   tenant: DojoTenantContext;
@@ -8210,6 +8294,7 @@ async function authorizeHostedRuntimeForProductionRun(input: {
           ok: false,
           status: "blocked",
           session_id: stringOpt(input.args["runtime_session_id"]) ?? "",
+          runtime_id: null,
           action_kind: "proof_gated_tool",
           blocked_by: gatewayResolution.blocked_by,
           audit_event_id: "",
@@ -8282,8 +8367,63 @@ async function dispatchBackingSkillTool(
   args: Record<string, unknown>,
   dojoContext: DojoValidatedBrowserWorkflowContext
 ): Promise<ToolResponse | null> {
-  if (!skill.published_tool_name) return null;
-  return await dispatchBrowserPrivateWorkflowToolAfterDojoProof(skill.published_tool_name, args, dojoContext);
+  const toolName = backingPrivateWorkflowToolNameForSkill(skill);
+  if (!toolName) return null;
+  return await dispatchBrowserPrivateWorkflowToolAfterDojoProof(
+    toolName,
+    args,
+    dojoContext,
+    backingPrivateWorkflowHydrationForSkill(skill)
+  );
+}
+
+function ensureBackingPrivateWorkflowToolReadyForDojoProof(
+  skill: DojoSkill
+): { ok: true } | { ok: false; blocked_by: string[]; error: ToolResponse } {
+  const toolName = backingPrivateWorkflowToolNameForSkill(skill);
+  if (!toolName) {
+    const error = errorResponse("dojo_backing_private_workflow_tool_missing", {
+      skill_id: skill.skill_id,
+      workflow_id: skill.workflow_id,
+      proof_not_consumed: true,
+    });
+    return { ok: false, blocked_by: ["dojo_backing_private_workflow_tool_missing"], error };
+  }
+  const readiness = ensureBrowserPrivateWorkflowToolForDojoProof(
+    toolName,
+    backingPrivateWorkflowHydrationForSkill(skill)
+  );
+  if (readiness.ok) return { ok: true };
+  const detail = objectOpt(readiness.error.structuredContent) ?? {};
+  const errorCode = stringOpt(detail["error"]) ?? "dojo_backing_private_workflow_tool_unavailable";
+  return {
+    ok: false,
+    blocked_by: [errorCode],
+    error: {
+      ...readiness.error,
+      structuredContent: {
+        ...detail,
+        skill_id: skill.skill_id,
+        workflow_id: skill.workflow_id,
+        published_tool_name: toolName,
+        proof_not_consumed: true,
+      },
+    },
+  };
+}
+
+function backingPrivateWorkflowToolNameForSkill(skill: DojoSkill): string | undefined {
+  return skill.published_tool_name ?? skill.private_tool_manifest?.tool_name;
+}
+
+function backingPrivateWorkflowHydrationForSkill(skill: DojoSkill): DojoPrivateWorkflowToolHydration | undefined {
+  const manifest = skill.private_tool_manifest;
+  if (!manifest) return undefined;
+  const brokerArtifact = browserBroker.workflowArtifact(manifest.workflow_id);
+  return {
+    manifest,
+    ...(brokerArtifact.ok ? { workflow_artifact: brokerArtifact.artifact } : {}),
+  };
 }
 
 function publishBackingPrivateTool(

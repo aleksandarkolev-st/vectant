@@ -307,11 +307,13 @@ spec:
                 secretKeyRef:
                   name: synthi-secrets
                   key: CLOUDFLARE_TURN_TOKEN_ID
+                  optional: true
             - name: CLOUDFLARE_TURN_API_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: synthi-secrets
                   key: CLOUDFLARE_TURN_API_TOKEN
+                  optional: true
             - name: TURN_CREDENTIAL_TTL
               valueFrom:
                 configMapKeyRef:

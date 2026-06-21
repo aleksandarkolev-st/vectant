@@ -16,6 +16,8 @@ const FORBIDDEN_RESOURCES = [
   { kind: "Deployment", name: "redis" },
   { kind: "Service", name: "postgres" },
   { kind: "Service", name: "redis" },
+  { kind: "NetworkPolicy", name: "allow-to-postgres" },
+  { kind: "NetworkPolicy", name: "allow-to-redis" },
 ];
 
 const FORBIDDEN_LITERALS = [
@@ -54,8 +56,10 @@ const REQUIRED_EXTERNAL_SECRET_KEYS = [
   "SYNTHI_AGENT_ID",
   "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_FILE",
   "SYNTHI_PRIVATE_WORKFLOW_TOOL_SCOPE",
+  "SYNTHI_PRIVATE_WORKFLOW_TOOL_STORE_KEY",
   "SYNTHI_AUTH_CHECKPOINT_STORE_FILE",
   "SYNTHI_AUTH_CHECKPOINT_SCOPE",
+  "SYNTHI_AUTH_CHECKPOINT_STORE_KEY",
 ];
 
 const REDIS_DEPLOYMENTS = ["collab-server", "signaling-server"];
@@ -71,6 +75,14 @@ const DOJO_MCP_HOST = {
   port: "9467",
   bearerHeader: "X-Synthi-Dojo-Mcp-Token",
 };
+
+const REQUIRED_INGRESS_ROUTES = [
+  { host: "beta.vectant.dev", path: "/collab", pathType: "Prefix", service: "collab-server", port: "1234" },
+  { host: "beta.vectant.dev", path: "/signal", pathType: "Prefix", service: "signaling-server", port: "9000" },
+  { host: "beta.vectant.dev", path: "/gateway", pathType: "Prefix", service: "ai-gateway", port: "7070" },
+  { host: "beta.vectant.dev", path: "/", pathType: "Prefix", service: "frontend", port: "3000" },
+  { host: "*.preview.vectant.dev", path: "/", pathType: "Prefix", service: "collab-preview", port: "1234" },
+];
 
 function defaultDojoMcpHost(env = process.env) {
   return {
@@ -282,10 +294,10 @@ function validateRenderedOverlay(rendered, dojoMcpHost = defaultDojoMcpHost()) {
       });
       continue;
     }
-    if (!isSecretBackedEnvBlock(redisBlocks[0], "synthi-secrets", "REDIS_URL")) {
+    if (!isSecretBackedEnvBlock(redisBlocks[0], "synthi-dojo-release-secrets", "REDIS_URL")) {
       failures.push({
         code: "redis_env_not_secret_backed",
-        message: `Deployment/${deploymentName} REDIS_URL must read from synthi-secrets/REDIS_URL.`,
+        message: `Deployment/${deploymentName} REDIS_URL must read from synthi-dojo-release-secrets/REDIS_URL.`,
       });
     }
   }
@@ -330,6 +342,12 @@ function validateRenderedOverlay(rendered, dojoMcpHost = defaultDojoMcpHost()) {
       failures.push({
         code: "dojo_mcp_host_secret_not_loaded",
         message: `Deployment/${dojoMcpHost.deployment} must load Secret/synthi-secrets.`,
+      });
+    }
+    if (!hasEnvFromRef(mcpDeployment.doc, "secretRef", "synthi-dojo-release-secrets")) {
+      failures.push({
+        code: "dojo_mcp_host_release_secret_not_loaded",
+        message: `Deployment/${dojoMcpHost.deployment} must load Secret/synthi-dojo-release-secrets.`,
       });
     }
     for (const [envName, expectedValue] of [
@@ -408,6 +426,15 @@ function validateRenderedOverlay(rendered, dojoMcpHost = defaultDojoMcpHost()) {
       code: "dojo_mcp_host_ingress_missing",
       message: `Ingress/synthi-ingress must route ${dojoMcpHost.host}${dojoMcpHost.path} to Service/${dojoMcpHost.service}:${dojoMcpHost.port}.`,
     });
+  } else {
+    for (const route of REQUIRED_INGRESS_ROUTES) {
+      if (!ingressRoutesToService(ingress.doc, route)) {
+        failures.push({
+          code: "base_ingress_route_missing",
+          message: `Ingress/synthi-ingress must preserve ${route.host}${route.path} to Service/${route.service}:${route.port}.`,
+        });
+      }
+    }
   }
 
   return {
@@ -489,7 +516,7 @@ function ingressRoutesToService(doc, expected) {
 
 function listItemBlock(doc, key, value) {
   const lines = doc.split(/\r?\n/);
-  const matcher = new RegExp(`^(\\s*)-\\s+${escapeRegex(key)}:\\s*"?${escapeRegex(value)}"?(?:\\s|$)`);
+  const matcher = new RegExp(`^(\\s*)-\\s+${escapeRegex(key)}:\\s*["']?${escapeRegex(value)}["']?(?:\\s|$)`);
   for (let index = 0; index < lines.length; index += 1) {
     const match = matcher.exec(lines[index]);
     if (!match) continue;
@@ -611,7 +638,7 @@ spec:
           valueFrom:
             secretKeyRef:
               key: REDIS_URL
-              name: synthi-secrets
+              name: synthi-dojo-release-secrets
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -627,7 +654,7 @@ spec:
           valueFrom:
             secretKeyRef:
               key: REDIS_URL
-              name: synthi-secrets
+              name: synthi-dojo-release-secrets
 ---
 apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
@@ -660,6 +687,8 @@ spec:
             name: synthi-config
         - secretRef:
             name: synthi-secrets
+        - secretRef:
+            name: synthi-dojo-release-secrets
         env:
         - name: SYNTHI_MCP_HTTP_HOST
           value: "0.0.0.0"
@@ -705,6 +734,44 @@ spec:
             name: dojo-mcp-host
             port:
               number: 9467
+      - path: /collab
+        pathType: Prefix
+        backend:
+          service:
+            name: collab-server
+            port:
+              number: 1234
+      - path: /signal
+        pathType: Prefix
+        backend:
+          service:
+            name: signaling-server
+            port:
+              number: 9000
+      - path: /gateway
+        pathType: Prefix
+        backend:
+          service:
+            name: ai-gateway
+            port:
+              number: 7070
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 3000
+  - host: "*.preview.vectant.dev"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: collab-preview
+            port:
+              number: 1234
 `;
 
   const valid = validateRenderedOverlay(validRendered);
@@ -716,8 +783,39 @@ spec:
     ...defaultDojoMcpHost(),
     host: "preview.example.com",
   };
+  const customHostRendered = validRendered.replace(`  - host: "*.preview.vectant.dev"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: collab-preview
+            port:
+              number: 1234
+`, `  - host: preview.example.com
+    http:
+      paths:
+      - path: /dojo/mcp
+        pathType: Prefix
+        backend:
+          service:
+            name: dojo-mcp-host
+            port:
+              number: 9467
+  - host: "*.preview.vectant.dev"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: collab-preview
+            port:
+              number: 1234
+`);
   const customHostValid = validateRenderedOverlay(
-    validRendered.replace("host: beta.vectant.dev", "host: preview.example.com"),
+    customHostRendered,
     customHost,
   );
   if (!customHostValid.ok) {
@@ -732,6 +830,18 @@ spec:
   const invalidIngress = validateRenderedOverlay(validRendered.replace("host: beta.vectant.dev", "host: preview.vectant.dev"));
   if (invalidIngress.ok || !invalidIngress.failures.some((failure) => failure.code === "dojo_mcp_host_ingress_missing")) {
     throw new Error("invalid self-check fixture did not detect MCP host ingress on the wrong host");
+  }
+
+  const invalidPreservedRoute = validateRenderedOverlay(validRendered.replace(
+    `name: collab-server
+            port:
+              number: 1234`,
+    `name: wrong-collab-service
+            port:
+              number: 1234`,
+  ));
+  if (invalidPreservedRoute.ok || !invalidPreservedRoute.failures.some((failure) => failure.code === "base_ingress_route_missing")) {
+    throw new Error("invalid self-check fixture did not detect missing preserved ingress route");
   }
 
   const invalidService = validateRenderedOverlay(validRendered.replace("    cloud.google.com/neg: '{\"ingress\": true}'\n", ""));

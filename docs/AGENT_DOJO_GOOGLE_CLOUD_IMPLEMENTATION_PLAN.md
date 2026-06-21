@@ -31,9 +31,10 @@ The core Synthi application is already hosted on Google Cloud:
 - Runtime node pool: `workspace-pool`
 - GCS bucket: `vectant-synthi-cloud-storage`
 
-The Agent Dojo enterprise release path is not fully hosted yet. The current
-repo has the right shape for an opt-in Dojo release overlay, but Google Cloud
-still needs production-grade dependencies:
+The Agent Dojo enterprise release path is partially hosted and the production
+deploy entrypoints now render the Dojo release overlay by default. That makes
+the live beta path exercise the release substrate, but Google Cloud still needs
+production-grade evidence before mature enterprise readiness can be claimed:
 
 - Cloud SQL or equivalent external Postgres for durable Dojo control plane
 - external Redis or equivalent production cache/coordination store
@@ -45,8 +46,8 @@ still needs production-grade dependencies:
 - release evidence proving the hosted MCP path, durable stores, signing, and
   non-loopback workflow runtime
 
-Do not deploy the Dojo release overlay until the preflight inventory and
-blocker report are clean.
+Do not claim Dojo enterprise production readiness until the preflight inventory,
+blocker report, deployed conformance, and enterprise release gates are clean.
 
 ---
 
@@ -103,12 +104,14 @@ Important files:
   - suitable for beta app hosting, not sufficient as enterprise Dojo proof
 
 - `k8s/overlays/dojo-release-gate/`
-  - opt-in release overlay
+  - production release overlay used by the default deploy entrypoints
+  - base `k8s/` remains available for beta-compatible rollback/debug deploys
   - adds Dojo production enforcement config
   - adds release-only external secret contracts
   - adds `dojo-mcp-host`
   - patches ingress with `/dojo/mcp`
   - removes base in-cluster Redis config from the runtime config map
+  - omits in-cluster Redis/Postgres workloads and their NetworkPolicies
 
 - `mcp/synthi-mcp/scripts/dojo-gcp-release-inventory.mjs`
   - read-only Google Cloud/Kubernetes inventory
@@ -195,7 +198,8 @@ Memorystore Redis
   -> production cache/session/coordination where required by app services
 ```
 
-The Dojo overlay remains opt-in until all release gates pass.
+The Dojo overlay is the production deploy default. Passing release gates is
+still required before claiming Dojo enterprise production readiness.
 
 ---
 
@@ -412,8 +416,10 @@ synthi-dojo-release-workspace-id
 synthi-dojo-release-agent-id
 synthi-private-workflow-tool-store-file
 synthi-private-workflow-tool-scope
+synthi-private-workflow-tool-store-key
 synthi-auth-checkpoint-store-file
 synthi-auth-checkpoint-scope
+synthi-auth-checkpoint-store-key
 ```
 
 Do not commit secret payloads. Do not print secret payloads in logs. Inventory
@@ -445,7 +451,9 @@ Acceptance:
 - External Secrets Operator is installed
 - `SecretStore` can read from GCP Secret Manager
 - `synthi-secrets` exists
-- `synthi-dojo-release-secrets` merges required Dojo keys into `synthi-secrets`
+- `synthi-dojo-release-secrets` syncs required Dojo keys into a dedicated
+  Kubernetes Secret, so the base `synthi-secrets` ExternalSecret does not
+  overwrite Dojo release-only keys during refresh
 
 ### 8. Deploy The Dojo Release Overlay
 
@@ -614,6 +622,13 @@ Dojo MCP host must enforce both:
 The IAP token and MCP bearer token are different controls and should remain
 separate.
 
+When IAP is enabled, the release conformance client sends the IAP credential in
+the HTTP `Authorization` bearer header. The Dojo application bearer token must
+therefore use a distinct header such as `X-Synthi-Dojo-Mcp-Token`. The accepted
+IAP token audience must be verified against the deployed backend before
+archiving release evidence; the beta load balancer has previously required the
+exact deployed MCP URL audience for service-account signed JWT access.
+
 ---
 
 ## Rollout Order
@@ -628,7 +643,8 @@ separate.
 7. Populate Secret Manager with required names and payloads.
 8. Verify External Secrets sync into the `synthi` namespace.
 9. Run inventory and blocker summary.
-10. Deploy Dojo release overlay only after blockers are resolved.
+10. Deploy or re-deploy the Dojo release overlay only after explicit release
+   approval, then verify blockers are resolved.
 11. Run hosted MCP and runtime conformance gates.
 12. Run enterprise release gates.
 13. Archive evidence manifest and visual artifacts.
@@ -769,8 +785,8 @@ Safe current claim:
 
 ```text
 The base Synthi application is hosted on Google Cloud. The repo contains an
-opt-in Agent Dojo release overlay and release-gate tooling, but the Dojo
-enterprise release path still requires external durable stores, managed signing,
-Secret Manager population, Kubernetes auth verification, and deployed MCP host
-conformance before it can be claimed production-ready.
+Agent Dojo release overlay and release-gate tooling, and production deploy
+entrypoints render that overlay by default. The Dojo enterprise release path
+still requires live inventory, blocker, deployed MCP host, hosted runtime, and
+enterprise gate evidence before it can be claimed production-ready.
 ```

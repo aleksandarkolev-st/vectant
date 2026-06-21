@@ -296,6 +296,8 @@ production defaults:
 | Cluster | `synthi-beta-cluster` |
 | Cluster location | `europe-west10-a` |
 | Deploy branch | `main` |
+| Kustomize dir | `k8s/overlays/dojo-release-gate` |
+| Kustomize load restrictor | `LoadRestrictionsNone` |
 
 The script refuses dirty local deploys by default because Cloud Build uploads
 the local checkout snapshot. Use `--allow-dirty` only when you intentionally
@@ -314,9 +316,10 @@ The GitHub deploy service account only needs to submit Cloud Builds. The Cloud
 Build service account still performs the image pushes and GKE rollout, so it
 must keep the Artifact Registry and GKE permissions listed above.
 
-Production deploys render Kustomize with the immutable image tag before applying
-manifests. This prevents the live cluster from briefly rolling Deployments to
-the placeholder `build-tag-required` image.
+Production deploys render the Dojo release overlay with the immutable image tag
+before applying manifests. This prevents the live cluster from briefly rolling
+Deployments to the placeholder `build-tag-required` image. The base `k8s/`
+render remains available for explicit rollback or beta-compatible debugging.
 
 ### Deploy
 
@@ -398,11 +401,16 @@ The collab server holds Yjs documents in memory and uses LevelDB on disk — it 
 ### Production Hardening
 - [x] Replace `secrets.yaml` with GCP Secret Manager + External Secrets Operator
 - [x] Enable Workload Identity for GCS access (remove GCP_CLIENT_EMAIL/KEY)
-- [ ] Set up Cloud SQL instead of in-cluster PostgreSQL
-- [ ] Set up Memorystore instead of in-cluster Redis
+- [x] Set up Cloud SQL for the Dojo release overlay instead of relying on in-cluster PostgreSQL
+- [x] Set up Memorystore for the Dojo release overlay instead of relying on in-cluster Redis
 - [x] Add NetworkPolicies to restrict pod-to-pod traffic
 - [x] Add PodDisruptionBudgets for frontend, gateway, signaling
 - [x] HTTP → HTTPS 301 redirect via FrontendConfig
 - [x] Prisma migration Job using configured `DATABASE_URL`
 - [ ] Configure Cloud Armor WAF rules on the Ingress
 - [ ] Set up Cloud Monitoring alerts for pod restarts and error rates
+
+The default `k8s/` render still includes in-cluster PostgreSQL and Redis for
+beta/base deployments. Production Dojo deployments use
+`k8s/overlays/dojo-release-gate`, which omits those manifests and reads the
+Cloud SQL/Redis connection values from External Secrets.

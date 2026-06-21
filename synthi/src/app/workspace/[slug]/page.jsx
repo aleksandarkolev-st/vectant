@@ -117,6 +117,7 @@ const ADAPTED_MANIFEST_CANDIDATES = [
     'synthi/build_manifest.json',
     ADAPTED_SIDECAR_PATH,
 ];
+const LAST_WORKSPACE_KEY = 'vectant:last-workspace';
 const ADAPTED_FALLBACK_HOST_FILES = ['shared.h', 'core.cpp', 'gui.cpp', 'host_runner.cpp'];
 const NATIVE_GUI_SOURCE_PATTERNS = [
     /#\s*include\s*[<"]SDL2\/SDL\.h[>"]/,
@@ -764,6 +765,17 @@ export default function EditorPage({ params }) {
             .catch(() => resolveTo(null));
         return () => { cancelled = true; };
     }, [slug]);
+
+    useEffect(() => {
+        if (!slug || typeof window === 'undefined') return;
+        try {
+            localStorage.setItem(LAST_WORKSPACE_KEY, JSON.stringify({
+                slug,
+                name: workspaceName || slug,
+                updatedAt: Date.now(),
+            }));
+        } catch (_) { /* best effort */ }
+    }, [slug, workspaceName]);
     const [hmrEnabled, setHmrEnabled] = useState(true);
     const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const [emulatorSessionId, setEmulatorSessionId] = useState(null);
@@ -3015,6 +3027,23 @@ export default function EditorPage({ params }) {
         setFloatingChatVisible((v) => !v);
     }, []);
 
+    const handleOpenWorkspaceStart = useCallback(() => {
+        router.push('/');
+    }, [router]);
+
+    useEffect(() => {
+        const handler = (event) => {
+            const key = String(event.key || '').toLowerCase();
+            if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === 'r') {
+                event.preventDefault();
+                event.stopPropagation();
+                handleOpenWorkspaceStart();
+            }
+        };
+        window.addEventListener('keydown', handler, true);
+        return () => window.removeEventListener('keydown', handler, true);
+    }, [handleOpenWorkspaceStart]);
+
     const handleUndo = useCallback(() => {
         if (editor) {
             const currentValue = editor.getValue();
@@ -3425,6 +3454,7 @@ export default function EditorPage({ params }) {
                         onToggleTerminal={onToggleTerminalCb}
                         onUndo={handleUndo}
                         onRedo={handleRedo}
+                        onOpenWorkspaceStart={handleOpenWorkspaceStart}
                         onToggleChat={handleToggleChat}
                         chatVisible={floatingChatVisible}
                         onCopyLineUp={handleCopyLineUp}

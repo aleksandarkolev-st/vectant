@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
@@ -20,6 +21,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const MCP_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(MCP_ROOT, "../..");
+const require = createRequire(import.meta.url);
 
 export const DOJO_MANAGED_KEY_SIGNING_TEST_FILES = [
   "tests/unit/dojo_proof_signing.test.ts",
@@ -83,7 +85,7 @@ export async function runDojoManagedKeySigningSelfCheck({
   const missing = DOJO_MANAGED_KEY_SIGNING_TEST_FILES.filter((file) => !existsSync(path.join(MCP_ROOT, file)));
   assert.deepEqual(missing, [], `missing managed-key signing test files: ${missing.join(", ")}`);
 
-  const vitestPath = path.join(MCP_ROOT, "node_modules", "vitest", "vitest.mjs");
+  const vitestPath = resolveVitestPath();
   assert.equal(existsSync(vitestPath), true, `missing vitest executable: ${vitestPath}`);
   const startedAt = performance.now();
   const result = spawnSync(process.execPath, [
@@ -431,6 +433,14 @@ function parseArgs(argv) {
     }
   }
   return parsed;
+}
+
+function resolveVitestPath() {
+  try {
+    return require.resolve("vitest/vitest.mjs");
+  } catch {
+    return path.join(MCP_ROOT, "node_modules", "vitest", "vitest.mjs");
+  }
 }
 
 function isDirectRun() {

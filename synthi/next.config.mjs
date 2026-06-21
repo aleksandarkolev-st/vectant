@@ -1,9 +1,10 @@
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { buildContentSecurityPolicy } from './src/lib/security/csp.js';
+import csp from './src/lib/security/csp.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const { buildContentSecurityPolicy } = csp;
 
 // Resolve a dependency's path robustly whether npm hoisted it to the repo-root
 // node_modules (npm workspaces) or kept it in synthi/node_modules. Falls back to

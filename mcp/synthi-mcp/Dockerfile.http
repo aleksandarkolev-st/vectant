@@ -1,15 +1,17 @@
 FROM node:22-slim@sha256:689c11043dad91472750cd824c97dd5e2318e9dd6f954e492fe7af0135d33ceb
 
-WORKDIR /workspace/mcp/synthi-mcp
+WORKDIR /app/mcp/synthi-mcp
 
-COPY packages/mcp-hub /workspace/packages/mcp-hub
+COPY packages/mcp-hub /app/packages/mcp-hub
 COPY mcp/synthi-mcp/.npmrc mcp/synthi-mcp/package.json mcp/synthi-mcp/package-lock.json ./
-RUN npm ci --workspaces=false
+RUN NODE_ENV=development npm ci --workspaces=false --include=dev --production=false \
+  && test -x ./node_modules/.bin/tsc \
+  && ./node_modules/.bin/tsc --version
 
 COPY mcp/synthi-mcp/tsconfig.json ./
 COPY mcp/synthi-mcp/src ./src
 COPY mcp/synthi-mcp/scripts ./scripts
-RUN npm run build
+RUN npm run build && test -s dist/http.js
 
 ENV SYNTHI_MCP_HTTP_HOST=0.0.0.0
 ENV SYNTHI_MCP_HTTP_PORT=9467

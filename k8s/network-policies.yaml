@@ -152,6 +152,13 @@ spec:
       ports:
         - port: 9466
           protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              app: dojo-mcp-host
+      ports:
+        - port: 9222
+          protocol: TCP
   policyTypes:
     - Ingress
 

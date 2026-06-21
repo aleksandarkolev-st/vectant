@@ -109,6 +109,10 @@ export type BrowserWorkflowOverlayActionSink = (
   request: BrowserWorkflowOverlayRequest & { tab_id: string; page_url: string }
 ) => Promise<BrowserWorkflowOverlayResponse> | BrowserWorkflowOverlayResponse;
 
+export interface BrowserCdpAttachOptions {
+  headers?: Record<string, string>;
+}
+
 type PopupOpenerContext = {
   opener_tab_id: string;
   opener_origin: string;
@@ -119,6 +123,7 @@ type PopupOpenerContext = {
 export class BrowserPlaywrightAdapter {
   private browser: Browser | null = null;
   private cdpUrl: string | null = null;
+  private cdpConnectionKey: string | null = null;
   private nextTabSeq = 0;
   private readonly pageIds = new WeakMap<Page, string>();
   private readonly pages = new Map<string, PageRecord>();
@@ -150,13 +155,17 @@ export class BrowserPlaywrightAdapter {
     this.workflowOverlayEnabled = enabled;
   }
 
-  async attach(cdpUrl: string): Promise<BrowserTab[]> {
-    if (!this.browser || this.cdpUrl !== cdpUrl) {
+  async attach(cdpUrl: string, options: BrowserCdpAttachOptions = {}): Promise<BrowserTab[]> {
+    const headers = normalizeCdpAttachHeaders(options.headers);
+    const connectionKey = cdpConnectionKey(cdpUrl, headers);
+    if (!this.browser || this.cdpConnectionKey !== connectionKey) {
       if (this.browser) await this.browser.close().catch(() => undefined);
       this.browser = await chromium.connectOverCDP(cdpUrl, {
         timeout: resolveCdpConnectTimeoutMs(),
+        headers,
       });
       this.cdpUrl = cdpUrl;
+      this.cdpConnectionKey = connectionKey;
     }
     return this.listTabs();
   }
@@ -769,21 +778,28 @@ export class BrowserPlaywrightAdapter {
     const page = this.pages.get(tab_id)?.page;
     if (!page || page.isClosed()) return { ok: false, error: "tab_not_found" };
     await this.installTeachCapture(page, tab_id);
-    if (this.workflowOverlayEnabled) {
-      const visible = await this.installWorkflowOverlay(page, tab_id);
-      if (visible) {
-        this.workflowOverlayInstalled.add(page);
-      } else {
-        this.workflowOverlayInstalled.delete(page);
-        return { ok: false, error: "workflow_overlay_install_failed" };
-      }
-    }
+    const overlay = await this.refreshWorkflowOverlay(tab_id);
+    if (!overlay.ok) return overlay;
     return { ok: true };
+  }
+
+  async refreshWorkflowOverlay(tab_id: string): Promise<{ ok: true; visible: boolean } | { ok: false; error: string }> {
+    const page = this.pages.get(tab_id)?.page;
+    if (!page || page.isClosed()) return { ok: false, error: "tab_not_found" };
+    if (!this.workflowOverlayEnabled) return { ok: true, visible: false };
+    const visible = await this.installWorkflowOverlay(page, tab_id);
+    if (!visible) {
+      this.workflowOverlayInstalled.delete(page);
+      return { ok: false, error: "workflow_overlay_install_failed" };
+    }
+    this.workflowOverlayInstalled.add(page);
+    return { ok: true, visible: true };
   }
 
   resetForTests(): void {
     this.browser = null;
     this.cdpUrl = null;
+    this.cdpConnectionKey = null;
     this.nextTabSeq = 0;
     this.pages.clear();
     this.consoleEvents.clear();
@@ -4046,4 +4062,19 @@ export function resolveCdpConnectTimeoutMs(env: NodeJS.ProcessEnv = process.env)
     return Math.min(Math.floor(parsed), 300_000);
   }
   return 60_000;
+}
+
+function normalizeCdpAttachHeaders(headers: Record<string, string> | undefined): Record<string, string> {
+  if (!headers) return {};
+  const normalized: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers).sort(([left], [right]) => left.localeCompare(right))) {
+    const headerName = name.trim();
+    if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(headerName)) continue;
+    normalized[headerName] = value;
+  }
+  return normalized;
+}
+
+function cdpConnectionKey(cdpUrl: string, headers: Record<string, string>): string {
+  return JSON.stringify({ cdpUrl, headers });
 }

@@ -27,6 +27,8 @@ data:
   SYNTHI_BROWSER_WORKFLOW_BRIDGE_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{bridgePort}"
   SYNTHI_BROWSER_WORKFLOW_BRIDGE_PORT: "9466"
   SYNTHI_HOSTED_BROWSER_CDP_PORT: "9222"
+  SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{cdpPort}"
+  SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY: "runtime-service"
   SYNTHI_HOSTED_BROWSER_VIEW_PORT: "6080"
   SYNTHI_HOSTED_BROWSER_VNC_PORT: "5900"
   SYNTHI_BROWSER_WORKFLOW_BRIDGE_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-browser-workflow-bridge:build-tag-required"
@@ -34,7 +36,7 @@ data:
   SYNTHI_BROWSER_EXTERNAL_OPEN_TIMEOUT_MS: "15000"
   # Optional runtime-scoped preview proxy target. Production previews route to
   # a pod-local preview sidecar so user apps may bind localhost-only ports.
-  SYNTHI_PREVIEW_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"
+  SYNTHI_PREVIEW_TARGET_TEMPLATE: "http://{runtimeId}-rt.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"
   SYNTHI_PREVIEW_PUBLIC_PREFIX: "/collab"
   SYNTHI_PREVIEW_PUBLIC_DOMAIN: "preview.vectant.dev"
   SYNTHI_PREVIEW_PUBLIC_PROTOCOL: "https"
@@ -107,9 +109,9 @@ data:
   # TODO: add a trivy CRITICAL gate to CI before enabling the backend in prod.
   RUNTIME_POD_IMAGE: "europe-west10-docker.pkg.dev/vectant-proj/synthi/vectant-runtime:build-tag-required"
   # Slice 4 preview routing: SYNTHI_PREVIEW_TARGET_TEMPLATE is already set ABOVE and
-  # targets the WORKER pod's preview sidecar ({runtimeId} -> rt-<hash>). When
-  # RUNTIME_BACKEND=sysbox-pod is enabled, change that template to target the RUNTIME
-  # pod's Service (rt-<hash>-rt) instead:
+  # targets the RUNTIME pod's preview sidecar ({runtimeId} -> rt-<hash>-rt). The
+  # worker Service ({runtimeId}) hosts the workflow bridge/CDP sidecars, not user
+  # app ports:
   #   "http://{runtimeId}-rt.synthi.svc.cluster.local:{sidecarPort}{sidecarPrefix}/{port}"
   # (One template per deploy; worker-vs-runtime preview coexistence is a follow-up.)
   # Schedule dynamically spawned workspace pods onto the autoscaled workspace pool.

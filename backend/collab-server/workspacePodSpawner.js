@@ -295,6 +295,7 @@ function workflowBridgeContainers(sessionId, metadata = {}) {
           valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'SYNTHI_BROWSER_WORKFLOW_BRIDGE_TOKEN' } },
         },
         { name: 'SYNTHI_HOSTED_BROWSER_CDP_URL', value: `http://127.0.0.1:${HOSTED_BROWSER_CDP_PORT}` },
+        { name: 'SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY', value: 'same-pod' },
         { name: 'SYNTHI_PREVIEW_SIDECAR_PORT', value: String(PREVIEW_SIDECAR_PORT) },
         { name: 'SYNTHI_PREVIEW_SIDECAR_PREFIX', value: PREVIEW_SIDECAR_PREFIX },
         { name: 'SYNTHI_PREVIEW_PUBLIC_DOMAIN', value: PREVIEW_PUBLIC_DOMAIN },
@@ -854,7 +855,10 @@ async function ensureService(sessionId) {
   };
   const ports = [
     { name: 'preview-proxy', port: PREVIEW_SIDECAR_PORT, targetPort: PREVIEW_SIDECAR_PORT },
-    ...(WORKFLOW_BRIDGE_IMAGE ? [{ name: 'workflow', port: WORKFLOW_BRIDGE_PORT, targetPort: WORKFLOW_BRIDGE_PORT }] : []),
+    ...(WORKFLOW_BRIDGE_IMAGE ? [
+      { name: 'workflow', port: WORKFLOW_BRIDGE_PORT, targetPort: WORKFLOW_BRIDGE_PORT },
+      { name: 'cdp', port: HOSTED_BROWSER_CDP_PORT, targetPort: HOSTED_BROWSER_CDP_PORT },
+    ] : []),
   ];
   const service = {
     apiVersion: 'v1',

@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# Synthi IDE - Agent Dojo Postgres Migration Job
+# ---------------------------------------------------------------------------
+# Runs Dojo schema migrations against the configured release Postgres targets.
+#
+# This manifest is intentionally not included in kustomization.yaml. It is
+# applied explicitly by Cloud Build after External Secrets sync and before app
+# rollout, so a failed Dojo schema migration stops the release cleanly.
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dojo-postgres-migrate
+  namespace: synthi
+  labels:
+    app: dojo-postgres-migrate
+    app.kubernetes.io/part-of: synthi-ide
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: dojo-postgres-migrate
+        app.kubernetes.io/part-of: synthi-ide
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: europe-west10-docker.pkg.dev/vectant-proj/synthi/synthi-mcp-http:build-tag-required
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -lc
+          args:
+            - npm run proof:dojo:postgres:migrate -- --out-dir /tmp/dojo-postgres-migrate
+          envFrom:
+            - secretRef:
+                name: synthi-secrets
+            - secretRef:
+                name: synthi-dojo-release-secrets

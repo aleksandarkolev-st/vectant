@@ -1,5 +1,5 @@
 import { authCheckpointManager, type AuthBrowserStorageState, type AuthReadiness, type AuthStorageArtifactMetadata } from "../browser/auth.js";
-import { browserBroker } from "../browser/broker.js";
+import { browserBroker, type BrowserRuntimeAttachment, type BrowserWorkflowArtifact } from "../browser/broker.js";
 import { browserBridgeServer } from "../browser/bridge_server.js";
 import { browserWorkflowDeploymentReadiness } from "../browser/deployment_readiness.js";
 import { buildDojoSkill, dojoSkillRegistry } from "../browser/dojo.js";
@@ -53,13 +53,24 @@ export interface DojoValidatedBrowserWorkflowContext {
   skill_id: string;
   requested_action: string;
   run_id?: string;
+  validated_graph_inputs?: Record<string, unknown>;
   tenant_id?: string;
   workspace_id?: string;
   runtime_session_id?: string;
   runtime_action_url?: string;
   runtime_authorization_evidence_record_ids?: string[];
+  verified_runtime_attachment?: BrowserRuntimeAttachment | null;
   now?: string;
 }
+
+export interface DojoPrivateWorkflowToolHydration {
+  manifest: PrivateWorkflowToolManifestV7;
+  workflow_artifact?: BrowserWorkflowArtifact;
+}
+
+export type DojoPrivateWorkflowToolReadiness =
+  | { ok: true; registration: PrivateWorkflowToolRegistration; workflow_artifact: BrowserWorkflowArtifact }
+  | { ok: false; error: ToolResponse };
 
 export type DojoBrowserRuntimeBindingValidation =
   | { ok: true; binding?: Record<string, unknown> }
@@ -954,9 +965,112 @@ export async function dispatchBrowserTool(toolName: string, args: unknown): Prom
 export async function dispatchBrowserPrivateWorkflowToolAfterDojoProof(
   toolName: string,
   args: unknown,
-  dojoContext: DojoValidatedBrowserWorkflowContext
+  dojoContext: DojoValidatedBrowserWorkflowContext,
+  hydration?: DojoPrivateWorkflowToolHydration
 ): Promise<ToolResponse> {
+  const readiness = ensureBrowserPrivateWorkflowToolForDojoProof(toolName, hydration);
+  if (!readiness.ok) return readiness.error;
   return await browserRunPublishedPrivateTool(toolName, args, dojoContext);
+}
+
+export function ensureBrowserPrivateWorkflowToolForDojoProof(
+  toolName: string,
+  hydration?: DojoPrivateWorkflowToolHydration
+): DojoPrivateWorkflowToolReadiness {
+  let registration = privateWorkflowToolRegistry.get(toolName);
+  if (!registration && hydration) {
+    const hydrated = hydrateDojoPrivateWorkflowTool(toolName, hydration);
+    if (!hydrated.ok) return hydrated;
+    registration = hydrated.registration;
+  }
+  if (!registration) {
+    return { ok: false, error: errorResponse("private_workflow_tool_not_found", { tool_name: toolName }) };
+  }
+  if (registration.workflow_id !== registration.manifest.workflow_id) {
+    return {
+      ok: false,
+      error: errorResponse("private_workflow_registration_mismatch", {
+        tool_name: toolName,
+        workflow_id: registration.workflow_id,
+        manifest_workflow_id: registration.manifest.workflow_id,
+      }),
+    };
+  }
+  if (registration.manifest.status === "blocked") {
+    return {
+      ok: false,
+      error: errorResponse("private_workflow_tool_blocked", {
+        tool_name: toolName,
+        workflow_id: registration.manifest.workflow_id,
+        blockers: registration.manifest.safety.blockers,
+      }),
+    };
+  }
+  let artifact = browserBroker.workflowArtifact(registration.workflow_id);
+  if (!artifact.ok && registration.workflow_artifact) {
+    artifact = browserBroker.registerWorkflowArtifact(registration.workflow_artifact);
+  }
+  if (!artifact.ok) {
+    return {
+      ok: false,
+      error: errorResponse(artifact.error, {
+        tool_name: toolName,
+        workflow_id: registration.workflow_id,
+        hydration_source: hydration ? "dojo_durable_skill" : "private_workflow_registry",
+      }),
+    };
+  }
+  return { ok: true, registration, workflow_artifact: artifact.artifact };
+}
+
+function hydrateDojoPrivateWorkflowTool(
+  toolName: string,
+  hydration: DojoPrivateWorkflowToolHydration
+): DojoPrivateWorkflowToolReadiness {
+  if (hydration.manifest.tool_name !== toolName) {
+    return {
+      ok: false,
+      error: errorResponse("private_workflow_tool_hydration_mismatch", {
+        tool_name: toolName,
+        hydrated_tool_name: hydration.manifest.tool_name,
+        workflow_id: hydration.manifest.workflow_id,
+      }),
+    };
+  }
+  let workflowArtifact = hydration.workflow_artifact;
+  if (!workflowArtifact) {
+    const brokerArtifact = browserBroker.workflowArtifact(hydration.manifest.workflow_id);
+    if (brokerArtifact.ok) workflowArtifact = brokerArtifact.artifact;
+  }
+  if (!workflowArtifact) {
+    return {
+      ok: false,
+      error: errorResponse("private_workflow_artifact_not_found", {
+        tool_name: toolName,
+        workflow_id: hydration.manifest.workflow_id,
+        hydration_source: "dojo_durable_skill",
+      }),
+    };
+  }
+  const published = privateWorkflowToolRegistry.publish(hydration.manifest, {
+    reservedToolNames: ADVERTISED_TOOLS,
+    workflowArtifact,
+  });
+  if (!published.ok) {
+    return {
+      ok: false,
+      error: errorResponse(published.error, {
+        tool_name: published.tool_name,
+        workflow_id: hydration.manifest.workflow_id,
+        hydration_source: "dojo_durable_skill",
+      }),
+    };
+  }
+  return {
+    ok: true,
+    registration: published.registration,
+    workflow_artifact: workflowArtifact,
+  };
 }
 
 async function browserDirectPrivateWorkflowTool(
@@ -1249,6 +1363,13 @@ async function browserObservePreviewTool(args: unknown, options: { userGesture?:
       reason: err instanceof Error ? err.message : String(err),
     });
   }
+  const overlay = await browserPlaywrightAdapter.refreshWorkflowOverlay(target.tab.tab_id);
+  if (!overlay.ok) {
+    return errorResponse(overlay.error, {
+      tab_id: target.tab.tab_id,
+      preview_url: target.tab.url,
+    });
+  }
   let snapshot;
   try {
     snapshot = await browserPlaywrightAdapter.snapshot(target.tab.tab_id);
@@ -1271,6 +1392,7 @@ async function browserObservePreviewTool(args: unknown, options: { userGesture?:
       reason: target.reason,
     },
     snapshot: gated.snapshot,
+    workflow_overlay: overlay,
     tabs,
     hidden_tabs: allTabs.length - tabs.length,
   });
@@ -2261,8 +2383,10 @@ async function browserRunPublishedPrivateTool(
     });
   }
 
-  const hostedRuntimeGate = privateWorkflowHostedRuntimeGate(toolName, effectiveManifest, a);
+  const hostedRuntimeGate = privateWorkflowHostedRuntimeGate(toolName, effectiveManifest, a, dojoContext);
   if (hostedRuntimeGate) return hostedRuntimeGate;
+  const dojoReplayTarget = await ensureDojoBrowserReplayTargetForProof(a, dojoContext);
+  if (!dojoReplayTarget.ok) return dojoReplayTarget.error;
 
   const lease = browserBroker.acquireLease(
     process.env["SYNTHI_AGENT_ID"] ?? "private_workflow_tool",
@@ -2270,14 +2394,20 @@ async function browserRunPublishedPrivateTool(
     `private_tool:${toolName}`
   );
   try {
-    const response = await browserRunWorkflowTool({
-      lease_id: lease.lease_id,
-      workflow_id: registration.workflow_id,
-      mode,
-      parameters,
-      ...dojoTenantReplayArgs(a),
-      ...(stringOpt(a["tab_id"]) ? { tab_id: stringOpt(a["tab_id"]) } : {}),
-    }, dojoContext);
+    let response: ToolResponse;
+    try {
+      response = await browserRunWorkflowTool({
+        lease_id: lease.lease_id,
+        workflow_id: registration.workflow_id,
+        mode,
+        parameters,
+        ...dojoTenantReplayArgs(a),
+        ...dojoValidatedReplayContextArgsForBrowserWorkflow(dojoContext),
+        ...(dojoReplayTarget.tab_id ? { tab_id: dojoReplayTarget.tab_id } : {}),
+      }, dojoContext);
+    } catch (err) {
+      response = errorFromException("private_workflow_replay_failed", err);
+    }
     const structuredContent = {
       ...(response.structuredContent ?? {}),
       private_tool: {
@@ -2295,6 +2425,144 @@ async function browserRunPublishedPrivateTool(
   } finally {
     browserBroker.releaseLease(lease.lease_id, `private_tool:${toolName}:complete`);
   }
+}
+
+type DojoBrowserReplayTarget =
+  | { ok: true; tab_id?: string }
+  | { ok: false; error: ToolResponse };
+
+async function ensureDojoBrowserReplayTargetForProof(
+  args: Record<string, unknown>,
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): Promise<DojoBrowserReplayTarget> {
+  const requestedTabId = stringOpt(args["tab_id"]);
+  if (requestedTabId && browserBroker.selectTab(requestedTabId)) {
+    return { ok: true, tab_id: requestedTabId };
+  }
+
+  const runtime = dojoContext?.verified_runtime_attachment;
+  if (!dojoContext || runtime?.kind !== "hosted") {
+    return requestedTabId ? { ok: true, tab_id: requestedTabId } : { ok: true };
+  }
+
+  const targetUrl = dojoRuntimeReplayTargetUrl(args, dojoContext);
+  const selected = browserBroker.selectedTab();
+  if (selected && browserReplayTabMatchesRuntimeTarget(selected.url, targetUrl)) {
+    return { ok: true, tab_id: selected.tab_id };
+  }
+
+  if (!targetUrl) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_replay_target_required", {
+        skill_id: dojoContext.skill_id,
+        proof_capsule_id: dojoContext.proof_capsule_id,
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? null,
+        required_field: "runtime_action_url",
+      }),
+    };
+  }
+
+  let attachment: Awaited<ReturnType<typeof attachHostedBrowserRuntime>>;
+  try {
+    attachment = await attachHostedBrowserRuntime(
+      {
+        tenant_id: dojoContext.tenant_id ?? runtime.tenant_id ?? stringOpt(args["tenant_id"]),
+        workspace_id: dojoContext.workspace_id ?? runtime.workspace_id ?? stringOpt(args["workspace_id"]),
+        actor_id: runtime.actor_id ?? stringOpt(args["actor_id"]),
+        workspace_url: targetUrl,
+        runtime_id: runtime.runtime_id ?? stringOpt(args["runtime_id"]),
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? stringOpt(args["runtime_session_id"]),
+        origin_allowlist: runtime.origin_allowlist,
+        local_network_allowed: runtime.egress_policy?.local_network_allowed,
+        redact_screenshots: runtime.redaction_policy?.screenshots,
+        open_workspace: true,
+      },
+      browserPlaywrightAdapter,
+      browserBroker
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      error: errorFromException("dojo_hosted_runtime_browser_attach_failed", err),
+    };
+  }
+
+  if (!attachment.ok) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_browser_attach_failed", {
+        skill_id: dojoContext.skill_id,
+        proof_capsule_id: dojoContext.proof_capsule_id,
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? null,
+        target_origin: originForUrl(targetUrl),
+        attachment_error: attachment.error,
+        runtime: attachment.runtime,
+      }),
+    };
+  }
+
+  const tab = selectDojoRuntimeReplayTab(attachment.tabs, targetUrl);
+  if (!tab) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_browser_tab_not_authorized", {
+        skill_id: dojoContext.skill_id,
+        proof_capsule_id: dojoContext.proof_capsule_id,
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? null,
+        target_origin: originForUrl(targetUrl),
+        authorized_tab_count: attachment.tabs.length,
+        consent: browserBroker.getConsent(targetUrl)[0],
+        required_tool: "synthi_browser_request_consent",
+      }),
+    };
+  }
+
+  const selectedTab = browserBroker.selectTab(tab.tab_id);
+  if (!selectedTab) {
+    return {
+      ok: false,
+      error: errorResponse("dojo_hosted_runtime_browser_tab_not_authorized", {
+        skill_id: dojoContext.skill_id,
+        proof_capsule_id: dojoContext.proof_capsule_id,
+        runtime_session_id: dojoContext.runtime_session_id ?? runtime.session_id ?? null,
+        target_origin: originForUrl(targetUrl),
+        tab_id: tab.tab_id,
+      }),
+    };
+  }
+
+  try {
+    await browserPlaywrightAdapter.selectTab(tab.tab_id);
+  } catch (err) {
+    return {
+      ok: false,
+      error: errorFromException("dojo_hosted_runtime_browser_select_failed", err),
+    };
+  }
+
+  return { ok: true, tab_id: selectedTab.tab_id };
+}
+
+function dojoRuntimeReplayTargetUrl(
+  args: Record<string, unknown>,
+  dojoContext: DojoValidatedBrowserWorkflowContext
+): string | undefined {
+  return stringOpt(args["runtime_action_url"])
+    ?? dojoContext.runtime_action_url
+    ?? stringOpt(dojoContext.verified_runtime_attachment?.workspace_url);
+}
+
+function browserReplayTabMatchesRuntimeTarget(tabUrl: string, targetUrl?: string): boolean {
+  if (!targetUrl) return true;
+  return originForUrl(tabUrl) === originForUrl(targetUrl);
+}
+
+function selectDojoRuntimeReplayTab(tabs: Array<{ tab_id: string; url: string }>, targetUrl: string): { tab_id: string; url: string } | null {
+  const targetOrigin = originForUrl(targetUrl);
+  return tabs.find((tab) => tab.url === targetUrl)
+    ?? tabs.find((tab) => originForUrl(tab.url) === targetOrigin)
+    ?? null;
 }
 
 function browserDirectPrivateToolRequiresDojoProof(
@@ -2438,7 +2706,7 @@ export function validateBrowserRuntimeAttachmentForDojoProof(
   const blockedBy: string[] = [];
   if (!dojoContext.runtime_session_id) blockedBy.push("runtime_session_context_missing");
 
-  const runtime = browserBroker.runtimeAttachment();
+  const runtime = dojoContext.verified_runtime_attachment ?? browserBroker.runtimeAttachment();
   if (!runtime) {
     blockedBy.push("runtime_attachment_missing");
   } else if (runtime.kind !== "hosted") {
@@ -2534,6 +2802,33 @@ function dojoTenantReplayArgs(args: Record<string, unknown>): Record<string, unk
     "data_region",
   ]) {
     if (args[key] !== undefined) replayArgs[key] = args[key];
+  }
+  return replayArgs;
+}
+
+const DOJO_REPLAY_CONTEXT_RESERVED_ARGS = new Set([
+  "lease_id",
+  "workflow_id",
+  "mode",
+  "run_mode",
+  "parameters",
+  "tab_id",
+  "action",
+  "selector",
+  "value",
+  "url",
+]);
+
+export function dojoValidatedReplayContextArgsForBrowserWorkflow(
+  dojoContext?: DojoValidatedBrowserWorkflowContext
+): Record<string, unknown> {
+  const replayArgs: Record<string, unknown> = {};
+  const inputs = dojoContext?.validated_graph_inputs;
+  if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) return replayArgs;
+  for (const [key, value] of Object.entries(inputs)) {
+    if (!key || DOJO_REPLAY_CONTEXT_RESERVED_ARGS.has(key)) continue;
+    if (typeof value === "undefined" || typeof value === "function" || typeof value === "symbol" || typeof value === "bigint") continue;
+    replayArgs[key] = value;
   }
   return replayArgs;
 }
@@ -2649,9 +2944,10 @@ function bindingResolutionSummary(resolution: DojoPublishedWorkflowBindingResolu
 function privateWorkflowHostedRuntimeGate(
   toolName: string,
   manifest: PrivateWorkflowToolManifestV7,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  dojoContext?: DojoValidatedBrowserWorkflowContext
 ): ToolResponse | null {
-  const runtime = browserBroker.runtimeAttachment();
+  const runtime = dojoContext?.verified_runtime_attachment ?? browserBroker.runtimeAttachment();
   if (runtime?.kind === "hosted") return null;
   const workspaceId = stringOpt(args["workspace_id"]);
   const readiness = resolveHostedBrowserRuntime({

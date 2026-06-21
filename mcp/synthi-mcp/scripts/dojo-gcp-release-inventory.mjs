@@ -1199,10 +1199,19 @@ function namesFrom(values, pick) {
   for (const value of values) {
     const name = pick(value);
     if (typeof name === "string" && name.trim()) {
-      result.add(name.trim());
+      addNameVariants(result, name);
     }
   }
   return result;
+}
+
+function addNameVariants(result, name) {
+  const trimmed = name.trim();
+  result.add(trimmed);
+  const shortName = trimmed.split("/").filter(Boolean).pop();
+  if (shortName) {
+    result.add(shortName);
+  }
 }
 
 function ingressHostsFrom(values) {
@@ -1312,11 +1321,15 @@ function writeReport(config, report) {
   const reportPath = path.join(config.outDir, "dojo-gcp-release-inventory.json");
   const evidencePath = path.join(config.outDir, "dojo-gcp-release-inventory.evidence.json");
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  const reportCanonicalJsonSha256 = fileSha256(reportPath);
+  const reportFileSha256 = sha256(readFileSync(reportPath, "utf8"));
   const evidence = {
     schema_version: "synthi.dojo.gcpReleaseInventoryEvidence.v1",
     created_at: report.created_at,
     report_path: reportPath,
-    report_sha256: fileSha256(reportPath),
+    report_sha256: reportCanonicalJsonSha256,
+    report_canonical_json_sha256: reportCanonicalJsonSha256,
+    report_file_sha256: reportFileSha256,
     mode: report.mode,
     execute: report.config.execute,
     command_count: report.command_plan.length,

@@ -26,9 +26,12 @@ describe("hosted browser runtime resolver", () => {
       workspace_id: "workspace-a",
       adapter: "not-configured",
       ignored_local_dev_env: ["SYNTHI_BROWSER_CDP_URL"],
-      required_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
+      required_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL or SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE"],
+      cdp_endpoint_source: "not-configured",
+      cdp_topology: "unspecified",
       runtime_host_class: "invalid",
       non_loopback_runtime: false,
+      cdp_header_names: [],
       origin_allowlist: [],
       session_ttl_ms: null,
       local_network_allowed: false,
@@ -95,6 +98,161 @@ describe("hosted browser runtime resolver", () => {
     expect(result.tabs.map((tab) => tab.tab_id)).toEqual(["hosted_tab_2"]);
     expect(result.hidden_tabs).toBe(1);
     expect(broker.runtimeAttachment()).toEqual(expect.objectContaining({ kind: "hosted" }));
+  });
+
+  it("keeps the opened workspace tab when runtime tab enumeration is stale", async () => {
+    const broker = new BrowserBroker();
+    broker.requestConsent("https://workspace.example.test", "granted", "unit", { screenshot: true });
+    const deps: HostedBrowserAttachDeps = {
+      async attach() {
+        return [{ tab_id: "bootstrap", url: "about:blank", active: true }];
+      },
+      async open(url: string) {
+        return { tab_id: "target", url, active: true };
+      },
+      async listTabs() {
+        return [{ tab_id: "bootstrap", url: "about:blank", active: false }];
+      },
+    };
+
+    const result = await attachHostedBrowserRuntime(
+      {
+        workspace_id: "workspace-a",
+        workspace_url: "https://workspace.example.test/workspace/browser",
+      },
+      deps,
+      broker,
+      {
+        SYNTHI_HOSTED_BROWSER_CDP_URL: "ws://hosted-runtime/devtools",
+        SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST: "https://workspace.example.test",
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected_hosted_attach_success");
+    expect(result.tabs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tab_id: "target",
+        url: "https://workspace.example.test/workspace/browser",
+      }),
+    ]));
+    expect(broker.selectTab("target")).toEqual(expect.objectContaining({
+      tab_id: "target",
+      url: "https://workspace.example.test/workspace/browser",
+    }));
+  });
+
+  it("merges per-session runtime origins into the hosted browser allowlist", async () => {
+    const broker = new BrowserBroker();
+    broker.requestConsent("http://frontend.synthi.svc.cluster.local:3000", "granted", "unit", { screenshot: true });
+    const deps: HostedBrowserAttachDeps = {
+      async attach() {
+        return [];
+      },
+      async open(url: string) {
+        return { tab_id: "runtime-target", url, active: true };
+      },
+      async listTabs() {
+        return [];
+      },
+    };
+
+    const result = await attachHostedBrowserRuntime(
+      {
+        workspace_id: "workspace-a",
+        workspace_url: "http://frontend.synthi.svc.cluster.local:3000/dojo-release-seed",
+        origin_allowlist: ["http://frontend.synthi.svc.cluster.local:3000"],
+        local_network_allowed: true,
+      },
+      deps,
+      broker,
+      {
+        SYNTHI_HOSTED_BROWSER_CDP_URL: "ws://hosted-runtime/devtools",
+        SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST: "https://workspace.example.test",
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected_hosted_attach_success");
+    expect(result.runtime).toEqual(expect.objectContaining({
+      origin_allowlist: [
+        "http://frontend.synthi.svc.cluster.local:3000",
+        "https://workspace.example.test",
+      ],
+      egress_policy: { local_network_allowed: true },
+    }));
+    expect(result.tabs).toEqual([
+      expect.objectContaining({ tab_id: "runtime-target" }),
+    ]);
+  });
+
+  it("renders runtime-scoped CDP templates and forwards sanitized attach headers", async () => {
+    const broker = new BrowserBroker();
+    broker.requestConsent("https://workspace.example.test", "granted", "unit", { screenshot: true });
+    let attachCall: { cdpUrl: string; headers: Record<string, string> } | null = null;
+    const deps: HostedBrowserAttachDeps = {
+      async attach(cdpUrl, options) {
+        attachCall = { cdpUrl, headers: options?.headers ?? {} };
+        return [{ tab_id: "hosted_tab_1", url: "https://workspace.example.test/runtime", active: true }];
+      },
+      async open(url: string) {
+        return { tab_id: "hosted_tab_1", url, active: true };
+      },
+      async listTabs() {
+        return [{ tab_id: "hosted_tab_1", url: "https://workspace.example.test/runtime", active: true }];
+      },
+    };
+
+    const env = {
+      SYNTHI_HOSTED_BROWSER_CDP_URL: "ws://fallback.example.test/devtools",
+      SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE: "http://{runtimeId}.synthi.svc.cluster.local:{cdpPort}",
+      SYNTHI_HOSTED_BROWSER_CDP_PORT: "9333",
+      SYNTHI_HOSTED_BROWSER_CDP_TOPOLOGY: "runtime-service",
+      SYNTHI_HOSTED_BROWSER_CDP_HEADERS_JSON: JSON.stringify({
+        Authorization: "Bearer runtime-token",
+        "X-Synthi-Runtime": "rt-unit-a",
+        "Invalid Header": "ignored",
+      }),
+      SYNTHI_HOSTED_BROWSER_ORIGIN_ALLOWLIST: "https://workspace.example.test",
+      SYNTHI_HOSTED_BROWSER_SESSION_TTL_MS: "900000",
+    };
+
+    const readiness = resolveHostedBrowserRuntime({
+      workspace_id: "workspace-a",
+      runtime_id: "rt-unit-a",
+      workspace_url: "https://workspace.example.test/runtime",
+    }, env);
+
+    expect(readiness).toEqual(expect.objectContaining({
+      configured: true,
+      runtime_id: "rt-unit-a",
+      cdp_endpoint_source: "runtime-template",
+      cdp_topology: "runtime-service",
+      runtime_host_class: "remote",
+      cdp_header_names: ["Authorization", "X-Synthi-Runtime"],
+    }));
+    expect(readiness).not.toHaveProperty("cdpUrl");
+    expect(readiness).not.toHaveProperty("cdpHeaders");
+
+    const result = await attachHostedBrowserRuntime(
+      {
+        workspace_id: "workspace-a",
+        runtime_id: "rt-unit-a",
+        workspace_url: "https://workspace.example.test/runtime",
+      },
+      deps,
+      broker,
+      env
+    );
+
+    expect(result.ok).toBe(true);
+    expect(attachCall).toEqual({
+      cdpUrl: "http://rt-unit-a.synthi.svc.cluster.local:9333",
+      headers: {
+        Authorization: "Bearer runtime-token",
+        "X-Synthi-Runtime": "rt-unit-a",
+      },
+    });
   });
 
   it("generates a hosted runtime session id when callers do not provide one", async () => {

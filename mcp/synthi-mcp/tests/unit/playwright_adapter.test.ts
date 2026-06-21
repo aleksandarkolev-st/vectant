@@ -20,6 +20,16 @@ describe("browser Playwright adapter config", () => {
     expect(resolveCdpConnectTimeoutMs({ SYNTHI_BROWSER_CDP_CONNECT_TIMEOUT_MS: "bad" })).toBe(60_000);
   });
 
+  it("passes sanitized CDP headers into the Playwright connection identity", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/browser/playwright_adapter.ts"), "utf8");
+
+    expect(source).toContain("export interface BrowserCdpAttachOptions");
+    expect(source).toContain("private cdpConnectionKey: string | null = null;");
+    expect(source).toContain("const headers = normalizeCdpAttachHeaders(options.headers);");
+    expect(source).toContain("const connectionKey = cdpConnectionKey(cdpUrl, headers);");
+    expect(source).toContain("headers,");
+  });
+
   it("splits auth storage into Playwright context state, cookies, and sessionStorage init payload", () => {
     const storageState = {
       cookies: [

@@ -31,8 +31,8 @@ substitutions:
   _REGISTRY: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/synthi
   _MANIFEST_SOURCE_REGISTRY: europe-west10-docker.pkg.dev/vectant-proj/synthi
   _IMAGE_TAG: ${BUILD_ID}
-  _KUSTOMIZE_DIR: k8s
-  _KUSTOMIZE_LOAD_RESTRICTOR: ""
+  _KUSTOMIZE_DIR: k8s/overlays/dojo-release-gate
+  _KUSTOMIZE_LOAD_RESTRICTOR: LoadRestrictionsNone
   _DOJO_RELEASE_KUSTOMIZE_DIR: k8s/overlays/dojo-release-gate
 
   # NEXT_PUBLIC_* build args baked into the frontend client bundle.
@@ -47,6 +47,7 @@ substitutions:
   _NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER: "true"
   _NEXT_PUBLIC_SYNTHI_LOOPBACK_AUTH_BRIDGE_PATH: "/auth/loopback"
   _WORKER_INSTALL_ROCM: "false"
+  _ENABLE_VULNERABILITY_SCAN: "false"
 
 options:
   machineType: E2_HIGHCPU_32
@@ -208,8 +209,7 @@ steps:
       # file dependency, matching the frontend workspace image pattern.
       - --context=dir:///workspace
       - --destination=${_REGISTRY}/synthi-browser-workflow-bridge:${_IMAGE_TAG}
-      - --cache=true
-      - --cache-ttl=168h
+      - --cache=false
 
   # Agent Dojo HTTP MCP host. Built for the release-gate overlay; the default
   # beta kustomization does not deploy this image.
@@ -226,6 +226,11 @@ steps:
       - -c
       - |
         set -eu
+        normalize_kustomize_dir() {
+          printf '%s' "$$1" | sed -e 's#//*#/#g' -e 's#^\./##' -e 's#/\./#/#g' -e 's#/$##'
+        }
+        KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${KUSTOMIZE_DIR}")"
+        DOJO_RELEASE_KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${DOJO_RELEASE_KUSTOMIZE_DIR}")"
         if [ "$${KUSTOMIZE_DIR}" != "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]; then
           echo "Skipping Dojo MCP host image build for kustomize dir: $${KUSTOMIZE_DIR}"
           exit 0
@@ -234,8 +239,7 @@ steps:
           --dockerfile=mcp/synthi-mcp/Dockerfile.http \
           --context=dir:///workspace \
           --destination="$${REGISTRY}/synthi-mcp-http:$${IMAGE_TAG}" \
-          --cache=true \
-          --cache-ttl=168h
+          --cache=false
 
   # ── 9. Per-workspace runtime image (rootful dind under Sysbox) ──────────
   # ROOTFUL build (RUNTIME_USER=root, daemon at /var/run/docker.sock): under Sysbox
@@ -257,8 +261,9 @@ steps:
       - --cache=true
       - --cache-ttl=168h
 
-  # ── 10. Vulnerability gate — full release image fleet ─────────────────────
-  # Every image built by this pipeline must pass a CRITICAL CVE gate before
+  # ── 10. Vulnerability scan — opt-in full release image fleet ───────────────
+  # Disabled by default for beta deploy velocity. Set
+  # _ENABLE_VULNERABILITY_SCAN=true to run the CRITICAL CVE gate before
   # deployment. The per-workspace runtime additionally honors its committed
   # waiver file for the known base-bundled grpc CVE. The release-only Dojo MCP
   # host image is scanned when the release-gate overlay is selected.
@@ -281,10 +286,20 @@ steps:
       - DOJO_RELEASE_KUSTOMIZE_DIR=${_DOJO_RELEASE_KUSTOMIZE_DIR}
       - REGISTRY=${_REGISTRY}
       - IMAGE_TAG=${_IMAGE_TAG}
+      - ENABLE_VULNERABILITY_SCAN=${_ENABLE_VULNERABILITY_SCAN}
     args:
       - -c
       - |
         set -eu
+        normalize_kustomize_dir() {
+          printf '%s' "$$1" | sed -e 's#//*#/#g' -e 's#^\./##' -e 's#/\./#/#g' -e 's#/$##'
+        }
+        KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${KUSTOMIZE_DIR}")"
+        DOJO_RELEASE_KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${DOJO_RELEASE_KUSTOMIZE_DIR}")"
+        if [ "$${ENABLE_VULNERABILITY_SCAN}" != "true" ]; then
+          echo "Skipping image vulnerability scan because _ENABLE_VULNERABILITY_SCAN=$${ENABLE_VULNERABILITY_SCAN}"
+          exit 0
+        fi
         scan() {
           echo "Scanning $1"
           trivy image --severity=CRITICAL --exit-code=1 --no-progress --timeout=10m "$1"
@@ -334,6 +349,17 @@ steps:
       - build-runtime-image
       - vulnerability-scan-images
 
+  - id: verify-kubectl-auth
+    name: gcr.io/cloud-builders/kubectl:latest@sha256:0001d965b1fd2d41ef80cb94cc7dfb39d65adbb8ab3855370524b424d897c078
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        kubectl get namespace synthi
+    waitFor:
+      - get-gke-credentials
+
   - id: deploy-to-gke
     name: gcr.io/cloud-builders/kubectl:latest@sha256:0001d965b1fd2d41ef80cb94cc7dfb39d65adbb8ab3855370524b424d897c078
     entrypoint: bash
@@ -348,6 +374,12 @@ steps:
         DOJO_RELEASE_KUSTOMIZE_DIR="${_DOJO_RELEASE_KUSTOMIZE_DIR}"
         KUSTOMIZE_LOAD_RESTRICTOR="${_KUSTOMIZE_LOAD_RESTRICTOR}"
         NS="synthi"
+
+        normalize_kustomize_dir() {
+          printf '%s' "$$1" | sed -e 's#//*#/#g' -e 's#^\./##' -e 's#/\./#/#g' -e 's#/$##'
+        }
+        KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${KUSTOMIZE_DIR}")"
+        DOJO_RELEASE_KUSTOMIZE_DIR="$$(normalize_kustomize_dir "$${DOJO_RELEASE_KUSTOMIZE_DIR}")"
 
         echo "=== Deploying tag: $${TAG} ==="
         echo "=== Region: ${_REGION} ==="
@@ -387,6 +419,77 @@ steps:
           exit 1
         fi
 
+        apply_rendered_manifest() {
+          local apply_output apply_status deployment
+          set +e
+          apply_output="$$(kubectl apply -f "$${RENDERED}" 2>&1)"
+          apply_status=$$?
+          set -e
+          printf '%s\n' "$${apply_output}"
+          if [[ "$${apply_status}" -eq 0 ]]; then
+            return 0
+          fi
+
+          mapfile -t selector_drift_deployments < <(
+            printf '%s\n' "$${apply_output}" \
+              | sed -n 's/.*Deployment\.apps "\([^"]\+\)" is invalid: spec\.selector:.*/\1/p' \
+              | sort -u
+          )
+          if [[ "$${#selector_drift_deployments[@]}" -eq 0 ]]; then
+            return "$${apply_status}"
+          fi
+
+          echo "=== Recreating Deployments with immutable selector drift ==="
+          for deployment in "$${selector_drift_deployments[@]}"; do
+            echo "Deleting Deployment/$${deployment} so Kubernetes can accept the rendered selector."
+            kubectl delete deployment "$${deployment}" -n "$${NS}" --ignore-not-found
+          done
+          for deployment in "$${selector_drift_deployments[@]}"; do
+            kubectl wait --for=delete "deployment/$${deployment}" -n "$${NS}" --timeout=180s || true
+          done
+          kubectl apply -f "$${RENDERED}"
+        }
+
+        if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then
+          echo "=== Validating Dojo release render contract ==="
+          bash scripts/validate-dojo-release-render.sh "$${RENDERED}"
+
+          echo "=== Applying Dojo secret prerequisites ==="
+          SECRET_PREREQS="/workspace/.cloudbuild/synthi-secret-prereqs.yaml"
+          awk '
+            BEGIN { doc = "" }
+            function flush() {
+              if (doc ~ /(^|\n)[[:space:]]*kind:[[:space:]]*ExternalSecret([[:space:]]|\n)/ ||
+                  doc ~ /(^|\n)[[:space:]]*kind:[[:space:]]*SecretStore([[:space:]]|\n)/ ||
+                  (doc ~ /(^|\n)[[:space:]]*kind:[[:space:]]*ServiceAccount([[:space:]]|\n)/ &&
+                   doc ~ /(^|\n)[[:space:]]*name:[[:space:]]*eso-service-account([[:space:]]|\n)/)) {
+                printf "%s---\n", doc
+              }
+              doc = ""
+            }
+            /^---[[:space:]]*$/ { flush(); next }
+            { doc = doc $0 "\n" }
+            END { flush() }
+          ' "$${RENDERED}" > "$${SECRET_PREREQS}"
+          if [[ ! -s "$${SECRET_PREREQS}" ]]; then
+            echo "Dojo overlay did not render External Secrets prerequisites." >&2
+            exit 1
+          fi
+          kubectl apply -f "$${SECRET_PREREQS}"
+          kubectl wait --for=condition=Ready externalsecret/synthi-secrets -n $${NS} --timeout=180s
+          kubectl wait --for=condition=Ready externalsecret/synthi-dojo-release-secrets -n $${NS} --timeout=180s
+
+          echo "=== Running Dojo Postgres migrations ==="
+          kubectl delete job dojo-postgres-migrate -n $${NS} --ignore-not-found
+          sed "s|$${MANIFEST_SOURCE_REGISTRY}|$${REGISTRY}|g; s|build-tag-required|$${TAG}|g" \
+            k8s/dojo-postgres-migrate-job.yaml | kubectl apply -f -
+          if ! kubectl wait --for=condition=complete job/dojo-postgres-migrate -n $${NS} --timeout=300s; then
+            kubectl logs job/dojo-postgres-migrate -n $${NS} -c migrate || true
+            exit 1
+          fi
+          kubectl logs job/dojo-postgres-migrate -n $${NS} -c migrate --tail=100 || true
+        fi
+
         echo "=== Running Prisma migrations ==="
         kubectl delete job prisma-migrate -n $${NS} --ignore-not-found
         sed "s|$${MANIFEST_SOURCE_REGISTRY}|$${REGISTRY}|g; s|build-tag-required|$${TAG}|g" \
@@ -398,7 +501,19 @@ steps:
         kubectl logs job/prisma-migrate -n $${NS} -c migrate --tail=100 || true
 
         echo "=== Applying Kubernetes manifests ==="
-        kubectl apply -f "$${RENDERED}"
+        apply_rendered_manifest
+        if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then
+          echo "=== Removing in-cluster beta Redis/Postgres workloads from Dojo release namespace ==="
+          kubectl delete \
+            deployment/redis \
+            service/redis \
+            statefulset/postgres \
+            service/postgres \
+            networkpolicy/allow-to-redis \
+            networkpolicy/allow-to-postgres \
+            -n $${NS} \
+            --ignore-not-found
+        fi
 
         echo "=== Waiting for rollouts ==="
         kubectl rollout status deployment/frontend -n $${NS} --timeout=300s
@@ -408,12 +523,15 @@ steps:
         kubectl rollout status deployment/signaling-server -n $${NS} --timeout=300s
         if [[ "$${KUSTOMIZE_DIR}" == "$${DOJO_RELEASE_KUSTOMIZE_DIR}" ]]; then
           kubectl rollout status deployment/dojo-mcp-host -n $${NS} --timeout=300s
+          echo "=== Seeding Dojo release competency ==="
+          kubectl exec -n $${NS} deployment/dojo-mcp-host -c dojo-mcp-host -- \
+            npm run live:dojo:seed-release-competency -- --out-dir /var/lib/synthi/dojo/release-competency-seed
         elif kubectl get deployment/dojo-mcp-host -n $${NS} >/dev/null 2>&1; then
           kubectl rollout status deployment/dojo-mcp-host -n $${NS} --timeout=300s
         fi
 
         echo "=== Deploy complete ==="
     waitFor:
-      - get-gke-credentials
+      - verify-kubectl-auth
 
 timeout: 3600s

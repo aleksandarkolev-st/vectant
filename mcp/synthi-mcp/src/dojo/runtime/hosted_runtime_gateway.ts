@@ -171,6 +171,7 @@ export interface DojoHostedRuntimeActionDecision {
   ok: boolean;
   status: "authorized" | "blocked";
   session_id: string;
+  runtime_id: string | null;
   action_kind: DojoHostedRuntimeActionKind;
   blocked_by: DojoHostedRuntimeBlockCode[];
   audit_event_id?: string;
@@ -420,6 +421,7 @@ class InProcessDojoHostedRuntimeGateway implements DojoHostedRuntimeGateway {
         ok: false,
         status: "blocked",
         session_id: input.session_id,
+        runtime_id: null,
         action_kind: input.action_kind,
         blocked_by: tenantBlockedBy,
         evidence_record_ids: [],
@@ -500,6 +502,7 @@ class InProcessDojoHostedRuntimeGateway implements DojoHostedRuntimeGateway {
       ok: true,
       status: "authorized",
       session_id: session.session_id,
+      runtime_id: session.runtime_id,
       action_kind: input.action_kind,
       blocked_by: [],
       audit_event_id: audit.audit_event_id,
@@ -675,6 +678,7 @@ class InProcessDojoHostedRuntimeGateway implements DojoHostedRuntimeGateway {
       ok: false,
       status: "blocked",
       session_id: input.session_id,
+      runtime_id: session?.runtime_id ?? null,
       action_kind: input.action_kind,
       blocked_by: blockedBy,
       audit_event_id: audit.audit_event_id,

@@ -33,11 +33,14 @@ const DIST_INDEX = path.join(MCP_ROOT, "dist", "index.js");
 export const REQUIRED_DOJO_HOST_TOOLS = [
   "synthi_browser_get_deployment_readiness",
   "synthi_dojo_list_competencies",
+  "synthi_dojo_get_skill",
   "synthi_dojo_issue_proof_capsule",
   "synthi_dojo_validate_proof_capsule",
   "synthi_dojo_run_with_proof_capsule",
   "synthi_dojo_revoke_proof_capsule",
 ];
+
+export const MCP_STREAMABLE_HTTP_ACCEPT = "application/json, text/event-stream";
 
 const RAW_BACKING_BLOCK_MARKERS = [
   "dojo_proof_capsule_required",
@@ -80,6 +83,17 @@ export const DOJO_MCP_HOST_DEPLOYMENT_CLAIM_REQUIREMENTS = [
   },
 ];
 
+export const DOJO_MCP_CONFORMANCE_TENANT_CONTEXT_FIELDS = [
+  "tenant_id",
+  "organization_id",
+  "workspace_id",
+  "actor_id",
+  "actor_type",
+  "roles",
+  "request_id",
+  "correlation_id",
+];
+
 const args = parseArgs(process.argv.slice(2));
 
 if (isDirectRun()) {
@@ -110,12 +124,20 @@ async function main() {
       requested_published_tool_name: config.publishedToolName || null,
       requested_action: config.requestedAction,
       execute_production: config.executeProduction,
+      runtime_session: {
+        provided_session: Boolean(config.runtime.sessionId),
+        auto_create_session: config.executeProduction && !config.runtime.sessionId,
+        workspace_url_configured: Boolean(config.runtime.workspaceUrl),
+        action_url_configured: Boolean(config.runtime.actionUrl),
+        origin_allowlist_count: config.runtime.originAllowlist.length,
+      },
       raw_backing_tool_required: !config.skipRawBackingToolCheck,
       evidence_record_count: config.evidenceRecordIds.length,
       ledger_checkpoint_hash_configured: Boolean(config.ledgerCheckpointHash),
       require_verified_evidence: config.requireVerifiedEvidence,
       app_bearer_header: config.host.bearerToken ? config.host.bearerHeader : null,
       iap_authorization_configured: Boolean(config.host.iapBearerToken),
+      tenant_context_configured_fields: Object.keys(config.tenantContextArgs).sort(),
     },
     deployment_claims: {
       require_external_control_plane_store: config.requireExternalControlPlaneStore,
@@ -171,7 +193,7 @@ async function main() {
     });
     log("ok", "observe production deployment readiness");
 
-    const competenciesCall = await client.toolCall("synthi_dojo_list_competencies", {});
+    const competenciesCall = await client.toolCall("synthi_dojo_list_competencies", config.tenantContextArgs);
     assertToolOk(competenciesCall, "list Dojo competencies");
     const competencies = Array.isArray(competenciesCall.parsed?.competencies)
       ? competenciesCall.parsed.competencies
@@ -191,10 +213,39 @@ async function main() {
     report.deployment_observations.licensed_skill_filtering = observesLicensedSkillFiltering(competencies);
     log("ok", `select published Dojo competency - skill=${competency.skill_id}`);
 
+    const selectedSkillCall = await client.toolCall("synthi_dojo_get_skill", {
+      ...config.tenantContextArgs,
+      skill_id: competency.skill_id,
+    });
+    assertToolOk(selectedSkillCall, "load selected Dojo skill");
+    const selectedSkill = selectedSkillCall.parsed?.skill && typeof selectedSkillCall.parsed.skill === "object"
+      ? selectedSkillCall.parsed.skill
+      : competency;
+    const derivedGuardrailContext = guardrailContextDefaultsForSkill(selectedSkill);
+    const proofContextClaims = conformanceProofContextClaimsForSkill({
+      baseContextClaims: config.contextClaims,
+      skill: selectedSkill,
+    });
+    const toolArgs = conformanceToolArgsForSkill({
+      baseToolArgs: config.toolArgs,
+      skill: selectedSkill,
+    });
+    report.steps.push({
+      name: "load selected Dojo skill",
+      ok: true,
+      skill_id: selectedSkill.skill_id ?? competency.skill_id,
+      derived_guardrail_context_keys: Object.keys(derivedGuardrailContext).sort(),
+      effective_context_claim_keys: Object.keys(proofContextClaims).sort(),
+      explicit_tool_arg_keys: Object.keys(config.toolArgs).sort(),
+      effective_tool_arg_keys: Object.keys(toolArgs).sort(),
+    });
+    log("ok", "load selected Dojo skill");
+
     const issueCall = await client.toolCall("synthi_dojo_issue_proof_capsule", {
+      ...config.tenantContextArgs,
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
-      context_claims: config.contextClaims,
+      context_claims: proofContextClaims,
       ...(config.evidenceClaims ? { evidence_claims: config.evidenceClaims } : {}),
       ...(config.evidenceRecordIds.length ? { evidence_record_ids: config.evidenceRecordIds } : {}),
       ...(config.ledgerCheckpointHash ? { ledger_checkpoint_hash: config.ledgerCheckpointHash } : {}),
@@ -214,10 +265,11 @@ async function main() {
     log("ok", `issue proof capsule - capsule=${proofCapsule.capsule_id}`);
 
     const validateCall = await client.toolCall("synthi_dojo_validate_proof_capsule", {
+      ...config.tenantContextArgs,
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
-      tool_args: config.toolArgs,
+      tool_args: toolArgs,
     });
     assertToolOk(validateCall, "validate proof capsule");
     report.steps.push({
@@ -227,11 +279,61 @@ async function main() {
     });
     log("ok", "validate proof capsule");
 
+    const runtimeSession = await resolveHostedRuntimeSessionForProductionRun({
+      client,
+      config,
+      competency,
+    });
+    if (runtimeSession) {
+      report.steps.push({
+        name: runtimeSession.created ? "create hosted runtime session" : "use hosted runtime session",
+        ok: true,
+        session_id: runtimeSession.session_id,
+        credential_id: runtimeSession.credential_id || null,
+        runtime_id: runtimeSession.runtime_id || null,
+        run_id: runtimeSession.run_id,
+        workspace_url: runtimeSession.workspace_url,
+        action_url: runtimeSession.action_url,
+        origin_allowlist: runtimeSession.origin_allowlist,
+      });
+      log("ok", `${runtimeSession.created ? "create" : "use"} hosted runtime session - session=${runtimeSession.session_id}`);
+    }
+
+    const consentRequests = config.executeProduction
+      ? conformanceBrowserConsentRequestsForSkill(selectedSkill, runtimeSession)
+      : [];
+    if (consentRequests.length > 0) {
+      const grants = [];
+      for (const request of consentRequests) {
+        const consentCall = await client.toolCall("synthi_browser_request_consent", {
+          url: request.url,
+          status: "granted",
+          reason: "dojo_mcp_host_conformance",
+          screenshot: request.screenshot,
+          diagnostics: request.diagnostics,
+        });
+        assertToolOk(consentCall, `grant workflow origin consent for ${request.url}`);
+        grants.push({
+          origin: request.origin,
+          screenshot: request.screenshot,
+          diagnostics: request.diagnostics,
+        });
+      }
+      report.steps.push({
+        name: "grant workflow origin consent",
+        ok: true,
+        grants,
+      });
+      log("ok", `grant workflow origin consent - origins=${grants.length}`);
+    }
+
     const runCall = await client.toolCall("synthi_dojo_run_with_proof_capsule", {
+      ...config.tenantContextArgs,
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
-      tool_args: config.toolArgs,
+      tool_args: toolArgs,
+      ...runtimeSessionRunArgs(runtimeSession),
       dry_run: !config.executeProduction,
     });
     assertToolOk(runCall, config.executeProduction ? "execute proof-gated Dojo skill" : "dry-run proof-gated Dojo skill");
@@ -246,7 +348,7 @@ async function main() {
     if (!config.skipRawBackingToolCheck) {
       const toolName = String(competency.published_tool_name || "");
       assert(toolName, "selected competency has no published_tool_name for raw backing-tool block check");
-      const rawCall = await client.toolCall(toolName, config.rawToolArgs);
+      const rawCall = await client.toolCall(toolName, { ...config.tenantContextArgs, ...config.rawToolArgs });
       assert(
         isExpectedBlockedToolCall(rawCall, RAW_BACKING_BLOCK_MARKERS),
         `raw backing tool was not blocked as expected: ${JSON.stringify(summarizeCall(rawCall))}`,
@@ -261,13 +363,14 @@ async function main() {
     }
 
     const revokeCall = await client.toolCall("synthi_dojo_revoke_proof_capsule", {
+      ...config.tenantContextArgs,
       capsule_id: proofCapsule.capsule_id,
       reason: config.revocationReason,
       actor_id: config.revocationActorId,
       actor_type: config.revocationActorType,
       evidence_refs: config.revocationEvidenceRefs.length
         ? config.revocationEvidenceRefs
-        : [`proof:${proofCapsule.capsule_id}`],
+        : revocationEvidenceRefsForProofRun({ config, proofCapsule, issueCall, runCall }),
     });
     assertToolOk(revokeCall, "revoke proof capsule");
     report.steps.push({
@@ -279,10 +382,11 @@ async function main() {
     log("ok", "revoke proof capsule");
 
     const validateRevokedCall = await client.toolCall("synthi_dojo_validate_proof_capsule", {
+      ...config.tenantContextArgs,
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
-      tool_args: config.toolArgs,
+      tool_args: toolArgs,
     });
     assert(
       isExpectedBlockedToolCall(validateRevokedCall, REVOKED_PROOF_BLOCK_MARKERS),
@@ -296,10 +400,11 @@ async function main() {
     log("ok", "revoked proof validation blocked");
 
     const runRevokedCall = await client.toolCall("synthi_dojo_run_with_proof_capsule", {
+      ...config.tenantContextArgs,
       skill_id: competency.skill_id,
       requested_action: config.requestedAction,
       proof_capsule: proofCapsule,
-      tool_args: config.toolArgs,
+      tool_args: toolArgs,
       dry_run: true,
     });
     assert(
@@ -327,6 +432,17 @@ async function main() {
   } finally {
     await client.close().catch(() => undefined);
   }
+}
+
+export function revocationEvidenceRefsForProofRun({ config = {}, proofCapsule = {}, issueCall = {}, runCall = {} } = {}) {
+  const refs = [
+    ...stringList(runCall?.parsed?.proof_record?.evidence_record_ids),
+    ...stringList(runCall?.parsed?.license_kernel?.proof_record?.evidence_record_ids),
+    ...stringList(issueCall?.parsed?.proof_capsule?.evidence_record_ids),
+    ...stringList(config?.evidenceRecordIds),
+  ].map(normalizeEvidenceRefForRevocation).filter(Boolean);
+  const unique = [...new Set(refs)];
+  return unique.length > 0 ? unique : [`proof:${proofCapsule?.capsule_id ?? "unknown"}`];
 }
 
 export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env } = {}) {
@@ -361,6 +477,7 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
     publishedToolName: args["published-tool-name"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_PUBLISHED_TOOL_NAME || "",
     requestedAction: args["requested-action"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUESTED_ACTION || "run_workflow",
     substrateClaim: args["substrate-claim"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_SUBSTRATE_CLAIM || "mcp",
+    tenantContextArgs: buildDojoMcpHostConformanceTenantContextArgs({ args, env }),
     contextClaims: parseJsonObjectArgument(args["context-claims-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_CONTEXT_CLAIMS_JSON || "{\"workspace_verified\":true}", "context_claims"),
     evidenceClaims: parseOptionalJsonArray(args["evidence-claims-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_EVIDENCE_CLAIMS_JSON, "evidence_claims"),
     evidenceRecordIds: parseStringList(args["evidence-record-ids"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EVIDENCE_RECORD_IDS),
@@ -368,6 +485,7 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
     evidenceMaxAgeMs: parseOptionalNonNegativeInteger(args["evidence-max-age-ms"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EVIDENCE_MAX_AGE_MS, "evidence_max_age_ms"),
     requireVerifiedEvidence: parseOptionalBooleanFlag(args["require-verified-evidence"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUIRE_VERIFIED_EVIDENCE),
     toolArgs: parseJsonObjectArgument(args["tool-args-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_TOOL_ARGS_JSON || "{}", "tool_args"),
+    runtime: buildRuntimeSessionConfig({ args, env }),
     rawToolArgs: parseJsonObjectArgument(args["raw-tool-args-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_RAW_TOOL_ARGS_JSON || "{}", "raw_tool_args"),
     executeProduction: parseBooleanFlag(args["execute-production"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_EXECUTE_PRODUCTION),
     skipRawBackingToolCheck: parseBooleanFlag(args["skip-raw-backing-tool-check"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_SKIP_RAW_BACKING_TOOL_CHECK),
@@ -388,6 +506,172 @@ export function buildDojoMcpHostConformanceConfig({ args = {}, env = process.env
   };
 }
 
+export function buildRuntimeSessionConfig({ args = {}, env = process.env } = {}) {
+  return {
+    sessionId: normalizeOptionalText(args["runtime-session-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_SESSION_ID),
+    credentialId: normalizeOptionalText(args["runtime-credential-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_CREDENTIAL_ID),
+    credentialSecret: normalizeOptionalText(args["runtime-credential-secret"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_CREDENTIAL_SECRET),
+    workspaceUrl: normalizeOptionalText(args["runtime-workspace-url"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_WORKSPACE_URL),
+    actionUrl: normalizeOptionalText(args["runtime-action-url"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_ACTION_URL),
+    runId: normalizeOptionalText(args["runtime-run-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_RUN_ID),
+    runtimeId: normalizeOptionalText(args["runtime-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_ID),
+    originAllowlist: parseStringList(args["runtime-origin-allowlist"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_ORIGIN_ALLOWLIST),
+    ttlMs: parseOptionalNonNegativeInteger(args["runtime-ttl-ms"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_TTL_MS, "runtime_ttl_ms"),
+    credentialTtlMs: parseOptionalNonNegativeInteger(args["runtime-credential-ttl-ms"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_CREDENTIAL_TTL_MS, "runtime_credential_ttl_ms"),
+    localNetworkAllowed: parseOptionalBooleanFlag(args["runtime-local-network-allowed"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_LOCAL_NETWORK_ALLOWED),
+    redactScreenshots: parseOptionalBooleanFlag(args["runtime-redact-screenshots"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_REDACT_SCREENSHOTS),
+    sensitiveWorkspace: parseOptionalBooleanFlag(args["runtime-sensitive-workspace"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_RUNTIME_SENSITIVE_WORKSPACE),
+  };
+}
+
+export function buildDojoMcpHostConformanceTenantContextArgs({ args = {}, env = process.env } = {}) {
+  const fromJson = parseJsonObjectArgument(
+    args["tenant-context-json"] || env.SYNTHI_DOJO_MCP_CONFORMANCE_TENANT_CONTEXT_JSON || "{}",
+    "tenant_context",
+  );
+  const tenantContext = {};
+  for (const field of DOJO_MCP_CONFORMANCE_TENANT_CONTEXT_FIELDS) {
+    if (field === "roles") {
+      const roles = parseTenantRoles(fromJson[field], "tenant_context.roles");
+      if (roles.length > 0) tenantContext.roles = roles;
+      continue;
+    }
+    const normalized = field === "actor_type"
+      ? normalizeTenantActorType(fromJson[field], "tenant_context.actor_type")
+      : normalizeOptionalText(fromJson[field]);
+    if (normalized) tenantContext[field] = normalized;
+  }
+
+  setTenantContextString(tenantContext, "tenant_id", args["tenant-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_TENANT_ID);
+  setTenantContextString(tenantContext, "organization_id", args["organization-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_ORGANIZATION_ID);
+  setTenantContextString(tenantContext, "workspace_id", args["workspace-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_WORKSPACE_ID);
+  setTenantContextString(tenantContext, "actor_id", args["actor-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_ACTOR_ID);
+  setTenantContextActorType(tenantContext, args["actor-type"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_ACTOR_TYPE);
+  const roles = parseTenantRolesFromInputs({
+    rolesJson: args["roles-json"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_ROLES_JSON,
+    rolesList: args.roles ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_ROLES,
+  });
+  if (roles.length > 0) tenantContext.roles = roles;
+  setTenantContextString(tenantContext, "request_id", args["request-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_REQUEST_ID);
+  setTenantContextString(tenantContext, "correlation_id", args["correlation-id"] ?? env.SYNTHI_DOJO_MCP_CONFORMANCE_CORRELATION_ID);
+
+  return tenantContext;
+}
+
+export async function resolveHostedRuntimeSessionForProductionRun({ client, config, competency }) {
+  if (!config.executeProduction) return null;
+  const runtime = config.runtime;
+  const runId = runtime.runId || normalizeOptionalText(config.tenantContextArgs.request_id) || `dojo_mcp_conformance_run_${Date.now()}`;
+  const actionUrl = resolveRuntimeActionUrl({ config, competency });
+  const workspaceUrl = runtime.workspaceUrl || actionUrl;
+  const originAllowlist = resolveRuntimeOriginAllowlist({ config, competency, actionUrl, workspaceUrl });
+
+  if (runtime.sessionId) {
+    return {
+      created: false,
+      session_id: runtime.sessionId,
+      credential_id: runtime.credentialId,
+      credential_secret: runtime.credentialSecret,
+      runtime_id: runtime.runtimeId,
+      run_id: runId,
+      workspace_url: workspaceUrl,
+      action_url: actionUrl,
+      origin_allowlist: originAllowlist,
+    };
+  }
+
+  const createArgs = {
+    ...config.tenantContextArgs,
+    skill_id: competency.skill_id,
+    run_id: runId,
+    workspace_url: workspaceUrl,
+    origin_allowlist: originAllowlist,
+    ...(runtime.runtimeId ? { runtime_id: runtime.runtimeId } : {}),
+    ...(runtime.ttlMs !== undefined ? { ttl_ms: runtime.ttlMs } : {}),
+    ...(runtime.credentialTtlMs !== undefined ? { credential_ttl_ms: runtime.credentialTtlMs } : {}),
+    ...(runtime.localNetworkAllowed !== undefined ? { local_network_allowed: runtime.localNetworkAllowed } : {}),
+    ...(runtime.redactScreenshots !== undefined ? { redact_screenshots: runtime.redactScreenshots } : {}),
+    ...(runtime.sensitiveWorkspace !== undefined ? { sensitive_workspace: runtime.sensitiveWorkspace } : {}),
+  };
+  const sessionCall = await client.toolCall("synthi_dojo_create_hosted_runtime_session", createArgs);
+  assertToolOk(sessionCall, "create hosted runtime session");
+  const session = sessionCall.parsed?.runtime_session;
+  const credentials = sessionCall.parsed?.credentials;
+  assert(session && typeof session === "object", "hosted runtime session creation did not return runtime_session");
+  assert(credentials && typeof credentials === "object", "hosted runtime session creation did not return credentials");
+  const sessionId = normalizeOptionalText(session.session_id);
+  const credentialId = normalizeOptionalText(credentials.credential_id ?? session.credential_id);
+  const credentialSecret = normalizeOptionalText(credentials.credential_secret);
+  assert(sessionId, "hosted runtime session creation returned empty session_id");
+  assert(credentialId, "hosted runtime session creation returned empty credential_id");
+  assert(credentialSecret, "hosted runtime session creation returned empty credential_secret");
+  return {
+    created: true,
+    session_id: sessionId,
+    credential_id: credentialId,
+    credential_secret: credentialSecret,
+    runtime_id: normalizeOptionalText(session.runtime_id),
+    run_id: runId,
+    workspace_url: workspaceUrl,
+    action_url: actionUrl,
+    origin_allowlist: originAllowlist,
+    audit_event_id: normalizeOptionalText(sessionCall.parsed?.audit_event_id),
+  };
+}
+
+export function runtimeSessionRunArgs(runtimeSession) {
+  if (!runtimeSession) return {};
+  return {
+    run_id: runtimeSession.run_id,
+    runtime_session_id: runtimeSession.session_id,
+    runtime_credential_id: runtimeSession.credential_id,
+    runtime_credential_secret: runtimeSession.credential_secret,
+    runtime_action_url: runtimeSession.action_url,
+  };
+}
+
+export function resolveRuntimeActionUrl({ config, competency }) {
+  const configured = config.runtime.actionUrl || config.runtime.workspaceUrl;
+  if (configured) return configured;
+  const competencyUrl = normalizeOptionalText(competency?.workflow_url)
+    || normalizeOptionalText(competency?.url)
+    || normalizeOptionalText(competency?.mcp_skill_manifest?.skill?.workflow_url)
+    || normalizeOptionalText(competency?.private_tool_manifest?.workflow?.url);
+  if (competencyUrl) return competencyUrl;
+  const origin = resolveCompetencyOrigin(competency) || originForUrl(config.host.mcpHostUrl);
+  if (!origin) throw new Error("dojo_mcp_conformance_runtime_action_url_required");
+  return origin;
+}
+
+export function resolveRuntimeOriginAllowlist({ config, competency, actionUrl, workspaceUrl }) {
+  const origins = [
+    ...config.runtime.originAllowlist,
+    originForUrl(actionUrl),
+    originForUrl(workspaceUrl),
+    resolveCompetencyOrigin(competency),
+  ].filter(Boolean);
+  const unique = [...new Set(origins)];
+  if (unique.length === 0) throw new Error("dojo_mcp_conformance_runtime_origin_allowlist_required");
+  return unique;
+}
+
+function resolveCompetencyOrigin(competency) {
+  return normalizeOptionalText(competency?.app_origin)
+    || normalizeOptionalText(competency?.origin)
+    || normalizeOptionalText(competency?.mcp_skill_manifest?.skill?.app_origin)
+    || originForUrl(competency?.mcp_skill_manifest?.skill?.app_url);
+}
+
+function originForUrl(value) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return "";
+  try {
+    return new URL(normalized).origin;
+  } catch {
+    return "";
+  }
+}
+
 function normalizeHttpHeaderName(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (!normalized || !/^[!#$%&'*+\-.^_`|~0-9a-z]+$/.test(normalized)) {
@@ -399,6 +683,50 @@ function normalizeHttpHeaderName(value) {
 function normalizeActorType(value) {
   const normalized = normalizeOptionalText(value);
   return normalized === "human" || normalized === "agent" || normalized === "service" ? normalized : "";
+}
+
+function normalizeTenantActorType(value, label) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return "";
+  if (normalized === "human" || normalized === "agent" || normalized === "service") return normalized;
+  throw new Error(`${label}_invalid`);
+}
+
+function setTenantContextString(target, field, value) {
+  const normalized = normalizeOptionalText(value);
+  if (normalized) target[field] = normalized;
+}
+
+function setTenantContextActorType(target, value) {
+  const normalized = normalizeTenantActorType(value, "tenant_context.actor_type");
+  if (normalized) target.actor_type = normalized;
+}
+
+function parseTenantRolesFromInputs({ rolesJson, rolesList }) {
+  const normalizedJson = normalizeOptionalText(rolesJson);
+  if (normalizedJson) return parseTenantRoles(parseJsonStringArray(normalizedJson, "tenant_context.roles_json"), "tenant_context.roles_json");
+  return parseStringList(rolesList);
+}
+
+function parseTenantRoles(value, label) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error(`${label}_must_be_string_array`);
+  return value.map((item) => {
+    const normalized = normalizeOptionalText(item);
+    if (!normalized) throw new Error(`${label}_must_be_non_empty_strings`);
+    return normalized;
+  });
+}
+
+function stringList(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => normalizeOptionalText(item)).filter(Boolean);
+}
+
+function normalizeEvidenceRefForRevocation(value) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return "";
+  return normalized.startsWith("evidence:") ? normalized.slice("evidence:".length) : normalized;
 }
 
 function parseStringList(value) {
@@ -571,6 +899,195 @@ export function selectDojoCompetencyForConformance(
   throw new Error(`dojo_competency_ambiguous: pass --skill-id (${filtered.map((item) => item.skill_id).join(", ")})`);
 }
 
+export function conformanceToolArgsForSkill({ baseToolArgs = {}, skill = {} } = {}) {
+  const base = baseToolArgs && typeof baseToolArgs === "object" && !Array.isArray(baseToolArgs)
+    ? baseToolArgs
+    : {};
+  return {
+    ...guardrailContextDefaultsForSkill(skill),
+    ...base,
+  };
+}
+
+export function conformanceProofContextClaimsForSkill({ baseContextClaims = {}, skill = {} } = {}) {
+  const base = baseContextClaims && typeof baseContextClaims === "object" && !Array.isArray(baseContextClaims)
+    ? baseContextClaims
+    : {};
+  return {
+    ...guardrailContextDefaultsForSkill(skill),
+    ...base,
+  };
+}
+
+export function conformanceBrowserConsentRequestsForSkill(skill = {}, runtimeSession = null) {
+  const merged = new Map();
+  const addRequest = ({ origin, screenshot = false, diagnostics = false }) => {
+    if (typeof origin !== "string" || origin.trim().length === 0) return;
+    let normalizedOrigin;
+    try {
+      normalizedOrigin = new URL(origin).origin;
+    } catch {
+      return;
+    }
+    const existing = merged.get(normalizedOrigin);
+    merged.set(normalizedOrigin, {
+      origin: normalizedOrigin,
+      url: normalizedOrigin,
+      screenshot: Boolean(existing?.screenshot || screenshot),
+      diagnostics: Boolean(existing?.diagnostics || diagnostics),
+    });
+  };
+
+  const manifest = skill?.private_tool_manifest && typeof skill.private_tool_manifest === "object"
+    ? skill.private_tool_manifest
+    : null;
+  const targets = Array.isArray(manifest?.target_origins) ? manifest.target_origins : [];
+  for (const target of targets) {
+    if (!target || typeof target !== "object") continue;
+    addRequest({
+      origin: target.origin,
+      screenshot: target.screenshot_consent_required === true,
+      diagnostics: target.diagnostics_consent_required === true,
+    });
+  }
+
+  if (merged.size === 0) {
+    const fallbackOrigin = typeof skill?.app_origin === "string"
+      ? skill.app_origin
+      : typeof skill?.skill_seed?.observed_trace?.app_origin === "string"
+        ? skill.skill_seed.observed_trace.app_origin
+        : "";
+    addRequest({ origin: fallbackOrigin });
+  }
+
+  if (runtimeSession && typeof runtimeSession === "object") {
+    addRequest({ origin: runtimeSession.action_url, screenshot: true, diagnostics: true });
+    addRequest({ origin: runtimeSession.workspace_url, screenshot: true, diagnostics: true });
+    for (const origin of Array.isArray(runtimeSession.origin_allowlist) ? runtimeSession.origin_allowlist : []) {
+      addRequest({ origin, screenshot: true, diagnostics: true });
+    }
+  }
+
+  return [...merged.values()].sort((a, b) => a.origin.localeCompare(b.origin));
+}
+
+export function guardrailContextDefaultsForSkill(skill = {}) {
+  const defaults = {};
+  const guardrails = Array.isArray(skill?.guardrails) ? skill.guardrails : [];
+  for (const guardrail of guardrails) {
+    const normalized = normalizeConformanceGuardrailPredicate({
+      rule: typeof guardrail?.rule === "string" ? guardrail.rule : "",
+      title: typeof guardrail?.title === "string" ? guardrail.title : "",
+      guardrail_id: typeof guardrail?.guardrail_id === "string" ? guardrail.guardrail_id : "",
+    });
+    const passValue = passingValueForGuardrailPredicate(normalized.predicate);
+    if (!passValue) continue;
+    defaults[passValue.key] = passValue.value;
+  }
+  return defaults;
+}
+
+export function normalizeConformanceGuardrailPredicate({ rule = "", title = "", guardrail_id = "" } = {}) {
+  const originalRule = String(rule || "").trim();
+  if (isParseableConformanceGuardrailPredicate(originalRule)) {
+    return { predicate: originalRule, source: "native", original_rule: originalRule };
+  }
+  const fallbackRule = originalRule || String(title || "").trim() || String(guardrail_id || "").trim() || "guardrail";
+  const normalizedText = `${title || ""} ${rule || ""} ${guardrail_id || ""}`.toLowerCase();
+  const knownPredicate = predicateForKnownConformanceGuardrailText(normalizedText);
+  if (knownPredicate) {
+    return { predicate: knownPredicate, source: "normalized", original_rule: fallbackRule };
+  }
+  const generatedKey = `guardrail_${createHash("sha256").update(fallbackRule).digest("hex").slice(0, 12)}`;
+  return {
+    predicate: `${generatedKey} == true`,
+    source: "generated_key",
+    original_rule: fallbackRule,
+  };
+}
+
+export function passingValueForGuardrailPredicate(predicate = "") {
+  const trimmed = String(predicate || "").trim();
+  if (!trimmed) return null;
+  const membership = trimmed.match(/^([a-zA-Z0-9_.-]+)\s+in\s+(\[.*\])$/);
+  if (membership?.[1] && membership?.[2]) {
+    try {
+      const values = JSON.parse(membership[2]);
+      if (Array.isArray(values) && values.length > 0) {
+        return { key: membership[1], value: values[0] };
+      }
+    } catch {
+      return null;
+    }
+  }
+  const comparison = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*(==|<=|>=|<|>)\s*(.+)$/);
+  if (comparison?.[1] && comparison?.[2] && comparison?.[3]) {
+    const value = parseGuardrailLiteral(comparison[3]);
+    return { key: comparison[1], value };
+  }
+  if (/^[a-zA-Z0-9_.-]+$/.test(trimmed)) return { key: trimmed, value: true };
+  return null;
+}
+
+function isParseableConformanceGuardrailPredicate(predicate) {
+  const trimmed = String(predicate || "").trim();
+  if (!trimmed) return false;
+  const membership = trimmed.match(/^([a-zA-Z0-9_.-]+)\s+in\s+(\[.*\])$/);
+  if (membership?.[2]) {
+    try {
+      return Array.isArray(JSON.parse(membership[2]));
+    } catch {
+      return false;
+    }
+  }
+  const comparison = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*(==|!=|<=|>=|<|>)\s*(.+)$/);
+  if (comparison?.[3]) return !/^[<>=!]/.test(comparison[3].trim());
+  return /^[a-zA-Z0-9_.-]+$/.test(trimmed);
+}
+
+function predicateForKnownConformanceGuardrailText(text) {
+  if (
+    text.includes("stable")
+      && (text.includes("entity") || text.includes("identifier") || text.includes(" id") || text.includes("client") || text.includes("record"))
+  ) {
+    return "client_id_verified == true";
+  }
+  if (
+    (text.includes("invalid") || text.includes("validation"))
+      && (text.includes("value") || text.includes("input") || text.includes("field"))
+  ) {
+    return "invalid_value_count == 0";
+  }
+  if (text.includes("source") && (text.includes("anchor") || text.includes("affordance") || text.includes("backed") || text.includes("contract"))) {
+    return "source_anchor_current == true";
+  }
+  if (text.includes("durable") || text.includes("success assertion") || text.includes("postcondition") || text.includes("state evidence")) {
+    return "durable_state_evidence == true";
+  }
+  if (
+    (text.includes("mutation") || text.includes("write") || text.includes("replay"))
+      && (text.includes("isolated") || text.includes("isolation") || text.includes("ci"))
+  ) {
+    return "mutation_isolation_available == true";
+  }
+  if (text.includes("approval") || text.includes("review") || text.includes("human")) {
+    return "human_review_ready == true";
+  }
+  return null;
+}
+
+function parseGuardrailLiteral(raw) {
+  const text = String(raw ?? "").trim();
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text.replace(/^['"]|['"]$/g, "");
+  }
+}
+
 export function isExpectedBlockedToolCall(call, markers = []) {
   const parsed = call?.parsed ?? call ?? {};
   const text = JSON.stringify({ isError: call?.isError === true, parsed, result: call?.result ?? null });
@@ -605,7 +1122,7 @@ async function createMcpClient(config) {
   throw new Error(`unsupported_mcp_transport:${config.host.transport}`);
 }
 
-class HttpJsonRpcClient {
+export class HttpJsonRpcClient {
   constructor({ endpoint, bearerToken, bearerHeader, iapBearerToken, timeoutMs }) {
     this.endpoint = endpoint;
     this.bearerToken = bearerToken;
@@ -613,27 +1130,36 @@ class HttpJsonRpcClient {
     this.iapBearerToken = iapBearerToken || "";
     this.timeoutMs = timeoutMs;
     this.nextId = 1;
+    this.mcpSessionId = "";
   }
 
   async request(method, params = {}) {
     const id = this.nextId++;
-    const response = await fetchWithTimeout(this.endpoint, {
+    const response = await this.send({
       timeoutMs: this.timeoutMs,
-      bearerToken: this.bearerToken,
-      bearerHeader: this.bearerHeader,
-      iapBearerToken: this.iapBearerToken,
       body: { jsonrpc: "2.0", id, method, params },
     });
     if (response.error) throw new Error(`${response.error.code ?? "json_rpc_error"}: ${response.error.message ?? "unknown"}`);
     return response.result;
   }
 
-  notify(method, params = {}) {
+  send({ timeoutMs, body }) {
     return fetchWithTimeout(this.endpoint, {
-      timeoutMs: Math.min(this.timeoutMs, 10_000),
+      timeoutMs,
       bearerToken: this.bearerToken,
       bearerHeader: this.bearerHeader,
       iapBearerToken: this.iapBearerToken,
+      mcpSessionId: this.mcpSessionId,
+      body,
+    }).then(({ message, mcpSessionId }) => {
+      if (mcpSessionId) this.mcpSessionId = mcpSessionId;
+      return message;
+    });
+  }
+
+  notify(method, params = {}) {
+    return this.send({
+      timeoutMs: Math.min(this.timeoutMs, 10_000),
       body: { jsonrpc: "2.0", method, params },
     }).catch(() => undefined);
   }
@@ -820,6 +1346,8 @@ function summarizeDeploymentReadiness(readiness) {
     hosted_runtime: readiness.hosted_runtime && typeof readiness.hosted_runtime === "object"
       ? {
           configured: readiness.hosted_runtime.configured === true,
+          cdp_endpoint_source: readiness.hosted_runtime.cdp_endpoint_source ?? null,
+          cdp_topology: readiness.hosted_runtime.cdp_topology ?? null,
           runtime_host_class: readiness.hosted_runtime.runtime_host_class ?? null,
           non_loopback_runtime: readiness.hosted_runtime.non_loopback_runtime === true,
           origin_allowlist_count: Array.isArray(readiness.hosted_runtime.origin_allowlist)
@@ -853,18 +1381,75 @@ export function observesLicensedSkillFiltering(competencies) {
 }
 
 export function redactConformanceReport(report) {
-  const clone = JSON.parse(JSON.stringify(report));
-  const text = JSON.stringify(clone);
-  if (/hmac-sha256:|-----BEGIN|private[_-]?key|bearer\s+[a-z0-9._-]+/i.test(text)) {
+  const clone = redactConformanceSecrets(JSON.parse(JSON.stringify(report)));
+  if (conformanceReportContainsSecretMaterial(clone)) {
     throw new Error("dojo_mcp_host_conformance_report_contains_secret_material");
   }
   return clone;
+}
+
+function conformanceReportContainsSecretMaterial(value) {
+  if (Array.isArray(value)) return value.some((item) => conformanceReportContainsSecretMaterial(item));
+  if (value && typeof value === "object") {
+    return Object.values(value).some((item) => conformanceReportContainsSecretMaterial(item));
+  }
+  if (typeof value !== "string") return false;
+  return /hmac-sha256:|-----BEGIN|private[_-]?key\s*[:=]|bearer\s+[a-z0-9._-]+/i.test(value);
+}
+
+function redactConformanceSecrets(value, key = "") {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactConformanceSecrets(item));
+  }
+  if (value && typeof value === "object") {
+    if (isSensitiveConformanceField(key)) return "[redacted]";
+    return Object.fromEntries(
+      Object.entries(value).map(([entryKey, entryValue]) => [
+        entryKey,
+        redactConformanceSecrets(entryValue, entryKey),
+      ]),
+    );
+  }
+  if (typeof value === "string") {
+    if (isSensitiveConformanceField(key)) return "[redacted]";
+    return redactConformanceSecretString(value);
+  }
+  return value;
+}
+
+function isSensitiveConformanceField(key = "") {
+  const normalized = String(key || "").toLowerCase().replace(/-/g, "_");
+  return [
+    "access_token",
+    "authorization",
+    "bearer_token",
+    "client_secret",
+    "cookie",
+    "credential_secret",
+    "id_token",
+    "private_key",
+    "proof_capsule",
+    "refresh_token",
+    "secret",
+    "set_cookie",
+    "signature",
+    "token",
+  ].includes(normalized);
+}
+
+function redactConformanceSecretString(value) {
+  return value
+    .replace(/hmac-sha256:[a-z0-9._:-]+/gi, "[redacted-hmac-signature]")
+    .replace(/-----BEGIN[\s\S]*?-----END[^-]*-----/g, "[redacted-private-key]")
+    .replace(/private[_-]?key\s*[:=]\s*[^\s"'}`]+/gi, "[redacted-private-key-reference]")
+    .replace(/bearer\s+[a-z0-9._-]+/gi, "Bearer [redacted]");
 }
 
 export function buildConformanceReleaseGateSummary(report) {
   const steps = Array.isArray(report?.steps) ? report.steps : [];
   const hasStep = (name) => steps.some((step) => step?.name === name && step?.ok === true);
   const rawBackingRequired = report?.config?.raw_backing_tool_required !== false;
+  const productionExecution = report?.config?.execute_production === true;
   const deploymentClaims = report?.deployment_claims && typeof report.deployment_claims === "object"
     ? report.deployment_claims
     : {};
@@ -882,6 +1467,9 @@ export function buildConformanceReleaseGateSummary(report) {
       id: "proof_gated_run",
       ok: hasStep("dry-run proof-gated Dojo skill") || hasStep("execute proof-gated Dojo skill"),
     },
+    productionExecution
+      ? { id: "hosted_runtime_session_bound", ok: hasStep("create hosted runtime session") || hasStep("use hosted runtime session") }
+      : { id: "hosted_runtime_session_bound", ok: true, skipped: true },
     rawBackingRequired
       ? { id: "raw_backing_tool_blocked", ok: hasStep("raw backing tool blocked outside Dojo proof path") }
       : { id: "raw_backing_tool_blocked", ok: true, skipped: true },
@@ -1083,24 +1671,11 @@ async function runSelfCheck({ outDir }) {
   return { report_path: artifacts.report_path, manifest_path: artifacts.manifest_path, report: artifacts.report, manifest: artifacts.manifest };
 }
 
-async function fetchWithTimeout(endpoint, { timeoutMs, bearerToken, bearerHeader = "authorization", iapBearerToken = "", body }) {
+async function fetchWithTimeout(endpoint, { timeoutMs, bearerToken, bearerHeader = "authorization", iapBearerToken = "", mcpSessionId = "", body }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const headers = {
-      "content-type": "application/json",
-      accept: "application/json",
-    };
-    if (iapBearerToken) {
-      headers.authorization = `Bearer ${iapBearerToken}`;
-    }
-    if (bearerToken) {
-      const normalizedBearerHeader = normalizeHttpHeaderName(bearerHeader);
-      if (headers[normalizedBearerHeader] && normalizedBearerHeader === "authorization") {
-        throw new Error("dojo_mcp_bearer_header_conflicts_with_iap_authorization");
-      }
-      headers[normalizedBearerHeader] = `Bearer ${bearerToken}`;
-    }
+    const headers = buildMcpHttpHeaders({ bearerToken, bearerHeader, iapBearerToken, mcpSessionId });
     const response = await fetch(endpoint, {
       method: "POST",
       signal: controller.signal,
@@ -1112,13 +1687,38 @@ async function fetchWithTimeout(endpoint, { timeoutMs, bearerToken, bearerHeader
       throw new Error(`mcp_http_error:${response.status}:${text.slice(0, 500)}`);
     }
     try {
-      return JSON.parse(text);
+      return {
+        message: JSON.parse(text),
+        mcpSessionId: normalizeOptionalText(response.headers.get("mcp-session-id")) || "",
+      };
     } catch {
       throw new Error(`mcp_http_invalid_json:${text.slice(0, 500)}`);
     }
   } finally {
     clearTimeout(timer);
   }
+}
+
+export function buildMcpHttpHeaders({ bearerToken, bearerHeader = "authorization", iapBearerToken = "", mcpSessionId = "" } = {}) {
+  const headers = {
+    "content-type": "application/json",
+    accept: MCP_STREAMABLE_HTTP_ACCEPT,
+  };
+  const normalizedSessionId = normalizeOptionalText(mcpSessionId);
+  if (normalizedSessionId) {
+    headers["mcp-session-id"] = normalizedSessionId;
+  }
+  if (iapBearerToken) {
+    headers.authorization = `Bearer ${iapBearerToken}`;
+  }
+  if (bearerToken) {
+    const normalizedBearerHeader = normalizeHttpHeaderName(bearerHeader);
+    if (headers[normalizedBearerHeader] && normalizedBearerHeader === "authorization") {
+      throw new Error("dojo_mcp_bearer_header_conflicts_with_iap_authorization");
+    }
+    headers[normalizedBearerHeader] = `Bearer ${bearerToken}`;
+  }
+  return headers;
 }
 
 function parseArgs(argv) {

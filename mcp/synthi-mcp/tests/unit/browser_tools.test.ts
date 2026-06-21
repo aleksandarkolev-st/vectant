@@ -210,6 +210,13 @@ describe("browser MCP tool surface", () => {
   it("does not let agent preview observe self-grant screenshot consent", async () => {
     const previewUrl = "http://localhost:5174/dashboard";
     mockPreviewAdapter(previewUrl);
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: "workspace-a",
+      runtime_id: "runtime-a",
+      workspace_url: "http://localhost:3000/workspace/workspace-a",
+      adapter: "unit-test",
+    });
 
     const response = await dispatchBrowserTool("synthi_browser_observe_preview", {
       workspace_url: "http://localhost:3000/workspace/workspace-a",
@@ -230,6 +237,13 @@ describe("browser MCP tool surface", () => {
   it("requires explicit screenshot consent for agent preview observe", async () => {
     const previewUrl = "http://localhost:5174/dashboard";
     mockPreviewAdapter(previewUrl);
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: "workspace-a",
+      runtime_id: "runtime-a",
+      workspace_url: "http://localhost:3000/workspace/workspace-a",
+      adapter: "unit-test",
+    });
     browserBroker.requestConsent(previewUrl, "granted", "unit", {
       screenshot: false,
       diagnostics: false,
@@ -250,6 +264,35 @@ describe("browser MCP tool surface", () => {
       screenshot: "denied",
       diagnostics: "denied",
     }));
+  });
+
+  it("installs the passive workflow overlay during successful preview observe", async () => {
+    const previewUrl = "http://localhost:5174/dashboard";
+    const { refreshWorkflowOverlay } = mockPreviewAdapter(previewUrl);
+    browserBroker.setRuntimeAttachment({
+      kind: "hosted",
+      workspace_id: "workspace-a",
+      runtime_id: "runtime-a",
+      workspace_url: "http://localhost:3000/workspace/workspace-a",
+      adapter: "unit-test",
+    });
+    browserBroker.requestConsent(previewUrl, "granted", "unit", {
+      screenshot: true,
+      diagnostics: false,
+    });
+
+    const response = await dispatchBrowserTool("synthi_browser_observe_preview", {
+      workspace_url: "http://localhost:3000/workspace/workspace-a",
+      preview_url: previewUrl,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(refreshWorkflowOverlay).toHaveBeenCalledWith("preview");
+    expect((response?.structuredContent as { workflow_overlay: { ok: boolean; visible: boolean } }).workflow_overlay).toEqual({
+      ok: true,
+      visible: true,
+    });
+    expect(browserBroker.teachState().active).toBe(false);
   });
 
   it("lets hosted overlay observe grant exact-origin screenshot consent from a user gesture", async () => {
@@ -1353,7 +1396,7 @@ describe("browser MCP tool surface", () => {
     }).runtime).toEqual(expect.objectContaining({
       configured: false,
       ignored_local_dev_env: ["SYNTHI_BROWSER_CDP_URL"],
-      required_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL"],
+      required_env: ["SYNTHI_HOSTED_BROWSER_CDP_URL or SYNTHI_HOSTED_BROWSER_CDP_TARGET_TEMPLATE"],
     }));
     expect(browserBroker.runtimeAttachment()).toBeNull();
   });
@@ -1393,7 +1436,7 @@ describe("browser MCP tool surface", () => {
       selector: "button",
     });
 
-    expect(attach).toHaveBeenCalledWith("ws://hosted-runtime.example.test/devtools/browser/session");
+    expect(attach).toHaveBeenCalledWith("ws://hosted-runtime.example.test/devtools/browser/session", { headers: {} });
     expect(attached?.isError).toBeUndefined();
     expect(revoked?.isError).toBeUndefined();
     expect(revoked?.structuredContent).toEqual(expect.objectContaining({
@@ -1848,7 +1891,7 @@ describe("browser MCP tool surface", () => {
   });
 });
 
-function mockPreviewAdapter(previewUrl: string): void {
+function mockPreviewAdapter(previewUrl: string) {
   const tab: BrowserTab = {
     tab_id: "preview",
     url: previewUrl,
@@ -1871,6 +1914,11 @@ function mockPreviewAdapter(previewUrl: string): void {
   ]);
   vi.spyOn(browserPlaywrightAdapter, "selectTab").mockResolvedValue(tab);
   vi.spyOn(browserPlaywrightAdapter, "snapshot").mockResolvedValue(snapshot);
+  const refreshWorkflowOverlay = vi.spyOn(browserPlaywrightAdapter, "refreshWorkflowOverlay").mockResolvedValue({
+    ok: true,
+    visible: true,
+  });
+  return { refreshWorkflowOverlay };
 }
 
 async function writeRefreshMintCommand(

@@ -6169,7 +6169,7 @@ describe("Agent Dojo MCP tools", () => {
       egress_policy: { local_network_allowed: false },
       redaction_policy: { screenshots: true },
     });
-    const mismatchedRuntimeRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+    const authorizedWorkflowRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
       skill_id: skillId,
       requested_action: "run_workflow",
       proof_capsule: workflowCapsule,
@@ -6185,23 +6185,21 @@ describe("Agent Dojo MCP tools", () => {
         correlation_id: "corr-hosted-runtime-mismatch-run",
       }),
     });
-    expect(mismatchedRuntimeRun?.isError).toBe(true);
-    expect(mismatchedRuntimeRun?.structuredContent).toEqual(expect.objectContaining({
-      proof_consume: null,
+    expect(authorizedWorkflowRun?.isError).toBeUndefined();
+    expect(authorizedWorkflowRun?.structuredContent).toEqual(expect.objectContaining({
+      ok: true,
       runtime_authorization: expect.objectContaining({
         ok: true,
         session_id: runtimeSession.session_id,
       }),
-      skill_bus: expect.objectContaining({
-        ok: false,
-        blocked_by: expect.arrayContaining(["runtime_session_attachment_mismatch"]),
-      }),
-      validation: expect.objectContaining({
-        blocked_by: expect.arrayContaining(["runtime_session_attachment_mismatch"]),
+      proof_consume: expect.objectContaining({ ok: true, status: "used" }),
+      proof_record: expect.objectContaining({
+        status: "used",
+        first_used_at: "2026-06-11T00:02:00.000Z",
       }),
     }));
     expect(dojoSkillRegistry.getProofRecord(workflowCapsule.capsule_id)).toEqual(expect.objectContaining({
-      status: "issued",
+      status: "used",
     }));
 
     const authorizedRun = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
@@ -6358,6 +6356,52 @@ describe("Agent Dojo MCP tools", () => {
     expect(dojoSkillRegistry.list()).toHaveLength(0);
     expect(privateWorkflowToolRegistry.get("synthi_app_open_details")).toBeNull();
     expect(await dispatchBrowserTool("synthi_app_open_details", {})).toBeNull();
+  });
+
+  it("blocks missing backing private workflow state before consuming proof capsules", async () => {
+    recordOpenDetailsWorkflowForDojoToolTest();
+    const publish = await dispatchDojoTool("synthi_dojo_publish_skill", publishArgsForDojoToolTest());
+    expect(publish?.isError).toBeUndefined();
+    const skillId = (publish?.structuredContent as { skill: { skill_id: string } }).skill.skill_id;
+    const publishedSkill = dojoSkillRegistry.get(skillId);
+    expect(publishedSkill).toBeTruthy();
+    const capsuleResponse = await dispatchDojoTool("synthi_dojo_issue_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      context_claims: { workspace_verified: true, ...runtimeClaimsForSkillGuardrails(publishedSkill!) },
+      evidence_ledger_records: evidenceLedgerRecordsForProof(publishedSkill!, {
+        record_id: "evidence-missing-backing-private-workflow",
+      }),
+      require_verified_evidence: true,
+      now: "2026-06-11T00:00:00.000Z",
+      expires_at: "2026-06-11T00:15:00.000Z",
+    });
+    expect(capsuleResponse?.isError).toBeUndefined();
+    const capsule = (capsuleResponse?.structuredContent as { proof_capsule: { capsule_id: string } }).proof_capsule;
+
+    privateWorkflowToolRegistry.resetForTests();
+    browserBroker.resetForTests();
+
+    const run = await dispatchDojoTool("synthi_dojo_run_with_proof_capsule", {
+      skill_id: skillId,
+      requested_action: "run_workflow",
+      proof_capsule: capsule,
+      run_id: "missing-backing-private-workflow",
+      now: "2026-06-11T00:01:00.000Z",
+    });
+
+    expect(run?.isError).toBe(true);
+    expect(run?.structuredContent).toEqual(expect.objectContaining({
+      error: "private_workflow_artifact_not_found",
+      proof_consume: null,
+      skill_bus: expect.objectContaining({
+        blocked_by: expect.arrayContaining(["private_workflow_artifact_not_found"]),
+      }),
+    }));
+    expect(dojoSkillRegistry.getProofRecord(capsule.capsule_id)).toEqual(expect.objectContaining({
+      status: "issued",
+    }));
+    expect(dojoSkillRegistry.getProofRecord(capsule.capsule_id)).not.toHaveProperty("first_used_at");
   });
 
   it("blocks proof execution before consuming proof when production requires a durable control plane but none is configured", async () => {

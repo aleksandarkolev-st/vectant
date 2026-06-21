@@ -539,6 +539,7 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
         proof_consume: result.proof_consume ? summarizeProofConsumeResult(result.proof_consume) : undefined,
         manifest_id: result.resolution?.mcp_skill_manifest?.manifest_id,
         rate_limit: result.rate_limit ? summarizeRateLimitDecision(result.rate_limit) : undefined,
+        executor_error: executorErrorFromDispatchResult(result),
       },
       created_at: this.nowFn().toISOString(),
     });
@@ -624,15 +625,42 @@ class InProcessDojoMcpSkillBus implements DojoMcpSkillBus {
     }
     try {
       return await this.executeTool(input);
-    } catch {
+    } catch (err) {
       return blockDojoMcpSkillBusExecution(["dojo_mcp_skill_executor_failed"], {
         ok: false,
         status: "blocked",
         blocked_by: ["dojo_mcp_skill_executor_failed"],
         error_codes: ["dojo_mcp_skill_executor_failed"],
+      }, {
+        error: "dojo_mcp_skill_executor_failed",
+        executor_error: summarizeDojoMcpSkillExecutorError(err),
       });
     }
   }
+}
+
+function summarizeDojoMcpSkillExecutorError(err: unknown): { name: string; message: string } {
+  const name = err instanceof Error && err.name ? err.name : typeof err;
+  const rawMessage = err instanceof Error ? err.message : String(err);
+  return {
+    name,
+    message: redactExecutorErrorMessage(rawMessage),
+  };
+}
+
+function redactExecutorErrorMessage(message: string): string {
+  return message
+    .replace(/([?&](?:code|token|access_token|refresh_token|id_token|credential_secret|state)=)[^&\s]+/gi, "$1[redacted]")
+    .slice(0, 512);
+}
+
+function executorErrorFromDispatchResult(result: DojoToolDispatchResult): unknown {
+  const payload = result.result;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const executorError = (payload as { executor_error?: unknown }).executor_error;
+  return executorError && typeof executorError === "object" && !Array.isArray(executorError)
+    ? executorError
+    : undefined;
 }
 
 export function validateDojoMcpTenantContext(tenant: DojoTenantContext | undefined): string[] {

@@ -6935,6 +6935,7 @@ function buildReleaseCandidateConformanceReport({
         ok: true,
         dry_run: !executeProduction,
       },
+      { name: executeProduction ? "use hosted runtime session" : "hosted runtime session skipped for dry run", ok: true },
       { name: "raw backing tool blocked outside Dojo proof path", ok: true },
       { name: "revoke proof capsule", ok: true },
       { name: "revoked proof validation blocked", ok: true },
