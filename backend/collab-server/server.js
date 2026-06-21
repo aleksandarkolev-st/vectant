@@ -2506,8 +2506,9 @@ const server = http.createServer(async (req, res) => {
           // Parse query params for owner
           const url = new URL(req.url, `http://${req.headers.host}`);
           const owner = url.searchParams.get('owner');
+          const recentOnly = url.searchParams.get('recent') === 'true';
           
-          const workspaces = workspaceManager.getWorkspaces(owner);
+          const workspaces = workspaceManager.getWorkspaces(owner, { recentOnly });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(workspaces));
       } catch (e) {
@@ -3889,8 +3890,16 @@ const server = http.createServer(async (req, res) => {
                 case 'clone':
                   result = await gitService.cloneRepo(slug, data.repoUrl, data.token, bootstrapUserId, tokenUserId);
                   hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
-                  // Save metadata locally
-                  workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name);
+                  // Save metadata locally. Imports stay addressable but are hidden
+                  // from the dashboard recent list unless explicitly marked.
+                  const showInRecent =
+                    data.showInRecent === true ||
+                    data.addToRecent === true ||
+                    data.source === 'ai';
+                  workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name, {
+                    showInRecent,
+                    source: data.source || (showInRecent ? 'ai' : 'import'),
+                  });
                   let workspaceRegistration = {
                     attempted: false,
                     created: false,
