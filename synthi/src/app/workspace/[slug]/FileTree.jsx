@@ -84,6 +84,16 @@ function humanBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function findNodeByPath(nodes, path) {
+  const stack = [...(nodes || [])];
+  while (stack.length) {
+    const n = stack.shift();
+    if (n.path === path) return n;
+    if (n.isFolder && n.children) stack.push(...n.children);
+  }
+  return null;
+}
+
 function readDirectoryEntries(reader) {
   return new Promise((resolve, reject) => {
     const entries = [];
@@ -191,6 +201,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
   const [isTreeHovered, setIsTreeHovered] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isExternalDropActive, setIsExternalDropActive] = useState(false);
+  const [externalDropTargetFolder, setExternalDropTargetFolder] = useState("");
   // Bumped on every contextmenu event so the menu Content remounts and
   // Radix recomputes its position from the latest right-click coords.
   // Without this, opening the menu at a new spot while the previous one
@@ -222,17 +233,6 @@ const FileTreeView = ({ onToggleOrientation }) => {
       ? activeFile.path
       : (findParentFolderPath(files, activeFile.path) ?? null)
     : undefined;
-
-  // Helper for context menu - uses unique path for correct identification
-  const findNodeByPath = (nodes, path) => {
-    const stack = [...nodes];
-    while (stack.length) {
-      const n = stack.shift();
-      if (n.path === path) return n;
-      if (n.isFolder && n.children) stack.push(...n.children);
-    }
-    return null;
-  };
 
   // Focus hook for any creation (root or inside a folder). The create-input
   // row is rendered by Virtuoso, which can mount the row a frame or two
@@ -437,6 +437,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
     event.preventDefault();
     event.stopPropagation();
     setIsExternalDropActive(false);
+    setExternalDropTargetFolder("");
     try {
       const entries = await filesFromDataTransfer(event.dataTransfer);
       await uploadFilesToWorkspace(entries, targetFolder);
@@ -446,6 +447,21 @@ const FileTreeView = ({ onToggleOrientation }) => {
     }
   }, [uploadFilesToWorkspace]);
 
+  const handleExternalFolderDragTarget = useCallback((targetFolder = "") => {
+    setExternalDropTargetFolder(targetFolder || "");
+    setIsExternalDropActive(true);
+  }, []);
+
+  const getFolderDropTargetFromEvent = useCallback((event) => {
+    if (typeof document === "undefined") return "";
+    const target = document.elementFromPoint(event.clientX, event.clientY);
+    const row = target?.closest?.("[data-node-path-id]");
+    const nodePath = row?.getAttribute?.("data-node-path-id");
+    if (!nodePath) return "";
+    const node = findNodeByPath(files, nodePath);
+    return node?.isFolder ? node.path : "";
+  }, [files]);
+
   // Drop on the empty tree area moves the dragged item to the workspace root.
   // Per-folder drops are handled inside FileItem; this only fires when the
   // drop lands on whitespace below all rows.
@@ -454,16 +470,21 @@ const FileTreeView = ({ onToggleOrientation }) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
       if (!isExternalDropActive) setIsExternalDropActive(true);
+      const hoveredFolder = getFolderDropTargetFromEvent(e);
+      if (hoveredFolder !== externalDropTargetFolder) {
+        setExternalDropTargetFolder(hoveredFolder);
+      }
       return;
     }
     if (!e.dataTransfer.types.includes("application/x-synthi-tree-item")) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-  }, [isExternalDropActive]);
+  }, [externalDropTargetFolder, getFolderDropTargetFromEvent, isExternalDropActive]);
 
   const handleRootDrop = useCallback(async (e) => {
     if (dataTransferHasType(e.dataTransfer, "Files")) {
-      await handleExternalFilesDrop(e);
+      const targetFolder = externalDropTargetFolder || getFolderDropTargetFromEvent(e);
+      await handleExternalFilesDrop(e, targetFolder);
       return;
     }
     const raw = e.dataTransfer.getData("application/x-synthi-tree-item");
@@ -485,11 +506,12 @@ const FileTreeView = ({ onToggleOrientation }) => {
     if (moveItemThunk.rejected.match(res)) {
       toast.error(`Move failed: ${res.error?.message || "Unknown error"}`);
     }
-  }, [dispatch, handleExternalFilesDrop]);
+  }, [dispatch, externalDropTargetFolder, getFolderDropTargetFromEvent, handleExternalFilesDrop]);
 
   const handleRootDragLeave = useCallback((e) => {
     if (e.currentTarget.contains(e.relatedTarget)) return;
     setIsExternalDropActive(false);
+    setExternalDropTargetFolder("");
   }, []);
 
   // All layout tabs — used to detect if the editor panel is missing
@@ -568,6 +590,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
         onAction={handleTreeAction}
         onRightMouseButtonClick={setContextTarget}
         onExternalFilesDrop={handleExternalFilesDrop}
+        onExternalFolderDragTarget={handleExternalFolderDragTarget}
         uiActionState={uiActionState}
         dispatch={dispatch}
         handleKeyDown={handleKeyDown}
@@ -575,7 +598,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
         shallow
       />
     );
-  }, [flatNodes, isTreeHovered, activeFolderPath, onFileSelectHandler, activeFile, handleTreeAction, handleExternalFilesDrop, uiActionState, dispatch, handleKeyDown, handleBlur, isCreatingFolder, name]);
+  }, [flatNodes, isTreeHovered, activeFolderPath, onFileSelectHandler, activeFile, handleTreeAction, handleExternalFilesDrop, handleExternalFolderDragTarget, uiActionState, dispatch, handleKeyDown, handleBlur, isCreatingFolder, name]);
 
   return (
     <ContextMenu
@@ -693,7 +716,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
               <div>
                 <Upload className="mx-auto mb-2 h-5 w-5" style={{ color: "var(--attention-purple)" }} />
                 <div className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
-                  Drop files to upload
+                  {externalDropTargetFolder ? `Drop files into ${externalDropTargetFolder}` : "Drop files into workspace root"}
                 </div>
                 <div className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
                   They will be written into this worktree.

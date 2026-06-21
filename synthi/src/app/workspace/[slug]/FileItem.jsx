@@ -31,6 +31,7 @@ function fileItemAreEqual(prev, next) {
     prev.activeFile !== next.activeFile ||
     prev.onAction !== next.onAction ||
     prev.onExternalFilesDrop !== next.onExternalFilesDrop ||
+    prev.onExternalFolderDragTarget !== next.onExternalFolderDragTarget ||
     prev.uiActionState !== next.uiActionState ||
     prev.dispatch !== next.dispatch ||
     prev.handleKeyDown !== next.handleKeyDown ||
@@ -63,6 +64,7 @@ const FileItem = memo(({
   onAction,
   onRightMouseButtonClick,
   onExternalFilesDrop,
+  onExternalFolderDragTarget,
   uiActionState,
   dispatch,
   handleKeyDown,
@@ -472,6 +474,7 @@ useEffect(() => {
       e.stopPropagation();
       e.dataTransfer.dropEffect = 'copy';
       if (!isExternalDropTarget) setIsExternalDropTarget(true);
+      onExternalFolderDragTarget?.(item.path);
       return;
     }
     // We can't read dataTransfer payload during dragover (browser locks it),
@@ -491,6 +494,7 @@ useEffect(() => {
     if (!item.isFolder) return;
     if (hasExternalFiles(e)) {
       setIsExternalDropTarget(false);
+      onExternalFolderDragTarget?.("");
       if (typeof onExternalFilesDrop === "function") {
         await onExternalFilesDrop(e, item.path);
       }
