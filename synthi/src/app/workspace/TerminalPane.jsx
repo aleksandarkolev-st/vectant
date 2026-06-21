@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { WifiOff, RefreshCw, Terminal, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw, Power } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTheme } from '@/components/ThemeProvider';
@@ -1224,12 +1224,15 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
 
       {/* Connection status — viewport-centred floating panel (portal to body) */}
-      {(state === 'error' || state === 'closed') && (
-        <ConnectionStatusPanel
-          state={state}
-          onReconnect={handleReconnect}
-        />
-      )}
+      <AnimatePresence>
+        {(state === 'error' || state === 'closed') && (
+          <ConnectionStatusPanel
+            key={`terminal-status-${state}`}
+            state={state}
+            onReconnect={handleReconnect}
+          />
+        )}
+      </AnimatePresence>
 
       <TerminalActivityHint state={state} stoppingRuntime={stoppingRuntime} />
     </div>
@@ -1851,6 +1854,7 @@ function TerminalColorPanel({ baseTheme, overrides, onClose }) {
  */
 function ConnectionStatusPanel({ state, onReconnect }) {
   const { pos, panelRef, onTitleMouseDown } = useDraggableViewportPanel();
+  const reduceMotion = useReducedMotion();
 
   if (typeof document === 'undefined') return null;
 
@@ -1858,12 +1862,23 @@ function ConnectionStatusPanel({ state, onReconnect }) {
     ? { left: pos.x, top: pos.y }
     : { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' };
 
-  const title = state === 'closed' ? 'Session Ended' : 'Terminal Disconnected';
-  const body =
-    state === 'closed'
-      ? 'The shell process has exited.'
-      : 'Unable to reach the terminal server. Make sure the collab-server is running.';
-  const actionLabel = state === 'closed' ? 'New Session' : 'Reconnect';
+  const isClosed = state === 'closed';
+  const title = isClosed ? 'Terminal session ended' : 'Runtime terminal unavailable';
+  const body = isClosed
+    ? 'The shell process exited. Workspace files are preserved.'
+    : 'The editor is still usable, but the terminal could not attach to the local runtime.';
+  const actionLabel = isClosed ? 'New session' : 'Retry terminal';
+  const statusItems = isClosed
+    ? [
+        ['Session', 'Exited'],
+        ['Workspace', 'Files preserved'],
+      ]
+    : [
+        ['Transport', 'WebSocket disconnected'],
+        ['Runtime', 'Check collab-server and image'],
+        ['Workspace', 'Files preserved'],
+      ];
+  const iconColor = isClosed ? 'var(--text-secondary, #a1a1aa)' : 'var(--accent-warning, #d89b2b)';
 
   return createPortal(
     <div
@@ -1871,20 +1886,24 @@ function ConnectionStatusPanel({ state, onReconnect }) {
       className="fixed"
       style={{
         ...placement,
-        width: 360,
+        width: 404,
         maxWidth: 'calc(100vw - 16px)',
         zIndex: 120,
       }}
     >
       <motion.div
-        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        role="status"
+        aria-live="polite"
+        initial={reduceMotion ? false : { opacity: 0, y: 10, scale: 0.985 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.18, ease: TERMINAL_MOTION_EASE }}
+        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.985 }}
+        transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: TERMINAL_MOTION_EASE }}
         className="flex flex-col overflow-hidden rounded-lg border shadow-2xl"
         style={{
-          background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 92%, var(--bg-app, #0a0b10))',
+          background: 'color-mix(in srgb, var(--bg-elevated, #18181b) 94%, var(--bg-app, #0a0b10))',
           borderColor: 'var(--border-medium, #3f3f46)',
           color: 'var(--text-primary, #e4e4e7)',
+          boxShadow: '0 24px 70px color-mix(in srgb, var(--bg-app, #0a0b10) 72%, transparent)',
         }}
       >
         <div
@@ -1894,37 +1913,65 @@ function ConnectionStatusPanel({ state, onReconnect }) {
         />
         <div
           onMouseDown={onTitleMouseDown}
-          className="flex items-start gap-3 border-b px-3 py-3 select-none"
+          className="flex items-start gap-3 border-b px-3.5 py-3.5 select-none"
           style={{
             borderColor: 'var(--border-subtle, #2a2b38)',
             cursor: 'move',
           }}
         >
           <div
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border"
             style={{
-              borderColor: 'color-mix(in srgb, var(--text-muted, #6b7089) 35%, transparent)',
-              color: 'var(--text-secondary, #a1a1aa)',
+              borderColor: 'color-mix(in srgb, var(--accent-warning, #d89b2b) 26%, var(--border-medium, #3f3f46))',
+              color: iconColor,
               background: 'color-mix(in srgb, var(--bg-app, #0a0b10) 76%, var(--bg-elevated, #18181b))',
             }}
           >
-            <WifiOff className="h-3.5 w-3.5" />
+            {isClosed ? <Terminal className="h-4 w-4" /> : <WifiOff className="h-4 w-4" />}
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-[12px] font-semibold">{title}</div>
-            <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-[13px] font-semibold">{title}</div>
+              <span
+                className="shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-medium"
+                style={{
+                  color: iconColor,
+                  borderColor: 'color-mix(in srgb, var(--accent-warning, #d89b2b) 26%, var(--border-medium, #3f3f46))',
+                  background: 'color-mix(in srgb, var(--accent-warning, #d89b2b) 8%, transparent)',
+                }}
+              >
+                {state}
+              </span>
+            </div>
+            <p className="mt-1.5 text-[11px] leading-5" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
               {body}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+        <div className="px-3.5 py-3">
+          <div className="grid gap-1.5">
+            {statusItems.map(([label, value]) => (
+              <div key={label} className="grid grid-cols-[86px_1fr] items-center gap-3 text-[10.5px]">
+                <span style={{ color: 'var(--text-muted, #6b7089)' }}>{label}</span>
+                <span className="truncate" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+                  {value}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div
+          className="flex items-center justify-between gap-3 border-t px-3.5 py-2.5"
+          style={{ borderColor: 'var(--border-subtle, #2a2b38)' }}
+        >
           <span className="text-[10px]" style={{ color: 'var(--text-muted, #6b7089)' }}>
-            Terminal state: {state}
+            Workspace stays editable
           </span>
           <motion.button
             type="button"
-            whileTap={{ scale: 0.97 }}
+            whileTap={reduceMotion ? undefined : { scale: 0.97 }}
             onClick={onReconnect}
             className="flex h-8 items-center gap-2 rounded-md px-3 text-xs font-semibold transition-opacity hover:opacity-90"
             style={{
