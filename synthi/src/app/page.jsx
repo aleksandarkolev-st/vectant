@@ -1,28 +1,48 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { AnimatePresence, motion } from "framer-motion";
 import {
-  Github,
-  LogOut,
-  FolderGit2,
-  Plus,
-  Loader2,
-  GitBranch,
+  AlertCircle,
   ArrowRight,
-  Lock,
-  Globe,
+  CheckCircle2,
   Clock,
+  FileArchive,
+  FolderGit2,
+  FolderOpen,
+  FolderPlus,
+  Github,
+  GitBranch,
+  Globe,
+  Home,
+  Loader2,
+  Lock,
+  LogOut,
   Sparkles,
+  UploadCloud,
+  X,
 } from "lucide-react";
 import AIJumpstartSection from "@/components/dashboard/AIJumpstartSection";
 import { storeJumpstartPayload } from "@/lib/ai-jumpstart-session";
 import { resolveCollabHttpUrl } from "@/lib/collab-url";
 import { toast } from "sonner";
 
-/* ──────────────────────────── helpers ──────────────────────────── */
+const LAST_WORKSPACE_KEY = "vectant:last-workspace";
+const MAX_LOCAL_UPLOAD_FILES = 240;
+const MAX_LOCAL_UPLOAD_TOTAL_BYTES = 64 * 1024 * 1024;
+const MAX_LOCAL_UPLOAD_FILE_BYTES = 24 * 1024 * 1024;
+const IGNORED_UPLOAD_SEGMENTS = new Set([
+  ".git",
+  "node_modules",
+  ".next",
+  "dist",
+  "build",
+  "out",
+  ".cache",
+  ".turbo",
+]);
 
 function relativeTime(dateStr) {
   const now = new Date();
@@ -38,6 +58,48 @@ function relativeTime(dateStr) {
   return date.toLocaleDateString();
 }
 
+function humanBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function createSlug(prefix = "ws") {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeUploadPath(rawPath) {
+  return String(rawPath || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .split("/")
+    .filter(Boolean)
+    .join("/");
+}
+
+function isIgnoredUploadPath(path) {
+  return normalizeUploadPath(path)
+    .split("/")
+    .some((segment) => IGNORED_UPLOAD_SEGMENTS.has(segment));
+}
+
+function inferWorkspaceName(entries) {
+  const firstPath = entries[0]?.path || "";
+  const firstSegment = firstPath.split("/").filter(Boolean)[0];
+  if (entries.length > 1 && firstSegment && entries.every((entry) => entry.path.startsWith(`${firstSegment}/`))) {
+    return firstSegment;
+  }
+  const fileName = firstPath.split("/").pop() || "uploaded-workspace";
+  return fileName.replace(/\.[^.]+$/, "") || "uploaded-workspace";
+}
+
+function repoNameFromUrl(repoUrl) {
+  const clean = String(repoUrl || "").trim().replace(/\/+$/, "");
+  const tail = clean.split("/").pop() || "imported-repo";
+  return tail.replace(/\.git$/i, "") || "imported-repo";
+}
+
 async function readResponseError(response, fallbackMessage) {
   try {
     const data = await response.json();
@@ -51,57 +113,155 @@ async function readResponseError(response, fallbackMessage) {
   return fallbackMessage;
 }
 
-/* ──────────────────────────── main ──────────────────────────── */
+function readDirectoryEntries(reader) {
+  return new Promise((resolve, reject) => {
+    const entries = [];
+    const readBatch = () => {
+      reader.readEntries(
+        (batch) => {
+          if (!batch.length) {
+            resolve(entries);
+            return;
+          }
+          entries.push(...batch);
+          readBatch();
+        },
+        reject,
+      );
+    };
+    readBatch();
+  });
+}
+
+function readEntryFile(entry) {
+  return new Promise((resolve, reject) => {
+    entry.file(resolve, reject);
+  });
+}
+
+async function filesFromEntry(entry, prefix = "") {
+  if (!entry) return [];
+
+  if (entry.isFile) {
+    const file = await readEntryFile(entry);
+    return [{ file, path: normalizeUploadPath(`${prefix}${file.name}`) }];
+  }
+
+  if (entry.isDirectory) {
+    const reader = entry.createReader();
+    const children = await readDirectoryEntries(reader);
+    const childResults = await Promise.all(
+      children.map((child) => filesFromEntry(child, `${prefix}${entry.name}/`)),
+    );
+    return childResults.flat();
+  }
+
+  return [];
+}
+
+async function filesFromDataTransfer(dataTransfer) {
+  const items = Array.from(dataTransfer?.items || []);
+  const entryItems = items
+    .map((item) => (typeof item.webkitGetAsEntry === "function" ? item.webkitGetAsEntry() : null))
+    .filter(Boolean);
+
+  if (entryItems.length) {
+    const results = await Promise.all(entryItems.map((entry) => filesFromEntry(entry)));
+    return results.flat();
+  }
+
+  return Array.from(dataTransfer?.files || []).map((file) => ({
+    file,
+    path: normalizeUploadPath(file.webkitRelativePath || file.name),
+  }));
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function fileToBatchEntry(entry) {
+  const buffer = await entry.file.arrayBuffer();
+  return {
+    path: entry.path,
+    encoding: "base64",
+    content: arrayBufferToBase64(buffer),
+  };
+}
+
+function modeTitle(mode) {
+  switch (mode) {
+    case "local":
+      return "Upload a worktree";
+    case "create":
+      return "Create with AI";
+    default:
+      return "Import repository";
+  }
+}
 
 export default function Dashboard() {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const collabServerUrl = resolveCollabHttpUrl();
+
+  const fileInputRef = useRef(null);
+  const folderInputRef = useRef(null);
 
   const [workspaces, setWorkspaces] = useState([]);
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);
+  const [lastWorkspace, setLastWorkspace] = useState(null);
 
-  // Import state
   const [repoUrl, setRepoUrl] = useState("");
   const [importing, setImporting] = useState(false);
 
-  // Create repo state
+  const [localWorkspaceName, setLocalWorkspaceName] = useState("");
+  const [localUploadFiles, setLocalUploadFiles] = useState([]);
+  const [localUploadSkipped, setLocalUploadSkipped] = useState([]);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const [uploadingLocal, setUploadingLocal] = useState(false);
+
   const [newRepoName, setNewRepoName] = useState("");
   const [newRepoDesc, setNewRepoDesc] = useState("");
   const [newRepoPrivate, setNewRepoPrivate] = useState(true);
   const [creating, setCreating] = useState(false);
 
-  // AI Jumpstart state
-  const [aiJumpstart, setAiJumpstart] = useState(false);
+  const [aiJumpstart, setAiJumpstart] = useState(true);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiAttachments, setAiAttachments] = useState([]);
-  // Project-type pick from NewProjectPicker (in jumpstart mode).
-  // Required when aiJumpstart is enabled — the prompt textarea is
-  // locked until this is set. Persisted alongside the prompt in
-  // sessionStorage so the workspace can prepend its systemPromptHint
-  // to the AI chat invocation.
   const [aiProjectType, setAiProjectType] = useState(null);
 
-  // Active tab
-  const [activeTab, setActiveTab] = useState("import");
+  const [activeTab, setActiveTab] = useState("local");
+  const [feedback, setFeedback] = useState(null);
 
-  // Error / success feedback
-  const [feedback, setFeedback] = useState(null); // { type: 'error'|'success', message }
-  const collabServerUrl = resolveCollabHttpUrl();
+  const isActionLoading = importing || creating || uploadingLocal;
 
-  /* ── data fetching ── */
+  const localUploadSummary = useMemo(() => {
+    const totalBytes = localUploadFiles.reduce((sum, item) => sum + item.file.size, 0);
+    return {
+      totalBytes,
+      label: `${localUploadFiles.length} ${localUploadFiles.length === 1 ? "file" : "files"} / ${humanBytes(totalBytes)}`,
+    };
+  }, [localUploadFiles]);
 
   const fetchWorkspaces = useCallback(async (email) => {
     setLoadingWorkspaces(true);
     try {
       const res = await fetch(
-        `${collabServerUrl}/workspaces?owner=${encodeURIComponent(email)}`,
+        `${collabServerUrl}/workspaces?owner=${encodeURIComponent(email)}&recent=true`,
       );
       if (res.ok) {
         const data = await res.json();
-        setWorkspaces(data);
+        setWorkspaces(Array.isArray(data) ? data : []);
       }
     } catch (e) {
-      console.error("Failed to fetch workspaces", e);
+      console.error("Failed to fetch recent workspaces", e);
     } finally {
       setLoadingWorkspaces(false);
     }
@@ -114,9 +274,7 @@ export default function Dashboard() {
       body: JSON.stringify({ slug, name, repoUrl }),
     });
 
-    if (response.ok || response.status === 409) {
-      return;
-    }
+    if (response.ok || response.status === 409) return;
 
     const errorMessage = await readResponseError(
       response,
@@ -133,16 +291,95 @@ export default function Dashboard() {
     }
   }, [session, fetchWorkspaces]);
 
-  /* ── import repo ── */
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LAST_WORKSPACE_KEY);
+      if (raw) setLastWorkspace(JSON.parse(raw));
+    } catch (_) {
+      setLastWorkspace(null);
+    }
+  }, []);
 
-  const handleImport = async (e) => {
-    e.preventDefault();
-    if (!repoUrl) return;
+  const addLocalFiles = useCallback((entries) => {
+    const incoming = Array.from(entries || []);
+    if (!incoming.length) return;
+
+    const previous = new Map(localUploadFiles.map((entry) => [entry.path, entry]));
+    const skipped = [];
+    let totalBytes = localUploadFiles.reduce((sum, item) => sum + item.file.size, 0);
+
+    for (const entry of incoming) {
+      const file = entry.file || entry;
+      const path = normalizeUploadPath(entry.path || file.webkitRelativePath || file.name);
+
+      if (!path || isIgnoredUploadPath(path)) {
+        skipped.push({ path: path || file.name, reason: "ignored" });
+        continue;
+      }
+      if (file.size > MAX_LOCAL_UPLOAD_FILE_BYTES) {
+        skipped.push({ path, reason: `over ${humanBytes(MAX_LOCAL_UPLOAD_FILE_BYTES)}` });
+        continue;
+      }
+      if (!previous.has(path) && previous.size >= MAX_LOCAL_UPLOAD_FILES) {
+        skipped.push({ path, reason: `over ${MAX_LOCAL_UPLOAD_FILES} file limit` });
+        continue;
+      }
+      if (!previous.has(path) && totalBytes + file.size > MAX_LOCAL_UPLOAD_TOTAL_BYTES) {
+        skipped.push({ path, reason: `over ${humanBytes(MAX_LOCAL_UPLOAD_TOTAL_BYTES)} total` });
+        continue;
+      }
+
+      const replaced = previous.get(path);
+      if (!replaced) totalBytes += file.size;
+      previous.set(path, { file, path });
+    }
+
+    const nextFiles = Array.from(previous.values()).sort((a, b) => a.path.localeCompare(b.path));
+    setLocalUploadFiles(nextFiles);
+    setLocalUploadSkipped(skipped);
+    if (!localWorkspaceName.trim() && nextFiles.length) {
+      setLocalWorkspaceName(inferWorkspaceName(nextFiles));
+    }
+    if (skipped.length) {
+      toast.warning(`${skipped.length} item${skipped.length === 1 ? "" : "s"} skipped`);
+    }
+  }, [localUploadFiles, localWorkspaceName]);
+
+  const handleFileInputChange = useCallback((event) => {
+    addLocalFiles(
+      Array.from(event.target.files || []).map((file) => ({
+        file,
+        path: normalizeUploadPath(file.webkitRelativePath || file.name),
+      })),
+    );
+    event.target.value = "";
+  }, [addLocalFiles]);
+
+  const handleDrop = useCallback(async (event) => {
+    event.preventDefault();
+    setIsDraggingFiles(false);
+    setFeedback(null);
+
+    try {
+      const files = await filesFromDataTransfer(event.dataTransfer);
+      addLocalFiles(files);
+    } catch (error) {
+      console.error(error);
+      setFeedback({
+        type: "error",
+        message: "Could not read the dropped files. Try the file picker instead.",
+      });
+    }
+  }, [addLocalFiles]);
+
+  const handleImport = async (event) => {
+    event.preventDefault();
+    if (!repoUrl.trim()) return;
     setImporting(true);
     setFeedback(null);
     try {
-      const slug = Math.random().toString(36).substring(2, 10);
-      const name = repoUrl.split("/").pop().replace(".git", "");
+      const slug = createSlug("repo");
+      const name = repoNameFromUrl(repoUrl);
       const userId = session?.user?.id || session?.user?.email;
 
       const res = await fetch(`${collabServerUrl}/git/${slug}/clone`, {
@@ -156,58 +393,111 @@ export default function Dashboard() {
           token: session?.accessToken,
           owner: session?.user?.email,
           name,
+          source: "import",
+          showInRecent: false,
         }),
       });
 
-      if (res.ok) {
-        await ensureWorkspaceRecord({ slug, name, repoUrl });
-
-        if (session?.user?.email) {
-          await fetchWorkspaces(session.user.email);
-        }
-        setRepoUrl("");
-        router.push(`/${slug}`);
-      } else {
+      if (!res.ok) {
         const errorMessage = await readResponseError(res, "Unknown error");
-        setFeedback({
-          type: "error",
-          message: `Import failed: ${errorMessage}`,
-        });
+        throw new Error(`Import failed: ${errorMessage}`);
       }
-    } catch (e) {
-      console.error(e);
+
+      await ensureWorkspaceRecord({ slug, name, repoUrl });
+      setRepoUrl("");
+      router.push(`/${slug}`);
+    } catch (error) {
+      console.error(error);
       setFeedback({
         type: "error",
-        message:
-          e instanceof Error
-            ? e.message
-            : "Import failed. Check the URL and try again.",
+        message: error instanceof Error ? error.message : "Import failed. Check the URL and try again.",
       });
     } finally {
       setImporting(false);
     }
   };
 
-  /* ── create repo ── */
+  const handleLocalUpload = async (event) => {
+    event.preventDefault();
+    if (!localUploadFiles.length) return;
 
-  const handleCreateRepo = async (e) => {
-    e.preventDefault();
+    const slug = createSlug("local");
+    const name = localWorkspaceName.trim() || inferWorkspaceName(localUploadFiles);
+    const userId = session?.user?.id || session?.user?.email;
+
+    setUploadingLocal(true);
+    setFeedback(null);
+    try {
+      const initRes = await fetch(`${collabServerUrl}/git/${slug}/init`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": userId,
+        },
+        body: JSON.stringify({ source: "local-upload" }),
+      });
+
+      if (!initRes.ok) {
+        const errorMessage = await readResponseError(initRes, "Workspace init failed");
+        throw new Error(errorMessage);
+      }
+
+      const files = await Promise.all(localUploadFiles.map(fileToBatchEntry));
+      const writeRes = await fetch(`${collabServerUrl}/git/${slug}/write-files-batch`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-id": userId,
+        },
+        body: JSON.stringify({
+          files,
+          syncToGcs: true,
+          source: "local-upload",
+          showInRecent: false,
+        }),
+      });
+
+      if (!writeRes.ok) {
+        const errorMessage = await readResponseError(writeRes, "Upload failed");
+        throw new Error(errorMessage);
+      }
+
+      const writeData = await writeRes.json();
+      if (Array.isArray(writeData?.errors) && writeData.errors.length > 0) {
+        throw new Error(`Uploaded ${writeData.written?.length || 0} files, but ${writeData.errors.length} failed.`);
+      }
+
+      await ensureWorkspaceRecord({ slug, name, repoUrl: null });
+      setLocalUploadFiles([]);
+      setLocalUploadSkipped([]);
+      setLocalWorkspaceName("");
+      router.push(`/${slug}`);
+    } catch (error) {
+      console.error(error);
+      setFeedback({
+        type: "error",
+        message: error instanceof Error ? error.message : "Upload failed. Try a smaller selection.",
+      });
+    } finally {
+      setUploadingLocal(false);
+    }
+  };
+
+  const handleCreateRepo = async (event) => {
+    event.preventDefault();
     if (!newRepoName.trim()) return;
 
-    // Validate AI Jumpstart prompt + project type when enabled
     if (aiJumpstart && !aiProjectType) {
       setFeedback({
         type: "error",
-        message:
-          "Please choose a project type for AI Jumpstart, or disable it.",
+        message: "Choose a project type for AI creation, or turn AI creation off.",
       });
       return;
     }
     if (aiJumpstart && !aiPrompt.trim()) {
       setFeedback({
         type: "error",
-        message:
-          "Please describe your project idea or disable AI Jumpstart.",
+        message: "Describe what the AI workspace should build.",
       });
       return;
     }
@@ -215,7 +505,6 @@ export default function Dashboard() {
     setCreating(true);
     setFeedback(null);
     try {
-      // 1. Create the repo on GitHub
       const createRes = await fetch("/api/github/create-repo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -227,21 +516,16 @@ export default function Dashboard() {
       });
 
       if (!createRes.ok) {
-        const err = await createRes.json();
+        const err = await createRes.json().catch(() => ({}));
         const errorMessage = err.error || "Failed to create repository.";
-        setFeedback({
-          type: "error",
-          message: errorMessage,
-        });
         toast.error(errorMessage);
-        return;
+        throw new Error(errorMessage);
       }
 
       const repo = await createRes.json();
-
-      // 2. Clone the newly created repo into a workspace
-      const slug = Math.random().toString(36).substring(2, 10);
+      const slug = createSlug("ai");
       const userId = session?.user?.id || session?.user?.email;
+      const showInRecent = Boolean(aiJumpstart);
 
       const cloneRes = await fetch(`${collabServerUrl}/git/${slug}/clone`, {
         method: "POST",
@@ -254,422 +538,517 @@ export default function Dashboard() {
           token: session?.accessToken,
           owner: session?.user?.email,
           name: repo.name,
+          source: showInRecent ? "ai" : "create",
+          showInRecent,
         }),
       });
 
-      if (cloneRes.ok) {
-        await ensureWorkspaceRecord({
-          slug,
-          name: repo.name,
-          repoUrl: repo.cloneUrl,
-        });
+      if (!cloneRes.ok) {
+        const errorMessage = await readResponseError(cloneRes, "Unknown error");
+        throw new Error(`Repository created on GitHub but workspace setup failed: ${errorMessage}`);
+      }
 
-        if (session?.user?.email) {
-          await fetchWorkspaces(session.user.email);
-        }
+      await ensureWorkspaceRecord({
+        slug,
+        name: repo.name,
+        repoUrl: repo.cloneUrl,
+      });
 
-        // 3. If AI Jumpstart is enabled, persist prompt data for workspace.
-        // The project-type hint is stored alongside the prompt so the
-        // workspace page can prepend it to the AI chat invocation.
-        if (aiJumpstart && aiPrompt.trim()) {
-          storeJumpstartPayload({
-            prompt: aiPrompt.trim(),
-            attachments: aiAttachments,
-            projectType: aiProjectType,
-          });
-        }
+      if (showInRecent && session?.user?.email) {
+        await fetchWorkspaces(session.user.email);
+      }
 
-        setNewRepoName("");
-        setNewRepoDesc("");
-        setAiJumpstart(false);
-        setAiPrompt("");
-        setAiAttachments([]);
-        setAiProjectType(null);
-        router.push(`/${slug}`);
-      } else {
-        const errorMessage = await readResponseError(
-          cloneRes,
-          "Unknown error",
-        );
-        setFeedback({
-          type: "error",
-          message: `Repository created on GitHub but workspace setup failed: ${errorMessage}`,
+      if (aiJumpstart && aiPrompt.trim()) {
+        storeJumpstartPayload({
+          prompt: aiPrompt.trim(),
+          attachments: aiAttachments,
+          projectType: aiProjectType,
         });
       }
-    } catch (e) {
-      console.error(e);
+
+      setNewRepoName("");
+      setNewRepoDesc("");
+      setAiJumpstart(true);
+      setAiPrompt("");
+      setAiAttachments([]);
+      setAiProjectType(null);
+      router.push(`/${slug}`);
+    } catch (error) {
+      console.error(error);
       setFeedback({
         type: "error",
-        message:
-          e instanceof Error
-            ? e.message
-            : "Something went wrong. Please try again.",
+        message: error instanceof Error ? error.message : "Something went wrong. Please try again.",
       });
     } finally {
       setCreating(false);
     }
   };
 
-  /* ── loading splash ── */
-
   if (status === "loading") {
     return (
-      <div
-        className="flex h-screen items-center justify-center"
-        style={{ background: "var(--bg-app)", color: "var(--text-primary)" }}
-      >
-        <div className="flex flex-col items-center gap-4">
-          <div
-            className="synthi-loading"
-            style={{ width: 40, height: 40, borderRadius: "50%" }}
-          />
-          <span style={{ color: "var(--text-muted)", fontSize: 13 }}>
-            Loading...
-          </span>
+      <div className="flex h-screen items-center justify-center bg-[var(--bg-app)] text-[var(--text-secondary)]">
+        <div className="flex items-center gap-3 text-sm">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading...
         </div>
       </div>
     );
   }
-
-  /* ── sign-in page ── */
 
   if (!session) {
     return (
-      <div
-        className="flex h-screen items-center justify-center"
-        style={{ background: "var(--bg-app)" }}
-      >
-        <div className="synthi-gradient-border" style={{ borderRadius: 16 }}>
-          <div
-            className="flex flex-col items-center gap-6 px-10 py-10"
-            style={{
-              background: "var(--bg-editor)",
-              borderRadius: 16,
-              minWidth: 360,
-            }}
-          >
-            <div className="flex flex-col items-center gap-2">
-              <h1
-                className="text-2xl font-semibold tracking-tight"
-                style={{ color: "var(--text-primary)" }}
-              >
-                Welcome to <span className="synthi-gradient-text">Vectant ADE</span>
+      <main className="min-h-screen overflow-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
+        <div className="absolute inset-0 opacity-60" style={{
+          background:
+            "radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--brand-stop-3) 16%, transparent), transparent 36%), linear-gradient(135deg, color-mix(in srgb, var(--bg-app) 72%, var(--brand-stop-4)), var(--bg-app) 58%)",
+        }} />
+        <section className="relative mx-auto flex min-h-screen w-full max-w-6xl items-center px-6 py-12">
+          <div className="grid w-full gap-8 lg:grid-cols-[1fr_420px] lg:items-center">
+            <div className="max-w-3xl">
+              <img src="/vectant-dark-theme.png" alt="Vectant" className="mb-10 h-10 w-auto" />
+              <h1 className="max-w-4xl text-5xl font-semibold leading-[0.95] tracking-normal md:text-7xl">
+                Vectant ADE
               </h1>
-              <p
-                className="synthi-body text-sm"
-                style={{ color: "var(--text-muted)" }}
-              >
-                Sign in to access your cloud workspaces
+              <p className="mt-6 max-w-2xl text-lg leading-8 text-[var(--text-secondary)]">
+                Open cloud workspaces, import existing code, or start from an AI-generated project brief.
               </p>
             </div>
-            <button
-              onClick={() => signIn("github", { callbackUrl: "/" })}
-              className="synthi-btn w-full flex items-center justify-center gap-2 h-10 text-sm font-medium cursor-pointer"
-              style={{ borderRadius: 8 }}
-            >
-              <Github className="h-4 w-4" /> Sign in with GitHub
-            </button>
+            <div className="rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_88%,transparent)] p-6 shadow-2xl">
+              <div className="mb-6">
+                <h2 className="text-xl font-semibold">Sign in</h2>
+                <p className="mt-2 text-sm text-[var(--text-muted)]">
+                  Connect your identity to create and open workspaces.
+                </p>
+              </div>
+              <button
+                onClick={() => signIn("github", { callbackUrl: "/" })}
+                className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
+              >
+                <Github className="h-4 w-4" />
+                Continue with GitHub
+              </button>
+              <button
+                onClick={() => router.push("/login")}
+                className="mt-3 flex h-10 w-full items-center justify-center rounded-lg border border-[var(--border-medium)] text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+              >
+                More sign-in options
+              </button>
+            </div>
           </div>
-        </div>
-      </div>
+        </section>
+      </main>
     );
   }
 
-  /* ── dashboard ── */
-
-  const isActionLoading = importing || creating;
+  const modes = [
+    { id: "local", icon: UploadCloud, label: "Upload", detail: "Drop files or pick from disk" },
+    { id: "import", icon: Github, label: "Import", detail: "Clone an existing repo" },
+    { id: "create", icon: Sparkles, label: "Create", detail: "Generate with AI tools" },
+  ];
 
   return (
-    <div
-      className="min-h-screen"
-      style={{ background: "var(--bg-app)", color: "var(--text-primary)" }}
-    >
-      {/* ── Header ── */}
-      <header
-        className="sticky top-0 z-50 border-b"
+    <main className="min-h-screen overflow-x-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0"
         style={{
-          background: "color-mix(in srgb, var(--bg-app) 85%, transparent)",
-          backdropFilter: "blur(12px)",
-          borderColor: "var(--border-subtle)",
+          background:
+            "linear-gradient(115deg, color-mix(in srgb, var(--bg-app) 82%, var(--brand-stop-4)) 0%, var(--bg-app) 48%, color-mix(in srgb, var(--bg-app) 88%, var(--brand-stop-1)) 100%)",
         }}
-      >
-        <div className="max-w-5xl mx-auto flex items-center justify-between px-6 h-14">
-          <h1 className="text-lg font-semibold tracking-tight flex items-center gap-2">
-            <span className="synthi-gradient-text">Vectant ADE</span>
-            <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>
-              Dashboard
-            </span>
-          </h1>
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0 opacity-[0.18]"
+        style={{
+          backgroundImage:
+            "linear-gradient(color-mix(in srgb, var(--text-primary) 10%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--text-primary) 10%, transparent) 1px, transparent 1px)",
+          backgroundSize: "48px 48px",
+          maskImage: "linear-gradient(to bottom, black, transparent 78%)",
+        }}
+      />
+
+      <header className="relative z-10 border-b border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_84%,transparent)] backdrop-blur-xl">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5 md:px-8">
           <div className="flex items-center gap-3">
+            <img src="/vectant/the_V.png" alt="" className="h-8 w-8 object-contain" draggable={false} />
+            <div>
+              <div className="text-sm font-semibold">Vectant ADE</div>
+              <div className="text-xs text-[var(--text-muted)]">Workspace start</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            {lastWorkspace?.slug && (
+              <button
+                onClick={() => router.push(`/${lastWorkspace.slug}`)}
+                className="hidden h-9 items-center gap-2 rounded-lg border border-[var(--border-medium)] px-3 text-sm text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)] sm:flex"
+              >
+                <Home className="h-4 w-4" />
+                Return to workspace
+              </button>
+            )}
             {session.user?.image && (
               <img
                 src={session.user.image}
                 alt=""
-                className="w-7 h-7 rounded-full"
-                style={{ border: "1px solid var(--border-medium)" }}
+                className="h-8 w-8 rounded-full border border-[var(--border-medium)]"
               />
             )}
-            <span
-              className="text-xs"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              {session.user?.name}
-            </span>
             <button
               onClick={() => signOut()}
-              className="th-btn-ghost p-1.5 rounded-md transition-colors cursor-pointer"
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+              aria-label="Sign out"
               title="Sign out"
             >
-              <LogOut className="h-3.5 w-3.5" />
+              <LogOut className="h-4 w-4" />
             </button>
           </div>
         </div>
       </header>
 
-      {/* ── Content ── */}
-      <main className="max-w-5xl mx-auto px-6 py-10">
-        {/* ── Get Started Section ── */}
-        <section className="mb-12">
-          <div className="flex items-center gap-2 mb-6">
-            <Sparkles
-              className="h-4 w-4"
-              style={{ color: "var(--accent-primary)" }}
-            />
-            <h2 className="synthi-heading text-base">Get Started</h2>
+      <div className="relative z-10 mx-auto grid max-w-7xl gap-8 px-5 py-8 md:px-8 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <section className="min-w-0">
+          <div className="mb-7 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <p className="mb-3 text-sm font-medium text-[var(--text-muted)]">Workspace control</p>
+              <h1 className="max-w-5xl text-4xl font-semibold leading-[1.02] tracking-normal md:text-6xl">
+                Choose a workspace entry point.
+              </h1>
+            </div>
+            <div className="flex rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_72%,transparent)] p-1">
+              {modes.map((mode) => {
+                const Icon = mode.icon;
+                const active = activeTab === mode.id;
+                return (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={() => setActiveTab(mode.id)}
+                    className="relative flex h-11 min-w-0 items-center gap-2 rounded-md px-3 text-left text-sm transition"
+                    style={{ color: active ? "var(--text-primary)" : "var(--text-muted)" }}
+                  >
+                    {active && (
+                      <motion.span
+                        layoutId="workspace-mode-active"
+                        className="absolute inset-0 rounded-md bg-[var(--bg-surface)]"
+                        transition={{ type: "spring", stiffness: 420, damping: 34 }}
+                      />
+                    )}
+                    <Icon className="relative h-4 w-4 shrink-0" />
+                    <span className="relative hidden sm:inline">{mode.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          <div
-            className="synthi-card overflow-hidden"
-            style={{ borderRadius: 12 }}
-          >
-            <Tabs
-              value={activeTab}
-              onValueChange={setActiveTab}
-              className="w-full"
+          {feedback && (
+            <div
+              className="mb-4 flex items-center gap-3 rounded-lg border px-4 py-3 text-sm"
+              style={{
+                background:
+                  feedback.type === "error"
+                    ? "color-mix(in srgb, var(--accent-danger) 11%, transparent)"
+                    : "color-mix(in srgb, var(--accent-success) 11%, transparent)",
+                borderColor:
+                  feedback.type === "error"
+                    ? "color-mix(in srgb, var(--accent-danger) 32%, transparent)"
+                    : "color-mix(in srgb, var(--accent-success) 32%, transparent)",
+                color: feedback.type === "error" ? "var(--accent-danger)" : "var(--accent-success)",
+              }}
             >
-              <div className="px-5 pt-5 pb-0">
-                <TabsList
-                  className="w-full h-10 p-1"
-                  style={{
-                    background: "var(--bg-app)",
-                    borderRadius: 8,
-                  }}
-                >
-                  <TabsTrigger
-                    value="import"
-                    className="flex-1 h-8 text-sm gap-2 rounded-md transition-all cursor-pointer data-[state=active]:shadow-none"
-                    style={{ "--tw-shadow": "none" }}
-                    data-synthi-tab=""
-                  >
-                    <FolderGit2 className="h-3.5 w-3.5" /> Import Repository
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="create"
-                    className="flex-1 h-8 text-sm gap-2 rounded-md transition-all cursor-pointer data-[state=active]:shadow-none"
-                    style={{ "--tw-shadow": "none" }}
-                    data-synthi-tab=""
-                  >
-                    <Plus className="h-3.5 w-3.5" /> Create Repository
-                  </TabsTrigger>
-                </TabsList>
-              </div>
+              {feedback.type === "error" ? <AlertCircle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+              <span className="flex-1">{feedback.message}</span>
+              <button onClick={() => setFeedback(null)} aria-label="Dismiss" className="opacity-70 hover:opacity-100">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
 
-              {/* ── Feedback Banner ── */}
-              {feedback && (
-                <div
-                  className="mx-5 mt-4 px-4 py-2.5 rounded-lg text-sm flex items-center gap-2"
-                  style={{
-                    background:
-                      feedback.type === "error"
-                        ? "color-mix(in srgb, var(--accent-danger) 10%, transparent)"
-                        : "color-mix(in srgb, var(--accent-success) 10%, transparent)",
-                    border: `1px solid ${
-                      feedback.type === "error"
-                        ? "color-mix(in srgb, var(--accent-danger) 30%, transparent)"
-                        : "color-mix(in srgb, var(--accent-success) 30%, transparent)"
-                    }`,
-                    color:
-                      feedback.type === "error"
-                        ? "var(--accent-danger)"
-                        : "var(--accent-success)",
-                  }}
-                >
-                  <span className="flex-1">{feedback.message}</span>
-                  <button
-                    onClick={() => setFeedback(null)}
-                    className="opacity-60 hover:opacity-100 text-xs cursor-pointer"
-                  >
-                    ✕
-                  </button>
+          <div className="overflow-hidden rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_86%,transparent)] shadow-2xl">
+            <div className="border-b border-[var(--border-subtle)] px-5 py-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold">{modeTitle(activeTab)}</h2>
+                  <p className="mt-1 text-sm text-[var(--text-muted)]">
+                    {activeTab === "local"
+                      ? "Selected files are written into a new workspace worktree."
+                      : activeTab === "create"
+                        ? "AI-created workspaces are the only ones added to recents."
+                        : "Imported repositories open immediately and stay out of recents."}
+                  </p>
                 </div>
+                <span className="hidden rounded-md border border-[var(--border-subtle)] px-2.5 py-1 text-xs text-[var(--text-muted)] sm:inline-flex">
+                  {activeTab === "local" ? localUploadSummary.label : isActionLoading ? "Working" : "Ready"}
+                </span>
+              </div>
+            </div>
+
+            <AnimatePresence mode="wait">
+              {activeTab === "local" && (
+                <motion.form
+                  key="local"
+                  onSubmit={handleLocalUpload}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.18 }}
+                  className="p-5"
+                >
+                  <input ref={fileInputRef} type="file" multiple className="sr-only" onChange={handleFileInputChange} />
+                  <input
+                    ref={folderInputRef}
+                    type="file"
+                    multiple
+                    webkitdirectory="true"
+                    className="sr-only"
+                    onChange={handleFileInputChange}
+                  />
+
+                  <motion.div
+                    onDragEnter={(event) => {
+                      event.preventDefault();
+                      setIsDraggingFiles(true);
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "copy";
+                      setIsDraggingFiles(true);
+                    }}
+                    onDragLeave={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget)) setIsDraggingFiles(false);
+                    }}
+                    onDrop={handleDrop}
+                    className="flex min-h-[280px] flex-col items-center justify-center rounded-lg border border-dashed p-6 text-center transition"
+                    style={{
+                      borderColor: isDraggingFiles ? "var(--attention-purple)" : "var(--border-strong)",
+                      background: isDraggingFiles
+                        ? "color-mix(in srgb, var(--attention-purple) 12%, transparent)"
+                        : "color-mix(in srgb, var(--bg-app) 54%, transparent)",
+                    }}
+                    whileHover={{ scale: 1.005 }}
+                  >
+                    <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-lg border border-[var(--border-medium)] bg-[var(--bg-surface)]">
+                      <UploadCloud className="h-7 w-7 text-[var(--text-primary)]" />
+                    </div>
+                    <h3 className="text-xl font-semibold">Drop files into the worktree</h3>
+                    <p className="mt-2 max-w-xl text-sm leading-6 text-[var(--text-muted)]">
+                      Drag files or folders here. Vectant skips heavy generated directories and writes the rest into a fresh workspace.
+                    </p>
+                    <div className="mt-6 flex flex-wrap justify-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="flex h-10 items-center gap-2 rounded-lg bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90"
+                      >
+                        <FolderOpen className="h-4 w-4" />
+                        Browse files
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => folderInputRef.current?.click()}
+                        className="flex h-10 items-center gap-2 rounded-lg border border-[var(--border-medium)] px-4 text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]"
+                      >
+                        <FolderPlus className="h-4 w-4" />
+                        Browse folder
+                      </button>
+                    </div>
+                  </motion.div>
+
+                  <div className="mt-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
+                    <label className="block">
+                      <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                        Workspace name
+                      </span>
+                      <input
+                        value={localWorkspaceName}
+                        onChange={(event) => setLocalWorkspaceName(event.target.value)}
+                        disabled={isActionLoading}
+                        placeholder="uploaded-workspace"
+                        className="h-11 w-full rounded-lg border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
+                      />
+                    </label>
+                    <button
+                      type="submit"
+                      disabled={uploadingLocal || !localUploadFiles.length}
+                      className="mt-auto flex h-11 items-center justify-center gap-2 rounded-lg bg-[var(--attention-purple)] px-4 text-sm font-semibold text-[var(--text-primary)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {uploadingLocal ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileArchive className="h-4 w-4" />}
+                      Open workspace
+                    </button>
+                  </div>
+
+                  {(localUploadFiles.length > 0 || localUploadSkipped.length > 0) && (
+                    <div className="mt-5 rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_52%,transparent)]">
+                      <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-4 py-3">
+                        <span className="text-sm font-medium">{localUploadSummary.label}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLocalUploadFiles([]);
+                            setLocalUploadSkipped([]);
+                          }}
+                          className="text-xs text-[var(--text-muted)] transition hover:text-[var(--text-primary)]"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div className="max-h-44 overflow-auto px-2 py-2">
+                        {localUploadFiles.slice(0, 80).map((entry) => (
+                          <div key={entry.path} className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-xs text-[var(--text-secondary)]">
+                            <span className="min-w-0 truncate font-mono">{entry.path}</span>
+                            <span className="shrink-0 text-[var(--text-dim)]">{humanBytes(entry.file.size)}</span>
+                          </div>
+                        ))}
+                        {localUploadFiles.length > 80 && (
+                          <div className="px-2 py-1.5 text-xs text-[var(--text-muted)]">
+                            {localUploadFiles.length - 80} more files selected
+                          </div>
+                        )}
+                        {localUploadSkipped.slice(0, 6).map((item) => (
+                          <div key={`${item.path}-${item.reason}`} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-[var(--accent-warning)]">
+                            <AlertCircle className="h-3.5 w-3.5" />
+                            <span className="min-w-0 truncate">{item.path}</span>
+                            <span className="shrink-0 opacity-80">{item.reason}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </motion.form>
               )}
 
-              {/* ── Import Tab ── */}
-              <TabsContent value="import" className="px-5 pb-5 pt-4">
-                <p
-                  className="synthi-body text-sm mb-4"
-                  style={{ color: "var(--text-muted)" }}
+              {activeTab === "import" && (
+                <motion.form
+                  key="import"
+                  onSubmit={handleImport}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.18 }}
+                  className="p-5"
                 >
-                  Clone an existing GitHub repository into a new cloud
-                  workspace.
-                </p>
-                <form onSubmit={handleImport} className="flex gap-3">
-                  <div className="flex-1 relative">
-                    <Github
-                      className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4"
-                      style={{ color: "var(--text-dim)" }}
-                    />
-                    <input
-                      type="text"
-                      placeholder="https://github.com/username/repo.git"
-                      value={repoUrl}
-                      onChange={(e) => setRepoUrl(e.target.value)}
-                      disabled={isActionLoading}
-                      className="th-input w-full h-10 pl-10 pr-4 rounded-lg text-sm outline-none transition-colors synthi-focus-ring"
-                      style={{
-                        background: "var(--bg-app)",
-                        color: "var(--text-primary)",
-                        border: "1px solid var(--border-medium)",
-                      }}
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={importing || !repoUrl.trim()}
-                    className="synthi-btn h-10 px-5 rounded-lg text-sm font-medium flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-                  >
-                    {importing ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <>
-                        Import <ArrowRight className="h-3.5 w-3.5" />
-                      </>
-                    )}
-                  </button>
-                </form>
-              </TabsContent>
-
-              {/* ── Create Tab ── */}
-              <TabsContent value="create" className="px-5 pb-5 pt-4">
-                <p
-                  className="synthi-body text-sm mb-4"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  Create a new repository on GitHub and open it in a cloud
-                  workspace.
-                </p>
-                <form onSubmit={handleCreateRepo} className="space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {/* Repo Name */}
-                    <div className="space-y-1.5">
-                      <label
-                        className="synthi-label"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        Repository name
+                  <div className="grid min-h-[280px] gap-5 md:grid-cols-[minmax(0,1fr)_260px]">
+                    <div className="flex flex-col justify-center rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_52%,transparent)] p-5">
+                      <Github className="mb-6 h-8 w-8 text-[var(--text-secondary)]" />
+                      <label>
+                        <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                          Repository URL
+                        </span>
+                        <input
+                          type="text"
+                          placeholder="https://github.com/owner/repo.git"
+                          value={repoUrl}
+                          onChange={(event) => setRepoUrl(event.target.value)}
+                          disabled={isActionLoading}
+                          className="h-12 w-full rounded-lg border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
+                        />
                       </label>
+                      <button
+                        type="submit"
+                        disabled={importing || !repoUrl.trim()}
+                        className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[var(--text-primary)] px-4 text-sm font-semibold text-[var(--bg-app)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+                        Import and open
+                      </button>
+                    </div>
+                    <div className="rounded-lg border border-[var(--border-subtle)] p-5">
+                      <div className="mb-5 flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--bg-surface)]">
+                        <GitBranch className="h-5 w-5 text-[var(--text-secondary)]" />
+                      </div>
+                      <h3 className="font-semibold">Imported workspaces are temporary entries.</h3>
+                      <p className="mt-3 text-sm leading-6 text-[var(--text-muted)]">
+                        They open in the editor after clone, but the dashboard recent list only tracks AI-created workspaces.
+                      </p>
+                    </div>
+                  </div>
+                </motion.form>
+              )}
+
+              {activeTab === "create" && (
+                <motion.form
+                  key="create"
+                  onSubmit={handleCreateRepo}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.18 }}
+                  className="space-y-5 p-5"
+                >
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label>
+                      <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                        Repository name
+                      </span>
                       <input
                         type="text"
-                        placeholder="my-project"
+                        placeholder="my-ai-project"
                         value={newRepoName}
-                        onChange={(e) => setNewRepoName(e.target.value)}
+                        onChange={(event) => setNewRepoName(event.target.value)}
                         disabled={isActionLoading}
-                        className="th-input w-full h-10 px-3 rounded-lg text-sm outline-none transition-colors synthi-focus-ring"
-                        style={{
-                          background: "var(--bg-app)",
-                          color: "var(--text-primary)",
-                          border: "1px solid var(--border-medium)",
-                        }}
+                        className="h-11 w-full rounded-lg border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
                       />
-                    </div>
-
-                    {/* Visibility */}
-                    <div className="space-y-1.5">
-                      <label
-                        className="synthi-label"
-                        style={{ color: "var(--text-muted)" }}
-                      >
+                    </label>
+                    <div>
+                      <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
                         Visibility
-                      </label>
-                      <div className="flex gap-2 h-10">
+                      </span>
+                      <div className="grid h-11 grid-cols-2 gap-2">
                         <button
                           type="button"
                           onClick={() => setNewRepoPrivate(true)}
                           disabled={isActionLoading}
-                          className="flex-1 h-full flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-all cursor-pointer"
+                          className="flex items-center justify-center gap-2 rounded-lg border text-sm font-medium transition disabled:opacity-40"
                           style={{
+                            borderColor: newRepoPrivate ? "var(--attention-purple)" : "var(--border-medium)",
                             background: newRepoPrivate
-                              ? "color-mix(in srgb, var(--accent-primary) 15%, transparent)"
+                              ? "color-mix(in srgb, var(--attention-purple) 14%, transparent)"
                               : "var(--bg-app)",
-                            border: `1px solid ${
-                              newRepoPrivate
-                                ? "var(--accent-primary)"
-                                : "var(--border-medium)"
-                            }`,
-                            color: newRepoPrivate
-                              ? "var(--accent-tertiary)"
-                              : "var(--text-muted)",
+                            color: newRepoPrivate ? "var(--text-primary)" : "var(--text-muted)",
                           }}
                         >
-                          <Lock className="h-3.5 w-3.5" /> Private
+                          <Lock className="h-4 w-4" />
+                          Private
                         </button>
                         <button
                           type="button"
                           onClick={() => setNewRepoPrivate(false)}
                           disabled={isActionLoading}
-                          className="flex-1 h-full flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-all cursor-pointer"
+                          className="flex items-center justify-center gap-2 rounded-lg border text-sm font-medium transition disabled:opacity-40"
                           style={{
+                            borderColor: !newRepoPrivate ? "var(--attention-purple)" : "var(--border-medium)",
                             background: !newRepoPrivate
-                              ? "color-mix(in srgb, var(--accent-primary) 15%, transparent)"
+                              ? "color-mix(in srgb, var(--attention-purple) 14%, transparent)"
                               : "var(--bg-app)",
-                            border: `1px solid ${
-                              !newRepoPrivate
-                                ? "var(--accent-primary)"
-                                : "var(--border-medium)"
-                            }`,
-                            color: !newRepoPrivate
-                              ? "var(--accent-tertiary)"
-                              : "var(--text-muted)",
+                            color: !newRepoPrivate ? "var(--text-primary)" : "var(--text-muted)",
                           }}
                         >
-                          <Globe className="h-3.5 w-3.5" /> Public
+                          <Globe className="h-4 w-4" />
+                          Public
                         </button>
                       </div>
                     </div>
                   </div>
 
-                  {/* Description */}
-                  <div className="space-y-1.5">
-                    <label
-                      className="synthi-label"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      Description{" "}
-                      <span style={{ color: "var(--text-dim)" }}>
-                        (optional)
-                      </span>
-                    </label>
+                  <label className="block">
+                    <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                      Description
+                    </span>
                     <input
                       type="text"
-                      placeholder="A short description of your project"
+                      placeholder="Short project summary"
                       value={newRepoDesc}
-                      onChange={(e) => setNewRepoDesc(e.target.value)}
+                      onChange={(event) => setNewRepoDesc(event.target.value)}
                       disabled={isActionLoading}
-                      className="th-input w-full h-10 px-3 rounded-lg text-sm outline-none transition-colors synthi-focus-ring"
-                      style={{
-                        background: "var(--bg-app)",
-                        color: "var(--text-primary)",
-                        border: "1px solid var(--border-medium)",
-                      }}
+                      className="h-11 w-full rounded-lg border border-[var(--border-medium)] bg-[var(--bg-app)] px-3 text-sm outline-none transition focus:border-[var(--attention-purple)]"
                     />
-                  </div>
+                  </label>
 
-                  {/* AI Jumpstart */}
                   <AIJumpstartSection
                     enabled={aiJumpstart}
-                    onEnabledChange={(v) => {
-                      setAiJumpstart(v);
-                      if (!v) setAiProjectType(null);
+                    onEnabledChange={(value) => {
+                      setAiJumpstart(value);
+                      if (!value) setAiProjectType(null);
                     }}
                     prompt={aiPrompt}
                     onPromptChange={setAiPrompt}
@@ -680,156 +1059,97 @@ export default function Dashboard() {
                     disabled={isActionLoading}
                   />
 
-                  {/* Submit */}
-                  <div className="flex justify-end pt-1">
+                  <div className="flex justify-end">
                     <button
                       type="submit"
                       disabled={creating || !newRepoName.trim() || (aiJumpstart && (!aiProjectType || !aiPrompt.trim()))}
-                      className="synthi-btn h-10 px-5 rounded-lg text-sm font-medium flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                      className="flex h-11 items-center gap-2 rounded-lg bg-[var(--attention-purple)] px-5 text-sm font-semibold text-[var(--text-primary)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      {creating ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : aiJumpstart ? (
-                        <>
-                          <Sparkles className="h-3.5 w-3.5" /> Create &amp; Jumpstart
-                        </>
-                      ) : (
-                        <>
-                          <Plus className="h-3.5 w-3.5" /> Create &amp; Open
-                        </>
-                      )}
+                      {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                      {aiJumpstart ? "Create AI workspace" : "Create and open"}
                     </button>
                   </div>
-                </form>
-              </TabsContent>
-            </Tabs>
+                </motion.form>
+              )}
+            </AnimatePresence>
           </div>
         </section>
 
-        {/* ── Workspaces Section ── */}
-        <section>
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-2">
-              <GitBranch
-                className="h-4 w-4"
-                style={{ color: "var(--accent-primary)" }}
-              />
-              <h2 className="synthi-heading text-base">Your Workspaces</h2>
-            </div>
-            <span className="synthi-pill">
-              {workspaces.length}{" "}
-              {workspaces.length === 1 ? "workspace" : "workspaces"}
-            </span>
-          </div>
-
-          {loadingWorkspaces ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {[1, 2, 3].map((i) => (
-                <div
-                  key={i}
-                  className="synthi-card p-5 space-y-3"
-                  style={{ borderRadius: 12 }}
-                >
-                  <div
-                    className="synthi-loading h-4 rounded"
-                    style={{ width: "60%" }}
-                  />
-                  <div
-                    className="synthi-loading h-3 rounded"
-                    style={{ width: "40%" }}
-                  />
-                </div>
-              ))}
-            </div>
-          ) : workspaces.length === 0 ? (
-            <div
-              className="synthi-card flex flex-col items-center justify-center py-16 gap-3"
-              style={{ borderRadius: 12 }}
+        <aside className="space-y-5">
+          {lastWorkspace?.slug && (
+            <motion.button
+              type="button"
+              onClick={() => router.push(`/${lastWorkspace.slug}`)}
+              className="w-full rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_86%,transparent)] p-4 text-left shadow-xl"
+              whileHover={{ y: -2 }}
+              transition={{ duration: 0.16 }}
             >
-              <FolderGit2
-                className="h-10 w-10"
-                style={{ color: "var(--text-dim)" }}
-              />
-              <p style={{ color: "var(--text-muted)", fontSize: 14 }}>
-                No workspaces yet
-              </p>
-              <p style={{ color: "var(--text-dim)", fontSize: 12 }}>
-                Import or create a repository to get started
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {workspaces.map((ws) => (
-                <button
-                  key={ws.slug}
-                  onClick={() => router.push(`/${ws.slug}`)}
-                  className="synthi-card group text-left p-5 transition-all duration-200 cursor-pointer"
-                  style={{
-                    borderRadius: 12,
-                    border: "1px solid var(--border-subtle)",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = "var(--accent-primary)";
-                    e.currentTarget.style.boxShadow = "var(--shadow-glow)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = "var(--border-subtle)";
-                    e.currentTarget.style.boxShadow = "none";
-                  }}
-                >
-                  {/* Workspace name */}
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <FolderGit2
-                        className="h-4 w-4 shrink-0"
-                        style={{ color: "var(--accent-primary)" }}
-                      />
-                      <span
-                        className="font-medium text-sm truncate"
-                        style={{ color: "var(--text-primary)" }}
-                      >
-                        {ws.name || "Workspace"}
-                      </span>
-                    </div>
-                    <ArrowRight
-                      className="h-3.5 w-3.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                      style={{ color: "var(--accent-primary)" }}
-                    />
-                  </div>
-
-                  {/* Slug */}
-                  <div className="mb-3">
-                    <span
-                      className="font-mono text-xs px-2 py-0.5 rounded"
-                      style={{
-                        background: "var(--bg-app)",
-                        color: "var(--text-dim)",
-                        border: "1px solid var(--border-subtle)",
-                      }}
-                    >
-                      {ws.slug}
-                    </span>
-                  </div>
-
-                  {/* Date */}
-                  <div className="flex items-center gap-1.5">
-                    <Clock
-                      className="h-3 w-3"
-                      style={{ color: "var(--text-dim)" }}
-                    />
-                    <span
-                      className="text-xs"
-                      style={{ color: "var(--text-dim)" }}
-                    >
-                      {ws.createdAt ? relativeTime(ws.createdAt) : "Unknown"}
-                    </span>
-                  </div>
-                </button>
-              ))}
-            </div>
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <Home className="h-4 w-4 text-[var(--attention-purple)]" />
+                  Return
+                </div>
+                <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
+              </div>
+              <div className="truncate text-sm text-[var(--text-secondary)]">
+                {lastWorkspace.name || lastWorkspace.slug}
+              </div>
+              <div className="mt-1 font-mono text-xs text-[var(--text-dim)]">{lastWorkspace.slug}</div>
+            </motion.button>
           )}
-        </section>
-      </main>
-    </div>
+
+          <section className="rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_86%,transparent)] p-4 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold">Recent workspaces</h2>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">AI-created only</p>
+              </div>
+              <span className="rounded-md border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-muted)]">
+                {workspaces.length}
+              </span>
+            </div>
+
+            {loadingWorkspaces ? (
+              <div className="space-y-2">
+                {[1, 2, 3].map((item) => (
+                  <div key={item} className="h-16 animate-pulse rounded-lg bg-[var(--bg-surface)]" />
+                ))}
+              </div>
+            ) : workspaces.length === 0 ? (
+              <div className="rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_50%,transparent)] p-4">
+                <FolderGit2 className="mb-3 h-5 w-5 text-[var(--text-muted)]" />
+                <p className="text-sm text-[var(--text-secondary)]">No recent AI workspaces yet.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {workspaces.map((workspace) => (
+                  <motion.button
+                    key={workspace.slug}
+                    type="button"
+                    onClick={() => router.push(`/${workspace.slug}`)}
+                    className="group w-full rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_46%,transparent)] p-3 text-left transition hover:border-[var(--attention-purple)]"
+                    whileHover={{ x: 2 }}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-[var(--text-primary)]">
+                          {workspace.name || "Workspace"}
+                        </div>
+                        <div className="mt-1 truncate font-mono text-xs text-[var(--text-dim)]">{workspace.slug}</div>
+                      </div>
+                      <ArrowRight className="h-4 w-4 shrink-0 text-[var(--text-muted)] opacity-0 transition group-hover:opacity-100" />
+                    </div>
+                    <div className="mt-3 flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
+                      <Clock className="h-3.5 w-3.5" />
+                      {workspace.createdAt ? relativeTime(workspace.createdAt) : "Unknown"}
+                    </div>
+                  </motion.button>
+                ))}
+              </div>
+            )}
+          </section>
+        </aside>
+      </div>
+    </main>
   );
 }
