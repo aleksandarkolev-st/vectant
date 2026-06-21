@@ -34,6 +34,8 @@ describe('buildDefaultPrograms', () => {
     expect(dbeaver.webGui).toBe(true);
     expect(dbeaver.ports).toEqual([6901]);
     expect(dbeaver.launch).toMatch(/^docker run .*-p 6901:6901/);
+    // Mounts the workspace so DBeaver reads/writes the same /workspace files as the editor.
+    expect(dbeaver.launch).toContain('-v "$PWD":/workspace -w /workspace');
     expect(dbeaver.permissions).toContain('ports.expose');
   });
 

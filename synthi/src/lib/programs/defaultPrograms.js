@@ -11,6 +11,7 @@
 
 import { parseProgramManifest } from './manifest';
 import { importDevcontainer } from './devcontainer';
+import { workspaceMountFlags } from './workspaceMount';
 
 const WEB_SCOPES = ['program.launch', 'network.outbound', 'ports.expose'];
 
@@ -110,7 +111,7 @@ export const DEFAULT_PROGRAM_RECIPES = [
       // by the runtime port monitor and surfaced via the slice-1 proxy.
       runtimeType: 'container', webGui: true,
       install: [],
-      launch: `docker run --rm --name vectant-dbeaver -p ${DBEAVER_PORT}:${DBEAVER_PORT} ${DBEAVER_IMAGE}`,
+      launch: `docker run --rm --name vectant-dbeaver -p ${DBEAVER_PORT}:${DBEAVER_PORT} ${workspaceMountFlags()} ${DBEAVER_IMAGE}`,
       ports: [DBEAVER_PORT],
       permissions: ['program.launch', 'network.outbound', 'ports.expose'],
     },
