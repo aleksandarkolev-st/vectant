@@ -85,7 +85,7 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="relative min-h-[100dvh] overflow-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
+    <main className="relative min-h-[100dvh] overflow-x-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 opacity-[0.06]"
@@ -97,12 +97,12 @@ export default function LoginPage() {
         }}
       />
 
-      <section className="relative mx-auto grid min-h-[100dvh] w-full max-w-7xl items-center gap-6 px-5 py-6 md:px-8 lg:grid-cols-[minmax(0,1fr)_410px]">
+      <section className="relative mx-auto grid min-h-[100dvh] w-full max-w-7xl items-start gap-5 px-4 py-5 sm:px-5 sm:py-6 md:px-8 lg:grid-cols-[minmax(0,1fr)_410px] lg:items-center">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.22 }}
-          className="hidden min-h-[560px] flex-col justify-between rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_88%,transparent)] p-5 lg:flex"
+          className="hidden min-h-[520px] flex-col justify-between rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_88%,transparent)] p-5 lg:flex xl:min-h-[560px]"
         >
           <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-4">
             <img src="/vectant-dark-theme.png" alt="Vectant" className="h-8 w-auto" />
@@ -168,7 +168,7 @@ export default function LoginPage() {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.2, delay: 0.04 }}
-          className="mx-auto w-full max-w-[410px] rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_94%,transparent)] p-5"
+          className="mx-auto w-full max-w-[410px] rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_94%,transparent)] p-4 sm:p-5"
         >
           <div className="mb-6 flex items-start justify-between gap-5 border-b border-[var(--border-subtle)] pb-5">
             <div>

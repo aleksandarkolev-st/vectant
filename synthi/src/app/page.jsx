@@ -657,10 +657,10 @@ export default function Dashboard() {
 
   if (!session) {
     return (
-      <main className="min-h-[100dvh] overflow-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
-        <section className="relative mx-auto flex min-h-[100dvh] w-full max-w-6xl items-center px-6 py-12">
+      <main className="min-h-[100dvh] overflow-x-hidden bg-[var(--bg-app)] text-[var(--text-primary)]">
+        <section className="relative mx-auto flex min-h-[100dvh] w-full max-w-6xl items-start px-4 py-5 sm:px-6 sm:py-8 lg:items-center lg:py-10">
           <div className="grid w-full gap-6 lg:grid-cols-[minmax(0,1fr)_390px] lg:items-stretch">
-            <div className="flex min-h-[500px] flex-col justify-between rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_88%,transparent)] p-5">
+            <div className="order-2 flex min-h-[420px] flex-col justify-between rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_88%,transparent)] p-4 sm:min-h-[500px] sm:p-5 lg:order-1">
               <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-4">
                 <img src="/vectant-dark-theme.png" alt="Vectant" className="h-8 w-auto" />
                 <span className="rounded-md border border-[var(--border-subtle)] px-2.5 py-1.5 font-mono text-[11px] text-[var(--text-muted)]">
@@ -695,7 +695,7 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_92%,transparent)] p-5">
+            <div className="order-1 rounded-lg border border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-editor)_92%,transparent)] p-4 sm:p-5 lg:order-2">
               <div className="mb-5 border-b border-[var(--border-subtle)] pb-5">
                 <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--border-medium)] bg-[var(--bg-surface)]">
                   <KeyRound className="h-5 w-5 text-[var(--attention-purple)]" />
@@ -1016,7 +1016,7 @@ export default function Dashboard() {
                       event.preventDefault();
                       fileInputRef.current?.click();
                     }}
-                    className="th-focus-ring relative flex min-h-[240px] flex-col items-start justify-center overflow-hidden rounded-md border border-dashed p-5 text-left transition"
+                    className="th-focus-ring relative flex min-h-[190px] flex-col items-start justify-center overflow-hidden rounded-md border border-dashed p-4 text-left transition sm:min-h-[240px] sm:p-5"
                     style={{
                       borderColor: isDraggingFiles ? "var(--attention-purple)" : "var(--border-strong)",
                       background: isDraggingFiles

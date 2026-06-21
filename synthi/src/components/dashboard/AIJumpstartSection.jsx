@@ -298,8 +298,9 @@ export default function AIJumpstartSection({
         aria-hidden={!enabled}
         className="overflow-hidden transition-all duration-200 ease-in-out"
         style={{
-          maxHeight: enabled ? 600 : 0,
+          maxHeight: enabled ? "min(720px, calc(100dvh - 180px))" : 0,
           opacity: enabled ? 1 : 0,
+          overflowY: enabled ? "auto" : "hidden",
         }}
       >
         <div
