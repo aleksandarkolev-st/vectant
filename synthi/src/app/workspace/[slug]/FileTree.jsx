@@ -591,6 +591,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
         onRightMouseButtonClick={setContextTarget}
         onExternalFilesDrop={handleExternalFilesDrop}
         onExternalFolderDragTarget={handleExternalFolderDragTarget}
+        isExternalFolderDropTarget={externalDropTargetFolder === row.item.path}
         uiActionState={uiActionState}
         dispatch={dispatch}
         handleKeyDown={handleKeyDown}
@@ -598,7 +599,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
         shallow
       />
     );
-  }, [flatNodes, isTreeHovered, activeFolderPath, onFileSelectHandler, activeFile, handleTreeAction, handleExternalFilesDrop, handleExternalFolderDragTarget, uiActionState, dispatch, handleKeyDown, handleBlur, isCreatingFolder, name]);
+  }, [flatNodes, isTreeHovered, activeFolderPath, onFileSelectHandler, activeFile, handleTreeAction, handleExternalFilesDrop, handleExternalFolderDragTarget, externalDropTargetFolder, uiActionState, dispatch, handleKeyDown, handleBlur, isCreatingFolder, name]);
 
   return (
     <ContextMenu
@@ -703,7 +704,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
             />
           </div>
 
-          {isExternalDropActive && (
+          {isExternalDropActive && !externalDropTargetFolder && (
             <div
               data-testid="workspace-file-drop-overlay"
               className="pointer-events-none absolute inset-2 z-[2] flex items-center justify-center rounded-lg border border-dashed px-4 text-center"

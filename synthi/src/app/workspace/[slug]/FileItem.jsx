@@ -32,6 +32,7 @@ function fileItemAreEqual(prev, next) {
     prev.onAction !== next.onAction ||
     prev.onExternalFilesDrop !== next.onExternalFilesDrop ||
     prev.onExternalFolderDragTarget !== next.onExternalFolderDragTarget ||
+    prev.isExternalFolderDropTarget !== next.isExternalFolderDropTarget ||
     prev.uiActionState !== next.uiActionState ||
     prev.dispatch !== next.dispatch ||
     prev.handleKeyDown !== next.handleKeyDown ||
@@ -65,6 +66,7 @@ const FileItem = memo(({
   onRightMouseButtonClick,
   onExternalFilesDrop,
   onExternalFolderDragTarget,
+  isExternalFolderDropTarget = false,
   uiActionState,
   dispatch,
   handleKeyDown,
@@ -444,6 +446,7 @@ useEffect(() => {
 
   const [isDropTarget, setIsDropTarget] = useState(false);
   const [isExternalDropTarget, setIsExternalDropTarget] = useState(false);
+  const showExternalDropLine = item.isFolder && (isExternalDropTarget || isExternalFolderDropTarget);
 
   const hasExternalFiles = (e) => Array.from(e.dataTransfer?.types || []).includes("Files");
 
@@ -542,9 +545,6 @@ useEffect(() => {
           ...(isDropTarget
             ? { background: 'color-mix(in srgb, var(--attention-purple) 18%, transparent)', outline: '1px solid var(--attention-purple)' }
             : {}),
-          ...(isExternalDropTarget
-            ? { background: 'color-mix(in srgb, var(--accent-success) 14%, transparent)', outline: '1px solid color-mix(in srgb, var(--accent-success) 70%, transparent)' }
-            : {}),
         }}
         onClick={handleClick}
         onContextMenu={handleClick}
@@ -560,6 +560,25 @@ useEffect(() => {
             style={{
               background: 'var(--brand-gradient)',
               boxShadow: '0 0 10px -2px color-mix(in srgb, var(--brand-stop-3) 55%, transparent)',
+            }}
+          />
+        )}
+        {showExternalDropLine && (
+          <span
+            data-testid="workspace-folder-drop-line"
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-0 left-2.5 right-2.5 h-[2px] rounded-t-full"
+            style={{
+              backgroundImage: [
+                'var(--brand-gradient-horizontal)',
+                'linear-gradient(90deg, color-mix(in srgb, var(--text-muted) 72%, transparent), color-mix(in srgb, var(--text-muted) 72%, transparent))',
+              ].join(', '),
+              backgroundRepeat: 'no-repeat, no-repeat',
+              backgroundPosition: 'left bottom, left bottom',
+              backgroundSize: '100% 100%, 100% 100%',
+              boxShadow: '0 0 8px -2px color-mix(in srgb, var(--brand-stop-3) 55%, transparent)',
+              transformOrigin: 'left center',
+              animation: 'file-folder-drop-line 160ms cubic-bezier(0.25, 1, 0.5, 1) both',
             }}
           />
         )}
