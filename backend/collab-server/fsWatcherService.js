@@ -31,6 +31,31 @@ const DEBOUNCE_MS = 500;
 /** Max events per batch (prevent massive payloads from npm install etc.) */
 const MAX_EVENTS_PER_BATCH = 50;
 
+/**
+ * Polling fallback (cross-writer detection). fs.watch/inotify does NOT fire for
+ * writes made by ANOTHER pod/container on the shared volume — e.g. a program
+ * container writing under /workspace — so the inotify path never sees them. When
+ * enabled, each active watcher ALSO stat-diffs its tree on an interval and emits
+ * the SAME fs-change events for anything that changed since the last snapshot.
+ * Opt-in + env-gated so it is a no-op when off (byte-for-byte current behavior).
+ */
+const DEFAULT_FS_POLL_INTERVAL_MS = 2000;
+/** Floor so a misconfigured tiny interval can't hot-loop the stat walk. */
+const MIN_FS_POLL_INTERVAL_MS = 250;
+
+/** True when the polling fallback is enabled (off by default). */
+function isFsPollingEnabled() {
+  const v = process.env.SYNTHI_FS_POLL_ENABLED;
+  return v === '1' || v === 'true';
+}
+
+/** Poll interval in ms (default 2000, env-overridable, floored). */
+function getFsPollIntervalMs() {
+  const raw = Number(process.env.SYNTHI_FS_POLL_INTERVAL_MS);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_FS_POLL_INTERVAL_MS;
+  return Math.max(MIN_FS_POLL_INTERVAL_MS, raw);
+}
+
 /** Directories to completely ignore (never watch or report changes in) */
 const IGNORED_DIRS = new Set([
   'node_modules',
@@ -289,8 +314,18 @@ function watchWorkspace(slug, rootDir, onChange) {
     debounceTimer: null,
     listeners: new Set([onChange]),
     rootDir,
+    snapshot: null,   // polling-fallback baseline (seeded on first poll cycle)
+    pollTimer: null,
   };
   activeWatchers.set(slug, entry);
+
+  // Polling fallback: stat-diff the tree on an interval to catch writes inotify
+  // misses (another pod/container writing the shared volume). Ref-counted with
+  // the watcher (cleared on close); unref'd so it never keeps the process alive.
+  if (isFsPollingEnabled()) {
+    entry.pollTimer = setInterval(() => runPollCycle(slug), getFsPollIntervalMs());
+    if (entry.pollTimer.unref) entry.pollTimer.unref();
+  }
 
   // ── Handle events ─────────────────────────────────────────────────────
   watcher.on('change', (eventType, filename) => {
@@ -371,16 +406,25 @@ async function flushEvents(slug) {
 
   if (classified.length === 0) return;
 
+  dispatchChange(slug, entry, classified);
+}
+
+/**
+ * Emit a change batch to BOTH the global change listeners (server.js consumers:
+ * Y-Sweet invalidation + git refresh, shape `{ slug, rootDir, events }`) and the
+ * per-watcher listeners (tree-refresh broadcast, shape `{ type:'fs-change', ... }`).
+ * Shared by the inotify flush and the polling fallback so they emit identically.
+ */
+function dispatchChange(slug, entry, events) {
   for (const listener of globalChangeListeners) {
     try {
-      listener({ slug, rootDir: entry.rootDir, events: classified });
+      listener({ slug, rootDir: entry.rootDir, events });
     } catch (err) {
       console.error(`[FSWatch] Global listener error:`, err.message);
     }
   }
 
-  // Broadcast to all listeners
-  const message = { type: 'fs-change', slug, events: classified };
+  const message = { type: 'fs-change', slug, events };
   for (const listener of entry.listeners) {
     try {
       listener(message);
@@ -388,6 +432,106 @@ async function flushEvents(slug) {
       console.error(`[FSWatch] Listener error:`, err.message);
     }
   }
+}
+
+// ─── Polling fallback ─────────────────────────────────────────────────────────
+
+/**
+ * Recursively snapshot a directory tree into a Map<relPath, {mtimeMs,size,isDir}>.
+ * Honors the same ignore rules as the inotify path: skips everything inside an
+ * ignored dir (but records the top-level dir itself, mirroring shouldIgnore) and
+ * never descends into IGNORED_DIRS. Best-effort — unreadable entries are skipped.
+ */
+function buildDirSnapshot(rootDir) {
+  const snapshot = new Map();
+  const walk = (absDir, relBase) => {
+    let dirents;
+    try {
+      dirents = fs.readdirSync(absDir, { withFileTypes: true });
+    } catch (_) {
+      return;
+    }
+    for (const dirent of dirents) {
+      const rel = relBase ? `${relBase}/${dirent.name}` : dirent.name;
+      if (shouldIgnore(rel)) continue;
+      const abs = path.join(absDir, dirent.name);
+      let stat;
+      try {
+        stat = fs.statSync(abs);
+      } catch (_) {
+        continue;
+      }
+      const isDir = stat.isDirectory();
+      snapshot.set(rel, { mtimeMs: stat.mtimeMs, size: stat.size, isDir });
+      if (isDir && !IGNORED_DIRS.has(dirent.name)) walk(abs, rel);
+    }
+  };
+  walk(rootDir, '');
+  return snapshot;
+}
+
+/**
+ * Pure diff of two tree snapshots → fs-change events. Added/modified entries are
+ * classified `dir`/`file` from the new snapshot; removed entries are `deleted`.
+ * Same event shape the inotify path produces (see classifyEvent).
+ */
+function diffSnapshots(prev, next) {
+  const events = [];
+  for (const [rel, meta] of next) {
+    const before = prev.get(rel);
+    if (!before) {
+      events.push({ path: rel, kind: meta.isDir ? 'dir' : 'file' });
+    } else if (before.mtimeMs !== meta.mtimeMs || before.size !== meta.size) {
+      events.push({ path: rel, kind: meta.isDir ? 'dir' : 'file' });
+    }
+  }
+  for (const [rel] of prev) {
+    if (!next.has(rel)) events.push({ path: rel, kind: 'deleted' });
+  }
+  return events;
+}
+
+/**
+ * Diff two snapshots and apply the same suppression rules as the inotify flush:
+ * fully suppressed while paused (git op), ignored paths + staging-locked paths
+ * dropped, and collapsed to a single bulk event past MAX_EVENTS_PER_BATCH.
+ */
+function computePollEvents(slug, prev, next) {
+  if (isWatcherPaused(slug)) return [];
+  const filtered = diffSnapshots(prev, next).filter(
+    (e) => !shouldIgnore(e.path) && !isStagingLocked(slug, e.path),
+  );
+  if (filtered.length > MAX_EVENTS_PER_BATCH) {
+    return [{ path: '/', kind: 'bulk' }];
+  }
+  return filtered;
+}
+
+/**
+ * One polling cycle for a watcher: re-snapshot the tree, diff against the stored
+ * baseline, advance the baseline, and dispatch any events the SAME way the
+ * inotify flush does. The first cycle only seeds the baseline (returns []).
+ * `snapshotFn` is injectable for tests; defaults to the real recursive walk.
+ * @returns {{path:string,kind:string}[]} the dispatched events
+ */
+function runPollCycle(slug, snapshotFn) {
+  const entry = activeWatchers.get(slug);
+  if (!entry) return [];
+  const build = snapshotFn || buildDirSnapshot;
+  let next;
+  try {
+    next = build(entry.rootDir);
+  } catch (_) {
+    return [];
+  }
+  const prev = entry.snapshot;
+  // Advance the baseline every cycle (incl. while paused) so churn that happened
+  // during a git pause is absorbed, not replayed when the pause lifts.
+  entry.snapshot = next;
+  if (!prev) return [];
+  const events = computePollEvents(slug, prev, next);
+  if (events.length > 0) dispatchChange(slug, entry, events);
+  return events;
 }
 
 /**
@@ -403,6 +547,7 @@ function unwatchListener(slug, onChange) {
   if (entry.refCount <= 0) {
     console.log(`[FSWatch] Closing watcher for "${slug}" (no more refs)`);
     if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
+    if (entry.pollTimer) clearInterval(entry.pollTimer);
     try { entry.watcher.close(); } catch (_) {}
     activeWatchers.delete(slug);
   }
@@ -414,6 +559,7 @@ function unwatchListener(slug, onChange) {
 function stopAll() {
   for (const [slug, entry] of activeWatchers) {
     if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
+    if (entry.pollTimer) clearInterval(entry.pollTimer);
     try { entry.watcher.close(); } catch (_) {}
   }
   activeWatchers.clear();
@@ -433,6 +579,13 @@ module.exports = {
   pauseWatcher,
   resumeWatcher,
   isWatcherPaused,
+  // Polling fallback (cross-writer detection)
+  isFsPollingEnabled,
+  getFsPollIntervalMs,
+  buildDirSnapshot,
+  diffSnapshots,
+  computePollEvents,
+  runPollCycle,
 };
 
 function registerChangeListener(listener) {
