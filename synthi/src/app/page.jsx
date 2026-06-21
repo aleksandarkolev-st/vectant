@@ -212,6 +212,41 @@ function modeTitle(mode) {
   }
 }
 
+function workspaceSourceMeta(workspace) {
+  const source = String(workspace?.source || "").toLowerCase();
+  if (source.includes("local") || source.includes("upload") || source.includes("file")) {
+    return { label: "Files", Icon: FileArchive };
+  }
+  if (source.includes("ai") || source.includes("agent")) {
+    return { label: "Agent", Icon: Command };
+  }
+  if (source.includes("import") || source.includes("git") || source.includes("repo") || workspace?.repoUrl) {
+    return { label: "Repo", Icon: FolderGit2 };
+  }
+  return { label: "Workspace", Icon: Layers3 };
+}
+
+function workspaceStatusLabel(workspace) {
+  if (workspace?.status) return String(workspace.status);
+  if (workspace?.showInRecent === false) return "Hidden";
+  return "Ready";
+}
+
+function workspaceActivityTime(workspace, lastWorkspace) {
+  if (lastWorkspace?.slug && lastWorkspace.slug === workspace?.slug && lastWorkspace.updatedAt) {
+    return { label: "Last opened", value: lastWorkspace.updatedAt };
+  }
+  const openedAt = workspace?.lastOpenedAt || workspace?.lastAccessedAt || workspace?.updatedAt;
+  if (openedAt) return { label: "Last opened", value: openedAt };
+  return { label: "Added", value: workspace?.createdAt || null };
+}
+
+function workspaceActivityMs(workspace) {
+  const value = workspace?.lastOpenedAt || workspace?.lastAccessedAt || workspace?.updatedAt || workspace?.createdAt;
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
 const workspaceSignals = [
   { icon: Server, label: "Runtime isolation", detail: "Scoped container worktrees" },
   { icon: Database, label: "State registry", detail: "Imports, uploads, creates saved" },
@@ -277,7 +312,8 @@ export default function Dashboard() {
       );
       if (res.ok) {
         const data = await res.json();
-        setWorkspaces(Array.isArray(data) ? data : []);
+        const nextWorkspaces = Array.isArray(data) ? data : [];
+        setWorkspaces([...nextWorkspaces].sort((a, b) => workspaceActivityMs(b) - workspaceActivityMs(a)));
       }
     } catch (e) {
       console.error("Failed to fetch recent workspaces", e);
@@ -1315,29 +1351,47 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="space-y-2">
-                {workspaces.map((workspace) => (
-                  <button
-                    key={workspace.slug}
-                    type="button"
-                    onClick={() => router.push(`/${workspace.slug}`)}
-                    aria-label={`Open workspace ${workspace.name || workspace.slug}`}
-                    className="th-focus-ring group w-full rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_46%,transparent)] p-3 text-left transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface)]"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-[var(--text-primary)]">
-                          {workspace.name || "Workspace"}
+                {workspaces.map((workspace) => {
+                  const source = workspaceSourceMeta(workspace);
+                  const SourceIcon = source.Icon;
+                  const activity = workspaceActivityTime(workspace, lastWorkspace);
+                  const statusLabel = workspaceStatusLabel(workspace);
+
+                  return (
+                    <button
+                      key={workspace.slug}
+                      type="button"
+                      onClick={() => router.push(`/${workspace.slug}`)}
+                      aria-label={`Open workspace ${workspace.name || workspace.slug}`}
+                      className="th-focus-ring group w-full rounded-lg border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_46%,transparent)] p-3 text-left transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface)]"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-[var(--text-primary)]">
+                            {workspace.name || "Workspace"}
+                          </div>
+                          <div className="mt-1 truncate font-mono text-xs text-[var(--text-dim)]">{workspace.slug}</div>
                         </div>
-                        <div className="mt-1 truncate font-mono text-xs text-[var(--text-dim)]">{workspace.slug}</div>
+                        <span className="shrink-0 rounded-md border border-[var(--border-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
+                          {statusLabel}
+                        </span>
                       </div>
-                      <ArrowRight className="h-4 w-4 shrink-0 text-[var(--text-muted)] opacity-0 transition group-hover:opacity-100" />
-                    </div>
-                    <div className="mt-3 flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
-                      <Clock className="h-3.5 w-3.5" />
-                      {workspace.createdAt ? relativeTime(workspace.createdAt) : "Unknown"}
-                    </div>
-                  </button>
-                ))}
+
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)]">
+                        <span className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--bg-app)_52%,transparent)] px-1.5 py-1">
+                          <SourceIcon className="h-3.5 w-3.5 text-[var(--attention-purple)]" />
+                          {source.label}
+                        </span>
+                        <span className="inline-flex min-w-0 items-center gap-1.5">
+                          <Clock className="h-3.5 w-3.5 shrink-0" />
+                          <span className="truncate">
+                            {activity.value ? `${activity.label} ${relativeTime(activity.value)}` : "Activity unknown"}
+                          </span>
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             )}
           </section>
