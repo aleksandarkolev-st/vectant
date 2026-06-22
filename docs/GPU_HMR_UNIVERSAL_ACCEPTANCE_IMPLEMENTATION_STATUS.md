@@ -23,9 +23,9 @@ Current strict matrix behavior deliberately downgrades older HIPRT warm visual a
 The latest generated machine-readable validation matrix ledger reports 25 rows: 9 full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 10 structured refusal rows, 1 preflight-only row, 3 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:23d6eee28cfeaa70120157e85e85ab854f08ce2663c2cdcd53f26cbe29f03172
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T190954Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T190954Z.md
+gpu-validation-matrix-ledger:sha256:ef73845314529bef75879f43807dfe71fccd545d05ede52205bdb33cc8ac14b7
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T192216Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T192216Z.md
 ```
 
 Current focused Flow/ray-light matrix:
@@ -94,6 +94,7 @@ Additional commits since the previous status pass:
 
 ```text
 ae6bbce3b fix(gpu-hmr): require HIPRT oracle-region proof
+ffe70a830 fix(gpu-hmr): ignore stale cold-only coverage targets
 76b89062f test(gpu-hmr): refresh wait proof fixture
 bddd1e7eb fix(gpu-hmr): require strict ledger materials in matrix
 f3a25f5df fix(gpu-hmr): embed visual ledger proof in split runs
@@ -214,9 +215,9 @@ Latest generated matrix artifact:
 
 ```text
 schema: synthi.gpu.hmr.validation_matrix_ledger.v1
-proof id: gpu-validation-matrix-ledger:sha256:23d6eee28cfeaa70120157e85e85ab854f08ce2663c2cdcd53f26cbe29f03172
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T190954Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T190954Z.md
+proof id: gpu-validation-matrix-ledger:sha256:ef73845314529bef75879f43807dfe71fccd545d05ede52205bdb33cc8ac14b7
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T192216Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T192216Z.md
 ```
 
 Matrix result:
@@ -281,7 +282,7 @@ OpenCL, Vulkan, and Bevy rows are evidence-backed refusals, not GPU HMR acceptan
 OIDN HIP is an evidence-backed refusal from the real 2026-06-22 checkout preflight; CPU OIDN diagnostics passed, HIP device creation/readback failed, and no shim/symlink/synthesized runtime was applied.
 HIPRT CameraRays is accepted only for the strict same-process ray-traced CameraRays profile. HIPRT MegaKernel direct-light-zero is a proven blank oracle-region refusal.
 The per-kernel/smallest-safe fission row is a deterministic fission verifier proof, not a full-runtime GPU HMR row. Runtime acceptance remains ledger-gated.
-The global `per_target_run_modes` plan row is still missing because older SAXPY and WebGPU rows do not carry the full cold/hot2/negative sequence. The focused latest Flow/ray-light matrix has per-target run modes accepted with no open gaps.
+The global `per_target_run_modes` plan row is still missing because older SAXPY, scoped HIPRT CameraRays, and scoped WebGPU rows do not carry the full cold/hot2/negative sequence. Stale cold-only artifacts no longer create phantom full-runtime target gaps. The focused latest Flow/ray-light matrix has per-target run modes accepted with no open gaps.
 ```
 
 Formatting note: `git diff --check` passed for the Rust fission patch. `cargo fmt --check` could not be run in the available builder-test image because rustfmt is not installed, and `cargo` is not installed on the Windows host.
@@ -319,7 +320,7 @@ node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix
-  current result: passed, matrix gpu-validation-matrix-ledger:sha256:23d6eee28cfeaa70120157e85e85ab854f08ce2663c2cdcd53f26cbe29f03172
+  current result: passed, matrix gpu-validation-matrix-ledger:sha256:ef73845314529bef75879f43807dfe71fccd545d05ede52205bdb33cc8ac14b7
 
 ray-light live MCP visual proof with hot-delta timing
   workspace: ray-light-gpu-hmr-proof-20260609-timing-matrix

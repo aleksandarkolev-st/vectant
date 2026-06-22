@@ -40,8 +40,8 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 22 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:23d6eee28cfeaa70120157e85e85ab854f08ce2663c2cdcd53f26cbe29f03172
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T190954Z.json
+global matrix: gpu-validation-matrix-ledger:sha256:ef73845314529bef75879f43807dfe71fccd545d05ede52205bdb33cc8ac14b7
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T192216Z.json
 global matrix summary: 25 rows, 9 full-runtime GPU HMR, 10 refusals, 3 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 focused Flow/ray-light matrix: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 focused matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-focused-flow-ray-light-20260622T181300Z.json
@@ -86,6 +86,7 @@ Latest implementation commits:
 
 ```text
 ae6bbce3b fix(gpu-hmr): require HIPRT oracle-region proof
+ffe70a830 fix(gpu-hmr): ignore stale cold-only coverage targets
 76b89062f test(gpu-hmr): refresh wait proof fixture
 bddd1e7eb fix(gpu-hmr): require strict ledger materials in matrix
 f3a25f5df fix(gpu-hmr): embed visual ledger proof in split runs
@@ -162,7 +163,7 @@ npm --prefix mcp/synthi-mcp run proof:external-project:self-check -> passed
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:23d6eee28cfeaa70120157e85e85ab854f08ce2663c2cdcd53f26cbe29f03172
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:ef73845314529bef75879f43807dfe71fccd545d05ede52205bdb33cc8ac14b7
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
@@ -739,7 +740,7 @@ These are generic hardening changes. They are not fixture-specific, and they do 
 ## Honest Remaining Work
 
 - Full-runtime Bevy acceptance is not implemented.
-- Focused Flow/ray-light per-target run-mode coverage is complete: cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit refusal all pass. The global matrix still has per-target run-mode gaps for older SAXPY and scoped WebGPU rows.
+- Focused Flow/ray-light per-target run-mode coverage is complete: cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit refusal all pass. The global matrix still has per-target run-mode gaps for older SAXPY, scoped HIPRT CameraRays, and scoped WebGPU rows; stale cold-only artifacts no longer create phantom full-runtime target gaps.
 - CUDA needs a CUDA machine.
 - OIDN HIP needs a ROCm-compatible OIDN HIP build; no ABI shortcut should be used.
 - OpenCL needs a real vendor ICD plus dispatch/event/readback ledger proof; no synthesized ICD or shim should be used.
