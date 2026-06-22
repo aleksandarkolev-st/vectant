@@ -574,6 +574,24 @@ await writeJson(path.join(visualDir, 'negative-edit-refusal.json'), {
   reasons: ['abi_compatibility_class_layout_changed', 'gpu_hmr_rejected_before_load'],
 });
 
+await writeJson(path.join(visualDir, 'stale-cold-only.json'), {
+  ...runModeProofBase,
+  targetId: 'stale-cold-only',
+  profileId: 'stale-cold-only',
+  proofId: 'agent-split-run-mode-proof:sha256:stale-cold-only',
+  coldSplitProven: true,
+  cold_split_proven: true,
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'cold',
+    cacheState: 'clean',
+    editId: 'initial-ai-split',
+    editHash: 'sha256:stale-cold-only',
+  },
+});
+
 const fissionManifest = {
   gpu: {
     vendor: 'rocm',
@@ -772,6 +790,8 @@ assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_2_evidence_missing'));
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:flow:hot_delta_2_different_edit_evidence_missing'));
 assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('negative_edit_refusal_evidence_missing'));
+assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:stale-cold-only:hot_delta_1_evidence_missing'));
+assert.ok(!coverageById.get('per_target_run_modes')?.openGaps.includes('hip:stale-cold-only:hot_delta_2_evidence_missing'));
 
 const coldRunMode = ledger.rows.find((row) =>
   row.targetId === 'flow' && row.proofMode === 'run_mode_proof' && row.runMode.metricScope === 'cold'

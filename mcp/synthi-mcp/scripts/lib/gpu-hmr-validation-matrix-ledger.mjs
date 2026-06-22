@@ -1789,7 +1789,9 @@ function validationRunModeCoverage(rows) {
   }
   for (const row of coldRows) {
     const key = `${row.backend}:${row.targetId}`;
-    rowsByTarget.set(key, [...(rowsByTarget.get(key) ?? []), row]);
+    if (rowsByTarget.has(key)) {
+      rowsByTarget.set(key, [...rowsByTarget.get(key), row]);
+    }
   }
   const openGaps = [];
   for (const [targetKey, targetRows] of rowsByTarget) {
