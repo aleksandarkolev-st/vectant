@@ -47,4 +47,19 @@ describe('getProgramSessionAppUrl', () => {
       getProgramSessionAppUrl(3000, { slug: 'my-repo', runtimeType: 'container', runtimeScope: 'ws-x:u2' }),
     ).toBe(`${BASE}/runtime/ws-x%3Au2/port/3000/`);
   });
+
+  // webGui (KasmVNC) App tab: noVNC otherwise dials ws://<host>/websockify (root),
+  // which the proxy can't route — hand it the proxied WS path so the stream connects.
+  // resize=scale makes noVNC zoom the framebuffer to fit the iframe (so the stream
+  // is resizeable, not scrollable, and fits an undocked floating frame).
+  it('appends the noVNC websocket path and resize=scale for a container App tab when vncPath is set', () => {
+    expect(
+      getProgramSessionAppUrl(6901, { slug: 'rfxr7ism', runtimeType: 'container', vncPath: true }),
+    ).toBe(`${BASE}/wsport/rfxr7ism/6901/?path=wsport/rfxr7ism/6901/websockify&resize=scale`);
+  });
+
+  it('vncPath is a no-op for non-container runtimes and when unset', () => {
+    expect(getProgramSessionAppUrl(6901, { slug: 'r', runtimeType: 'container' })).toBe(`${BASE}/wsport/r/6901/`);
+    expect(getProgramSessionAppUrl(3000, { runtimeType: 'web', vncPath: true })).toBe(`${BASE}/port/3000/`);
+  });
 });

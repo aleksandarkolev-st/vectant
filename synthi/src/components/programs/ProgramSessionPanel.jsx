@@ -116,7 +116,9 @@ export default function ProgramSessionPanel({ workspaceSlug, sessionId, title = 
   const [appPortOverride, setAppPortOverride] = useState(null);
   const effectiveWebPort = appPortOverride ?? session?.webPort ?? null;
   const appUrl = useMemo(
-    () => getProgramSessionAppUrl(effectiveWebPort, { slug: workspaceSlug, runtimeType: session?.runtimeType, runtimeScope: session?.runtimeScope }),
+    // vncPath: route KasmVNC's noVNC websocket through the /wsport proxy (it would
+    // otherwise dial ws://<host>/websockify at the root and fail with 1006).
+    () => getProgramSessionAppUrl(effectiveWebPort, { slug: workspaceSlug, runtimeType: session?.runtimeType, runtimeScope: session?.runtimeScope, vncPath: true }),
     [effectiveWebPort, workspaceSlug, session?.runtimeType, session?.runtimeScope],
   );
   const ports = Array.isArray(session?.activePorts) ? session.activePorts : [];
