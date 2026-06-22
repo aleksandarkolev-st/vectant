@@ -137,6 +137,10 @@ const containerPortProxy = ENABLE_CONTAINER_RUNTIME
         const spaceIdx = match.indexOf(' ');
         return runtimeContainerHost(match.slice(0, spaceIdx), match.slice(spaceIdx + 1));
       },
+      // Stream auto-login: hand the proxy the per-session KasmVNC credential so it
+      // injects Authorization: Basic for webGui desktop streams (DBeaver/Postman).
+      // Invoked at request time, after managedProgramRuntime is initialized.
+      resolveStreamAuth: (slug, port) => managedProgramRuntime.resolveStreamAuth(slug, port),
     })
   : null;
 
