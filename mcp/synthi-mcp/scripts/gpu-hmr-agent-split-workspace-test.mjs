@@ -1226,6 +1226,21 @@ async function readGeneratedSplit(vendor) {
   return { workspacePath, sidecarRaw, sidecar, manifest, roles, files };
 }
 
+async function refreshGeneratedSplitSidecar(split, filePath, source) {
+  const sidecarRaw = await readWorkerFile(split.workspacePath, '.synthi_split_meta.json');
+  const sidecar = JSON.parse(sidecarRaw);
+  const sourceBaselineProof = sourceBaselineProofFromSidecar(sidecarRaw, filePath, source);
+  if (!sourceBaselineProof.accepted) {
+    throw new Error(`generated split sidecar did not refresh compiler-emitted source baseline proof for ${filePath}: ${sourceBaselineProof.failures.join('|')}`);
+  }
+  split.sidecarRaw = sidecarRaw;
+  split.sidecar = sidecar;
+  if (sidecar.compile_manifest?.gpu) {
+    split.manifest = sidecar.compile_manifest;
+  }
+  return sourceBaselineProof;
+}
+
 function validateGeneratedSplit(split) {
   const core = split.files[split.roles.core] || '';
   const gui = split.files[split.roles.gui] || '';
@@ -1684,6 +1699,11 @@ async function compileGeneratedDevice(split, editedDevice, options = {}) {
     differentEdit: options.differentEdit === true,
     waitRecordLabel: options.waitRecordLabel,
   });
+  const refreshedSourceBaselineProof = await refreshGeneratedSplitSidecar(
+    split,
+    split.roles.device,
+    editedDevice,
+  );
   return {
     ...result,
     previousDevice,
@@ -1693,6 +1713,8 @@ async function compileGeneratedDevice(split, editedDevice, options = {}) {
     editId: options.editId ?? `device-edit:${sha256Hex(editHash).slice(0, 16)}`,
     editKind,
     sourceBaselineProof,
+    refreshedSourceBaselineProof,
+    refreshed_source_baseline_proof: refreshedSourceBaselineProof,
   };
 }
 
@@ -2336,6 +2358,8 @@ async function run() {
       device_edit_mutation: hotDelta1Edit.mutation,
       sourceBaselineProof: generatedDeviceResult.sourceBaselineProof,
       source_baseline_proof: generatedDeviceResult.sourceBaselineProof,
+      refreshedSourceBaselineProof: generatedDeviceResult.refreshedSourceBaselineProof,
+      refreshed_source_baseline_proof: generatedDeviceResult.refreshedSourceBaselineProof,
       visualArtifacts: visualDelta.visualArtifacts,
       visual_artifacts: visualDelta.visual_artifacts,
       visualMetrics: {
@@ -2437,6 +2461,8 @@ async function run() {
       device_edit_mutation: hotDelta2Edit.mutation,
       sourceBaselineProof: hotDelta2Result.sourceBaselineProof,
       source_baseline_proof: hotDelta2Result.sourceBaselineProof,
+      refreshedSourceBaselineProof: hotDelta2Result.refreshedSourceBaselineProof,
+      refreshed_source_baseline_proof: hotDelta2Result.refreshedSourceBaselineProof,
       visualArtifacts: hotDelta2VisualDelta.visualArtifacts,
       visual_artifacts: hotDelta2VisualDelta.visual_artifacts,
       visualMetrics: {
