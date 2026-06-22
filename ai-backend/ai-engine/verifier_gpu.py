@@ -359,7 +359,7 @@ _GPU_INIT_KERNEL_LAUNCH_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _SYNTHI_LAUNCH_RESULT_CHECK_RE = re.compile(
-    r"(?:\bif\s*\(\s*synthi_gpu_launch\s*\(|\b(?:const\s+)?(?:bool|auto)(?:\s+const)?\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*synthi_gpu_launch\s*\()",
+    r"(?:\bif\s*\(\s*synthi_gpu_launch(?:_source_location|_original_host_path)?\s*\(|\b(?:const\s+)?(?:bool|auto)(?:\s+const)?\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*synthi_gpu_launch(?:_source_location|_original_host_path)?\s*\()",
     re.DOTALL,
 )
 _GUI_RENDER_MIRROR_INDEX_RE = re.compile(
