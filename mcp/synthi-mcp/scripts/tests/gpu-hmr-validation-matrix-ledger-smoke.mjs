@@ -330,14 +330,18 @@ assert.equal(ledger.schemaVersion, GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSI
 assert.equal(ledger.query.accepted, true);
 assert.ok(ledger.proofId.startsWith('gpu-validation-matrix-ledger:sha256:'));
 
-const acceptedFlow = ledger.rows.find((row) => row.targetId === 'flow');
+const acceptedFlow = ledger.rows.find((row) =>
+  row.targetId === 'flow'
+    && row.matrixOutcome === 'full_runtime_gpu_hmr'
+    && row.runMode?.metricScope === 'hot_delta_1'
+);
 assert.equal(acceptedFlow?.matrixOutcome, 'full_runtime_gpu_hmr');
 assert.equal(acceptedFlow.acceptedForGpuHmr, true);
 assert.equal(acceptedFlow.visual.accepted, true);
 assert.equal(acceptedFlow.runMode.accepted, true);
 assert.equal(acceptedFlow.runMode.metricScope, 'hot_delta_1');
 assert.equal(acceptedFlow.visual.changedPixelRatio, 0.042);
-assert.equal(acceptedFlow.ledger.proofId, 'gpu-ledger-proof:sha256:synthetic');
+assert.equal(acceptedFlow.ledger.proofId, 'gpu-ledger-proof:sha256:synthetic-hot1');
 
 const opencl = ledger.rows.find((row) => row.backend === 'opencl');
 assert.equal(opencl?.matrixOutcome, 'refusal_proven');
@@ -362,10 +366,14 @@ assert.equal(forgedWebGpuQueryOnly?.matrixOutcome, 'unproven');
 assert.equal(forgedWebGpuQueryOnly.acceptedForGpuHmr, false);
 assert.equal(forgedWebGpuQueryOnly.visual.accepted, true);
 assert.equal(forgedWebGpuQueryOnly.ledger.present, false);
-assert.equal(forgedWebGpuQueryOnly.ledger.source, 'supplied_query');
+assert.equal(forgedWebGpuQueryOnly.ledger.source, 'supplied_query_ignored_no_ledger');
 assert.ok(forgedWebGpuQueryOnly.reasons.includes('proof_ledger_record_missing'));
 
-assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 3);
+const legacyAgentSplit = ledger.rows.find((row) => row.proofMode === 'mcp_preview_visual');
+assert.equal(legacyAgentSplit?.matrixOutcome, 'unproven');
+assert.equal(legacyAgentSplit.targetId, 'unknown');
+
+assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 2);
 assert.equal(ledger.summary.refusalProvenRows, 3);
 assert.ok(ledger.summary.unprovenRows >= 1);
 

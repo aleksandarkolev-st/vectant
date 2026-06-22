@@ -323,8 +323,7 @@ function ledgerFacet(json) {
     query = queryGpuHmrLedgerInvariants(ledger);
     source = 'recomputed_ledger';
   } else if (suppliedQuery.schemaVersion || suppliedQuery.schema_version) {
-    query = suppliedQuery;
-    source = 'supplied_query';
+    source = 'supplied_query_ignored_no_ledger';
   }
   const failures = Array.isArray(query?.failedInvariants)
     ? query.failedInvariants
@@ -334,7 +333,8 @@ function ledgerFacet(json) {
   return {
     present: Object.keys(ledger).length > 0,
     source,
-    proofId: firstText(ledger.proofId, ledger.proof_id, query?.proofId, query?.proof_id),
+    suppliedQueryPresent: Object.keys(suppliedQuery).length > 0,
+    proofId: firstText(ledger.proofId, ledger.proof_id),
     gpuHmrSuccess: boolOrNull(query?.gpuHmrSuccess ?? query?.gpu_hmr_success),
     failedInvariants: failures.map((failure) => (
       isObject(failure) ? failure : { code: String(failure) }
@@ -401,8 +401,7 @@ async function runtimeProofRow(json, filePath, context) {
   const backend = firstText(
     isObject(contract.backend) ? contract.backend.value : contract.backend,
     json.backend,
-    'hip',
-  );
+  ) ?? 'unknown';
   const targetId = firstText(
     json.target_name,
     json.targetName,
@@ -511,12 +510,88 @@ function visualMetricsFromDeltaDetail(detail) {
   };
 }
 
+function backendFromVendorText(value) {
+  const raw = String(value ?? '').toLowerCase();
+  if (/\b(rocm|amd|hip)\b/.test(raw)) return 'hip';
+  if (/\bcuda\b/.test(raw)) return 'cuda';
+  if (/\bopencl\b/.test(raw)) return 'opencl';
+  if (/\bvulkan\b/.test(raw)) return 'vulkan';
+  if (/\bwebgpu\b/.test(raw)) return 'webgpu';
+  if (/\bbevy_wgsl\b/.test(raw)) return 'bevy_wgsl';
+  return null;
+}
+
+function runtimePayloadIdentity(value) {
+  const contract = compactObject(
+    value?.acceptanceContract
+      ?? value?.acceptance_contract
+      ?? value?.contract,
+  );
+  const artifactIdentity = compactObject(contract.artifact_identity ?? contract.artifactIdentity);
+  const backend = firstText(
+    isObject(contract.backend) ? contract.backend.value : contract.backend,
+    value?.backend,
+  );
+  const targetId = firstText(
+    value?.targetId,
+    value?.target_id,
+    value?.targetName,
+    value?.target_name,
+    contract.project_id,
+    contract.projectId,
+    artifactIdentity.source_paths?.join('+'),
+    artifactIdentity.sourcePaths?.join('+'),
+    artifactIdentity.entry_points?.join('+'),
+    artifactIdentity.entryPoints?.join('+'),
+  );
+  const profileId = firstText(
+    value?.profileId,
+    value?.profile_id,
+    contract.contract_id,
+    contract.contractId,
+    targetId,
+  );
+  return {
+    backend: backend ?? 'unknown',
+    targetId: targetId ?? 'unknown',
+    profileId: profileId ?? targetId ?? 'unknown',
+  };
+}
+
+function acceptedLedgerValidation(proofValidation) {
+  const ledgerValidation = compactObject(proofValidation?.proofLedgerValidation);
+  return proofValidation?.satisfied === true
+    && ledgerValidation.gpuHmrSuccess === true
+    && Array.isArray(ledgerValidation.failedInvariants)
+    && ledgerValidation.failedInvariants.length === 0;
+}
+
+function firewallFieldsFromProofValidation(proofValidation) {
+  if (!acceptedLedgerValidation(proofValidation)) {
+    return {
+      cpuHmrUsed: null,
+      fullRebuildUsed: null,
+      processRestarted: null,
+      firewallEvidenceSource: 'missing_accepted_proof_ledger_validation',
+    };
+  }
+  return {
+    cpuHmrUsed: false,
+    fullRebuildUsed: false,
+    processRestarted: false,
+    firewallEvidenceSource: 'proof_ledger_invariant_query',
+  };
+}
+
 async function agentSplitRow(records, filePath, context) {
-  const fixture = firstText(detailRecord(records, 'fixture', false)?.detail, path.basename(path.dirname(filePath)));
   const waitDetail = parseRecordDetailJson(detailRecord(records, 'mcp wait_hmr proof gate'));
   const proofValidation = compactObject(waitDetail?.gpu_proof_validation);
   const ledgerValidation = compactObject(proofValidation.proofLedgerValidation);
   const runtimeValidation = compactObject(proofValidation.runtimeProofArtifactValidation);
+  const identity = runtimePayloadIdentity(waitDetail);
+  const backend = backendFromVendorText(detailRecord(records, 'gpu vendor', false)?.detail)
+    ?? identity.backend;
+  const firewall = firewallFieldsFromProofValidation(proofValidation);
   const deltaRecord = detailRecord(records, 'mcp screenshot visual delta');
   const deltaMetrics = visualMetricsFromDeltaDetail(deltaRecord?.detail);
   const beforePaths = imagePathsFromDetail(detailRecord(records, 'mcp screenshot before hmr')?.detail);
@@ -540,10 +615,14 @@ async function agentSplitRow(records, filePath, context) {
     && Array.isArray(ledgerValidation.failedInvariants)
     && ledgerValidation.failedInvariants.length === 0
     && runtimeValidation.accepted === true
+    && firewall.cpuHmrUsed === false
+    && firewall.fullRebuildUsed === false
+    && firewall.processRestarted === false
+    && identity.targetId !== 'unknown'
     && deltaRecord?.status === 'pass'
     && visual.accepted === true;
   const ledger = {
-    present: false,
+    present: Boolean(ledgerValidation.proofId),
     proofId: firstText(ledgerValidation.proofId),
     gpuHmrSuccess: boolOrNull(ledgerValidation.gpuHmrSuccess),
     failedInvariants: Array.isArray(ledgerValidation.failedInvariants)
@@ -560,9 +639,9 @@ async function agentSplitRow(records, filePath, context) {
     artifactSchema: 'synthi.gpu.hmr.agent_split_results.v1',
     artifactPath: relPath(filePath, context.repoRoot),
     updatedAt: context.updatedAt,
-    backend: 'hip',
-    targetId: fixture,
-    profileId: fixture,
+    backend,
+    targetId: identity.targetId,
+    profileId: identity.profileId,
     proofMode: 'mcp_preview_visual',
     evidenceKind: 'visual_oracle',
     matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
@@ -580,14 +659,16 @@ async function agentSplitRow(records, filePath, context) {
     ledger,
     visual,
     runMode,
-    cpuHmrUsed: false,
-    fullRebuildUsed: false,
-    processRestarted: false,
+    cpuHmrUsed: firewall.cpuHmrUsed,
+    fullRebuildUsed: firewall.fullRebuildUsed,
+    processRestarted: firewall.processRestarted,
+    firewallEvidenceSource: firewall.firewallEvidenceSource,
     timings: {
       selectedDeltaMs: deltaMetrics.selectedDeltaMs,
     },
     reasons: accepted ? [] : compactStringList([
       proofValidation.reason,
+      identity.targetId === 'unknown' ? 'target_identity_not_present_in_runtime_payload' : null,
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
       visual.accepted ? null : 'visual_artifacts_not_readable',
     ]),
@@ -682,8 +763,8 @@ async function generatedSplitFissionRow(json, filePath, context) {
     artifactPath: relPath(filePath, context.repoRoot),
     updatedAt: context.updatedAt,
     backend: backendFromGeneratedFissionReport(json),
-    targetId: firstText(selectedKernel, selectedPath, path.basename(path.dirname(filePath))),
-    profileId: firstText(selectedPath, selectedKernel, path.basename(path.dirname(filePath))),
+    targetId: firstText(selectedKernel, selectedPath) ?? 'unknown',
+    profileId: firstText(selectedPath, selectedKernel) ?? 'unknown',
     proofMode: 'deterministic_fission_verifier',
     evidenceKind: 'fission_verifier_report',
     matrixOutcome: accepted ? 'deterministic_fission_proven' : 'unproven',
@@ -1173,9 +1254,17 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     json.timing_metrics,
     json.timings,
   );
-  const backend = firstText(json.backend, json.contract?.backend?.value, json.contract?.backend) ?? 'hip';
-  const targetId = firstText(json.targetId, json.target_id, json.profileId, json.profile_id, json.fixture)
-    ?? path.basename(path.dirname(filePath));
+  const backend = firstText(json.backend, json.contract?.backend?.value, json.contract?.backend) ?? 'unknown';
+  const targetId = firstText(
+    json.targetId,
+    json.target_id,
+    json.contract?.projectId,
+    json.contract?.project_id,
+    json.acceptanceContract?.projectId,
+    json.acceptanceContract?.project_id,
+    json.acceptance_contract?.projectId,
+    json.acceptance_contract?.project_id,
+  ) ?? 'unknown';
   const proofValidation = compactObject(json.gpuProofValidation ?? json.gpu_proof_validation ?? json.proofValidation);
   const ledgerValidation = compactObject(proofValidation.proofLedgerValidation);
   const runtimeValidation = compactObject(proofValidation.runtimeProofArtifactValidation);
@@ -1192,9 +1281,12 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
   );
   const metricScope = runMode.metricScope;
   const isCold = metricScope === 'cold';
-  const noCpuFallback = json.cpuHmrUsed !== true && json.cpu_hmr_used !== true;
-  const noFullRebuild = json.fullRebuildUsed !== true && json.full_rebuild_used !== true;
-  const noRestart = json.processRestarted !== true && json.process_restarted !== true;
+  const cpuHmrUsed = boolOrNull(json.cpuHmrUsed ?? json.cpu_hmr_used);
+  const fullRebuildUsed = boolOrNull(json.fullRebuildUsed ?? json.full_rebuild_used);
+  const processRestarted = boolOrNull(json.processRestarted ?? json.process_restarted);
+  const noCpuFallback = cpuHmrUsed === false;
+  const noFullRebuild = fullRebuildUsed === false;
+  const noRestart = processRestarted === false;
   const acceptedRuntime =
     json.acceptedForGpuHmr === true
     && json.gpuHmrSuccess === true
@@ -1228,7 +1320,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     updatedAt: context.updatedAt,
     backend,
     targetId,
-    profileId: firstText(json.profileId, json.profile_id, targetId),
+    profileId: firstText(json.profileId, json.profile_id, targetId === 'unknown' ? null : targetId) ?? 'unknown',
     proofMode: 'run_mode_proof',
     evidenceKind: isCold ? 'cold_split_visual_oracle' : 'visual_oracle',
     matrixOutcome,
@@ -1263,9 +1355,9 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     },
     visual,
     runMode,
-    cpuHmrUsed: boolOrNull(json.cpuHmrUsed ?? json.cpu_hmr_used) ?? false,
-    fullRebuildUsed: boolOrNull(json.fullRebuildUsed ?? json.full_rebuild_used) ?? false,
-    processRestarted: boolOrNull(json.processRestarted ?? json.process_restarted) ?? false,
+    cpuHmrUsed,
+    fullRebuildUsed,
+    processRestarted,
     timings: compactObject(json.timings),
     reasons: matrixOutcome === 'unproven' ? compactStringList([
       runMode.accepted ? null : 'run_mode_timing_not_accepted',
@@ -1273,6 +1365,10 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       isCold || acceptedRuntime ? null : 'gpu_hmr_runtime_ledger_not_accepted',
       proofValidation.satisfied === true || isCold ? null : 'wait_hmr_proof_validation_not_satisfied',
       runtimeValidation.accepted === true || isCold ? null : 'runtime_proof_artifact_not_accepted',
+      cpuHmrUsed === false ? null : 'cpu_hmr_firewall_field_not_false',
+      fullRebuildUsed === false ? null : 'full_rebuild_firewall_field_not_false',
+      processRestarted === false ? null : 'process_restart_firewall_field_not_false',
+      targetId === 'unknown' ? 'target_identity_not_present_in_run_mode_artifact' : null,
       ...(Array.isArray(ledgerValidation.failedInvariants) ? ledgerValidation.failedInvariants.map((failure) => failure.code) : []),
     ]) : [],
     openGaps: matrixOutcome === 'unproven' ? ['run_mode_proof_not_accepted'] : [],
@@ -1287,9 +1383,17 @@ function agentSplitNegativeEditRefusalRow(json, filePath, context) {
     json.timing_metrics,
     json.timings,
   );
-  const backend = firstText(json.backend, json.contract?.backend?.value, json.contract?.backend) ?? 'hip';
-  const targetId = firstText(json.targetId, json.target_id, json.profileId, json.profile_id, json.fixture)
-    ?? path.basename(path.dirname(filePath));
+  const backend = firstText(json.backend, json.contract?.backend?.value, json.contract?.backend) ?? 'unknown';
+  const targetId = firstText(
+    json.targetId,
+    json.target_id,
+    json.contract?.projectId,
+    json.contract?.project_id,
+    json.acceptanceContract?.projectId,
+    json.acceptanceContract?.project_id,
+    json.acceptance_contract?.projectId,
+    json.acceptance_contract?.project_id,
+  ) ?? 'unknown';
   const reasons = compactStringList([
     ...(Array.isArray(json.reasons) ? json.reasons : []),
     ...(Array.isArray(json.unsupportedReasons) ? json.unsupportedReasons : []),

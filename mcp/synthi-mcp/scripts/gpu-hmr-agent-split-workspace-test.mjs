@@ -1739,13 +1739,57 @@ function backendForSplit(split) {
   return 'unknown';
 }
 
+function splitProofIdentity(split) {
+  const manifest = split?.manifest && typeof split.manifest === 'object' ? split.manifest : {};
+  const moduleFiles = manifest.module_files && typeof manifest.module_files === 'object'
+    ? Object.fromEntries(
+      Object.entries(manifest.module_files)
+        .map(([role, filePath]) => [role, cleanRel(filePath)])
+        .sort(([left], [right]) => left.localeCompare(right)),
+    )
+    : {};
+  const deviceRoles = Array.isArray(manifest.gpu?.device_roles)
+    ? manifest.gpu.device_roles.map((role) => ({
+      id: role?.id ?? null,
+      path: cleanRel(role?.path),
+      compiler: role?.compiler ?? null,
+      arch: Array.isArray(role?.arch) ? role.arch : [],
+    }))
+    : [];
+  const explicitTarget = manifest.project_id ?? manifest.projectId ?? manifest.target_id ?? manifest.targetId;
+  const topologyHash = sha256Hex(stableJson({
+    gpu: manifest.gpu ?? null,
+    moduleFiles,
+    deviceRoles,
+  })).slice(0, 24);
+  const targetId = explicitTarget
+    ? String(explicitTarget)
+    : `generated-gpu-split:${topologyHash}`;
+  const profileId = String(
+    manifest.profile_id
+      ?? manifest.profileId
+      ?? manifest.contract_id
+      ?? manifest.contractId
+      ?? targetId,
+  );
+  return {
+    targetId,
+    target_id: targetId,
+    profileId,
+    profile_id: profileId,
+    targetIdentityEvidenceSource: explicitTarget
+      ? 'compile_manifest_project_identity'
+      : 'compile_manifest_topology_hash',
+    target_identity_evidence_source: explicitTarget
+      ? 'compile_manifest_project_identity'
+      : 'compile_manifest_topology_hash',
+  };
+}
+
 function runModeProofIdentity(split) {
   return {
     backend: backendForSplit(split),
-    targetId: CFG.fixture,
-    target_id: CFG.fixture,
-    profileId: CFG.fixture,
-    profile_id: CFG.fixture,
+    ...splitProofIdentity(split),
   };
 }
 
