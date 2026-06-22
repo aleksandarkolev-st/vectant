@@ -2506,8 +2506,9 @@ const server = http.createServer(async (req, res) => {
           // Parse query params for owner
           const url = new URL(req.url, `http://${req.headers.host}`);
           const owner = url.searchParams.get('owner');
+          const recentOnly = url.searchParams.get('recent') === 'true';
           
-          const workspaces = workspaceManager.getWorkspaces(owner);
+          const workspaces = workspaceManager.getWorkspaces(owner, { recentOnly });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(workspaces));
       } catch (e) {
@@ -3873,6 +3874,12 @@ const server = http.createServer(async (req, res) => {
                 case 'init':
                 result = await gitService.initRepo(slug, data.remoteUrl, bootstrapUserId, tokenUserId);
                 hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
+                if (data.owner || data.name || data.showInRecent === true || data.addToRecent === true) {
+                  workspaceManager.addWorkspace(slug, data.remoteUrl, data.owner, data.name, {
+                    showInRecent: data.showInRecent !== false && data.addToRecent !== false,
+                    source: data.source || 'create',
+                  });
+                }
                     break;
                 case 'add-remote':
                     result = await gitService.addRemote(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId);
@@ -3889,8 +3896,15 @@ const server = http.createServer(async (req, res) => {
                 case 'clone':
                   result = await gitService.cloneRepo(slug, data.repoUrl, data.token, bootstrapUserId, tokenUserId);
                   hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
-                  // Save metadata locally
-                  workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name);
+                  // Save metadata locally for the dashboard recent list. Callers can
+                  // still opt out explicitly for short-lived internal workspaces.
+                  const showInRecent =
+                    data.showInRecent !== false &&
+                    data.addToRecent !== false;
+                  workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name, {
+                    showInRecent,
+                    source: data.source || 'import',
+                  });
                   let workspaceRegistration = {
                     attempted: false,
                     created: false,
