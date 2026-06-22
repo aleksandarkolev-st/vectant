@@ -575,6 +575,7 @@ function createProgramRuntimeManager(options = {}) {
         command: trimmedCommand,
         env,
         runtimeType,
+        webGui: webGui === true,
         title,
         metadata,
         ports: declaredPorts,

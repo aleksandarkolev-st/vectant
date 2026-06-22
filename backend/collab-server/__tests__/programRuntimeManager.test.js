@@ -715,3 +715,16 @@ test('a regular (non-webGui) container launch does not inject KASM_PASSWORD', as
   await mgr.launchManagedSession({ sessionId: 'p1', workspaceSlug: 'w', command: 'x', runtimeType: 'container', webGui: false, ports: [9000] });
   assert.equal('KASM_PASSWORD' in launches[0].env, false);
 });
+
+test('restarting a webGui container session preserves webGui and rotates the credential', async () => {
+  const mgr = makeManager();
+  await mgr.launchManagedSession({ sessionId: 'g3', workspaceSlug: 'wse', command: 'docker run x', runtimeType: 'container', webGui: true, ports: [6901] });
+  const before = mgr.resolveStreamAuth('wse', 6901);
+  assert.ok(before);
+
+  const restarted = await mgr.restartManagedSession('g3');
+  assert.equal(restarted.webGui, true);              // webGui must survive restart (behavior guarantee #3)
+  const after = mgr.resolveStreamAuth('wse', 6901);
+  assert.ok(after);                                  // still resolvable after restart
+  assert.notEqual(after.password, before.password);  // rotated, not reused
+});
