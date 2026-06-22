@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.webgpu_visual_profile.v1",
+  "id": "webgpu-wgsl-runtime-triangle-hot2",
+  "targetId": "webgpu-wgsl-runtime-triangle",
+  "project": {
+    "name": "WebGPU WGSL runtime visual HMR proof",
+    "kind": "gpu_project"
+  },
+  "canvas": {
+    "width": 640,
+    "height": 360
+  },
+  "shader": {
+    "artifactKind": "wgsl",
+    "beforePath": "webgpu/triangle-before.wgsl",
+    "afterPath": "webgpu/triangle-after-hot2.wgsl",
+    "entryPoints": {
+      "vertex": "vs",
+      "fragment": "fs"
+    },
+    "draw": {
+      "vertexCount": 3
+    }
+  },
+  "pipeline": {
+    "layout": "explicit-empty",
+    "primitiveTopology": "triangle-list",
+    "bindGroupLayouts": [],
+    "vertexBufferLayouts": [],
+    "colorTargetState": {
+      "format": "preferredCanvasFormat",
+      "alphaMode": "opaque"
+    }
+  },
+  "runMode": {
+    "metricScope": "hot_delta_2",
+    "cacheState": "pipeline_cache_warm",
+    "editId": "webgpu-wgsl-runtime-triangle-wgsl-hot-delta-2",
+    "editKind": "different_gpu_edit",
+    "differentEdit": true
+  },
+  "visualProof": {
+    "claim": "Replacing the WGSL shader module with a second distinct shader edit and recreating the WebGPU render pipeline in the same browser page changes the rendered frame.",
+    "minChangedPixelRatio": 0.02,
+    "minMeanAbsDelta8bit": 1.0
+  },
+  "deterministicVisualMode": {
+    "fixedSeed": "webgpu-no-random-input",
+    "seedPolicyFixed": true,
+    "frozenCamera": true,
+    "temporalAccumulationNotApplicable": true,
+    "taaNotApplicable": true,
+    "denoiserNotApplicable": true,
+    "fixedResolution": true,
+    "fixedSwapchainImageCount": true,
+    "frameCaptureAfterEpochDispatch": true,
+    "presentationFenceOrFrameBoundary": true,
+    "warmupFrames": 0
+  }
+}

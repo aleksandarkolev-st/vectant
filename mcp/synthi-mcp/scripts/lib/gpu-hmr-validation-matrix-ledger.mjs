@@ -423,7 +423,11 @@ async function recomputeHiprtOracleRegion({ baselinePath, changedPath, oracleReg
 }
 
 function rowKey(row) {
-  const runModeKey = row.proofMode === 'run_mode_proof'
+  const runModeKey = (
+    row.proofMode === 'run_mode_proof'
+    || row.matrixOutcome === 'full_runtime_gpu_hmr'
+    || row.matrixOutcome === 'cold_split_proven'
+  )
     ? row.runMode?.metricScope ?? 'unknown'
     : null;
   return [
@@ -1208,7 +1212,7 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     && processContinuity.processRestarted === false
     && nativeApiEvidence.accepted === true
     && visual.accepted === true;
-  const profileId = firstText(json.profile?.id, json.slug);
+  const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
   return finalizeRow({
     artifactSchema: json.schema,
     artifactPath: relPath(filePath, context.repoRoot),
@@ -1613,8 +1617,14 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     && noRestart;
   const acceptedCold =
     isCold
-    && json.coldSplitProven === true
-    && json.cold_split_proven === true
+    && (
+      (json.coldSplitProven === true && json.cold_split_proven === true)
+      || (
+        genericRuntimeRunMode
+        && json.coldRuntimeInitialProven === true
+        && json.cold_runtime_initial_proven === true
+      )
+    )
     && visual.accepted === true
     && runMode.accepted === true
     && noCpuFallback

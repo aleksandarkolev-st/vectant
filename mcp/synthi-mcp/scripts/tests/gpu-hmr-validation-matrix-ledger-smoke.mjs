@@ -602,8 +602,8 @@ await writeJson(path.join(visualDir, 'run-mode-cold.json'), {
   ...runModeProofBase,
   schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
   proofId: 'agent-split-run-mode-proof:sha256:cold',
-  coldSplitProven: true,
-  cold_split_proven: true,
+  coldRuntimeInitialProven: true,
+  cold_runtime_initial_proven: true,
   acceptedForGpuHmr: false,
   gpuHmrSuccess: false,
   runMode: {

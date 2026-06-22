@@ -28,8 +28,10 @@
     "scripts/gpu-hmr-webgpu-preflight.mjs",
     "scripts/gpu-hmr-webgpu-runtime-visual-proof.mjs",
     "scripts/profiles/webgpu-wgsl-runtime-triangle.json",
+    "scripts/profiles/webgpu-wgsl-runtime-triangle-hot2.json",
     "scripts/profiles/webgpu/triangle-before.wgsl",
     "scripts/profiles/webgpu/triangle-after.wgsl",
+    "scripts/profiles/webgpu/triangle-after-hot2.wgsl",
     "README.md"
   ],
   "publishConfig": {

@@ -53,6 +53,9 @@ const CFG = {
   timeoutMs: Number(process.env.SYNTHI_WEBGPU_VISUAL_TIMEOUT_MS ?? 60000),
   splitModel: process.env.SYNTHI_GEMINI_SPLIT_MODEL ?? 'gemini-3.5-flash',
   gpuDeltaModel: process.env.SYNTHI_GEMINI_DELTA_MODEL ?? 'gemini-3.1-flash-lite',
+  metricScope: process.env.SYNTHI_WEBGPU_VISUAL_METRIC_SCOPE ?? 'hot_delta_1',
+  cacheState: process.env.SYNTHI_WEBGPU_VISUAL_CACHE_STATE ?? 'pipeline_cache_warm',
+  differentEdit: process.env.SYNTHI_WEBGPU_VISUAL_DIFFERENT_EDIT === '1',
 };
 
 function nowSlugDate() {
@@ -210,6 +213,13 @@ async function loadProfile(profilePath) {
     profilePath: resolvedPath,
     profileHash: sha256Text(stableJson(profile)),
     id: firstText(profile.id) ?? safeSlug(path.basename(resolvedPath, '.json')),
+    targetId: firstText(
+      profile.targetId,
+      profile.target_id,
+      profile.validationTarget?.id,
+      profile.validation_target?.id,
+      profile.id,
+    ) ?? safeSlug(path.basename(resolvedPath, '.json')),
     projectName: firstText(profile.project?.name) ?? 'WebGPU visual HMR profile',
     width,
     height,
@@ -255,6 +265,39 @@ async function loadProfile(profilePath) {
         0,
       ),
     },
+  };
+}
+
+function runModeMetadata(profile) {
+  const runMode = profile.raw.runMode ?? profile.raw.run_mode ?? {};
+  const metricScope = firstText(runMode.metricScope, runMode.metric_scope, CFG.metricScope);
+  const cacheState = firstText(runMode.cacheState, runMode.cache_state, CFG.cacheState);
+  const editId = firstText(
+    runMode.editId,
+    runMode.edit_id,
+    `${profile.targetId}-wgsl-${metricScope}`,
+  );
+  const editHash = firstText(runMode.editHash, runMode.edit_hash, profile.afterHash);
+  const editKind = firstText(runMode.editKind, runMode.edit_kind, 'gpu_artifact_edit');
+  const differentEdit =
+    runMode.differentEdit === true
+    || runMode.different_edit === true
+    || CFG.differentEdit;
+  return {
+    metric_clock: 'monotonic_ns',
+    metricClock: 'monotonic_ns',
+    metric_scope: metricScope,
+    metricScope,
+    cache_state: cacheState,
+    cacheState,
+    edit_id: editId,
+    editId,
+    edit_hash: editHash,
+    editHash,
+    edit_kind: editKind,
+    editKind,
+    different_edit: differentEdit,
+    differentEdit,
   };
 }
 
@@ -692,7 +735,7 @@ function buildContract({ profile, trace, hashes }) {
   }));
   const contract = {
     contract_version: 'synthi.gpu_hmr.contract.v1',
-    project_id: profile.id,
+    project_id: profile.targetId,
     backend: { value: 'webgpu' },
     confidence: 1.0,
     classification: {
@@ -747,12 +790,16 @@ function buildContract({ profile, trace, hashes }) {
   return contract;
 }
 
-function timingFields(ns) {
+function timingFields(ns, runMode = runModeMetadata({ targetId: 'webgpu', afterHash: null, raw: {} })) {
   const fallback = 0;
   return {
     metric_clock: 'monotonic_ns',
-    metric_scope: 'hot_delta_1',
-    cache_state: 'pipeline_cache_warm',
+    metric_scope: runMode.metric_scope,
+    cache_state: runMode.cache_state,
+    edit_id: runMode.edit_id,
+    edit_hash: runMode.edit_hash,
+    edit_kind: runMode.edit_kind,
+    different_edit: runMode.different_edit,
     static_discovery_time: ns.staticDiscovery ?? fallback,
     ai_contract_synthesis_time: ns.aiContractSynthesis ?? fallback,
     model_availability_check_time: ns.modelAvailability ?? fallback,
@@ -771,6 +818,70 @@ function timingFields(ns) {
   };
 }
 
+function coldRuntimeRunModeMetadata(profile) {
+  return {
+    metric_clock: 'monotonic_ns',
+    metricClock: 'monotonic_ns',
+    metric_scope: 'cold',
+    metricScope: 'cold',
+    cache_state: 'clean',
+    cacheState: 'clean',
+    edit_id: `${profile.targetId}-webgpu-cold-runtime-initial`,
+    editId: `${profile.targetId}-webgpu-cold-runtime-initial`,
+    edit_hash: profile.beforeHash,
+    editHash: profile.beforeHash,
+    edit_kind: 'cold_runtime_initial',
+    editKind: 'cold_runtime_initial',
+    different_edit: false,
+    differentEdit: false,
+  };
+}
+
+async function writeColdRuntimeRunModeProof({ filePath, profile, proof, artifacts }) {
+  const runMode = coldRuntimeRunModeMetadata(profile);
+  const artifact = {
+    schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+    proofId: `runtime-run-mode-proof:${sha256Text(stableJson({
+      schema: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+      targetId: profile.targetId,
+      runMode,
+      beforeImageHash: artifacts.beforeImageHash,
+      sourceProofId: proof.proofId,
+    }))}`,
+    backend: 'webgpu',
+    targetId: profile.targetId,
+    target_id: profile.targetId,
+    profileId: profile.id,
+    profile_id: profile.id,
+    coldRuntimeInitialProven: true,
+    cold_runtime_initial_proven: true,
+    acceptedForGpuHmr: false,
+    gpuHmrSuccess: false,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    visualRequired: true,
+    visual_required: true,
+    visualArtifacts: {
+      beforeImage: artifacts.beforeImage,
+      before_image: artifacts.beforeImage,
+    },
+    runMode,
+    run_mode: runMode,
+    timingMetrics: runMode,
+    timing_metrics: runMode,
+    sourceProofId: proof.proofId,
+    source_proof_id: proof.proofId,
+    evidenceKind: 'cold_runtime_initial_visual_oracle',
+    evidence_kind: 'cold_runtime_initial_visual_oracle',
+  };
+  await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return artifact;
+}
+
 function buildLedgerRecord({
   profile,
   trace,
@@ -783,6 +894,7 @@ function buildLedgerRecord({
   modelProvenanceEvidence,
   visualThresholdValidation,
   nativeWebGpuApiEvidence,
+  runMode,
 }) {
   const afterEpoch = trace.after.epoch;
   const dispatchId = trace.after.dispatchId;
@@ -809,7 +921,7 @@ function buildLedgerRecord({
       && metrics.changedPixelRatio > 0,
     new_epoch_watermark_or_trace: `${dispatchId}:${afterEpoch}:${profile.afterHash}`,
     camera_state_hash: sha256Text(stableJson({
-      profile: profile.id,
+      profile: profile.targetId,
       camera: 'webgpu-2d-canvas-fixed',
       width: profile.width,
       height: profile.height,
@@ -841,8 +953,11 @@ function buildLedgerRecord({
     },
   };
   return {
-    project_id: profile.id,
-    edit_id: `${safeSlug(profile.id)}-wgsl-hot-delta`,
+    project_id: profile.targetId,
+    edit_id: runMode.edit_id,
+    edit_hash: runMode.edit_hash,
+    edit_kind: runMode.edit_kind,
+    different_edit: runMode.different_edit,
     backend: 'webgpu',
     classification: {
       project_kind: 'gpu_project',
@@ -937,10 +1052,10 @@ function buildLedgerRecord({
       kind: 'visual',
       target: 'webgpu-canvas-frame',
     },
-    timings: timingFields(timings.ns),
+    timings: timingFields(timings.ns, runMode),
     metric_clock: 'monotonic_ns',
-    metric_scope: 'hot_delta_1',
-    cache_state: 'pipeline_cache_warm',
+    metric_scope: runMode.metric_scope,
+    cache_state: runMode.cache_state,
     model_provenance: modelProvenanceEvidence,
     evidence_refs: evidenceRefs,
   };
@@ -953,6 +1068,7 @@ async function runProof() {
   const checkedAt = new Date().toISOString();
   const staticStartNs = process.hrtime.bigint();
   const profile = await loadProfile(CFG.profilePath);
+  const runMode = runModeMetadata(profile);
   const staticEndNs = process.hrtime.bigint();
   timings.ns.staticDiscovery = durationNs(staticStartNs, staticEndNs);
   timings.ns.aiContractSynthesis = 0;
@@ -967,6 +1083,7 @@ async function runProof() {
   const afterImage = path.join(ARTIFACT_DIR, `${profileSlug}-after.png`);
   const diffImage = path.join(ARTIFACT_DIR, `${profileSlug}-diff.png`);
   const proofPath = path.join(ARTIFACT_DIR, `${profileSlug}-proof.json`);
+  const coldRunModeProofPath = path.join(ARTIFACT_DIR, `${profileSlug}-cold-run-mode-proof.json`);
   const summaryPath = path.join(ARTIFACT_DIR, `${profileSlug}-summary.txt`);
   const hashEndNs = process.hrtime.bigint();
   timings.ns.artifactHash = durationNs(hashStartNs, hashEndNs);
@@ -1075,6 +1192,7 @@ async function runProof() {
       modelProvenanceEvidence,
       visualThresholdValidation,
       nativeWebGpuApiEvidence: nativeWebGpuEvidence,
+      runMode,
     });
     const proofLedger = buildGpuHmrProofLedger(ledgerRecord);
     const ledgerQuery = evaluateGpuHmrProofLedger(ledgerRecord);
@@ -1088,6 +1206,8 @@ async function runProof() {
       slug: CFG.slug,
       profile: {
         id: profile.id,
+        targetId: profile.targetId,
+        target_id: profile.targetId,
         path: profile.profilePath,
         hash: profile.profileHash,
       },
@@ -1118,7 +1238,9 @@ async function runProof() {
       resultState: gpuHmrSuccess
         ? 'webgpu-hmr-full-runtime-proven'
         : 'webgpu-hmr-rejected',
-      timings: timingFields(timings.ns),
+      timingMetrics: runMode,
+      timing_metrics: runMode,
+      timings: timingFields(timings.ns, runMode),
       noShimApplied: nativeWebGpuEvidence.accepted === true,
       noBrowserFlagClaimedAsHmr: true,
     };
@@ -1131,12 +1253,29 @@ async function runProof() {
       metrics: proof.metrics,
     }))}`;
 
+    const coldRunModeProof = await writeColdRuntimeRunModeProof({
+      filePath: coldRunModeProofPath,
+      profile,
+      proof,
+      artifacts,
+    });
+    proof.runModeCompanionArtifacts = {
+      coldRuntimeInitial: coldRunModeProofPath,
+    };
+    proof.run_mode_companion_artifacts = proof.runModeCompanionArtifacts;
+    proof.runModeCompanionProofIds = {
+      coldRuntimeInitial: coldRunModeProof.proofId,
+    };
+    proof.run_mode_companion_proof_ids = proof.runModeCompanionProofIds;
+
     await writeFile(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
     await writeFile(summaryPath, [
       `proof_id=${proof.proofId}`,
       `result_state=${proof.resultState}`,
       `gpu_hmr_success=${proof.gpuHmrSuccess}`,
       `ledger_proof_id=${proofLedger.proofId}`,
+      `cold_run_mode_proof_id=${coldRunModeProof.proofId}`,
+      `cold_run_mode_proof_json=${coldRunModeProofPath}`,
       `ledger_failed_invariants=${ledgerQuery.failedInvariants.map((failure) => failure.code).join(',') || 'none'}`,
       `visual_thresholds_accepted=${visualThresholdValidation.accepted}`,
       `visual_threshold_failures=${visualThresholdValidation.failedGates.join(',') || 'none'}`,
@@ -1402,6 +1541,7 @@ async function main() {
   console.log(`ledger_proof_id=${proof.proofLedger.proofId}`);
   console.log(`proof_json=${proofPath}`);
   console.log(`summary_txt=${summaryPath}`);
+  console.log(`cold_run_mode_proof_json=${proof.runModeCompanionArtifacts?.coldRuntimeInitial ?? ''}`);
   console.log(`before=${proof.artifacts.beforeImage}`);
   console.log(`after=${proof.artifacts.afterImage}`);
   console.log(`diff=${proof.artifacts.diffImage}`);
