@@ -29,6 +29,7 @@ Current focused Flow/ray-light matrix:
 
 ```text
 proof id: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-focused-flow-ray-light-20260622T181300Z.json
 rows: 9
 outcomes: 4 full_runtime_gpu_hmr, 2 cold_split_proven, 2 refusal_proven, 1 deterministic_fission_proven
 open gates: none
@@ -168,7 +169,7 @@ The validation matrix now derives plan-coverage rows for accepted, visual-profil
 Generated split topology now rejects per-kernel HMR unless a deterministic fission verifier proves it, even when a TU contains only one kernel.
 Narrow generated fission candidates now require generated-topology evidence plus a binding from generated role path to the content-addressed selected partial artifact.
 Generated split deterministic fission now emits all eight required fission evidence categories and is collected as a separate proof class that cannot count as GPU HMR success by itself.
-Ray-light generated split fission is accepted for `trace_light_rays`; Flow generated split fission is rejected at `symbol_ownership` because the selected device role contains `particle_init` and `particle_flow`.
+Ray-light generated split fission is accepted for `trace_light_rays`; Flow generated split fission is rejected at `symbol_ownership` because the latest selected device role contains `particle_flow` and `synthi_generated_seed_buffers`.
 The validation matrix now records run-mode evidence for accepted rows and derives a separate `per_target_run_modes` coverage row instead of hiding cold/hot-delta gaps.
 Standalone external rejection proof artifacts, including Bevy refusals, are first-class matrix rows.
 WebGPU full-runtime acceptance now requires an embedded recomputable proof ledger; a supplied query without the underlying ledger is rejected as unproven.
@@ -388,7 +389,7 @@ Those rejected attempts are not accepted proof.
 
 ## MCP Ray-Light Visual HMR
 
-Latest accepted MCP proof after the timing-matrix hardening:
+Historical accepted MCP proof from the June 9 timing-matrix hardening. The current accepted proof is the June 22 `embedded-ledger-10` block recorded in the executive status above:
 
 ```text
 workspace slug: ray-light-gpu-hmr-proof-20260609-timing-matrix
@@ -482,7 +483,7 @@ Visual inspection confirmed a ray/light scene before HMR and a clearly changed l
 
 ## MCP Flow Visual HMR
 
-Latest accepted MCP proof after the timing-matrix hardening:
+Historical accepted MCP proof from the June 9 timing-matrix hardening. The current accepted proof is the June 22 `embedded-ledger-10` block recorded in the executive status above:
 
 ```text
 workspace slug: flow-gpu-hmr-proof-20260609-timing-matrix
@@ -1023,7 +1024,7 @@ f8c82024c fix(gpu-hmr): normalize real rocm proof ledger inputs
 
 ## Verification Commands
 
-Passed after the latest code fix:
+Passed after the latest code fix or latest verification rerun:
 
 ```text
 npx vitest run mcp/synthi-mcp/tests/unit/gpu_hmr_runtime_proof.test.ts
@@ -1043,21 +1044,29 @@ node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
 docker run --rm -v "${PWD}\backend\synthi-webrtc-compiler\worker:/workspace" -w /workspace vectant-ade-worker-builder-test:latest cargo test --release --features gpu-hmr gpu_fission --lib
 docker run --rm -v "${PWD}\backend\synthi-webrtc-compiler\worker:/workspace" -w /workspace vectant-ade-worker-builder-test:latest cargo test --release --features gpu-hmr gpu_prod_contracts --lib
 $env:SYNTHI_GPU_HMR_EXTERNAL_PROJECT_DEFAULT_PROFILE_ID='threejs-webgl-shader-lava'; npm --prefix mcp/synthi-mcp run proof:external-project
-npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays
-npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
-npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt:camera-rays
-npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt
 node --check mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 SYNTHI_GPU_AGENT_MODE=seed-only SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=agent-split-archive-smoke-20260609-pass SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node scripts/gpu-hmr-agent-split-workspace-test.mjs
 MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/workspace/mcp/synthi-mcp/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=ray-light SLUG=ray-light-gpu-hmr-proof-20260622-embedded-ledger-10 SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/workspace/mcp/synthi-mcp/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=flow-gpu-hmr-proof-20260622-embedded-ledger-10 SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
-SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger npm --prefix mcp/synthi-mcp run proof:oidn:preflight
 npm --prefix mcp/synthi-mcp run proof:opencl:preflight:self-check
 SYNTHI_OPENCL_WORKER_CONTAINER=vectant-ade-worker-1 SLUG=opencl-rocm-preflight-20260609-after-output-gate npm --prefix mcp/synthi-mcp run proof:opencl:preflight
 npm --prefix mcp/synthi-mcp run proof:vulkan:preflight:self-check
 SYNTHI_VULKAN_WORKER_CONTAINER=vectant-ade-worker-1 SLUG=vulkan-rocm-preflight-20260609 npm --prefix mcp/synthi-mcp run proof:vulkan:preflight
 node mcp/synthi-mcp/scripts/gpu-hmr-external-project-profile.mjs --rejection-proof-from-report mcp/synthi-mcp/.gpu-hmr-test-logs/external-projects/bevy-wgsl-shader-material-1780972280020-report.json
+```
+
+Historical or currently blocked live proof commands:
+
+```text
+npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:camera-rays
+npm --prefix mcp/synthi-mcp run proof:hiprt:same-process
+npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt:camera-rays
+npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt
+  current 2026-06-22 rerun status: blocked because /tmp/synthi-real-rocm/HIPRT-Path-Tracer is absent from vectant-ade-worker-1
+
+SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger npm --prefix mcp/synthi-mcp run proof:oidn:preflight
+  current 2026-06-22 live status: unconfigured/blocked until a real OIDN/HIPRT checkout and matching ROCm HIP runtime are present; no shim or symlink fallback is accepted
 ```
 
 Expected rejection command:

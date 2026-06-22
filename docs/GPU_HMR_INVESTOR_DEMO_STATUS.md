@@ -43,6 +43,7 @@ global matrix: gpu-validation-matrix-ledger:sha256:5e7e21c031eaaa75d3e53451664e3
 global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T180247Z.json
 global matrix summary: 22 rows, 8 full-runtime GPU HMR, 8 refusals, 3 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 focused Flow/ray-light matrix: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
+focused matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-focused-flow-ray-light-20260622T181300Z.json
 focused matrix coverage: ROCm/HIP full runtime accepted, Flow visual path accepted, ray-light visual path accepted, per-target run modes accepted, per-kernel/smallest-safe fission accepted
 ```
 
@@ -148,12 +149,16 @@ npm --prefix mcp/synthi-mcp run proof:generated-split-granularity:self-check -> 
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:validation-matrix -> passed
 npm --prefix mcp/synthi-mcp run proof:opencl:preflight:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:vulkan:preflight:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:webgpu:preflight:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:external-project:self-check -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
 latest validation matrix -> gpu-validation-matrix-ledger:sha256:5e7e21c031eaaa75d3e53451664e37eb1fee59b112a8bcc663f19731fea9e5a5
+focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 ```
 
 ## Live Preview Targets
@@ -193,7 +198,7 @@ hot delta 2 total validator wall time: 2930783900ns
 deterministic fission: accepted=true claim=per_kernel_hmr kernel=trace_light_rays
 ```
 
-Accepted current proof:
+Historical June 9 timing-matrix proof:
 
 ```text
 workspace slug: ray-light-gpu-hmr-proof-20260609-timing-matrix
@@ -249,7 +254,7 @@ hot delta 2 total validator wall time: 2878428200ns
 deterministic fission: accepted=false failure=symbol_ownership; device_translation_unit_hmr only
 ```
 
-Accepted current proof:
+Historical June 9 timing-matrix proof:
 
 ```text
 workspace slug: flow-gpu-hmr-proof-20260609-timing-matrix
