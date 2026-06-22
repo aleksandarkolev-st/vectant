@@ -5783,6 +5783,13 @@ fn partial_fission_candidate_and_evidence(
     let island_id = format!("fission-island:sha256:{seed_hash}");
     let candidate_evidence_id = format!("evidence:fission-island-input:{seed_hash}");
     let required_oracle_id = format!("oracle:required:sha256:{seed_hash}");
+    let output_oracle_target = outcome
+        .target_symbols
+        .first()
+        .cloned()
+        .or_else(|| generated_role_path.clone())
+        .or_else(|| source_paths.first().cloned())
+        .unwrap_or_else(|| selected_artifact_id.to_string());
 
     let mut candidate = serde_json::json!({
         "schemaVersion": crate::hmr::gpu_fission::FISSION_ISLAND_SCHEMA_VERSION,
@@ -5811,6 +5818,20 @@ fn partial_fission_candidate_and_evidence(
             "acceptedTransports": ["ram_blob", "filesystem_path"],
         },
         "requiredOracleId": required_oracle_id,
+        "outputOracleProposal": {
+            "kind": "buffer_checksum",
+            "producer": "worker.runtime_dispatch_replay",
+            "expected": "runtime_readback_changed_after_epoch_dispatch",
+            "outputTargetId": format!("kernel-output:{output_oracle_target}"),
+            "readbackPlan": {
+                "syncPoint": "after-dispatch",
+                "timestampSource": "runtime-boundary",
+                "probeMode": "runtime-dispatch-replay"
+            },
+            "sessionIdSource": "runtime-session",
+            "artifactId": selected_artifact_id,
+            "selectedArtifactId": selected_artifact_id
+        },
         "verifierEvidenceIds": [
             candidate_evidence_id.clone(),
             compiler_evidence_id,
