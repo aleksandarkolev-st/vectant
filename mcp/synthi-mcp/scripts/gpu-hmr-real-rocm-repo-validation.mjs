@@ -1024,11 +1024,11 @@ async function writeTargetProgressionLedgerArtifact(outputDir, { report, entry }
 }
 
 const REAL_ROCM_PROFILE = loadRealRocmProfile();
-const configuredRepoUrl = process.env.SYNTHI_REAL_ROCM_REPO_URL ?? REAL_ROCM_PROFILE.repo.url;
+const configuredRepoUrl = process.env.SYNTHI_REAL_ROCM_REPO_URL || REAL_ROCM_PROFILE.repo.url;
 const configuredRepoName = cleanIdentifier(
   process.env.SYNTHI_REAL_ROCM_REPO_NAME
-    ?? REAL_ROCM_PROFILE.repo.name
-    ?? repoNameFromUrl(configuredRepoUrl),
+    || REAL_ROCM_PROFILE.repo.name
+    || repoNameFromUrl(configuredRepoUrl),
 );
 const configuredWorkspaceRoot =
   process.env.SYNTHI_REAL_ROCM_WORKSPACE_ROOT ?? `/workspace/${configuredRepoName}`;
@@ -1066,8 +1066,8 @@ const configuredOutputOracleJson = process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JS
 const CFG = {
   repoUrl: configuredRepoUrl,
   repoName: configuredRepoName,
-  repoPath: path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_REPO_PATH ?? `tmp/real-rocm/${configuredRepoName}`),
-  repoCommit: process.env.SYNTHI_REAL_ROCM_COMMIT ?? REAL_ROCM_PROFILE.repo.commit ?? '',
+  repoPath: path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_REPO_PATH || `tmp/real-rocm/${configuredRepoName}`),
+  repoCommit: process.env.SYNTHI_REAL_ROCM_COMMIT || REAL_ROCM_PROFILE.repo.commit || '',
   initSubmodules: process.env.SYNTHI_REAL_ROCM_INIT_SUBMODULES !== undefined
     ? process.env.SYNTHI_REAL_ROCM_INIT_SUBMODULES !== '0'
     : REAL_ROCM_PROFILE.repo.initSubmodules ?? true,
