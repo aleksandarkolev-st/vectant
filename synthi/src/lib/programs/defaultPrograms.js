@@ -21,6 +21,11 @@ const WEB_SCOPES = ['program.launch', 'network.outbound', 'ports.expose'];
 const DBEAVER_IMAGE = process.env.VECTANT_DBEAVER_IMAGE || 'vectant-dbeaver:dev';
 const DBEAVER_PORT = Number(process.env.VECTANT_DBEAVER_PORT) || 6901;
 
+// Postman shares the same KasmVNC kiosk tier (curated gui-base image). Its KasmVNC
+// port is distinct from DBeaver's so both can stream in one workspace at once.
+const POSTMAN_IMAGE = process.env.VECTANT_POSTMAN_IMAGE || 'vectant-postman:dev';
+const POSTMAN_PORT = Number(process.env.VECTANT_POSTMAN_PORT) || 6902;
+
 // Web-UI tier (Docker GUI): the official Portainer CE image. Env-driven so prod
 // pins a digest in Artifact Registry; defaults to the upstream LTS tag.
 const PORTAINER_IMAGE = process.env.VECTANT_PORTAINER_IMAGE || 'portainer/portainer-ce:lts';
@@ -118,6 +123,25 @@ export const DEFAULT_PROGRAM_RECIPES = [
       install: [],
       launch: `docker run --rm --name vectant-dbeaver -p ${DBEAVER_PORT}:${DBEAVER_PORT} ${workspaceMountFlags()} ${DBEAVER_IMAGE}`,
       ports: [DBEAVER_PORT],
+      permissions: ['program.launch', 'network.outbound', 'ports.expose'],
+    },
+  },
+  {
+    name: 'postman',
+    kind: 'manifest',
+    recipe: {
+      packageId: 'postman', version: '1.0.0',
+      displayName: 'Postman',
+      description: 'Postman API client — build, test and debug APIs, streamed to your workspace via KasmVNC.',
+      // Same KasmVNC-desktop tier as DBeaver: the curated single-app kiosk image,
+      // streamed as a webGui floating surface. A distinct KASM_PORT (6902 vs
+      // DBeaver's 6901) lets both stream in one workspace runtime without a
+      // host-port clash. The workspace is mounted so Postman can import/export
+      // collections as /workspace files.
+      runtimeType: 'container', webGui: true,
+      install: [],
+      launch: `docker run --rm --name vectant-postman -p ${POSTMAN_PORT}:${POSTMAN_PORT} -e KASM_PORT=${POSTMAN_PORT} ${workspaceMountFlags()} ${POSTMAN_IMAGE}`,
+      ports: [POSTMAN_PORT],
       permissions: ['program.launch', 'network.outbound', 'ports.expose'],
     },
   },

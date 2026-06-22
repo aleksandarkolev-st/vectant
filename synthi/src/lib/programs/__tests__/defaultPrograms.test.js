@@ -7,7 +7,7 @@ describe('buildDefaultPrograms', () => {
 
   it('builds one valid @vectant/<name> program per recipe', () => {
     expect(built.length).toBe(DEFAULT_PROGRAM_RECIPES.length);
-    expect(built.length).toBe(9);
+    expect(built.length).toBe(10);
     for (const { packageId, config } of built) {
       expect(packageId).toMatch(/^@vectant\/[a-z0-9._-]+$/);
       expect(SUPPORTED_RUNTIME_TYPES).toContain(config.runtimeType);
@@ -37,6 +37,19 @@ describe('buildDefaultPrograms', () => {
     // Mounts the workspace so DBeaver reads/writes the same /workspace files as the editor.
     expect(dbeaver.launch).toContain('-v "$PWD":/workspace -w /workspace');
     expect(dbeaver.permissions).toContain('ports.expose');
+  });
+
+  it('ships @vectant/postman as a webGui container program (KasmVNC)', () => {
+    const postman = built.find((b) => b.packageId === '@vectant/postman').config;
+    expect(postman.runtimeType).toBe('container');
+    expect(postman.webGui).toBe(true);
+    expect(postman.ports).toEqual([6902]);
+    expect(postman.launch).toMatch(/^docker run .*-p 6902:6902/);
+    // Distinct KasmVNC port so Postman and DBeaver (6901) can run side by side.
+    expect(postman.launch).toContain('-e KASM_PORT=6902');
+    // Mounts the workspace so Postman imports/exports collections as /workspace files.
+    expect(postman.launch).toContain('-v "$PWD":/workspace -w /workspace');
+    expect(postman.permissions).toContain('ports.expose');
   });
 
   it('ships @vectant/portainer as a web-UI container program (Docker GUI)', () => {
@@ -89,9 +102,9 @@ describe('ensureDefaultPrograms', () => {
 
     expect(seeded).toContain('@vectant/nextjs-dev');
     expect(seeded).toContain('@vectant/dbeaver');
-    expect(seeded.length).toBe(9);
-    expect(prisma.marketplaceProgram.upsert).toHaveBeenCalledTimes(9);
-    expect(prisma.programVersion.upsert).toHaveBeenCalledTimes(9);
+    expect(seeded.length).toBe(10);
+    expect(prisma.marketplaceProgram.upsert).toHaveBeenCalledTimes(10);
+    expect(prisma.programVersion.upsert).toHaveBeenCalledTimes(10);
 
     const arg = prisma.marketplaceProgram.upsert.mock.calls.find(
       (c) => c[0].where.packageId === '@vectant/nextjs-dev',

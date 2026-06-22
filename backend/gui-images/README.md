@@ -10,6 +10,7 @@ Spec: `docs/superpowers/specs/2026-06-20-gui-dev-tool-streaming-design.md`.
 |---|---|---|
 | `gui-base/` | `debian:bookworm-slim` + KasmVNC + matchbox-window-manager | nothing on its own — sets up the kiosk; child images set `APP_CMD` |
 | `dbeaver/` | `gui-base` + DBeaver CE (bundled JRE) | DBeaver Community database GUI |
+| `postman/` | `gui-base` + Postman (bundled Electron) | Postman API client |
 
 ## Kiosk security model
 
@@ -32,7 +33,11 @@ Spec: `docs/superpowers/specs/2026-06-20-gui-dev-tool-streaming-design.md`.
 ```bash
 docker build -t vectant-gui-base:dev backend/gui-images/gui-base
 docker build -t vectant-dbeaver:dev  backend/gui-images/dbeaver        # FROM vectant-gui-base:dev
+docker build -t vectant-postman:dev  backend/gui-images/postman        # FROM vectant-gui-base:dev
 ```
+
+Postman streams on a distinct KasmVNC port (`6902`) from DBeaver (`6901`) so both
+can run side by side in one workspace; its recipe passes `-e KASM_PORT=6902`.
 
 Override the base for CI / registry builds:
 `docker build --build-arg BASE_IMAGE=<registry>/vectant-gui-base@sha256:... -t <registry>/vectant-dbeaver:<tag> backend/gui-images/dbeaver`
