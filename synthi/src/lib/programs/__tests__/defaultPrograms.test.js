@@ -37,6 +37,10 @@ describe('buildDefaultPrograms', () => {
     // Mounts the workspace so DBeaver reads/writes the same /workspace files as the editor.
     expect(dbeaver.launch).toContain('-v "$PWD":/workspace -w /workspace');
     expect(dbeaver.permissions).toContain('ports.expose');
+    // Per-session auto-login: the password is injected by the runtime manager;
+    // the recipe only declares the passthrough (no value committed).
+    expect(dbeaver.launch).toMatch(/-e KASM_PASSWORD(\s|$)/);
+    expect(dbeaver.launch).not.toContain('KASM_PASSWORD=');
   });
 
   it('ships @vectant/postman as a webGui container program (KasmVNC)', () => {
@@ -50,6 +54,9 @@ describe('buildDefaultPrograms', () => {
     // Mounts the workspace so Postman imports/exports collections as /workspace files.
     expect(postman.launch).toContain('-v "$PWD":/workspace -w /workspace');
     expect(postman.permissions).toContain('ports.expose');
+    // Per-session auto-login passthrough (distinct from the -e KASM_PORT value above).
+    expect(postman.launch).toMatch(/-e KASM_PASSWORD(\s|$)/);
+    expect(postman.launch).not.toContain('KASM_PASSWORD=');
   });
 
   it('ships @vectant/portainer as a web-UI container program (Docker GUI)', () => {

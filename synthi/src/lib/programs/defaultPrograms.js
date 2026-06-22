@@ -121,7 +121,7 @@ export const DEFAULT_PROGRAM_RECIPES = [
       // by the runtime port monitor and surfaced via the slice-1 proxy.
       runtimeType: 'container', webGui: true,
       install: [],
-      launch: `docker run --rm --name vectant-dbeaver -p ${DBEAVER_PORT}:${DBEAVER_PORT} ${workspaceMountFlags()} ${DBEAVER_IMAGE}`,
+      launch: `docker run --rm --name vectant-dbeaver -p ${DBEAVER_PORT}:${DBEAVER_PORT} -e KASM_PASSWORD ${workspaceMountFlags()} ${DBEAVER_IMAGE}`,
       ports: [DBEAVER_PORT],
       permissions: ['program.launch', 'network.outbound', 'ports.expose'],
     },
@@ -140,7 +140,7 @@ export const DEFAULT_PROGRAM_RECIPES = [
       // collections as /workspace files.
       runtimeType: 'container', webGui: true,
       install: [],
-      launch: `docker run --rm --name vectant-postman -p ${POSTMAN_PORT}:${POSTMAN_PORT} -e KASM_PORT=${POSTMAN_PORT} ${workspaceMountFlags()} ${POSTMAN_IMAGE}`,
+      launch: `docker run --rm --name vectant-postman -p ${POSTMAN_PORT}:${POSTMAN_PORT} -e KASM_PORT=${POSTMAN_PORT} -e KASM_PASSWORD ${workspaceMountFlags()} ${POSTMAN_IMAGE}`,
       ports: [POSTMAN_PORT],
       permissions: ['program.launch', 'network.outbound', 'ports.expose'],
     },
