@@ -26,9 +26,11 @@ import {
   formatProgramSessionAge,
   formatProgramSessionPorts,
   isActiveProgramSession,
+  isTerminalRuntimeType,
 } from './programSessionSections';
 import { activateTabAction, openTab, openFloatingPanel, bringFloatToFrontAction, selectNodes, selectTabs, selectFloating, setFocusedTabGroup } from '@/components/docking-wm/state/layout-slice';
 import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
+import { setShowTerminal } from '@/redux/uiSlice';
 
 function sessionLabel(session) {
   if (!session?.id) {
@@ -327,8 +329,21 @@ export default function ProgramsPanel() {
 
   const sections = useMemo(() => buildProgramSessionSections(sessions), [sessions]);
 
-  const openProgramSession = useCallback((session) => {
+  const openProgramSession = useCallback((session, { label = null, command = null } = {}) => {
     if (!session?.id) return;
+
+    // CLI/TUI programs run in the REAL integrated terminal (a terminal tab bound
+    // to the session PTY), not a ProgramSessionPanel. Reuses the same
+    // terminal-session-open event the AI terminal uses; TerminalManager dedups by
+    // fixedSessionId, so re-launch / Open re-focuses the existing tab. Closing the
+    // tab only detaches — the managed session is stopped from this panel.
+    if (isTerminalRuntimeType(session.runtimeType)) {
+      dispatch(setShowTerminal(true));
+      window.dispatchEvent(new CustomEvent('terminal-session-open', {
+        detail: { sessionId: session.id, command: command || null, label: label || sessionLabel(session) },
+      }));
+      return;
+    }
 
     // Already open as a docked tab → focus it.
     const existing = findProgramSessionTab(nodes, tabs, session.id);
@@ -391,7 +406,7 @@ export default function ProgramsPanel() {
       });
       toast.success('Program launched');
       if (launched?.session) {
-        openProgramSession(launched.session);
+        openProgramSession(launched.session, { command: trimmed, label: trimmed });
       }
       await load();
     } catch (error) {
@@ -467,7 +482,7 @@ export default function ProgramsPanel() {
       const result = await launchInstalledProgram(workspaceSlug, install.id);
       toast.success('Program launched');
       if (result?.session) {
-        openProgramSession(result.session);
+        openProgramSession(result.session, { label: install.packageId });
       }
       await load();
     } catch (error) {
