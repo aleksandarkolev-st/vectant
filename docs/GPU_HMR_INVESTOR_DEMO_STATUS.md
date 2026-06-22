@@ -18,7 +18,8 @@ Best demo surfaces:
 4. ThreeJS WebGL external profile: concrete external runtime screenshot proof, not full ledger acceptance.
 5. WebGPU Chrome/AMD scoped WGSL runtime visual proof: shader-module/pipeline/frame proof for an explicit-empty-layout profile.
 6. Strict ROCm/HIP compute ledger: strongest full-runtime proof artifact and output-oracle readback.
-7. HIPRT same-process CameraRays and MegaKernel: historical ray-traced visual evidence, currently not a full-runtime matrix acceptance because the artifacts lack embedded proof ledgers.
+7. HIPRT same-process CameraRays: scoped ray-traced visual full-runtime proof with embedded ledger/runtime artifact and nonblank oracle-region proof.
+8. HIPRT MegaKernel direct-light-zero: useful adversarial visual refusal proving blank render-region output is not accepted.
 
 Do not claim:
 
@@ -26,7 +27,7 @@ Do not claim:
 CUDA was proven on this AMD GPU.
 Every arbitrary GPU project is production accepted.
 Bevy or broad/general WebGPU has full-runtime proof-ledger acceptance.
-HIPRT is currently accepted in the strict matrix.
+Broad HIPRT is accepted beyond the scoped CameraRays profile.
 OIDN HIP produced or validated the accepted visual output.
 OpenCL dispatch/readback output proof was validated on this worker.
 Vulkan pipeline/command-buffer/frame output proof was validated on this worker.
@@ -39,9 +40,9 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 22 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:5e7e21c031eaaa75d3e53451664e37eb1fee59b112a8bcc663f19731fea9e5a5
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T180247Z.json
-global matrix summary: 22 rows, 8 full-runtime GPU HMR, 8 refusals, 3 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
+global matrix: gpu-validation-matrix-ledger:sha256:23d6eee28cfeaa70120157e85e85ab854f08ce2663c2cdcd53f26cbe29f03172
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T190954Z.json
+global matrix summary: 25 rows, 9 full-runtime GPU HMR, 10 refusals, 3 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 focused Flow/ray-light matrix: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 focused matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-focused-flow-ray-light-20260622T181300Z.json
 focused matrix coverage: ROCm/HIP full runtime accepted, Flow visual path accepted, ray-light visual path accepted, per-target run modes accepted, per-kernel/smallest-safe fission accepted
@@ -73,8 +74,9 @@ Flow timings: hot1 total_validator_wall_time=2961567300ns, hot2 total_validator_
 Current HIPRT/OIDN caveat:
 
 ```text
-HIPRT rerun attempted on 2026-06-22 with SYNTHI_HIPRT_PROBE_GPU_ARCH=gfx1201. It passed sandbox escalation but failed real preflight because /tmp/synthi-real-rocm/HIPRT-Path-Tracer is absent from vectant-ade-worker-1.
-OIDN live preflight is not configured in the current worker state: SYNTHI_OIDN_WORKER_CONTAINER and SYNTHI_OIDN_REPO_PATH are required, and no OIDN/HIPRT checkout exists under /tmp/synthi-real-rocm.
+HIPRT CameraRays rerun on 2026-06-22 with SYNTHI_HIPRT_PROBE_GPU_ARCH=gfx1201 is strict-matrix accepted for that scoped ray-traced profile.
+HIPRT MegaKernel direct-light-zero rerun on 2026-06-22 is refused because the post-epoch oracle region is blank.
+OIDN live preflight ran against /tmp/synthi-real-rocm/HIPRT-Path-Tracer and is rejected for HIP output proof because libOpenImageDenoise_device_hip.so.2.3.0 depends on missing libamdhip64.so.5.
 No compatibility shim, symlink, fake ICD, or project-specific branch was added.
 ```
 
@@ -83,6 +85,7 @@ No compatibility shim, symlink, fake ICD, or project-specific branch was added.
 Latest implementation commits:
 
 ```text
+ae6bbce3b fix(gpu-hmr): require HIPRT oracle-region proof
 76b89062f test(gpu-hmr): refresh wait proof fixture
 bddd1e7eb fix(gpu-hmr): require strict ledger materials in matrix
 f3a25f5df fix(gpu-hmr): embed visual ledger proof in split runs
@@ -123,6 +126,7 @@ Generated split topology now rejects per-kernel HMR unless deterministic fission
 Narrow generated fission candidates now require topology binding to a content-addressed partial artifact before the verifier can pass them.
 The deterministic fission verifier accepts ray-light `trace_light_rays` and refuses Flow because the selected generated device role contains two kernels.
 The validation matrix now carries run-mode evidence, refuses WebGPU supplied-query-only proofs without an embedded ledger, and treats standalone external rejection proof artifacts as first-class refusal rows.
+HIPRT visual matrix acceptance now requires embedded proof-ledger/runtime-artifact materials plus a data-derived nonblank oracle-region check; direct-light-zero is refused as blank render-region output.
 Ray-light and Flow now have hot-delta-1 monotonic timing evidence from live MCP timing-matrix runs.
 Vulkan preflight now rejects missing ICD/tool evidence and cannot count as pipeline or frame-output proof.
 WebGPU preflight records Chrome launch flags, AMD RDNA4 adapter evidence, and a nonblank diagnostic screenshot, but still cannot count as shader/pipeline/frame HMR proof.
@@ -155,10 +159,14 @@ npm --prefix mcp/synthi-mcp run proof:webgpu:preflight:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:external-project:self-check -> passed
+node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:5e7e21c031eaaa75d3e53451664e37eb1fee59b112a8bcc663f19731fea9e5a5
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:23d6eee28cfeaa70120157e85e85ab854f08ce2663c2cdcd53f26cbe29f03172
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
+npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
+npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
+npm --prefix mcp/synthi-mcp run build -> passed
 ```
 
 ## Live Preview Targets
@@ -319,7 +327,7 @@ Missing coverage keeps the row unproven; Flow rejects at symbol_ownership.
 
 ## HIPRT Ray-Traced Proof
 
-HIPRT is historical same-process path-tracer visual evidence, not the MCP preview path and not current strict-matrix full-runtime acceptance. The current matrix requires embedded proof-ledger/runtime-artifact materials; the older HIPRT warm visual artifacts do not contain them. A fresh 2026-06-22 rerun was blocked because `/tmp/synthi-real-rocm/HIPRT-Path-Tracer` is absent from `vectant-ade-worker-1`.
+HIPRT is separate from the MCP browser preview path. The current investor-safe HIPRT claim is scoped: CameraRays same-process ray-traced visual HMR is strict-matrix accepted with embedded proof-ledger/runtime-artifact materials and nonblank oracle-region proof. MegaKernel direct-light-zero is not accepted; it is a proven blank render-region refusal.
 
 ```text
 worker repo path: /tmp/synthi-real-rocm/HIPRT-Path-Tracer
@@ -332,45 +340,55 @@ CameraRays:
 
 ```text
 profile: hiprt-camera-rays-horizontal-mirror
-proof id: hiprt-warm-runtime-proof:sha256:aa108131d5999bc6c473971db04f4bc0c047e0bce9570614a85f483f27c2ac40
-proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032207-proof.json
-before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032207-same-process-baseline-framebuffer.png
-after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032207-same-process-changed-framebuffer.png
-diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032207-diff-amplified.png
+proof id: hiprt-warm-runtime-proof:sha256:1d15cb417f082b7ed3602abaecf05d8983c6ac647d0076a510fe75e477c38aea
+strict runtime proof id: gpu-runtime-proof:sha256:7ef274e6d60f3a17f66b02437ff9846073744ba3408f013430bdc0ed75283f25
+proof ledger id: gpu-ledger-proof:sha256:c7345ddcd4b9ddf1ef1e56d0fadf8dffb56d2a688074c8337c3bdbca265a6037
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-camera-rays-strict-region-20260622-proof.json
+before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-camera-rays-strict-region-20260622-same-process-baseline-framebuffer.png
+after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-camera-rays-strict-region-20260622-same-process-changed-framebuffer.png
+diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-camera-rays-strict-region-20260622-diff-amplified.png
 changed pixels: 91.4019%
 mean abs delta 8-bit: 53.1273
-live recompile: 41ms
-edit to first visual: 1894ms
-total wall: 12843.4901ms
+oracle-region nonblank: true
+live recompile: 87ms
+edit to first visual: 8008ms
+total wall: 32815.8128ms
 ```
 
-MegaKernel direct-light:
+MegaKernel direct-light-zero refusal:
 
 ```text
 profile: hiprt-megakernel-direct-light-zero
-proof id: hiprt-warm-runtime-proof:sha256:bc32cdeabf7439f559b0f3b16403dcc36738612d6e691bc362a2c9ba98ea93ac
-proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032241-proof.json
-before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032241-same-process-baseline-framebuffer.png
-after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032241-same-process-changed-framebuffer.png
-diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-warm-light-math-20260609032241-diff-amplified.png
+accepted: false
+matrix outcome: refusal_proven
+proof id: hiprt-warm-runtime-proof:sha256:ca0effaf57433ead4ef062c54a168537178f84f555425fbc87127f5caa516f9e
+strict runtime proof id: gpu-runtime-proof:sha256:2be665516b31ddf724e6d793013f4a141db419e8259cccefdea4d10594dbafbe
+proof ledger id: gpu-ledger-proof:sha256:32b1b8f456fa3b31984ac997ddc404e88cfa8e0c03117429e787677a983d937f
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-megakernel-blank-refusal-20260622-proof.json
+before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-megakernel-blank-refusal-20260622-same-process-baseline-framebuffer.png
+after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-megakernel-blank-refusal-20260622-same-process-changed-framebuffer.png
+diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-megakernel-blank-refusal-20260622-diff-amplified.png
 changed pixels: 41.8229%
 mean abs delta 8-bit: 32.9462
-live recompile: 75ms
-edit to first visual: 2389ms
-total wall: 13764.7823ms
+oracle-region nonblank: false
+oracle-region changed visible ratio: 0.007079728781856441
+live recompile: 209ms
+edit to first visual: 7623ms
+total wall: 30637.1206ms
 ```
 
-Visual inspection: both HIPRT diffs are readable and nonblank. CameraRays shows a mirrored/recomposed Cornell-style framebuffer; MegaKernel shows a direct-light contribution change.
+Visual inspection: CameraRays before/after/diff are readable and nonblank, showing a mirrored/recomposed Cornell-style framebuffer. MegaKernel's changed render region is mostly black, and the stricter oracle refuses it even though the diff image is high-signal.
 
 ## OIDN Result
 
 Structured OIDN preflight proof:
 
 ```text
-proof id: oidn-preflight-proof:sha256:809e4e3e9613c6343fcd6fd0b3f138db66f781b74104126e65d7cc06830c60ef
+proof id: oidn-preflight-proof:sha256:5fc3136f57579a91c4be2475af7d1776d23e5c19696d7f76a1794413db5ec21a
 result state: oidn-hip-rejected
-proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger-proof.json
-summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger-summary.txt
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260622-real-checkout-proof.json
+summary: mcp/synthi-mcp/.gpu-hmr-test-artifacts/oidn-preflight/oidn-hiprt-rocm-preflight-20260622-real-checkout-summary.txt
+repo path: /tmp/synthi-real-rocm/HIPRT-Path-Tracer
 ```
 
 OIDN HIP was tested and rejected:
@@ -385,6 +403,9 @@ result: FAILED, bool(device) false
 ldd libOpenImageDenoise_device_hip.so.2.3.0:
 libamdhip64.so.5 => not found
 unsupported reasons: missing_dependency:libamdhip64.so.5, oidn_hip_buffer_read_write_failed, oidn_hip_device_creation_failed
+noShimApplied: true
+noSymlinkApplied: true
+noSynthesizedRuntime: true
 ```
 
 OIDN CPU diagnostics passed:
