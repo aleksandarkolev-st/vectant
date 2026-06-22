@@ -877,6 +877,7 @@ async function generatedSplitFissionRow(json, filePath, context) {
 async function hiprtWarmRow(json, filePath, context) {
   const acceptance = compactObject(json.acceptance);
   const diff = compactObject(json.diff);
+  const oracleRegion = compactObject(diff.oracleRegion ?? diff.oracle_region);
   const baseline = compactObject(json.runtime?.baseline);
   const changed = compactObject(json.runtime?.changed);
   const strict = compactObject(json.strictHmrProvenance ?? json.strict_hmr_provenance);
@@ -902,6 +903,12 @@ async function hiprtWarmRow(json, filePath, context) {
     },
     true,
   );
+  const oracleRegionAccepted =
+    acceptance.oracleRegionNonBlank === true
+    && oracleRegion.nonBlankAfterEpoch === true
+    && oracleRegion.blankFrameRejected === true
+    && finiteNumber(oracleRegion.changed?.visiblePixelRatio) > 0
+    && finiteNumber(oracleRegion.changed?.visiblePixels) > 0;
   const accepted =
     json.accepted === true
     && ledger.present === true
@@ -913,10 +920,18 @@ async function hiprtWarmRow(json, filePath, context) {
     && acceptance.strictProvenance === true
     && acceptance.sameProcessRuntime === true
     && acceptance.visualDelta === true
+    && oracleRegionAccepted === true
     && strict.fullRuntimeProven === true
     && strict.strictFullRuntimePassed === true
     && changed.sameProcess === true
     && visual.accepted === true;
+  const blankRegionRefusal =
+    json.accepted === false
+    && acceptance.visualDelta === true
+    && acceptance.oracleRegionNonBlank === false
+    && oracleRegion.blankFrameRejected === false
+    && finiteNumber(oracleRegion.changed?.visiblePixelRatio) !== null
+    && finiteNumber(oracleRegion.changed?.visiblePixels) !== null;
   const profileId = firstText(json.profile?.id, json.profileId, json.slug);
   const runMode = timingEvidence(json.timingMetrics, json.timing_metrics, json.timings);
   return finalizeRow({
@@ -928,13 +943,21 @@ async function hiprtWarmRow(json, filePath, context) {
     profileId,
     proofMode: firstText(json.mode, 'same-process'),
     evidenceKind: 'raytraced_visual_oracle',
-    matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
-    acceptanceClass: accepted ? 'full_runtime_gpu_hmr' : 'hiprt_runtime_rejected',
+    matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : blankRegionRefusal ? 'refusal_proven' : 'unproven',
+    acceptanceClass: accepted
+      ? 'full_runtime_gpu_hmr'
+      : blankRegionRefusal
+        ? 'hiprt_visual_blank_region_refusal'
+        : 'hiprt_runtime_rejected',
     acceptedForGpuHmr: accepted,
     gpuHmrSuccess: accepted,
-    refusalProven: false,
-    proofChainAccepted: accepted,
-    proofChain: accepted ? 'embedded_runtime_proof_artifact_recomputed_ledger' : 'hiprt_strict_runtime_rejected',
+    refusalProven: blankRegionRefusal,
+    proofChainAccepted: accepted || blankRegionRefusal,
+    proofChain: accepted
+      ? 'embedded_runtime_proof_artifact_recomputed_ledger'
+      : blankRegionRefusal
+        ? 'hiprt_oracle_region_blank_refusal'
+        : 'hiprt_strict_runtime_rejected',
     proofIds: proofIdsFrom(json, strict, runtimeProofArtifact, ledger),
     ledger,
     runtimeProofArtifact: runtimeProofArtifactProof,
@@ -957,11 +980,16 @@ async function hiprtWarmRow(json, filePath, context) {
       ledger.failedInvariants.length === 0 ? null : 'proof_ledger_invariants_failed',
       runtimeProofArtifactProof.present === true ? null : 'runtime_proof_artifact_missing',
       runtimeProofArtifactProof.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
+      oracleRegionAccepted === true ? null : 'hiprt_oracle_region_nonblank_not_proven',
       cpuHmrUsed === false ? null : 'cpu_hmr_firewall_field_not_false',
       fullRebuildUsed === false ? null : 'full_rebuild_firewall_field_not_false',
       processRestarted === false ? null : 'process_restart_firewall_field_not_false',
     ]),
-    openGaps: accepted ? [] : ['hiprt_same_process_visual_proof_not_accepted'],
+    openGaps: accepted
+      ? []
+      : blankRegionRefusal
+        ? ['full_runtime_gpu_hmr_not_proven_blank_oracle_region']
+        : ['hiprt_same_process_visual_proof_not_accepted'],
   });
 }
 

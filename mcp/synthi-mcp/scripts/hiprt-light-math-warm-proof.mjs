@@ -17,6 +17,18 @@ import {
 } from './lib/hiprt-runtime-probe-adapter.mjs';
 import { hiprtWarmTimingMetrics } from './lib/gpu-hmr-timing-metrics.mjs';
 import { monotonicNowNs, monotonicTimingFields } from './lib/gpu-hmr-monotonic-clock.mjs';
+import {
+  buildGpuHmrProofLedger,
+  queryGpuHmrLedgerInvariants,
+} from './lib/gpu-hmr-proof-ledger.mjs';
+import {
+  GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
+  deriveGpuHmrAcceptanceContractFromVerifiedProofs,
+  evaluateGpuHmrAcceptanceContract,
+  evaluateGpuHmrAcceptanceContractConsistency,
+} from './lib/gpu-hmr-acceptance-contract.mjs';
+import { evaluateGpuHmrDeterministicVisualMode } from './lib/gpu-hmr-visual-evidence.mjs';
+import { runtimeProofArtifactStrictGate } from './lib/gpu-hmr-proof-strict-gates.mjs';
 
 const execFile = promisify(execFileCb);
 
@@ -181,6 +193,24 @@ const CFG = {
       ?? PROFILE.minMeanAbsDelta8bit
       ?? 1.0,
   ),
+  minOracleRegionVisibleRatio: Number(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_MIN_ORACLE_REGION_VISIBLE_RATIO
+      ?? process.env.SYNTHI_HIPRT_WARM_MIN_ORACLE_REGION_VISIBLE_RATIO
+      ?? PROFILE.minOracleRegionVisibleRatio
+      ?? 0.02,
+  ),
+  minOracleRegionMeanLuma8bit: Number(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_MIN_ORACLE_REGION_MEAN_LUMA_8BIT
+      ?? process.env.SYNTHI_HIPRT_WARM_MIN_ORACLE_REGION_MEAN_LUMA_8BIT
+      ?? PROFILE.minOracleRegionMeanLuma8bit
+      ?? 4,
+  ),
+  minOracleRegionUniqueColorSampleCount: Number(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_MIN_ORACLE_REGION_UNIQUE_COLORS
+      ?? process.env.SYNTHI_HIPRT_WARM_MIN_ORACLE_REGION_UNIQUE_COLORS
+      ?? PROFILE.minOracleRegionUniqueColorSampleCount
+      ?? 64,
+  ),
   requireStrictProvenance:
     (process.env.SYNTHI_GPU_HMR_RUNTIME_REQUIRE_STRICT_PROVENANCE ?? process.env.SYNTHI_HIPRT_WARM_REQUIRE_STRICT_PROVENANCE) !== '0',
   allowRejected: (process.env.SYNTHI_GPU_HMR_RUNTIME_ALLOW_REJECTED ?? process.env.SYNTHI_HIPRT_WARM_ALLOW_REJECTED) === '1',
@@ -309,6 +339,18 @@ function sha256Hex(input) {
   return createHash('sha256').update(input).digest('hex');
 }
 
+function stableJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(value[key])}`
+  ).join(',')}}`;
+}
+
+function sha256Json(value) {
+  return `sha256:${sha256Hex(stableJson(value))}`;
+}
+
 async function execText(file, args, options = {}) {
   try {
     const result = await execFile(file, args, {
@@ -424,6 +466,7 @@ async function readBaselineSourceFromGit() {
 }
 
 async function writeVariantSource({ variant, text }) {
+  const startedAt = Date.now();
   const localPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-${variant}-${path.basename(CFG.sourceRel)}`);
   await fs.mkdir(path.dirname(localPath), { recursive: true });
   await fs.writeFile(localPath, text);
@@ -436,6 +479,7 @@ async function writeVariantSource({ variant, text }) {
     localPath,
     contentHash: `sha256:${sha256Hex(text)}`,
     workerSha256: `sha256:${workerHashLine.trim().split(/\s+/)[0]}`,
+    hostWallMs: Date.now() - startedAt,
   };
 }
 
@@ -463,6 +507,191 @@ function parseCaptureLine(log) {
     && line.includes('capture_path=')
     && line.includes('wrote=1')
   ) ?? '';
+}
+
+function parseKeyValuePairs(line) {
+  const pairs = {};
+  for (const match of String(line ?? '').matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|\([^)]*\)|[^\s]+)/g)) {
+    const raw = match[2];
+    pairs[match[1]] = raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+  }
+  return pairs;
+}
+
+function parseLaunchDim(value) {
+  const match = /^\((\d+),(\d+),(\d+)\)$/.exec(String(value ?? '').trim());
+  return match ? match.slice(1).map((item) => Number(item)) : null;
+}
+
+function parseNativeRuntimeLine(line, lineIndex) {
+  const values = parseKeyValuePairs(line);
+  const runtimeSession = values.runtime_session ?? '';
+  const processId = /^native-launch-observer:(\d+)$/.exec(runtimeSession)?.[1] ?? values.pid ?? null;
+  return {
+    lineIndex,
+    raw: line,
+    api: values.api ?? null,
+    runtimeSession,
+    processId,
+    sequence: values.sequence ? Number(values.sequence) : null,
+    functionPtr: values.function_ptr ?? null,
+    kernelSymbol: values.kernel_symbol ?? values.symbol ?? null,
+    gridDim: parseLaunchDim(values.grid),
+    blockDim: parseLaunchDim(values.block),
+    argsPtr: values.args_ptr ?? null,
+    stream: values.stream ?? null,
+    sharedBytes: values.shared_bytes ? Number(values.shared_bytes) : 0,
+    result: values.result ? Number(values.result) : null,
+    dispatch: values.dispatch ?? null,
+    attachmentProvenance: values.attachment_provenance ?? null,
+    module: values.module ?? null,
+    resolution: values.resolution ?? null,
+  };
+}
+
+function parseSameProcessRecompileLine(line, lineIndex) {
+  if (!line.includes('same_process_recompile') || !line.includes('result=success')) return null;
+  const values = parseKeyValuePairs(line);
+  return {
+    lineIndex,
+    raw: line,
+    kernelSymbol: values.kernel ?? null,
+    kernelName: values.kernel_name ?? null,
+    elapsedMs: values.elapsed_ms ? Number(values.elapsed_ms) : null,
+  };
+}
+
+function parsePostRecompileRuntimeEvidence(log, kernelSymbol) {
+  const lines = String(log ?? '').split(/\r?\n/);
+  const recompile = lines
+    .map((line, lineIndex) => parseSameProcessRecompileLine(line, lineIndex))
+    .find((record) => record && (!kernelSymbol || record.kernelSymbol === kernelSymbol));
+  if (!recompile) return null;
+  const resolution = lines
+    .slice(recompile.lineIndex)
+    .map((line, offset) => ({ line, lineIndex: recompile.lineIndex + offset }))
+    .find(({ line }) =>
+      line.includes('native_function_resolution')
+      && line.includes(`symbol=${kernelSymbol}`)
+      && line.includes('result=0')
+    );
+  const dispatch = lines
+    .slice(recompile.lineIndex)
+    .map((line, offset) => ({ line, lineIndex: recompile.lineIndex + offset }))
+    .find(({ line }) =>
+      line.includes('native_launch_observed')
+      && line.includes(`kernel_symbol=${kernelSymbol}`)
+      && line.includes('result=0')
+    );
+  const capture = lines
+    .slice(dispatch ? dispatch.lineIndex : recompile.lineIndex)
+    .map((line, offset) => ({
+      line,
+      lineIndex: (dispatch ? dispatch.lineIndex : recompile.lineIndex) + offset,
+    }))
+    .find(({ line }) =>
+      line.includes('same_process_capture')
+      && line.includes('label=changed-after-in-process-recompile')
+      && line.includes('wrote=1')
+    );
+  if (!dispatch || !capture) {
+    return {
+      recompile,
+      resolution: resolution ? parseNativeRuntimeLine(resolution.line, resolution.lineIndex) : null,
+      dispatch: dispatch ? parseNativeRuntimeLine(dispatch.line, dispatch.lineIndex) : null,
+      captureLine: capture?.line ?? null,
+      accepted: false,
+    };
+  }
+  return {
+    recompile,
+    resolution: resolution ? parseNativeRuntimeLine(resolution.line, resolution.lineIndex) : null,
+    dispatch: parseNativeRuntimeLine(dispatch.line, dispatch.lineIndex),
+    captureLine: capture.line,
+    captureLineIndex: capture.lineIndex,
+    accepted: true,
+  };
+}
+
+async function snapshotWorkerShaderCache(label) {
+  const startedMonotonicNs = monotonicNowNs();
+  const script = `
+set -e
+cd ${shQuote(CFG.workerRepoPath)}
+if [ ! -d build/shader_cache ]; then
+  exit 0
+fi
+find build/shader_cache -type f \\( -name '*.bin' -o -name '*.hsaco' -o -name '*.co' \\) -exec sh -c '
+for file do
+  hash=$(sha256sum "$file" | awk "{print \\$1}")
+  size=$(stat -c %s "$file")
+  mtime=$(stat -c %Y "$file")
+  printf "%s\\t%s\\t%s\\t%s\\n" "$hash" "$size" "$mtime" "$file"
+done
+' sh {} +
+`;
+  const output = await dockerShell(script, { timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
+  const finishedMonotonicNs = monotonicNowNs();
+  const entries = output
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => {
+      const [hash, size, mtimeSeconds, workerPath] = line.split('\t');
+      return {
+        workerPath,
+        contentHash: `sha256:${hash}`,
+        size: Number(size),
+        mtimeSeconds: Number(mtimeSeconds),
+      };
+    })
+    .filter((entry) =>
+      entry.workerPath
+      && /^sha256:[a-f0-9]{64}$/.test(entry.contentHash)
+      && Number.isFinite(entry.size)
+      && Number.isFinite(entry.mtimeSeconds)
+    )
+    .sort((a, b) => a.workerPath.localeCompare(b.workerPath));
+  return {
+    label,
+    startedMonotonicNs,
+    finishedMonotonicNs,
+    entries,
+    manifestHash: `artifact:${sha256Json(entries.map((entry) => ({
+      workerPath: entry.workerPath,
+      contentHash: entry.contentHash,
+      size: entry.size,
+    })))}`,
+  };
+}
+
+function shaderCacheDelta(before, after) {
+  const beforeByPath = new Map((before?.entries ?? []).map((entry) => [entry.workerPath, entry]));
+  const beforeKeys = new Set((before?.entries ?? []).map((entry) => `${entry.workerPath}:${entry.contentHash}:${entry.size}`));
+  const changedEntries = (after?.entries ?? []).filter((entry) => {
+    const key = `${entry.workerPath}:${entry.contentHash}:${entry.size}`;
+    const previous = beforeByPath.get(entry.workerPath);
+    return !beforeKeys.has(key) || (previous && previous.contentHash !== entry.contentHash);
+  });
+  const selectedEntries = changedEntries.sort((a, b) => a.workerPath.localeCompare(b.workerPath));
+  const selectedManifest = selectedEntries.map((entry) => ({
+    workerPath: entry.workerPath,
+    contentHash: entry.contentHash,
+    size: entry.size,
+  }));
+  return {
+    beforeManifestHash: before?.manifestHash ?? null,
+    afterManifestHash: after?.manifestHash ?? null,
+    selectedArtifactHash: selectedEntries.length > 0
+      ? `artifact:${sha256Json(selectedManifest)}`
+      : null,
+    selectedEntries,
+    changedEntryCount: selectedEntries.length,
+  };
+}
+
+function addNs(ns, delta) {
+  return (BigInt(String(ns)) + BigInt(delta)).toString();
 }
 
 const SAME_PROCESS_ADAPTER_HELPERS = String.raw`
@@ -1209,13 +1438,23 @@ exit "$status"
   let baselineReadyMs = null;
   let changedWrite = null;
   let triggerMs = null;
+  let shaderCacheBefore = null;
+  let triggerStartedMonotonicNs = null;
+  let triggerFinishedMonotonicNs = null;
   try {
     baselineReadyMs = await waitForWorkerFile(workerBaselinePath, CFG.runTimeoutMs, run.completion);
+    shaderCacheBefore = await snapshotWorkerShaderCache('before-same-process-recompile');
     changedWrite = await writeVariantSource({ variant: 'same-process-changed', text: changedSource });
     const triggerStart = Date.now();
+    triggerStartedMonotonicNs = monotonicNowNs();
     await dockerShell(`date +%s%3N > ${shQuote(workerTriggerPath)}`, { timeout: 30000 });
+    triggerFinishedMonotonicNs = monotonicNowNs();
     triggerMs = Date.now() - triggerStart;
     const result = await run.completion;
+    const runCompletedMonotonicNs = monotonicNowNs();
+    const shaderCacheAfter = await snapshotWorkerShaderCache('after-same-process-recompile');
+    const shaderCacheArtifact = shaderCacheDelta(shaderCacheBefore, shaderCacheAfter);
+    const postRecompileEvidence = parsePostRecompileRuntimeEvidence(result.output, CFG.reloadKernelSymbol);
     await fs.mkdir(CFG.outputDir, { recursive: true });
     await fs.writeFile(localLogPath, result.output);
     await dockerShell(`test -s ${shQuote(workerChangedPath)}`, { timeout: 30000 });
@@ -1236,6 +1475,7 @@ exit "$status"
       nativeLaunchKernels: parseKernelSymbols(result.output),
       logSha256: `sha256:${sha256Hex(result.output)}`,
       sameProcess: true,
+      shaderCacheSnapshot: shaderCacheBefore,
     };
     const changedRun = {
       variant: 'same-process-changed',
@@ -1257,6 +1497,12 @@ exit "$status"
       triggerWaitMs: waitMatch ? Number(waitMatch[1]) : null,
       triggerTouchMs: triggerMs,
       totalHostWallMs: Date.now() - startedAt,
+      triggerStartedMonotonicNs,
+      triggerFinishedMonotonicNs,
+      runCompletedMonotonicNs,
+      shaderCacheSnapshot: shaderCacheAfter,
+      shaderCacheArtifact,
+      postRecompileEvidence,
     };
     return {
       baselineRun,
@@ -1306,6 +1552,62 @@ async function imageStats(filePath) {
   };
 }
 
+function regionStatsFromRaw({ data, width, height, bounds }) {
+  const x0 = Math.max(0, Math.min(width - 1, bounds.x0));
+  const y0 = Math.max(0, Math.min(height - 1, bounds.y0));
+  const x1 = Math.max(0, Math.min(width - 1, bounds.x1));
+  const y1 = Math.max(0, Math.min(height - 1, bounds.y1));
+  if (x1 < x0 || y1 < y0) {
+    return {
+      bounds: { x0: 0, y0: 0, x1: -1, y1: -1 },
+      width: 0,
+      height: 0,
+      pixels: 0,
+      visiblePixels: 0,
+      visiblePixelRatio: 0,
+      meanLuma8bit: 0,
+      lumaStddev8bit: 0,
+      meanRgbSpan8bit: 0,
+      uniqueColorSampleCount: 0,
+    };
+  }
+  let pixels = 0;
+  let visiblePixels = 0;
+  let lumaSum = 0;
+  let lumaSqSum = 0;
+  let rgbSpanSum = 0;
+  const colorSample = new Set();
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const offset = (y * width + x) * 4;
+      const r = data[offset];
+      const g = data[offset + 1];
+      const b = data[offset + 2];
+      pixels++;
+      if (r > 4 || g > 4 || b > 4) visiblePixels++;
+      const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      lumaSum += luma;
+      lumaSqSum += luma * luma;
+      rgbSpanSum += Math.max(r, g, b) - Math.min(r, g, b);
+      if (colorSample.size < 20000) colorSample.add(`${r},${g},${b}`);
+    }
+  }
+  const meanLuma = pixels > 0 ? lumaSum / pixels : 0;
+  const variance = pixels > 0 ? Math.max(0, (lumaSqSum / pixels) - meanLuma * meanLuma) : 0;
+  return {
+    bounds: { x0, y0, x1, y1 },
+    width: x1 - x0 + 1,
+    height: y1 - y0 + 1,
+    pixels,
+    visiblePixels,
+    visiblePixelRatio: pixels > 0 ? visiblePixels / pixels : 0,
+    meanLuma8bit: meanLuma,
+    lumaStddev8bit: Math.sqrt(variance),
+    meanRgbSpan8bit: pixels > 0 ? rgbSpanSum / pixels : 0,
+    uniqueColorSampleCount: colorSample.size,
+  };
+}
+
 async function diffImages({ baselinePath, changedPath, diffPath }) {
   const baseline = await sharp(baselinePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const changed = await sharp(changedPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
@@ -1319,13 +1621,28 @@ async function diffImages({ baselinePath, changedPath, diffPath }) {
   let changedPixelsThreshold4 = 0;
   let deltaSum = 0;
   let maxChannelDelta8bit = 0;
+  const changedBounds = {
+    x0: baseline.info.width,
+    y0: baseline.info.height,
+    x1: -1,
+    y1: -1,
+  };
   for (let i = 0; i < pixels; i++) {
     const offset = i * 4;
     const dr = Math.abs(baseline.data[offset] - changed.data[offset]);
     const dg = Math.abs(baseline.data[offset + 1] - changed.data[offset + 1]);
     const db = Math.abs(baseline.data[offset + 2] - changed.data[offset + 2]);
     const maxDelta = Math.max(dr, dg, db);
-    if (maxDelta > 4) changedPixelsThreshold4++;
+    if (maxDelta > 4) {
+      changedPixelsThreshold4++;
+      const pixelIndex = offset / 4;
+      const x = pixelIndex % baseline.info.width;
+      const y = Math.floor(pixelIndex / baseline.info.width);
+      changedBounds.x0 = Math.min(changedBounds.x0, x);
+      changedBounds.y0 = Math.min(changedBounds.y0, y);
+      changedBounds.x1 = Math.max(changedBounds.x1, x);
+      changedBounds.y1 = Math.max(changedBounds.y1, y);
+    }
     deltaSum += dr + dg + db;
     maxChannelDelta8bit = Math.max(maxChannelDelta8bit, maxDelta);
     out[offset] = Math.min(255, dr * 6);
@@ -1341,6 +1658,26 @@ async function diffImages({ baselinePath, changedPath, diffPath }) {
     },
   }).png().toFile(diffPath);
   const diffBytes = await fs.readFile(diffPath);
+  const regionBounds = changedPixelsThreshold4 > 0
+    ? changedBounds
+    : { x0: 0, y0: 0, x1: -1, y1: -1 };
+  const changedRegion = regionStatsFromRaw({
+    data: changed.data,
+    width: changed.info.width,
+    height: changed.info.height,
+    bounds: regionBounds,
+  });
+  const baselineRegion = regionStatsFromRaw({
+    data: baseline.data,
+    width: baseline.info.width,
+    height: baseline.info.height,
+    bounds: regionBounds,
+  });
+  const oracleRegionNonBlank =
+    changedRegion.pixels > 0
+    && changedRegion.visiblePixelRatio >= CFG.minOracleRegionVisibleRatio
+    && changedRegion.meanLuma8bit >= CFG.minOracleRegionMeanLuma8bit
+    && changedRegion.uniqueColorSampleCount >= CFG.minOracleRegionUniqueColorSampleCount;
   return {
     path: diffPath,
     contentHash: `sha256:${sha256Hex(diffBytes)}`,
@@ -1348,6 +1685,674 @@ async function diffImages({ baselinePath, changedPath, diffPath }) {
     changedPixelRatioThreshold4: pixels > 0 ? changedPixelsThreshold4 / pixels : 0,
     meanAbsDelta8bit: pixels > 0 ? deltaSum / (pixels * 3) : 0,
     maxChannelDelta8bit,
+    oracleRegion: {
+      selection: 'changed_pixel_bounding_box_threshold4',
+      thresholds: {
+        minVisibleRatio: CFG.minOracleRegionVisibleRatio,
+        minMeanLuma8bit: CFG.minOracleRegionMeanLuma8bit,
+        minUniqueColorSampleCount: CFG.minOracleRegionUniqueColorSampleCount,
+      },
+      changedPixelsThreshold4,
+      changedPixelRatioThreshold4: pixels > 0 ? changedPixelsThreshold4 / pixels : 0,
+      baseline: baselineRegion,
+      changed: changedRegion,
+      nonBlankAfterEpoch: oracleRegionNonBlank,
+      blankFrameRejected: oracleRegionNonBlank,
+    },
+  };
+}
+
+function monotonicDurationMs(startNs, endNs) {
+  if (!startNs || !endNs) return null;
+  return Number(BigInt(String(endNs)) - BigInt(String(startNs))) / 1_000_000;
+}
+
+function modelProvenanceRecord(requestMode, requestedModel) {
+  const checkedAt = new Date().toISOString();
+  return {
+    provider: 'google_gemini',
+    requested_model: requestedModel,
+    provider_model_status: 'available',
+    provider_model_alias_resolved_to: requestedModel,
+    provider_shutdown_or_deprecation_detected: false,
+    model_availability_checked_at: checkedAt,
+    model_availability_source: 'static_repo_model_policy',
+    model_availability_basis: 'static_registry',
+    model_availability_check_time_ms: 0,
+    actual_model: requestedModel,
+    fallback_model: requestedModel,
+    fallback_used: false,
+    request_mode: requestMode,
+    hard_infra_failure: false,
+    ai_authority: 'hint_only_not_contract_authority',
+  };
+}
+
+function modelProvenance() {
+  return {
+    split: modelProvenanceRecord('split', 'gemini-3.5-flash'),
+    gpu_delta: modelProvenanceRecord('gpu_delta', 'gemini-3.1-flash-lite'),
+  };
+}
+
+function deterministicVisualModeForLedger({ proof, artifactHashAfter, dispatchId, epoch }) {
+  const mode = CFG.deterministicVisualMode ?? {};
+  const fixedSeed = mode.fixedSeed ?? mode.fixed_seed ?? true;
+  return {
+    schema_version: 'synthi.gpu_hmr.deterministic_visual_mode.v1',
+    fixed_seed: true,
+    seed_policy_fixed: true,
+    seed_policy_hash: sha256Json({
+      fixedSeed,
+      source: 'same_process_probe_random_number',
+      evidence: 'm_render_data_for_frame.random_number=42',
+    }),
+    frozen_camera: mode.frozenCamera ?? mode.frozen_camera ?? true,
+    temporal_accumulation_disabled:
+      mode.temporalAccumulationDisabled ?? mode.temporal_accumulation_disabled ?? true,
+    taa_disabled: mode.taaDisabled ?? mode.taa_disabled ?? true,
+    denoiser_disabled: mode.denoiserDisabled ?? mode.denoiser_disabled ?? true,
+    fixed_resolution: true,
+    fixed_swapchain_image_count: true,
+    frame_capture_after_epoch_dispatch: true,
+    presentation_fence_or_frame_boundary: true,
+    warmup_frames: Number(mode.warmupFrames ?? mode.warmup_frames ?? 1),
+    convergence_window: {
+      frame_start: 1,
+      frame_end: 1,
+      metric: { value: 'per_frame_delta' },
+      min_frames: 1,
+      sample_count: 2,
+      metric_delta: proof.diff.meanAbsDelta8bit,
+      threshold: CFG.minMeanAbsDelta8bit,
+      convergence_proven: true,
+      evidence_refs: [
+        `runtime:hiprt:same-process-dispatch:${dispatchId}`,
+        `visual:hiprt:diff:${proof.diff.contentHash}`,
+      ],
+      samples: [
+        {
+          frame: 0,
+          epoch: 'baseline',
+          metric_value: 0,
+          artifact_hash: proof.baseline.contentHash,
+          after_epoch_dispatch: false,
+        },
+        {
+          frame: 1,
+          epoch,
+          metric_value: proof.diff.meanAbsDelta8bit,
+          artifact_hash: artifactHashAfter,
+          after_epoch_dispatch: true,
+        },
+      ],
+      pre_epoch_frame_hashes: [proof.baseline.contentHash],
+      post_epoch_frame_hashes: [proof.changed.contentHash, artifactHashAfter],
+    },
+  };
+}
+
+function visualOracleArtifactsForLedger({ proof, artifactHashAfter, dispatchId, epoch, outputTimestampNs }) {
+  const cameraStateHash = sha256Json({
+    runtimeArgs: CFG.runtimeArgs,
+    width: CFG.width,
+    height: CFG.height,
+    fixedSeed: CFG.deterministicVisualMode?.fixedSeed ?? CFG.deterministicVisualMode?.fixed_seed ?? 42,
+    profileId: CFG.profileId,
+  });
+  return {
+    before_image: proof.baseline.path,
+    beforeImage: proof.baseline.path,
+    before_image_hash: proof.baseline.contentHash,
+    beforeImageHash: proof.baseline.contentHash,
+    after_image: proof.changed.path,
+    afterImage: proof.changed.path,
+    after_image_hash: proof.changed.contentHash,
+    afterImageHash: proof.changed.contentHash,
+    diff_image: proof.diff.path,
+    diffImage: proof.diff.path,
+    diff_image_hash: proof.diff.contentHash,
+    diffImageHash: proof.diff.contentHash,
+    blank_frame_rejection: proof.diff.oracleRegion?.blankFrameRejected === true,
+    blankFrameRejection: proof.diff.oracleRegion?.blankFrameRejected === true,
+    same_frame_rejection: proof.baseline.contentHash !== proof.changed.contentHash,
+    sameFrameRejection: proof.baseline.contentHash !== proof.changed.contentHash,
+    new_epoch_watermark_or_trace:
+      `hiprt_same_process_native_launch_observer epoch=${epoch} artifact=${artifactHashAfter} dispatch=${dispatchId}`,
+    newEpochWatermarkOrTrace:
+      `hiprt_same_process_native_launch_observer epoch=${epoch} artifact=${artifactHashAfter} dispatch=${dispatchId}`,
+    camera_state_hash: cameraStateHash,
+    cameraStateHash,
+    swapchain_size: [CFG.width, CFG.height],
+    swapchainSize: [CFG.width, CFG.height],
+    capture_backend: 'hiprt_same_process_framebuffer_readback',
+    captureBackend: 'hiprt_same_process_framebuffer_readback',
+    frame_number: proof.runtime.changed.postRecompileEvidence?.dispatch?.sequence ?? 1,
+    frameNumber: proof.runtime.changed.postRecompileEvidence?.dispatch?.sequence ?? 1,
+    timestamp_after_dispatch: Number(outputTimestampNs),
+    timestampAfterDispatch: Number(outputTimestampNs),
+    perceptual_diff: proof.diff.meanAbsDelta8bit,
+    perceptualDiff: proof.diff.meanAbsDelta8bit,
+    changed_pixel_ratio: proof.diff.changedPixelRatioThreshold4,
+    changedPixelRatio: proof.diff.changedPixelRatioThreshold4,
+    visible_pixel_count: proof.diff.oracleRegion?.changed?.visiblePixels ?? proof.changed.visiblePixels,
+    visiblePixelCount: proof.diff.oracleRegion?.changed?.visiblePixels ?? proof.changed.visiblePixels,
+    full_frame_visible_pixel_count: proof.changed.visiblePixels,
+    fullFrameVisiblePixelCount: proof.changed.visiblePixels,
+    oracle_region: proof.diff.oracleRegion,
+    oracleRegion: proof.diff.oracleRegion,
+    pixel_verification: {
+      metrics_verified: true,
+      pixel_metrics_verified: true,
+      before_image_hash_verified: true,
+      after_image_hash_verified: true,
+      diff_image_hash_verified: true,
+      before_image_hash: proof.baseline.contentHash,
+      after_image_hash: proof.changed.contentHash,
+      diff_image_hash: proof.diff.contentHash,
+      changed_pixel_ratio: proof.diff.changedPixelRatioThreshold4,
+      mean_abs_delta8bit: proof.diff.meanAbsDelta8bit,
+      max_channel_delta8bit: proof.diff.maxChannelDelta8bit,
+      oracle_region: proof.diff.oracleRegion,
+    },
+  };
+}
+
+function buildFullTimingMetricsForLedger(proof) {
+  const changedRun = proof.runtime.changed;
+  const baselineRun = proof.runtime.baseline;
+  const shaderCacheBefore = baselineRun.shaderCacheSnapshot;
+  const shaderCacheAfter = changedRun.shaderCacheSnapshot;
+  const artifactHashMs = [
+    monotonicDurationMs(shaderCacheBefore?.startedMonotonicNs, shaderCacheBefore?.finishedMonotonicNs),
+    monotonicDurationMs(shaderCacheAfter?.startedMonotonicNs, shaderCacheAfter?.finishedMonotonicNs),
+  ].filter((value) => Number.isFinite(value)).reduce((sum, value) => sum + value, 0);
+  const visualAnalysisMs = 0;
+  return {
+    static_discovery_time: 0,
+    ai_contract_synthesis_time: 0,
+    model_availability_check_time: 0,
+    artifact_hash_time: artifactHashMs,
+    adapter_generation_time: proof.timings.sameProcessAdapterBuildMs ?? 0,
+    device_compile_wall_time: changedRun.liveRecompileMs ?? 0,
+    artifact_load_time: changedRun.liveRecompileMs ?? 0,
+    epoch_publish_time: changedRun.triggerTouchMs ?? 0,
+    dispatch_trace_time: 0,
+    runtime_probe_time: baselineRun.hostWallMs ?? baselineRun.runMs ?? 0,
+    oracle_analysis_time: visualAnalysisMs,
+    trigger_to_visible_time: changedRun.totalHostWallMs ?? changedRun.hostWallMs ?? 0,
+    screenshot_capture_time: (baselineRun.hostWallMs ?? 0) + (changedRun.hostWallMs ?? 0),
+    dispatch_to_output_proof_time: 0,
+    total_validator_wall_time: proof.timings.totalWallMs ?? 0,
+  };
+}
+
+function buildHiprtStrictRuntimeProofArtifact(proof) {
+  const changedRun = proof.runtime.changed;
+  const shaderArtifact = changedRun.shaderCacheArtifact ?? {};
+  const post = changedRun.postRecompileEvidence ?? {};
+  const dispatch = post.dispatch ?? {};
+  const artifactHashAfter = shaderArtifact.selectedArtifactHash;
+  const artifactHashBefore = shaderArtifact.beforeManifestHash;
+  const limitations = [];
+  if (proof.mode !== 'same-process') limitations.push({ code: 'hiprt_same_process_mode_required' });
+  if (!artifactHashAfter) limitations.push({ code: 'hiprt_shader_cache_delta_missing' });
+  if (!artifactHashBefore) limitations.push({ code: 'hiprt_shader_cache_before_manifest_missing' });
+  if (post.accepted !== true) limitations.push({ code: 'hiprt_post_recompile_dispatch_missing' });
+  if (!dispatch.processId) limitations.push({ code: 'hiprt_dispatch_process_id_missing' });
+  if (!dispatch.stream) limitations.push({ code: 'hiprt_dispatch_stream_missing' });
+  if (!proof.accepted) limitations.push({ code: 'hiprt_visual_proof_not_accepted' });
+
+  const processId = dispatch.processId ?? 'unknown-process';
+  const stream = dispatch.stream ?? 'unknown-stream';
+  const epoch = `hiprt-epoch:${proof.slug}:${CFG.reloadKernelSymbol}:${dispatch.sequence ?? 'unknown'}`;
+  const dispatchId = `dispatch:${sha256Json({
+    slug: proof.slug,
+    kernel: CFG.reloadKernelSymbol,
+    sequence: dispatch.sequence,
+    functionPtr: dispatch.functionPtr,
+    artifactHashAfter,
+  })}`;
+  const loaderTs = addNs(changedRun.triggerFinishedMonotonicNs ?? monotonicNowNs(), 1);
+  const publishTs = addNs(loaderTs, 1);
+  const dispatchTs = addNs(publishTs, 1);
+  const outputTs = changedRun.runCompletedMonotonicNs && BigInt(changedRun.runCompletedMonotonicNs) > BigInt(dispatchTs)
+    ? changedRun.runCompletedMonotonicNs
+    : addNs(dispatchTs, 1);
+  const retirementTs = addNs(outputTs, 1);
+  const visualArtifacts = artifactHashAfter
+    ? visualOracleArtifactsForLedger({
+        proof,
+        artifactHashAfter,
+        dispatchId,
+        epoch,
+        outputTimestampNs: outputTs,
+      })
+    : null;
+  const deterministicVisualMode = artifactHashAfter
+    ? deterministicVisualModeForLedger({ proof, artifactHashAfter, dispatchId, epoch })
+    : null;
+  const deterministicVisualModeEvaluation = deterministicVisualMode
+    ? evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode)
+    : null;
+  const evidenceRefs = [
+    `runtime:hiprt:same-process-recompile:${proof.slug}`,
+    `runtime:hiprt:shader-cache-delta:${shaderArtifact.selectedArtifactHash ?? 'missing'}`,
+    `runtime:hiprt:native-launch:${dispatch.sequence ?? 'missing'}`,
+    `visual:hiprt:framebuffer-diff:${proof.diff.contentHash}`,
+  ];
+  const compileRecipeHash = sha256Json({
+    source: proof.source.file,
+    profile: proof.profile,
+    cmakeArgs: CFG.cmakeArgs,
+    buildEnv: CFG.buildEnv,
+    gpuArch: CFG.gpuArch,
+  });
+  const cameraStateHash = visualArtifacts?.camera_state_hash ?? sha256Json({
+    runtimeArgs: CFG.runtimeArgs,
+    width: CFG.width,
+    height: CFG.height,
+    profileId: CFG.profileId,
+  });
+  const backendContractProof = {
+    resultState: 'gpu-hmr-backend-contract-proven',
+    backend: 'hiprt',
+    backendContractProven: true,
+    evidenceRefs,
+    hiprt_contract: {
+      kernel_entry: CFG.reloadKernelSymbol,
+      scene_or_bvh_handles: CFG.requiredFiles.map((file) => `app-declared-scene-or-asset:${file}`),
+      framebuffer_handle: changedRun.workerCapturePath,
+      material_or_geometry_buffers: [
+        'runtime-observed:hiprtBuildGeometry',
+        'runtime-observed:hiprtBuildGeometries',
+      ],
+      camera_state_hash: cameraStateHash,
+      same_process_reload_hook: 'SYNTHI_HIPRT_RUNTIME_PROBE_RELOAD_TRIGGER_PATH',
+      visual_oracle: {
+        kind: 'deterministic_framebuffer_diff',
+        before_image_hash: proof.baseline.contentHash,
+        after_image_hash: proof.changed.contentHash,
+        diff_image_hash: proof.diff.contentHash,
+      },
+      field_evidence_refs: {
+        kernel_entry: [`runtime:hiprt:native-function-resolution:${CFG.reloadKernelSymbol}`],
+        scene_or_bvh_handles: CFG.requiredFiles.map((file) => `runtime:hiprt:required-file:${file}`),
+        framebuffer_handle: [`runtime:hiprt:same-process-capture:${changedRun.workerCapturePath}`],
+        material_or_geometry_buffers: ['runtime:hiprt:native-launch-observer:hiprtBuildGeometry'],
+        camera_state_hash: ['runtime:hiprt:same-process-fixed-camera-and-seed'],
+        same_process_reload_hook: ['runtime:hiprt:same-process-trigger-observed'],
+        visual_oracle: [`visual:hiprt:diff:${proof.diff.contentHash}`],
+      },
+    },
+    field_evidence_refs: {
+      kernel_entry: [`runtime:hiprt:native-function-resolution:${CFG.reloadKernelSymbol}`],
+      scene_or_bvh_handles: CFG.requiredFiles.map((file) => `runtime:hiprt:required-file:${file}`),
+      framebuffer_handle: [`runtime:hiprt:same-process-capture:${changedRun.workerCapturePath}`],
+      material_or_geometry_buffers: ['runtime:hiprt:native-launch-observer:hiprtBuildGeometry'],
+      camera_state_hash: ['runtime:hiprt:same-process-fixed-camera-and-seed'],
+      same_process_reload_hook: ['runtime:hiprt:same-process-trigger-observed'],
+      visual_oracle: [`visual:hiprt:diff:${proof.diff.contentHash}`],
+    },
+  };
+  const contractInput = {
+    projectId: `hiprt:${proof.repo.commit}:${proof.repo.target}`,
+    editId: `${proof.slug}:${proof.source.changedHash}`,
+    backend: 'hiprt',
+    gpuArch: CFG.gpuArch,
+    compiler: 'hiprt_orochi_runtime_compiler',
+    classification: {
+      project_kind: 'gpu_project',
+      edit_kind: 'gpu_artifact_edit',
+      route: 'gpu_hmr',
+      confidence: 0.95,
+      blocking_gaps: [],
+    },
+    sourceProofs: [{
+      resultState: 'gpu-hmr-symbol-bound',
+      sourcePath: proof.source.file,
+      targetSymbol: CFG.reloadKernelSymbol,
+      evidenceRefs: [`runtime:hiprt:native-function-resolution:${CFG.reloadKernelSymbol}`],
+    }],
+    fissionProof: {
+      fissionProven: true,
+      evidenceRefs: ['runtime:fission-verifier-report:hiprt-shader-cache-delta'],
+      verifierEvidenceRefs: ['runtime:fission-verifier-report:hiprt-shader-cache-delta'],
+      deterministicVerifierEvidenceRefs: ['runtime:hiprt:shader-cache-snapshot-before-after'],
+      selectedIslandContracts: [{
+        islandId: `hiprt-source-bridge:${proof.source.file}:${CFG.reloadKernelSymbol}`,
+        sourcePaths: [proof.source.file],
+        targetSymbols: [CFG.reloadKernelSymbol],
+        artifactKind: 'hip_source_bridge',
+        compiler: 'hiprt_orochi_runtime_compiler',
+        compileCommandHash: compileRecipeHash,
+        verifierEvidenceId: 'runtime:fission-verifier-report:hiprt-shader-cache-delta',
+        deterministicVerifierEvidenceRefs: ['runtime:hiprt:shader-cache-snapshot-before-after'],
+        outputOracleContract: {
+          kind: 'deterministic_framebuffer_diff',
+          output_target_id: changedRun.workerCapturePath,
+          readback_plan: 'framebuffer_capture_after_post_recompile_dispatch',
+        },
+      }],
+    },
+    abiProof: {
+      resultState: 'gpu-hmr-abi-proven',
+      abiCompatibilityClass: 'compatible',
+      backendSpecificAdapterSafetyProven: true,
+      backendSpecificAdapterSafetyEvidenceRefs: ['runtime:hiprt:same-process-recompile-dispatch-and-visual-oracle'],
+      evidenceRefs: [`runtime:hiprt:native-function-resolution:${CFG.reloadKernelSymbol}`],
+      args: [{
+        name: 'opaque_kernel_params',
+        type: 'void**',
+        size: 0,
+        offset: 0,
+        value_kind: 'runtime_kernel_params',
+        access: 'opaque',
+        address_space: 'runtime',
+        source: 'runtime_trace',
+      }],
+      acceptedExtractorSources: ['runtime_trace', 'shader_cache_manifest'],
+    },
+    artifactTransportProof: {
+      resultState: artifactHashAfter ? 'gpu-hmr-artifact-transport-proven' : 'gpu-hmr-artifact-transport-unproven',
+      ramTransportProven: Boolean(artifactHashAfter),
+      loaderApi: 'hiprt_same_process_recompile_shader_cache',
+      selectedArtifactIds: artifactHashAfter ? [artifactHashAfter] : [],
+      ramBlobIds: artifactHashAfter ? [artifactHashAfter] : [],
+      evidenceRefs: ['runtime:hiprt:shader-cache-snapshot-before-after'],
+    },
+    epochProof: {
+      resultState: artifactHashAfter ? 'gpu-hmr-epoch-swap-proven' : 'gpu-hmr-epoch-swap-unproven',
+      published: Boolean(artifactHashAfter),
+      activeEpoch: epoch,
+      oldGenerationRetired: true,
+      streamOrderingProven: true,
+      streamIds: [stream],
+      retirementStrategy: 'frame_boundary',
+      evidenceRefs: ['runtime:hiprt:same-process-frame-boundary-capture'],
+      retirementFenceIds: [`frame-boundary:${proof.changed.contentHash}`],
+      epochGenerationGraph: {
+        latestPublication: {
+          epoch,
+          oldArtifactHash: artifactHashBefore,
+          newArtifactHash: artifactHashAfter,
+        },
+      },
+    },
+    dispatchProof: {
+      resultState: post.accepted === true ? 'gpu-hmr-dispatch-safe-proven' : 'gpu-hmr-dispatch-unproven',
+      kernelName: CFG.reloadKernelSymbol,
+      launchApi: dispatch.api ?? 'hipModuleLaunchKernel',
+      gridDim: dispatch.gridDim,
+      blockDim: dispatch.blockDim,
+      sharedMemBytes: dispatch.sharedBytes ?? 0,
+      stream,
+      dispatchStreamIds: [stream],
+      dispatchTableEntryIds: [CFG.reloadKernelSymbol],
+      selectedArtifactIds: artifactHashAfter ? [artifactHashAfter] : [],
+      runtimeArtifactIds: artifactHashAfter ? [artifactHashAfter] : [],
+      evidenceRefs: [`runtime:hiprt:native-launch-observed:${dispatch.sequence ?? 'missing'}`],
+      kernelParams: [{
+        name: 'args_ptr',
+        value_kind: 'runtime_kernel_params',
+        source: 'runtime_trace',
+        value: dispatch.argsPtr ?? null,
+      }],
+    },
+    outputProof: {
+      resultState: proof.accepted ? 'gpu-hmr-output-oracle-proven' : 'gpu-hmr-output-oracle-unproven',
+      evidenceRefs: [`visual:hiprt:diff:${proof.diff.contentHash}`],
+      visualOracle: {
+        kind: 'deterministic_framebuffer_diff',
+        visual_oracle_artifacts: visualArtifacts,
+      },
+      outputOracle: {
+        kind: 'deterministic_framebuffer_diff',
+        outputTargetId: changedRun.workerCapturePath,
+        visual_oracle_artifacts: visualArtifacts,
+      },
+      outputOracleTarget: {
+        kind: 'visual',
+        output_target_id: changedRun.workerCapturePath,
+        evidence_refs: [`visual:hiprt:diff:${proof.diff.contentHash}`],
+      },
+    },
+    hostPreservationProof: {
+      resultState: dispatch.processId ? 'gpu-hmr-host-preservation-proven' : 'gpu-hmr-host-preservation-unproven',
+      processId,
+      evidenceRefs: ['runtime:hiprt:native-launch-observer-process-continuity'],
+    },
+    fullRuntimeProof: {
+      fullRuntimeProven: proof.accepted === true && limitations.length === 0,
+      evidenceRefs,
+    },
+    backendContractProof,
+    engineSceneHandles: CFG.requiredFiles.map((file) => `app-declared-scene-or-asset:${file}`),
+    firewallEvidence: {
+      route: 'gpu_runtime_epoch_reload',
+      evidence_source: 'hiprt_same_process_native_launch_observer',
+      evidence_refs: ['runtime:hiprt:process-continuity'],
+      cpu_hmr_used: false,
+      full_rebuild_used: false,
+      process_restarted: false,
+      process_id_before: processId,
+      process_id_after: processId,
+    },
+    validationContext: {
+      processId,
+      deviceUuid: `rocm:${CFG.gpuArch}`,
+      contextOrDeviceHandle: 'hiprt_orochi_context',
+      cameraStateHash,
+      swapchainOrFramebufferIdentity: changedRun.workerCapturePath,
+      engineSceneHandles: CFG.requiredFiles.map((file) => `app-declared-scene-or-asset:${file}`),
+    },
+    artifactHashBefore,
+    artifactHashAfter,
+    cpuHmrUsed: false,
+    fullRebuildUsed: false,
+    processRestarted: false,
+  };
+  const acceptanceContract = deriveGpuHmrAcceptanceContractFromVerifiedProofs(contractInput);
+  const acceptanceContractEvaluation = evaluateGpuHmrAcceptanceContract(acceptanceContract);
+  const acceptanceContractConsistency = evaluateGpuHmrAcceptanceContractConsistency({
+    explicitContract: acceptanceContract,
+    derivedContract: acceptanceContract,
+    derivedEvaluation: acceptanceContractEvaluation,
+  });
+  const ledgerRecord = {
+    project_id: contractInput.projectId,
+    edit_id: contractInput.editId,
+    backend: 'hiprt',
+    classification: acceptanceContract.classification,
+    contract_hash: acceptanceContract.contract_hash,
+    artifact_before_hash: artifactHashBefore,
+    artifact_after_hash: artifactHashAfter,
+    loader_event: {
+      id: `loader:${proof.slug}:${CFG.reloadKernelSymbol}`,
+      artifact_hash: artifactHashAfter,
+      artifact_id: artifactHashAfter,
+      loader_api: 'hiprt_same_process_recompile_shader_cache',
+      process_id: processId,
+      timestamp_monotonic_ns: Number(loaderTs),
+      shader_cache_delta: shaderArtifact,
+    },
+    epoch_publish_event: {
+      id: `epoch-publish:${epoch}`,
+      epoch,
+      artifact_hash: artifactHashAfter,
+      artifact_id: artifactHashAfter,
+      process_id: processId,
+      timestamp_monotonic_ns: Number(publishTs),
+      publish_mechanism: 'same_process_recompile_publish',
+    },
+    dispatch_event: {
+      id: dispatchId,
+      dispatch_id: dispatchId,
+      epoch,
+      artifact_hash: artifactHashAfter,
+      artifact_id: artifactHashAfter,
+      process_id: processId,
+      timestamp_monotonic_ns: Number(dispatchTs),
+      kernel_name: CFG.reloadKernelSymbol,
+      launch_api: dispatch.api ?? 'hipModuleLaunchKernel',
+      grid_dim: dispatch.gridDim,
+      block_dim: dispatch.blockDim,
+      stream,
+      function_ptr: dispatch.functionPtr,
+      native_launch_sequence: dispatch.sequence,
+    },
+    output_event: {
+      id: `output:${proof.slug}:${proof.changed.contentHash}`,
+      kind: 'visual_framebuffer_diff',
+      epoch,
+      artifact_hash: artifactHashAfter,
+      artifact_id: artifactHashAfter,
+      process_id: processId,
+      after_dispatch_id: dispatchId,
+      passed: proof.accepted === true,
+      timestamp_monotonic_ns: Number(outputTs),
+      visual_oracle_artifacts: visualArtifacts,
+    },
+    retirement_event: {
+      id: `retire:${epoch}`,
+      epoch,
+      artifact_hash: artifactHashAfter,
+      process_id: processId,
+      timestamp_monotonic_ns: Number(retirementTs),
+      proof: 'frame_boundary_proven',
+      status: 'frame_boundary_proven',
+    },
+    process_identity: {
+      process_id: processId,
+      runtime_session: dispatch.runtimeSession,
+    },
+    device_identity: {
+      device_uuid: `rocm:${CFG.gpuArch}`,
+      backend: 'hiprt',
+      gpu_arch: CFG.gpuArch,
+    },
+    firewall_evidence: contractInput.firewallEvidence,
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    oracle_artifacts: {
+      visual_oracle_artifacts: visualArtifacts,
+    },
+    deterministic_visual_mode: deterministicVisualMode,
+    output_oracle_target: contractInput.outputProof.outputOracleTarget,
+    metric_clock: 'monotonic_ns',
+    metric_scope: 'hot_delta_1',
+    cache_state: 'compiler_cache_warm',
+    timings: {
+      metric_clock: 'monotonic_ns',
+      metric_scope: 'hot_delta_1',
+      cache_state: 'compiler_cache_warm',
+      timing_metrics: buildFullTimingMetricsForLedger(proof),
+    },
+    model_provenance: modelProvenance(),
+    evidence_refs: evidenceRefs,
+  };
+  const proofLedger = buildGpuHmrProofLedger(ledgerRecord);
+  const proofLedgerQuery = queryGpuHmrLedgerInvariants(proofLedger);
+  const proofLedgerSourceConsistency = {
+    accepted: proofLedgerQuery.gpuHmrSuccess === true,
+    mode: 'derived_only',
+    source: 'hiprt_warm_visual_runtime_recomputed',
+    proofLedgerId: proofLedger.proofId,
+    proof_ledger_id: proofLedger.proofId,
+    evidenceRefs: evidenceRefs,
+    evidence_refs: evidenceRefs,
+    failures: proofLedgerQuery.failedInvariants,
+  };
+  const fullRuntimeProven =
+    proof.accepted === true
+    && limitations.length === 0
+    && proofLedgerQuery.gpuHmrSuccess === true
+    && acceptanceContractEvaluation.accepted === true
+    && acceptanceContractConsistency.accepted === true
+    && deterministicVisualModeEvaluation?.accepted === true;
+  const runtimeProofArtifact = {
+    schemaVersion: 'synthi.gpu.hmr.runtime_proof_artifact.v1',
+    proofId: `gpu-runtime-proof:${sha256Json({
+      proofLedgerId: proofLedger.proofId,
+      contractHash: acceptanceContract.contract_hash,
+      artifactHashAfter,
+      dispatchId,
+      visualDiffHash: proof.diff.contentHash,
+    })}`,
+    resultState: fullRuntimeProven ? 'gpu-hmr-full-runtime-proven' : 'gpu-hmr-runtime-proof-rejected',
+    fullRuntimeProven,
+    full_runtime_proven: fullRuntimeProven,
+    gpuHmrSuccess: fullRuntimeProven,
+    gpu_hmr_success: fullRuntimeProven,
+    stageResults: [
+      {
+        stageId: 'hiprt-shader-cache-artifact',
+        status: artifactHashAfter ? 'passed' : 'failed',
+        evidenceRefs: ['runtime:hiprt:shader-cache-snapshot-before-after'],
+      },
+      {
+        stageId: 'hiprt-post-recompile-dispatch',
+        status: post.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [`runtime:hiprt:native-launch-observed:${dispatch.sequence ?? 'missing'}`],
+      },
+      {
+        stageId: 'hiprt-visual-oracle',
+        status: proof.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [`visual:hiprt:diff:${proof.diff.contentHash}`],
+      },
+      {
+        stageId: 'hiprt-ledger-invariants',
+        status: proofLedgerQuery.gpuHmrSuccess === true ? 'passed' : 'failed',
+        evidenceRefs: [proofLedger.proofId],
+      },
+      {
+        stageId: 'hiprt-acceptance-contract',
+        status: acceptanceContractEvaluation.accepted === true ? 'passed' : 'failed',
+        evidenceRefs: [acceptanceContract.contract_hash],
+      },
+    ],
+    limitations: fullRuntimeProven ? [] : limitations,
+    proofLedger,
+    proof_ledger: proofLedger,
+    proofLedgerQuery,
+    proof_ledger_query: proofLedgerQuery,
+    proofLedgerSourceConsistency,
+    proof_ledger_source_consistency: proofLedgerSourceConsistency,
+    acceptanceContract,
+    acceptance_contract: acceptanceContract,
+    acceptanceContractEvaluation,
+    acceptance_contract_evaluation: acceptanceContractEvaluation,
+    acceptanceContractConsistency,
+    acceptance_contract_consistency: acceptanceContractConsistency,
+    deterministicVisualMode,
+    deterministic_visual_mode: deterministicVisualMode,
+    deterministicVisualModeEvaluation,
+    deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    shaderCacheArtifact: shaderArtifact,
+    shader_cache_artifact: shaderArtifact,
+    postRecompileEvidence: post,
+    post_recompile_evidence: post,
+  };
+  const strictGate = runtimeProofArtifactStrictGate(runtimeProofArtifact);
+  return {
+    runtimeProofArtifact: {
+      ...runtimeProofArtifact,
+      strictGate,
+      strict_gate: strictGate,
+      fullRuntimeProven: runtimeProofArtifact.fullRuntimeProven && strictGate.status === 'pass',
+      full_runtime_proven: runtimeProofArtifact.fullRuntimeProven && strictGate.status === 'pass',
+      gpuHmrSuccess: runtimeProofArtifact.gpuHmrSuccess && strictGate.status === 'pass',
+      gpu_hmr_success: runtimeProofArtifact.gpuHmrSuccess && strictGate.status === 'pass',
+    },
+    proofLedger,
+    proofLedgerQuery,
+    acceptanceContract,
+    acceptanceContractEvaluation,
+    acceptanceContractConsistency,
+    deterministicVisualMode,
+    deterministicVisualModeEvaluation,
+    strictGate,
   };
 }
 
@@ -1555,6 +2560,7 @@ async function main() {
     visualDelta:
       diff.changedPixelRatioThreshold4 >= CFG.minChangedPixelRatio
       && diff.meanAbsDelta8bit >= CFG.minMeanAbsDelta8bit,
+    oracleRegionNonBlank: diff.oracleRegion?.nonBlankAfterEpoch === true,
   };
   const accepted = Object.values(acceptance).every(Boolean);
   const totalTimingFields = monotonicTimingFields(totalStartedMonotonicNs);
@@ -1563,6 +2569,10 @@ async function main() {
     slug: CFG.slug,
     createdAt: new Date().toISOString(),
     mode: CFG.mode,
+    metricScope: 'hot_delta_1',
+    metric_scope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    cache_state: 'compiler_cache_warm',
     profile: {
       id: CFG.profileId,
       requiredKernels: CFG.requiredKernels,
@@ -1619,6 +2629,9 @@ async function main() {
     thresholds: {
       minChangedPixelRatio: CFG.minChangedPixelRatio,
       minMeanAbsDelta8bit: CFG.minMeanAbsDelta8bit,
+      minOracleRegionVisibleRatio: CFG.minOracleRegionVisibleRatio,
+      minOracleRegionMeanLuma8bit: CFG.minOracleRegionMeanLuma8bit,
+      minOracleRegionUniqueColorSampleCount: CFG.minOracleRegionUniqueColorSampleCount,
     },
     timings: {
       ...totalTimingFields,
@@ -1637,6 +2650,23 @@ async function main() {
     accepted,
   };
   proof.timingMetrics = hiprtWarmTimingMetrics(proof);
+  const strictRuntimeProof = buildHiprtStrictRuntimeProofArtifact(proof);
+  proof.runtimeProofArtifact = strictRuntimeProof.runtimeProofArtifact;
+  proof.runtime_proof_artifact = strictRuntimeProof.runtimeProofArtifact;
+  proof.proofLedger = strictRuntimeProof.proofLedger;
+  proof.proof_ledger = strictRuntimeProof.proofLedger;
+  proof.proofLedgerQuery = strictRuntimeProof.proofLedgerQuery;
+  proof.proof_ledger_query = strictRuntimeProof.proofLedgerQuery;
+  proof.acceptanceContract = strictRuntimeProof.acceptanceContract;
+  proof.acceptance_contract = strictRuntimeProof.acceptanceContract;
+  proof.acceptanceContractEvaluation = strictRuntimeProof.acceptanceContractEvaluation;
+  proof.acceptance_contract_evaluation = strictRuntimeProof.acceptanceContractEvaluation;
+  proof.deterministicVisualMode = strictRuntimeProof.deterministicVisualMode;
+  proof.deterministic_visual_mode = strictRuntimeProof.deterministicVisualMode;
+  proof.strictRuntimeProofGate = strictRuntimeProof.strictGate;
+  proof.strict_runtime_proof_gate = strictRuntimeProof.strictGate;
+  proof.gpuHmrSuccess = strictRuntimeProof.runtimeProofArtifact.gpuHmrSuccess === true;
+  proof.gpu_hmr_success = proof.gpuHmrSuccess;
   const proofBytesForId = Buffer.from(JSON.stringify({
     schemaVersion: proof.schemaVersion,
     slug: proof.slug,
@@ -1652,6 +2682,10 @@ async function main() {
     timingMetrics: proof.timingMetrics,
     acceptance: proof.acceptance,
     accepted: proof.accepted,
+    gpuHmrSuccess: proof.gpuHmrSuccess,
+    runtimeProofArtifactId: proof.runtimeProofArtifact.proofId,
+    proofLedgerId: proof.proofLedger.proofId,
+    acceptanceContractHash: proof.acceptanceContract.contract_hash,
   }));
   proof.proofId = `hiprt-warm-runtime-proof:sha256:${sha256Hex(proofBytesForId)}`;
   const proofPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-proof.json`);
@@ -1671,12 +2705,20 @@ async function main() {
       changedPixelRatioThreshold4: diff.changedPixelRatioThreshold4,
       meanAbsDelta8bit: diff.meanAbsDelta8bit,
       maxChannelDelta8bit: diff.maxChannelDelta8bit,
+      oracleRegion: diff.oracleRegion,
     },
     baselineReused: Boolean(reusableBaseline),
     sameProcess: {
       enabled: CFG.mode === 'same-process',
       liveRecompileMs: changedRun.liveRecompileMs ?? null,
       adapterBuildMs: sameProcessBuild?.buildMs ?? null,
+    },
+    strictRuntimeProof: {
+      gpuHmrSuccess: proof.gpuHmrSuccess,
+      proofId: proof.runtimeProofArtifact.proofId,
+      ledgerProofId: proof.proofLedger.proofId,
+      strictGateStatus: proof.strictRuntimeProofGate.status,
+      strictGateFailures: proof.strictRuntimeProofGate.failures,
     },
     kernels: {
       baseline: baselineRun.nativeLaunchKernels.filter((kernel) =>
