@@ -195,7 +195,7 @@ export function reduce(s, evt) {
         case 'counterfactual_learned':
             return {
                 ...s,
-                learnedLines: mergeUnique(s.learnedLines, evt.learned_lines || []),
+                learnedLines: mergeUnique(s.learnedLines, learnedLinesFromPayload(evt)),
                 policyDeltas: [...(s.policyDeltas || []), ...(evt.policy_deltas || [])],
             };
         case 'all_done':
@@ -215,9 +215,26 @@ export function applySelectionResult(s, data) {
     if (!data || typeof data !== 'object') return s;
     return {
         ...s,
-        learnedLines: mergeUnique(s.learnedLines, data.learned_lines || []),
+        learnedLines: mergeUnique(s.learnedLines, learnedLinesFromPayload(data)),
         policyDeltas: [...(s.policyDeltas || []), ...(data.policy_deltas || [])],
     };
+}
+
+export function learnedLinesFromPayload(payload) {
+    if (!payload || typeof payload !== 'object') return [];
+    const lines = [];
+    const listFields = [
+        payload.learned_lines,
+        payload.learnedLines,
+    ];
+    for (const value of listFields) {
+        if (Array.isArray(value)) lines.push(...value);
+        else if (typeof value === 'string') lines.push(value);
+    }
+    for (const value of [payload.learned_from_this_run, payload.learnedFromThisRun]) {
+        if (typeof value === 'string') lines.push(value);
+    }
+    return lines;
 }
 
 function mergeUnique(existing, incoming) {

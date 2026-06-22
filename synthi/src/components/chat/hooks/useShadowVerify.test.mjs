@@ -23,6 +23,15 @@ describe('useShadowVerify counterfactual events', () => {
     expect(state.policyDeltas).toEqual([{ id: 'pdelta_1' }]);
   });
 
+  it('accepts the canonical learned_from_this_run field', () => {
+    const state = reduce(baseState, {
+      type: 'counterfactual_learned',
+      learned_from_this_run: 'Runtime-level branch changed the next universe plan.',
+    });
+
+    expect(state.learnedLines).toEqual(['Runtime-level branch changed the next universe plan.']);
+  });
+
   it('stores policy hints from next-run policy events', () => {
     const state = reduce(baseState, {
       type: 'counterfactual_policy',
