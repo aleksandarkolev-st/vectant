@@ -40,8 +40,8 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 22 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:ef73845314529bef75879f43807dfe71fccd545d05ede52205bdb33cc8ac14b7
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T192216Z.json
+global matrix: gpu-validation-matrix-ledger:sha256:27cd98348de0654e1540426df51bec39111b41ac1b7a5ec62e53ef66526f918c
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T193336Z.json
 global matrix summary: 25 rows, 9 full-runtime GPU HMR, 10 refusals, 3 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 focused Flow/ray-light matrix: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 focused matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-focused-flow-ray-light-20260622T181300Z.json
@@ -74,7 +74,7 @@ Flow timings: hot1 total_validator_wall_time=2961567300ns, hot2 total_validator_
 Current HIPRT/OIDN caveat:
 
 ```text
-HIPRT CameraRays rerun on 2026-06-22 with SYNTHI_HIPRT_PROBE_GPU_ARCH=gfx1201 is strict-matrix accepted for that scoped ray-traced profile.
+HIPRT CameraRays rerun on 2026-06-22 with SYNTHI_HIPRT_PROBE_GPU_ARCH=gfx1201 is strict-matrix accepted for that scoped ray-traced profile after the matrix recomputes the oracle region from persisted before/after PNG pixels.
 HIPRT MegaKernel direct-light-zero rerun on 2026-06-22 is refused because the post-epoch oracle region is blank.
 OIDN live preflight ran against /tmp/synthi-real-rocm/HIPRT-Path-Tracer and is rejected for HIP output proof because libOpenImageDenoise_device_hip.so.2.3.0 depends on missing libamdhip64.so.5.
 No compatibility shim, symlink, fake ICD, or project-specific branch was added.
@@ -85,6 +85,7 @@ No compatibility shim, symlink, fake ICD, or project-specific branch was added.
 Latest implementation commits:
 
 ```text
+c0a4f373c fix(gpu-hmr): recompute HIPRT oracle-region pixels
 ae6bbce3b fix(gpu-hmr): require HIPRT oracle-region proof
 ffe70a830 fix(gpu-hmr): ignore stale cold-only coverage targets
 76b89062f test(gpu-hmr): refresh wait proof fixture
@@ -127,7 +128,7 @@ Generated split topology now rejects per-kernel HMR unless deterministic fission
 Narrow generated fission candidates now require topology binding to a content-addressed partial artifact before the verifier can pass them.
 The deterministic fission verifier accepts ray-light `trace_light_rays` and refuses Flow because the selected generated device role contains two kernels.
 The validation matrix now carries run-mode evidence, refuses WebGPU supplied-query-only proofs without an embedded ledger, and treats standalone external rejection proof artifacts as first-class refusal rows.
-HIPRT visual matrix acceptance now requires embedded proof-ledger/runtime-artifact materials plus a data-derived nonblank oracle-region check; direct-light-zero is refused as blank render-region output.
+HIPRT visual matrix acceptance now requires embedded proof-ledger/runtime-artifact materials plus a matrix-recomputed nonblank oracle-region check from persisted before/after PNG pixels; direct-light-zero is refused as blank render-region output.
 Ray-light and Flow now have hot-delta-1 monotonic timing evidence from live MCP timing-matrix runs.
 Vulkan preflight now rejects missing ICD/tool evidence and cannot count as pipeline or frame-output proof.
 WebGPU preflight records Chrome launch flags, AMD RDNA4 adapter evidence, and a nonblank diagnostic screenshot, but still cannot count as shader/pipeline/frame HMR proof.
@@ -163,7 +164,7 @@ npm --prefix mcp/synthi-mcp run proof:external-project:self-check -> passed
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:ef73845314529bef75879f43807dfe71fccd545d05ede52205bdb33cc8ac14b7
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:27cd98348de0654e1540426df51bec39111b41ac1b7a5ec62e53ef66526f918c
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed

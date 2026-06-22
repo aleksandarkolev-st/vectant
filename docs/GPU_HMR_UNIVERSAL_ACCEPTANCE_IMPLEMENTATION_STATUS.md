@@ -18,14 +18,14 @@ Current accepted proof is broader than one fixture, but it is not universal prod
 - WebGPU Chrome/AMD RDNA4 runtime visual HMR proof for an explicit-empty-layout WGSL shader/pipeline profile,
 - negative/rejection evidence for HIPRT blank-frame direct-light-zero, OIDN HIP, Bevy, OpenCL, and Vulkan where proof is missing, blank, or the runtime dependency is incompatible.
 
-Current strict matrix behavior deliberately downgrades older HIPRT warm visual artifacts that lack an embedded proof ledger and data-derived oracle-region proof. A fresh 2026-06-22 HIPRT CameraRays rerun is accepted as strict full-runtime HIPRT GPU HMR. The MegaKernel direct-light-zero profile is now a proven blank-oracle-region refusal, not a success. OIDN live preflight ran against the real HIPRT checkout and remains rejected for HIP output proof because the installed OIDN HIP device library depends on `libamdhip64.so.5`, which is absent on this ROCm 7 worker. No symlink, ABI shim, fake ICD, or synthesized runtime was added.
+Current strict matrix behavior deliberately downgrades older HIPRT warm visual artifacts that lack an embedded proof ledger and data-derived oracle-region proof. HIPRT matrix ingestion now recomputes the oracle region from the persisted before/after PNG pixels; JSON claims about a nonblank region are not accepted by themselves. A fresh 2026-06-22 HIPRT CameraRays rerun is accepted as strict full-runtime HIPRT GPU HMR. The MegaKernel direct-light-zero profile is now a proven blank-oracle-region refusal, not a success. OIDN live preflight ran against the real HIPRT checkout and remains rejected for HIP output proof because the installed OIDN HIP device library depends on `libamdhip64.so.5`, which is absent on this ROCm 7 worker. No symlink, ABI shim, fake ICD, or synthesized runtime was added.
 
 The latest generated machine-readable validation matrix ledger reports 25 rows: 9 full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 10 structured refusal rows, 1 preflight-only row, 3 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:ef73845314529bef75879f43807dfe71fccd545d05ede52205bdb33cc8ac14b7
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T192216Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T192216Z.md
+gpu-validation-matrix-ledger:sha256:27cd98348de0654e1540426df51bec39111b41ac1b7a5ec62e53ef66526f918c
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T193336Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T193336Z.md
 ```
 
 Current focused Flow/ray-light matrix:
@@ -81,7 +81,7 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 - Docker proof runners now require explicit runtime configuration instead of baked-in endpoint/container/entry defaults.
 - Visual evidence must be readable image artifacts; invalid image placeholders are rejected.
 - `wait_hmr` now returns embedded proof ledger and runtime proof artifact materials for full-runtime GPU proof waits; matrix acceptance recomputes ledger invariants from those materials instead of trusting supplied summaries.
-- HIPRT matrix rows require the same embedded proof-ledger/runtime-artifact chain as other full-runtime GPU HMR rows plus data-derived nonblank oracle-region proof; older HIPRT artifacts without that chain are not accepted, and blank render-region outputs are structured refusals.
+- HIPRT matrix rows require the same embedded proof-ledger/runtime-artifact chain as other full-runtime GPU HMR rows plus matrix-recomputed nonblank oracle-region proof from the persisted PNG pixels; older HIPRT artifacts without that chain are not accepted, and blank render-region outputs are structured refusals.
 - Preflight refusal rows require explicit no-shim, no-symlink, and no-synthesized-runtime evidence.
 - After `37f110451`, visual HMR success cannot be derived from screenshots or pixel diffs alone. If visual proof is required, the derived proof ledger record must contain `visual_oracle_artifacts`; screenshots remain evidence inputs.
 - Compute proof cards are supplemental unless the accepted target is compute-only and backed by deterministic output-oracle proof.
@@ -93,6 +93,7 @@ This is not yet production-grade acceptance for every arbitrary GPU project. The
 Additional commits since the previous status pass:
 
 ```text
+c0a4f373c fix(gpu-hmr): recompute HIPRT oracle-region pixels
 ae6bbce3b fix(gpu-hmr): require HIPRT oracle-region proof
 ffe70a830 fix(gpu-hmr): ignore stale cold-only coverage targets
 76b89062f test(gpu-hmr): refresh wait proof fixture
@@ -215,9 +216,9 @@ Latest generated matrix artifact:
 
 ```text
 schema: synthi.gpu.hmr.validation_matrix_ledger.v1
-proof id: gpu-validation-matrix-ledger:sha256:ef73845314529bef75879f43807dfe71fccd545d05ede52205bdb33cc8ac14b7
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T192216Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T192216Z.md
+proof id: gpu-validation-matrix-ledger:sha256:27cd98348de0654e1540426df51bec39111b41ac1b7a5ec62e53ef66526f918c
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T193336Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T193336Z.md
 ```
 
 Matrix result:
@@ -280,7 +281,7 @@ ThreeJS is accepted as an external visual-profile proof, not as a full-runtime G
 WebGPU preflight is runtime capability evidence only; the separate webgpu-wgsl-runtime-triangle row is the scoped full-runtime WebGPU proof.
 OpenCL, Vulkan, and Bevy rows are evidence-backed refusals, not GPU HMR acceptance.
 OIDN HIP is an evidence-backed refusal from the real 2026-06-22 checkout preflight; CPU OIDN diagnostics passed, HIP device creation/readback failed, and no shim/symlink/synthesized runtime was applied.
-HIPRT CameraRays is accepted only for the strict same-process ray-traced CameraRays profile. HIPRT MegaKernel direct-light-zero is a proven blank oracle-region refusal.
+HIPRT CameraRays is accepted only for the strict same-process ray-traced CameraRays profile, with the matrix recomputing oracle-region nonblank proof from persisted before/after PNG pixels. HIPRT MegaKernel direct-light-zero is a proven blank oracle-region refusal.
 The per-kernel/smallest-safe fission row is a deterministic fission verifier proof, not a full-runtime GPU HMR row. Runtime acceptance remains ledger-gated.
 The global `per_target_run_modes` plan row is still missing because older SAXPY, scoped HIPRT CameraRays, and scoped WebGPU rows do not carry the full cold/hot2/negative sequence. Stale cold-only artifacts no longer create phantom full-runtime target gaps. The focused latest Flow/ray-light matrix has per-target run modes accepted with no open gaps.
 ```
@@ -320,7 +321,7 @@ node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix
-  current result: passed, matrix gpu-validation-matrix-ledger:sha256:ef73845314529bef75879f43807dfe71fccd545d05ede52205bdb33cc8ac14b7
+  current result: passed, matrix gpu-validation-matrix-ledger:sha256:27cd98348de0654e1540426df51bec39111b41ac1b7a5ec62e53ef66526f918c
 
 ray-light live MCP visual proof with hot-delta timing
   workspace: ray-light-gpu-hmr-proof-20260609-timing-matrix
