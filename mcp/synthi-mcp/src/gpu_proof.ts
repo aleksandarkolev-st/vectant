@@ -465,6 +465,24 @@ function runtimeProofArtifactCandidate(
   return null;
 }
 
+export function gpuHmrFullRuntimeProofMaterials(
+  proof: GpuHmrProofTelemetry | null
+): {
+  proofLedger: Record<string, unknown> | null;
+  runtimeProofArtifact: Record<string, unknown> | null;
+} {
+  if (proof === null) {
+    return {
+      proofLedger: null,
+      runtimeProofArtifact: null,
+    };
+  }
+  return {
+    proofLedger: embeddedGpuHmrProofLedger(proof.raw),
+    runtimeProofArtifact: runtimeProofArtifactCandidate(proof.raw)?.artifact ?? null,
+  };
+}
+
 function validateRuntimeProofArtifactAcceptance(
   raw: Record<string, unknown>,
   expectedProofLedger: Record<string, unknown> | null = null,

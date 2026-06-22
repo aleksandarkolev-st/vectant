@@ -15,6 +15,7 @@ import {
   classifyGpuHmrProofMessage,
   gpuHmrProofMatches,
   gpuHmrProofStateRank,
+  gpuHmrFullRuntimeProofMaterials,
   type GpuHmrProofMatchOpts,
   isKnownGpuHmrProofState,
   validateGpuHmrProofState,
@@ -167,6 +168,17 @@ function responseWithGpuProofValidation(
   }
   if (proof !== null) {
     payload.gpu_proof = gpuProofPayload(proof);
+    if (gpuHmrProofStateRank(requiredState) >= gpuHmrProofStateRank("gpu-hmr-full-runtime-proven")) {
+      const materials = gpuHmrFullRuntimeProofMaterials(proof);
+      if (materials.proofLedger !== null) {
+        payload.proofLedger = materials.proofLedger;
+        payload.proof_ledger = materials.proofLedger;
+      }
+      if (materials.runtimeProofArtifact !== null) {
+        payload.runtimeProofArtifact = materials.runtimeProofArtifact;
+        payload.runtime_proof_artifact = materials.runtimeProofArtifact;
+      }
+    }
   }
   return jsonResponse(payload);
 }
