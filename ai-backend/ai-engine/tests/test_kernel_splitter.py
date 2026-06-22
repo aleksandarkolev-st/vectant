@@ -619,8 +619,8 @@ def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provide
         vendor_hint="rocm",
         per_file={"src/demo.hip": GpuDetectionEvidence(qualifier_hits=1)},
     )
-    monkeypatch.setenv("SYNTHI_GPU_VENDOR", "rocm")
-    monkeypatch.setenv("SYNTHI_GPU_ARCH", "gfx1201")
+    monkeypatch.delenv("SYNTHI_GPU_VENDOR", raising=False)
+    monkeypatch.delenv("SYNTHI_GPU_ARCH", raising=False)
 
     result = asyncio.run(
         run_kernel_splitter(
@@ -631,6 +631,7 @@ def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provide
             files=[{"name": "src/demo.hip", "content": source}],
             focus="src/demo.hip",
             model="gemini-3.5-flash",
+            gpu_arch_hint="gfx1201",
         )
     )
 

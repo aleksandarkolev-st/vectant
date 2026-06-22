@@ -2368,6 +2368,11 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         or os.getenv("SYNTHI_GEMINI_MODEL")
         or "gemini-3.5-flash"
     )
+    request_arch_hint = (
+        req.gpu_arch.strip()
+        if req.gpu_arch and req.gpu_arch.strip().lower() != "auto"
+        else None
+    )
     split_prompt = req.prompt
     max_split_attempts = 3
     split_attempts = []
@@ -2384,6 +2389,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 api_key=req.api_key,
                 files=req.files,
                 focus=req.focus,
+                gpu_arch_hint=request_arch_hint,
             )
         except _KernelSplitterUnsupportedProjectError as e:
             verification = _split_failure_verification(
@@ -2570,11 +2576,6 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
             },
         )
 
-    request_arch_hint = (
-        req.gpu_arch.strip()
-        if req.gpu_arch and req.gpu_arch.strip().lower() != "auto"
-        else None
-    )
     try:
         manifest_raw = normalize_gpu_split_manifest(
             split.manifest if isinstance(split.manifest, dict) else {},

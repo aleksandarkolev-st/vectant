@@ -1609,6 +1609,7 @@ async def run_kernel_splitter(
     api_key: Optional[str] = None,
     files: Optional[Sequence[Mapping[str, Any]]] = None,
     focus: Optional[str] = None,
+    gpu_arch_hint: Optional[str] = None,
 ) -> KernelSplitResult:
     """Run the Kernel Splitter Agent end-to-end.
 
@@ -1677,7 +1678,7 @@ async def run_kernel_splitter(
                 _runtime_vendor_hint()
                 or (detection.vendor_hint if detection is not None else None)
             ),
-            arch_hint=_runtime_arch_hint(),
+            arch_hint=gpu_arch_hint or _runtime_arch_hint(),
             focus=focus,
         )
     except DeterministicGpuSplitUnsupported as exc:
