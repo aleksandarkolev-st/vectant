@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const http = require('http');
-const { parseWsPortUrl, createContainerPortProxy } = require('../containerPortProxy');
+const { parseWsPortUrl, createContainerPortProxy, buildProxyResponseHeaders } = require('../containerPortProxy');
 
 test('parseWsPortUrl extracts slug, port, downstream', () => {
   assert.deepEqual(parseWsPortUrl('/wsport/my-repo/3000/foo/bar'),
@@ -15,6 +15,15 @@ test('parseWsPortUrl rejects non-matching / unsafe paths', () => {
   assert.equal(parseWsPortUrl('/port/3000/'), null);
   assert.equal(parseWsPortUrl('/wsport/../3000/'), null);
   assert.equal(parseWsPortUrl('/wsport/repo/notaport/'), null);
+});
+
+test('buildProxyResponseHeaders strips X-Frame-Options and sets embed headers', () => {
+  const out = buildProxyResponseHeaders({ 'x-frame-options': 'DENY', 'content-type': 'text/html' });
+  assert.equal(out['x-frame-options'], undefined);          // stripped so the App tab can iframe it
+  assert.equal(out['content-type'], 'text/html');           // unrelated headers preserved
+  assert.equal(out['cross-origin-embedder-policy'], 'credentialless');
+  assert.equal(out['cross-origin-resource-policy'], 'cross-origin');
+  assert.equal(out['access-control-allow-origin'], '*');
 });
 
 test('proxyHttp forwards to the resolved runtime host', async () => {

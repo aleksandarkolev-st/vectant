@@ -16,6 +16,25 @@ function parseWsPortUrl(urlString) {
 }
 
 /**
+ * Response headers for a proxied /wsport response. The IDE document is served
+ * under COEP (credentialless), so a cross-origin iframe is only embeddable if its
+ * response asserts an embedder policy and is resource-shareable. credentialless
+ * keeps the embedded app's OWN subresources working without requiring CORP on each.
+ * Strip X-Frame-Options so web UIs (Portainer, pgAdmin, …) can render in the App
+ * tab — the /wsport proxy is already the workspace-access boundary.
+ */
+function buildProxyResponseHeaders(upstreamHeaders = {}) {
+  const headers = { ...upstreamHeaders };
+  delete headers['x-frame-options'];
+  return {
+    ...headers,
+    'access-control-allow-origin': '*',
+    'cross-origin-resource-policy': 'cross-origin',
+    'cross-origin-embedder-policy': 'credentialless',
+  };
+}
+
+/**
  * @param {object} opts
  * @param {(slug:string)=>string|null} opts.resolveHost - slug -> runtime container host (or null)
  */
@@ -31,18 +50,7 @@ function createContainerPortProxy({ resolveHost } = {}) {
       hostname: host, port: parsed.port, path: parsed.downstream, method: req.method,
       headers: { ...req.headers, host: `localhost:${parsed.port}` }, timeout: 30000,
     }, (up) => {
-      // The IDE document is served under COEP (credentialless), so a cross-origin
-      // iframe is only embeddable if its response asserts an embedder policy and is
-      // resource-shareable. credentialless keeps the embedded app's OWN subresources
-      // working without requiring CORP on each of them. Without these, the App tab
-      // shows Chrome's blocked-frame error page even though the body loads fine.
-      const headers = {
-        ...up.headers,
-        'access-control-allow-origin': '*',
-        'cross-origin-resource-policy': 'cross-origin',
-        'cross-origin-embedder-policy': 'credentialless',
-      };
-      res.writeHead(up.statusCode, headers);
+      res.writeHead(up.statusCode, buildProxyResponseHeaders(up.headers));
       up.pipe(res, { end: true });
     });
     proxyReq.on('error', () => { if (!res.headersSent) { res.writeHead(502); res.end('upstream unreachable'); } });
@@ -73,4 +81,4 @@ function createContainerPortProxy({ resolveHost } = {}) {
   return { proxyHttp, proxyWsUpgrade };
 }
 
-module.exports = { parseWsPortUrl, createContainerPortProxy };
+module.exports = { parseWsPortUrl, createContainerPortProxy, buildProxyResponseHeaders };
