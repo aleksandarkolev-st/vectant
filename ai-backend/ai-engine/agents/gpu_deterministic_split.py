@@ -460,10 +460,7 @@ def _extract_device_prelude(source: str, report: dict) -> str:
     for include in ("#include <hip/hip_runtime.h>", "#include <cuda_runtime.h>", "#include <cmath>", "#include <cstdlib>", "#include <cstdint>"):
         if include in pre_main and include not in lines:
             lines.append(include)
-    constants = _extract_constants(pre_main)
-    if constants:
-        lines.append(constants)
-    body = _strip_includes_and_host_only_comments(pre_main)
+    body = _strip_constant_blocks(_strip_includes_and_host_only_comments(pre_main))
     body = _ensure_extern_c_global_kernels(body)
     if not (_KERNEL_DECL_RE.search(body) or _DEVICE_FUNC_RE.search(body)):
         _unsupported(report, "deterministic_split_device_code_missing", "source device code could not be extracted")
@@ -481,6 +478,10 @@ def _strip_includes_and_host_only_comments(source: str) -> str:
             continue
         lines.append(line)
     return "\n".join(lines)
+
+
+def _strip_constant_blocks(source: str) -> str:
+    return _CONSTANT_BLOCK_RE.sub("", source)
 
 
 def _ensure_extern_c_global_kernels(source: str) -> str:

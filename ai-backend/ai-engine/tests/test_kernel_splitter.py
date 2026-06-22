@@ -646,6 +646,8 @@ def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provide
     assert "sizeof(float);" not in result.files["core.cpp"]
     assert "SDL_RenderFillRect" in result.files["gui.cpp"]
     assert "synthi_generated_seed_buffers" in result.files["device.hip"]
+    assert "constexpr int N" in result.files["shared.h"]
+    assert "constexpr int N" not in result.files["device.hip"]
 
 
 def test_build_split_retry_prompt_preserves_previous_rejections():
