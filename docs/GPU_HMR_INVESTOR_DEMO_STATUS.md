@@ -1,6 +1,6 @@
 # GPU HMR Investor Demo Status
 
-Updated: 2026-06-09
+Updated: 2026-06-22
 
 ## Demo Position
 
@@ -14,11 +14,11 @@ Best demo surfaces:
 
 1. ROCm/HIP MCP ray-light preview: strongest Synthi app preview proof.
 2. ROCm/HIP MCP Flow preview: second generated visual workload, proving this is not a one-case path.
-3. HIPRT same-process CameraRays and MegaKernel: strongest ray-traced framebuffer proof.
+3. Deterministic generated-split fission verifier for ray-light `trace_light_rays`: proof-only row, not a replacement for runtime-ledger acceptance.
 4. ThreeJS WebGL external profile: concrete external runtime screenshot proof, not full ledger acceptance.
 5. WebGPU Chrome/AMD scoped WGSL runtime visual proof: shader-module/pipeline/frame proof for an explicit-empty-layout profile.
 6. Strict ROCm/HIP compute ledger: strongest full-runtime proof artifact and output-oracle readback.
-7. Deterministic generated-split fission verifier for ray-light `trace_light_rays`: proof-only row, not a replacement for runtime-ledger acceptance.
+7. HIPRT same-process CameraRays and MegaKernel: historical ray-traced visual evidence, currently not a full-runtime matrix acceptance because the artifacts lack embedded proof ledgers.
 
 Do not claim:
 
@@ -26,6 +26,7 @@ Do not claim:
 CUDA was proven on this AMD GPU.
 Every arbitrary GPU project is production accepted.
 Bevy or broad/general WebGPU has full-runtime proof-ledger acceptance.
+HIPRT is currently accepted in the strict matrix.
 OIDN HIP produced or validated the accepted visual output.
 OpenCL dispatch/readback output proof was validated on this worker.
 Vulkan pipeline/command-buffer/frame output proof was validated on this worker.
@@ -35,11 +36,60 @@ Flow's generated `.hip` file proves per-kernel or smallest-safe fission.
 Any proof succeeded because of a shim or hardcoded scenario path.
 ```
 
+Current June 22 proof snapshot:
+
+```text
+global matrix: gpu-validation-matrix-ledger:sha256:5e7e21c031eaaa75d3e53451664e37eb1fee59b112a8bcc663f19731fea9e5a5
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T180247Z.json
+global matrix summary: 22 rows, 8 full-runtime GPU HMR, 8 refusals, 3 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
+focused Flow/ray-light matrix: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
+focused matrix coverage: ROCm/HIP full runtime accepted, Flow visual path accepted, ray-light visual path accepted, per-target run modes accepted, per-kernel/smallest-safe fission accepted
+```
+
+Current live previews:
+
+```text
+Ray-light: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260622-embedded-ledger-10 -> HTTP 200
+Flow:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260622-embedded-ledger-10 -> HTTP 200
+```
+
+Current visual proof artifacts:
+
+```text
+Ray-light dir: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260622-embedded-ledger-10
+Ray-light hot1 ledger: gpu-ledger-proof:sha256:fc798cb97c10df6099ee16d994f8829470596d6408288393da0f751d160a74f2
+Ray-light hot2 ledger: gpu-ledger-proof:sha256:a5fc66a3ef1f03824af64d2151ffa970fe57794421f3866bd0127cffdc5b50f2
+Ray-light visuals: before-after-diff.png, hot-delta-2-diff.png
+Ray-light timings: hot1 total_validator_wall_time=2864084200ns, hot2 total_validator_wall_time=2930783900ns
+
+Flow dir: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260622-embedded-ledger-10
+Flow hot1 ledger: gpu-ledger-proof:sha256:82171321eac0bc7b8a4bd5177e51766931a4361600f8b14a668290cdf0ad9e98
+Flow hot2 ledger: gpu-ledger-proof:sha256:c92876a2dc20d43f3811f4db236844838b8fd47b3668462c4049dbfbc211503c
+Flow visuals: before-after-diff.png, hot-delta-2-diff.png
+Flow timings: hot1 total_validator_wall_time=2961567300ns, hot2 total_validator_wall_time=2878428200ns
+```
+
+Current HIPRT/OIDN caveat:
+
+```text
+HIPRT rerun attempted on 2026-06-22 with SYNTHI_HIPRT_PROBE_GPU_ARCH=gfx1201. It passed sandbox escalation but failed real preflight because /tmp/synthi-real-rocm/HIPRT-Path-Tracer is absent from vectant-ade-worker-1.
+OIDN live preflight is not configured in the current worker state: SYNTHI_OIDN_WORKER_CONTAINER and SYNTHI_OIDN_REPO_PATH are required, and no OIDN/HIPRT checkout exists under /tmp/synthi-real-rocm.
+No compatibility shim, symlink, fake ICD, or project-specific branch was added.
+```
+
 ## Current Hardening Status
 
 Latest implementation commits:
 
 ```text
+76b89062f test(gpu-hmr): refresh wait proof fixture
+bddd1e7eb fix(gpu-hmr): require strict ledger materials in matrix
+f3a25f5df fix(gpu-hmr): embed visual ledger proof in split runs
+fd136a820 fix(gpu-hmr): expose wait runtime proof materials
+03175dad5 fix(gpu-hmr): wait through intermediate proof states
+9103998cb fix(gpu-hmr): refresh generated split sidecar between hot deltas
+b0058cbdc fix(gpu-hmr): carry fission verifier metadata into runtime proof
+511936571 fix(gpu-hmr): attach runtime output oracle proposal
 21224766f feat(gpu-hmr): harden matrix evidence modes
 78070f28e feat(gpu-hmr): prove generated split fission
 7dcbbb84c feat(gpu-hmr): normalize webgpu runtime timings
@@ -103,7 +153,7 @@ npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:71b37307a049f7b4c4200696d2b8838227f0ea515c577004ed7f437c0212dfca
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:5e7e21c031eaaa75d3e53451664e37eb1fee59b112a8bcc663f19731fea9e5a5
 ```
 
 ## Live Preview Targets
@@ -119,15 +169,29 @@ worker: up
 HTTP preview checks passed:
 
 ```text
-Ray-light: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260609-timing-matrix -> HTTP 200
-Flow:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260609-timing-matrix -> HTTP 200
-Ray-light timing matrix: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260609-timing-matrix -> generated, visually proven, hot-delta-1 timed
-Flow timing matrix:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260609-timing-matrix -> generated, visually proven, hot-delta-1 timed; per-kernel fission refused
+Ray-light: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260622-embedded-ledger-10 -> HTTP 200
+Flow:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260622-embedded-ledger-10 -> HTTP 200
+Ray-light embedded-ledger proof: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260622-embedded-ledger-10 -> cold/hot1/hot2/negative run modes proven in focused matrix
+Flow embedded-ledger proof:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260622-embedded-ledger-10 -> cold/hot1/hot2/negative run modes proven; per-kernel fission refused
 ```
 
 Headless Chrome page-level captures showed only the dark app shell and are not counted as proof. Visual proof for this checkpoint comes from MCP screenshot artifacts tied to frame gates and local image inspection of the persisted PNGs.
 
 ## Ray-Light Preview Proof
+
+Current accepted proof is `ray-light-gpu-hmr-proof-20260622-embedded-ledger-10`; the older June 9 timing-matrix block below is retained as historical context.
+
+```text
+workspace slug: ray-light-gpu-hmr-proof-20260622-embedded-ledger-10
+workspace url: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260622-embedded-ledger-10
+hot delta 1 ledger id: gpu-ledger-proof:sha256:fc798cb97c10df6099ee16d994f8829470596d6408288393da0f751d160a74f2
+hot delta 2 ledger id: gpu-ledger-proof:sha256:a5fc66a3ef1f03824af64d2151ffa970fe57794421f3866bd0127cffdc5b50f2
+hot delta 1 visual diff: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260622-embedded-ledger-10/before-after-diff.png
+hot delta 2 visual diff: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/ray-light-gpu-hmr-proof-20260622-embedded-ledger-10/hot-delta-2-diff.png
+hot delta 1 total validator wall time: 2864084200ns
+hot delta 2 total validator wall time: 2930783900ns
+deterministic fission: accepted=true claim=per_kernel_hmr kernel=trace_light_rays
+```
 
 Accepted current proof:
 
@@ -170,6 +234,20 @@ selected delta: 1098ms
 Visual inspection: before renders a ray/light scene with ground grid and ray bundle; after moves the light/ray path; the diff is nonblank and high-signal.
 
 ## Flow Preview Proof
+
+Current accepted proof is `flow-gpu-hmr-proof-20260622-embedded-ledger-10`; the older June 9 timing-matrix block below is retained as historical context.
+
+```text
+workspace slug: flow-gpu-hmr-proof-20260622-embedded-ledger-10
+workspace url: http://localhost:3000/workspace/flow-gpu-hmr-proof-20260622-embedded-ledger-10
+hot delta 1 ledger id: gpu-ledger-proof:sha256:82171321eac0bc7b8a4bd5177e51766931a4361600f8b14a668290cdf0ad9e98
+hot delta 2 ledger id: gpu-ledger-proof:sha256:c92876a2dc20d43f3811f4db236844838b8fd47b3668462c4049dbfbc211503c
+hot delta 1 visual diff: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260622-embedded-ledger-10/before-after-diff.png
+hot delta 2 visual diff: mcp/synthi-mcp/.gpu-hmr-test-logs/agent-split-artifacts/flow-gpu-hmr-proof-20260622-embedded-ledger-10/hot-delta-2-diff.png
+hot delta 1 total validator wall time: 2961567300ns
+hot delta 2 total validator wall time: 2878428200ns
+deterministic fission: accepted=false failure=symbol_ownership; device_translation_unit_hmr only
+```
 
 Accepted current proof:
 
@@ -236,7 +314,7 @@ Missing coverage keeps the row unproven; Flow rejects at symbol_ownership.
 
 ## HIPRT Ray-Traced Proof
 
-HIPRT is a same-process path-tracer proof, not the MCP preview path.
+HIPRT is historical same-process path-tracer visual evidence, not the MCP preview path and not current strict-matrix full-runtime acceptance. The current matrix requires embedded proof-ledger/runtime-artifact materials; the older HIPRT warm visual artifacts do not contain them. A fresh 2026-06-22 rerun was blocked because `/tmp/synthi-real-rocm/HIPRT-Path-Tracer` is absent from `vectant-ade-worker-1`.
 
 ```text
 worker repo path: /tmp/synthi-real-rocm/HIPRT-Path-Tracer
@@ -583,8 +661,8 @@ npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt:camera-rays
 npm --prefix mcp/synthi-mcp run proof:runtime-profile:hiprt
 node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
 $env:SYNTHI_GPU_HMR_EXTERNAL_PROJECT_DEFAULT_PROFILE_ID='threejs-webgl-shader-lava'; npm --prefix mcp/synthi-mcp run proof:external-project
-MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/app/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=ray-light SLUG=ray-light-gpu-hmr-proof-20260609-timing-matrix SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
-MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/app/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=flow-gpu-hmr-proof-20260609-timing-matrix SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
+MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/workspace/mcp/synthi-mcp/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=ray-light SLUG=ray-light-gpu-hmr-proof-20260622-embedded-ledger-10 SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
+MCP_TRANSPORT=docker MCP_CONTAINER=vectant-ade-mcp-1 MCP_CONTAINER_ENTRY=/workspace/mcp/synthi-mcp/dist/index.js MCP_SIGNALING_URL=ws://signaling-server:9000 WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_GPU_AGENT_CAPTURE_ARTIFACTS=1 SYNTHI_GPU_VENDOR=rocm SYNTHI_GPU_ARCH=gfx1201 SYNTHI_GPU_AGENT_FIXTURE=flow SLUG=flow-gpu-hmr-proof-20260622-embedded-ledger-10 SYNTHI_SYNC_TO_GCS=0 SYNTHI_VALIDATION_AUTHLESS_WORKSPACE=1 node mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 npm --prefix mcp/synthi-mcp run proof:oidn:preflight:self-check
 SYNTHI_OIDN_WORKER_CONTAINER=vectant-ade-worker-1 SYNTHI_OIDN_REPO_PATH=/tmp/synthi-real-rocm/HIPRT-Path-Tracer SLUG=oidn-hiprt-rocm-preflight-20260609-rerun-after-visual-ledger npm --prefix mcp/synthi-mcp run proof:oidn:preflight
 npm --prefix mcp/synthi-mcp run proof:opencl:preflight:self-check
@@ -601,7 +679,7 @@ node mcp/synthi-mcp/scripts/gpu-hmr-external-project-profile.mjs --rejection-pro
 Expected rejection:
 
 ```text
-SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_URL=ws://signaling-server:9000 SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER=vectant-ade-mcp-1 SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER_ENTRY=/app/dist/index.js SYNTHI_GPU_HMR_EXTERNAL_MCP_REQUEST_TIMEOUT_MS=1200000 SYNTHI_GPU_HMR_EXTERNAL_MCP_ATTACH_TIMEOUT_MS=1200000 npm --prefix mcp/synthi-mcp run proof:external-project:bevy
+SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_URL=ws://signaling-server:9000 SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER=vectant-ade-mcp-1 SYNTHI_GPU_HMR_EXTERNAL_MCP_CONTAINER_ENTRY=/workspace/mcp/synthi-mcp/dist/index.js SYNTHI_GPU_HMR_EXTERNAL_MCP_REQUEST_TIMEOUT_MS=1200000 SYNTHI_GPU_HMR_EXTERNAL_MCP_ATTACH_TIMEOUT_MS=1200000 npm --prefix mcp/synthi-mcp run proof:external-project:bevy
 ```
 
 ## Commit Checkpoint
@@ -635,7 +713,7 @@ These are generic hardening changes. They are not fixture-specific, and they do 
 ## Honest Remaining Work
 
 - Full-runtime Bevy acceptance is not implemented.
-- Per-target run-mode coverage is not complete: hot-delta-1 timing is proven for ray-light and Flow, but cold split, hot-delta-2 with a different edit, and negative-edit evidence remain open across accepted targets.
+- Focused Flow/ray-light per-target run-mode coverage is complete: cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit refusal all pass. The global matrix still has per-target run-mode gaps for older SAXPY and scoped WebGPU rows.
 - CUDA needs a CUDA machine.
 - OIDN HIP needs a ROCm-compatible OIDN HIP build; no ABI shortcut should be used.
 - OpenCL needs a real vendor ICD plus dispatch/event/readback ledger proof; no synthesized ICD or shim should be used.
