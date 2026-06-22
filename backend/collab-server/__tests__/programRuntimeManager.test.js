@@ -728,3 +728,23 @@ test('restarting a webGui container session preserves webGui and rotates the cre
   assert.ok(after);                                  // still resolvable after restart
   assert.notEqual(after.password, before.password);  // rotated, not reused
 });
+
+// Regression: the PRODUCTION launch path is launchManagedProgram (server.js), which
+// must carry config.webGui through to launchManagedSession. A unit test that calls
+// launchManagedSession directly with webGui:true misses this — the real path dropped
+// webGui, so DBeaver/Postman launched with no injected KASM_PASSWORD (502/blank stream).
+test('launchManagedProgram carries config.webGui so a KasmVNC program gets a credential', async () => {
+  const launches = [];
+  const mgr = makeManager({ launchRuntime: async (spec) => { launches.push(spec); return createManagedRuntimeHandle(); } });
+  const s = await mgr.launchManagedProgram({
+    sessionId: 'prog-gui',
+    workspaceSlug: 'wsf',
+    config: { packageId: 'dbeaver', runtimeType: 'container', webGui: true, launch: 'docker run x', env: {}, ports: [6901] },
+  });
+  assert.equal(s.webGui, true);
+  // the real launch path must inject the password and expose the credential
+  assert.match(launches[0].env.KASM_PASSWORD, /^[A-Za-z0-9]{24}$/);
+  const auth = mgr.resolveStreamAuth('wsf', 6901);
+  assert.ok(auth);
+  assert.equal(auth.password, launches[0].env.KASM_PASSWORD);
+});

@@ -620,6 +620,7 @@ function createProgramRuntimeManager(options = {}) {
       command,
       env: config.env || {},
       runtimeType: config.runtimeType || 'cli',
+      webGui: config.webGui === true,
       title: title || config.displayName || config.packageId || null,
       ports: Array.isArray(config.ports) ? config.ports : [],
       health: config.health || null,
