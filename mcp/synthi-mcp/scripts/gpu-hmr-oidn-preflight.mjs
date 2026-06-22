@@ -219,6 +219,7 @@ async function buildProof() {
       cpuDiagnosticOnly: classification.oidnCpuDiagnosticsPassed && !classification.oidnHipAccepted,
       noShimApplied: true,
       noSymlinkApplied: true,
+      noSynthesizedRuntime: true,
     },
   };
   const proofId = `oidn-preflight-proof:sha256:${sha256Json(proofBase)}`;
@@ -241,6 +242,7 @@ async function writeProof(proof) {
     `unsupported_reasons=${proof.classification.unsupportedReasons.join(',') || 'none'}`,
     `no_shim_applied=${proof.acceptance.noShimApplied}`,
     `no_symlink_applied=${proof.acceptance.noSymlinkApplied}`,
+    `no_synthesized_runtime=${proof.acceptance.noSynthesizedRuntime}`,
   ].join('\n') + '\n';
   await writeFile(jsonPath, JSON.stringify(proof, null, 2));
   await writeFile(txtPath, summary);

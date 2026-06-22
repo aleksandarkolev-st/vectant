@@ -228,6 +228,7 @@ async function buildProof() {
       outputOracleRequired: true,
       noShimApplied: true,
       noVendorIcdSynthesized: true,
+      noSynthesizedRuntime: true,
       noSymlinkApplied: true,
     },
   };
@@ -252,6 +253,7 @@ async function writeProof(proof) {
     `unsupported_reasons=${proof.classification.unsupportedReasons.join(',') || 'none'}`,
     `no_shim_applied=${proof.acceptance.noShimApplied}`,
     `no_vendor_icd_synthesized=${proof.acceptance.noVendorIcdSynthesized}`,
+    `no_synthesized_runtime=${proof.acceptance.noSynthesizedRuntime}`,
     `no_symlink_applied=${proof.acceptance.noSymlinkApplied}`,
     '',
   ].join('\n'));

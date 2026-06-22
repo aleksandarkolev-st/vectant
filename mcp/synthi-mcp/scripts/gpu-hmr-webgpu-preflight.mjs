@@ -319,6 +319,8 @@ async function buildProof() {
       pipelineRecreateProofRequired: true,
       frameOutputOracleRequired: true,
       noShimApplied: true,
+      noSymlinkApplied: true,
+      noSynthesizedRuntime: true,
       noBrowserFlagClaimedAsHmr: true,
     },
   };
@@ -343,6 +345,8 @@ async function writeProof(proof) {
     `unsupported_reasons=${proof.classification.unsupportedReasons.join(',') || 'none'}`,
     `diagnostic_screenshot=${proof.classification.diagnosticScreenshot || 'none'}`,
     `no_shim_applied=${proof.acceptance.noShimApplied}`,
+    `no_symlink_applied=${proof.acceptance.noSymlinkApplied}`,
+    `no_synthesized_runtime=${proof.acceptance.noSynthesizedRuntime}`,
     `no_browser_flag_claimed_as_hmr=${proof.acceptance.noBrowserFlagClaimedAsHmr}`,
     '',
   ].join('\n'));
