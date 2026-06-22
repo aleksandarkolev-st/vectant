@@ -21,6 +21,11 @@ const WEB_SCOPES = ['program.launch', 'network.outbound', 'ports.expose'];
 const DBEAVER_IMAGE = process.env.VECTANT_DBEAVER_IMAGE || 'vectant-dbeaver:dev';
 const DBEAVER_PORT = Number(process.env.VECTANT_DBEAVER_PORT) || 6901;
 
+// Web-UI tier (Docker GUI): the official Portainer CE image. Env-driven so prod
+// pins a digest in Artifact Registry; defaults to the upstream LTS tag.
+const PORTAINER_IMAGE = process.env.VECTANT_PORTAINER_IMAGE || 'portainer/portainer-ce:lts';
+const PORTAINER_PORT = Number(process.env.VECTANT_PORTAINER_PORT) || 9000;
+
 /**
  * @typedef {{ name: string, kind: 'manifest'|'devcontainer', recipe: object, description?: string }} DefaultRecipe
  */
@@ -113,6 +118,25 @@ export const DEFAULT_PROGRAM_RECIPES = [
       install: [],
       launch: `docker run --rm --name vectant-dbeaver -p ${DBEAVER_PORT}:${DBEAVER_PORT} ${workspaceMountFlags()} ${DBEAVER_IMAGE}`,
       ports: [DBEAVER_PORT],
+      permissions: ['program.launch', 'network.outbound', 'ports.expose'],
+    },
+  },
+  {
+    name: 'portainer',
+    kind: 'manifest',
+    recipe: {
+      packageId: 'portainer', version: '1.0.0',
+      displayName: 'Portainer (Docker)',
+      description: 'Portainer CE - manage the Docker containers, images and volumes in your workspace via a web UI.',
+      // Web-UI tier: a container program with NO webGui. Its web port is served
+      // into the App-tab iframe by the container port proxy. Mounts the runtime's
+      // docker socket to manage the workspace's own dockerd (contained by Sysbox);
+      // --no-csp lets Portainer be framed; /data persists to /workspace so the
+      // admin account + saved connections survive relaunch.
+      runtimeType: 'container',
+      install: [],
+      launch: `docker run --rm --name vectant-portainer -p ${PORTAINER_PORT}:9000 -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/.vectant/portainer":/data ${PORTAINER_IMAGE} --no-csp`,
+      ports: [PORTAINER_PORT],
       permissions: ['program.launch', 'network.outbound', 'ports.expose'],
     },
   },
