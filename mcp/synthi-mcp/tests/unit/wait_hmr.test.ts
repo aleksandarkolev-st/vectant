@@ -232,6 +232,12 @@ function passingAcceptanceContract(ledger = passingProofLedger(), overrides: Rec
     reload_mechanism: "generated_adapter",
     adapter_outcome: "adapter_generated",
     reload_evidence_refs: ["runtime:module-load"],
+    output_oracle_target: {
+      kind: "compute",
+      target_id: "allocation-output",
+      compute_only_target_verified: true,
+      evidence_refs: ["runtime:readback-oracle"],
+    },
     firewall_evidence: {
       route: "gpu_device_sidecar_reload",
       evidence_source: "test:gpu-route-classifier",
@@ -263,12 +269,26 @@ function passingAcceptanceContract(ledger = passingProofLedger(), overrides: Rec
     fission_report: {
       selected_island: "device-kernel",
       selected_reason: "verified_fission_contract",
+      changed_sources: ["src/gpu/kernel.hip"],
+      included_dependencies: ["src/gpu/kernel.hip"],
+      excluded_host_sources: ["src/main.cpp"],
       artifact_hash_before: artifactBeforeHash,
       artifact_hash_after: artifactAfterHash,
+      abi_compatibility_class: "compatible",
       full_device_fallback: false,
       host_relinked: false,
       process_restarted: false,
       full_rebuild_used: false,
+      unaffected_artifacts_hash_unchanged: true,
+      evidence_refs: ["evidence:fission-verifier-report:wait-fixture"],
+      selected_verifier_evidence_id: "evidence:fission-verifier-report:wait-fixture",
+      deterministic_verifier_evidence_refs: ["evidence:fission-verifier-report:wait-fixture"],
+      selection_decision_hash: HASH_C,
+      output_oracle_contract: {
+        kind: "compute",
+        target_id: "allocation-output",
+        readback: "runtime_readback_sample",
+      },
     },
     hip_contract: {
       kernel_name: "kernel_main",
@@ -335,6 +355,7 @@ function passingRuntimeProofArtifact(ledger = passingProofLedger(), overrides: R
     derivedProofLedgerRecord: ledgerRecord,
     proofLedgerSourceConsistency: {
       accepted: true,
+      mode: "derived_only",
       failures: [],
       failedGates: [],
     },
