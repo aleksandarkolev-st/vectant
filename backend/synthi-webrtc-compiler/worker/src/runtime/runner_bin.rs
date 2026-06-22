@@ -2326,6 +2326,7 @@ mod tests {
                 abi_membrane_hash: Some("sha256:def".into()),
                 dependency_closure_hash: Some("sha256:123".into()),
                 proof_hash: Some("sha256:456".into()),
+                ..Default::default()
             },
         )
         .expect("capsule token");

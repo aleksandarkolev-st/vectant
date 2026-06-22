@@ -6244,6 +6244,115 @@ fn proof_fission_island_id(proof: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn proof_fission_verifier_evidence<'a>(
+    proof: &'a serde_json::Value,
+) -> Option<&'a serde_json::Value> {
+    first_proof_evidence(proof, "fission-verifier-report")
+}
+
+fn proof_fission_verifier_evidence_id(proof: &serde_json::Value) -> Option<String> {
+    proof_fission_verifier_evidence(proof)
+        .and_then(|evidence| evidence.get("evidenceId"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn proof_fission_verifier_metadata(proof: &serde_json::Value) -> Option<&serde_json::Value> {
+    proof_fission_verifier_evidence(proof)
+        .and_then(|evidence| evidence.get("metadata"))
+        .filter(|metadata| metadata.is_object())
+}
+
+fn proof_selected_fission_candidate(proof: &serde_json::Value) -> Option<&serde_json::Value> {
+    let metadata = proof_fission_verifier_metadata(proof)?;
+    let selected_index = metadata
+        .get("selectedCandidateIndex")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|index| usize::try_from(index).ok());
+    metadata
+        .get("candidates")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|candidates| {
+            selected_index
+                .and_then(|index| candidates.get(index))
+                .filter(|candidate| {
+                    candidate.get("status").and_then(serde_json::Value::as_str) == Some("pass")
+                })
+                .or_else(|| {
+                    candidates.iter().find(|candidate| {
+                        candidate
+                            .get("selected")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true)
+                            && candidate.get("status").and_then(serde_json::Value::as_str)
+                                == Some("pass")
+                    })
+                })
+        })
+}
+
+fn json_string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
+    let values = value?
+        .as_array()?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    (!values.is_empty()).then_some(values)
+}
+
+fn proof_selected_fission_verifier_evidence_id(proof: &serde_json::Value) -> Option<String> {
+    let selection_id = proof_fission_verifier_metadata(proof)
+        .and_then(|metadata| metadata.get("selectionDecision"))
+        .and_then(|decision| decision.get("selectedVerifierEvidenceId"))
+        .and_then(serde_json::Value::as_str);
+    selection_id
+        .or_else(|| {
+            proof_selected_fission_candidate(proof)
+                .and_then(|candidate| candidate.get("verifierEvidenceId"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn proof_deterministic_fission_evidence_refs(proof: &serde_json::Value) -> Option<Vec<String>> {
+    json_string_array(
+        proof_selected_fission_candidate(proof)
+            .and_then(|candidate| candidate.get("deterministicVerifierEvidenceIds")),
+    )
+}
+
+fn proof_fission_source_paths(proof: &serde_json::Value) -> Option<Vec<String>> {
+    json_string_array(
+        proof_selected_fission_candidate(proof)
+            .and_then(|candidate| candidate.get("normalizedSourcePaths"))
+            .or_else(|| {
+                proof_selected_fission_candidate(proof)
+                    .and_then(|candidate| candidate.pointer("/candidate/sourcePaths"))
+            }),
+    )
+}
+
+fn proof_fission_selection_decision_hash(proof: &serde_json::Value) -> Option<String> {
+    proof_fission_verifier_metadata(proof)
+        .and_then(|metadata| metadata.get("selectionDecision"))
+        .filter(|decision| decision.is_object())
+        .map(|decision| format!("sha256:{}", sha256_hex_str(&decision.to_string())))
+}
+
+fn proof_fission_output_oracle_contract(proof: &serde_json::Value) -> Option<serde_json::Value> {
+    proof_selected_fission_candidate(proof)
+        .and_then(|candidate| candidate.get("outputOracleContract"))
+        .filter(|contract| contract.is_object())
+        .cloned()
+}
+
 fn proof_abi_membrane_hash(proof: &serde_json::Value) -> Option<String> {
     first_proof_evidence(proof, "device-abi-metadata")
         .and_then(|evidence| evidence.get("contentHash"))
@@ -6273,6 +6382,20 @@ async fn reload_capsule_metadata_from_proof_artifact(
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
     ReloadCapsuleMetadata {
         fission_island_id: proof.as_ref().and_then(proof_fission_island_id),
+        fission_verifier_evidence_id: proof.as_ref().and_then(proof_fission_verifier_evidence_id),
+        selected_verifier_evidence_id: proof
+            .as_ref()
+            .and_then(proof_selected_fission_verifier_evidence_id),
+        deterministic_verifier_evidence_refs: proof
+            .as_ref()
+            .and_then(proof_deterministic_fission_evidence_refs),
+        fission_source_paths: proof.as_ref().and_then(proof_fission_source_paths),
+        fission_selection_decision_hash: proof
+            .as_ref()
+            .and_then(proof_fission_selection_decision_hash),
+        fission_output_oracle_contract: proof
+            .as_ref()
+            .and_then(proof_fission_output_oracle_contract),
         abi_membrane_hash: proof.as_ref().and_then(proof_abi_membrane_hash),
         dependency_closure_hash: proof
             .as_ref()

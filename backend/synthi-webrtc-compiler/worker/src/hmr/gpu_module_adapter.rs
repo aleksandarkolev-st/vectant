@@ -1439,6 +1439,43 @@ fn runtime_acceptance_contract(
     } else {
         source_paths.to_vec()
     };
+    let fission_selected_verifier_evidence_id = capsule_metadata
+        .and_then(|metadata| metadata.selected_verifier_evidence_id.clone());
+    let fission_verifier_evidence_id = capsule_metadata
+        .and_then(|metadata| metadata.fission_verifier_evidence_id.clone());
+    let fission_deterministic_verifier_evidence_refs = capsule_metadata
+        .and_then(|metadata| metadata.deterministic_verifier_evidence_refs.clone())
+        .unwrap_or_default();
+    let fission_source_paths = capsule_metadata
+        .and_then(|metadata| metadata.fission_source_paths.clone())
+        .filter(|paths| !paths.is_empty())
+        .unwrap_or_else(|| source_paths.clone());
+    let fission_selection_decision_hash = capsule_metadata
+        .and_then(|metadata| metadata.fission_selection_decision_hash.clone());
+    let fission_output_oracle_contract = capsule_metadata
+        .and_then(|metadata| metadata.fission_output_oracle_contract.clone())
+        .unwrap_or(Value::Null);
+    let mut acceptance_evidence_values = evidence_refs.to_vec();
+    if let Some(evidence_id) = &fission_verifier_evidence_id {
+        acceptance_evidence_values.push(evidence_id.clone());
+    }
+    if let Some(evidence_id) = &fission_selected_verifier_evidence_id {
+        acceptance_evidence_values.push(evidence_id.clone());
+    }
+    acceptance_evidence_values.extend(fission_deterministic_verifier_evidence_refs.clone());
+    let acceptance_evidence_refs = sorted_unique_non_empty(acceptance_evidence_values);
+    let fission_evidence_refs = sorted_unique_non_empty(
+        fission_verifier_evidence_id
+            .clone()
+            .into_iter()
+            .chain(fission_selected_verifier_evidence_id.clone())
+            .chain(fission_deterministic_verifier_evidence_refs.clone())
+            .collect(),
+    );
+    let fission_contract_verified = fission_selected_verifier_evidence_id.is_some()
+        && !fission_deterministic_verifier_evidence_refs.is_empty()
+        && fission_selection_decision_hash.is_some()
+        && fission_output_oracle_contract.is_object();
     let compile_target = runtime_proof_compile_target(vendor);
     let stream = if dispatch_record.stream_token == 0 {
         "default".to_string()
@@ -1447,16 +1484,16 @@ fn runtime_acceptance_contract(
     };
     let arg_provenance = launch_arg_provenance_json(&dispatch_record.arg_provenance);
     let evidence_by_field = json!({
-        "kernel_name": evidence_refs,
-        "launch_api": evidence_refs,
-        "grid_dim": evidence_refs,
-        "block_dim": evidence_refs,
-        "shared_mem_bytes": evidence_refs,
-        "stream": evidence_refs,
-        "kernel_params": evidence_refs,
-        "code_object_metadata": evidence_refs,
-        "output_buffers": evidence_refs,
-        "readback_oracle": evidence_refs,
+        "kernel_name": acceptance_evidence_refs,
+        "launch_api": acceptance_evidence_refs,
+        "grid_dim": acceptance_evidence_refs,
+        "block_dim": acceptance_evidence_refs,
+        "shared_mem_bytes": acceptance_evidence_refs,
+        "stream": acceptance_evidence_refs,
+        "kernel_params": acceptance_evidence_refs,
+        "code_object_metadata": acceptance_evidence_refs,
+        "output_buffers": acceptance_evidence_refs,
+        "readback_oracle": acceptance_evidence_refs,
     });
     json!({
         "contract_version": GPU_HMR_ACCEPTANCE_CONTRACT_SCHEMA_VERSION,
@@ -1466,7 +1503,7 @@ fn runtime_acceptance_contract(
         "edit_id": req.reload_id,
         "backend": vendor.proof_backend(),
         "confidence": 0.95,
-        "evidence_refs": evidence_refs,
+        "evidence_refs": acceptance_evidence_refs,
         "classification": {
             "project_kind": "gpu_project",
             "edit_kind": "gpu_artifact_edit",
@@ -1487,9 +1524,9 @@ fn runtime_acceptance_contract(
         "unaffected_artifacts_hash_unchanged": true,
         "abi_compatibility_class": {
             "value": "compatible",
-            "evidence_refs": evidence_refs,
+            "evidence_refs": acceptance_evidence_refs,
             "backend_specific_adapter_safety_proven": true,
-            "backend_specific_adapter_safety_evidence_refs": evidence_refs,
+            "backend_specific_adapter_safety_evidence_refs": acceptance_evidence_refs,
         },
         "abi_metadata": {
             "args": arg_provenance.clone(),
@@ -1500,11 +1537,11 @@ fn runtime_acceptance_contract(
             },
             "stream_or_queue_requirements": stream,
             "extractor_provenance": "runtime_launch_boundary",
-            "metadata_sources": evidence_refs,
+            "metadata_sources": acceptance_evidence_refs,
         },
         "reload_mechanism": "generated_adapter",
         "adapter_outcome": "adapter_generated",
-        "reload_evidence_refs": evidence_refs,
+        "reload_evidence_refs": acceptance_evidence_refs,
         "firewall_evidence": {
             "route": req.firewall_evidence.route,
             "cpu_hmr_used": false,
@@ -1513,7 +1550,7 @@ fn runtime_acceptance_contract(
             "process_id_before": process_id,
             "process_id_after": process_id,
             "evidence_source": req.firewall_evidence.evidence_source,
-            "evidence_refs": evidence_refs,
+            "evidence_refs": acceptance_evidence_refs,
         },
         "output_oracle_target": output_oracle_target,
         "dispatch_trace_required": true,
@@ -1532,19 +1569,34 @@ fn runtime_acceptance_contract(
         },
         "epoch_retirement_proof": {
             "value": runtime_epoch_retirement_proof_value(retirement_strategy),
-            "evidence_refs": evidence_refs,
+            "evidence_refs": acceptance_evidence_refs,
         },
         "fission_report": {
             "selected_island": capsule_metadata
                 .and_then(|metadata| metadata.fission_island_id.clone())
                 .unwrap_or_else(|| "runtime-device-sidecar".to_string()),
-            "selected_reason": "verified_device_artifact_delta",
+            "selected_reason": if fission_contract_verified {
+                "verified_fission_contract"
+            } else {
+                "verified_device_artifact_delta"
+            },
+            "changed_sources": fission_source_paths,
+            "included_dependencies": source_paths,
+            "excluded_host_sources": [],
             "artifact_hash_before": previous_artifact_id,
             "artifact_hash_after": new_artifact_id,
+            "abi_compatibility_class": "compatible",
             "full_device_fallback": false,
             "host_relinked": false,
             "process_restarted": false,
             "full_rebuild_used": false,
+            "unaffected_artifacts_hash_unchanged": true,
+            "evidence_refs": fission_evidence_refs,
+            "selected_verifier_evidence_id": fission_selected_verifier_evidence_id,
+            "deterministic_verifier_evidence_refs": fission_deterministic_verifier_evidence_refs,
+            "selection_decision_hash": fission_selection_decision_hash,
+            "output_oracle_contract": fission_output_oracle_contract,
+            "smallest_safe_island_proven": fission_contract_verified,
         },
         "hip_contract": {
             "kernel_name": kernel_name,
@@ -4358,6 +4410,7 @@ mod tests {
             abi_membrane_hash: Some(format!("sha256:{}", "b".repeat(64))),
             dependency_closure_hash: Some(format!("sha256:{}", "c".repeat(64))),
             proof_hash: Some(format!("sha256:{}", "d".repeat(64))),
+            ..Default::default()
         });
         let mut a = adapter_with_symbols(stub_symbols());
         let r = a.reload(&req);

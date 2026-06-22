@@ -8,6 +8,7 @@
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
@@ -40,6 +41,18 @@ pub struct ReloadArtifactBlob {
 pub struct ReloadCapsuleMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fission_island_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fission_verifier_evidence_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_verifier_evidence_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deterministic_verifier_evidence_refs: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fission_source_paths: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fission_selection_decision_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fission_output_oracle_contract: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub abi_membrane_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -103,15 +116,48 @@ fn normalized_reload_capsule_metadata(
 ) -> Option<ReloadCapsuleMetadata> {
     let normalized = ReloadCapsuleMetadata {
         fission_island_id: non_empty_token(metadata.fission_island_id.clone()),
+        fission_verifier_evidence_id: non_empty_token(metadata.fission_verifier_evidence_id.clone()),
+        selected_verifier_evidence_id: non_empty_token(metadata.selected_verifier_evidence_id.clone()),
+        deterministic_verifier_evidence_refs: non_empty_string_vec(
+            metadata.deterministic_verifier_evidence_refs.clone(),
+        ),
+        fission_source_paths: non_empty_string_vec(metadata.fission_source_paths.clone()),
+        fission_selection_decision_hash: non_empty_token(
+            metadata.fission_selection_decision_hash.clone(),
+        ),
+        fission_output_oracle_contract: non_empty_json_object(
+            metadata.fission_output_oracle_contract.clone(),
+        ),
         abi_membrane_hash: non_empty_token(metadata.abi_membrane_hash.clone()),
         dependency_closure_hash: non_empty_token(metadata.dependency_closure_hash.clone()),
         proof_hash: non_empty_token(metadata.proof_hash.clone()),
     };
     (normalized.fission_island_id.is_some()
+        || normalized.fission_verifier_evidence_id.is_some()
+        || normalized.selected_verifier_evidence_id.is_some()
+        || normalized.deterministic_verifier_evidence_refs.is_some()
+        || normalized.fission_source_paths.is_some()
+        || normalized.fission_selection_decision_hash.is_some()
+        || normalized.fission_output_oracle_contract.is_some()
         || normalized.abi_membrane_hash.is_some()
         || normalized.dependency_closure_hash.is_some()
         || normalized.proof_hash.is_some())
     .then_some(normalized)
+}
+
+fn non_empty_string_vec(value: Option<Vec<String>>) -> Option<Vec<String>> {
+    let values = value?
+        .into_iter()
+        .filter_map(|value| non_empty_token(Some(value)))
+        .collect::<Vec<_>>();
+    (!values.is_empty()).then_some(values)
+}
+
+fn non_empty_json_object(value: Option<Value>) -> Option<Value> {
+    match value {
+        Some(Value::Object(map)) if !map.is_empty() => Some(Value::Object(map)),
+        _ => None,
+    }
 }
 
 pub fn encode_reload_capsule_metadata_token(metadata: &ReloadCapsuleMetadata) -> Option<String> {
@@ -301,6 +347,7 @@ mod tests {
             abi_membrane_hash: Some("sha256:def".into()),
             dependency_closure_hash: Some("".into()),
             proof_hash: Some("sha256:123".into()),
+            ..Default::default()
         };
 
         let token = encode_reload_capsule_metadata_token(&metadata).expect("capsule token");
