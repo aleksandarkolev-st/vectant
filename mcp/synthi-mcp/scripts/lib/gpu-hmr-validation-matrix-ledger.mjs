@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import sharp from 'sharp';
 import { queryGpuHmrLedgerInvariants } from './gpu-hmr-proof-ledger.mjs';
 import { classifyGpuHmrFissionProof } from './gpu-hmr-runtime-proof.mjs';
 import { runtimeProofArtifactStrictGate } from './gpu-hmr-proof-strict-gates.mjs';
@@ -251,6 +252,174 @@ async function visualArtifactEvidence(paths, repoRoot, baseDir, metrics = {}, re
     visiblePixelCount: finiteNumber(metrics.visiblePixelCount ?? metrics.visible_pixel_count),
     images: evidence,
   };
+}
+
+function regionStatsFromRgba({ data, width, height, bounds }) {
+  const x0 = Math.max(0, Math.min(width - 1, Number(bounds?.x0 ?? 0)));
+  const y0 = Math.max(0, Math.min(height - 1, Number(bounds?.y0 ?? 0)));
+  const x1 = Math.max(0, Math.min(width - 1, Number(bounds?.x1 ?? -1)));
+  const y1 = Math.max(0, Math.min(height - 1, Number(bounds?.y1 ?? -1)));
+  if (x1 < x0 || y1 < y0) {
+    return {
+      bounds: { x0: 0, y0: 0, x1: -1, y1: -1 },
+      width: 0,
+      height: 0,
+      pixels: 0,
+      visiblePixels: 0,
+      visiblePixelRatio: 0,
+      meanLuma8bit: 0,
+      lumaStddev8bit: 0,
+      meanRgbSpan8bit: 0,
+      uniqueColorSampleCount: 0,
+    };
+  }
+  let pixels = 0;
+  let visiblePixels = 0;
+  let lumaSum = 0;
+  let lumaSqSum = 0;
+  let rgbSpanSum = 0;
+  const colorSample = new Set();
+  for (let y = y0; y <= y1; y += 1) {
+    for (let x = x0; x <= x1; x += 1) {
+      const offset = (y * width + x) * 4;
+      const r = data[offset];
+      const g = data[offset + 1];
+      const b = data[offset + 2];
+      pixels += 1;
+      if (r > 4 || g > 4 || b > 4) visiblePixels += 1;
+      const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      lumaSum += luma;
+      lumaSqSum += luma * luma;
+      rgbSpanSum += Math.max(r, g, b) - Math.min(r, g, b);
+      if (colorSample.size < 20000) colorSample.add(`${r},${g},${b}`);
+    }
+  }
+  const meanLuma = pixels > 0 ? lumaSum / pixels : 0;
+  const variance = pixels > 0 ? Math.max(0, (lumaSqSum / pixels) - meanLuma * meanLuma) : 0;
+  return {
+    bounds: { x0, y0, x1, y1 },
+    width: x1 - x0 + 1,
+    height: y1 - y0 + 1,
+    pixels,
+    visiblePixels,
+    visiblePixelRatio: pixels > 0 ? visiblePixels / pixels : 0,
+    meanLuma8bit: meanLuma,
+    lumaStddev8bit: Math.sqrt(variance),
+    meanRgbSpan8bit: pixels > 0 ? rgbSpanSum / pixels : 0,
+    uniqueColorSampleCount: colorSample.size,
+  };
+}
+
+function oracleRegionThresholds(oracleRegion) {
+  const thresholds = compactObject(oracleRegion?.thresholds);
+  return {
+    minVisibleRatio: finiteNumber(thresholds.minVisibleRatio ?? thresholds.min_visible_ratio) ?? 0.02,
+    minMeanLuma8bit: finiteNumber(thresholds.minMeanLuma8bit ?? thresholds.min_mean_luma_8bit) ?? 4,
+    minUniqueColorSampleCount:
+      finiteNumber(thresholds.minUniqueColorSampleCount ?? thresholds.min_unique_color_sample_count) ?? 64,
+  };
+}
+
+async function recomputeHiprtOracleRegion({ baselinePath, changedPath, oracleRegion }) {
+  const thresholds = oracleRegionThresholds(oracleRegion);
+  if (!baselinePath || !changedPath) {
+    return {
+      present: false,
+      accepted: false,
+      source: 'matrix_recomputed_png_pixels',
+      thresholds,
+      failedGates: [{ code: 'hiprt_oracle_region_capture_paths_missing' }],
+    };
+  }
+  try {
+    const baseline = await sharp(baselinePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const changed = await sharp(changedPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    if (baseline.info.width !== changed.info.width || baseline.info.height !== changed.info.height) {
+      return {
+        present: true,
+        accepted: false,
+        source: 'matrix_recomputed_png_pixels',
+        thresholds,
+        baselinePath,
+        changedPath,
+        failedGates: [{ code: 'hiprt_oracle_region_dimension_mismatch' }],
+      };
+    }
+    const width = baseline.info.width;
+    const height = baseline.info.height;
+    const pixels = width * height;
+    const changedBounds = { x0: width, y0: height, x1: -1, y1: -1 };
+    let changedPixelsThreshold4 = 0;
+    for (let i = 0; i < pixels; i += 1) {
+      const offset = i * 4;
+      const maxDelta = Math.max(
+        Math.abs(baseline.data[offset] - changed.data[offset]),
+        Math.abs(baseline.data[offset + 1] - changed.data[offset + 1]),
+        Math.abs(baseline.data[offset + 2] - changed.data[offset + 2]),
+      );
+      if (maxDelta > 4) {
+        changedPixelsThreshold4 += 1;
+        const x = i % width;
+        const y = Math.floor(i / width);
+        changedBounds.x0 = Math.min(changedBounds.x0, x);
+        changedBounds.y0 = Math.min(changedBounds.y0, y);
+        changedBounds.x1 = Math.max(changedBounds.x1, x);
+        changedBounds.y1 = Math.max(changedBounds.y1, y);
+      }
+    }
+    const bounds = changedPixelsThreshold4 > 0
+      ? changedBounds
+      : { x0: 0, y0: 0, x1: -1, y1: -1 };
+    const baselineRegion = regionStatsFromRgba({
+      data: baseline.data,
+      width,
+      height,
+      bounds,
+    });
+    const changedRegion = regionStatsFromRgba({
+      data: changed.data,
+      width,
+      height,
+      bounds,
+    });
+    const nonBlankAfterEpoch =
+      changedRegion.pixels > 0
+      && changedRegion.visiblePixelRatio >= thresholds.minVisibleRatio
+      && changedRegion.meanLuma8bit >= thresholds.minMeanLuma8bit
+      && changedRegion.uniqueColorSampleCount >= thresholds.minUniqueColorSampleCount;
+    return {
+      present: true,
+      accepted: nonBlankAfterEpoch,
+      source: 'matrix_recomputed_png_pixels',
+      baselinePath,
+      changedPath,
+      width,
+      height,
+      thresholds,
+      changedPixelsThreshold4,
+      changedPixelRatioThreshold4: pixels > 0 ? changedPixelsThreshold4 / pixels : 0,
+      baseline: baselineRegion,
+      changed: changedRegion,
+      nonBlankAfterEpoch,
+      blankFrameRejected: nonBlankAfterEpoch,
+      failedGates: nonBlankAfterEpoch
+        ? []
+        : [{ code: 'hiprt_oracle_region_nonblank_pixel_recompute_failed' }],
+    };
+  } catch (error) {
+    return {
+      present: true,
+      accepted: false,
+      source: 'matrix_recomputed_png_pixels',
+      thresholds,
+      baselinePath,
+      changedPath,
+      failedGates: [{
+        code: 'hiprt_oracle_region_pixel_recompute_error',
+        message: error?.message ? String(error.message) : String(error),
+      }],
+    };
+  }
 }
 
 function rowKey(row) {
@@ -893,6 +1062,13 @@ async function hiprtWarmRow(json, filePath, context) {
   const cpuHmrUsed = boolOrNull(ledgerRecord.cpu_hmr_used ?? ledgerRecord.cpuHmrUsed);
   const fullRebuildUsed = boolOrNull(ledgerRecord.full_rebuild_used ?? ledgerRecord.fullRebuildUsed);
   const processRestarted = boolOrNull(ledgerRecord.process_restarted ?? ledgerRecord.processRestarted);
+  const baselineCapturePath = resolveEvidencePath(baseline.localCapturePath, context.repoRoot, path.dirname(filePath));
+  const changedCapturePath = resolveEvidencePath(changed.localCapturePath, context.repoRoot, path.dirname(filePath));
+  const oracleRegionRecomputed = await recomputeHiprtOracleRegion({
+    baselinePath: baselineCapturePath,
+    changedPath: changedCapturePath,
+    oracleRegion,
+  });
   const visual = await visualArtifactEvidence(
     [baseline.localCapturePath, changed.localCapturePath, diff.path],
     context.repoRoot,
@@ -907,6 +1083,9 @@ async function hiprtWarmRow(json, filePath, context) {
     acceptance.oracleRegionNonBlank === true
     && oracleRegion.nonBlankAfterEpoch === true
     && oracleRegion.blankFrameRejected === true
+    && oracleRegionRecomputed.accepted === true
+    && oracleRegionRecomputed.nonBlankAfterEpoch === true
+    && oracleRegionRecomputed.blankFrameRejected === true
     && finiteNumber(oracleRegion.changed?.visiblePixelRatio) > 0
     && finiteNumber(oracleRegion.changed?.visiblePixels) > 0;
   const accepted =
@@ -930,6 +1109,9 @@ async function hiprtWarmRow(json, filePath, context) {
     && acceptance.visualDelta === true
     && acceptance.oracleRegionNonBlank === false
     && oracleRegion.blankFrameRejected === false
+    && oracleRegionRecomputed.present === true
+    && oracleRegionRecomputed.nonBlankAfterEpoch === false
+    && finiteNumber(oracleRegionRecomputed.changedPixelsThreshold4) > 0
     && finiteNumber(oracleRegion.changed?.visiblePixelRatio) !== null
     && finiteNumber(oracleRegion.changed?.visiblePixels) !== null;
   const profileId = firstText(json.profile?.id, json.profileId, json.slug);
@@ -961,6 +1143,7 @@ async function hiprtWarmRow(json, filePath, context) {
     proofIds: proofIdsFrom(json, strict, runtimeProofArtifact, ledger),
     ledger,
     runtimeProofArtifact: runtimeProofArtifactProof,
+    oracleRegion: oracleRegionRecomputed,
     visual,
     runMode,
     cpuHmrUsed,
@@ -981,9 +1164,11 @@ async function hiprtWarmRow(json, filePath, context) {
       runtimeProofArtifactProof.present === true ? null : 'runtime_proof_artifact_missing',
       runtimeProofArtifactProof.accepted === true ? null : 'runtime_proof_artifact_not_strictly_accepted',
       oracleRegionAccepted === true ? null : 'hiprt_oracle_region_nonblank_not_proven',
+      oracleRegionRecomputed.accepted === true ? null : 'hiprt_oracle_region_pixel_recompute_not_accepted',
       cpuHmrUsed === false ? null : 'cpu_hmr_firewall_field_not_false',
       fullRebuildUsed === false ? null : 'full_rebuild_firewall_field_not_false',
       processRestarted === false ? null : 'process_restart_firewall_field_not_false',
+      ...oracleRegionRecomputed.failedGates.map((failure) => failure.code),
     ]),
     openGaps: accepted
       ? []

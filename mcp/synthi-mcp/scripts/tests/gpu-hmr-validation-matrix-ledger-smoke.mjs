@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import sharp from 'sharp';
 import {
   collectGpuHmrValidationMatrixLedger,
   GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
@@ -36,6 +37,22 @@ async function writeJson(filePath, value) {
 async function writePng(filePath) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, PNG_HEADER);
+}
+
+async function writeRgbaPng(filePath, width, height, pixelAt) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const data = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const [r, g, b, a = 255] = pixelAt(x, y);
+      const offset = (y * width + x) * 4;
+      data[offset] = r;
+      data[offset + 1] = g;
+      data[offset + 2] = b;
+      data[offset + 3] = a;
+    }
+  }
+  await sharp(data, { raw: { width, height, channels: 4 } }).png().toFile(filePath);
 }
 
 function sha256Hex(value) {
@@ -402,6 +419,86 @@ function runtimeProofMaterials(scope, options = {}) {
   };
 }
 
+function hiprtWarmProofArtifact({
+  slug,
+  profileId,
+  baselinePath,
+  changedPath,
+  diffPath,
+  oracleRegionClaimNonBlank = true,
+}) {
+  const materials = runtimeProofMaterials('hot_delta_1', {
+    projectId: profileId,
+    visualRoot: path.dirname(diffPath),
+  });
+  return {
+    schemaVersion: 'synthi.hiprt.warm_visual_proof.v2',
+    slug,
+    createdAt: '2026-06-09T00:00:00.000Z',
+    mode: 'same-process',
+    metricScope: 'hot_delta_1',
+    metric_scope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    cache_state: 'compiler_cache_warm',
+    profile: { id: profileId },
+    accepted: true,
+    acceptance: {
+      strictProvenance: true,
+      sameProcessRuntime: true,
+      visualDelta: true,
+      oracleRegionNonBlank: oracleRegionClaimNonBlank,
+    },
+    runtime: {
+      baseline: { localCapturePath: baselinePath },
+      changed: {
+        localCapturePath: changedPath,
+        sameProcess: true,
+        liveRecompileMs: 1,
+        totalHostWallMs: 2,
+      },
+    },
+    diff: {
+      path: diffPath,
+      changedPixelRatioThreshold4: 1,
+      meanAbsDelta8bit: 10,
+      oracleRegion: {
+        thresholds: {
+          minVisibleRatio: 0.02,
+          minMeanLuma8bit: 4,
+          minUniqueColorSampleCount: 1,
+        },
+        changedPixelsThreshold4: 64,
+        changedPixelRatioThreshold4: 1,
+        changed: {
+          pixels: 64,
+          visiblePixels: oracleRegionClaimNonBlank ? 64 : 0,
+          visiblePixelRatio: oracleRegionClaimNonBlank ? 1 : 0,
+          meanLuma8bit: oracleRegionClaimNonBlank ? 16 : 0,
+          uniqueColorSampleCount: oracleRegionClaimNonBlank ? 4 : 1,
+        },
+        nonBlankAfterEpoch: oracleRegionClaimNonBlank,
+        blankFrameRejected: oracleRegionClaimNonBlank,
+      },
+    },
+    strictHmrProvenance: {
+      fullRuntimeProven: true,
+      strictFullRuntimePassed: true,
+    },
+    timings: {
+      totalWallMs: 3,
+    },
+    timingMetrics: {
+      metricClock: 'monotonic_ns',
+      metricScope: 'hot_delta_1',
+      cacheState: 'compiler_cache_warm',
+      editId: `source-edit:${slug}:hot1`,
+      editHash: `sha256:${sha256Hex(`${slug}:hot1`)}`,
+      editKind: 'gpu_artifact_edit',
+    },
+    ...materials,
+  };
+}
+
 const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'gpu-hmr-validation-matrix-'));
 const mcpRoot = path.join(tmpRoot, 'mcp', 'synthi-mcp');
 const logsRoot = path.join(mcpRoot, '.gpu-hmr-test-logs');
@@ -717,6 +814,89 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-query-only-proof
   },
 });
 
+const hiprtDir = path.join(artifactsRoot, 'hiprt-light-math-warm-proof');
+const hiprtAcceptedBefore = path.join(hiprtDir, 'accepted-before.png');
+const hiprtAcceptedAfter = path.join(hiprtDir, 'accepted-after.png');
+const hiprtAcceptedDiff = path.join(hiprtDir, 'accepted-diff.png');
+await writeRgbaPng(hiprtAcceptedBefore, 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(hiprtAcceptedAfter, 8, 8, (x, y) => [24 + x, 32 + y, 48 + x + y, 255]);
+await writeRgbaPng(hiprtAcceptedDiff, 8, 8, () => [255, 255, 255, 255]);
+await writeJson(path.join(hiprtDir, 'accepted-hiprt-proof.json'), hiprtWarmProofArtifact({
+  slug: 'accepted-hiprt-recomputed-oracle',
+  profileId: 'accepted-hiprt-recomputed-oracle',
+  baselinePath: hiprtAcceptedBefore,
+  changedPath: hiprtAcceptedAfter,
+  diffPath: hiprtAcceptedDiff,
+  oracleRegionClaimNonBlank: true,
+}));
+await writeJson(path.join(hiprtDir, 'accepted-hiprt-cold.json'), {
+  ...runModeProofBase,
+  backend: 'hiprt',
+  targetId: 'accepted-hiprt-recomputed-oracle',
+  profileId: 'accepted-hiprt-recomputed-oracle',
+  proofId: 'agent-split-run-mode-proof:sha256:accepted-hiprt-cold',
+  coldSplitProven: true,
+  cold_split_proven: true,
+  acceptedForGpuHmr: false,
+  gpuHmrSuccess: false,
+  visualArtifacts: {
+    beforeImage: hiprtAcceptedBefore,
+    afterImage: hiprtAcceptedAfter,
+    diffImage: hiprtAcceptedDiff,
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'cold',
+    cacheState: 'clean',
+    editId: 'initial-ai-split',
+    editHash: 'sha256:accepted-hiprt-cold',
+    editKind: 'cold_split',
+  },
+});
+await writeJson(path.join(hiprtDir, 'accepted-hiprt-hot2.json'), {
+  ...runModeProofBase,
+  ...waitProofValidation('gpu-ledger-proof:sha256:accepted-hiprt-hot2', 'gpu-runtime-proof:sha256:accepted-hiprt-hot2'),
+  ...runtimeProofMaterials('hot_delta_2', {
+    projectId: 'accepted-hiprt-recomputed-oracle',
+    visualRoot: hiprtDir,
+  }),
+  backend: 'hiprt',
+  targetId: 'accepted-hiprt-recomputed-oracle',
+  profileId: 'accepted-hiprt-recomputed-oracle',
+  proofId: 'agent-split-run-mode-proof:sha256:accepted-hiprt-hot2',
+  acceptedForGpuHmr: true,
+  gpuHmrSuccess: true,
+  visualArtifacts: {
+    beforeImage: hiprtAcceptedBefore,
+    afterImage: hiprtAcceptedAfter,
+    diffImage: hiprtAcceptedDiff,
+  },
+  runMode: {
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_2',
+    cacheState: 'compiler_cache_warm',
+    editId: 'source-edit:accepted-hiprt-hot2',
+    editHash: 'sha256:accepted-hiprt-hot2',
+    editKind: 'different_gpu_edit',
+    differentEdit: true,
+  },
+});
+
+const hiprtForgedBefore = path.join(hiprtDir, 'forged-before.png');
+const hiprtForgedAfter = path.join(hiprtDir, 'forged-after.png');
+const hiprtForgedDiff = path.join(hiprtDir, 'forged-diff.png');
+await writeRgbaPng(hiprtForgedBefore, 8, 8, (x, y) => [24 + x, 32 + y, 48 + x + y, 255]);
+await writeRgbaPng(hiprtForgedAfter, 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(hiprtForgedDiff, 8, 8, () => [255, 255, 255, 255]);
+await writeJson(path.join(hiprtDir, 'forged-hiprt-proof.json'), hiprtWarmProofArtifact({
+  slug: 'forged-hiprt-oracle-region-json',
+  profileId: 'forged-hiprt-oracle-region-json',
+  baselinePath: hiprtForgedBefore,
+  changedPath: hiprtForgedAfter,
+  diffPath: hiprtForgedDiff,
+  oracleRegionClaimNonBlank: true,
+}));
+
 const ledger = await collectGpuHmrValidationMatrixLedger({
   repoRoot: tmpRoot,
   mcpRoot,
@@ -770,11 +950,29 @@ assert.equal(forgedWebGpuQueryOnly.ledger.present, false);
 assert.equal(forgedWebGpuQueryOnly.ledger.source, 'supplied_query_ignored_no_ledger');
 assert.ok(forgedWebGpuQueryOnly.reasons.includes('proof_ledger_record_missing'));
 
+const acceptedHiprt = ledger.rows.find((row) =>
+  row.targetId === 'accepted-hiprt-recomputed-oracle'
+  && row.proofMode === 'same-process'
+);
+assert.equal(acceptedHiprt?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(acceptedHiprt.acceptedForGpuHmr, true);
+assert.equal(acceptedHiprt.oracleRegion.source, 'matrix_recomputed_png_pixels');
+assert.equal(acceptedHiprt.oracleRegion.accepted, true);
+assert.equal(acceptedHiprt.oracleRegion.nonBlankAfterEpoch, true);
+
+const forgedHiprt = ledger.rows.find((row) => row.targetId === 'forged-hiprt-oracle-region-json');
+assert.equal(forgedHiprt?.matrixOutcome, 'unproven');
+assert.equal(forgedHiprt.acceptedForGpuHmr, false);
+assert.equal(forgedHiprt.oracleRegion.source, 'matrix_recomputed_png_pixels');
+assert.equal(forgedHiprt.oracleRegion.accepted, false);
+assert.equal(forgedHiprt.oracleRegion.nonBlankAfterEpoch, false);
+assert.ok(forgedHiprt.reasons.includes('hiprt_oracle_region_pixel_recompute_not_accepted'));
+
 const legacyAgentSplit = ledger.rows.find((row) => row.proofMode === 'mcp_preview_visual');
 assert.equal(legacyAgentSplit?.matrixOutcome, 'unproven');
 assert.equal(legacyAgentSplit.targetId, 'unknown');
 
-assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 2);
+assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 4);
 assert.equal(ledger.summary.refusalProvenRows, 3);
 assert.ok(ledger.summary.unprovenRows >= 1);
 
