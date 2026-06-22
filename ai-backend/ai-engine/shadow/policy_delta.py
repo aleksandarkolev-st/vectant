@@ -17,6 +17,13 @@ class PolicyDeltaStore:
     def add(self, delta: PolicyDelta) -> None:
         self._by_workspace.setdefault(delta.workspace_id, []).append(delta)
 
+    def delete(self, workspace_id: str, delta_id: str) -> bool:
+        for delta in self._by_workspace.get(workspace_id, []):
+            if delta.id == delta_id:
+                delta.status = PolicyDeltaStatus.DELETED
+                return True
+        return False
+
     def list_active(self, workspace_id: str, task_class: str, *, now: float | None = None) -> List[PolicyDelta]:
         now_value = time.time() if now is None else now
         out: List[PolicyDelta] = []
@@ -48,6 +55,7 @@ def make_policy_delta(
     confidence: str,
     evidence_refs: Iterable[str],
     status: PolicyDeltaStatus = PolicyDeltaStatus.HYPOTHESIS,
+    expiry: float | None = None,
 ) -> PolicyDelta:
     return PolicyDelta(
         id=f"pdelta_{uuid.uuid4().hex[:12]}",
@@ -59,6 +67,7 @@ def make_policy_delta(
         after=after,
         confidence=confidence,
         evidence_refs=list(evidence_refs),
+        expiry=expiry,
         status=status,
     )
 
