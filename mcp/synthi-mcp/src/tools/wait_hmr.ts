@@ -274,12 +274,14 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     };
 
     const waitForRequiredGpuProof = (
-      timeoutMs: number
+      timeoutMs: number,
+      opts: { settleOnTerminal?: boolean } = {}
     ): { promise: Promise<"satisfied" | "terminal" | "timeout">; cancel: () => void } => {
+      const settleOnTerminal = opts.settleOnTerminal !== false;
       if (requiredProofState === null || requiredProofSatisfied()) {
         return { promise: Promise.resolve("satisfied"), cancel: () => {} };
       }
-      if (postApplyTerminal) {
+      if (settleOnTerminal && postApplyTerminal) {
         return { promise: Promise.resolve("terminal"), cancel: () => {} };
       }
       if (timeoutMs <= 0) {
@@ -298,7 +300,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         const onProofOrTerminal = (): void => {
           if (requiredProofSatisfied()) {
             settle("satisfied");
-          } else if (postApplyTerminal) {
+          } else if (settleOnTerminal && postApplyTerminal) {
             settle("terminal");
           }
         };
@@ -329,6 +331,15 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
         result = outcome.kind === "terminal"
           ? outcome.terminal
           : await terminalWait;
+        if (result.status !== "applied" && requiredProofState !== null) {
+          const remaining = Math.max(0, timeoutMs - (Date.now() - start));
+          const lateProofWait = waitForRequiredGpuProof(remaining, { settleOnTerminal: false });
+          const lateProofOutcome = await lateProofWait.promise;
+          lateProofWait.cancel();
+          if (lateProofOutcome === "satisfied" && latestGpuProof !== null) {
+            result = terminalEventFromGpuProof(latestGpuProof, Date.now() - start);
+          }
+        }
       }
     } else {
       result = await terminalWait;
