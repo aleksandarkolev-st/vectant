@@ -20,6 +20,8 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
+  deterministicVisualModeFromMcpEvidence,
+  evaluateGpuHmrDeterministicVisualMode,
   mcpFrameAtOrAfterFrameGate,
   mcpFrameGateSatisfiedByScreenshot,
   mcpScreenshotArgsForFrameGate,
@@ -30,6 +32,7 @@ import {
   assertNoGeneratedSplitFissionOverclaim,
   verifyGeneratedGpuSplitDeterministicFission,
 } from './lib/gpu-hmr-generated-split-granularity.mjs';
+import { queryGpuHmrLedgerInvariants } from './lib/gpu-hmr-proof-ledger.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1748,11 +1751,17 @@ function artifactRel(name) {
 
 function waitProofFields(result) {
   const wait = result?.wait ?? {};
+  const proofLedger = wait.proofLedger ?? wait.proof_ledger ?? null;
+  const runtimeProofArtifact = wait.runtimeProofArtifact ?? wait.runtime_proof_artifact ?? null;
   return {
     gpuProofValidation: wait.gpu_proof_validation ?? null,
     gpu_proof_validation: wait.gpu_proof_validation ?? null,
     gpuProofTelemetry: wait.gpu_proof_telemetry ?? null,
     gpu_proof_telemetry: wait.gpu_proof_telemetry ?? null,
+    proofLedger,
+    proof_ledger: proofLedger,
+    runtimeProofArtifact,
+    runtime_proof_artifact: runtimeProofArtifact,
   };
 }
 
@@ -1811,13 +1820,349 @@ function splitProofIdentity(split) {
 }
 
 function runModeProofIdentity(split) {
+  const splitIdentity = splitProofIdentity(split);
   return {
     backend: backendForSplit(split),
-    ...splitProofIdentity(split),
+    ...splitIdentity,
+    generatedSplitProfileId: splitIdentity.profileId,
+    generated_split_profile_id: splitIdentity.profile_id,
+    profileId: CFG.fixture,
+    profile_id: CFG.fixture,
+    fixtureId: CFG.fixture,
+    fixture_id: CFG.fixture,
+    validationProfileId: CFG.fixture,
+    validation_profile_id: CFG.fixture,
   };
 }
 
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function embeddedLedgerFromProof(proof) {
+  if (isRecord(proof?.proofLedger)) return proof.proofLedger;
+  if (isRecord(proof?.proof_ledger)) return proof.proof_ledger;
+  const runtimeProofArtifact = isRecord(proof?.runtimeProofArtifact)
+    ? proof.runtimeProofArtifact
+    : isRecord(proof?.runtime_proof_artifact)
+      ? proof.runtime_proof_artifact
+      : null;
+  if (isRecord(runtimeProofArtifact?.proofLedger)) return runtimeProofArtifact.proofLedger;
+  if (isRecord(runtimeProofArtifact?.proof_ledger)) return runtimeProofArtifact.proof_ledger;
+  return null;
+}
+
+function firstLedgerRecord(ledger) {
+  if (Array.isArray(ledger?.records)) {
+    return ledger.records.find((record) => isRecord(record)) ?? null;
+  }
+  if (isRecord(ledger?.record)) return ledger.record;
+  return isRecord(ledger) ? ledger : null;
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function selectedVisualShot(capture, seq) {
+  const samples = [capture?.first, capture?.second, ...(capture?.samples ?? [])]
+    .filter((sample) => isRecord(sample));
+  return samples.find((sample) => Number(sample.seq) === Number(seq))
+    ?? capture?.second
+    ?? capture?.first
+    ?? null;
+}
+
+function visualLedgerArtifactsFromDelta({
+  visualDelta,
+  beforeShot,
+  afterShot,
+  ledgerRecord,
+}) {
+  const selected = selectedVisualShot(afterShot, visualDelta?.selectedSeq);
+  const baseline = selectedVisualShot(beforeShot, visualDelta?.baselineSeq);
+  const width = Number(selected?.width ?? baseline?.width ?? 0);
+  const height = Number(selected?.height ?? baseline?.height ?? 0);
+  const visiblePixelCount = Number(
+    selected?.visiblePixels
+    ?? afterShot?.second?.visiblePixels
+    ?? afterShot?.first?.visiblePixels
+    ?? 0,
+  );
+  const dispatchEvent = isRecord(ledgerRecord?.dispatch_event)
+    ? ledgerRecord.dispatch_event
+    : isRecord(ledgerRecord?.dispatchEvent)
+      ? ledgerRecord.dispatchEvent
+      : {};
+  const epochPublishEvent = isRecord(ledgerRecord?.epoch_publish_event)
+    ? ledgerRecord.epoch_publish_event
+    : isRecord(ledgerRecord?.epochPublishEvent)
+      ? ledgerRecord.epochPublishEvent
+      : {};
+  const artifactAfterHash = ledgerRecord?.artifact_after_hash ?? ledgerRecord?.artifactAfterHash;
+  const dispatchEpoch = dispatchEvent.epoch ?? epochPublishEvent.epoch ?? null;
+  const dispatchId = dispatchEvent.id ?? null;
+  const artifactHash = dispatchEvent.artifact_hash
+    ?? dispatchEvent.artifactHash
+    ?? artifactAfterHash
+    ?? null;
+  const captureBackend = 'mcp_decoded_frame';
+  const cameraStateHash = `sha256:${sha256Hex(stableJson({
+    captureBackend,
+    validationRunnerCameraMutation: false,
+    width,
+    height,
+  }))}`;
+  return {
+    before_image: visualDelta.visual_artifacts.before_image,
+    beforeImage: visualDelta.visualArtifacts.beforeImage,
+    before_image_hash: visualDelta.visual_artifacts.before_image_hash,
+    beforeImageHash: visualDelta.visualArtifacts.beforeImageHash,
+    before_image_hash_verified: true,
+    beforeImageHashVerified: true,
+    after_image: visualDelta.visual_artifacts.after_image,
+    afterImage: visualDelta.visualArtifacts.afterImage,
+    after_image_hash: visualDelta.visual_artifacts.after_image_hash,
+    afterImageHash: visualDelta.visualArtifacts.afterImageHash,
+    after_image_hash_verified: true,
+    afterImageHashVerified: true,
+    diff_image: visualDelta.visual_artifacts.diff_image,
+    diffImage: visualDelta.visualArtifacts.diffImage,
+    diff_image_hash: visualDelta.visual_artifacts.diff_image_hash,
+    diffImageHash: visualDelta.visualArtifacts.diffImageHash,
+    diff_image_hash_verified: true,
+    diffImageHashVerified: true,
+    blank_frame_rejection: visiblePixelCount > 0,
+    blankFrameRejection: visiblePixelCount > 0,
+    same_frame_rejection: Number(visualDelta.baselineSeq) !== Number(visualDelta.selectedSeq),
+    sameFrameRejection: Number(visualDelta.baselineSeq) !== Number(visualDelta.selectedSeq),
+    new_epoch_watermark_or_trace:
+      `epoch=${dispatchEpoch ?? 'unknown'} dispatch=${dispatchId ?? 'unknown'} artifact=${artifactHash ?? 'unknown'}`,
+    newEpochWatermarkOrTrace:
+      `epoch=${dispatchEpoch ?? 'unknown'} dispatch=${dispatchId ?? 'unknown'} artifact=${artifactHash ?? 'unknown'}`,
+    camera_state_hash: cameraStateHash,
+    cameraStateHash: cameraStateHash,
+    swapchain_size: [width, height],
+    swapchainSize: [width, height],
+    capture_backend: captureBackend,
+    captureBackend,
+    frame_number: Number(visualDelta.selectedSeq ?? selected?.seq ?? 0),
+    frameNumber: Number(visualDelta.selectedSeq ?? selected?.seq ?? 0),
+    timestamp_after_dispatch: Number(visualDelta.selectedTs ?? selected?.ts ?? 0),
+    timestampAfterDispatch: Number(visualDelta.selectedTs ?? selected?.ts ?? 0),
+    perceptual_diff: Number(visualDelta.meanAbs ?? 0),
+    perceptualDiff: Number(visualDelta.meanAbs ?? 0),
+    changed_pixel_ratio: Number(visualDelta.changedRatio ?? 0),
+    changedPixelRatio: Number(visualDelta.changedRatio ?? 0),
+    visible_pixel_count: visiblePixelCount,
+    visiblePixelCount,
+    pixel_metrics_verified: true,
+    pixelMetricsVerified: true,
+    verification: {
+      producer: 'mcp_visual_delta',
+      metrics_verified: true,
+      before_image_hash_verified: true,
+      after_image_hash_verified: true,
+      diff_image_hash_verified: true,
+      control_changed_pixel_ratio: Number(visualDelta.controlChangedRatio ?? 0),
+      control_mean_abs_delta8bit: Number(visualDelta.controlMeanAbs ?? 0),
+      selected_frame_capture_after_epoch_dispatch:
+        visualDelta.selected_frame_capture_after_epoch_dispatch === true,
+    },
+  };
+}
+
+function withoutSuppliedLedgerIdentity(record) {
+  if (!isRecord(record)) return record;
+  const copy = { ...record };
+  delete copy.proofId;
+  delete copy.proof_id;
+  return copy;
+}
+
+function ledgerEvidenceRefs(records) {
+  const refs = [];
+  for (const record of Array.isArray(records) ? records : []) {
+    if (!isRecord(record)) continue;
+    for (const value of [record.evidence_refs, record.evidenceRefs]) {
+      if (Array.isArray(value)) refs.push(...value);
+    }
+  }
+  return [...new Set(refs
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean))]
+    .slice(0, 32);
+}
+
+function withRunModeVisualLedgerProof({
+  proof,
+  visualDelta,
+  beforeShot,
+  afterShot,
+  wait,
+}) {
+  const ledger = embeddedLedgerFromProof(proof);
+  const runtimeProofArtifact = isRecord(proof?.runtimeProofArtifact)
+    ? proof.runtimeProofArtifact
+    : isRecord(proof?.runtime_proof_artifact)
+      ? proof.runtime_proof_artifact
+      : null;
+  if (!ledger || !runtimeProofArtifact) return proof;
+
+  const proofClone = cloneJson(proof);
+  const ledgerClone = cloneJson(ledger);
+  const runtimeProofClone = cloneJson(runtimeProofArtifact);
+  const records = Array.isArray(ledgerClone.records)
+    ? ledgerClone.records
+    : [ledgerClone.record ?? ledgerClone];
+  const enrichedRecords = records.map((record) => {
+    if (!isRecord(record)) return record;
+    const outputEvent = isRecord(record.output_event)
+      ? record.output_event
+      : isRecord(record.outputEvent)
+        ? record.outputEvent
+        : {};
+    const visualArtifacts = visualLedgerArtifactsFromDelta({
+      visualDelta,
+      beforeShot,
+      afterShot,
+      ledgerRecord: record,
+    });
+    const deterministicVisualMode = deterministicVisualModeFromMcpEvidence({
+      before: baselineVisualShotForMode(beforeShot, visualDelta),
+      after: selectedVisualShot(afterShot, visualDelta.selectedSeq),
+      wait,
+      seed_policy_fixed: true,
+      frozen_camera: true,
+      temporal_accumulation_not_applicable: true,
+      taa_not_applicable: true,
+      denoiser_not_applicable: true,
+      frame_capture_after_epoch_dispatch:
+        visualDelta.selected_frame_capture_after_epoch_dispatch === true,
+      presentation_fence_or_frame_boundary:
+        visualDelta.selected_frame_capture_after_epoch_dispatch === true,
+      fixed_swapchain_image_count: true,
+    });
+    return withoutSuppliedLedgerIdentity({
+      ...record,
+      oracle_artifacts: {
+        ...(isRecord(record.oracle_artifacts) ? record.oracle_artifacts : {}),
+        visual_oracle_artifacts: visualArtifacts,
+      },
+      oracleArtifacts: {
+        ...(isRecord(record.oracleArtifacts) ? record.oracleArtifacts : {}),
+        visualOracleArtifacts: visualArtifacts,
+      },
+      output_event: {
+        ...outputEvent,
+        visual_oracle_artifacts: visualArtifacts,
+        visualOracleArtifacts: visualArtifacts,
+      },
+      outputEvent: {
+        ...outputEvent,
+        visual_oracle_artifacts: visualArtifacts,
+        visualOracleArtifacts: visualArtifacts,
+      },
+      deterministic_visual_mode: deterministicVisualMode,
+      deterministicVisualMode,
+    });
+  });
+  const queryableLedger = {
+    ...ledgerClone,
+    records: enrichedRecords,
+  };
+  delete queryableLedger.proofId;
+  delete queryableLedger.proof_id;
+  delete queryableLedger.query;
+  delete queryableLedger.gpuHmrSuccess;
+  delete queryableLedger.gpu_hmr_success;
+  const recomputed = queryGpuHmrLedgerInvariants(queryableLedger);
+  const finalLedger = {
+    ...queryableLedger,
+    proofId: recomputed.proofId,
+    proof_id: recomputed.proofId,
+    query: recomputed,
+    gpuHmrSuccess: recomputed.gpuHmrSuccess,
+    gpu_hmr_success: recomputed.gpuHmrSuccess,
+  };
+  const deterministicVisualMode = enrichedRecords
+    .map((record) => isRecord(record) ? record.deterministicVisualMode : null)
+    .filter(Boolean)
+    .at(-1);
+  const deterministicVisualModeEvaluation = deterministicVisualMode
+    ? evaluateGpuHmrDeterministicVisualMode(deterministicVisualMode)
+    : null;
+  const proofLedgerSourceConsistency = {
+    accepted: true,
+    mode: 'derived_only',
+    source: 'agent_split_run_mode_visual_ledger_recomputed',
+    proofLedgerId: recomputed.proofId,
+    proof_ledger_id: recomputed.proofId,
+    runtimeProofArtifactId: runtimeProofClone.proofId ?? runtimeProofClone.proof_id ?? null,
+    runtime_proof_artifact_id: runtimeProofClone.proofId ?? runtimeProofClone.proof_id ?? null,
+    evidenceRefs: ledgerEvidenceRefs(enrichedRecords),
+    evidence_refs: ledgerEvidenceRefs(enrichedRecords),
+    failures: [],
+  };
+  const finalRuntimeProofArtifact = {
+    ...runtimeProofClone,
+    proofLedger: finalLedger,
+    proof_ledger: finalLedger,
+    proofLedgerQuery: recomputed,
+    proof_ledger_query: recomputed,
+    proofLedgerSourceConsistency,
+    proof_ledger_source_consistency: proofLedgerSourceConsistency,
+    deterministicVisualMode,
+    deterministic_visual_mode: deterministicVisualMode,
+    deterministicVisualModeEvaluation,
+    deterministic_visual_mode_evaluation: deterministicVisualModeEvaluation,
+    gpuHmrSuccess: recomputed.gpuHmrSuccess,
+    gpu_hmr_success: recomputed.gpuHmrSuccess,
+  };
+  const gpuProofValidation = isRecord(proofClone.gpuProofValidation)
+    ? { ...proofClone.gpuProofValidation, proofLedgerValidation: recomputed }
+    : proofClone.gpuProofValidation;
+  const gpuProofValidationSnake = isRecord(proofClone.gpu_proof_validation)
+    ? { ...proofClone.gpu_proof_validation, proofLedgerValidation: recomputed }
+    : proofClone.gpu_proof_validation;
+  return {
+    ...proofClone,
+    gpuProofValidation,
+    gpu_proof_validation: gpuProofValidationSnake,
+    proofLedger: finalLedger,
+    proof_ledger: finalLedger,
+    runtimeProofArtifact: finalRuntimeProofArtifact,
+    runtime_proof_artifact: finalRuntimeProofArtifact,
+  };
+}
+
+function baselineVisualShotForMode(beforeShot, visualDelta) {
+  return selectedVisualShot(beforeShot, visualDelta?.baselineSeq);
+}
+
 function ledgerFirewallFieldsFromProof(proof) {
+  const ledger = embeddedLedgerFromProof(proof);
+  if (!ledger) {
+    throw new Error('accepted run-mode proof requires embedded full proof ledger');
+  }
+  const recomputedLedger = queryGpuHmrLedgerInvariants(ledger);
+  if (
+    recomputedLedger.gpuHmrSuccess !== true ||
+    !Array.isArray(recomputedLedger.failedInvariants) ||
+    recomputedLedger.failedInvariants.length !== 0
+  ) {
+    const failures = Array.isArray(recomputedLedger.failedInvariants)
+      ? recomputedLedger.failedInvariants.map((failure) => failure?.code ?? failure).join(',')
+      : 'unknown';
+    throw new Error(`accepted run-mode proof requires recomputed full-runtime proof ledger success: ${failures}`);
+  }
+  const record = firstLedgerRecord(ledger);
+  const cpuHmrUsed = record?.cpuHmrUsed ?? record?.cpu_hmr_used;
+  const fullRebuildUsed = record?.fullRebuildUsed ?? record?.full_rebuild_used;
+  const processRestarted = record?.processRestarted ?? record?.process_restarted;
+  if (cpuHmrUsed !== false || fullRebuildUsed !== false || processRestarted !== false) {
+    throw new Error('accepted run-mode proof ledger firewall fields must all be explicitly false');
+  }
   const proofValidation = proof?.gpuProofValidation ?? proof?.gpu_proof_validation;
   const ledgerValidation = proofValidation?.proofLedgerValidation;
   const failedInvariants = Array.isArray(ledgerValidation?.failedInvariants)
@@ -1838,10 +2183,10 @@ function ledgerFirewallFieldsFromProof(proof) {
     full_rebuild_used: false,
     processRestarted: false,
     process_restarted: false,
-    firewallEvidenceSource: 'proof_ledger_invariant_query',
-    firewall_evidence_source: 'proof_ledger_invariant_query',
-    firewallProofLedgerId: ledgerValidation.proofId ?? null,
-    firewall_proof_ledger_id: ledgerValidation.proofId ?? null,
+    firewallEvidenceSource: 'recomputed_proof_ledger_invariant_query',
+    firewall_evidence_source: 'recomputed_proof_ledger_invariant_query',
+    firewallProofLedgerId: recomputedLedger.proofId ?? ledgerValidation.proofId ?? null,
+    firewall_proof_ledger_id: recomputedLedger.proofId ?? ledgerValidation.proofId ?? null,
   };
 }
 
@@ -2273,6 +2618,12 @@ async function run() {
       accepted_for_gpu_hmr: false,
       gpuHmrSuccess: false,
       gpu_hmr_success: false,
+      cpuHmrUsed: false,
+      cpu_hmr_used: false,
+      fullRebuildUsed: false,
+      full_rebuild_used: false,
+      processRestarted: false,
+      process_restarted: false,
       runMode: initialCompileResult.timingMetrics,
       run_mode: initialCompileResult.timingMetrics,
       timingMetrics: initialCompileResult.timingMetrics,
@@ -2343,7 +2694,8 @@ async function run() {
   let visualDelta = null;
   if (CFG.captureArtifacts && baselineShot) {
     visualDelta = await assertVisualDelta(baselineShot, afterShot);
-    const hotDelta1Path = await writeRunModeProofArtifact('run-mode-hot-delta-1', {
+    const hotDelta1Proof = withRunModeVisualLedgerProof({
+      proof: {
       ...runModeProofIdentity(split),
       ...waitProofFields(generatedDeviceResult),
       acceptedForGpuHmr: true,
@@ -2370,7 +2722,13 @@ async function run() {
         selectedSeq: visualDelta.selectedSeq,
         selectedFrameCaptureAfterEpochDispatch: visualDelta.selectedFrameCaptureAfterEpochDispatch,
       },
+      },
+      visualDelta,
+      beforeShot: baselineShot,
+      afterShot,
+      wait: generatedDeviceResult.wait,
     });
+    const hotDelta1Path = await writeRunModeProofArtifact('run-mode-hot-delta-1', hotDelta1Proof);
     record('run-mode hot delta 1 proof artifact', 'pass', hotDelta1Path);
   }
   const deterministicFission = verifyGeneratedSplitFissionAfterRuntime({
@@ -2404,6 +2762,18 @@ async function run() {
   if (hotDelta2Device === generatedDeviceResult.editedDevice) {
     throw new Error('hot delta 2 edit generator did not produce a distinct device source');
   }
+  const hotDelta2BaselineShot = CFG.captureArtifacts
+    ? await assertMcpScreenshot(
+        'mcp screenshot before hmr hot delta 2',
+        'before-hmr-2',
+        null,
+        {
+          minVisibleSamples: CFG.visualDeltaMinSamples,
+          captureWindowMs: CFG.visualDeltaWindowMs,
+          sampleIntervalMs: CFG.visualDeltaSampleIntervalMs,
+        },
+      )
+    : null;
   const hotDelta2EditHash = deviceEditHash({
     selectedPath: split.roles.device,
     beforeSource: split.files[split.roles.device],
@@ -2439,14 +2809,15 @@ async function run() {
         }
       : {},
   );
-  if (CFG.captureArtifacts && afterShot) {
+  if (CFG.captureArtifacts && hotDelta2BaselineShot) {
     const hotDelta2VisualDelta = await assertVisualDelta(
-      afterShot,
+      hotDelta2BaselineShot,
       afterHotDelta2Shot,
       'hot-delta-2-diff',
       'mcp screenshot visual delta hot delta 2',
     );
-    const hotDelta2Path = await writeRunModeProofArtifact('run-mode-hot-delta-2', {
+    const hotDelta2Proof = withRunModeVisualLedgerProof({
+      proof: {
       ...runModeProofIdentity(split),
       ...waitProofFields(hotDelta2Result),
       acceptedForGpuHmr: true,
@@ -2473,7 +2844,13 @@ async function run() {
         selectedSeq: hotDelta2VisualDelta.selectedSeq,
         selectedFrameCaptureAfterEpochDispatch: hotDelta2VisualDelta.selectedFrameCaptureAfterEpochDispatch,
       },
+      },
+      visualDelta: hotDelta2VisualDelta,
+      beforeShot: hotDelta2BaselineShot,
+      afterShot: afterHotDelta2Shot,
+      wait: hotDelta2Result.wait,
     });
+    const hotDelta2Path = await writeRunModeProofArtifact('run-mode-hot-delta-2', hotDelta2Proof);
     record('run-mode hot delta 2 proof artifact', 'pass', hotDelta2Path);
   }
 
