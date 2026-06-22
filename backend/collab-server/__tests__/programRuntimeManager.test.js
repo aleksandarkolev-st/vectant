@@ -667,3 +667,51 @@ test('buildManagedRuntimeEnv strips any recipe-supplied DOCKER_HOST (container p
   assert.equal(sock.DOCKER_SOCKET, undefined);
   assert.equal(sock.DOCKER_CERT_PATH, undefined);
 });
+
+// ── Stream auto-login: per-session KasmVNC credential (Task 2) ──
+
+test('webGui container launch injects a random KASM_PASSWORD and exposes kasmAuth via resolveStreamAuth', async () => {
+  const launches = [];
+  const mgr = makeManager({ launchRuntime: async (spec) => { launches.push(spec); return createManagedRuntimeHandle(); } });
+
+  const s = await mgr.launchManagedSession({
+    sessionId: 'g1', workspaceSlug: 'wsa', command: 'docker run x',
+    runtimeType: 'container', webGui: true, ports: [6901],
+  });
+
+  // injected into the env handed to launchRuntime (for the `-e KASM_PASSWORD` passthrough)
+  assert.match(launches[0].env.KASM_PASSWORD, /^[A-Za-z0-9]{24}$/);
+  // resolvable by slug + declared port, user is the gui-base default
+  const auth = mgr.resolveStreamAuth('wsa', 6901);
+  assert.equal(auth.user, 'vectant');
+  assert.equal(auth.password, launches[0].env.KASM_PASSWORD);
+  // SECURITY: the public snapshot (sent to the browser) must never carry the secret
+  assert.equal(s.kasmAuth, undefined);
+  assert.equal(mgr.getManagedSession('g1').kasmAuth, undefined);
+});
+
+test('resolveStreamAuth returns null for non-webGui or non-container sessions', async () => {
+  const mgr = makeManager();
+  await mgr.launchManagedSession({ sessionId: 'c1', workspaceSlug: 'wsb', command: 'x', runtimeType: 'container', webGui: false, ports: [9000] });
+  await mgr.launchManagedSession({ sessionId: 'w1', workspaceSlug: 'wsc', command: 'x', runtimeType: 'web', webGui: true, ports: [3000] });
+  assert.equal(mgr.resolveStreamAuth('wsb', 9000), null);
+  assert.equal(mgr.resolveStreamAuth('wsc', 3000), null);
+});
+
+test('resolveStreamAuth matches on port and stops resolving after the session stops', async () => {
+  const mgr = makeManager();
+  await mgr.launchManagedSession({ sessionId: 'g2', workspaceSlug: 'wsd', command: 'x', runtimeType: 'container', webGui: true, ports: [6902] });
+  assert.equal(mgr.resolveStreamAuth('wsd', 6901), null);   // wrong port
+  assert.ok(mgr.resolveStreamAuth('wsd', 6902));            // right port
+  assert.equal(mgr.resolveStreamAuth('other', 6902), null); // wrong slug
+
+  await mgr.stopManagedSession('g2', { reason: 'user_stop' });
+  assert.equal(mgr.resolveStreamAuth('wsd', 6902), null);   // stopped → gone
+});
+
+test('a regular (non-webGui) container launch does not inject KASM_PASSWORD', async () => {
+  const launches = [];
+  const mgr = makeManager({ launchRuntime: async (spec) => { launches.push(spec); return createManagedRuntimeHandle(); } });
+  await mgr.launchManagedSession({ sessionId: 'p1', workspaceSlug: 'w', command: 'x', runtimeType: 'container', webGui: false, ports: [9000] });
+  assert.equal('KASM_PASSWORD' in launches[0].env, false);
+});

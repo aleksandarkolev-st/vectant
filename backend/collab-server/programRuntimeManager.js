@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 const DEFAULT_HEADLESS_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_IDLE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_OUTPUT_CAP = 50_000;
@@ -50,6 +52,21 @@ const BLOCKED_ENV_VALUE_FRAGMENTS = [
   '\\\\.\\pipe\\docker_engine',
 ];
 
+// Stream auto-login: the KasmVNC Basic-auth user is the gui-base default
+// (KASM_VNC_USER → vectant); single source of truth for both the injected
+// credential and the proxy header.
+const KASM_STREAM_USER = 'vectant';
+const KASM_PASSWORD_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
+/** Per-session random KasmVNC password: 24 chars of [A-Za-z0-9], unbiased. */
+function generateKasmStreamPassword(length = 24) {
+  let out = '';
+  for (let i = 0; i < length; i += 1) {
+    out += KASM_PASSWORD_ALPHABET[crypto.randomInt(KASM_PASSWORD_ALPHABET.length)];
+  }
+  return out;
+}
+
 function toPublicManagedSession(record) {
   if (!record) {
     return null;
@@ -63,6 +80,7 @@ function toPublicManagedSession(record) {
     runtimeDataDisposable,
     runtimeExitDisposable,
     launchRequest,
+    kasmAuth, // per-session KasmVNC secret — never expose to the API/browser
     ...publicRecord
   } = record;
 
@@ -493,6 +511,18 @@ function createProgramRuntimeManager(options = {}) {
 
     const currentTime = now();
     const safeEnv = buildManagedRuntimeEnv(baseEnv, env);
+    // Stream auto-login: webGui container programs (KasmVNC desktop tier) get a
+    // unique random password per launch, injected via env-passthrough — the
+    // recipe declares `-e KASM_PASSWORD`, which reads this value from the exec
+    // env (hybrid) / exported shell env (pod). Regenerated on every launch, so
+    // restartManagedSession rotates it; gone when the record is dropped.
+    const isWebGuiContainer = webGui === true && runtimeType === 'container';
+    let kasmAuth = null;
+    if (isWebGuiContainer) {
+      const password = generateKasmStreamPassword();
+      safeEnv.KASM_PASSWORD = password;
+      kasmAuth = { user: KASM_STREAM_USER, password };
+    }
     // Phase 2 surfaces *declared* manifest ports immediately (Phase 3 adds
     // live auto-detection via refreshManagedSessionPorts).
     const declaredPorts = normalizePorts(ports);
@@ -519,6 +549,7 @@ function createProgramRuntimeManager(options = {}) {
       userId,
       runtimeType,
       webGui: webGui === true,
+      kasmAuth,
       title: title || trimmedCommand,
       state: 'starting',
       startedAt: currentTime,
@@ -779,6 +810,25 @@ function createProgramRuntimeManager(options = {}) {
     return toPublicManagedSession(managedSessions.get(sessionId));
   }
 
+  /**
+   * Stream auto-login lookup for the container port proxy. Return the in-memory
+   * KasmVNC credential of the RUNNING webGui session whose workspaceSlug === slug
+   * and whose declared/active ports include `port`; else null. Returns a copy so
+   * callers can't mutate the stored secret.
+   */
+  function resolveStreamAuth(slug, port) {
+    if (!slug || !Number.isInteger(port)) return null;
+    for (const record of managedSessions.values()) {
+      if (!record.kasmAuth) continue;
+      if (record.workspaceSlug !== slug) continue;
+      if (!RUNNING_STATES.includes(record.state)) continue;
+      const ports = new Set([...(record.declaredPorts || []), ...(record.activePorts || [])]);
+      if (!ports.has(port)) continue;
+      return { ...record.kasmAuth };
+    }
+    return null;
+  }
+
   function getManagedRuntime(sessionId) {
     return managedSessions.get(sessionId)?.runtime || null;
   }
@@ -810,6 +860,7 @@ function createProgramRuntimeManager(options = {}) {
     recomputeManagedPorts,
     recomputeRuntimeScopePorts,
     refreshManagedSessionPorts,
+    resolveStreamAuth,
     restartManagedSession,
     stopManagedSession,
     promoteHeadlessSession,
