@@ -94,10 +94,6 @@ _MEMCPY_RE = re.compile(
     r"(?P<bytes>[^,]+?)\s*,\s*(?P<kind>hipMemcpyDeviceToHost|cudaMemcpyDeviceToHost|hipMemcpyHostToDevice|cudaMemcpyHostToDevice)\s*\)",
     re.DOTALL,
 )
-_MALLOC_RE = re.compile(
-    r"\b(?:hipMalloc|cudaMalloc)\s*\(\s*&\s*(?P<ptr>[A-Za-z_][A-Za-z0-9_]*)\s*,\s*(?P<bytes>[^)]+)\)",
-    re.DOTALL,
-)
 _HELPER_FUNCTION_RE = re.compile(
     r"\bstatic\s+void\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
     re.DOTALL,
@@ -321,10 +317,7 @@ def _extract_buffers(source: str, report: dict) -> List[_Buffer]:
         match.group("name"): match.group("type").strip()
         for match in _DEVICE_PTR_RE.finditer(source)
     }
-    malloc_bytes = {
-        match.group("ptr").strip(): re.sub(r"\s+", " ", match.group("bytes").strip())
-        for match in _MALLOC_RE.finditer(source)
-    }
+    malloc_bytes = _extract_malloc_bytes(source)
     pairs: Dict[Tuple[str, str], str] = {}
     for match in _MEMCPY_RE.finditer(source):
         kind = match.group("kind")
@@ -358,6 +351,18 @@ def _extract_buffers(source: str, report: dict) -> List[_Buffer]:
             )
         )
     return buffers
+
+
+def _extract_malloc_bytes(source: str) -> Dict[str, str]:
+    malloc_bytes: Dict[str, str] = {}
+    for match in re.finditer(r"\b(?:hipMalloc|cudaMalloc)\s*\(", source):
+        body, _after = _read_balanced(source, match.end() - 1, "(", ")")
+        args = _split_top_level(body)
+        if len(args) < 2:
+            continue
+        ptr = _clean_expr(args[0])
+        malloc_bytes[ptr] = re.sub(r"\s+", " ", args[1].strip())
+    return malloc_bytes
 
 
 def _clean_expr(expr: str) -> str:

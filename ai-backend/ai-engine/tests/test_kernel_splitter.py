@@ -642,6 +642,8 @@ def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provide
     assert "synthi_output_oracle" not in result.files["core.cpp"]
     assert "Dim3 block(256);" in result.files["core.cpp"]
     assert "Dim3 grid((N + block.x - 1) / block.x);" in result.files["core.cpp"]
+    assert "sizeof(float) * N" in result.files["core.cpp"]
+    assert "sizeof(float);" not in result.files["core.cpp"]
     assert "SDL_RenderFillRect" in result.files["gui.cpp"]
     assert "synthi_generated_seed_buffers" in result.files["device.hip"]
 
