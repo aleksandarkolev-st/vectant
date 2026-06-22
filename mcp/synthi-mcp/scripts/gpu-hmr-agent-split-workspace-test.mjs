@@ -125,10 +125,11 @@ async function httpJson(method, url, body, headers = {}) {
   return json ?? {};
 }
 
-function execText(cmd, args, timeoutMs = 10000, rejectOnError = false) {
+function execText(cmd, args, timeoutMs = 10000, rejectOnError = false, options = {}) {
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 128 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const text = `${stdout ?? ''}${stderr ?? ''}`.trim();
+      const raw = `${stdout ?? ''}${stderr ?? ''}`;
+      const text = options.trim === false ? raw : raw.trim();
       if (err && rejectOnError) {
         err.output = text;
         reject(err);
@@ -330,6 +331,7 @@ async function readWorkerFile(workspacePath, relPath) {
     ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(full)}`],
     10000,
     true,
+    { trim: false },
   );
 }
 
