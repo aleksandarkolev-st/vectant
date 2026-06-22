@@ -86,6 +86,8 @@ export function MultiverseCard({ jobId }) {
     const verify = useShadowVerify(jobId);
     if (!jobId) return null;
     const universes = Object.values(verify.universes || {});
+    const learnedLines = verify.learnedLines || [];
+    const policyHints = verify.policyHints || [];
 
     return (
         <div className="genome-card">
@@ -101,6 +103,21 @@ export function MultiverseCard({ jobId }) {
             {verify.error ? (
                 <div className="genome-card__error">error: {verify.error}</div>
             ) : null}
+            {learnedLines.length > 0 ? (
+                <div className="genome-card__learned" data-testid="counterfactual-learned-line">
+                    <strong>Learned from this run:</strong> {learnedLines[0]}
+                </div>
+            ) : null}
+            {verify.cancelled && learnedLines.length === 0 ? (
+                <div className="genome-card__ambiguity" data-testid="counterfactual-ambiguity-note">
+                    Cancellation recorded as ambiguous; no branch rejection lesson was created.
+                </div>
+            ) : null}
+            {policyHints.length > 0 ? (
+                <div className="genome-card__policy" data-testid="counterfactual-policy-hint">
+                    Policy hint active: {policyHints[0]}
+                </div>
+            ) : null}
             {universes.length === 0 ? (
                 <div className="genome-card__empty">starting universe…</div>
             ) : (
@@ -109,7 +126,7 @@ export function MultiverseCard({ jobId }) {
                 ))
             )}
             {verify.convergence || verify.arbiter ? (
-                <ArbiterCard jobId={jobId} />
+                <ArbiterCard jobId={jobId} verify={verify} />
             ) : null}
             {verify.finished && verify.winner ? (
                 <footer className="genome-card__foot">winner: Universe {verify.winner}</footer>

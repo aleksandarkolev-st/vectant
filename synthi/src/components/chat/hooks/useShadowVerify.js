@@ -19,6 +19,10 @@ const initial = () => ({
     universes: {}, // id -> { stage, evidence }
     arbiter: null,
     convergence: null, // { downgrading_to, cohort? }
+    policyHints: [],
+    directionForecast: [],
+    learnedLines: [],
+    policyDeltas: [],
     winner: null,
     finished: false,
     cancelled: false,
@@ -102,7 +106,9 @@ export function useShadowVerify(jobId) {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ universeId }),
         });
-        return res.json().catch(() => ({}));
+        const data = await res.json().catch(() => ({}));
+        setState((s) => applySelectionResult(s, data));
+        return data;
     };
 
     const cancel = async () => {
@@ -110,7 +116,9 @@ export function useShadowVerify(jobId) {
         const res = await fetch(`/api/shadow/${encodeURIComponent(jobId)}/cancel`, {
             method: 'POST',
         });
-        return res.json().catch(() => ({}));
+        const data = await res.json().catch(() => ({}));
+        setState((s) => ({ ...s, cancelled: true }));
+        return data;
     };
 
     const askWhy = async (question) => {
@@ -130,7 +138,7 @@ export function useShadowVerify(jobId) {
     return { ...state, apply, cancel, askWhy };
 }
 
-function reduce(s, evt) {
+export function reduce(s, evt) {
     switch (evt.type) {
         case 'job_started':
             return { ...s, tier: evt.tier, universesPlanned: evt.universes_planned || 0 };
@@ -178,11 +186,58 @@ function reduce(s, evt) {
                     cohort: evt.cohort || Object.keys(s.universes || {}),
                 },
             };
+        case 'counterfactual_policy':
+            return {
+                ...s,
+                policyHints: evt.policy_hints || [],
+                directionForecast: evt.direction_forecast || [],
+            };
+        case 'counterfactual_learned':
+            return {
+                ...s,
+                learnedLines: mergeUnique(s.learnedLines, learnedLinesFromPayload(evt)),
+                policyDeltas: [...(s.policyDeltas || []), ...(evt.policy_deltas || [])],
+            };
         case 'all_done':
             return { ...s, finished: true, winner: evt.winner || null };
         case 'error':
-            return { ...s, error: `${evt.stage}: ${evt.msg}` };
+            return {
+                ...s,
+                cancelled: evt.stage === 'cancel' ? true : s.cancelled,
+                error: `${evt.stage}: ${evt.msg}`,
+            };
         default:
             return s;
     }
+}
+
+export function applySelectionResult(s, data) {
+    if (!data || typeof data !== 'object') return s;
+    return {
+        ...s,
+        learnedLines: mergeUnique(s.learnedLines, learnedLinesFromPayload(data)),
+        policyDeltas: [...(s.policyDeltas || []), ...(data.policy_deltas || [])],
+    };
+}
+
+export function learnedLinesFromPayload(payload) {
+    if (!payload || typeof payload !== 'object') return [];
+    const lines = [];
+    const listFields = [
+        payload.learned_lines,
+        payload.learnedLines,
+    ];
+    for (const value of listFields) {
+        if (Array.isArray(value)) lines.push(...value);
+        else if (typeof value === 'string') lines.push(value);
+    }
+    for (const value of [payload.learned_from_this_run, payload.learnedFromThisRun]) {
+        if (typeof value === 'string') lines.push(value);
+    }
+    return lines;
+}
+
+function mergeUnique(existing, incoming) {
+    const values = [...(existing || []), ...(incoming || [])].filter(Boolean);
+    return Array.from(new Set(values));
 }
