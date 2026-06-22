@@ -1544,6 +1544,12 @@ async function preflightRow(json, filePath, context) {
 }
 
 async function agentSplitRunModeProofRow(json, filePath, context) {
+  const schema = firstText(
+    json.schemaVersion,
+    json.schema,
+    'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+  );
+  const genericRuntimeRunMode = schema === 'synthi.gpu.hmr.runtime_run_mode_proof.v1';
   const runMode = timingEvidence(
     json.runMode,
     json.run_mode,
@@ -1620,7 +1626,7 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
       ? 'cold_split_proven'
       : 'unproven';
   return finalizeRow({
-    artifactSchema: 'synthi.gpu.hmr.agent_split_run_mode_proof.v1',
+    artifactSchema: schema,
     artifactPath: relPath(filePath, context.repoRoot),
     updatedAt: context.updatedAt,
     backend,
@@ -1629,7 +1635,11 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     fixtureId,
     fixture_id: fixtureId,
     proofMode: 'run_mode_proof',
-    evidenceKind: isCold ? 'cold_split_visual_oracle' : 'visual_oracle',
+    evidenceKind: isCold
+      ? genericRuntimeRunMode
+        ? 'cold_runtime_initial_visual_oracle'
+        : 'cold_split_visual_oracle'
+      : 'visual_oracle',
     matrixOutcome,
     acceptanceClass: acceptedRuntime
       ? 'full_runtime_gpu_hmr'
@@ -1643,7 +1653,9 @@ async function agentSplitRunModeProofRow(json, filePath, context) {
     proofChain: acceptedRuntime
       ? 'embedded_runtime_proof_artifact_recomputed_ledger'
       : acceptedCold
-        ? 'mcp_initial_split_visual_gate'
+        ? genericRuntimeRunMode
+          ? 'runtime_initial_visual_gate'
+          : 'mcp_initial_split_visual_gate'
         : 'run_mode_proof_rejected',
     proofIds: proofIdsFrom(
       json,
@@ -1783,7 +1795,10 @@ async function classifyJsonArtifact(json, filePath, context) {
   if (schema === 'synthi.gpu.hmr.external_project_rejection.v1') {
     return externalProjectRejectionRow(json, filePath, context);
   }
-  if (schema === 'synthi.gpu.hmr.agent_split_run_mode_proof.v1') {
+  if (
+    schema === 'synthi.gpu.hmr.agent_split_run_mode_proof.v1'
+    || schema === 'synthi.gpu.hmr.runtime_run_mode_proof.v1'
+  ) {
     return agentSplitRunModeProofRow(json, filePath, context);
   }
   if (schema === 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1') {

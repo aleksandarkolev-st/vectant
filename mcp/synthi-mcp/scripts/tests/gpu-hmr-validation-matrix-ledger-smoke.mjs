@@ -600,6 +600,7 @@ function waitProofValidation(proofId, runtimeProofId) {
 
 await writeJson(path.join(visualDir, 'run-mode-cold.json'), {
   ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
   proofId: 'agent-split-run-mode-proof:sha256:cold',
   coldSplitProven: true,
   cold_split_proven: true,
@@ -632,6 +633,7 @@ await writeJson(path.join(visualDir, 'run-mode-hot1.json'), {
 
 await writeJson(path.join(visualDir, 'run-mode-hot2.json'), {
   ...runModeProofBase,
+  schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
   ...waitProofValidation('gpu-ledger-proof:sha256:synthetic-hot2', 'gpu-runtime-proof:sha256:synthetic-hot2'),
   ...runtimeProofMaterials('hot_delta_2'),
   proofId: 'agent-split-run-mode-proof:sha256:hot2',
@@ -996,11 +998,14 @@ const coldRunMode = ledger.rows.find((row) =>
 );
 assert.equal(coldRunMode?.matrixOutcome, 'cold_split_proven');
 assert.equal(coldRunMode.acceptedForGpuHmr, false);
+assert.equal(coldRunMode.artifactSchema, 'synthi.gpu.hmr.runtime_run_mode_proof.v1');
+assert.equal(coldRunMode.proofChain, 'runtime_initial_visual_gate');
 
 const hot2RunMode = ledger.rows.find((row) =>
   row.targetId === 'flow' && row.proofMode === 'run_mode_proof' && row.runMode.metricScope === 'hot_delta_2'
 );
 assert.equal(hot2RunMode?.matrixOutcome, 'full_runtime_gpu_hmr');
+assert.equal(hot2RunMode.artifactSchema, 'synthi.gpu.hmr.runtime_run_mode_proof.v1');
 assert.equal(hot2RunMode.runMode.differentEdit, true);
 
 const negativeEdit = ledger.rows.find((row) => row.proofMode === 'negative_edit');
