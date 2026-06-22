@@ -34,11 +34,20 @@ function buildProxyResponseHeaders(upstreamHeaders = {}) {
   };
 }
 
+/** Build an `Authorization: Basic …` value from a {user,password} cred, or null. */
+function basicAuthHeaderValue(cred) {
+  if (!cred || !cred.user || !cred.password) return null;
+  return `Basic ${Buffer.from(`${cred.user}:${cred.password}`).toString('base64')}`;
+}
+
 /**
  * @param {object} opts
  * @param {(slug:string)=>string|null} opts.resolveHost - slug -> runtime container host (or null)
+ * @param {(slug:string,port:number)=>({user:string,password:string}|null)} [opts.resolveStreamAuth]
+ *   slug+port -> per-session KasmVNC credential (or null). Defaults to a null
+ *   resolver so callers that don't opt in (and the dark-merge path) are unaffected.
  */
-function createContainerPortProxy({ resolveHost } = {}) {
+function createContainerPortProxy({ resolveHost, resolveStreamAuth = () => null } = {}) {
   if (typeof resolveHost !== 'function') throw new TypeError('resolveHost is required');
 
   function proxyHttp(req, res) {
@@ -46,9 +55,17 @@ function createContainerPortProxy({ resolveHost } = {}) {
     if (!parsed) { res.writeHead(400); res.end('bad /wsport url'); return; }
     const host = resolveHost(parsed.slug);
     if (!host) { res.writeHead(502); res.end('runtime container not running'); return; }
+    const headers = { ...req.headers, host: `localhost:${parsed.port}` };
+    // Stream auto-login: inject the per-session KasmVNC Basic credential the
+    // browser can't supply (cross-origin COEP iframe suppresses the dialog).
+    // Only fill an ABSENT Authorization — never clobber a real incoming one.
+    if (!req.headers.authorization) {
+      const auth = basicAuthHeaderValue(resolveStreamAuth(parsed.slug, parsed.port));
+      if (auth) headers.authorization = auth;
+    }
     const proxyReq = http.request({
       hostname: host, port: parsed.port, path: parsed.downstream, method: req.method,
-      headers: { ...req.headers, host: `localhost:${parsed.port}` }, timeout: 30000,
+      headers, timeout: 30000,
     }, (up) => {
       res.writeHead(up.statusCode, buildProxyResponseHeaders(up.headers));
       up.pipe(res, { end: true });
@@ -65,11 +82,16 @@ function createContainerPortProxy({ resolveHost } = {}) {
     if (!host) { socket.destroy(); return false; }
     const up = net.connect(parsed.port, host, () => {
       const reqLine = `${req.method} ${parsed.downstream} HTTP/1.1\r\n`;
-      const headers = Object.entries(req.headers)
+      const headerLines = Object.entries(req.headers)
         .filter(([k]) => k.toLowerCase() !== 'host')
         .map(([k, v]) => `${k}: ${v}`)
-        .concat([`Host: localhost:${parsed.port}`]).join('\r\n');
-      up.write(reqLine + headers + '\r\n\r\n');
+        .concat([`Host: localhost:${parsed.port}`]);
+      // Same auto-login injection as proxyHttp, for the noVNC /websockify upgrade.
+      if (!req.headers.authorization) {
+        const auth = basicAuthHeaderValue(resolveStreamAuth(parsed.slug, parsed.port));
+        if (auth) headerLines.push(`Authorization: ${auth}`);
+      }
+      up.write(reqLine + headerLines.join('\r\n') + '\r\n\r\n');
       if (head && head.length) up.write(head);
       up.pipe(socket); socket.pipe(up);
     });
@@ -81,4 +103,4 @@ function createContainerPortProxy({ resolveHost } = {}) {
   return { proxyHttp, proxyWsUpgrade };
 }
 
-module.exports = { parseWsPortUrl, createContainerPortProxy, buildProxyResponseHeaders };
+module.exports = { parseWsPortUrl, createContainerPortProxy, buildProxyResponseHeaders, basicAuthHeaderValue };
