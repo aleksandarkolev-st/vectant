@@ -2616,7 +2616,37 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     verification = split.verification.to_dict() if split.verification else None
     if split.verification and not split.verification.ok:
         logger.info("[split/gpu] verifier rejected GPU split: %s", verification)
-    split_provider_model = getattr(provider, "last_call_metadata", {}) or {}
+    deterministic_split_report = (
+        split.repair_report.get("deterministicSplit")
+        if isinstance(split.repair_report, Mapping)
+        else None
+    )
+    if (
+        isinstance(deterministic_split_report, Mapping)
+        and deterministic_split_report.get("providerCallUsed") is False
+    ):
+        split_provider_model = {
+            "provider": "deterministic_static_splitter",
+            "requested_model": split_model,
+            "actual_model": "deterministic-static-gpu-splitter",
+            "fallback_model": None,
+            "fallback_used": False,
+            "mode": "split",
+            "request_mode": "split",
+            "provider_model_status": "unknown",
+            "provider_model_alias_resolved_to": None,
+            "provider_shutdown_or_deprecation_detected": False,
+            "model_availability_checked_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ",
+                time.gmtime(),
+            ),
+            "model_availability_source": "provider_not_called",
+            "model_availability_check_time_ms": 0.0,
+            "hard_infra_failure": False,
+            "provider_call_used": False,
+        }
+    else:
+        split_provider_model = getattr(provider, "last_call_metadata", {}) or {}
     split_actual_model = split_provider_model.get("actual_model") or split_model
     split_fallback_used = bool(split_provider_model.get("fallback_used"))
     logger.info(

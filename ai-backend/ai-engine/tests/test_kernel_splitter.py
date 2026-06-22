@@ -557,6 +557,94 @@ def test_run_kernel_splitter_rejects_ambiguous_cmake_target_before_ai_provider()
     assert resolution["method"] == "ambiguous_executable_targets_containing_focus"
 
 
+def test_run_kernel_splitter_uses_deterministic_rocm_sdl_split_before_ai_provider(monkeypatch):
+    class Provider:
+        called = False
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise AssertionError("provider should not be called for deterministic source-owned split")
+
+    source = r'''
+    #include <SDL2/SDL.h>
+    #include <hip/hip_runtime.h>
+    #include <cmath>
+    constexpr int WIDTH = 64;
+    constexpr int HEIGHT = 64;
+    constexpr int N = 8;
+    static void seed(float* x, float* y) {
+        for (int i = 0; i < N; ++i) {
+            x[i] = (float)(i * 3);
+            y[i] = (float)(i * 5);
+        }
+    }
+    extern "C" __global__ void move_points(float* x, float* y, int n, unsigned long long frame) {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if (i >= n) return;
+        x[i] = fmodf(x[i] + 1.0f + (float)(frame & 3), (float)WIDTH);
+        y[i] = fmodf(y[i] + 2.0f, (float)HEIGHT);
+    }
+    int main() {
+        SDL_Window* window = SDL_CreateWindow("demo", 0, 0, WIDTH, HEIGHT, 0);
+        SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, 0);
+        float hostX[N];
+        float hostY[N];
+        seed(hostX, hostY);
+        float* deviceX = nullptr;
+        float* deviceY = nullptr;
+        hipMalloc(&deviceX, sizeof(float) * N);
+        hipMalloc(&deviceY, sizeof(float) * N);
+        hipMemcpy(deviceX, hostX, sizeof(float) * N, hipMemcpyHostToDevice);
+        hipMemcpy(deviceY, hostY, sizeof(float) * N, hipMemcpyHostToDevice);
+        unsigned long long frame = 0;
+        dim3 block(256);
+        dim3 grid((N + block.x - 1) / block.x);
+        move_points<<<grid, block>>>(deviceX, deviceY, N, frame++);
+        hipMemcpy(hostX, deviceX, sizeof(float) * N, hipMemcpyDeviceToHost);
+        hipMemcpy(hostY, deviceY, sizeof(float) * N, hipMemcpyDeviceToHost);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+        SDL_SetRenderDrawColor(renderer, 255, 220, 80, 255);
+        for (int i = 0; i < N; ++i) {
+            SDL_Rect r{(int)hostX[i], (int)hostY[i], 2, 2};
+            SDL_RenderFillRect(renderer, &r);
+        }
+        SDL_RenderPresent(renderer);
+        return 0;
+    }
+    '''
+    provider = Provider()
+    detection = GpuDetectionResult(
+        is_gpu=True,
+        vendor_hint="rocm",
+        per_file={"src/demo.hip": GpuDetectionEvidence(qualifier_hits=1)},
+    )
+    monkeypatch.setenv("SYNTHI_GPU_VENDOR", "rocm")
+    monkeypatch.setenv("SYNTHI_GPU_ARCH", "gfx1201")
+
+    result = asyncio.run(
+        run_kernel_splitter(
+            provider=provider,
+            user_code=source,
+            lang="cpp",
+            detection=detection,
+            files=[{"name": "src/demo.hip", "content": source}],
+            focus="src/demo.hip",
+            model="gemini-3.5-flash",
+        )
+    )
+
+    assert provider.called is False
+    assert result.verification and result.verification.ok is True
+    assert result.repair_report["deterministicSplit"]["providerCallUsed"] is False
+    assert result.raw_response == ""
+    assert "synthi_output_oracle" not in result.files["core.cpp"]
+    assert "Dim3 block(256);" in result.files["core.cpp"]
+    assert "Dim3 grid((N + block.x - 1) / block.x);" in result.files["core.cpp"]
+    assert "SDL_RenderFillRect" in result.files["gui.cpp"]
+    assert "synthi_generated_seed_buffers" in result.files["device.hip"]
+
+
 def test_build_split_retry_prompt_preserves_previous_rejections():
     prompt = build_split_retry_prompt(
         "original prompt",

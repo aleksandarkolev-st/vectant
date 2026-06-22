@@ -44,6 +44,10 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, 
 
 from agents.abi_stamper import mask_comments_for_parsing, stamp_device_source
 from agents.gpu_detect import GpuDetectionResult
+from agents.gpu_deterministic_split import (
+    DeterministicGpuSplitUnsupported,
+    try_build_deterministic_gpu_split,
+)
 from agents.gpu_device_markers import GPU_DEVICE_MARKER_RE as _GPU_DEVICE_MARKER_RE
 from agents.gpu_split_repair import (
     REPAIR_SCHEMA_VERSION,
@@ -1665,6 +1669,106 @@ async def run_kernel_splitter(
             ),
             source_context_report=source_context_report,
         )
+    try:
+        deterministic = try_build_deterministic_gpu_split(
+            source_files=scoped_source_map,
+            source_context_report=source_context_report,
+            vendor_hint=(
+                _runtime_vendor_hint()
+                or (detection.vendor_hint if detection is not None else None)
+            ),
+            arch_hint=_runtime_arch_hint(),
+            focus=focus,
+        )
+    except DeterministicGpuSplitUnsupported as exc:
+        source_context_report = dict(source_context_report)
+        source_context_report["deterministicSplit"] = {
+            **exc.report,
+            "supported": False,
+            "reasonCode": exc.reason_code,
+            "message": str(exc),
+        }
+    else:
+        parsed = {
+            "files": deterministic.files,
+            "manifest": deterministic.manifest,
+            "architecture_md": deterministic.architecture_md,
+            "launch_graph": deterministic.launch_graph,
+        }
+        arch_list: List[str] = []
+        gpu_block = deterministic.manifest.get("gpu") if isinstance(deterministic.manifest, dict) else None
+        if isinstance(gpu_block, Mapping):
+            arch_value = gpu_block.get("arch")
+            if isinstance(arch_value, list):
+                arch_list = [str(a) for a in arch_value]
+        verification = verify_split_output(
+            files=parsed["files"],
+            manifest_arch=arch_list,
+            manifest=deterministic.manifest,
+            source_files=scoped_source_map,
+        )
+        parsed["files"], verification, stable_repair_report = _apply_split_repairs_until_stable(
+            files=parsed["files"],
+            manifest=deterministic.manifest,
+            manifest_arch=arch_list,
+            source_files=scoped_source_map,
+            verification=verification,
+        )
+        parsed["kernel_hashes"] = _kernel_hashes_for_generated_split(
+            files=parsed["files"],
+            manifest=deterministic.manifest,
+            source_files=scoped_source_map,
+        )
+        stamped_files = _stamp_core_device_kernel_sig_hashes(
+            files=parsed["files"],
+            manifest=deterministic.manifest,
+            kernel_hashes=parsed["kernel_hashes"],
+        )
+        if stamped_files != parsed["files"]:
+            parsed["files"] = stamped_files
+            verification = verify_split_output(
+                files=parsed["files"],
+                manifest_arch=arch_list,
+                manifest=deterministic.manifest,
+                source_files=scoped_source_map,
+            )
+        deterministic_report = {
+            "schemaVersion": REPAIR_SCHEMA_VERSION,
+            "repaired": False,
+            "scope": "deterministic_static_splitter",
+            "deterministicSplit": deterministic.report,
+            "providerCallUsed": False,
+            "inputReasonCodes": [],
+            "repairRules": [],
+            "changedFiles": [],
+            "passes": [],
+            "remainingReasonCodes": _reason_codes(verification),
+        }
+        source_context_report = dict(source_context_report)
+        merged_deterministic_report = _merge_split_repair_reports(
+            deterministic_report,
+            stable_repair_report,
+        )
+        if verification.ok:
+            source_context_report["deterministicSplit"] = deterministic.report
+            return KernelSplitResult(
+                files=parsed["files"],
+                manifest=deterministic.manifest,
+                architecture_md=parsed["architecture_md"],
+                kernel_hashes=parsed["kernel_hashes"],
+                launch_graph=parsed["launch_graph"],
+                source_context_report=source_context_report,
+                verification=verification,
+                repair_report=merged_deterministic_report,
+                raw_response="",
+            )
+        source_context_report["deterministicSplit"] = {
+            **deterministic.report,
+            "supported": False,
+            "reasonCode": "deterministic_split_verifier_rejected",
+            "verifierReasonCodes": _reason_codes(verification),
+            "repairReport": merged_deterministic_report,
+        }
     prompt = build_prompt(
         user_code,
         detection=detection,
