@@ -4389,15 +4389,15 @@ fn upsert_generated_split_source_baselines(
     meta: &mut serde_json::Value,
     result: &serde_json::Value,
 ) -> usize {
-    let Some(root) = meta.as_object_mut() else {
-        return 0;
-    };
     let manifest = result
         .get("_synthi_manifest")
         .filter(|value| !value.is_null())
         .cloned()
         .or_else(|| meta.get("compile_manifest").filter(|value| !value.is_null()).cloned())
         .unwrap_or(serde_json::Value::Null);
+    let Some(root) = meta.as_object_mut() else {
+        return 0;
+    };
     let mut count = 0;
     for role in ["shared", "core", "gui", "host_runner", "device"] {
         let Some(filename) = split_role_filename(result, &manifest, role) else {
@@ -9076,30 +9076,16 @@ pub async fn handle_compile_request(
                         .await?;
 
                         let mut meta = sidecar_meta.as_object().cloned().unwrap_or_default();
-                        let baseline_hash = device_source_hash(&req.source);
-                        upsert_object_field(
+                        let baseline_hash = upsert_source_baseline_content(
                             &mut meta,
-                            "sourceBaselineContents",
                             &request_device_name,
-                            serde_json::Value::String(req.source.clone()),
-                        );
-                        upsert_object_field(
+                            &req.source,
+                        )
+                        .unwrap_or_else(|| device_source_hash(&req.source));
+                        let generated_baseline_hash = upsert_source_baseline_content(
                             &mut meta,
-                            "sourceBaselineHashes",
-                            &request_device_name,
-                            serde_json::Value::String(baseline_hash.clone()),
-                        );
-                        upsert_device_mapping_report_field(
-                            &mut meta,
-                            "sourceBaselineContents",
-                            &request_device_name,
-                            serde_json::Value::String(req.source.clone()),
-                        );
-                        upsert_device_mapping_report_field(
-                            &mut meta,
-                            "sourceBaselineHashes",
-                            &request_device_name,
-                            serde_json::Value::String(baseline_hash.clone()),
+                            &generated_path,
+                            &patched_device_source,
                         );
                         meta.insert(
                             "lastReloadPlanReport".to_string(),
@@ -9123,6 +9109,7 @@ pub async fn handle_compile_request(
                                 "splitCacheHit": false,
                                 "splitCacheReason": "not_applicable_device_only_fast_path",
                                 "splitCacheKey": format!("device:{}:{}", request_device_name, baseline_hash),
+                                "generatedDeviceBaselineHash": generated_baseline_hash,
                             }),
                         );
                         invalidate_derived_gpu_reports(&mut meta);
@@ -9464,14 +9451,14 @@ pub async fn handle_compile_request(
                         }
 
                         invalidate_derived_gpu_reports(&mut meta);
-                        write_sidecar_logged(
-                            &sidecar_path,
-                            &serde_json::Value::Object(meta),
-                            &session_id,
-                        )
-                        .await;
 
                         if !warm.accepted {
+                            write_sidecar_logged(
+                                &sidecar_path,
+                                &serde_json::Value::Object(meta),
+                                &session_id,
+                            )
+                            .await;
                             eprintln!(
                                 "[gpu-hmr] warm_rebuild rejected: user={} reasons={}",
                                 request_name,
@@ -9499,6 +9486,27 @@ pub async fn handle_compile_request(
                                     )
                                 })?
                         };
+                        let generated_baseline_hash = upsert_source_baseline_content(
+                            &mut meta,
+                            &generated_path,
+                            &generated_device_source,
+                        );
+                        if let Some(cache_report) =
+                            meta.get_mut("cacheReport").and_then(serde_json::Value::as_object_mut)
+                        {
+                            cache_report.insert(
+                                "generatedDeviceBaselineHash".to_string(),
+                                generated_baseline_hash
+                                    .map(serde_json::Value::String)
+                                    .unwrap_or(serde_json::Value::Null),
+                            );
+                        }
+                        write_sidecar_logged(
+                            &sidecar_path,
+                            &serde_json::Value::Object(meta),
+                            &session_id,
+                        )
+                        .await;
                         eprintln!(
                             "[gpu-hmr] warm_rebuild accepted: user={} generated={} reasons={}",
                             request_name,
@@ -10082,32 +10090,22 @@ pub async fn handle_compile_request(
                             )
                             .await?;
 
-                            let baseline_hash = device_source_hash(&req.source);
                             let mut meta = sidecar_meta.as_object().cloned().unwrap_or_default();
-                            upsert_object_field(
+                            let baseline_hash = upsert_source_baseline_content(
                                 &mut meta,
-                                "sourceBaselineContents",
                                 &request_device_name,
-                                serde_json::Value::String(req.source.clone()),
-                            );
-                            upsert_object_field(
-                                &mut meta,
-                                "sourceBaselineHashes",
-                                &request_device_name,
-                                serde_json::Value::String(baseline_hash.clone()),
-                            );
-                            upsert_device_mapping_report_field(
-                                &mut meta,
-                                "sourceBaselineContents",
-                                &request_device_name,
-                                serde_json::Value::String(req.source.clone()),
-                            );
-                            upsert_device_mapping_report_field(
-                                &mut meta,
-                                "sourceBaselineHashes",
-                                &request_device_name,
-                                serde_json::Value::String(baseline_hash.clone()),
-                            );
+                                &req.source,
+                            )
+                            .unwrap_or_else(|| device_source_hash(&req.source));
+                            for (path, source) in [
+                                (shared_filename.as_str(), final_shared.as_str()),
+                                (core_filename.as_str(), final_core.as_str()),
+                                (gui_filename.as_str(), final_gui.as_str()),
+                                (host_runner_filename.as_str(), final_host_runner.as_str()),
+                                (generated_device_path.as_str(), final_device.as_str()),
+                            ] {
+                                upsert_source_baseline_content(&mut meta, path, source);
+                            }
                             let reason_codes = vec![
                                 "ai_delta.generated_role_patch".to_string(),
                                 format!("ai_delta.reload_plan.{}", ai_delta.reload_plan),
@@ -10748,6 +10746,30 @@ pub async fn handle_compile_request(
                                 .or_else(|| sidecar_meta.get("launch_indirection_report"))
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null);
+                            let reconstructed_device_role =
+                                if let Some(device_filename) =
+                                    CompileManifest::from_json_value(&sidecar_manifest_json)
+                                        .and_then(|manifest| {
+                                            manifest.device_source_filename().map(ToString::to_string)
+                                        })
+                                {
+                                    let normalized = device_filename.replace('\\', "/");
+                                    match compile_request_relpath(&normalized) {
+                                        Ok(rel) => match tokio::fs::read_to_string(
+                                            ctx.workspace_path.join(rel),
+                                        )
+                                        .await
+                                        {
+                                            Ok(content) if !content.trim().is_empty() => {
+                                                Some((normalized, content))
+                                            }
+                                            _ => None,
+                                        },
+                                        Err(_) => None,
+                                    }
+                                } else {
+                                    None
+                                };
                             let mut meta = serde_json::json!({
                                 "split_hash": source_hash_str,
                                 "original_source": req.source,
@@ -10756,10 +10778,7 @@ pub async fn handle_compile_request(
                                 "source_context_report": source_report.clone(),
                                 "launch_indirection_report": launch_report.clone(),
                             });
-                            upsert_compile_request_source_baselines(&mut meta, &req);
-                            write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
-
-                            serde_json::json!({
+                            let mut reconstructed_split = serde_json::json!({
                                 "shared": { "content": final_shared, "filename": shared_filename },
                                 "core": { "content": final_core, "filename": core_filename },
                                 "gui": { "content": final_gui, "filename": gui_filename },
@@ -10767,7 +10786,25 @@ pub async fn handle_compile_request(
                                 "_synthi_manifest": sidecar_manifest_json.clone(),
                                 "_synthi_source_context_report": source_report,
                                 "_synthi_launch_indirection_report": launch_report,
-                            })
+                            });
+                            if let (Some(obj), Some((device_filename, device_content))) =
+                                (reconstructed_split.as_object_mut(), reconstructed_device_role)
+                            {
+                                obj.insert(
+                                    "device".to_string(),
+                                    serde_json::json!({
+                                        "content": device_content,
+                                        "filename": device_filename,
+                                    }),
+                                );
+                            }
+                            upsert_compile_and_generated_source_baselines(
+                                &mut meta,
+                                &req,
+                                &reconstructed_split,
+                            );
+                            write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
+                            reconstructed_split
                         }
                     }
                 } else {
@@ -10853,7 +10890,7 @@ pub async fn handle_compile_request(
                         "source_context_report": fresh_source_report,
                         "launch_indirection_report": fresh_launch_report,
                     });
-                    upsert_compile_request_source_baselines(&mut meta, &req);
+                    upsert_compile_and_generated_source_baselines(&mut meta, &req, &result);
                     write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
                     result
                 }
@@ -15406,6 +15443,55 @@ extern "C" __global__ void shade(RenderData render_data) {}
                 .pointer("/deviceMappingReport/sourceBaselineHashes/src~1gpu~1device.hip")
                 .and_then(serde_json::Value::as_str),
             Some(hash.as_str())
+        );
+    }
+
+    #[test]
+    fn generated_split_source_baselines_include_manifest_device_role() {
+        let core = r#"extern "C" void core_on_update(float) {}"#;
+        let device = r#"extern "C" __global__ void shade(float* pixels) { pixels[0] = 1.0f; }"#;
+        let mut meta = serde_json::json!({
+            "compile_manifest": {
+                "module_files": {
+                    "core": ".synthi/generated/gpu/core.cpp",
+                    "device": ".synthi/generated/gpu/device.hip"
+                }
+            }
+        });
+        let split = serde_json::json!({
+            "core": {
+                "filename": ".synthi/generated/gpu/core.cpp",
+                "content": core
+            },
+            "device": {
+                "filename": ".synthi/generated/gpu/device.hip",
+                "content": device
+            }
+        });
+
+        assert_eq!(upsert_generated_split_source_baselines(&mut meta, &split), 2);
+
+        assert_eq!(
+            meta.pointer("/sourceBaselineContents/.synthi~1generated~1gpu~1core.cpp")
+                .and_then(serde_json::Value::as_str),
+            Some(core)
+        );
+        assert_eq!(
+            meta.pointer("/sourceBaselineContents/.synthi~1generated~1gpu~1device.hip")
+                .and_then(serde_json::Value::as_str),
+            Some(device)
+        );
+        assert_eq!(
+            meta.pointer("/sourceBaselineHashes/.synthi~1generated~1gpu~1device.hip")
+                .and_then(serde_json::Value::as_str),
+            Some(device_source_hash(device).as_str())
+        );
+        assert_eq!(
+            meta.pointer(
+                "/deviceMappingReport/sourceBaselineContents/.synthi~1generated~1gpu~1device.hip"
+            )
+            .and_then(serde_json::Value::as_str),
+            Some(device)
         );
     }
 
