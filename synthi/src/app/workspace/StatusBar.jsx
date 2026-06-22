@@ -1097,7 +1097,7 @@ function StatusBarInner({
         {/* Problems */}
         <div
           onClick={onProblemsClick}
-          className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)]"
+          className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-colors hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)]"
           style={hasProblems ? { background: 'color-mix(in srgb, var(--accent-danger) 4%, transparent)' } : {}}
         >
           {deferredIsAnalyzing ? (
@@ -1121,7 +1121,7 @@ function StatusBarInner({
 
         {/* Compiler — keep the status encoded in the icon colour + tooltip
             so the island stays compact. */}
-        <div className="flex items-center px-1.5 py-0.5 rounded-md transition-all cursor-default" title={`Compiler: ${statusStyle.text}`}>
+        <div className="flex items-center px-1.5 py-0.5 rounded-md transition-colors cursor-default" title={`Compiler: ${statusStyle.text}`}>
           <Cpu className="w-3.5 h-3.5" style={statusStyle.textStyle} strokeWidth={2} />
         </div>
       </div>
@@ -1134,7 +1134,7 @@ function StatusBarInner({
             visual offset when side widths differ. */}
       <div className="status-island-zone flex-1 flex items-center justify-center gap-1 min-w-0">
         {/* Collab status — label hides below xl */}
-        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md transition-all cursor-default" title={`Collaboration: ${collabStyle.text}`}>
+        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md transition-colors cursor-default" title={`Collaboration: ${collabStyle.text}`}>
           <collabStyle.Icon className="w-3.5 h-3.5" style={collabStyle.textStyle} strokeWidth={2} />
           <div className={`w-1.5 h-1.5 rounded-full ${collabStyle.dotPulse ? 'animate-pulse' : ''}`} style={collabStyle.dotStyle} />
           <span className="status-island-label hidden 2xl:inline font-semibold" style={collabStyle.textStyle}>{collabStyle.text}</span>
@@ -1203,7 +1203,7 @@ function StatusBarInner({
         {/* Language — at the end of the right zone, always displays in
             full (no truncate, no shrinking). The lightning-bolt icon is
             our signature mark for the detected language. */}
-        <div className="flex shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]" title={language}>
+        <div className="flex shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-colors hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]" title={language}>
           <Zap className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
           <span className="status-island-label font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
         </div>
@@ -1213,7 +1213,7 @@ function StatusBarInner({
             pill in the left zone, which already owns the Cpu glyph. */}
         {languageAndFramework && (
           <div
-            className="flex shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-all"
+            className="flex shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-colors"
             title={`Framework: ${languageAndFramework}`}
           >
             <Boxes className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />

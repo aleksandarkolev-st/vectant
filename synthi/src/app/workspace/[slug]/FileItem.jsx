@@ -33,6 +33,7 @@ function fileItemAreEqual(prev, next) {
     prev.onExternalFilesDrop !== next.onExternalFilesDrop ||
     prev.onExternalFolderDragTarget !== next.onExternalFolderDragTarget ||
     prev.isExternalFolderDropTarget !== next.isExternalFolderDropTarget ||
+    prev.canMutateFiles !== next.canMutateFiles ||
     prev.uiActionState !== next.uiActionState ||
     prev.dispatch !== next.dispatch ||
     prev.handleKeyDown !== next.handleKeyDown ||
@@ -67,6 +68,7 @@ const FileItem = memo(({
   onExternalFilesDrop,
   onExternalFolderDragTarget,
   isExternalFolderDropTarget = false,
+  canMutateFiles = true,
   uiActionState,
   dispatch,
   handleKeyDown,
@@ -432,21 +434,40 @@ useEffect(() => {
     handleFileClick(e);
   };
 
+  const handleRowKeyDown = (e) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handleFileClick(e);
+      return;
+    }
+    if (!item.isFolder) return;
+    if (e.key === "ArrowRight" && isExpandable && !isOpen) {
+      e.preventDefault();
+      dispatch(toggleFolderExpansion(item.path));
+    } else if (e.key === "ArrowLeft" && isOpen) {
+      e.preventDefault();
+      dispatch(toggleFolderExpansion(item.path));
+    }
+  };
+
   // Drag for chat-context (string drop on AI chat) and tree move (drop on folder).
   // The tree-move handler (handleDrop) recognises the JSON payload below.
   const handleDragStart = (e) => {
     e.dataTransfer.setData('text/workspace-path', item.path);
     e.dataTransfer.setData('text/plain', item.name);
-    e.dataTransfer.setData(
-      'application/x-synthi-tree-item',
-      JSON.stringify({ path: item.path, name: item.name, isFolder: !!item.isFolder }),
-    );
-    e.dataTransfer.effectAllowed = 'copyMove';
+    if (canMutateFiles) {
+      e.dataTransfer.setData(
+        'application/x-synthi-tree-item',
+        JSON.stringify({ path: item.path, name: item.name, isFolder: !!item.isFolder }),
+      );
+    }
+    e.dataTransfer.effectAllowed = canMutateFiles ? 'copyMove' : 'copy';
   };
 
   const [isDropTarget, setIsDropTarget] = useState(false);
   const [isExternalDropTarget, setIsExternalDropTarget] = useState(false);
-  const showExternalDropLine = item.isFolder && (isExternalDropTarget || isExternalFolderDropTarget);
+  const showExternalDropLine = canMutateFiles && item.isFolder && (isExternalDropTarget || isExternalFolderDropTarget);
 
   const hasExternalFiles = (e) => Array.from(e.dataTransfer?.types || []).includes("Files");
 
@@ -472,6 +493,14 @@ useEffect(() => {
 
   const handleDragOver = (e) => {
     if (!item.isFolder) return;
+    if (!canMutateFiles) {
+      if (hasExternalFiles(e) || Array.from(e.dataTransfer?.types || []).includes('application/x-synthi-tree-item')) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'none';
+      }
+      return;
+    }
     if (hasExternalFiles(e)) {
       e.preventDefault();
       e.stopPropagation();
@@ -495,6 +524,17 @@ useEffect(() => {
 
   const handleDrop = async (e) => {
     if (!item.isFolder) return;
+    if (!canMutateFiles) {
+      if (hasExternalFiles(e) || Array.from(e.dataTransfer?.types || []).includes('application/x-synthi-tree-item')) {
+        e.preventDefault();
+        e.stopPropagation();
+        toast.error('File operations are disabled for this session.');
+      }
+      setIsDropTarget(false);
+      setIsExternalDropTarget(false);
+      onExternalFolderDragTarget?.("");
+      return;
+    }
     if (hasExternalFiles(e)) {
       setIsExternalDropTarget(false);
       onExternalFolderDragTarget?.("");
@@ -527,12 +567,17 @@ useEffect(() => {
         data-node-path={item.path}
         data-node-path-id={item.path}
         data-node-name={item.name}
+        role="treeitem"
+        tabIndex={0}
+        aria-selected={!!isSelected}
+        aria-expanded={item.isFolder ? !!isOpen : undefined}
+        aria-label={`${item.isFolder ? 'Folder' : 'File'} ${item.name}`}
         draggable
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`file-item relative group flex items-center py-1 px-2 cursor-pointer transition-all ${isSelected ? 'rounded-none' : 'rounded-md'}`}
+        className={`file-item th-focus-ring relative group flex items-center py-1 px-2 cursor-pointer transition-all ${isSelected ? 'rounded-none' : 'rounded-md'}`}
         style={{
           ...itemStyle,
           ...(isSelected
@@ -547,6 +592,7 @@ useEffect(() => {
             : {}),
         }}
         onClick={handleClick}
+        onKeyDown={handleRowKeyDown}
         onContextMenu={handleClick}
       >
         {guidesVisibleForRow &&
@@ -583,14 +629,17 @@ useEffect(() => {
           />
         )}
         {isExpandable && (
-          <div
+          <button
+            type="button"
+            aria-label={isOpen ? `Collapse ${item.name}` : `Expand ${item.name}`}
+            className="th-focus-ring rounded-sm"
             onClick={(e) => {
               e.stopPropagation();
               dispatch(toggleFolderExpansion(item.path));
             }}
           >
             <ChevronIcon isOpen={isOpen} isSelected={isSelected} />
-          </div>
+          </button>
         )}
         <div className={`w-3 h-3 mr-2 flex-shrink-0 flex items-center justify-center text-[13px] ${isSelected ? 'opacity-98' : 'opacity-95'}`}>
           {currentIcon}
@@ -764,6 +813,9 @@ useEffect(() => {
               activeFile={activeFile}
               onAction={onAction}
               onRightMouseButtonClick={onRightMouseButtonClick}
+              onExternalFilesDrop={onExternalFilesDrop}
+              onExternalFolderDragTarget={onExternalFolderDragTarget}
+              canMutateFiles={canMutateFiles}
               // Propagate all necessary state and handlers
               uiActionState={uiActionState}
               dispatch={dispatch}

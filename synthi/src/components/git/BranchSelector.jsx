@@ -61,7 +61,7 @@ function CheckoutConflictDialog({ slug, branch, create, onClose }) {
 
     return (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div className="w-[380px] rounded-xl border shadow-2xl p-4" style={{ background: 'var(--bg-elevated, #18181b)', borderColor: 'var(--border-medium, #3f3f46)' }}>
+            <div className="w-[380px] rounded-xl border shadow-none p-4" style={{ background: 'var(--bg-elevated, #18181b)', borderColor: 'var(--border-medium, #3f3f46)' }}>
                 <div className="flex items-start gap-2.5 mb-3">
                     <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: 'var(--accent-warning)' }} />
                     <div>
@@ -248,7 +248,7 @@ export function BranchSelector({ slug }) {
             <Select value={currentBranch || ''} onValueChange={handleValueChange} disabled={loading}>
                 <SelectTrigger
                     onContextMenu={handleTriggerContextMenu}
-                    className="h-5 w-auto gap-1.5 border-none bg-transparent px-1.5 text-[11px] rounded-full focus:ring-0 focus:ring-offset-0 data-[size=default]:h-5 data-[size=default]:px-1.5 data-[size=default]:py-0 [&>svg:last-child]:w-3 [&>svg:last-child]:h-3 [&>svg:last-child]:opacity-50 duration-300 hover:-translate-y-0.5 transition-all cursor-pointer"
+                    className="th-focus-ring h-5 w-auto gap-1.5 border-none bg-transparent px-1.5 text-[11px] rounded-full focus:ring-0 focus:ring-offset-0 data-[size=default]:h-5 data-[size=default]:px-1.5 data-[size=default]:py-0 [&>svg:last-child]:w-3 [&>svg:last-child]:h-3 [&>svg:last-child]:opacity-50 transition-colors cursor-pointer"
                     style={{ color: 'var(--text-primary)' }}
                 >
                     <GitBranch className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={1.5} />

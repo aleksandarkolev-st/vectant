@@ -44,7 +44,7 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
         type="button"
         aria-label={label}
         onClick={() => onSelect?.(id)}
-        className="group relative w-full h-9 flex items-center justify-center transition-all duration-150"
+        className="th-focus-ring group relative w-full h-9 flex items-center justify-center transition-colors duration-150"
       >
         {/* Active edge marker — 2px brand-gradient bar. Single
             source-of-truth for the active state; the icon also tints
@@ -57,7 +57,7 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
             className="pointer-events-none absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r-full"
             style={{
               background: 'var(--brand-gradient)',
-              boxShadow: '0 0 12px -2px color-mix(in srgb, var(--brand-stop-3) 50%, transparent)',
+              boxShadow: '0 0 8px -4px color-mix(in srgb, var(--brand-stop-3) 48%, transparent)',
             }}
           />
         )}
@@ -73,12 +73,12 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
           <img
             src={extensionIcon}
             alt={label}
-            className={`relative w-[18px] h-[18px] transition-all ${isActive ? 'opacity-100' : 'opacity-60 group-hover:opacity-95'}`}
+            className={`relative w-[18px] h-[18px] transition-opacity ${isActive ? 'opacity-100' : 'opacity-60 group-hover:opacity-95'}`}
             onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }}
           />
         ) : null}
         <Icon
-          className={`relative w-[18px] h-[18px] transition-all ${isActive ? 'opacity-100' : 'opacity-60 group-hover:opacity-95'}`}
+          className={`relative w-[18px] h-[18px] transition-opacity ${isActive ? 'opacity-100' : 'opacity-60 group-hover:opacity-95'}`}
           strokeWidth={isActive ? 2 : 1.5}
           style={{
             color: isActive ? 'var(--attention-purple)' : undefined,
@@ -89,12 +89,12 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
         {/* Hover label — slides in from the right with depth */}
         <div
           role="tooltip"
-          className="pointer-events-none absolute left-full ml-2 top-1/2 -translate-y-1/2 z-50 whitespace-nowrap rounded-md border px-2 py-1 text-[11px] font-medium opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-150"
+          className="pointer-events-none absolute left-full ml-2 top-1/2 -translate-y-1/2 z-50 whitespace-nowrap rounded-md border px-2 py-1 text-[11px] font-medium opacity-0 group-hover:opacity-100 transition-opacity duration-150"
           style={{
             borderColor: 'var(--border-medium)',
             background: 'var(--bg-panel)',
             color: 'var(--text-primary)',
-            boxShadow: 'var(--depth-shadow-2)',
+            boxShadow: 'none',
           }}
         >
           {label}{extensionId ? <span style={{ color: 'var(--text-muted)' }}> · {extensionId}</span> : null}
@@ -106,7 +106,7 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
             className="absolute right-1 top-1 min-w-3.5 h-3.5 px-1 rounded-full text-white text-[9px] leading-[14px] text-center font-semibold"
             style={{
               background: 'var(--brand-gradient-horizontal)',
-              boxShadow: '0 0 8px color-mix(in srgb, var(--brand-stop-3) 45%, transparent)',
+              boxShadow: '0 0 6px -2px color-mix(in srgb, var(--brand-stop-3) 42%, transparent)',
             }}
           >
             {badge}
