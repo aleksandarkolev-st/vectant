@@ -1913,6 +1913,44 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   );
   const targetProgressionGateFailures = targetProgressionGates
     .filter((gate) => text(gate.status)?.toLowerCase() === 'fail');
+  const nativeRocmLaunchBoundary = compactObject(
+    json.native_rocm_launch_boundary
+    ?? json.nativeRocmLaunchBoundary
+    ?? summary.native_rocm_launch_boundary
+    ?? summary.nativeRocmLaunchBoundary
+    ?? runtimeProofArtifact.native_rocm_launch_boundary
+    ?? runtimeProofArtifact.nativeRocmLaunchBoundary,
+  );
+  const realRocmRuntimeEligibility = compactObject(
+    json.real_rocm_runtime_eligibility
+    ?? json.realRocmRuntimeEligibility
+    ?? json.native_runtime_eligibility
+    ?? json.nativeRuntimeEligibility
+    ?? summary.real_rocm_runtime_eligibility
+    ?? summary.realRocmRuntimeEligibility
+    ?? summary.native_runtime_eligibility
+    ?? summary.nativeRuntimeEligibility
+    ?? runtimeProofArtifact.real_rocm_runtime_eligibility
+    ?? runtimeProofArtifact.realRocmRuntimeEligibility
+    ?? runtimeProofArtifact.native_runtime_eligibility
+    ?? runtimeProofArtifact.nativeRuntimeEligibility,
+  );
+  const nativeRocmBoundaryGaps = compactStringList([
+    ...(Array.isArray(nativeRocmLaunchBoundary.blockingGaps) ? nativeRocmLaunchBoundary.blockingGaps : []),
+    ...(Array.isArray(nativeRocmLaunchBoundary.blocking_gaps) ? nativeRocmLaunchBoundary.blocking_gaps : []),
+  ]);
+  const realRocmRuntimeEligibilityGaps = compactStringList([
+    ...(Array.isArray(realRocmRuntimeEligibility.blockingGaps) ? realRocmRuntimeEligibility.blockingGaps : []),
+    ...(Array.isArray(realRocmRuntimeEligibility.blocking_gaps) ? realRocmRuntimeEligibility.blocking_gaps : []),
+  ]);
+  const nativeRocmBoundaryReason =
+    Object.keys(nativeRocmLaunchBoundary).length > 0
+      ? firstText(nativeRocmLaunchBoundary.status, nativeRocmLaunchBoundary.reason)
+      : null;
+  const realRocmRuntimeEligibilityReason =
+    Object.keys(realRocmRuntimeEligibility).length > 0
+      ? firstText(realRocmRuntimeEligibility.status, realRocmRuntimeEligibility.reason)
+      : null;
   const hmrWaitDetail = realRocmCheckDetailJson(checks, 'real_repo_user_source_delta_hmr')
     ?? realRocmCheckDetailJson(checks, 'first_real_repo_ai_split_compile');
   const hmrProofValidation = compactObject(hmrWaitDetail?.gpu_proof_validation);
@@ -2051,12 +2089,20 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     outputOracleResolution,
     targetProgression,
     targetProgressionGates,
+    nativeRocmLaunchBoundary,
+    native_rocm_launch_boundary: nativeRocmLaunchBoundary,
+    realRocmRuntimeEligibility,
+    real_rocm_runtime_eligibility: realRocmRuntimeEligibility,
     timings: compactObject(runMode.present ? json.timingMetrics ?? json.timing_metrics ?? summary.timings?.timingMetrics : {}),
     reasons: compactStringList([
       ...strictGateFailures,
       ...runtimeProofArtifactGate.failedGates.map((failure) => failure.code),
       ...targetProgressionGateFailures.map((gate) => `target_progression_gate_failed:${text(gate.name) ?? 'unnamed'}`),
       ...outputOracleFacet.failedGates.map((failure) => failure.code),
+      nativeRocmBoundaryReason ? `native_rocm_launch_boundary:${nativeRocmBoundaryReason}` : null,
+      ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
+      realRocmRuntimeEligibilityReason ? `real_rocm_runtime_eligibility:${realRocmRuntimeEligibilityReason}` : null,
+      ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
       hmrProofValidation.reason,
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
@@ -2069,6 +2115,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_required',
       proofStateMissing ? 'gpu_hmr_full_runtime_proof_state_missing' : null,
       targetProgressionGateFailures.length > 0 ? 'target_progression_gates_failed' : null,
+      ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
+      ...realRocmRuntimeEligibilityGaps.map((gap) => `real_rocm_runtime_eligibility:${gap}`),
     ]),
   });
 }
