@@ -4488,7 +4488,13 @@ function realRocmCompileBridgeFacet(phases = []) {
     entry.summary.status === 'compile_bridge_incomplete_not_runtime_proof'
   );
   const blockingGaps = [];
-  if (!anyCandidate) blockingGaps.push('compile_response_device_sidecar_bridge_not_declared');
+  if (anyCandidate) {
+    blockingGaps.push('compile_response_bridge_candidate_not_runtime_proof');
+  } else if (anyIncomplete) {
+    blockingGaps.push('compile_response_bridge_incomplete_not_runtime_proof');
+  } else {
+    blockingGaps.push('compile_response_device_sidecar_bridge_not_declared');
+  }
   return {
     schemaVersion: 'synthi.real_rocm.compile_bridge_facet.v1',
     status: anyCandidate
@@ -9370,6 +9376,41 @@ int main()
     || waitResultFromWaitHmrToolError(new Error('tool synthi_wait_hmr isError: {"error":"other"}')) !== null
   ) {
     throw new Error('wait_hmr proof-insufficient parser self-check failed');
+  }
+  const missingCompileBridge = realRocmCompileBridgeFacet([
+    { name: 'real_repo_user_source_delta_hmr', compile_response_summary: compileResponseBridgeSummary({
+      ok: true,
+      session_id: 'self-check',
+      note: 'compile dispatched',
+    }) },
+  ]);
+  const incompleteCompileBridge = realRocmCompileBridgeFacet([
+    { name: 'real_repo_user_source_delta_hmr', compile_response_summary: compileResponseBridgeSummary({
+      ok: true,
+      note: 'device sidecar requested',
+    }) },
+  ]);
+  const candidateCompileBridge = realRocmCompileBridgeFacet([
+    { name: 'real_repo_user_source_delta_hmr', compile_response_summary: compileResponseBridgeSummary({
+      ok: true,
+      device_sidecar: {
+        command: 'load_device rocm /tmp/kernel.hsaco kernel',
+        artifact_hash: `sha256:${'1'.repeat(64)}`,
+        runtime_proof: { proof_id: `gpu-runtime-proof:sha256:${'2'.repeat(64)}` },
+      },
+    }) },
+  ]);
+  if (
+    missingCompileBridge.status !== 'compile_bridge_missing'
+    || missingCompileBridge.canSatisfyRuntimeProof !== false
+    || !missingCompileBridge.blocking_gaps.includes('compile_response_device_sidecar_bridge_not_declared')
+    || incompleteCompileBridge.status !== 'compile_bridge_incomplete_not_runtime_proof'
+    || !incompleteCompileBridge.blocking_gaps.includes('compile_response_bridge_incomplete_not_runtime_proof')
+    || candidateCompileBridge.status !== 'compile_bridge_candidate_observed_not_runtime_proof'
+    || candidateCompileBridge.can_satisfy_runtime_proof !== false
+    || !candidateCompileBridge.blocking_gaps.includes('compile_response_bridge_candidate_not_runtime_proof')
+  ) {
+    throw new Error('compile response bridge evidence self-check failed');
   }
   const structuredSidecarProvenance = structuredModelProvenanceFromSidecar({
     available: true,

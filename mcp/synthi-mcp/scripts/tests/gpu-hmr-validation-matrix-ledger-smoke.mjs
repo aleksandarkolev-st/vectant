@@ -1673,6 +1673,18 @@ await writeJson(path.join(forgedRequiredHookRocmDir, 'real-rocm-forged-required-
     blockingGaps: ['app_hook_dispatch_trace_runtime_not_observed'],
     blocking_gaps: ['app_hook_dispatch_trace_runtime_not_observed'],
   },
+  real_rocm_compile_bridge: {
+    schemaVersion: 'synthi.real_rocm.compile_bridge_facet.v1',
+    status: 'compile_bridge_candidate_observed_not_runtime_proof',
+    proofAuthority: 'compile_response_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'compile_response_evidence_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    phaseCount: 1,
+    phase_count: 1,
+    blockingGaps: ['compile_response_bridge_candidate_not_runtime_proof'],
+    blocking_gaps: ['compile_response_bridge_candidate_not_runtime_proof'],
+  },
   ...runtimeProofMaterials('hot_delta_1', {
     projectId: 'real-rocm-forged-required-hook',
     visualRoot: forgedRequiredHookRocmDir,
@@ -1714,8 +1726,13 @@ assert.equal(forgedRequiredHookRocm.ledger.gpuHmrSuccess, true);
 assert.equal(forgedRequiredHookRocm.outputOracleFacet.accepted, true);
 assert.equal(forgedRequiredHookRocm.realRocmAppHookContract.declared, true);
 assert.equal(forgedRequiredHookRocm.realRocmAppHookContract.canSatisfyRuntimeProof, false);
+assert.equal(forgedRequiredHookRocm.realRocmCompileBridge.canSatisfyRuntimeProof, false);
 assert.ok(forgedRequiredHookRocm.reasons.includes('real_rocm_app_hook_contract_required_not_proven'));
+assert.ok(forgedRequiredHookRocm.reasons.includes('real_rocm_compile_bridge:compile_bridge_candidate_observed_not_runtime_proof'));
 assert.ok(forgedRequiredHookRocm.openGaps.includes('real_rocm_app_hook_contract_required'));
+assert.ok(forgedRequiredHookRocm.openGaps.includes(
+  'real_rocm_compile_bridge:compile_response_bridge_candidate_not_runtime_proof',
+));
 
 const forgedMissingHookFacetRocmDir = path.join(logsRoot, 'real-rocm-forged-missing-hook-facet');
 await writeRgbaPng(path.join(forgedMissingHookFacetRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
