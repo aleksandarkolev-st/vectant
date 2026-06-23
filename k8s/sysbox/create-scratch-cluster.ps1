@@ -51,6 +51,7 @@ if ($LASTEXITCODE -eq 0) {
                                     # Must be set at create; legacy dataplane does NOT enforce NP.
     '--machine-type',$DefaultMachine,
     '--num-nodes','1',
+    '--disk-type','pd-standard','--disk-size','50',  # lesson #36: pd-standard bills DISKS_TOTAL_GB, not the tight regional SSD_TOTAL_GB (390/500)
     '--no-enable-autoupgrade',
     '--no-enable-autorepair'
   )
@@ -73,6 +74,7 @@ if ($LASTEXITCODE -eq 0) {
     '--image-type','UBUNTU_CONTAINERD',   # COS is unsupported by Sysbox (read-only rootfs)
     '--machine-type',$SysboxMachine,
     '--num-nodes','1',                     # warm floor 1 during validation (no scale-to-zero)
+    '--disk-type','pd-standard','--disk-size','50',  # lesson #36: avoid the regional SSD_TOTAL_GB quota
     '--no-enable-autoupgrade',
     '--no-enable-autorepair',
     '--node-labels','sysbox-install=yes',  # DaemonSet installs Sysbox here

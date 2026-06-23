@@ -69,6 +69,7 @@ import { privateWorkflowToolRegistry } from "./browser/private_tool_registry.js"
 import { DOJO_TOOLS, dispatchDojoTool } from "./tools/dojo.js";
 import { SOURCE_TOOLS, dispatchSourceTool } from "./tools/source.js";
 import { SAFETY_TOOLS, dispatchSafetyTool } from "./tools/safety.js";
+import { PROGRAM_TOOLS, dispatchProgramTool } from "./tools/programs.js";
 import type { ToolContext } from "./tools/shared.js";
 import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
 import { isExternalToolName, callExternalTool, type ExternalTools } from "./external/index.js";
@@ -85,6 +86,7 @@ const TOOLS = [
   ...AUTH_TOOLS,
   ...SOURCE_TOOLS,
   ...SAFETY_TOOLS,
+  ...PROGRAM_TOOLS,
   {
     name: "synthi_attach",
     description:
@@ -1257,108 +1259,72 @@ async function dispatchTool(
   const safetyResponse = await dispatchSafetyTool(toolName, args);
   if (safetyResponse) return safetyResponse as CallToolResult;
 
-  switch (toolName) {
-      case "synthi_attach":
-        return (await attachTool(args, ctx)) as CallToolResult;
-      case "synthi_screenshot":
-        return (await screenshotTool(args)) as CallToolResult;
-      case "synthi_wait_hmr":
-        return (await waitHmrTool(args)) as CallToolResult;
-      case "synthi_click":
-        return (await clickTool(args)) as CallToolResult;
-      case "synthi_type":
-        return (await typeTool(args)) as CallToolResult;
-      case "synthi_locate":
-        return (await locateTool(args, signal ? { signal } : undefined)) as CallToolResult;
-      case "synthi_detach":
-        return (await detachTool(args)) as CallToolResult;
-      case "synthi_health":
-        return (await healthTool(args)) as CallToolResult;
-      case "synthi_reconnect":
-        return (await reconnectTool(args)) as CallToolResult;
-      case "synthi_get_event_log":
-        return (await getEventLogTool(args)) as CallToolResult;
-      case "synthi_get_source_state":
-        return (await getSourceStateTool(args)) as CallToolResult;
-      case "synthi_wait":
-        return (await waitTool(args)) as CallToolResult;
-      case "synthi_mouse":
-        return (await mouseTool(args)) as CallToolResult;
-      case "synthi_keyboard":
-        return (await keyboardTool(args)) as CallToolResult;
-      case "synthi_get_usage":
-        return (await getUsageTool(args)) as CallToolResult;
-      case "synthi_set_quality":
-        return (await setQualityTool(args)) as CallToolResult;
-      case "synthi_checkpoint":
-        return (await checkpointTool(args)) as CallToolResult;
-      case "synthi_acknowledge_disruption":
-        return (await acknowledgeDisruptionTool(args)) as CallToolResult;
-      case "synthi_get_crash_info":
-        return (await getCrashInfoTool(args)) as CallToolResult;
-      case "synthi_reset_guest":
-        return (await resetGuestTool(args)) as CallToolResult;
-      case "synthi_verify":
-        return (await verifyTool(args)) as CallToolResult;
-      case "synthi_compile":
-        return (await compileTool(args)) as CallToolResult;
-      case "synthi_report_source_state":
-        return (await reportSourceStateTool(args)) as CallToolResult;
-      case "synthi_dispatch_input":
-        return (await dispatchInputTool(args)) as CallToolResult;
-      case "synthi_describe":
-        return (await describeTool(args, signal ? { signal } : undefined)) as CallToolResult;
-      case "synthi_acquire_input":
-        return (await acquireInputTool(args)) as CallToolResult;
-      case "synthi_force_release_input":
-        return (await forceReleaseInputTool(args)) as CallToolResult;
-      case "synthi_renew_input":
-        return (await renewInputTool(args)) as CallToolResult;
-      case "synthi_release_input":
-        return (await releaseInputTool(args)) as CallToolResult;
-      case "synthi_request_human":
-        return (await requestHumanTool(args)) as CallToolResult;
-      case "synthi_annotate_and_ask":
-        return (await annotateAndAskTool(args)) as CallToolResult;
-      case "synthi_recent_human_actions":
-        return (await recentHumanActionsTool(args)) as CallToolResult;
-      case "synthi_query":
-        return (await queryTool(args)) as CallToolResult;
-      case "synthi_act":
-        return (await actTool(args)) as CallToolResult;
-      case "synthi_click_text":
-        return (await clickTextTool(args)) as CallToolResult;
-      case "synthi_fill_form":
-        return (await fillFormTool(args)) as CallToolResult;
-      case "synthi_get_labels":
-        return (await getLabelsTool(args)) as CallToolResult;
-      case "synthi_get_process_state":
-        return (await getProcessStateTool(args)) as CallToolResult;
-      case "synthi_get_metrics":
-        return (await getMetricsTool(args)) as CallToolResult;
-      case "synthi_get_audio_level":
-        return (await getAudioLevelTool(args)) as CallToolResult;
-      case "synthi_wait_audio_event":
-        return (await waitAudioEventTool(args)) as CallToolResult;
-      case "synthi_snapshot":
-        return (await snapshotTool(args)) as CallToolResult;
-      case "synthi_restore":
-        return (await restoreTool(args)) as CallToolResult;
-      case "synthi_list_snapshots":
-        return (await listSnapshotsTool(args)) as CallToolResult;
-      case "synthi_answer_escape_hatch":
-        return (await answerEscapeHatchTool(args)) as CallToolResult;
-      default:
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ error: "unknown_tool", tool: toolName }),
-            },
-          ],
-          isError: true,
-        };
-    }
+  const programResponse = await dispatchProgramTool(toolName, args);
+  if (programResponse) return programResponse as CallToolResult;
+
+  // Tool dispatch table — replaces a ~45-case `switch (toolName)` with an object
+  // lookup for easier maintenance (adding a tool is one entry). Handlers capture
+  // args/ctx/signal from the enclosing scope; only locate/describe use signal.
+  const handlers: Record<string, () => Promise<CallToolResult>> = {
+    synthi_attach: async () => (await attachTool(args, ctx)) as CallToolResult,
+    synthi_screenshot: async () => (await screenshotTool(args)) as CallToolResult,
+    synthi_wait_hmr: async () => (await waitHmrTool(args)) as CallToolResult,
+    synthi_click: async () => (await clickTool(args)) as CallToolResult,
+    synthi_type: async () => (await typeTool(args)) as CallToolResult,
+    synthi_locate: async () => (await locateTool(args, signal ? { signal } : undefined)) as CallToolResult,
+    synthi_detach: async () => (await detachTool(args)) as CallToolResult,
+    synthi_health: async () => (await healthTool(args)) as CallToolResult,
+    synthi_reconnect: async () => (await reconnectTool(args)) as CallToolResult,
+    synthi_get_event_log: async () => (await getEventLogTool(args)) as CallToolResult,
+    synthi_get_source_state: async () => (await getSourceStateTool(args)) as CallToolResult,
+    synthi_wait: async () => (await waitTool(args)) as CallToolResult,
+    synthi_mouse: async () => (await mouseTool(args)) as CallToolResult,
+    synthi_keyboard: async () => (await keyboardTool(args)) as CallToolResult,
+    synthi_get_usage: async () => (await getUsageTool(args)) as CallToolResult,
+    synthi_set_quality: async () => (await setQualityTool(args)) as CallToolResult,
+    synthi_checkpoint: async () => (await checkpointTool(args)) as CallToolResult,
+    synthi_acknowledge_disruption: async () => (await acknowledgeDisruptionTool(args)) as CallToolResult,
+    synthi_get_crash_info: async () => (await getCrashInfoTool(args)) as CallToolResult,
+    synthi_reset_guest: async () => (await resetGuestTool(args)) as CallToolResult,
+    synthi_verify: async () => (await verifyTool(args)) as CallToolResult,
+    synthi_compile: async () => (await compileTool(args)) as CallToolResult,
+    synthi_report_source_state: async () => (await reportSourceStateTool(args)) as CallToolResult,
+    synthi_dispatch_input: async () => (await dispatchInputTool(args)) as CallToolResult,
+    synthi_describe: async () => (await describeTool(args, signal ? { signal } : undefined)) as CallToolResult,
+    synthi_acquire_input: async () => (await acquireInputTool(args)) as CallToolResult,
+    synthi_force_release_input: async () => (await forceReleaseInputTool(args)) as CallToolResult,
+    synthi_renew_input: async () => (await renewInputTool(args)) as CallToolResult,
+    synthi_release_input: async () => (await releaseInputTool(args)) as CallToolResult,
+    synthi_request_human: async () => (await requestHumanTool(args)) as CallToolResult,
+    synthi_annotate_and_ask: async () => (await annotateAndAskTool(args)) as CallToolResult,
+    synthi_recent_human_actions: async () => (await recentHumanActionsTool(args)) as CallToolResult,
+    synthi_query: async () => (await queryTool(args)) as CallToolResult,
+    synthi_act: async () => (await actTool(args)) as CallToolResult,
+    synthi_click_text: async () => (await clickTextTool(args)) as CallToolResult,
+    synthi_fill_form: async () => (await fillFormTool(args)) as CallToolResult,
+    synthi_get_labels: async () => (await getLabelsTool(args)) as CallToolResult,
+    synthi_get_process_state: async () => (await getProcessStateTool(args)) as CallToolResult,
+    synthi_get_metrics: async () => (await getMetricsTool(args)) as CallToolResult,
+    synthi_get_audio_level: async () => (await getAudioLevelTool(args)) as CallToolResult,
+    synthi_wait_audio_event: async () => (await waitAudioEventTool(args)) as CallToolResult,
+    synthi_snapshot: async () => (await snapshotTool(args)) as CallToolResult,
+    synthi_restore: async () => (await restoreTool(args)) as CallToolResult,
+    synthi_list_snapshots: async () => (await listSnapshotsTool(args)) as CallToolResult,
+    synthi_answer_escape_hatch: async () => (await answerEscapeHatchTool(args)) as CallToolResult,
+  };
+
+  const handler = handlers[toolName];
+  if (handler) return handler();
+
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify({ error: "unknown_tool", tool: toolName }),
+      },
+    ],
+    isError: true,
+  };
   }
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult> => {

@@ -6,6 +6,7 @@
  */
 
 import { parseProgramManifest } from './manifest';
+import { workspaceMountFlags } from './workspaceMount';
 
 function scrapeExposePorts(raw) {
   const out = [];
@@ -48,7 +49,7 @@ export function importDockerfile(raw, { name = 'app', containerRuntime = false }
     displayName: name,
     runtimeType: 'container',
     install: [`docker build -t ${tag} .`],
-    launch: `docker run --rm ${portFlags ? `${portFlags} ` : ''}${tag}`.trim(),
+    launch: `docker run --rm ${portFlags ? `${portFlags} ` : ''}${workspaceMountFlags()} ${tag}`.trim(),
     ports,
     permissions: ports.length ? ['program.launch', 'ports.expose', 'network.outbound'] : ['program.launch'],
   });

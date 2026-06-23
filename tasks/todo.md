@@ -1,3 +1,75 @@
+> ⚠️⚠️ **RECURRING REMINDER — READ WHENEVER TOUCHING "PROGRAMS" / GUI DEV TOOLS** ⚠️⚠️
+> The current programs work (KasmVNC GUI dev-tool streaming, real-programs **Slice 3**) ships
+> **command/CLI** AI control ONLY. The **NEXT STEP is VISUAL GUI DRIVING** — the AI seeing +
+> clicking/typing inside the streamed GUI. Any time programs are designed, extended, or discussed,
+> raise this planned follow-up. Spec §10: `docs/superpowers/specs/2026-06-20-gui-dev-tool-streaming-design.md`.
+>
+> **NEXT SLICE — Visual GUI driving (MCP):**
+> - **Observe:** capture frames from the KasmVNC stream (or the container's X display) → feed the vision
+>   model (the MCP already uses Gemini vision for the worker preview; adapt the frame source to KasmVNC).
+> - **Drive:** inject pointer/keyboard via the KasmVNC input protocol or XTest in the container's X
+>   display; reuse the MCP input-lease/broker concepts.
+> - **Loop:** vision → plan action → inject → re-observe (computer-use style); bounded + cancellable.
+> - **MCP tools:** `gui_screenshot`, `gui_click`, `gui_type`, `gui_key` scoped to a program session.
+> - **Security:** same Sysbox isolation; AI input is a controlled channel separate from the user's kiosk
+>   stream; rate/scope limits; never re-enables a desktop/launcher.
+> - **Sequencing:** ship after the command-level loop + the streaming surface (Slice 3) are solid.
+>
+> ---
+
+## Slice 3 / Group E — MCP command control (status 2026-06-20)
+
+Command/CLI AI control over the program domain, over the PAT-gated `/api/integrations/mcp/*` boundary
+(SYNTHI_API_URL + SYNTHI_PAT [+ SYNTHI_WORKSPACE_SLUG]). All tools registered in `mcp/synthi-mcp/src/server.ts`.
+
+- [x] **`synthi_exec_in_runtime`** — run a command **inside the workspace's Sysbox runtime pod** (its own
+      dockerd lives there, so `docker ...` works). Backend `POST /api/integrations/mcp/runtime-exec` →
+      collab-server `POST /program-runtime/:slug/exec` → `runtimeExecOnce` (k8s-exec into the `runtime`
+      container). Routed by **workspaceSlug → runtimeScope** (never a user id). Owner/admin + `program.launch`
+      consent. Returns `{runtimeScope,stdout,stderr,exitCode,timedOut}`.
+      NOTE: the first cut wrongly used the managed-program `/exec-terminal` path → headless PTY (DOCKER_HOST
+      scrubbed, userId-keyed cwd); fixed in `fix(mcp): exec_in_runtime runs in the Sysbox runtime pod`.
+- [x] **`synthi_list_programs`** — member-read inventory: merged sessions + installed catalog (`GET .../programs`).
+- [x] **`synthi_read_session`** — member-read single session + redacted events (`GET .../programs/[sessionId]`).
+- [x] **`synthi_launch_program`** — launch an installed **container** program by installId (`POST .../programs/launch`).
+      Container programs route by **workspaceSlug → runtimeScope** into the Sysbox pod (slug-routed, never a
+      user id) — so a PAT launches them safely; the earlier `workspaceUserId` blocker only affects the
+      headless/hybrid (userId-routed) paths, so **non-container programs are refused** (`unsupported_program_type`)
+      and must be launched from the workspace UI. Owner/admin + `program.launch` consent.
+      RESIDUAL: faithful per-user-filesystem launch for non-container (cli/web) programs still needs the
+      PAT→workspaceUserId resolution (persist the OAuth provider id) — deferred.
+
+### Group A — GUI images (done, built+validated locally)
+- [x] `@vectant/gui-base` (`backend/gui-images/gui-base`) — debian-slim + KasmVNC 1.4.0 + matchbox (no
+      menu/panel); no DE/terminal/file-manager/browser; per-session credential; plain HTTP+WS. 409MB.
+- [x] `@vectant/dbeaver` (`backend/gui-images/dbeaver`) — gui-base + DBeaver CE (bundled JRE 21). 668MB.
+      Verified: KasmVNC serves (401→200), DBeaver GUI launches under matchbox fullscreen, no escape binaries.
+
+### Group F — recipe (done)
+- [x] `@vectant/dbeaver` in `defaultPrograms.js` (runtimeType container, webGui, port 6901, env-driven image).
+
+### Group G — verification + wrap
+- [x] Local: images build+run+kiosk-validated; backend/synthi/mcp suites green; node --check clean.
+- [x] **G1 live GKE gate — PASSED (2026-06-21), cluster torn down.** Scratch Sysbox cluster
+      (`synthi-sysbox-scratch`, 1.35.3) + sysbox-pool; Sysbox v0.7.0 installed (`sysbox-runtime=running`);
+      ran `vectant-dbeaver` (from AR) in a `sysbox-runc` pod's dockerd. Validated: **non-privileged**
+      (`privileged=false`) + **root-in-userns** (`uid_map 0→2348417024`) + own docker.sock; **KasmVNC streams**
+      (no-auth 401 → per-session-cred 200 on `/vnc.html`); **DBeaver GUI process alive**; **kiosk-clean**
+      (no terminal/browser/file-manager/desktop binaries); **exec into the runtime works** (exec_in_runtime
+      capability). Teardown: cluster deleted (async), gate AR images deleted, prod untouched.
+      - FOLLOW-UP (pre-existing): the committed `sysbox-install.yaml` digest `c7859de…` was deleted from AR by
+        the LG4/G1 teardown; a `docker pull`+push re-host yields a *different* (single-arch) digest. To restore
+        the exact committed (multi-arch index) digest for the next run/prod, re-host with **`crane copy`**
+        (daemon-free, preserves the index digest) per lesson #27 — don't `docker push` (re-pins to a new digest).
+
+### Hardcoded-values audit (Slice 3, A+F)
+- DBeaver .deb pinned to **`latest`** (`dbeaver-ce_latest_amd64.deb`) — NOT reproducible. **Pin a version for
+  prod** (DBEAVER_URL is an ARG, so override at build). Acceptable for dev.
+- `debian:bookworm-slim` base + KasmVNC `1.4.0` (KASMVNC_VERSION ARG) — KasmVNC pinned ✓; base image not
+  digest-pinned (minor; digest-pin + trivy-gate for prod, like backend/runtime-image).
+- Recipe image/port are env-driven (VECTANT_DBEAVER_IMAGE / VECTANT_DBEAVER_PORT) ✓; KASM_PASSWORD generated ✓;
+  KASM_PORT/GEOMETRY/user all env-overridable ✓. No improper hardcoding in the runtime path.
+
 # Task 7: AI Chat redesign — "The Living Orb" 2026-05-25
 
 Direction A approved (living gradient orb identity). Scope: visual + IA restructure across floating / docked / mobile (one component system). Personality: expressive but calm — motion is purposeful, never twitchy. Diagnostics (Code Intel, Shadow verify, Regression) collapse into one drawer.

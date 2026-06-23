@@ -313,6 +313,73 @@ async function runtimeRunOnce(runtimeScope, argv) {
   });
 }
 
+/**
+ * Parse a Kubernetes Exec completion V1Status into a numeric exit code.
+ * Success ⇒ 0. A NonZeroExitCode failure carries the code in
+ * details.causes[reason=ExitCode].message. Any other Failure ⇒ 1. Unknown ⇒ null.
+ */
+function parseExecExitCode(status) {
+  if (!status || typeof status !== 'object') return null;
+  if (status.status === 'Success') return 0;
+  const causes = status.details && Array.isArray(status.details.causes) ? status.details.causes : [];
+  const exitCause = causes.find((c) => c && c.reason === 'ExitCode');
+  if (exitCause && exitCause.message != null) {
+    const code = Number(exitCause.message);
+    return Number.isFinite(code) ? code : 1;
+  }
+  return status.status === 'Failure' ? 1 : null;
+}
+
+/**
+ * One-shot, non-interactive command exec into the Sysbox runtime pod's `runtime`
+ * container (where the workspace's own dockerd lives, DOCKER_HOST inherited from
+ * the pod env; workspace mounted at /workspace). Routed purely by `runtimeScope`
+ * (slug-derived) — never by a user id. Returns { stdout, stderr, exitCode,
+ * timedOut } with stdout/stderr captured separately. Live-validated on a Sysbox
+ * cluster (k8s-exec). Throws `runtime_pod_not_ready` if no ready pod.
+ */
+async function runtimeExecOnce(runtimeScope, command, { timeoutMs = 30000 } = {}) {
+  if (!runtimeScope) throw new Error('runtime_pod_not_ready');
+  const cmd = String(command || '').trim();
+  if (!cmd) throw new Error('command is required');
+  const ready = typeof spawner.getReadyRuntimePodForSession === 'function'
+    ? await spawner.getReadyRuntimePodForSession(runtimeScope)
+    : null;
+  if (!ready || !ready.podName) throw new Error('runtime_pod_not_ready');
+
+  const stdoutStream = new PassThrough();
+  const stderrStream = new PassThrough();
+  let stdout = '';
+  let stderr = '';
+  const MAX_OUT = 50000;
+  stdoutStream.on('data', (c) => { if (stdout.length < MAX_OUT) stdout += Buffer.isBuffer(c) ? c.toString('utf8') : String(c); });
+  stderrStream.on('data', (c) => { if (stderr.length < MAX_OUT) stderr += Buffer.isBuffer(c) ? c.toString('utf8') : String(c); });
+
+  const exec = new k8s.Exec(kubeConfig());
+  const cappedTimeout = Math.min(Math.max(Number(timeoutMs) || 30000, 1000), 60000);
+
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    let timedOut = false;
+    let wsRef = null;
+    const finish = (result) => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { wsRef?.close?.(); } catch (_) {}
+      finish({ stdout, stderr, exitCode: null, timedOut: true });
+    }, cappedTimeout);
+
+    exec
+      .exec(NAMESPACE, ready.podName, RUNTIME_POD_CONTAINER, ['/bin/bash', '-lc', cmd], stdoutStream, stderrStream, null, false,
+        (status) => finish({ stdout, stderr, exitCode: parseExecExitCode(status), timedOut }))
+      .then((ws) => {
+        wsRef = ws;
+        if (ws && typeof ws.on === 'function') ws.on('error', () => finish({ stdout, stderr, exitCode: null, timedOut }));
+      })
+      .catch((err) => { if (!settled) { settled = true; clearTimeout(timer); reject(err); } });
+  });
+}
+
 module.exports = {
   shouldUseRuntimePodTerminal,
   runtimeTerminalTarget,
@@ -322,4 +389,6 @@ module.exports = {
   createRuntimePodPty,
   createRuntimePodProgram,
   runtimeRunOnce,
+  runtimeExecOnce,
+  parseExecExitCode,
 };

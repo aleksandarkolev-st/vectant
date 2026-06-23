@@ -7,7 +7,7 @@ describe('buildDefaultPrograms', () => {
 
   it('builds one valid @vectant/<name> program per recipe', () => {
     expect(built.length).toBe(DEFAULT_PROGRAM_RECIPES.length);
-    expect(built.length).toBe(7);
+    expect(built.length).toBe(10);
     for (const { packageId, config } of built) {
       expect(packageId).toMatch(/^@vectant\/[a-z0-9._-]+$/);
       expect(SUPPORTED_RUNTIME_TYPES).toContain(config.runtimeType);
@@ -26,6 +26,49 @@ describe('buildDefaultPrograms', () => {
     expect(byId['@vectant/node-worker'].ports).toEqual([]);
     expect(byId['@vectant/lazygit'].runtimeType).toBe('tui');
     expect(byId['@vectant/lazygit'].ports).toEqual([]);
+  });
+
+  it('ships @vectant/dbeaver as a webGui container program (KasmVNC)', () => {
+    const dbeaver = built.find((b) => b.packageId === '@vectant/dbeaver').config;
+    expect(dbeaver.runtimeType).toBe('container');
+    expect(dbeaver.webGui).toBe(true);
+    expect(dbeaver.ports).toEqual([6901]);
+    expect(dbeaver.launch).toMatch(/^docker run .*-p 6901:6901/);
+    // Mounts the workspace so DBeaver reads/writes the same /workspace files as the editor.
+    expect(dbeaver.launch).toContain('-v "$PWD":/workspace -w /workspace');
+    expect(dbeaver.permissions).toContain('ports.expose');
+    // Per-session auto-login: the password is injected by the runtime manager;
+    // the recipe only declares the passthrough (no value committed).
+    expect(dbeaver.launch).toMatch(/-e KASM_PASSWORD(\s|$)/);
+    expect(dbeaver.launch).not.toContain('KASM_PASSWORD=');
+  });
+
+  it('ships @vectant/postman as a webGui container program (KasmVNC)', () => {
+    const postman = built.find((b) => b.packageId === '@vectant/postman').config;
+    expect(postman.runtimeType).toBe('container');
+    expect(postman.webGui).toBe(true);
+    expect(postman.ports).toEqual([6902]);
+    expect(postman.launch).toMatch(/^docker run .*-p 6902:6902/);
+    // Distinct KasmVNC port so Postman and DBeaver (6901) can run side by side.
+    expect(postman.launch).toContain('-e KASM_PORT=6902');
+    // Mounts the workspace so Postman imports/exports collections as /workspace files.
+    expect(postman.launch).toContain('-v "$PWD":/workspace -w /workspace');
+    expect(postman.permissions).toContain('ports.expose');
+    // Per-session auto-login passthrough (distinct from the -e KASM_PORT value above).
+    expect(postman.launch).toMatch(/-e KASM_PASSWORD(\s|$)/);
+    expect(postman.launch).not.toContain('KASM_PASSWORD=');
+  });
+
+  it('ships @vectant/portainer as a web-UI container program (Docker GUI)', () => {
+    const portainer = built.find((b) => b.packageId === '@vectant/portainer').config;
+    expect(portainer.runtimeType).toBe('container');
+    expect(portainer.webGui).toBe(false); // web-UI tier: plain iframe, not KasmVNC
+    expect(portainer.ports).toEqual([9000]);
+    expect(portainer.launch).toMatch(/^docker run .*-p 9000:9000/);
+    expect(portainer.launch).toContain('/var/run/docker.sock:/var/run/docker.sock');
+    expect(portainer.launch).toContain('-v "$PWD/.vectant/portainer":/data');
+    expect(portainer.launch).toContain('--no-csp');
+    expect(portainer.permissions).toContain('ports.expose');
   });
 
   it('builds the Dev Container default via the devcontainer importer', () => {
@@ -65,9 +108,10 @@ describe('ensureDefaultPrograms', () => {
     const seeded = await ensureDefaultPrograms(prisma);
 
     expect(seeded).toContain('@vectant/nextjs-dev');
-    expect(seeded.length).toBe(7);
-    expect(prisma.marketplaceProgram.upsert).toHaveBeenCalledTimes(7);
-    expect(prisma.programVersion.upsert).toHaveBeenCalledTimes(7);
+    expect(seeded).toContain('@vectant/dbeaver');
+    expect(seeded.length).toBe(10);
+    expect(prisma.marketplaceProgram.upsert).toHaveBeenCalledTimes(10);
+    expect(prisma.programVersion.upsert).toHaveBeenCalledTimes(10);
 
     const arg = prisma.marketplaceProgram.upsert.mock.calls.find(
       (c) => c[0].where.packageId === '@vectant/nextjs-dev',
