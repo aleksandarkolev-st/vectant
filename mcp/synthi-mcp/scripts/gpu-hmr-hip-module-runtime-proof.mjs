@@ -275,6 +275,28 @@ function timingFields(ns, runMode) {
   };
 }
 
+function eventNs(event, field = 'timestamp_monotonic_ns') {
+  const alias = field === 'start_timestamp_monotonic_ns' ? event?.startTimestampMonotonicNs : event?.timestampMonotonicNs;
+  const value = Number(event?.[field] ?? alias);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function nsDelta(start, end) {
+  return Number.isFinite(start) && Number.isFinite(end) && end >= start ? Math.round(end - start) : 0;
+}
+
+function afterEpochTraceEvents(runtimeTrace) {
+  const byEpoch = (items) => firstArray(items).find((entry) => String(entry?.epoch) === '2') ?? {};
+  return {
+    loader: byEpoch(runtimeTrace.loaderEvents),
+    symbol: byEpoch(runtimeTrace.symbolEvents),
+    epoch: byEpoch(runtimeTrace.epochEvents),
+    dispatch: byEpoch(runtimeTrace.dispatchEvents),
+    output: byEpoch(runtimeTrace.outputEvents),
+    retirement: objectOrEmpty(runtimeTrace.retirementEvent),
+  };
+}
+
 async function loadProfile(profilePath) {
   const resolvedPath = path.resolve(profilePath);
   const profileDir = path.dirname(resolvedPath);
@@ -1384,6 +1406,15 @@ async function main() {
   const oracleValidation = computeOracleValidation({ artifacts: oracleArtifacts });
   const oracleEnd = process.hrtime.bigint();
   const runMode = runModeMetadata(profile);
+  const traceEvents = afterEpochTraceEvents(runtime.runtimeTrace);
+  const loaderStartNs = eventNs(traceEvents.loader, 'start_timestamp_monotonic_ns');
+  const loaderEndNs = eventNs(traceEvents.loader);
+  const symbolNs = eventNs(traceEvents.symbol);
+  const publishNs = eventNs(traceEvents.epoch);
+  const dispatchNs = eventNs(traceEvents.dispatch);
+  const outputNs = eventNs(traceEvents.output);
+  const retirementNs = eventNs(traceEvents.retirement);
+  const oracleDurationNs = durationNs(oracleStart, oracleEnd);
   const timings = timingFields({
     staticDiscovery: durationNs(staticStart, staticEnd),
     aiContractSynthesis: 0,
@@ -1391,21 +1422,21 @@ async function main() {
     artifactHash: 0,
     adapterGeneration: 0,
     deviceCompileWall: compiled.compileDurationNs,
-    artifactLoad: 1,
-    epochPublish: 1,
-    dispatchTrace: runtime.runtimeDurationNs,
+    artifactLoad: nsDelta(loaderStartNs, loaderEndNs),
+    epochPublish: nsDelta(symbolNs, publishNs),
+    dispatchTrace: nsDelta(dispatchNs, outputNs),
     runtimeProbe: runtime.runtimeDurationNs,
-    oracleAnalysis: durationNs(oracleStart, oracleEnd),
-    triggerToVisible: compiled.compileDurationNs + runtime.runtimeDurationNs + durationNs(oracleStart, oracleEnd),
+    oracleAnalysis: oracleDurationNs,
+    triggerToVisible: compiled.compileDurationNs + nsDelta(loaderStartNs, outputNs) + oracleDurationNs,
     screenshotCapture: 0,
-    dispatchToOutputProof: runtime.runtimeDurationNs + durationNs(oracleStart, oracleEnd),
+    dispatchToOutputProof: nsDelta(dispatchNs, outputNs) + oracleDurationNs,
     totalValidatorWall: nsSince(totalStart),
   }, runMode);
-  timings.loaderTimestampNs = timings.static_discovery_time + timings.model_availability_check_time + compiled.compileDurationNs + 10;
-  timings.publishTimestampNs = timings.loaderTimestampNs + 10;
-  timings.dispatchTimestampNs = timings.publishTimestampNs + 10;
-  timings.outputTimestampNs = timings.dispatchTimestampNs + timings.oracle_analysis_time + 10;
-  timings.retirementTimestampNs = timings.outputTimestampNs + 10;
+  timings.loaderTimestampNs = loaderEndNs;
+  timings.publishTimestampNs = publishNs;
+  timings.dispatchTimestampNs = dispatchNs;
+  timings.outputTimestampNs = outputNs;
+  timings.retirementTimestampNs = retirementNs;
   oracleArtifacts.timestamp_after_dispatch = timings.outputTimestampNs;
   const contract = buildContract({
     profile,

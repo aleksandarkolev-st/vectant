@@ -1,5 +1,6 @@
 #include <hip/hip_runtime_api.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -22,6 +23,12 @@ static int current_pid() { return static_cast<int>(getpid()); }
 #endif
 
 namespace {
+
+std::uint64_t monotonic_ns() {
+  return static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
 struct Dim3 {
   unsigned x = 1;
@@ -50,6 +57,12 @@ struct DispatchResult {
   int epoch = 0;
   std::string artifact_hash;
   std::string dispatch_id;
+  std::uint64_t module_load_start_ns = 0;
+  std::uint64_t module_load_ns = 0;
+  std::uint64_t symbol_resolve_ns = 0;
+  std::uint64_t epoch_publish_ns = 0;
+  std::uint64_t dispatch_start_ns = 0;
+  std::uint64_t output_readback_ns = 0;
   float gpu_ms = 0.0f;
   bool passed = false;
   std::vector<float> values;
@@ -223,13 +236,19 @@ struct ModuleEntry {
   hipModule_t module = nullptr;
   hipFunction_t function = nullptr;
   std::vector<char> bytes;
+  std::uint64_t module_load_start_ns = 0;
+  std::uint64_t module_load_ns = 0;
+  std::uint64_t symbol_resolve_ns = 0;
 };
 
 ModuleEntry load_module(const std::string& hsaco_path, const Plan& plan) {
   ModuleEntry entry;
   entry.bytes = read_binary(hsaco_path);
+  entry.module_load_start_ns = monotonic_ns();
   hip_check(hipModuleLoadData(&entry.module, entry.bytes.data()), "hipModuleLoadData");
+  entry.module_load_ns = monotonic_ns();
   hip_check(hipModuleGetFunction(&entry.function, entry.module, plan.kernel_name.c_str()), "hipModuleGetFunction");
+  entry.symbol_resolve_ns = monotonic_ns();
   return entry;
 }
 
@@ -238,6 +257,10 @@ DispatchResult dispatch_module(const ModuleEntry& entry, const Plan& plan, int e
   result.epoch = epoch;
   result.artifact_hash = artifact_hash;
   result.dispatch_id = "hip-module-dispatch-epoch-" + std::to_string(epoch);
+  result.module_load_start_ns = entry.module_load_start_ns;
+  result.module_load_ns = entry.module_load_ns;
+  result.symbol_resolve_ns = entry.symbol_resolve_ns;
+  result.epoch_publish_ns = monotonic_ns();
 
   float* device_input = nullptr;
   float* device_output = nullptr;
@@ -262,6 +285,7 @@ DispatchResult dispatch_module(const ModuleEntry& entry, const Plan& plan, int e
   void* args[] = {&device_output, &device_input, &scale, &bias, &n};
 
   hip_check(hipEventRecord(start, stream), "hipEventRecord start");
+  result.dispatch_start_ns = monotonic_ns();
   hip_check(
     hipModuleLaunchKernel(
       entry.function,
@@ -275,6 +299,7 @@ DispatchResult dispatch_module(const ModuleEntry& entry, const Plan& plan, int e
   hip_check(hipEventRecord(stop, stream), "hipEventRecord stop");
   hip_check(hipMemcpyAsync(result.values.data(), device_output, byte_count, hipMemcpyDeviceToHost, stream), "hipMemcpyAsync output");
   hip_check(hipStreamSynchronize(stream), "hipStreamSynchronize");
+  result.output_readback_ns = monotonic_ns();
   hip_check(hipEventElapsedTime(&result.gpu_ms, start, stop), "hipEventElapsedTime");
 
   result.passed = float_vectors_match(
@@ -310,41 +335,51 @@ void write_runtime_json(
       << json_string(plan.compile_target) << "},\n";
   out << "  \"loaderEvents\":[\n";
   out << "    {\"id\":\"hip-module-loader-1\",\"artifact_hash\":" << json_string(plan.artifact_hash_before)
-      << ",\"epoch\":1,\"api\":\"hipModuleLoadData\"},\n";
+      << ",\"epoch\":1,\"api\":\"hipModuleLoadData\",\"start_timestamp_monotonic_ns\":" << before.module_load_start_ns
+      << ",\"timestamp_monotonic_ns\":" << before.module_load_ns << "},\n";
   out << "    {\"id\":\"hip-module-loader-2\",\"artifact_hash\":" << json_string(plan.artifact_hash_after)
-      << ",\"epoch\":2,\"api\":\"hipModuleLoadData\"}\n";
+      << ",\"epoch\":2,\"api\":\"hipModuleLoadData\",\"start_timestamp_monotonic_ns\":" << after.module_load_start_ns
+      << ",\"timestamp_monotonic_ns\":" << after.module_load_ns << "}\n";
   out << "  ],\n";
   out << "  \"symbolEvents\":[\n";
-  out << "    {\"epoch\":1,\"api\":\"hipModuleGetFunction\",\"kernel_name\":" << json_string(plan.kernel_name) << "},\n";
-  out << "    {\"epoch\":2,\"api\":\"hipModuleGetFunction\",\"kernel_name\":" << json_string(plan.kernel_name) << "}\n";
+  out << "    {\"epoch\":1,\"api\":\"hipModuleGetFunction\",\"kernel_name\":" << json_string(plan.kernel_name)
+      << ",\"timestamp_monotonic_ns\":" << before.symbol_resolve_ns << "},\n";
+  out << "    {\"epoch\":2,\"api\":\"hipModuleGetFunction\",\"kernel_name\":" << json_string(plan.kernel_name)
+      << ",\"timestamp_monotonic_ns\":" << after.symbol_resolve_ns << "}\n";
   out << "  ],\n";
   out << "  \"epochEvents\":[\n";
-  out << "    {\"id\":\"hip-module-publish-1\",\"epoch\":1,\"artifact_hash\":" << json_string(plan.artifact_hash_before) << "},\n";
-  out << "    {\"id\":\"hip-module-publish-2\",\"epoch\":2,\"artifact_hash\":" << json_string(plan.artifact_hash_after) << "}\n";
+  out << "    {\"id\":\"hip-module-publish-1\",\"epoch\":1,\"artifact_hash\":" << json_string(plan.artifact_hash_before)
+      << ",\"timestamp_monotonic_ns\":" << before.epoch_publish_ns << "},\n";
+  out << "    {\"id\":\"hip-module-publish-2\",\"epoch\":2,\"artifact_hash\":" << json_string(plan.artifact_hash_after)
+      << ",\"timestamp_monotonic_ns\":" << after.epoch_publish_ns << "}\n";
   out << "  ],\n";
   out << "  \"dispatchEvents\":[\n";
   out << "    {\"id\":" << json_string(before.dispatch_id) << ",\"epoch\":1,\"artifact_hash\":"
       << json_string(before.artifact_hash) << ",\"launch_api\":\"hipModuleLaunchKernel\",\"grid_dim\":"
       << dim_json(plan.grid_dim) << ",\"block_dim\":" << dim_json(plan.block_dim)
       << ",\"shared_mem_bytes\":" << plan.shared_mem_bytes << ",\"stream\":\"hipStreamCreate\",\"gpu_ms\":"
-      << before.gpu_ms << ",\"passed\":" << (before.passed ? "true" : "false") << "},\n";
+      << before.gpu_ms << ",\"timestamp_monotonic_ns\":" << before.dispatch_start_ns
+      << ",\"passed\":" << (before.passed ? "true" : "false") << "},\n";
   out << "    {\"id\":" << json_string(after.dispatch_id) << ",\"epoch\":2,\"artifact_hash\":"
       << json_string(after.artifact_hash) << ",\"launch_api\":\"hipModuleLaunchKernel\",\"grid_dim\":"
       << dim_json(plan.grid_dim) << ",\"block_dim\":" << dim_json(plan.block_dim)
       << ",\"shared_mem_bytes\":" << plan.shared_mem_bytes << ",\"stream\":\"hipStreamCreate\",\"gpu_ms\":"
-      << after.gpu_ms << ",\"passed\":" << (after.passed ? "true" : "false") << "}\n";
+      << after.gpu_ms << ",\"timestamp_monotonic_ns\":" << after.dispatch_start_ns
+      << ",\"passed\":" << (after.passed ? "true" : "false") << "}\n";
   out << "  ],\n";
   out << "  \"outputEvents\":[\n";
   out << "    {\"id\":\"hip-module-output-1\",\"after_dispatch_id\":" << json_string(before.dispatch_id)
       << ",\"epoch\":1,\"artifact_hash\":" << json_string(before.artifact_hash)
       << ",\"passed\":" << (before.passed ? "true" : "false")
+      << ",\"timestamp_monotonic_ns\":" << before.output_readback_ns
       << ",\"values\":" << float_array_json(before.values) << "},\n";
   out << "    {\"id\":\"hip-module-output-2\",\"after_dispatch_id\":" << json_string(after.dispatch_id)
       << ",\"epoch\":2,\"artifact_hash\":" << json_string(after.artifact_hash)
       << ",\"passed\":" << (after.passed ? "true" : "false")
+      << ",\"timestamp_monotonic_ns\":" << after.output_readback_ns
       << ",\"values\":" << float_array_json(after.values) << "}\n";
   out << "  ],\n";
-  out << "  \"retirementEvent\":{\"id\":\"hip-module-retire-1\",\"retired_epoch\":1,\"status\":\"stream_event_proven\",\"api\":\"hipEventRecord+hipStreamSynchronize+hipModuleUnload\"},\n";
+  out << "  \"retirementEvent\":{\"id\":\"hip-module-retire-1\",\"retired_epoch\":1,\"status\":\"stream_event_proven\",\"api\":\"hipEventRecord+hipStreamSynchronize+hipModuleUnload\",\"timestamp_monotonic_ns\":" << monotonic_ns() << "},\n";
   out << "  \"processRestarted\":false,\n";
   out << "  \"sameProcess\":true\n";
   out << "}\n";
