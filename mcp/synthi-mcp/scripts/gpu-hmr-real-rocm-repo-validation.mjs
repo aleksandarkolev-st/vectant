@@ -5934,6 +5934,220 @@ function nativeRocmLaunchBoundaryRefusalFacet({
   };
 }
 
+function sourceDialectFromPath(filePath) {
+  const ext = path.extname(String(filePath ?? '').toLowerCase());
+  if (ext === '.cl') return 'opencl_c';
+  if (ext === '.hip') return 'hip_cpp';
+  if (ext === '.cu') return 'cuda_cpp';
+  if (['.h', '.hh', '.hpp', '.hxx', '.cpp', '.cc', '.cxx', '.c'].includes(ext)) return 'c_cpp';
+  return 'unknown';
+}
+
+function inferRuntimeBackendCandidates({
+  gpuMode = '',
+  cmakeArgs = [],
+  nativeObservation = {},
+  runtimeCapabilityPreflight = {},
+  compiler = '',
+} = {}) {
+  const evidenceText = [
+    gpuMode,
+    runtimeCapabilityPreflight?.backend,
+    runtimeCapabilityPreflight?.api,
+    compiler,
+    ...compactStringList(cmakeArgs),
+    ...compactStringList(nativeObservation.api_coverage),
+    ...compactStringList(nativeObservation.apis),
+    ...compactStringList(nativeObservation.attempted_apis),
+    ...compactStringList(nativeObservation.function_resolution_api_coverage),
+    ...compactStringList(nativeObservation.array_allocation_api_coverage),
+    ...compactStringList(nativeObservation.texture_object_api_coverage),
+  ].join(' ').toLowerCase();
+  const candidates = [];
+  if (/\bhiprt\b|hiprtpathtracer|hiprt[_-]?oro|hiprto/.test(evidenceText)) candidates.push('hiprt');
+  if (/\bhip\b|hipcc|hipmodule|hiplaunch|hipmalloc|hipmemcpy|hipstream|amdhip64|miopen_backend=hip/.test(evidenceText)) {
+    candidates.push('hip');
+  }
+  if (/\bopencl\b|clcreateprogram|clbuildprogram|clenqueue/i.test(evidenceText)) candidates.push('opencl');
+  if (/\bvulkan\b|spirv|spv|vkcreate/i.test(evidenceText)) candidates.push('vulkan');
+  if (/\bwebgpu\b|\bwgpu\b|wgsl/.test(evidenceText)) candidates.push('webgpu');
+  const rocmOrHipEvidence =
+    /\brocm\b|amdclang|amdgcn|gfx\d+|amdhip64|hipmodule|hiplaunch|hipmalloc|hipmemcpy|hipstream|miopen_backend=hip/.test(evidenceText);
+  const cudaSpecificEvidence = /\bcuda\b|\bnvidia\b|nvcc|cubin|\bptx\b/.test(evidenceText);
+  const cudaDriverEvidence = /\bcu(module|launch|mem|stream|ctx|get|device)/.test(evidenceText);
+  if (cudaSpecificEvidence || (!rocmOrHipEvidence && cudaDriverEvidence)) candidates.push('cuda');
+  if (candidates.length === 0 && /\brocm\b|amdclang|amdgcn|gfx\d+/.test(evidenceText)) {
+    candidates.push('hip');
+  }
+  return compactStringList(candidates);
+}
+
+function compilerFromCmakeArgs(cmakeArgs = []) {
+  for (const arg of Array.isArray(cmakeArgs) ? cmakeArgs : []) {
+    const match = String(arg ?? '').match(/^-D(?:CMAKE_(?:C|CXX)_COMPILER|HIP_HIPCC_EXECUTABLE|HIP_COMPILER)=([^=].*)$/i);
+    if (match?.[1]?.trim()) return match[1].trim();
+  }
+  return null;
+}
+
+function realRocmRuntimeEligibilityFacet({
+  nativeBoundary = {},
+  nativeObservation = {},
+  runtimeDispatch = {},
+  runtimeArtifactTransport = {},
+  runtimeEpochSwap = {},
+  runtimeOutputOracle = {},
+  runtimeHostPreservation = {},
+  runtimeCapabilityPreflight = {},
+  outputOracleResolution = {},
+  fullRuntimeProof = {},
+  runtimeBackend = null,
+  compiler = null,
+} = {}) {
+  const sourcePaths = compactStringList([
+    CFG.entryFile,
+    CFG.deltaFile,
+    CFG.secondDeltaBefore || CFG.secondDeltaAfter ? CFG.secondDeltaFile : null,
+    ...((Array.isArray(report.extra_deltas) ? report.extra_deltas : [])
+      .map((delta) => delta?.file)
+      .filter(Boolean)),
+  ]);
+  const sourceDialects = compactStringList(sourcePaths.map(sourceDialectFromPath));
+  const candidateCompiler = compiler ?? compilerFromCmakeArgs(CFG.cmakeArgs);
+  const backendCandidates = inferRuntimeBackendCandidates({
+    gpuMode: CFG.gpuMode,
+    cmakeArgs: CFG.cmakeArgs,
+    nativeObservation,
+    runtimeCapabilityPreflight,
+    compiler: candidateCompiler,
+  });
+  const epochEvidence = runtimeEpochSwap?.evidence ?? runtimeEpochSwap ?? {};
+  const hostEvidence = runtimeHostPreservation?.evidence ?? runtimeHostPreservation ?? {};
+  const fullRuntimeProven = fullRuntimeProof?.fullRuntimeProven === true;
+  const synthiDispatchObserved = Number(runtimeDispatch.success_count ?? 0) > 0;
+  const artifactTransportObserved = Number(runtimeArtifactTransport.total_count ?? 0) > 0;
+  const epochObserved = Number(epochEvidence.total_count ?? 0) > 0
+    || Number(epochEvidence.published_count ?? 0) > 0
+    || runtimeEpochSwap?.proof?.resultState === 'gpu-hmr-epoch-swap-proven';
+  const outputOracleObserved = Number(runtimeOutputOracle.total_count ?? 0) > 0;
+  const hostIdentityObserved = Number(hostEvidence.total_count ?? 0) > 0;
+  const nativeObserved = nativeBoundary.observed === true
+    || nativeBoundary.native_launch_boundary_observed === true
+    || Number(nativeObservation.function_resolution_count ?? 0) > 0
+    || Number(nativeObservation.attempt_count ?? 0) > 0
+    || Number(nativeObservation.total_count ?? 0) > 0;
+  const oracleProfileAbsent =
+    outputOracleResolution?.runtimeProfilePresent !== true
+    && outputOracleResolution?.contractPresent !== true
+    && (
+      outputOracleResolution?.mode === 'none'
+      || outputOracleResolution?.requestedProfile === 'none'
+      || outputOracleResolution?.requested_profile === 'none'
+      || outputOracleResolution?.disabledReason === 'profile_disabled'
+      || outputOracleResolution?.disabled_reason === 'profile_disabled'
+    );
+  const blockingGaps = [];
+  if (!fullRuntimeProven) {
+    if (nativeObserved) blockingGaps.push('native_boundary_not_synthi_dispatch_proof');
+    if (!artifactTransportObserved) blockingGaps.push('artifact_transport_not_observed');
+    if (!epochObserved) blockingGaps.push('same_process_epoch_missing');
+    if (!synthiDispatchObserved) blockingGaps.push('dispatch_epoch_missing');
+    if (!outputOracleObserved) {
+      blockingGaps.push(oracleProfileAbsent ? 'output_oracle_profile_absent' : 'output_oracle_missing');
+    }
+    if (!hostIdentityObserved) blockingGaps.push('host_identity_not_observed');
+  }
+  const hasRuntimeEvidence = backendCandidates.length > 0
+    || nativeObserved
+    || runtimeCapabilityPreflight?.backend
+    || runtimeCapabilityPreflight?.api;
+  const evidenceRefs = compactStringList([
+    `profile:${CFG.realRocmProfile.id}`,
+    ...sourcePaths.map((sourcePath) => `profile:source:${sourcePath}`),
+    ...CFG.cmakeArgs.map((arg) => `profile:cmake_arg:${arg}`),
+    ...((nativeBoundary.evidence_refs ?? nativeBoundary.evidenceRefs) ?? []),
+    runtimeCapabilityPreflight?.backend ? `runtime-preflight:backend:${runtimeCapabilityPreflight.backend}` : null,
+    runtimeCapabilityPreflight?.api ? `runtime-preflight:api:${runtimeCapabilityPreflight.api}` : null,
+  ]);
+  const compilerArgsHash = `sha256:${createHash('sha256').update(stableJson({
+    cmakeArgs: CFG.cmakeArgs,
+    cmakeConfigName: CFG.cmakeConfigName,
+    targetName: CFG.targetName,
+    gpuArch: CFG.gpuArch,
+  })).digest('hex')}`;
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_eligibility.v1',
+    observed: hasRuntimeEvidence,
+    status: fullRuntimeProven
+      ? 'supplemental_runtime_proof_evidence'
+      : hasRuntimeEvidence
+        ? 'refused_missing_runtime_proof'
+        : 'not_observed',
+    proofAuthority: 'candidate_metadata_only_not_gpu_hmr_success',
+    proof_authority: 'candidate_metadata_only_not_gpu_hmr_success',
+    canSatisfyDispatchProof: false,
+    can_satisfy_dispatch_proof: false,
+    hmrBackend: fullRuntimeProven ? runtimeBackend : null,
+    hmr_backend: fullRuntimeProven ? runtimeBackend : null,
+    backendCandidates,
+    backend_candidates: backendCandidates,
+    runtimeBackendCandidates: backendCandidates,
+    runtime_backend_candidates: backendCandidates,
+    sourceLanguage: sourceDialects.length === 1 ? sourceDialects[0] : 'mixed_or_unknown',
+    source_language: sourceDialects.length === 1 ? sourceDialects[0] : 'mixed_or_unknown',
+    sourceDialects,
+    source_dialects: sourceDialects,
+    candidateArtifactIdentity: {
+      source_paths: sourcePaths,
+      artifact_kind: backendCandidates.includes('hiprt') || backendCandidates.includes('hip')
+        ? 'hip_source_bridge'
+        : backendCandidates.includes('opencl')
+          ? 'opencl_program'
+          : 'unknown',
+      entry_points: compactStringList([
+        ...compactStringList(nativeObservation.function_resolution_symbols),
+        ...compactStringList(nativeObservation.kernel_symbols),
+        ...compactStringList(CFG.nativeLaunchSymbols),
+      ]),
+      compile_target: CFG.gpuArch,
+      compiler: candidateCompiler,
+      compiler_args_hash: compilerArgsHash,
+    },
+    candidate_artifact_identity: {
+      source_paths: sourcePaths,
+      artifact_kind: backendCandidates.includes('hiprt') || backendCandidates.includes('hip')
+        ? 'hip_source_bridge'
+        : backendCandidates.includes('opencl')
+          ? 'opencl_program'
+          : 'unknown',
+      entry_points: compactStringList([
+        ...compactStringList(nativeObservation.function_resolution_symbols),
+        ...compactStringList(nativeObservation.kernel_symbols),
+        ...compactStringList(CFG.nativeLaunchSymbols),
+      ]),
+      compile_target: CFG.gpuArch,
+      compiler: candidateCompiler,
+      compiler_args_hash: compilerArgsHash,
+    },
+    nativeLaunchBoundaryObserved: nativeObserved,
+    native_launch_boundary_observed: nativeObserved,
+    synthiDispatchObserved,
+    synthi_dispatch_observed: synthiDispatchObserved,
+    artifactTransportObserved,
+    artifact_transport_observed: artifactTransportObserved,
+    epochObserved,
+    epoch_observed: epochObserved,
+    outputOracleObserved,
+    output_oracle_observed: outputOracleObserved,
+    hostIdentityObserved,
+    host_identity_observed: hostIdentityObserved,
+    blockingGaps: compactStringList(blockingGaps),
+    blocking_gaps: compactStringList(blockingGaps),
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+  };
+}
+
 function selectedArtifactIdsFromProofArtifacts(records) {
   const ids = new Set();
   for (const record of Array.isArray(records) ? records : []) {
@@ -7144,6 +7358,44 @@ async function selfCheckRuntimeDispatchEvidence() {
     },
     fullRuntimeProof: { fullRuntimeProven: false },
   });
+  const nativeOnlyEligibility = realRocmRuntimeEligibilityFacet({
+    nativeBoundary: nativeOnlyBoundary,
+    nativeObservation: nativeOnlyObservation,
+    runtimeDispatch: nativeOnlyDispatch,
+    runtimeArtifactTransport: { total_count: 0 },
+    runtimeEpochSwap: { evidence: { total_count: 0, published_count: 0 } },
+    runtimeOutputOracle: { total_count: 0 },
+    runtimeHostPreservation: { evidence: { total_count: 0 } },
+    runtimeCapabilityPreflight: {
+      backend: 'rocm',
+      api: 'genericArrayAlloc',
+    },
+    outputOracleResolution: {
+      mode: 'none',
+      requestedProfile: 'none',
+      runtimeProfilePresent: false,
+      contractPresent: false,
+    },
+    fullRuntimeProof: { fullRuntimeProven: false },
+    runtimeBackend: null,
+    compiler: 'hipcc',
+  });
+  const rocmCuAliasCandidates = inferRuntimeBackendCandidates({
+    gpuMode: 'rocm',
+    cmakeArgs: ['-DMIOPEN_BACKEND=HIP'],
+    nativeObservation: {
+      api_coverage: ['cuModuleGetFunction'],
+      function_resolution_api_coverage: ['cuModuleGetFunction'],
+    },
+    runtimeCapabilityPreflight: {
+      backend: 'rocm',
+      api: 'hipMallocArray',
+    },
+    compiler: '/opt/rocm/llvm/bin/amdclang++',
+  });
+  if (!rocmCuAliasCandidates.includes('hip') || rocmCuAliasCandidates.includes('cuda')) {
+    throw new Error(`ROCm cu* compatibility aliases must infer HIP only, got ${rocmCuAliasCandidates.join(',')}`);
+  }
   const nativeOnlyOriginalHost = originalHostPathProofFromRuntimeEvidence(
     nativeOnlyRuntimeEvidence.runtimeEvidence,
     {
@@ -7251,6 +7503,17 @@ async function selfCheckRuntimeDispatchEvidence() {
     || !nativeOnlyBoundary.blocking_gaps.includes('host_identity_not_observed')
     || !nativeOnlyBoundary.blocking_gaps.includes('adapter_impossible_requires_app_hook')
     || !nativeOnlyBoundary.blocking_gaps.includes('native_function_resolution_without_synthi_epoch_dispatch')
+    || nativeOnlyEligibility.status !== 'refused_missing_runtime_proof'
+    || nativeOnlyEligibility.can_satisfy_dispatch_proof
+    || nativeOnlyEligibility.hmr_backend !== null
+    || !nativeOnlyEligibility.backend_candidates.includes('hip')
+    || nativeOnlyEligibility.candidate_artifact_identity.entry_points[0] !== 'kernel'
+    || !nativeOnlyEligibility.blocking_gaps.includes('native_boundary_not_synthi_dispatch_proof')
+    || !nativeOnlyEligibility.blocking_gaps.includes('artifact_transport_not_observed')
+    || !nativeOnlyEligibility.blocking_gaps.includes('same_process_epoch_missing')
+    || !nativeOnlyEligibility.blocking_gaps.includes('dispatch_epoch_missing')
+    || !nativeOnlyEligibility.blocking_gaps.includes('output_oracle_profile_absent')
+    || !nativeOnlyEligibility.blocking_gaps.includes('host_identity_not_observed')
     || nativeOnlyOriginalHost.evidence.raw_count !== 1
     || nativeOnlyOriginalHost.proof.attachmentProven
     || !nativeOnlyOriginalHost.proof.runtimeCapabilityPreflightObserved
@@ -8591,6 +8854,21 @@ async function collectRuntimeEvidence() {
     fullRuntimeProof: report.full_runtime_proof,
   });
   report.evidence.native_rocm_launch_boundary = report.native_rocm_launch_boundary;
+  report.real_rocm_runtime_eligibility = realRocmRuntimeEligibilityFacet({
+    nativeBoundary: report.native_rocm_launch_boundary,
+    nativeObservation: runtimeNativeLaunchObservation,
+    runtimeDispatch,
+    runtimeArtifactTransport,
+    runtimeEpochSwap,
+    runtimeOutputOracle,
+    runtimeHostPreservation,
+    runtimeCapabilityPreflight: report.runtime_capability_preflight,
+    outputOracleResolution: report.output_oracle_resolution,
+    fullRuntimeProof: report.full_runtime_proof,
+    runtimeBackend: runtimeProofBackend(),
+    compiler: runtimeProofCompiler(),
+  });
+  report.evidence.real_rocm_runtime_eligibility = report.real_rocm_runtime_eligibility;
   if (report.native_rocm_launch_boundary.observed) {
     record(
       'native ROCm launch boundary refusal facet',
@@ -8601,6 +8879,19 @@ async function collectRuntimeEvidence() {
         `attempts=${report.native_rocm_launch_boundary.launch_attempt_count}`,
         `observed=${report.native_rocm_launch_boundary.native_launch_observed_count}`,
         `gaps=${report.native_rocm_launch_boundary.blocking_gaps.join(',') || 'none'}`,
+      ].join(' '),
+    );
+  }
+  if (report.real_rocm_runtime_eligibility.observed) {
+    record(
+      'real ROCm runtime eligibility facet',
+      report.full_runtime_proof.fullRuntimeProven ? 'pass' : 'warn',
+      [
+        `status=${report.real_rocm_runtime_eligibility.status}`,
+        `candidates=${report.real_rocm_runtime_eligibility.backend_candidates.join(',') || 'none'}`,
+        `hmr_backend=${report.real_rocm_runtime_eligibility.hmr_backend ?? 'none'}`,
+        `source_language=${report.real_rocm_runtime_eligibility.source_language}`,
+        `gaps=${report.real_rocm_runtime_eligibility.blocking_gaps.join(',') || 'none'}`,
       ].join(' '),
     );
   }
@@ -8793,6 +9084,7 @@ function runtimeProofCompiler() {
 }
 
 function runtimeProofBackend() {
+  if (report.full_runtime_proof?.fullRuntimeProven !== true) return null;
   const island = selectedFissionIslandContract();
   const compiler = String(runtimeProofCompiler() ?? '').toLowerCase();
   const launchEvidence = [
@@ -8892,6 +9184,10 @@ async function writeResults() {
   const runtimeOutputTarget = runtimeOutputOracleTarget();
   const runtimeClassification = runtimeGpuClassification();
   const runtimeContextHandle = runtimeContextHandleFromHostEvidence();
+  const candidateArtifactIdentity =
+    report.real_rocm_runtime_eligibility?.candidate_artifact_identity
+    ?? report.real_rocm_runtime_eligibility?.candidateArtifactIdentity
+    ?? null;
   const validationContext = {
     command: report.command,
     docker: report.docker,
@@ -8947,6 +9243,22 @@ async function writeResults() {
     runtime_capability_preflight: report.runtime_capability_preflight,
     nativeRocmLaunchBoundary: report.native_rocm_launch_boundary,
     native_rocm_launch_boundary: report.native_rocm_launch_boundary,
+    realRocmRuntimeEligibility: report.real_rocm_runtime_eligibility,
+    real_rocm_runtime_eligibility: report.real_rocm_runtime_eligibility,
+    nativeRuntimeEligibility: report.real_rocm_runtime_eligibility,
+    native_runtime_eligibility: report.real_rocm_runtime_eligibility,
+    backendCandidates: report.real_rocm_runtime_eligibility?.backend_candidates ?? [],
+    backend_candidates: report.real_rocm_runtime_eligibility?.backend_candidates ?? [],
+    backendEvidence: [
+      ...(report.real_rocm_runtime_eligibility?.backend_candidates ?? []),
+      ...(report.real_rocm_runtime_eligibility?.evidence_refs ?? []),
+    ].join(' '),
+    backend_evidence: [
+      ...(report.real_rocm_runtime_eligibility?.backend_candidates ?? []),
+      ...(report.real_rocm_runtime_eligibility?.evidence_refs ?? []),
+    ].join(' '),
+    candidateArtifactIdentity,
+    candidate_artifact_identity: candidateArtifactIdentity,
     compile_transport: report.compile_transport,
     output_oracle_contract: report.output_oracle_contract,
     render_preview_enabled: report.render_preview_enabled,
@@ -9156,6 +9468,7 @@ async function writeResults() {
     `target_progression_ledger_artifact: ${JSON.stringify(report.target_progression_ledger_artifact)}`,
     `target_progression_gates: ${JSON.stringify(report.target_progression_gates)}`,
     `runtime_capability_preflight: ${JSON.stringify(report.runtime_capability_preflight)}`,
+    `real_rocm_runtime_eligibility: ${JSON.stringify(report.real_rocm_runtime_eligibility)}`,
     `model: ${report.model}`,
     `model_roles: ${JSON.stringify(report.model_roles)}`,
     `gpu_vendor: ${report.gpu_vendor}`,

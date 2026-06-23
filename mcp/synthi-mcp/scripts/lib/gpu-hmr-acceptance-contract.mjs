@@ -574,6 +574,12 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     reload_evidence_refs: compactStringList(c.reload_evidence_refs ?? c.reloadEvidenceRefs),
     firewall_evidence: normalizeFirewallEvidence(c.firewall_evidence ?? c.firewallEvidence),
     output_oracle_target: normalizeOutputOracleTarget(c.output_oracle_target ?? c.outputOracleTarget),
+    native_runtime_eligibility: asObject(
+      c.native_runtime_eligibility
+      ?? c.nativeRuntimeEligibility
+      ?? c.real_rocm_runtime_eligibility
+      ?? c.realRocmRuntimeEligibility,
+    ),
     dispatch_trace_required: c.dispatch_trace_required !== false && c.dispatchTraceRequired !== false,
     oracle_trace_required: c.oracle_trace_required !== false && c.oracleTraceRequired !== false,
     state_preservation_checks: asObject(c.state_preservation_checks ?? c.statePreservationChecks),
@@ -603,6 +609,7 @@ export function normalizeGpuHmrAcceptanceContract(input = {}) {
     reload_evidence_refs: normalized.reload_evidence_refs,
     firewall_evidence: normalized.firewall_evidence,
     output_oracle_target: normalized.output_oracle_target,
+    native_runtime_eligibility: normalized.native_runtime_eligibility,
     dispatch_trace_required: normalized.dispatch_trace_required,
     oracle_trace_required: normalized.oracle_trace_required,
     state_preservation_checks: normalized.state_preservation_checks,
@@ -1635,6 +1642,18 @@ function nativeRocmLaunchBoundaryBlockingGaps(nativeBoundary, fullRuntimeProof) 
     : ['native_launch_boundary_observed', 'native_boundary_not_synthi_dispatch_proof'];
 }
 
+function nativeRuntimeEligibilityBlockingGaps(nativeEligibility, fullRuntimeProof) {
+  const eligibility = asObject(nativeEligibility);
+  const observed = eligibility.observed === true
+    || compactStringList(eligibility.backend_candidates ?? eligibility.backendCandidates).length > 0
+    || text(eligibility.status) === 'refused_missing_runtime_proof';
+  if (!observed || fullRuntimeProof?.fullRuntimeProven === true) return [];
+  const configuredGaps = compactStringList(eligibility.blocking_gaps ?? eligibility.blockingGaps);
+  return configuredGaps.length > 0
+    ? configuredGaps
+    : ['native_runtime_eligibility_refused_missing_runtime_proof'];
+}
+
 function firewallProofFromVerifiedProofs({ input, validationContext }) {
   const firewallEvidence = firstObject(
     input.firewallEvidence,
@@ -1748,6 +1767,7 @@ function blockingGapsFromVerifiedProofs({
   backendContractProof,
   classificationGaps = [],
   nativeRocmLaunchBoundary = {},
+  nativeRuntimeEligibility = {},
 }) {
   const gaps = [];
   if (backend === 'unknown') gaps.push('backend_unknown');
@@ -1778,6 +1798,7 @@ function blockingGapsFromVerifiedProofs({
     }
   }
   gaps.push(...nativeRocmLaunchBoundaryBlockingGaps(nativeRocmLaunchBoundary, fullRuntimeProof));
+  gaps.push(...nativeRuntimeEligibilityBlockingGaps(nativeRuntimeEligibility, fullRuntimeProof));
   gaps.push(...asArray(firewallProof?.blockingGaps));
   return compactStringList(gaps);
 }
@@ -1831,6 +1852,24 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     ?? validationContext.nativeRocmLaunchBoundary
     ?? validationContext.native_rocm_launch_boundary,
   );
+  const nativeRuntimeEligibility = asObject(
+    input.nativeRuntimeEligibility
+    ?? input.native_runtime_eligibility
+    ?? input.realRocmRuntimeEligibility
+    ?? input.real_rocm_runtime_eligibility
+    ?? validationContext.nativeRuntimeEligibility
+    ?? validationContext.native_runtime_eligibility
+    ?? validationContext.realRocmRuntimeEligibility
+    ?? validationContext.real_rocm_runtime_eligibility,
+  );
+  const candidateArtifactIdentity = firstObject(
+    input.candidateArtifactIdentity,
+    input.candidate_artifact_identity,
+    validationContext.candidateArtifactIdentity,
+    validationContext.candidate_artifact_identity,
+    nativeRuntimeEligibility.candidateArtifactIdentity,
+    nativeRuntimeEligibility.candidate_artifact_identity,
+  );
   const rawClassification = rawClassificationFromVerifiedContext(input, validationContext);
   const verifiedClassification = normalizeClassification(rawClassification);
   const firewallProof = firewallProofFromVerifiedProofs({ input, validationContext });
@@ -1864,6 +1903,8 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
   const sourcePaths = compactStringList([
     ...asArray(selectedIsland.sourcePaths),
     ...asArray(selectedIsland.source_paths),
+    ...asArray(candidateArtifactIdentity.source_paths),
+    ...asArray(candidateArtifactIdentity.sourcePaths),
   ]);
   const entryPoints = compactStringList([
     ...asArray(selectedIsland.targetSymbols),
@@ -1872,6 +1913,8 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     ...asArray(selectedIsland.exported_symbols_expected),
     ...asArray(dispatchProof.dispatchTableEntryIds).map((entry) => String(entry).split(':')[0]),
     ...asArray(dispatchProof.dispatch_table_entry_ids).map((entry) => String(entry).split(':')[0]),
+    ...asArray(candidateArtifactIdentity.entry_points),
+    ...asArray(candidateArtifactIdentity.entryPoints),
   ]);
   const evidenceRefs = evidenceRefsFromProofs(
     ...sourceProofs,
@@ -1884,6 +1927,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     hostPreservationProof,
     backendContractProof,
     nativeRocmLaunchBoundary,
+    nativeRuntimeEligibility,
   );
   const blockingGaps = blockingGapsFromVerifiedProofs({
     backend,
@@ -1901,9 +1945,18 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
     backendContractProof,
     classificationGaps: verifiedClassificationGaps(rawClassification, verifiedClassification),
     nativeRocmLaunchBoundary,
+    nativeRuntimeEligibility,
   });
   const gpuRouteAccepted = blockingGaps.length === 0;
-  const artifactKind = selectedIslandKind(selectedIsland, backend);
+  const candidateArtifactKind = enumValue(
+    asObject(candidateArtifactIdentity.artifact_kind).value
+    ?? candidateArtifactIdentity.artifact_kind
+    ?? candidateArtifactIdentity.artifactKind,
+    ARTIFACT_KINDS,
+    'unknown',
+  );
+  const selectedArtifactKind = selectedIslandKind(selectedIsland, backend);
+  const artifactKind = selectedArtifactKind !== 'unknown' ? selectedArtifactKind : candidateArtifactKind;
   const fullDeviceFallback = /full[_-]?device|device[_-]?module/.test(
     String(selectedIsland.artifactKind ?? selectedIsland.artifact_kind ?? ''),
   );
@@ -1942,7 +1995,14 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       source_paths: sourcePaths,
       artifact_kind: artifactKind,
       entry_points: entryPoints,
-      compile_target: firstText(input.gpuArch, input.gpu_arch, validationContext.gpuArch, validationContext.gpu_arch),
+      compile_target: firstText(
+        input.gpuArch,
+        input.gpu_arch,
+        validationContext.gpuArch,
+        validationContext.gpu_arch,
+        candidateArtifactIdentity.compile_target,
+        candidateArtifactIdentity.compileTarget,
+      ),
       compiler: firstText(
         selectedIsland.compiler,
         selectedIsland.compilerName,
@@ -1953,12 +2013,15 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
         validationContext.compiler,
         validationContext.deviceCompiler,
         validationContext.device_compiler,
+        candidateArtifactIdentity.compiler,
       ),
       compiler_args_hash: firstText(
         selectedIsland.compileCommandHash,
         selectedIsland.compile_command_hash,
         selectedIsland.compileRecipeHash,
         selectedIsland.compile_recipe_hash,
+        candidateArtifactIdentity.compiler_args_hash,
+        candidateArtifactIdentity.compilerArgsHash,
       ),
     },
     artifact_hash_before: artifactHashBefore,
@@ -2058,6 +2121,7 @@ export function deriveGpuHmrAcceptanceContractFromVerifiedProofs(input = {}) {
       outputProof.output_oracle?.outputOracleTarget,
       outputProof.output_oracle?.output_oracle_target,
     ),
+    native_runtime_eligibility: nativeRuntimeEligibility,
     firewall_evidence: {
       route: firewallProof.route,
       evidence_source: firewallProof.evidence_source,
