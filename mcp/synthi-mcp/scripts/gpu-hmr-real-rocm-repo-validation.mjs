@@ -5943,6 +5943,26 @@ function sourceDialectFromPath(filePath) {
   return 'unknown';
 }
 
+function runtimeBackendHintsFromCmakeArgs(cmakeArgs = []) {
+  const hints = [];
+  for (const rawArg of Array.isArray(cmakeArgs) ? cmakeArgs : []) {
+    const match = String(rawArg ?? '').trim().match(/^-D([^=]+)=([^=].*)$/);
+    if (!match) continue;
+    const key = match[1].trim().toLowerCase();
+    const value = match[2].trim().toLowerCase();
+    const backendLikeKey =
+      /(?:^|_)(backend|runtime|gpu|accelerator|device|compute|platform|api)(?:_|$)/.test(key)
+      || key.endsWith('_backend')
+      || key.endsWith('_runtime')
+      || key.endsWith('_api');
+    if (!backendLikeKey) continue;
+    for (const token of value.split(/[^a-z0-9_+-]+/)) {
+      if (/^(hip|rocm|hiprt|opencl|vulkan|webgpu|wgpu|cuda|sycl)$/.test(token)) hints.push(token);
+    }
+  }
+  return compactStringList(hints);
+}
+
 function inferRuntimeBackendCandidates({
   gpuMode = '',
   cmakeArgs = [],
@@ -5950,12 +5970,14 @@ function inferRuntimeBackendCandidates({
   runtimeCapabilityPreflight = {},
   compiler = '',
 } = {}) {
+  const cmakeBackendHints = runtimeBackendHintsFromCmakeArgs(cmakeArgs);
   const evidenceText = [
     gpuMode,
     runtimeCapabilityPreflight?.backend,
     runtimeCapabilityPreflight?.api,
     compiler,
     ...compactStringList(cmakeArgs),
+    ...cmakeBackendHints,
     ...compactStringList(nativeObservation.api_coverage),
     ...compactStringList(nativeObservation.apis),
     ...compactStringList(nativeObservation.attempted_apis),
@@ -5965,14 +5987,14 @@ function inferRuntimeBackendCandidates({
   ].join(' ').toLowerCase();
   const candidates = [];
   if (/\bhiprt\b|hiprtpathtracer|hiprt[_-]?oro|hiprto/.test(evidenceText)) candidates.push('hiprt');
-  if (/\bhip\b|hipcc|hipmodule|hiplaunch|hipmalloc|hipmemcpy|hipstream|amdhip64|miopen_backend=hip/.test(evidenceText)) {
+  if (/\bhip\b|hipcc|hipmodule|hiplaunch|hipmalloc|hipmemcpy|hipstream|amdhip64/.test(evidenceText)) {
     candidates.push('hip');
   }
   if (/\bopencl\b|clcreateprogram|clbuildprogram|clenqueue/i.test(evidenceText)) candidates.push('opencl');
   if (/\bvulkan\b|spirv|spv|vkcreate/i.test(evidenceText)) candidates.push('vulkan');
   if (/\bwebgpu\b|\bwgpu\b|wgsl/.test(evidenceText)) candidates.push('webgpu');
   const rocmOrHipEvidence =
-    /\brocm\b|amdclang|amdgcn|gfx\d+|amdhip64|hipmodule|hiplaunch|hipmalloc|hipmemcpy|hipstream|miopen_backend=hip/.test(evidenceText);
+    /\brocm\b|amdclang|amdgcn|gfx\d+|amdhip64|hipmodule|hiplaunch|hipmalloc|hipmemcpy|hipstream/.test(evidenceText);
   const cudaSpecificEvidence = /\bcuda\b|\bnvidia\b|nvcc|cubin|\bptx\b/.test(evidenceText);
   const cudaDriverEvidence = /\bcu(module|launch|mem|stream|ctx|get|device)/.test(evidenceText);
   if (cudaSpecificEvidence || (!rocmOrHipEvidence && cudaDriverEvidence)) candidates.push('cuda');
@@ -7382,7 +7404,7 @@ async function selfCheckRuntimeDispatchEvidence() {
   });
   const rocmCuAliasCandidates = inferRuntimeBackendCandidates({
     gpuMode: 'rocm',
-    cmakeArgs: ['-DMIOPEN_BACKEND=HIP'],
+    cmakeArgs: ['-DPROJECT_BACKEND=HIP'],
     nativeObservation: {
       api_coverage: ['cuModuleGetFunction'],
       function_resolution_api_coverage: ['cuModuleGetFunction'],

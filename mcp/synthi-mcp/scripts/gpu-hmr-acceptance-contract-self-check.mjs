@@ -758,7 +758,7 @@ const nativeRuntimeEligibility = {
     'output_oracle_profile_absent',
     'host_identity_not_observed',
   ],
-  evidence_refs: ['profile:cmake_arg:-DMIOPEN_BACKEND=HIP'],
+  evidence_refs: ['profile:cmake_arg:-DPROJECT_BACKEND=HIP'],
 };
 const derivedNativeBoundaryRefusal = deriveGpuHmrAcceptanceContractFromVerifiedProofs({
   ...derivedProofInput,
