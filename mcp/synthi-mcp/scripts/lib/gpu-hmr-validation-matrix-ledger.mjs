@@ -92,6 +92,29 @@ function compactObjectList(value) {
     .filter((entry) => Object.keys(entry).length > 0);
 }
 
+function eventList(...values) {
+  for (const value of values) {
+    const list = compactObjectList(value);
+    if (list.length > 0) return list;
+  }
+  return [];
+}
+
+function eventByEpoch(events, epoch) {
+  const expected = Number(epoch);
+  return compactObject(events.find((event) => Number(event.epoch) === expected));
+}
+
+function eventTimestampNs(event) {
+  return finiteNumber(
+    event.timestamp_monotonic_ns
+    ?? event.timestampMonotonicNs
+    ?? event.timestamp_ns
+    ?? event.timestampNs
+    ?? event.timestamp,
+  );
+}
+
 function isSelfCheckId(value) {
   return /\bself[-_ ]?check\b/i.test(String(value ?? ''));
 }
@@ -2024,6 +2047,13 @@ async function hipModuleRuntimeRow(json, filePath, context) {
   const hipContract = compactObject(contract.hip_contract ?? contract.hipContract);
   const nativeApiEvidence = compactObject(json.nativeHipApiEvidence ?? json.native_hip_api_evidence);
   const runtimeTrace = compactObject(json.runtimeTrace ?? json.runtime_trace);
+  const claimBoundary = compactObject(json.claimBoundary ?? json.claim_boundary);
+  const negativeEditRefusal = compactObject(json.negativeEditRefusal ?? json.negative_edit_refusal);
+  const executableStaticCheck = compactObject(
+    negativeEditRefusal.executableStaticCheck ?? negativeEditRefusal.executable_static_check,
+  );
+  const timingMetrics = compactObject(json.timingMetrics ?? json.timing_metrics);
+  const timingVisualEvidence = compactObject(timingMetrics.visualEvidence ?? timingMetrics.visual_evidence);
   const computeOracleFacet = await realRocmLedgerOutputOracleFacet(
     ledger,
     proofLedger,
@@ -2063,6 +2093,70 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     json.profile?.validationScope,
     json.profile?.validation_scope,
   );
+  const artifactAfterHash = firstText(
+    json.compiler?.hsacoAfterHash,
+    json.compiler?.hsaco_after_hash,
+    contract.artifact_hash_after,
+    contract.artifactHashAfter,
+    ledgerRecord.artifact_after_hash,
+    ledgerRecord.artifactAfterHash,
+  );
+  const loaderEpoch2 = eventByEpoch(eventList(runtimeTrace.loaderEvents, runtimeTrace.loader_events), 2);
+  const epochPublish2 = eventByEpoch(eventList(runtimeTrace.epochEvents, runtimeTrace.epoch_events), 2);
+  const dispatchEpoch2 = eventByEpoch(eventList(runtimeTrace.dispatchEvents, runtimeTrace.dispatch_events), 2);
+  const outputEpoch2 = eventByEpoch(eventList(runtimeTrace.outputEvents, runtimeTrace.output_events), 2);
+  const retirementEvent = compactObject(runtimeTrace.retirementEvent ?? runtimeTrace.retirement_event);
+  const runtimeTimestamps = {
+    loader: eventTimestampNs(loaderEpoch2),
+    epochPublish: eventTimestampNs(epochPublish2),
+    dispatch: eventTimestampNs(dispatchEpoch2),
+    output: eventTimestampNs(outputEpoch2),
+    retirement: eventTimestampNs(retirementEvent),
+  };
+  const runtimeTimestampProofAccepted =
+    runtimeTimestamps.loader !== null
+    && runtimeTimestamps.epochPublish !== null
+    && runtimeTimestamps.dispatch !== null
+    && runtimeTimestamps.output !== null
+    && runtimeTimestamps.retirement !== null
+    && runtimeTimestamps.loader <= runtimeTimestamps.epochPublish
+    && runtimeTimestamps.epochPublish <= runtimeTimestamps.dispatch
+    && runtimeTimestamps.dispatch <= runtimeTimestamps.output
+    && runtimeTimestamps.output <= runtimeTimestamps.retirement;
+  const epoch2ArtifactHashes = [
+    loaderEpoch2.artifact_hash,
+    loaderEpoch2.artifactHash,
+    epochPublish2.artifact_hash,
+    epochPublish2.artifactHash,
+    dispatchEpoch2.artifact_hash,
+    dispatchEpoch2.artifactHash,
+    outputEpoch2.artifact_hash,
+    outputEpoch2.artifactHash,
+  ].map(text).filter(Boolean);
+  const epoch2ArtifactHashProofAccepted =
+    Boolean(artifactAfterHash)
+    && epoch2ArtifactHashes.length >= 4
+    && epoch2ArtifactHashes.every((hash) => hash === artifactAfterHash);
+  const claimBoundaryAccepted =
+    claimBoundary.proofAuthority === 'scoped_native_hip_module_runtime_trace'
+    && claimBoundary.executionBoundary === 'standalone_hip_module_probe'
+    && claimBoundary.arbitraryTargetRuntimeAccepted === false
+    && claimBoundary.arbitraryLibraryAccepted === false
+    && claimBoundary.broadHipApplicationAcceptance === false;
+  const negativeAbiRefusalAccepted =
+    negativeEditRefusal.refusalProven === true
+    && negativeEditRefusal.gpuHmrSuccess === false
+    && negativeEditRefusal.abiCompatibilityClass === 'layout_changed'
+    && executableStaticCheck.accepted === true
+    && executableStaticCheck.signatureChanged === true
+    && executableStaticCheck.negativeKernelFound === true
+    && Boolean(firstText(executableStaticCheck.sourceAfterHash, executableStaticCheck.source_after_hash))
+    && Boolean(firstText(executableStaticCheck.acceptedSignatureHash, executableStaticCheck.accepted_signature_hash))
+    && Boolean(firstText(executableStaticCheck.negativeSignatureHash, executableStaticCheck.negative_signature_hash));
+  const computeCardOnlyProofAccepted =
+    finiteNumber(timingVisualEvidence.screenshotCount ?? timingVisualEvidence.screenshot_count) === 0
+    && timingVisualEvidence.accepted === false
+    && firstText(timingVisualEvidence.reason) === 'hip_module_readback_uses_compute_card_not_runtime_frame_visual_proof';
   const accepted =
     json.gpuHmrSuccess === true
     && ledger.present === true
@@ -2078,7 +2172,12 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     && Number(nativeCounts.hipModuleLoadData ?? 0) >= 2
     && Number(nativeCounts.hipModuleGetFunction ?? 0) >= 2
     && Number(nativeCounts.hipModuleLaunchKernel ?? 0) >= 2
-    && supportedPipelineScope === 'explicit-hip-module-float32-readback';
+    && supportedPipelineScope === 'explicit-hip-module-float32-readback'
+    && claimBoundaryAccepted
+    && negativeAbiRefusalAccepted
+    && runtimeTimestampProofAccepted
+    && epoch2ArtifactHashProofAccepted
+    && computeCardOnlyProofAccepted;
   const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
   return finalizeRow({
     artifactSchema: json.schema,
@@ -2110,6 +2209,34 @@ async function hipModuleRuntimeRow(json, filePath, context) {
     native_hip_api_evidence: nativeApiEvidence,
     runtimeTrace,
     runtime_trace: runtimeTrace,
+    claimBoundary,
+    claim_boundary: claimBoundary,
+    claimBoundaryAccepted,
+    claim_boundary_accepted: claimBoundaryAccepted,
+    negativeEditRefusal,
+    negative_edit_refusal: negativeEditRefusal,
+    negativeAbiRefusalAccepted,
+    negative_abi_refusal_accepted: negativeAbiRefusalAccepted,
+    runtimeTimestampProof: {
+      accepted: runtimeTimestampProofAccepted,
+      timestamps: runtimeTimestamps,
+    },
+    runtime_timestamp_proof: {
+      accepted: runtimeTimestampProofAccepted,
+      timestamps: runtimeTimestamps,
+    },
+    epoch2ArtifactHashProof: {
+      accepted: epoch2ArtifactHashProofAccepted,
+      artifactAfterHash,
+      observedArtifactHashes: epoch2ArtifactHashes,
+    },
+    epoch2_artifact_hash_proof: {
+      accepted: epoch2ArtifactHashProofAccepted,
+      artifact_after_hash: artifactAfterHash,
+      observed_artifact_hashes: epoch2ArtifactHashes,
+    },
+    computeCardOnlyProofAccepted,
+    compute_card_only_proof_accepted: computeCardOnlyProofAccepted,
     visual: {
       required: false,
       accepted: false,
@@ -2146,6 +2273,11 @@ async function hipModuleRuntimeRow(json, filePath, context) {
       supportedPipelineScope === 'explicit-hip-module-float32-readback'
         ? null
         : 'hip_module_supported_pipeline_scope_missing',
+      claimBoundaryAccepted ? null : 'hip_module_claim_boundary_not_scoped',
+      negativeAbiRefusalAccepted ? null : 'hip_module_negative_abi_refusal_not_executable',
+      runtimeTimestampProofAccepted ? null : 'hip_module_runtime_event_timestamps_not_observed',
+      epoch2ArtifactHashProofAccepted ? null : 'hip_module_epoch2_artifact_hash_chain_not_proven',
+      computeCardOnlyProofAccepted ? null : 'hip_module_compute_card_not_separated_from_visual_proof',
     ]),
     openGaps: accepted ? [] : ['hip_module_runtime_readback_proof_not_accepted'],
   });
