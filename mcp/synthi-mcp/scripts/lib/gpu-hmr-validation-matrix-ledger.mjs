@@ -561,6 +561,83 @@ function finalizeRow(seed) {
   return row;
 }
 
+function nativeBoundaryRequiresRealRocmAppHook({
+  nativeRocmLaunchBoundary = {},
+  realRocmRuntimeEligibility = {},
+} = {}) {
+  const nativeBoundaryGaps = compactStringList([
+    ...(Array.isArray(nativeRocmLaunchBoundary.blockingGaps) ? nativeRocmLaunchBoundary.blockingGaps : []),
+    ...(Array.isArray(nativeRocmLaunchBoundary.blocking_gaps) ? nativeRocmLaunchBoundary.blocking_gaps : []),
+  ]);
+  const runtimeEligibilityGaps = compactStringList([
+    ...(Array.isArray(realRocmRuntimeEligibility.blockingGaps) ? realRocmRuntimeEligibility.blockingGaps : []),
+    ...(Array.isArray(realRocmRuntimeEligibility.blocking_gaps) ? realRocmRuntimeEligibility.blocking_gaps : []),
+  ]);
+  return compactStringList([
+    ...nativeBoundaryGaps,
+    ...runtimeEligibilityGaps,
+    nativeRocmLaunchBoundary.adapterOutcome,
+    nativeRocmLaunchBoundary.adapter_outcome,
+    nativeRocmLaunchBoundary.status,
+    realRocmRuntimeEligibility.appHookContractStatus,
+    realRocmRuntimeEligibility.app_hook_contract_status,
+  ]).some((value) =>
+    value === 'adapter_impossible_requires_app_hook'
+    || value === 'app_hook_contract_not_declared'
+    || value === 'required_app_hook_contract_missing'
+    || /^app_hook_/.test(value)
+  );
+}
+
+function realRocmAppHookContractGate({
+  nativeBoundaryRequiresAppHook = false,
+  nativeRocmLaunchBoundary = {},
+  realRocmRuntimeEligibility = {},
+  realRocmAppHookContract = {},
+  realRocmProfileProofObligations = {},
+  realRocmProfile = {},
+} = {}) {
+  const contract = compactObject(realRocmAppHookContract);
+  const profile = compactObject(realRocmProfile);
+  const profileProofObligations = compactObject(realRocmProfileProofObligations);
+  const facetPresent = Object.keys(contract).length > 0;
+  const profileAppHookContract = compactObject(profile.appHookContract ?? profile.app_hook_contract);
+  const required =
+    nativeBoundaryRequiresAppHook
+    || nativeBoundaryRequiresRealRocmAppHook({
+      nativeRocmLaunchBoundary,
+      realRocmRuntimeEligibility,
+    })
+    || contract.required === true
+    || contract.appHookRequired === true
+    || contract.app_hook_required === true
+    || profileProofObligations.requiresAppHookContract === true
+    || profileProofObligations.requires_app_hook_contract === true
+    || profileProofObligations.appHookContractRequired === true
+    || profileProofObligations.app_hook_contract_required === true
+    || profile.appHookContractDeclared === true
+    || profile.app_hook_contract_declared === true
+    || profileAppHookContract.declared === true
+    || profileAppHookContract.required === true;
+  const proven =
+    facetPresent
+    && (
+      contract.canSatisfyRuntimeProof === true
+      || contract.can_satisfy_runtime_proof === true
+    );
+  return {
+    required,
+    facetPresent,
+    proven,
+    accepted: !required || proven,
+    missing: required && !facetPresent,
+    failedGaps: compactStringList([
+      required && !facetPresent ? 'real_rocm_app_hook_contract_missing' : null,
+      required && !proven ? 'real_rocm_app_hook_contract_required' : null,
+    ]),
+  };
+}
+
 function rowSafetyFailures(row) {
   const failures = [];
   if (row.acceptedForGpuHmr === true && row.matrixOutcome !== 'full_runtime_gpu_hmr') {
@@ -611,6 +688,38 @@ function rowSafetyFailures(row) {
     }
     if (row.runtimeProofArtifact?.accepted !== true) {
       failures.push({ code: 'gpu_hmr_success_requires_strict_runtime_proof_artifact' });
+    }
+  }
+  if (row.acceptedForGpuHmr === true && row.proofMode === 'real_rocm_repo_validation') {
+    const appHookGate = realRocmAppHookContractGate({
+      nativeRocmLaunchBoundary: compactObject(row.nativeRocmLaunchBoundary ?? row.native_rocm_launch_boundary),
+      realRocmRuntimeEligibility: compactObject(row.realRocmRuntimeEligibility ?? row.real_rocm_runtime_eligibility),
+      realRocmAppHookContract: compactObject(
+        row.realRocmAppHookContract
+        ?? row.real_rocm_app_hook_contract
+        ?? row.appHookContract
+        ?? row.app_hook_contract,
+      ),
+      realRocmProfileProofObligations: compactObject(
+        row.realRocmProfileProofObligations
+        ?? row.real_rocm_profile_proof_obligations
+        ?? row.profileProofObligations
+        ?? row.profile_proof_obligations,
+      ),
+      realRocmProfile: compactObject(
+        row.realRocmProfile
+        ?? row.real_rocm_profile
+        ?? row.profile
+        ?? row.realRocm
+        ?? row.real_rocm,
+      ),
+    });
+    if (appHookGate.required && !appHookGate.proven) {
+      failures.push({
+        code: appHookGate.missing
+          ? 'gpu_hmr_success_requires_real_rocm_app_hook_contract'
+          : 'gpu_hmr_success_requires_proven_real_rocm_app_hook_contract',
+      });
     }
   }
   if (row.matrixOutcome === 'refusal_proven' && row.acceptedForGpuHmr === true) {
@@ -2345,27 +2454,17 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     path.dirname(filePath),
   );
   const outputOrVisualOracleAccepted = outputOracleFacet.accepted === true;
-  const nativeBoundaryRequiresAppHook = compactStringList([
-    ...nativeRocmBoundaryGaps,
-    ...realRocmRuntimeEligibilityGaps,
-    nativeRocmLaunchBoundary.adapterOutcome,
-    nativeRocmLaunchBoundary.adapter_outcome,
-    nativeRocmLaunchBoundary.status,
-    realRocmRuntimeEligibility.appHookContractStatus,
-    realRocmRuntimeEligibility.app_hook_contract_status,
-  ]).some((value) =>
-    value === 'adapter_impossible_requires_app_hook'
-    || value === 'app_hook_contract_not_declared'
-    || value === 'required_app_hook_contract_missing'
-    || /^app_hook_/.test(value)
-  );
-  const appHookContractRequired =
-    nativeBoundaryRequiresAppHook
-    || realRocmAppHookContract.required === true;
-  const appHookContractAccepted =
-    !appHookContractRequired
-    || realRocmAppHookContract.canSatisfyRuntimeProof === true
-    || realRocmAppHookContract.can_satisfy_runtime_proof === true;
+  const nativeBoundaryRequiresAppHook = nativeBoundaryRequiresRealRocmAppHook({
+    nativeRocmLaunchBoundary,
+    realRocmRuntimeEligibility,
+  });
+  const appHookContractGate = realRocmAppHookContractGate({
+    nativeBoundaryRequiresAppHook,
+    realRocmAppHookContract,
+    realRocmProfileProofObligations,
+    realRocmProfile: profile,
+  });
+  const appHookContractAccepted = appHookContractGate.accepted === true;
   const sidecarRuntimeBackendMismatch =
     realRocmSidecarRuntimeConsistencyGaps.includes('sidecar_runtime_backend_mismatch');
   const sidecarRuntimeConsistencyAccepted = !sidecarRuntimeBackendMismatch;
@@ -2491,6 +2590,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_runtime_eligibility: realRocmRuntimeEligibility,
     realRocmAppHookContract,
     real_rocm_app_hook_contract: realRocmAppHookContract,
+    realRocmAppHookContractGate: appHookContractGate,
+    real_rocm_app_hook_contract_gate: appHookContractGate,
     realRocmDeviceSidecarContract,
     real_rocm_device_sidecar_contract: realRocmDeviceSidecarContract,
     realRocmSidecarRuntimeConsistency,
@@ -2511,6 +2612,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...realRocmProfileProofObligationsGaps.map((gap) => `real_rocm_profile_proof_obligations:${gap}`),
       realRocmAppHookContractReason ? `real_rocm_app_hook_contract:${realRocmAppHookContractReason}` : null,
       ...realRocmAppHookContractGaps.map((gap) => `real_rocm_app_hook_contract:${gap}`),
+      ...appHookContractGate.failedGaps,
       !accepted && realRocmDeviceSidecarContractReason
         ? `real_rocm_device_sidecar_contract:${realRocmDeviceSidecarContractReason}`
         : null,
@@ -2537,6 +2639,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ledger.gpuHmrSuccess === true ? null : 'proof_ledger_success_required',
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_required',
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required',
+      ...appHookContractGate.failedGaps,
       sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_required',
       profileProofObligationsAccepted ? null : 'real_rocm_profile_proof_obligations_required',
       realRocmFirewall.accepted ? null : 'real_rocm_cpu_gpu_firewall_required',
