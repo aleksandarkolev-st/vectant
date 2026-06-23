@@ -1405,6 +1405,14 @@ assert.ok(largeRocm.openGaps.includes('real_rocm_profile_proof_obligations_requi
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_profile_proof_obligations:proof_obligation_output_oracle_profile_missing',
 ));
+assert.equal(largeRocm.cpuHmrUsed, null);
+assert.equal(largeRocm.fullRebuildUsed, null);
+assert.equal(largeRocm.processRestarted, null);
+assert.equal(largeRocm.realRocmFirewall.accepted, false);
+assert.ok(largeRocm.openGaps.includes('real_rocm_cpu_gpu_firewall_required'));
+assert.ok(largeRocm.openGaps.includes('real_rocm_cpu_gpu_firewall:cpu_hmr_absence_evidence_required'));
+assert.ok(largeRocm.openGaps.includes('real_rocm_cpu_gpu_firewall:full_rebuild_absence_evidence_required'));
+assert.ok(largeRocm.openGaps.includes('real_rocm_cpu_gpu_firewall:process_restart_absence_evidence_required'));
 assert.ok(largeRocm.openGaps.includes('real_rocm_app_hook_contract:app_hook_artifact_transport_evidence_missing'));
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_device_sidecar_contract:device_sidecar_dispatch_trace_runtime_not_observed',
@@ -1776,10 +1784,224 @@ assert.equal(acceptedRealRocm.targetProgression.phase, 'small-oracle');
 assert.equal(acceptedRealRocm.targetProgressionGates[0]?.status, 'pass');
 assert.equal(acceptedRealRocm.coverageObligations.perTargetRunModes, false);
 assert.equal(acceptedRealRocm.validationTargetScope, 'evidence_row');
+assert.equal(acceptedRealRocm.cpuHmrUsed, false);
+assert.equal(acceptedRealRocm.fullRebuildUsed, false);
+assert.equal(acceptedRealRocm.processRestarted, false);
+assert.equal(acceptedRealRocm.realRocmFirewall.accepted, true);
+assert.equal(acceptedRealRocm.realRocmFirewall.firewallEvidenceSource, 'proof_ledger_invariant_summary');
 const acceptedRealRocmCoverage = new Map(acceptedRealRocmLedger.summary.planCoverage.map((entry) => [entry.id, entry]));
 assert.equal(acceptedRealRocmCoverage.get('large_real_rocm_repo')?.status, 'accepted');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.status, 'missing');
 assert.equal(acceptedRealRocmCoverage.get('per_target_run_modes')?.targetCoverage.length, 0);
+
+async function writeForgedRealRocmFirewallCase({ slug, field, expectedReason }) {
+  const dir = path.join(logsRoot, `real-rocm-forged-${slug}`);
+  await writeRgbaPng(path.join(dir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+  await writeRgbaPng(path.join(dir, 'after-hmr-first.png'), 8, 8, (x, y) => [90 + x, 104 + y, 140, 255]);
+  await writeRgbaPng(path.join(dir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
+  const materials = runtimeProofMaterials('hot_delta_1', {
+    projectId: `real-rocm-forged-${slug}`,
+    visualRoot: dir,
+  });
+  const record = materials.proofLedger.records[0];
+  if (field === 'cpu') {
+    record.cpuHmrUsed = true;
+    record.cpu_hmr_used = true;
+  } else if (field === 'full_rebuild') {
+    record.fullRebuildUsed = true;
+    record.full_rebuild_used = true;
+  } else if (field === 'process_restart') {
+    record.processRestarted = true;
+    record.process_restarted = true;
+  }
+  await writeJson(path.join(dir, `real-rocm-forged-${slug}.json`), {
+    slug: `gpu-real-rocm-forged-${slug}-20260623`,
+    real_rocm_profile: { id: `real-rocm-forged-${slug}` },
+    source_url: `https://example.invalid/rocm/forged-${slug}.git`,
+    repo_commit: 'abcdefabcdefabcdefabcdefabcdefabcdefabcd',
+    entry_file: 'src/kernels/firewall_entry.hip',
+    delta_file: 'src/kernels/firewall_delta.h',
+    target_name: `ForgedFirewall${slug}`,
+    gpu_vendor: 'rocm',
+    full_runtime_proof_required: true,
+    full_runtime_proven: true,
+    gpu_hmr_success: true,
+    output_oracle_resolution: {
+      schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+      requestedProfile: 'profile.tensor.checksum.v1',
+      mode: 'profile.tensor.checksum.v1',
+      selectedSource: 'profile_runtime_profile',
+      disabledReason: null,
+      failedReason: null,
+      contractPresent: true,
+      runtimeProfilePresent: true,
+      runtimeProfileSynced: true,
+    },
+    target_progression: {
+      schemaVersion: 'synthi.real_rocm.target_progression.v1',
+      required: false,
+      phaseRaw: 'small-oracle',
+      phase: 'small-oracle',
+      recognized: true,
+      reason: null,
+    },
+    target_progression_gates: [
+      { name: 'target progression phase', status: 'pass', detail: 'phase=small-oracle' },
+    ],
+    output_proof: {
+      accepted: true,
+      result_state: 'gpu-hmr-output-oracle-proven',
+    },
+    strict_proof_gates: {
+      accepted: true,
+      failures: [],
+    },
+    ...materials,
+    visual_artifact_paths: [
+      path.join(dir, 'before-hmr-first.png'),
+      path.join(dir, 'after-hmr-first.png'),
+      path.join(dir, 'before-after-diff.png'),
+    ],
+    timingMetrics: {
+      schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+      source: 'real_rocm_validation',
+      metricClock: 'monotonic_ns',
+      metricScope: 'hot_delta_1',
+      cacheState: 'compiler_cache_warm',
+      editId: `real-rocm-forged-${slug}-delta`,
+      editHash: hashValue(`real-rocm-forged-${slug}-delta`),
+    },
+    checks: [
+      { name: 'real ROCm repo', status: 'pass', detail: `https://example.invalid/rocm/forged-${slug}.git @ abcdef files=12000` },
+      { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+      { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+    ],
+  });
+  const forgedLedger = await collectGpuHmrValidationMatrixLedger({
+    repoRoot: tmpRoot,
+    mcpRoot,
+    roots: [dir],
+    generatedAt: '2026-06-09T00:00:02.020Z',
+    includeUnproven: true,
+  });
+  const row = forgedLedger.rows.find((entry) => entry.proofMode === 'real_rocm_repo_validation');
+  assert.equal(row?.matrixOutcome, 'unproven');
+  assert.equal(row.acceptedForGpuHmr, false);
+  assert.equal(row.realRocmFirewall.accepted, false);
+  assert.ok(row.reasons.includes(expectedReason));
+  assert.ok(row.reasons.includes('real_rocm_cpu_gpu_firewall_not_proven'));
+  assert.ok(row.openGaps.includes('real_rocm_cpu_gpu_firewall_required'));
+  assert.ok(row.openGaps.includes(`real_rocm_cpu_gpu_firewall:${expectedReason}`));
+  return row;
+}
+
+const forgedCpuFirewall = await writeForgedRealRocmFirewallCase({
+  slug: 'cpu-hmr-firewall',
+  field: 'cpu',
+  expectedReason: 'cpu_hmr_used_by_real_rocm_firewall',
+});
+assert.equal(forgedCpuFirewall.cpuHmrUsed, true);
+const forgedFullRebuildFirewall = await writeForgedRealRocmFirewallCase({
+  slug: 'full-rebuild-firewall',
+  field: 'full_rebuild',
+  expectedReason: 'full_rebuild_used_by_real_rocm_firewall',
+});
+assert.equal(forgedFullRebuildFirewall.fullRebuildUsed, true);
+const forgedRestartFirewall = await writeForgedRealRocmFirewallCase({
+  slug: 'process-restart-firewall',
+  field: 'process_restart',
+  expectedReason: 'process_restart_observed_by_real_rocm_firewall',
+});
+assert.equal(forgedRestartFirewall.processRestarted, true);
+
+const forgedOldArtifactRocmDir = path.join(logsRoot, 'real-rocm-forged-old-artifact-dispatch');
+await writeRgbaPng(path.join(forgedOldArtifactRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);
+await writeRgbaPng(path.join(forgedOldArtifactRocmDir, 'after-hmr-first.png'), 8, 8, (x, y) => [94 + x, 106 + y, 144, 255]);
+await writeRgbaPng(path.join(forgedOldArtifactRocmDir, 'before-after-diff.png'), 8, 8, () => [255, 255, 255, 255]);
+const forgedOldArtifactMaterials = runtimeProofMaterials('hot_delta_1', {
+  projectId: 'real-rocm-forged-old-artifact-dispatch',
+  visualRoot: forgedOldArtifactRocmDir,
+});
+forgedOldArtifactMaterials.proofLedger.records[0].dispatchEvent.artifact_hash =
+  hashValue('old-artifact-dispatched');
+await writeJson(path.join(forgedOldArtifactRocmDir, 'real-rocm-forged-old-artifact-dispatch.json'), {
+  slug: 'gpu-real-rocm-forged-old-artifact-dispatch-20260623',
+  real_rocm_profile: { id: 'real-rocm-forged-old-artifact-dispatch' },
+  source_url: 'https://example.invalid/rocm/forged-old-artifact.git',
+  repo_commit: 'abcdefabcdefabcdefabcdefabcdefabcdefabcd',
+  entry_file: 'src/kernels/old_artifact_entry.hip',
+  delta_file: 'src/kernels/old_artifact_delta.h',
+  target_name: 'ForgedOldArtifactDispatch',
+  gpu_vendor: 'rocm',
+  full_runtime_proof_required: true,
+  full_runtime_proven: true,
+  gpu_hmr_success: true,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: 'profile.tensor.checksum.v1',
+    mode: 'profile.tensor.checksum.v1',
+    selectedSource: 'profile_runtime_profile',
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: true,
+    runtimeProfileSynced: true,
+  },
+  target_progression: {
+    schemaVersion: 'synthi.real_rocm.target_progression.v1',
+    required: false,
+    phaseRaw: 'small-oracle',
+    phase: 'small-oracle',
+    recognized: true,
+    reason: null,
+  },
+  target_progression_gates: [
+    { name: 'target progression phase', status: 'pass', detail: 'phase=small-oracle' },
+  ],
+  output_proof: {
+    accepted: true,
+    result_state: 'gpu-hmr-output-oracle-proven',
+  },
+  strict_proof_gates: {
+    accepted: true,
+    failures: [],
+  },
+  ...forgedOldArtifactMaterials,
+  visual_artifact_paths: [
+    path.join(forgedOldArtifactRocmDir, 'before-hmr-first.png'),
+    path.join(forgedOldArtifactRocmDir, 'after-hmr-first.png'),
+    path.join(forgedOldArtifactRocmDir, 'before-after-diff.png'),
+  ],
+  timingMetrics: {
+    schemaVersion: 'synthi.gpu.hmr.timing_metrics.v1',
+    source: 'real_rocm_validation',
+    metricClock: 'monotonic_ns',
+    metricScope: 'hot_delta_1',
+    cacheState: 'compiler_cache_warm',
+    editId: 'real-rocm-forged-old-artifact-dispatch-delta',
+    editHash: hashValue('real-rocm-forged-old-artifact-dispatch-delta'),
+  },
+  checks: [
+    { name: 'real ROCm repo', status: 'pass', detail: 'https://example.invalid/rocm/forged-old-artifact.git @ abcdef files=12000' },
+    { name: 'real_repo_user_source_delta_hmr', status: 'pass', detail: 'full_runtime_proven=true' },
+    { name: 'strict runtime proof artifact presence', status: 'pass', detail: 'accepted' },
+  ],
+});
+const forgedOldArtifactLedger = await collectGpuHmrValidationMatrixLedger({
+  repoRoot: tmpRoot,
+  mcpRoot,
+  roots: [forgedOldArtifactRocmDir],
+  generatedAt: '2026-06-09T00:00:02.025Z',
+  includeUnproven: true,
+});
+const forgedOldArtifact = forgedOldArtifactLedger.rows.find(
+  (row) => row.proofMode === 'real_rocm_repo_validation',
+);
+assert.equal(forgedOldArtifact?.matrixOutcome, 'unproven');
+assert.equal(forgedOldArtifact.acceptedForGpuHmr, false);
+assert.equal(forgedOldArtifact.ledger.gpuHmrSuccess, false);
+assert.ok(forgedOldArtifact.reasons.includes('dispatch_artifact_hash_mismatch'));
+assert.ok(forgedOldArtifact.openGaps.includes('proof_ledger_success_required'));
 
 const forgedSidecarMismatchRocmDir = path.join(logsRoot, 'real-rocm-forged-sidecar-mismatch');
 await writeRgbaPng(path.join(forgedSidecarMismatchRocmDir, 'before-hmr-first.png'), 8, 8, () => [0, 0, 0, 255]);

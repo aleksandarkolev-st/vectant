@@ -922,6 +922,197 @@ function firewallFieldsFromProofValidation(proofValidation) {
   };
 }
 
+function hasOwnValue(object, key) {
+  return isObject(object) && Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function firstOwnBool(object, keys) {
+  for (const key of keys) {
+    if (hasOwnValue(object, key) && typeof object[key] === 'boolean') {
+      return { present: true, value: object[key] };
+    }
+  }
+  return { present: false, value: null };
+}
+
+function firstRecordedEvidence(object, keys) {
+  for (const key of keys) {
+    if (!hasOwnValue(object, key)) continue;
+    const value = object[key];
+    if (value === true) return true;
+    if (typeof value === 'string' && value.trim()) return true;
+    if (typeof value === 'number' && Number.isFinite(value)) return true;
+    if (Array.isArray(value) && value.length > 0) return true;
+    if (isObject(value) && Object.keys(value).length > 0) return true;
+  }
+  return false;
+}
+
+function realRocmFirewallCandidate(object, source, valueKeys, evidenceKeys, trustedFalse = false) {
+  const found = firstOwnBool(object, valueKeys);
+  if (!found.present) return null;
+  const evidencePresent =
+    found.value === true
+    || trustedFalse
+    || firstRecordedEvidence(object, evidenceKeys);
+  if (!evidencePresent) return null;
+  return {
+    value: found.value,
+    source,
+    evidencePresent,
+  };
+}
+
+function firstRealRocmFirewallFact(candidates, valueKeys, evidenceKeys) {
+  for (const candidate of candidates) {
+    const fact = realRocmFirewallCandidate(
+      candidate.object,
+      candidate.source,
+      valueKeys,
+      evidenceKeys,
+      candidate.trustedFalse === true,
+    );
+    if (fact) return fact;
+  }
+  return { value: null, source: 'missing', evidencePresent: false };
+}
+
+function realRocmFirewallFieldsFromEvidence({
+  json = {},
+  summary = {},
+  runtimeProofArtifact = {},
+  proofLedger = {},
+} = {}) {
+  const proofLedgerQuery = Object.keys(proofLedger).length > 0
+    ? queryGpuHmrLedgerInvariants(proofLedger)
+    : null;
+  const invariantSummary = compactObject(proofLedgerQuery?.invariantSummary);
+  const ledgerRecord = compactObject(proofLedgerQuery?.record);
+  const candidates = [
+    {
+      object: invariantSummary,
+      source: 'proof_ledger_invariant_summary',
+      trustedFalse: proofLedgerQuery?.gpuHmrSuccess === true,
+    },
+    {
+      object: ledgerRecord,
+      source: 'proof_ledger_record',
+      trustedFalse: proofLedgerQuery?.gpuHmrSuccess === true,
+    },
+    {
+      object: compactObject(
+        runtimeProofArtifact.derivedProofLedgerRecord
+        ?? runtimeProofArtifact.derived_proof_ledger_record,
+      ),
+      source: 'runtime_proof_artifact_derived_proof_ledger_record',
+    },
+    {
+      object: compactObject(proofLedger.record ?? proofLedger.proof_record),
+      source: 'proof_ledger_record_alias',
+    },
+    {
+      object: compactObject(runtimeProofArtifact.firewallEvidence ?? runtimeProofArtifact.firewall_evidence),
+      source: 'runtime_proof_artifact_firewall_evidence',
+    },
+    {
+      object: compactObject(summary.firewallEvidence ?? summary.firewall_evidence),
+      source: 'summary_firewall_evidence',
+    },
+    {
+      object: compactObject(json.firewallEvidence ?? json.firewall_evidence),
+      source: 'artifact_firewall_evidence',
+    },
+    {
+      object: runtimeProofArtifact,
+      source: 'runtime_proof_artifact_top_level',
+    },
+    {
+      object: summary,
+      source: 'summary_top_level',
+    },
+    {
+      object: json,
+      source: 'artifact_top_level',
+    },
+  ];
+  const commonEvidenceKeys = [
+    'evidence_source',
+    'evidenceSource',
+    'source',
+    'proofAuthority',
+    'proof_authority',
+    'evidence_refs',
+    'evidenceRefs',
+  ];
+  const cpu = firstRealRocmFirewallFact(
+    candidates,
+    ['cpuHmrUsed', 'cpu_hmr_used'],
+    [
+      'cpuHmrUsedEvidencePresent',
+      'cpu_hmr_used_evidence_present',
+      'cpuHmrAbsenceBasis',
+      'cpu_hmr_absence_basis',
+      ...commonEvidenceKeys,
+    ],
+  );
+  const full = firstRealRocmFirewallFact(
+    candidates,
+    ['fullRebuildUsed', 'full_rebuild_used'],
+    [
+      'fullRebuildUsedEvidencePresent',
+      'full_rebuild_used_evidence_present',
+      'fullRebuildAbsenceBasis',
+      'full_rebuild_absence_basis',
+      ...commonEvidenceKeys,
+    ],
+  );
+  const process = firstRealRocmFirewallFact(
+    candidates,
+    ['processRestarted', 'process_restarted'],
+    [
+      'processRestartedEvidencePresent',
+      'process_restarted_evidence_present',
+      'processRestartAbsenceBasis',
+      'process_restart_absence_basis',
+      'processRestartObserved',
+      'process_restart_observed',
+      'hostRestartCount',
+      'host_restart_count',
+      'runtimeIdentityChanges',
+      'runtime_identity_changes',
+      ...commonEvidenceKeys,
+    ],
+  );
+  const failedGates = compactStringList([
+    cpu.value === true ? 'cpu_hmr_used_by_real_rocm_firewall' : null,
+    cpu.value === false ? null : cpu.value === null ? 'cpu_hmr_absence_evidence_required' : null,
+    full.value === true ? 'full_rebuild_used_by_real_rocm_firewall' : null,
+    full.value === false ? null : full.value === null ? 'full_rebuild_absence_evidence_required' : null,
+    process.value === true ? 'process_restart_observed_by_real_rocm_firewall' : null,
+    process.value === false ? null : process.value === null ? 'process_restart_absence_evidence_required' : null,
+  ]).map((code) => ({ code }));
+  const evidenceSources = compactStringList([cpu.source, full.source, process.source]);
+  return {
+    accepted: cpu.value === false && full.value === false && process.value === false,
+    cpuHmrUsed: cpu.value,
+    cpu_hmr_used: cpu.value,
+    fullRebuildUsed: full.value,
+    full_rebuild_used: full.value,
+    processRestarted: process.value,
+    process_restarted: process.value,
+    cpuHmrEvidenceSource: cpu.source,
+    cpu_hmr_evidence_source: cpu.source,
+    fullRebuildEvidenceSource: full.source,
+    full_rebuild_evidence_source: full.source,
+    processRestartEvidenceSource: process.source,
+    process_restart_evidence_source: process.source,
+    firewallEvidenceSource: evidenceSources.join('+') || 'missing',
+    firewall_evidence_source: evidenceSources.join('+') || 'missing',
+    failedGates,
+    failed_gates: failedGates,
+  };
+}
+
 async function agentSplitRow(records, filePath, context) {
   const waitDetail = parseRecordDetailJson(detailRecord(records, 'mcp wait_hmr proof gate'));
   const proofValidation = compactObject(waitDetail?.gpu_proof_validation);
@@ -1898,6 +2089,12 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.proofLedger
     ?? runtimeProofArtifact.proof_ledger,
   );
+  const realRocmFirewall = realRocmFirewallFieldsFromEvidence({
+    json,
+    summary,
+    runtimeProofArtifact,
+    proofLedger,
+  });
   const strictGates = compactObject(
     json.strict_proof_gates
     ?? json.strictProofGates
@@ -2152,7 +2349,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && outputOrVisualOracleAccepted === true
     && appHookContractAccepted === true
     && sidecarRuntimeConsistencyAccepted === true
-    && profileProofObligationsAccepted === true;
+    && profileProofObligationsAccepted === true
+    && realRocmFirewall.accepted === true;
   const strictRuntimeGateFailed =
     strictGates.accepted === false
     || strictGateFailures.length > 0
@@ -2217,9 +2415,16 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     outputOracleFacet,
     output_oracle_facet: outputOracleFacet,
     runMode,
-    cpuHmrUsed: null,
-    fullRebuildUsed: null,
-    processRestarted: null,
+    cpuHmrUsed: realRocmFirewall.cpuHmrUsed,
+    cpu_hmr_used: realRocmFirewall.cpu_hmr_used,
+    fullRebuildUsed: realRocmFirewall.fullRebuildUsed,
+    full_rebuild_used: realRocmFirewall.full_rebuild_used,
+    processRestarted: realRocmFirewall.processRestarted,
+    process_restarted: realRocmFirewall.process_restarted,
+    firewallEvidenceSource: realRocmFirewall.firewallEvidenceSource,
+    firewall_evidence_source: realRocmFirewall.firewall_evidence_source,
+    realRocmFirewall,
+    real_rocm_firewall: realRocmFirewall,
     realRocm: {
       sourceUrl: firstText(json.source_url, json.sourceUrl),
       repoCommit: firstText(json.repo_commit, json.repoCommit),
@@ -2272,11 +2477,13 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       realRocmCompileBridgeReason ? `real_rocm_compile_bridge:${realRocmCompileBridgeReason}` : null,
       ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
+      ...realRocmFirewall.failedGates.map((failure) => failure.code),
       hmrProofValidation.reason,
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required_not_proven',
       sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_not_proven',
       profileProofObligationsAccepted ? null : 'real_rocm_profile_proof_obligations_not_met',
+      realRocmFirewall.accepted ? null : 'real_rocm_cpu_gpu_firewall_not_proven',
       ledger.present === true ? null : 'proof_ledger_record_missing',
       realRocmRequiredFullRuntimeProof(json) ? null : 'full_runtime_proof_not_required_by_artifact',
     ]),
@@ -2287,6 +2494,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required',
       sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_required',
       profileProofObligationsAccepted ? null : 'real_rocm_profile_proof_obligations_required',
+      realRocmFirewall.accepted ? null : 'real_rocm_cpu_gpu_firewall_required',
       proofStateMissing ? 'gpu_hmr_full_runtime_proof_state_missing' : null,
       targetProgressionGateFailures.length > 0 ? 'target_progression_gates_failed' : null,
       ...nativeRocmBoundaryGaps.map((gap) => `native_rocm_launch_boundary:${gap}`),
@@ -2296,6 +2504,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...realRocmDeviceSidecarContractGaps.map((gap) => `real_rocm_device_sidecar_contract:${gap}`),
       ...realRocmSidecarRuntimeConsistencyGaps.map((gap) => `real_rocm_sidecar_runtime_consistency:${gap}`),
       ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
+      ...realRocmFirewall.failedGates.map((failure) => `real_rocm_cpu_gpu_firewall:${failure.code}`),
     ]),
   });
 }
