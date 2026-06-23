@@ -20,7 +20,8 @@ Current accepted proof is broader than one fixture, but it is not universal prod
 
 Current fail-closed evidence also includes:
 
-- large real ROCm ML infrastructure validation against upstream MIOpen, which builds and runs and is now a first-class validation-matrix row, but is refused because full-runtime Synthi proof ledger, strict runtime proof artifact, same-process app-hook contract evidence, and output/visual oracle proof are missing,
+- large real ROCm ML infrastructure validation against upstream MIOpen, which builds and runs and has a strict refusal artifact, but is refused because full-runtime Synthi proof ledger, strict runtime proof artifact, same-process app-hook contract evidence, and output/visual oracle proof are missing,
+- real ROCm matrix multiplication validation against upstream `ROCm/rocm-examples`, which derives and syncs a source-backed buffer checksum oracle, observes the native HIP launch boundary, and is the current real ROCm row in the generated validation matrix, but is refused because Synthi artifact transport, epoch publication, dispatch trace, host identity, and runtime output-oracle observation are missing,
 - negative/rejection evidence for HIPRT blank-frame direct-light-zero, OIDN HIP, Bevy, OpenCL, and Vulkan where proof is missing, blank, or the runtime dependency is incompatible.
 
 Current strict matrix behavior deliberately downgrades older HIPRT warm visual artifacts that lack an embedded proof ledger and data-derived oracle-region proof. HIPRT matrix ingestion now recomputes the oracle region from the persisted before/after PNG pixels; JSON claims about a nonblank region are not accepted by themselves. A fresh 2026-06-22 HIPRT CameraRays rerun is accepted as strict full-runtime HIPRT GPU HMR. The MegaKernel direct-light-zero profile is now a proven blank-oracle-region refusal, not a success. OIDN live preflight ran against the real HIPRT checkout and remains rejected for HIP output proof because the installed OIDN HIP device library depends on `libamdhip64.so.5`, which is absent on this ROCm 7 worker. No symlink, ABI shim, fake ICD, or synthesized runtime was added.
@@ -31,6 +32,11 @@ The latest generated machine-readable validation matrix ledger reports 42 rows: 
 gpu-validation-matrix-ledger:sha256:2f16aacc0d8f17388fca5c70d6bea43467f1f0bb8b4e37e68e62e2a1dd127ad2
 json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T130134Z.json
 markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T130134Z.md
+latest rerun after ROCm matrix oracle proof:
+gpu-validation-matrix-ledger:sha256:a853dd76180fb6e6fa3f705feb4b0a0a1056a8cc1888b06a201c30cc186279f5
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T131345Z.json
+summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
+self-check: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed
 ```
 
 The global per-target run-mode coverage row is `accepted` for the 3 enrolled run-mode targets: generated Flow, generated ray-light, and scoped WebGPU WGSL. SAXPY remains a valid full-runtime evidence row outside that run-mode-suite obligation. Scoped WebGPU now has structured cold runtime evidence, hot delta 1, hot delta 2 with a different shader edit, and binding-layout negative-edit refusal rows.
@@ -143,9 +149,34 @@ matrix open gaps: strict_runtime_proof_artifact_required, proof_ledger_success_r
 plan coverage: large_real_rocm_repo=refused
 ```
 
+Latest real ROCm matrix multiplication compute-oracle validation:
+
+```text
+profile: mcp/synthi-mcp/scripts/profiles/real-rocm-matrix-multiplication.json
+command: npm --prefix mcp/synthi-mcp run proof:real-rocm:matrix-multiplication
+repo: https://github.com/ROCm/rocm-examples.git @ c121d6d2e6a21ce1d0a140e97b890ada635f7574
+result slug: gpu-real-rocm-matrix-20260623
+result path: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results.json
+target: hip_matrix_multiplication
+entry file: HIP-Basic/matrix_multiplication/main.hip
+upstream build/run: configure_ms=1602, build_ms=1731, run_ms=236, run_exit_code=0
+output oracle resolution: requested_profile=hip.matrix-multiplication.readback-c.v1, source_derived_candidates=1, selected_source=source_derived_profile, runtime_profile_present=true, runtime_profile_synced=true
+output oracle contract: oracle=oracle:real-rocm:matrix-readback-c:b8f18aad760bfaf7, kind=buffer_checksum, output=HIP-Basic/matrix_multiplication/main.hip:C, baseline=sha256:aaedc7073c76880db6c8be81a91229d0073f1069e70791a7d028f575910c352c, expected=sha256:e7352404a601e877e39b4ae06181ce1597e93ccbbb2c9d654eb9df479bb9a858
+native runtime evidence: hipLaunchKernel observed through native launch observer; function_resolution_count=0
+hot path timings: initial_compile_ms=30017, hot_delta_compile_ms=30008, hot_wait_ms=30005, total_validator_wall_ms=172677.2248
+strict result: refused, gpu_hmr_success=false, runtime_proof_artifact=gpu-runtime-proof:sha256:96c25d12af772cd2fdf244db8bc52e37b3b489e2592bdd61915abd2b022a5de0
+refusal reason: native HIP launch evidence is evidence-only and cannot satisfy GPU HMR; no synthi_gpu_launch dispatch, artifact_transport, dispatcher_epoch, host_identity, or runtime output_oracle observation was collected
+native ROCm refusal facet: status=refusal_evidence, can_satisfy_dispatch_proof=false, gaps=native_launch_boundary_observed,native_boundary_not_synthi_dispatch_proof,synthi_dispatch_not_observed,artifact_transport_not_observed,epoch_not_observed,output_oracle_not_observed,host_identity_not_observed,adapter_impossible_requires_app_hook
+real ROCm app-hook contract facet: status=required_app_hook_contract_missing, declared=false, required=true, can_satisfy_runtime_proof=false, gaps=app_hook_contract_not_declared,app_hook_artifact_transport_evidence_missing,app_hook_artifact_transport_runtime_not_observed,app_hook_epoch_publication_evidence_missing,app_hook_epoch_publication_runtime_not_observed,app_hook_dispatch_trace_evidence_missing,app_hook_dispatch_trace_runtime_not_observed,app_hook_host_identity_evidence_missing,app_hook_host_identity_runtime_not_observed,app_hook_output_oracle_evidence_missing,app_hook_output_oracle_runtime_not_observed
+matrix row: real_rocm_repo_validation, backend=hip, outcome=refusal_proven, proof_chain=real_rocm_strict_runtime_refusal
+matrix proof ids: gpu-ledger-proof:sha256:c82514f4c0bf87fc62c79564b363e9e52adab91fb167736b9501e6c22f7d98d6, gpu-runtime-proof:sha256:96c25d12af772cd2fdf244db8bc52e37b3b489e2592bdd61915abd2b022a5de0, real-rocm-validation:sha256:2b00274e7c57292e54c5515d638b6cd2e30d74d3797743e9ba063697d2e6a473
+matrix row id: gpu-validation-matrix-row:sha256:dad77865cce1cfe96756f58f2c2bc9e6ecac11c270db7489eb075aae722b9bf0
+visual result: compute-only target; no frame captured or counted, and the row still refuses because the runtime ledger lacks post-epoch output-oracle observation
+```
+
 This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths above, including the scoped HIPRT CameraRays and scoped WebGPU paths.
 
-Still open or refused: CUDA, MIOpen full-runtime GPU HMR, HIPRT MegaKernel direct-light-zero, OIDN HIP output proof, Vulkan, OpenCL full-runtime acceptance, Bevy, and broader WebGPU profiles with bind groups, vertex buffers, or engine-owned pipeline caches.
+Still open or refused: CUDA, MIOpen full-runtime GPU HMR, real ROCm matrix multiplication full-runtime GPU HMR, HIPRT MegaKernel direct-light-zero, OIDN HIP output proof, Vulkan, OpenCL full-runtime acceptance, Bevy, and broader WebGPU profiles with bind groups, vertex buffers, or engine-owned pipeline caches.
 
 ## Hard Rules Preserved
 
@@ -160,6 +191,7 @@ Still open or refused: CUDA, MIOpen full-runtime GPU HMR, HIPRT MegaKernel direc
 - Large real ROCm app-hook contracts are now generic, profile-declared evidence inputs, not project branches. Matrix ingestion fails closed when native ROCm launch-boundary evidence requires an app hook but no contract/runtime observation proves artifact transport, epoch publication, dispatch trace, host identity, and output oracle stages. Profile `evidenceRefs` must resolve against collected runtime/proof evidence before they count as contract evidence.
 - Large ROCm runtime eligibility is now a separate evidence-only facet. It can identify a HIP candidate, source dialects, candidate artifact identity, compiler, and missing proof gates for a serious project such as MIOpen, but it is explicitly `candidate_metadata_only_not_gpu_hmr_success` and cannot authorize backend, dispatch, epoch, or oracle proof.
 - Large real ROCm profiles can now declare generic runtime output-oracle profiles and target-progression defaults. The latest MIOpen profile declares `outputOracle.profile=none` and required `targetProgression.phase=final-acceptance`, so the result explicitly reports no installed oracle and fails the missing prior-phase/full-runtime/raw-compute-oracle gates instead of implying hidden proof.
+- The real ROCm matrix multiplication profile declares `outputOracle.profile=hip.matrix-multiplication.readback-c.v1`; the runner derives the buffer checksum oracle from source constants and the edited `b_value`, syncs that profile to the worker, and still refuses because the runtime never emitted Synthi epoch/dispatch/output-oracle evidence.
 - Large real ROCm final-acceptance progression now verifies prior `small-oracle` ledger entries from artifact-backed compute or visual oracle evidence. Compute prior rows must carry re-readable raw readback/schema/card artifacts; visual prior rows must carry re-readable image artifacts with matching content hashes.
 - The validation matrix now preserves each real ROCm row's `outputOracleResolution`, `targetProgression`, `targetProgressionGates`, `nativeRocmLaunchBoundary`, and `realRocmRuntimeEligibility` metadata, so large-project refusal gaps are machine-auditable without relying on raw logs.
 - Visual matrix acceptance now decodes PNG artifacts with `sharp`; PNG headers or existing files are not enough. Run-mode visual proofs cannot opt out with `visualRequired=false`, and Flow/ray-light coverage requires accepted visual evidence.
@@ -178,6 +210,9 @@ Still open or refused: CUDA, MIOpen full-runtime GPU HMR, HIPRT MegaKernel direc
 Additional commits since the previous status pass:
 
 ```text
+2ce7bf864 feat(gpu-hmr): add ROCm matrix compute oracle
+013e3f84c docs(gpu-hmr): record HIPRT light-gain proof
+0cc266cc8 test(gpu-hmr): add HIPRT light-gain runtime profile
 6a56a06cd fix(gpu-hmr): verify prior ROCm oracle evidence
 17e61a8a6 fix(gpu-hmr): allow raw ROCm oracle progression
 0a46e00cc fix(gpu-hmr): surface ROCm app hook proof limitations
