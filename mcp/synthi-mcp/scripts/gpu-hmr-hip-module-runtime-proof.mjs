@@ -884,7 +884,7 @@ function buildFissionReport({ profile, compiled, runtimeTrace, oracleArtifacts }
   const verifierEvidenceRef = `runtime:fission-verifier-report:${sha256Text(stableJson(decision)).replace(/^sha256:/, '')}`;
   return {
     selected_island: `hip-module-hsaco:${profile.targetId}:${compiled.afterHsacoHash}`,
-    selected_reason: 'verified_hip_module_contract',
+    selected_reason: 'verified_fission_contract',
     changed_sources: [profile.afterPath],
     included_dependencies: [profile.profilePath, PROBE_SOURCE_PATH],
     excluded_host_sources: [],
@@ -1089,8 +1089,8 @@ function buildProofLedgerRecord({
   oracleArtifacts,
   oracleValidation,
 }) {
-  const afterEpoch = 2;
-  const beforeEpoch = 1;
+  const afterEpoch = '2';
+  const beforeEpoch = '1';
   const dispatchId = runtimeTrace.dispatchEvents?.[1]?.id ?? 'hip-module-dispatch-epoch-2';
   const processId = runtimeTrace.processId;
   const outputEvent = {
