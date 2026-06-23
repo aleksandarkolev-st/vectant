@@ -16,7 +16,7 @@ Current accepted proof is broader than one fixture, but it is not universal prod
 - HIPRT same-process CameraRays ray-traced visual proof with embedded proof ledger, strict runtime proof artifact, shader-cache artifact binding, data-derived nonblank oracle-region proof, and full cold/hot1/hot2-different-edit/negative run-mode coverage,
 - HIPRT same-process MegaKernel direct-light-gain ray-traced visual proof on the real HIPRT checkout, proving a second HIPRT kernel path without runner branching or relaxed visual thresholds,
 - ThreeJS external runtime visual proof as an external screenshot profile,
-- WebGPU Chrome/AMD RDNA4 runtime visual HMR proof for an explicit-empty-layout WGSL shader/pipeline profile with cold/hot1/hot2-different-edit/negative run-mode coverage.
+- WebGPU Chrome/AMD runtime visual HMR proof for both an explicit-empty-layout WGSL shader/pipeline profile and an explicit-profiled pipeline profile with a real uniform bind group plus float32 vertex buffer runtime trace, each with cold/hot1/hot2-different-edit/negative run-mode coverage.
 
 Current fail-closed evidence also includes:
 
@@ -26,20 +26,21 @@ Current fail-closed evidence also includes:
 
 Current strict matrix behavior deliberately downgrades older HIPRT warm visual artifacts that lack an embedded proof ledger and data-derived oracle-region proof. HIPRT matrix ingestion now recomputes the oracle region from the persisted before/after PNG pixels; JSON claims about a nonblank region are not accepted by themselves. A fresh 2026-06-22 HIPRT CameraRays rerun is accepted as strict full-runtime HIPRT GPU HMR. The MegaKernel direct-light-zero profile is now a proven blank-oracle-region refusal, not a success. OIDN live preflight ran against the real HIPRT checkout and remains rejected for HIP output proof because the installed OIDN HIP device library depends on `libamdhip64.so.5`, which is absent on this ROCm 7 worker. No symlink, ABI shim, fake ICD, or synthesized runtime was added.
 
-The latest generated machine-readable validation matrix ledger reports 42 rows: 17 full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 15 structured refusal rows, 1 preflight-only row, 7 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
+The latest generated machine-readable validation matrix ledger reports 50 rows: 21 full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 17 structured refusal rows, 1 preflight-only row, 9 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:3c35a18bb4b97da0f7eb2806c00643f669e76f402b5b17e54e6f41a83e3d23b7
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T170606Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T170606Z.md
-latest rerun context: validation matrix rerun over existing proof artifacts after real ROCm profile proof-obligation gates, CPU/GPU firewall evidence gates, explicit target-progression failure gates, required app-hook fail-closed gates, generic runtime capability preflight surfacing, and the latest MIOpen no-device strict refusal rerun
-summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
+gpu-validation-matrix-ledger:sha256:39d554dcd8c0949df0728db440e0bf0d0df5cb5817055ecd3b84981d4ed4501d
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T172834Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T172834Z.md
+latest rerun context: validation matrix rerun over existing proof artifacts after WebGPU profiled-layout runtime binding proof, real ROCm profile proof-obligation gates, CPU/GPU firewall evidence gates, explicit target-progression failure gates, required app-hook fail-closed gates, generic runtime capability preflight surfacing, and the latest MIOpen no-device strict refusal rerun
+summary: 50 rows, 21 full-runtime GPU HMR, 17 refusals, 9 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 self-check: npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check -> passed
-history audit: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:51b02527c6b39fe56b4d03fc9643d795bcf14de7e50bebae78e164f29f17e282, 635 rows with 593 historical unproven rows included
-history audit json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260623T171125Z.json
+history audit: npm --prefix mcp/synthi-mcp run proof:validation-matrix:history -> passed, gpu-validation-matrix-ledger:sha256:6f3f59fa3ab14f739b17474d2f99286caaa92016fa1af9898fd97e45bb4e08c4, 643 rows with 593 historical unproven rows included
+history audit json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260623T172939Z.json
+timing summary: npm --prefix mcp/synthi-mcp run proof:timing-metrics -> passed, count=20, json=mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260623T172937Z.json
 ```
 
-The global per-target run-mode coverage row is `accepted` for the 3 enrolled run-mode targets: generated Flow, generated ray-light, and scoped WebGPU WGSL. SAXPY remains a valid full-runtime evidence row outside that run-mode-suite obligation. Scoped WebGPU now has structured cold runtime evidence, hot delta 1, hot delta 2 with a different shader edit, and binding-layout negative-edit refusal rows.
+The global per-target run-mode coverage row is `accepted` for the 4 enrolled run-mode targets: generated Flow, generated ray-light, scoped WebGPU explicit-empty WGSL, and scoped WebGPU explicit-profiled WGSL. SAXPY remains a valid full-runtime evidence row outside that run-mode-suite obligation. Scoped WebGPU now has structured cold runtime evidence, hot delta 1, hot delta 2 with a different shader edit, and binding-layout/vertex-layout negative-edit refusal rows.
 
 The backend-specific `hiprt_run_modes` coverage row is now `accepted` for `hiprt-camera-rays-horizontal-mirror`: it has structured cold runtime visual evidence, hot delta 1, hot delta 2 with a different source edit, and an ABI-changing negative-edit refusal. HIPRT also has an accepted MegaKernel direct-light-gain same-process visual proof as a second scoped kernel path. This still does not mean broad HIPRT acceptance; it means those scoped profiles satisfy their recorded proof gates without overclaiming other HIPRT kernels or applications.
 
@@ -90,7 +91,7 @@ fission: device_translation_unit_hmr only; per-kernel/smallest-safe fission rema
 visual inspection: before-after-diff.png and hot-delta-2-diff.png opened with the local image tool on 2026-06-23; both were visibly nonblank and showed different Flow particle-ring patterns.
 ```
 
-Latest WebGPU run-mode visual proof:
+Latest WebGPU explicit-empty run-mode visual proof:
 
 ```text
 hot delta 1 proof id: webgpu-runtime-visual-proof:sha256:23db4d987cd865c25a728ec8dfabde136e2beabc40e1efc3392e4a35f9cebcf5
@@ -114,6 +115,37 @@ hot delta 2 changed_pixel_ratio: 0.32245225694444446
 negative edit refusal reasons: bind_group_layouts_not_supported_by_runner, webgpu_pipeline_layout_or_binding_abi_changed, gpu_hmr_rejected_before_load
 visuals inspected locally with the image tool: hot1 after/diff and hot2 after/diff PNGs from `webgpu-runtime-runmodes-hot1-20260623-neg-*` and `webgpu-runtime-runmodes-hot2-20260623-neg-*`
 visual result: hot1 after yellow inverted triangle with nonblank diff; hot2 after green rotated triangle with nonblank diff
+```
+
+Latest WebGPU explicit-profiled bind-group/vertex-buffer visual proof:
+
+```text
+profile: webgpu-wgsl-runtime-profiled-layout
+pipeline scope: explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list
+resource state hash: sha256:febd60767177cf5ba103734735eba5e2f083a4b5131c5fab915567e9a843b2f3
+runtime binding trace: bind_group_count=1, bind_group_binding=0, uniform_bytes=32, vertex_buffer_count=1, vertex_bytes=48
+native WebGPU API gates: createBuffer, createBindGroupLayout, createBindGroup, createShaderModule, createRenderPipeline all accepted
+hot delta 1 proof id: webgpu-runtime-visual-proof:sha256:8d94cd439ac99621306ae61e5a18b7dbf5f56b91d6f2987145fed66dafbe67da
+hot delta 1 runtime proof artifact: gpu-runtime-proof:sha256:470fb0ec6bfa136668d7aff0f15172a6af81bd21ca05f8ed16d7e55ade88185c
+hot delta 1 ledger: gpu-ledger-proof:sha256:cdcc04ec9a057c64f0efed4025c66edbba461220c6023bd00160e2a4b0b9b5d9
+hot delta 1 run-mode proof: runtime-run-mode-proof:sha256:06af47d8287b451e133be6e506361d4cf80dd0b257f89aab3867b0efab2b0fa0
+hot delta 1 cold runtime proof: runtime-run-mode-proof:sha256:0a2ec2786ef5170781996b2ab2db685eaf3137746cd0c13af52d7bc4e0e85934
+hot delta 1 negative refusal: agent-split-negative-edit-refusal:sha256:ef5c2543eb5bfdbef5046484fdda9c32b2c78a33c6273e011093dce6bf54d7ca
+hot delta 1 total validator wall time: 931537200ns
+hot delta 1 trigger_to_visible_time: 122562400ns
+hot delta 1 changed_pixel_ratio: 0.23291666666666666
+hot delta 2 proof id: webgpu-runtime-visual-proof:sha256:ebbf8c0f8811befb7b65a6bf9a522afb16f0a51dffeea1800caace1c53d59f80
+hot delta 2 runtime proof artifact: gpu-runtime-proof:sha256:d4e424a459c2f5887484a9b583ac9aca06a3f8791a1cde02706c169c53f5b76a
+hot delta 2 ledger: gpu-ledger-proof:sha256:cbc9fdc9f8fe40feb89254bc4102756c6e310dbec84ac6f45f19771196ded890
+hot delta 2 run-mode proof: runtime-run-mode-proof:sha256:8e66ce0e816b0cc9367baf98db27505fe92794d137bcad1f6fca5331a431e2b0
+hot delta 2 cold runtime proof: runtime-run-mode-proof:sha256:a0072433e1aaee79da0c15b3760a8bccb9f05d215e6f09ebd71d3e0f1ce9b4b2
+hot delta 2 negative refusal: agent-split-negative-edit-refusal:sha256:db00663cbc41045c1fb17475d6ee2f5eaa254baf65ae0539b0ccada63f1c2e23
+hot delta 2 total validator wall time: 923131800ns
+hot delta 2 trigger_to_visible_time: 123553700ns
+hot delta 2 changed_pixel_ratio: 0.24441840277777777
+negative edit refusal reasons: storage uniform binding or vertex attribute format changes reject before GPU HMR acceptance
+visuals inspected locally with the image tool: profiled hot1 after/diff and hot2 after/diff PNGs from `webgpu-profiled-hot1-20260623T1732-*` and `webgpu-profiled-hot2-20260623T1732-*`
+visual result: hot1 and hot2 rendered nonblank profile-driven triangles with visible diffs derived from the post-epoch frame
 ```
 
 Latest large ROCm ML infrastructure validation:
@@ -185,7 +217,7 @@ visual result: compute-only target; no frame captured or counted, and the row st
 
 This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths above, including the scoped HIPRT CameraRays and scoped WebGPU paths.
 
-Still open or refused: CUDA, MIOpen full-runtime GPU HMR, real ROCm matrix multiplication full-runtime GPU HMR, HIPRT MegaKernel direct-light-zero, OIDN HIP output proof, Vulkan, OpenCL full-runtime acceptance, Bevy, and broader WebGPU profiles with bind groups, vertex buffers, or engine-owned pipeline caches.
+Still open or refused: CUDA, MIOpen full-runtime GPU HMR, real ROCm matrix multiplication full-runtime GPU HMR, HIPRT MegaKernel direct-light-zero, OIDN HIP output proof, Vulkan, OpenCL full-runtime acceptance, Bevy, WebGPU compute, WebGPU engine-owned pipeline caches, and WebGPU resource layouts beyond the proven uniform-buffer plus float32-vertex-buffer subset.
 
 ## Hard Rules Preserved
 
@@ -347,7 +379,7 @@ strict runtime artifact gates reject invented source-consistency modes and requi
 OpenCL preflight now refuses missing runtime evidence and cannot count as dispatch/readback output proof.
 Vulkan preflight now refuses missing ICD/tool evidence and cannot count as pipeline, command-buffer, or frame-output proof.
 WebGPU preflight now records browser, launch flags, adapter, features, limits, and a diagnostic screenshot while still refusing shader/pipeline/frame HMR proof.
-WebGPU runtime visual proof now accepts only an executed explicit-empty-layout WGSL pipeline scope and derives success from shared ledger invariants, visual thresholds, process-continuity evidence, and native WebGPU API evidence.
+WebGPU runtime visual proof now accepts executed explicit-empty WGSL and explicit-profiled uniform-buffer/float32-vertex-buffer pipeline scopes, and derives success from shared ledger invariants, visual thresholds, process-continuity evidence, native WebGPU API evidence, and resource binding traces.
 The timing metrics summary collector now normalizes WebGPU runtime visual proofs into the shared `synthi.gpu.hmr.timing_metrics.v1` schema.
 The validation matrix ledger collector now scans proof artifacts and separates full-runtime GPU HMR, external visual-profile proof, preflight-only evidence, structured refusal, and unproven historical attempts.
 The matrix self-check includes a forged WebGPU success flag with no ledger/images and verifies it remains unproven.
@@ -385,10 +417,14 @@ npm --prefix mcp/synthi-mcp run proof:webgpu:preflight:self-check
 $env:SLUG='webgpu-preflight-20260609'; npm --prefix mcp/synthi-mcp run proof:webgpu:preflight
 npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual:self-check
 $env:SLUG='webgpu-runtime-visual-20260609'; npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual
+npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual:profiled
+npm --prefix mcp/synthi-mcp run proof:webgpu:runtime-visual:profiled-hot2
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check
-node mcp/synthi-mcp/scripts/gpu-hmr-timing-metrics-summary.mjs --format json
+npm --prefix mcp/synthi-mcp run proof:timing-metrics
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix
+  result: passed
+npm --prefix mcp/synthi-mcp run proof:validation-matrix:history
   result: passed
 npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:megakernel-light-gain
   result: passed on ROCm/RX 9070 XT worker with visual image-tool inspection
@@ -1139,16 +1175,17 @@ total validator wall time: 951597400ns
 trigger to visible time: 67788100ns
 ```
 
-The shared timing summary includes the scoped WebGPU row:
+The shared timing summary includes the scoped WebGPU rows:
 
 ```text
-timing summary json: mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260609T051533Z.json
+timing summary json: mcp/synthi-mcp/.gpu-hmr-test-logs/timing-metrics/gpu-hmr-timing-metrics-20260623T172937Z.json
 source: webgpu_runtime_visual
-profile: webgpu-wgsl-runtime-triangle
+profiles: webgpu-wgsl-runtime-triangle, webgpu-wgsl-runtime-profiled-layout
 status: pass
-total wall: 951.5974ms
-edit/trigger to first visual: 67.7881ms
-visual diff: 35.6061ms
+profiled hot1 total wall: 931.5372ms
+profiled hot1 trigger to visible: 122.5624ms
+profiled hot2 total wall: 923.1318ms
+profiled hot2 trigger to visible: 123.5537ms
 ```
 
 The accepted WebGPU proof is deliberately narrow:
@@ -1169,7 +1206,7 @@ no shim applied: true
 no browser flag claimed as HMR: true
 ```
 
-Unsupported WebGPU profiles with non-empty bind-group layouts, vertex buffers, fixed color target formats outside the preferred canvas format, or non-opaque alpha mode are rejected by the runner instead of being overclaimed.
+Unsupported WebGPU profiles outside the implemented explicit-empty and explicit-profiled uniform-buffer/float32-vertex-buffer scopes, including other bind group resource kinds, unsupported vertex formats, fixed color target formats outside the preferred canvas format, or non-opaque alpha mode, are rejected by the runner instead of being overclaimed.
 
 ## External Project Profiles
 
@@ -1358,7 +1395,7 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 | OIDN | CPU diagnostics pass; HIP backend rejected due `libamdhip64.so.5` dependency mismatch. | Use a matching OIDN HIP build for ROCm 7 or keep OIDN out of accepted HIP proof. No shims. |
 | OpenCL | Worker has `libOpenCL.so.1`, but no vendor ICD and no `clinfo`; structured preflight rejected OpenCL runtime proof. | Install/provide a real OpenCL vendor ICD and then add dispatch/event/readback ledger proof. No synthesized ICDs or shims. |
 | Vulkan | Worker has `libvulkan.so.1`, but no ICD files and no `vulkaninfo`; structured preflight rejected Vulkan runtime proof. | Provide a real Vulkan ICD/tooling, then add pipeline-layout, command-buffer, frame-boundary, and visual oracle ledger proof. No synthesized ICDs or shims. |
-| WebGPU | Scoped Chrome/AMD RDNA4 WGSL runtime visual proof accepted for an explicit-empty-layout, no-bindings, no-vertex-buffers triangle-list pipeline. | Broaden only with executed evidence for bind groups, vertex buffers, pipeline-cache ownership, command/frame traces, and output oracles. Browser flags must remain evidence-only. |
+| WebGPU | Scoped Chrome/AMD WGSL runtime visual proof accepted for explicit-empty triangle-list and explicit-profiled uniform-bind-group/float32-vertex-buffer triangle-list profiles. | Broaden only with executed evidence for additional bind group kinds, vertex formats, pipeline-cache ownership, command/frame traces, engine integration, and output oracles. Browser flags must remain evidence-only. |
 | External projects | ThreeJS visual profile accepted; Bevy remains rejected. Latest run timed out with no decoded frames or visual oracle; an earlier strict gate rejected missing full-runtime proof. | Implement backend-specific full-runtime proof for Bevy before accepting it. |
 | CUDA | Not tested on this AMD machine. | Validate only on CUDA hardware. |
 | Narrow fission | Deterministic generated-split fission verifier accepted `trace_light_rays` and refused Flow's multi-kernel device role. | Broaden only with verifier evidence for additional backends/projects; do not infer per-kernel fission from one-file output. |
@@ -1367,7 +1404,7 @@ SYNTHI_GPU_HMR_EXTERNAL_MCP_TRANSPORT=docker SYNTHI_GPU_HMR_EXTERNAL_SIGNALING_U
 ## Accepted Statement
 
 ```text
-On the local AMD ROCm machine, Synthi can split generated ROCm/HIP GPU workloads, compile the device artifact with hipcc, hot-reload a device-only edit in a running preview/runtime, prove generated ROCm/HIP device artifacts with strict runtime-ledger acceptance, and provide pixel-backed visual evidence for Flow, ray-light, scoped HIPRT CameraRays with cold/hot1/hot2/negative run-mode coverage, scoped WebGPU WGSL, and external ThreeJS. Blank HIPRT render-region output and ABI-changing HIPRT edits are refused instead of accepted.
+On the local AMD ROCm machine, Synthi can split generated ROCm/HIP GPU workloads, compile the device artifact with hipcc, hot-reload a device-only edit in a running preview/runtime, prove generated ROCm/HIP device artifacts with strict runtime-ledger acceptance, and provide pixel-backed visual evidence for Flow, ray-light, scoped HIPRT CameraRays with cold/hot1/hot2/negative run-mode coverage, scoped WebGPU WGSL explicit-empty and explicit-profiled binding profiles, and external ThreeJS. Blank HIPRT render-region output and ABI-changing HIPRT/WebGPU edits are refused instead of accepted.
 ```
 
 Do not claim:
@@ -1380,7 +1417,7 @@ Broad HIPRT has strict-matrix full-runtime acceptance beyond the scoped CameraRa
 OIDN HIP produced or validated the accepted output.
 OpenCL dispatch/readback output proof was validated on this worker.
 Vulkan pipeline/command-buffer/frame output proof was validated on this worker.
-General WebGPU bind-group, vertex-buffer, engine-cache, or arbitrary app shader HMR was validated on this worker.
+General WebGPU bind-group kinds, vertex formats, engine-cache, compute, or arbitrary app shader HMR was validated on this worker.
 A one-file generated .hip split proves per-kernel or smallest-island fission without deterministic verifier evidence.
 Flow's one-file generated .hip split proves per-kernel or smallest-island fission.
 Bevy has full-runtime proof-ledger acceptance.
