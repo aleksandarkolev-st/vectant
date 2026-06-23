@@ -170,11 +170,23 @@ function classifyReport(json, filePath) {
   if (!json || typeof json !== 'object') return null;
 
   if (json.timingMetrics?.schemaVersion === GPU_HMR_TIMING_METRICS_SCHEMA_VERSION) {
+    if (json.timingMetrics.source === 'webgpu_runtime_compute') {
+      return {
+        kind: 'webgpu_runtime_compute',
+        metrics: withProofContext(webGpuRuntimeComputeTimingMetrics(json), json),
+      };
+    }
     if (
       json.timingMetrics.source === 'hip_module_runtime'
       && hardenedHipModuleProofAccepted(json) !== true
     ) {
       return null;
+    }
+    if (json.timingMetrics.source === 'hip_module_runtime') {
+      return {
+        kind: 'hip_module_runtime',
+        metrics: withProofContext(hipModuleRuntimeTimingMetrics(json), json),
+      };
     }
     return {
       kind: json.timingMetrics.source ?? 'precomputed',
@@ -500,6 +512,37 @@ function runSelfCheck() {
     path.join(repoRoot, 'tmp', 'schema-backed-hiprt.json'),
   );
   assertSelfCheck(schemaBackedHiprt?.kind === 'hiprt_warm_runtime', 'HIPRT timing proof schema must classify');
+
+  const staleEmbeddedWebGpuCompute = classifyReport(
+    {
+      schema: 'synthi.gpu_hmr.webgpu_runtime_compute_proof.v1',
+      proofId: 'webgpu-runtime-compute-proof:sha256:selfcheck',
+      gpuHmrSuccess: true,
+      profile: { id: 'webgpu-compute-selfcheck' },
+      timingMetrics: {
+        schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
+        source: 'webgpu_runtime_compute',
+        visualEvidence: { screenshotCount: 1, accepted: true },
+      },
+      computeOracleArtifacts: {
+        raw_readback_hash: 'sha256:selfcheck',
+        raw_readback_byte_length: 32,
+        deterministic_slice_hash: 'sha256:selfcheck-slice',
+        rendered_card_png: 'proof-card.png',
+      },
+      timings: { total_validator_wall_time: 1_000_000 },
+      proofLedger: { records: [{ metricScope: 'hot_delta_1', cacheState: 'pipeline_cache_warm' }] },
+    },
+    path.join(repoRoot, 'tmp', 'webgpu-compute-selfcheck.json'),
+  );
+  assertSelfCheck(
+    staleEmbeddedWebGpuCompute?.metrics?.visualEvidence?.accepted === false,
+    'WebGPU compute timing must recompute stale embedded visual evidence',
+  );
+  assertSelfCheck(
+    staleEmbeddedWebGpuCompute?.metrics?.computeEvidence?.computeCardAccepted === true,
+    'WebGPU compute timing must preserve compute-card evidence separately',
+  );
 
   console.log(JSON.stringify({
     ok: true,
