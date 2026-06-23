@@ -63,6 +63,19 @@
       "Denoising/postprocess must not satisfy visual proof unless this mode is explicitly enforced by the adapter."
     ]
   },
+  "negativeEdit": {
+    "source": {
+      "file": "src/Device/kernels/CameraRays.h",
+      "before": "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData render_data)",
+      "after": "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData render_data, int synthi_negative_abi_break)"
+    },
+    "abiCompatibilityClass": "layout_changed",
+    "reasons": [
+      "kernel_signature_changed",
+      "abi_layout_changed",
+      "hiprt_runtime_adapter_contract_rejects_layout_changed_abi"
+    ]
+  },
   "proof": {
     "requireStrictProvenance": true
   }

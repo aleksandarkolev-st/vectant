@@ -127,6 +127,41 @@ function normalizeRunMode(value) {
   };
 }
 
+function normalizeNegativeEdit(value, sourceFile) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('runtime profile negativeEdit must be an object');
+  }
+  const source = value.source && typeof value.source === 'object' && !Array.isArray(value.source)
+    ? value.source
+    : {};
+  const before = nonEmptyString(value.before ?? source.before, 'negativeEdit.before');
+  const after = nonEmptyString(value.after ?? source.after, 'negativeEdit.after');
+  if (before === after) {
+    throw new Error('runtime profile negativeEdit.before and negativeEdit.after must differ');
+  }
+  const reasons = optionalStringList(value.reasons ?? value.unsupportedReasons, 'negativeEdit.reasons');
+  if (reasons.length === 0) {
+    throw new Error('runtime profile negativeEdit.reasons must contain at least one reason');
+  }
+  return {
+    source: {
+      file: optionalString(source.file ?? source.path ?? value.sourceFile, 'negativeEdit.source.file')
+        ?.replace(/\\/g, '/')
+        ?? sourceFile,
+      before,
+      after,
+    },
+    reasons,
+    unsupportedReasons: reasons,
+    abiCompatibilityClass: optionalEnum(
+      value.abiCompatibilityClass ?? value.abi_compatibility_class,
+      'negativeEdit.abiCompatibilityClass',
+      ['layout_changed', 'unknown', 'incompatible'],
+    ) ?? 'layout_changed',
+  };
+}
+
 function normalizeDeterministicVisualMode(value) {
   if (value === undefined || value === null) return null;
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -312,6 +347,7 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
       raw.deterministicVisualMode ?? visual.deterministicVisualMode,
     ),
     runMode: normalizeRunMode(raw.runMode ?? runtime.runMode ?? visual.runMode),
+    negativeEdit: normalizeNegativeEdit(raw.negativeEdit ?? runtime.negativeEdit, sourceFile),
     proof: {
       requireStrictProvenance: raw.proof && typeof raw.proof === 'object'
         ? raw.proof.requireStrictProvenance !== false
@@ -355,6 +391,7 @@ export function runtimeProfileToLegacyHiprtWarmProfile(profile) {
     buildEnv: normalized.build.env,
     deterministicVisualMode: normalized.deterministicVisualMode,
     runMode: normalized.runMode,
+    negativeEdit: normalized.negativeEdit,
   };
 }
 
@@ -396,6 +433,9 @@ export function runtimeProfileToHiprtWarmEnv(profile) {
   if (normalized.runMode.editKind) env.SYNTHI_HIPRT_WARM_EDIT_KIND = normalized.runMode.editKind;
   if (normalized.runMode.differentEdit !== null) {
     env.SYNTHI_HIPRT_WARM_DIFFERENT_EDIT = normalized.runMode.differentEdit ? '1' : '0';
+  }
+  if (normalized.negativeEdit) {
+    env.SYNTHI_HIPRT_WARM_NEGATIVE_EDIT_JSON = JSON.stringify(normalized.negativeEdit);
   }
   return env;
 }

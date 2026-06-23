@@ -236,6 +236,12 @@ const CFG = {
     PROFILE.runMode?.differentEdit ?? null,
     'SYNTHI_HIPRT_WARM_DIFFERENT_EDIT',
   ),
+  negativeEdit: parseJsonObjectEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_NEGATIVE_EDIT_JSON
+      ?? process.env.SYNTHI_HIPRT_WARM_NEGATIVE_EDIT_JSON,
+    PROFILE.negativeEdit ?? null,
+    'negative edit',
+  ),
   allowRejected: (process.env.SYNTHI_GPU_HMR_RUNTIME_ALLOW_REJECTED ?? process.env.SYNTHI_HIPRT_WARM_ALLOW_REJECTED) === '1',
   runtimeProfile: PROFILE.runtimeProfile,
 };
@@ -2628,6 +2634,133 @@ async function writeHiprtRuntimeRunModeProofArtifacts(proof) {
   return artifacts;
 }
 
+function normalizeHiprtNegativeEditConfig(value) {
+  if (value === null || value === undefined) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('negative edit must be a JSON object');
+  }
+  const source = value.source && typeof value.source === 'object' && !Array.isArray(value.source)
+    ? value.source
+    : {};
+  const sourceFile = String(source.file ?? source.path ?? value.sourceFile ?? CFG.sourceRel).trim().replace(/\\/g, '/');
+  const before = String(source.before ?? value.before ?? '').trim();
+  const after = String(source.after ?? value.after ?? '').trim();
+  const reasons = [
+    ...(Array.isArray(value.reasons) ? value.reasons : []),
+    ...(Array.isArray(value.unsupportedReasons) ? value.unsupportedReasons : []),
+    ...(Array.isArray(value.unsupported_reasons) ? value.unsupported_reasons : []),
+  ].map((item) => String(item).trim()).filter(Boolean);
+  if (!sourceFile) throw new Error('negative edit source.file is required');
+  if (!before) throw new Error('negative edit source.before is required');
+  if (!after) throw new Error('negative edit source.after is required');
+  if (before === after) throw new Error('negative edit source.before and source.after must differ');
+  if (reasons.length === 0) throw new Error('negative edit reasons are required');
+  return {
+    sourceFile,
+    before,
+    after,
+    reasons: [...new Set(reasons)],
+    abiCompatibilityClass: String(
+      value.abiCompatibilityClass
+        ?? value.abi_compatibility_class
+        ?? 'layout_changed',
+    ).trim() || 'layout_changed',
+  };
+}
+
+async function writeHiprtNegativeEditRefusalArtifact({ proof, baselineSource }) {
+  const negativeEdit = normalizeHiprtNegativeEditConfig(CFG.negativeEdit);
+  if (!negativeEdit) return null;
+  if (negativeEdit.sourceFile !== CFG.sourceRel) {
+    throw new Error(`negative edit source ${negativeEdit.sourceFile} does not match proof source ${CFG.sourceRel}`);
+  }
+  const beforeCount = countOccurrences(baselineSource, negativeEdit.before);
+  const afterCount = countOccurrences(baselineSource, negativeEdit.after);
+  if (beforeCount !== 1) {
+    throw new Error(`negative edit source.before must occur exactly once in git baseline; found ${beforeCount}`);
+  }
+  const editedSource = baselineSource.replace(negativeEdit.before, negativeEdit.after);
+  const editHash = `sha256:${sha256Hex(editedSource)}`;
+  const runMode = runtimeRunModeMetadata({
+    metricScope: 'hot_delta_2',
+    cacheState: CFG.cacheState,
+    editId: `negative-edit:${sha256Hex(editHash).slice(0, 16)}`,
+    editHash,
+    editKind: 'negative_edit',
+    differentEdit: true,
+  });
+  const artifact = {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
+    proofId: `agent-split-negative-edit-refusal:${sha256Json({
+      backend: 'hiprt',
+      profileId: CFG.profileId,
+      sourceFile: negativeEdit.sourceFile,
+      editHash,
+      reasons: negativeEdit.reasons,
+      sourceProofId: proof.proofId,
+    })}`,
+    backend: 'hiprt',
+    targetId: CFG.profileId,
+    target_id: CFG.profileId,
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    route: 'reject',
+    classification: {
+      project_kind: 'gpu_project',
+      edit_kind: 'gpu_artifact_edit',
+      route: 'reject',
+      confidence: 1,
+      blocking_gaps: negativeEdit.reasons,
+    },
+    abiCompatibilityClass: negativeEdit.abiCompatibilityClass,
+    abi_compatibility_class: negativeEdit.abiCompatibilityClass,
+    reasons: negativeEdit.reasons,
+    unsupportedReasons: negativeEdit.reasons,
+    unsupported_reasons: negativeEdit.reasons,
+    source: {
+      file: negativeEdit.sourceFile,
+      before: negativeEdit.before,
+      after: negativeEdit.after,
+      beforeCount,
+      afterCount,
+      baselineHash: proof.source.baselineHash,
+      editedHash: editHash,
+    },
+    runMode,
+    run_mode: runMode,
+    timingMetrics: runMode,
+    timing_metrics: runMode,
+    sourceProofId: proof.proofId,
+    source_proof_id: proof.proofId,
+    evidenceKind: 'negative_edit',
+    evidence_kind: 'negative_edit',
+    coverageObligations: { hiprtRunModes: true, perTargetRunModes: false },
+    coverage_obligations: { hiprt_run_modes: true, per_target_run_modes: false },
+    validationTargetScope: 'hiprt_run_mode_support',
+    validation_target_scope: 'hiprt_run_mode_support',
+  };
+  const artifactPath = path.join(
+    CFG.outputDir,
+    `${cleanIdentifier(proof.slug)}-negative-edit-refusal.json`,
+  );
+  await fs.writeFile(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return {
+    kind: 'negative_edit_refusal',
+    path: artifactPath,
+    proofId: artifact.proofId,
+  };
+}
+
 async function findStrictProofJson() {
   if (CFG.strictProofJson) {
     const filePath = path.resolve(REPO_ROOT, CFG.strictProofJson);
@@ -2962,6 +3095,9 @@ async function main() {
   proof.proofId = `hiprt-warm-runtime-proof:sha256:${sha256Hex(proofBytesForId)}`;
   proof.runModeProofArtifacts = await writeHiprtRuntimeRunModeProofArtifacts(proof);
   proof.run_mode_proof_artifacts = proof.runModeProofArtifacts;
+  const negativeEditRefusal = await writeHiprtNegativeEditRefusalArtifact({ proof, baselineSource });
+  proof.negativeEditRefusalArtifact = negativeEditRefusal;
+  proof.negative_edit_refusal_artifact = negativeEditRefusal;
   const proofPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-proof.json`);
   await fs.writeFile(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
   console.log(JSON.stringify({
