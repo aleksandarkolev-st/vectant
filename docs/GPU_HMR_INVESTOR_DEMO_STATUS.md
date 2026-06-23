@@ -45,11 +45,11 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 23 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:de53d1ef28e1faf2d64b2f03b82851d24b3f3488dcabd48a5ad9c742644ee35f
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T153457Z.json
+global matrix: gpu-validation-matrix-ledger:sha256:c4fe313a37c582c9ca1a265c888b449b8040fa44c29ddb6cfdb38f4ae742a73a
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T161355Z.json
 global matrix summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
-latest global matrix after large ROCm ML MIOpen refusal proof: gpu-validation-matrix-ledger:sha256:de53d1ef28e1faf2d64b2f03b82851d24b3f3488dcabd48a5ad9c742644ee35f
-latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T153457Z.json
+latest global matrix after real ROCm proof-obligation and firewall gating: gpu-validation-matrix-ledger:sha256:c4fe313a37c582c9ca1a265c888b449b8040fa44c29ddb6cfdb38f4ae742a73a
+latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T161355Z.json
 latest global matrix summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 global per-target run modes: accepted for 3 enrolled run-mode targets: generated Flow, generated ray-light, and scoped WebGPU WGSL; SAXPY remains a full-runtime evidence row outside that run-mode-suite target set
 HIPRT run modes: accepted for hiprt-camera-rays-horizontal-mirror with cold runtime visual evidence, hot-delta-1, hot-delta-2 different edit, and ABI-changing negative-edit refusal evidence
@@ -290,6 +290,8 @@ The ROCm examples matrix multiplication profile is now a required `small-oracle`
 Real ROCm compile phases now preserve an evidence-only compile bridge facet. The latest tightened matrix run records no compile-declared `load_device`, device-sidecar, artifact-reference, runtime-proof material, or matching bridge signal strings, so the matrix row exposes `real_rocm_compile_bridge:compile_response_device_sidecar_bridge_not_declared`.
 Compile bridge candidates are also non-authoritative. Even if a future compile response names `load_device`, device sidecars, artifacts, and proof material, the matrix keeps it as `compile_response_bridge_candidate_not_runtime_proof` until runtime artifact transport, epoch publication, dispatch, host identity, and output-oracle proof are actually observed.
 Real ROCm device-sidecar contracts are now a separate non-authoritative facet. The latest MIOpen rerun derives an OpenCL-program candidate from CMake/build metadata and include reachability, then keeps it blocked until runtime artifact transport, epoch publication, dispatch trace, host identity, and output-oracle proof are observed.
+Real ROCm final-acceptance profile proof obligations are now matrix-gated. A final-acceptance target without an output-oracle profile is refused unless explicitly marked refusal-only, and `targetProgression.required=true` implies full-runtime proof.
+Real ROCm CPU/GPU firewall evidence is now matrix-gated from recomputed ledger/runtime evidence. Accepted rows must explicitly prove `cpuHmrUsed=false`, `fullRebuildUsed=false`, and `processRestarted=false`; missing firewall evidence, forged CPU fallback, hidden full rebuild, process restart, and old-artifact dispatch are refusal material.
 Real ROCm final-acceptance target progression now revalidates prior small-oracle rows from raw compute oracle artifacts or readable visual artifacts with matching content hashes; proof ids and status labels are not enough.
 Real ROCm validation matrix rows now carry native ROCm launch-boundary and runtime-eligibility facets as queryable refusal gaps, while preserving `can_satisfy_dispatch_proof=false` for native function resolution.
 Real ROCm matrix rows now preserve `outputOracleResolution`, `targetProgression`, and `targetProgressionGates`, so the serious-project refusal reason is queryable from the matrix artifact instead of inferred from logs.
@@ -332,7 +334,7 @@ npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:megakernel-light-gain -
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:de53d1ef28e1faf2d64b2f03b82851d24b3f3488dcabd48a5ad9c742644ee35f
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:c4fe313a37c582c9ca1a265c888b449b8040fa44c29ddb6cfdb38f4ae742a73a
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
