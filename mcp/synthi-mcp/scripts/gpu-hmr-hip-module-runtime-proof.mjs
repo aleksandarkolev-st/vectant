@@ -168,6 +168,50 @@ function normalizeFloat32Values(rawValues, field) {
   return values;
 }
 
+function regexEscape(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeKernelParam(param) {
+  const text = String(param ?? '').replace(/\s+/g, ' ').trim();
+  if (!text || text === 'void') return null;
+  const cleaned = text.replace(/\s*=\s*[^,]+$/u, '').trim();
+  const match = cleaned.match(/^(.+?)([A-Za-z_][A-Za-z0-9_]*)$/u);
+  if (!match) return { raw: cleaned, type: cleaned, name: '' };
+  const type = match[1]
+    .trim()
+    .replace(/\s*([*&])\s*/gu, '$1')
+    .replace(/\s+/gu, ' ');
+  return { raw: cleaned, type, name: match[2] };
+}
+
+function extractKernelSignature(source, kernelName) {
+  const pattern = new RegExp(
+    `(?:extern\\s+"C"\\s+)?__global__\\s+void\\s+${regexEscape(kernelName)}\\s*\\(([^)]*)\\)`,
+    'su',
+  );
+  const match = String(source ?? '').match(pattern);
+  const params = match
+    ? match[1].split(',').map(normalizeKernelParam).filter(Boolean)
+    : [];
+  return {
+    found: Boolean(match),
+    params,
+    signatureHash: sha256Text(stableJson(params.map((param) => ({ type: param.type, name: param.name })))),
+  };
+}
+
+function abiSignature(params) {
+  const normalized = firstArray(params).map((param) => ({
+    type: firstText(param.type) ?? 'unknown',
+    name: firstText(param.name) ?? '',
+  }));
+  return {
+    params: normalized,
+    signatureHash: sha256Text(stableJson(normalized)),
+  };
+}
+
 function normalizeDim(raw, fallback = {}) {
   const dim = objectOrEmpty(raw);
   return {
@@ -351,6 +395,19 @@ async function loadProfile(profilePath) {
   const deterministicSlice = objectOrEmpty(oracle.deterministicSlice ?? oracle.deterministic_slice);
   const runMode = objectOrEmpty(raw.runMode ?? raw.run_mode);
   const negativeEdit = objectOrEmpty(raw.negativeEdit ?? raw.negative_edit);
+  const negativeSourceAfterPath = resolveRelative(profileDir, firstText(
+    negativeEdit.sourceAfterPath,
+    negativeEdit.source_after_path,
+    negativeEdit.afterPath,
+    negativeEdit.after_path,
+  ));
+  const negativeSourceAfter = negativeSourceAfterPath ? await readFile(negativeSourceAfterPath, 'utf8') : null;
+  const negativeSourceAfterSignature = negativeSourceAfter
+    ? extractKernelSignature(
+      negativeSourceAfter,
+      firstText(kernel.name, kernel.kernelName, kernel.kernel_name) ?? 'synthi_hmr_float32_epoch_kernel',
+    )
+    : null;
   return {
     raw,
     schemaVersion: firstText(raw.schemaVersion, raw.schema_version) ?? PROFILE_SCHEMA,
@@ -438,6 +495,9 @@ async function loadProfile(profilePath) {
         negativeEdit.abiCompatibilityClass,
         negativeEdit.abi_compatibility_class,
       ) ?? 'layout_changed',
+      sourceAfterPath: negativeSourceAfterPath,
+      sourceAfterHash: negativeSourceAfter ? sha256Text(negativeSourceAfter) : null,
+      sourceAfterSignature: negativeSourceAfterSignature,
     } : null,
   };
 }
@@ -1299,6 +1359,13 @@ function buildRunModeProof({ profile, runMode, ledger, proofLedger, oracleArtifa
 
 function buildNegativeRefusal({ profile }) {
   if (!profile.negativeEdit) return null;
+  const acceptedSignature = abiSignature(profile.abi.params);
+  const negativeSignature = profile.negativeEdit.sourceAfterSignature;
+  const signatureChanged = acceptedSignature.signatureHash !== negativeSignature?.signatureHash;
+  const executableStaticCheckAccepted =
+    negativeSignature?.found === true
+    && signatureChanged
+    && profile.negativeEdit.abiCompatibilityClass === 'layout_changed';
   const material = {
     schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
     backend: 'hip',
@@ -1307,11 +1374,25 @@ function buildNegativeRefusal({ profile }) {
     editId: profile.negativeEdit.editId,
     editHash: profile.negativeEdit.editHash,
     claim: profile.negativeEdit.claim,
-    reasons: profile.negativeEdit.reasons,
+    reasons: executableStaticCheckAccepted
+      ? profile.negativeEdit.reasons
+      : [...profile.negativeEdit.reasons, 'negative_edit_signature_change_not_observed'],
     abiCompatibilityClass: profile.negativeEdit.abiCompatibilityClass,
+    executableStaticCheck: {
+      source: 'hip_module_negative_source_signature',
+      sourceAfterPath: profile.negativeEdit.sourceAfterPath ? relRepo(profile.negativeEdit.sourceAfterPath) : null,
+      sourceAfterHash: profile.negativeEdit.sourceAfterHash,
+      acceptedSignatureHash: acceptedSignature.signatureHash,
+      negativeSignatureHash: negativeSignature?.signatureHash ?? null,
+      negativeKernelFound: negativeSignature?.found === true,
+      signatureChanged,
+      acceptedParams: acceptedSignature.params,
+      negativeParams: negativeSignature?.params ?? [],
+      accepted: executableStaticCheckAccepted,
+    },
     gpuHmrSuccess: false,
     acceptedForGpuHmr: false,
-    refusalProven: true,
+    refusalProven: executableStaticCheckAccepted,
     refusedBeforeLoad: true,
     validationTargetScope: 'hip_module_runtime_readback_target',
     validation_target_scope: 'hip_module_runtime_readback_target',
@@ -1353,7 +1434,8 @@ async function selfCheck() {
     name: 'negative-edit-refuses-before-load',
     ok:
       buildNegativeRefusal({ profile })?.refusalProven === true
-      && buildNegativeRefusal({ profile })?.acceptedForGpuHmr === false,
+      && buildNegativeRefusal({ profile })?.acceptedForGpuHmr === false
+      && buildNegativeRefusal({ profile })?.executableStaticCheck?.accepted === true,
   });
   checks.push({
     name: 'unsupported-scope-fails-self-check',

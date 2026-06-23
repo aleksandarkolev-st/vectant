@@ -72,6 +72,7 @@
   },
   "negativeEdit": {
     "editId": "hip-module-runtime-readback-abi-layout-change",
+    "sourceAfterPath": "hip-module/float32-after-abi-layout-changed.hip",
     "claim": "Kernel argument layout changed and must be rejected before GPU HMR acceptance.",
     "reasons": [
       "hip_kernel_argument_layout_changed",
