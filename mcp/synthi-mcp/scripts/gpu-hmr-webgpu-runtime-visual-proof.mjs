@@ -173,6 +173,54 @@ function normalizeSupportedPipeline(rawPipeline = {}) {
   };
 }
 
+function normalizeWebgpuNegativeEdit(rawNegativeEdit = null) {
+  if (!rawNegativeEdit || typeof rawNegativeEdit !== 'object' || Array.isArray(rawNegativeEdit)) {
+    return null;
+  }
+  const pipelineCandidate = rawNegativeEdit.pipeline ?? rawNegativeEdit.pipeline_edit ?? rawNegativeEdit.pipelineEdit;
+  if (!pipelineCandidate || typeof pipelineCandidate !== 'object' || Array.isArray(pipelineCandidate)) {
+    throw new Error('negativeEdit.pipeline is required for WebGPU refusal proof');
+  }
+  let unsupportedReasons = [];
+  try {
+    normalizeSupportedPipeline(pipelineCandidate);
+  } catch (error) {
+    unsupportedReasons = Array.isArray(error.unsupportedReasons)
+      ? error.unsupportedReasons
+      : [String(error.message || error)];
+  }
+  if (unsupportedReasons.length === 0) {
+    throw new Error('negativeEdit.pipeline must be rejected by the WebGPU profile validator');
+  }
+  const declaredReasons = Array.isArray(rawNegativeEdit.reasons)
+    ? rawNegativeEdit.reasons
+    : Array.isArray(rawNegativeEdit.unsupportedReasons)
+      ? rawNegativeEdit.unsupportedReasons
+      : Array.isArray(rawNegativeEdit.unsupported_reasons)
+        ? rawNegativeEdit.unsupported_reasons
+        : [];
+  const editHash = sha256Text(stableJson({
+    pipelineCandidate,
+    unsupportedReasons,
+    declaredReasons,
+  }));
+  return {
+    editId: firstText(
+      rawNegativeEdit.editId,
+      rawNegativeEdit.edit_id,
+    ) ?? `webgpu-negative-edit:${editHash.replace(/^sha256:/, '').slice(0, 16)}`,
+    editHash,
+    reasons: [...new Set([
+      ...unsupportedReasons,
+      ...declaredReasons.map((reason) => firstText(reason)).filter(Boolean),
+      'webgpu_pipeline_layout_or_binding_abi_changed',
+      'gpu_hmr_rejected_before_load',
+    ])],
+    pipeline: pipelineCandidate,
+    claim: firstText(rawNegativeEdit.claim) ?? null,
+  };
+}
+
 function candidateBrowserExecutables() {
   return [
     CFG.browserExecutable,
@@ -215,6 +263,7 @@ async function loadProfile(profilePath) {
   const minChangedPixelRatio = finiteNumber(profile.visualProof?.minChangedPixelRatio, 0.01);
   const minMeanAbsDelta8bit = finiteNumber(profile.visualProof?.minMeanAbsDelta8bit, 1.0);
   const pipeline = normalizeSupportedPipeline(profile.pipeline);
+  const negativeEdit = normalizeWebgpuNegativeEdit(profile.negativeEdit ?? profile.negative_edit);
   return {
     raw: profile,
     profilePath: resolvedPath,
@@ -245,6 +294,7 @@ async function loadProfile(profilePath) {
       vertexCount: finiteNumber(shader.draw?.vertexCount ?? shader.draw?.vertex_count, 3),
     },
     pipeline,
+    negativeEdit,
     visualProof: {
       minChangedPixelRatio,
       minMeanAbsDelta8bit,
@@ -1040,8 +1090,19 @@ function coldRuntimeRunModeMetadata(profile) {
   };
 }
 
+function webgpuRunModeCoverageObligations(profile) {
+  const perTargetRunModes = Boolean(profile.negativeEdit);
+  return {
+    webgpuRunModes: true,
+    webgpu_run_modes: true,
+    perTargetRunModes,
+    per_target_run_modes: perTargetRunModes,
+  };
+}
+
 async function writeColdRuntimeRunModeProof({ filePath, profile, proof, artifacts }) {
   const runMode = coldRuntimeRunModeMetadata(profile);
+  const coverageObligations = webgpuRunModeCoverageObligations(profile);
   const artifact = {
     schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
     proofId: `runtime-run-mode-proof:${sha256Text(stableJson({
@@ -1082,6 +1143,10 @@ async function writeColdRuntimeRunModeProof({ filePath, profile, proof, artifact
     source_proof_id: proof.proofId,
     evidenceKind: 'cold_runtime_initial_visual_oracle',
     evidence_kind: 'cold_runtime_initial_visual_oracle',
+    coverageObligations,
+    coverage_obligations: coverageObligations,
+    validationTargetScope: 'webgpu_run_mode_target',
+    validation_target_scope: 'webgpu_run_mode_target',
   };
   await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
   return artifact;
@@ -1260,6 +1325,7 @@ function buildRuntimeProofArtifact({
 }
 
 async function writeHotRuntimeRunModeProof({ filePath, profile, proof, artifacts, metrics, runMode }) {
+  const coverageObligations = webgpuRunModeCoverageObligations(profile);
   const artifact = {
     schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
     proofId: `runtime-run-mode-proof:${sha256Text(stableJson({
@@ -1318,10 +1384,87 @@ async function writeHotRuntimeRunModeProof({ filePath, profile, proof, artifacts
     source_proof_id: proof.proofId,
     evidenceKind: 'webgpu_visual_oracle',
     evidence_kind: 'webgpu_visual_oracle',
-    coverageObligations: { webgpuRunModes: true, perTargetRunModes: false },
-    coverage_obligations: { webgpu_run_modes: true, per_target_run_modes: false },
+    coverageObligations,
+    coverage_obligations: coverageObligations,
     validationTargetScope: 'webgpu_run_mode_target',
     validation_target_scope: 'webgpu_run_mode_target',
+  };
+  await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
+  return artifact;
+}
+
+async function writeWebgpuNegativeEditRefusal({ filePath, profile, proof, runMode }) {
+  if (!profile.negativeEdit) return null;
+  const negativeRunMode = {
+    metric_clock: 'monotonic_ns',
+    metricClock: 'monotonic_ns',
+    metric_scope: 'hot_delta_2',
+    metricScope: 'hot_delta_2',
+    cache_state: runMode.cache_state,
+    cacheState: runMode.cacheState,
+    edit_id: profile.negativeEdit.editId,
+    editId: profile.negativeEdit.editId,
+    edit_hash: profile.negativeEdit.editHash,
+    editHash: profile.negativeEdit.editHash,
+    edit_kind: 'negative_edit',
+    editKind: 'negative_edit',
+    different_edit: true,
+    differentEdit: true,
+  };
+  const seed = {
+    schemaVersion: 'synthi.gpu.hmr.agent_split_negative_edit_refusal.v1',
+    backend: 'webgpu',
+    targetId: profile.targetId,
+    target_id: profile.targetId,
+    profileId: profile.id,
+    profile_id: profile.id,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    route: 'reject',
+    classification: {
+      project_kind: 'gpu_project',
+      edit_kind: 'gpu_artifact_edit',
+      route: 'reject',
+      confidence: 1,
+      blocking_gaps: profile.negativeEdit.reasons,
+    },
+    reasons: profile.negativeEdit.reasons,
+    unsupportedReasons: profile.negativeEdit.reasons,
+    unsupported_reasons: profile.negativeEdit.reasons,
+    negativeEdit: {
+      claim: profile.negativeEdit.claim,
+      pipeline: profile.negativeEdit.pipeline,
+      editHash: profile.negativeEdit.editHash,
+    },
+    negative_edit: {
+      claim: profile.negativeEdit.claim,
+      pipeline: profile.negativeEdit.pipeline,
+      edit_hash: profile.negativeEdit.editHash,
+    },
+    runMode: negativeRunMode,
+    run_mode: negativeRunMode,
+    timingMetrics: negativeRunMode,
+    timing_metrics: negativeRunMode,
+    sourceProofId: proof.proofId,
+    source_proof_id: proof.proofId,
+    evidenceKind: 'negative_edit',
+    evidence_kind: 'negative_edit',
+    coverageObligations: webgpuRunModeCoverageObligations(profile),
+    coverage_obligations: webgpuRunModeCoverageObligations(profile),
+    validationTargetScope: 'webgpu_run_mode_target',
+    validation_target_scope: 'webgpu_run_mode_target',
+  };
+  const artifact = {
+    ...seed,
+    proofId: `agent-split-negative-edit-refusal:${sha256Text(stableJson(seed))}`,
   };
   await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`);
   return artifact;
@@ -1530,6 +1673,7 @@ async function runProof() {
   const proofPath = path.join(ARTIFACT_DIR, `${profileSlug}-proof.json`);
   const coldRunModeProofPath = path.join(ARTIFACT_DIR, `${profileSlug}-cold-run-mode-proof.json`);
   const hotRunModeProofPath = path.join(ARTIFACT_DIR, `${profileSlug}-${runMode.metric_scope}-run-mode-proof.json`);
+  const negativeEditRefusalPath = path.join(ARTIFACT_DIR, `${profileSlug}-negative-edit-refusal.json`);
   const summaryPath = path.join(ARTIFACT_DIR, `${profileSlug}-summary.txt`);
   const hashEndNs = process.hrtime.bigint();
   timings.ns.artifactHash = durationNs(hashStartNs, hashEndNs);
@@ -1733,14 +1877,22 @@ async function runProof() {
       metrics,
       runMode,
     });
+    const negativeEditRefusal = await writeWebgpuNegativeEditRefusal({
+      filePath: negativeEditRefusalPath,
+      profile,
+      proof,
+      runMode,
+    });
     proof.runModeCompanionArtifacts = {
       coldRuntimeInitial: coldRunModeProofPath,
       [runMode.metric_scope]: hotRunModeProofPath,
+      ...(negativeEditRefusal ? { negativeEditRefusal: negativeEditRefusalPath } : {}),
     };
     proof.run_mode_companion_artifacts = proof.runModeCompanionArtifacts;
     proof.runModeCompanionProofIds = {
       coldRuntimeInitial: coldRunModeProof.proofId,
       [runMode.metric_scope]: hotRunModeProof.proofId,
+      ...(negativeEditRefusal ? { negativeEditRefusal: negativeEditRefusal.proofId } : {}),
     };
     proof.run_mode_companion_proof_ids = proof.runModeCompanionProofIds;
 
@@ -1755,6 +1907,8 @@ async function runProof() {
       `cold_run_mode_proof_json=${coldRunModeProofPath}`,
       `hot_run_mode_proof_id=${hotRunModeProof.proofId}`,
       `hot_run_mode_proof_json=${hotRunModeProofPath}`,
+      `negative_edit_refusal_proof_id=${negativeEditRefusal?.proofId ?? 'none'}`,
+      `negative_edit_refusal_json=${negativeEditRefusal ? negativeEditRefusalPath : ''}`,
       `ledger_failed_invariants=${ledgerQuery.failedInvariants.map((failure) => failure.code).join(',') || 'none'}`,
       `runtime_proof_strict_gate=${proof.runtimeProofArtifact.strictGate?.status ?? 'unknown'}`,
       `visual_thresholds_accepted=${visualThresholdValidation.accepted}`,
@@ -2025,6 +2179,7 @@ async function main() {
   console.log(`summary_txt=${summaryPath}`);
   console.log(`cold_run_mode_proof_json=${proof.runModeCompanionArtifacts?.coldRuntimeInitial ?? ''}`);
   console.log(`hot_run_mode_proof_json=${proof.runModeCompanionArtifacts?.[proof.timingMetrics?.metric_scope] ?? ''}`);
+  console.log(`negative_edit_refusal_json=${proof.runModeCompanionArtifacts?.negativeEditRefusal ?? ''}`);
   console.log(`before=${proof.artifacts.beforeImage}`);
   console.log(`after=${proof.artifacts.afterImage}`);
   console.log(`diff=${proof.artifacts.diffImage}`);
