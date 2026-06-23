@@ -14,6 +14,7 @@ Current accepted proof is broader than one fixture, but it is not universal prod
 - MCP preview visual HMR for generated ray-light and Flow workloads with cold split, hot delta 1, hot delta 2 with a different edit, and negative edit refusal,
 - deterministic generated-split fission verification for ray-light `trace_light_rays`,
 - HIPRT same-process CameraRays ray-traced visual proof with embedded proof ledger, strict runtime proof artifact, shader-cache artifact binding, data-derived nonblank oracle-region proof, and full cold/hot1/hot2-different-edit/negative run-mode coverage,
+- HIPRT same-process MegaKernel direct-light-gain ray-traced visual proof on the real HIPRT checkout, proving a second HIPRT kernel path without runner branching or relaxed visual thresholds,
 - ThreeJS external runtime visual proof as an external screenshot profile,
 - WebGPU Chrome/AMD RDNA4 runtime visual HMR proof for an explicit-empty-layout WGSL shader/pipeline profile with cold/hot1/hot2-different-edit/negative run-mode coverage.
 
@@ -24,17 +25,17 @@ Current fail-closed evidence also includes:
 
 Current strict matrix behavior deliberately downgrades older HIPRT warm visual artifacts that lack an embedded proof ledger and data-derived oracle-region proof. HIPRT matrix ingestion now recomputes the oracle region from the persisted before/after PNG pixels; JSON claims about a nonblank region are not accepted by themselves. A fresh 2026-06-22 HIPRT CameraRays rerun is accepted as strict full-runtime HIPRT GPU HMR. The MegaKernel direct-light-zero profile is now a proven blank-oracle-region refusal, not a success. OIDN live preflight ran against the real HIPRT checkout and remains rejected for HIP output proof because the installed OIDN HIP device library depends on `libamdhip64.so.5`, which is absent on this ROCm 7 worker. No symlink, ABI shim, fake ICD, or synthesized runtime was added.
 
-The latest generated machine-readable validation matrix ledger reports 38 rows: 15 full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 14 structured refusal rows, 1 preflight-only row, 6 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
+The latest generated machine-readable validation matrix ledger reports 42 rows: 17 full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 15 structured refusal rows, 1 preflight-only row, 7 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:2edc0cbe13fbab680af6b23458b998ffc4be691c90e3159a169273d3e48216b4
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T123921Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T123921Z.md
+gpu-validation-matrix-ledger:sha256:2f16aacc0d8f17388fca5c70d6bea43467f1f0bb8b4e37e68e62e2a1dd127ad2
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T130134Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T130134Z.md
 ```
 
 The global per-target run-mode coverage row is `accepted` for the 3 enrolled run-mode targets: generated Flow, generated ray-light, and scoped WebGPU WGSL. SAXPY remains a valid full-runtime evidence row outside that run-mode-suite obligation. Scoped WebGPU now has structured cold runtime evidence, hot delta 1, hot delta 2 with a different shader edit, and binding-layout negative-edit refusal rows.
 
-The backend-specific `hiprt_run_modes` coverage row is now `accepted` for `hiprt-camera-rays-horizontal-mirror`: it has structured cold runtime visual evidence, hot delta 1, hot delta 2 with a different source edit, and an ABI-changing negative-edit refusal. This still does not mean broad HIPRT acceptance; it means the scoped CameraRays profile now satisfies the plan's run-mode sequence without overclaiming other HIPRT kernels or applications.
+The backend-specific `hiprt_run_modes` coverage row is now `accepted` for `hiprt-camera-rays-horizontal-mirror`: it has structured cold runtime visual evidence, hot delta 1, hot delta 2 with a different source edit, and an ABI-changing negative-edit refusal. HIPRT also has an accepted MegaKernel direct-light-gain same-process visual proof as a second scoped kernel path. This still does not mean broad HIPRT acceptance; it means those scoped profiles satisfy their recorded proof gates without overclaiming other HIPRT kernels or applications.
 
 Current focused Flow/ray-light matrix:
 
@@ -324,6 +325,8 @@ node mcp/synthi-mcp/scripts/gpu-hmr-timing-metrics-summary.mjs --format json
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix
   result: passed
+npm --prefix mcp/synthi-mcp run proof:hiprt:same-process:megakernel-light-gain
+  result: passed on ROCm/RX 9070 XT worker with visual image-tool inspection
 ```
 
 ## Validation Matrix Ledger
@@ -332,32 +335,34 @@ Latest generated matrix artifact:
 
 ```text
 schema: synthi.gpu.hmr.validation_matrix_ledger.v1
-proof id: gpu-validation-matrix-ledger:sha256:2edc0cbe13fbab680af6b23458b998ffc4be691c90e3159a169273d3e48216b4
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T123921Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T123921Z.md
+proof id: gpu-validation-matrix-ledger:sha256:2f16aacc0d8f17388fca5c70d6bea43467f1f0bb8b4e37e68e62e2a1dd127ad2
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T130134Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T130134Z.md
 ```
 
 Matrix result:
 
 ```text
-row count: 38
-full-runtime GPU HMR rows: 15
+row count: 42
+full-runtime GPU HMR rows: 17
   flow
   ray-light
   saxpy_kernel+saxpy_init_kernel
   hiprt-camera-rays-horizontal-mirror
+  hiprt-megakernel-direct-light-gain
   webgpu-wgsl-runtime-triangle
-strict cold split rows: 6
+strict cold split rows: 7
 deterministic fission rows: 1
   trace_light_rays
 external visual-profile rows: 1
   threejs-webgl-shader-lava
-structured refusal rows: 14
+structured refusal rows: 15
   bevy-wgsl-shader-material
   flow generated negative edit refusals
   ray-light generated negative edit refusals
   real-rocm-miopen-activation-large-ml
   hiprt-camera-rays-horizontal-mirror ABI-changing negative edit refusal
+  hiprt-megakernel-direct-light-gain ABI-changing negative edit refusal
   hiprt-megakernel-direct-light-zero
   oidn-hiprt-rocm-preflight-20260622-real-checkout
   opencl-rocm-preflight-20260609-after-output-gate
@@ -404,7 +409,7 @@ OpenCL, Vulkan, and Bevy rows are evidence-backed refusals, not GPU HMR acceptan
 The large real ROCm/MIOpen row is an evidence-backed refusal. It is matrix-ingested as a generic real ROCm validation row and remains rejected because strict runtime proof artifact, proof-ledger success, same-process app-hook contract proof, output/visual oracle proof, and required final-acceptance progression gates are missing. The latest matrix row carries `outputOracleResolution` with profile `none`, zero source-derived candidates, no selected source, no contract, and no runtime profile; `targetProgression` showing phase `final-acceptance` and required=true; plus native ROCm launch-boundary, app-hook, and runtime-eligibility gaps showing that native function resolution was evidence only, not Synthi artifact transport, epoch publication, dispatch, host identity, or oracle proof.
 Real ROCm validation acceptance requires artifact-backed oracle evidence. A recomputed ledger can satisfy compute-output proof, but visual ledger outputs must also have readable visual files; top-level oracle success booleans are not authority.
 OIDN HIP is an evidence-backed refusal from the real 2026-06-22 checkout preflight; CPU OIDN diagnostics passed, HIP device creation/readback failed, and no shim/symlink/synthesized runtime was applied.
-HIPRT CameraRays is accepted only for the strict same-process ray-traced CameraRays profile, with the matrix recomputing oracle-region nonblank proof from persisted before/after PNG pixels. HIPRT MegaKernel direct-light-zero is a proven blank oracle-region refusal. The `hiprt_run_modes` plan row is now `accepted` for CameraRays because structured artifacts prove cold runtime visual evidence, hot delta 1, hot delta 2 with a different edit, and ABI-changing negative-edit refusal.
+HIPRT CameraRays is accepted only for the strict same-process ray-traced CameraRays profile, with the matrix recomputing oracle-region nonblank proof from persisted before/after PNG pixels. HIPRT MegaKernel direct-light-gain is now accepted as a second scoped HIPRT same-process visual proof on the `MegaKernel` dispatch path; its ABI-changing negative edit is refused. HIPRT MegaKernel direct-light-zero remains a proven blank oracle-region refusal. The `hiprt_run_modes` plan row is accepted because structured artifacts prove the CameraRays cold/hot1/hot2-different-edit/negative sequence, and the broader `hiprt_visual_path` row now has CameraRays plus MegaKernel light-gain visual ledger evidence.
 The per-kernel/smallest-safe fission row is a deterministic fission verifier proof, not a full-runtime GPU HMR row. Runtime acceptance remains ledger-gated.
 The global `per_target_run_modes` plan row is accepted for 3 enrolled run-mode targets because generated Flow, generated ray-light, and scoped WebGPU carry the full cold/hot1/hot2-different-edit/negative-edit sequence. SAXPY remains accepted full-runtime evidence outside that run-mode-suite obligation. Scoped HIPRT CameraRays has its own backend-specific `hiprt_run_modes=accepted` row; stale cold-only artifacts no longer create phantom full-runtime target gaps, and negative-edit refusal is evaluated per enrolled target.
 ```
@@ -447,7 +452,7 @@ node --check mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs
 node mcp/synthi-mcp/scripts/gpu-hmr-real-rocm-repo-validation.mjs --self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix
-  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:2edc0cbe13fbab680af6b23458b998ffc4be691c90e3159a169273d3e48216b4
+  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:2f16aacc0d8f17388fca5c70d6bea43467f1f0bb8b4e37e68e62e2a1dd127ad2
   smoke coverage: compute-only real ROCm oracle acceptance plus forged missing raw/schema/card file refusal
 
 ray-light live MCP visual proof with hot-delta timing
@@ -801,7 +806,7 @@ CameraRays run-mode suite proof:
 
 ```text
 matrix coverage row: hiprt_run_modes=accepted
-matrix proof id: gpu-validation-matrix-ledger:sha256:2edc0cbe13fbab680af6b23458b998ffc4be691c90e3159a169273d3e48216b4
+matrix proof id: gpu-validation-matrix-ledger:sha256:2f16aacc0d8f17388fca5c70d6bea43467f1f0bb8b4e37e68e62e2a1dd127ad2
 
 hot delta 1 proof id: hiprt-warm-runtime-proof:sha256:d0a8b4ca701d855e96ce0c6b812c668a4307901d13b232948e5c629fe7b0384b
 hot delta 1 runtime proof: gpu-runtime-proof:sha256:41cfc3ac84b5d95ee667711bcbb52e76a6fc4c2be96905d95f3fac4e7ce4b355
@@ -821,6 +826,39 @@ cold runtime visual run-mode proof: runtime-run-mode-proof:sha256:e889f9f87531a4
 negative ABI edit refusal proof: agent-split-negative-edit-refusal:sha256:f44d46b50f0c36124535d1d348bc49b49b75073b56d0992a1d57ec1e273e7a01
 negative refusal reasons: kernel_signature_changed, abi_layout_changed, hiprt_runtime_adapter_contract_rejects_layout_changed_abi
 visual inspection: hot delta 1 and hot delta 2 diff PNGs were opened with the local image tool and were visibly nonblank, high-change ray-traced frame diffs.
+```
+
+MegaKernel direct-light-gain proof:
+
+```text
+profile: hiprt-megakernel-direct-light-gain
+mode: same-process
+accepted: true
+matrix outcome: full_runtime_gpu_hmr
+proof id: hiprt-warm-runtime-proof:sha256:bfc7237c96db6688d94410167ff705fb41c0a955c6dee01ccd43011f3537c102
+strict runtime proof id: gpu-runtime-proof:sha256:2256732f63143775e7c15db599828ef1b6a32dbb82fef0cba0aaf0fcd946ddef
+proof ledger id: gpu-ledger-proof:sha256:8ede8c7a1bcea38429eb855947e73150fa8d7b508ee6301a81d7cd521b94721b
+acceptance contract hash: sha256:39a6c7d0d85bbd67385c5f9aca6e8c6e939212188d73ef5e9a01d272387369fa
+strict gate: pass
+proof json: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-megakernel-light-gain-20260623-proof.json
+before: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-megakernel-light-gain-20260623-same-process-baseline-framebuffer.png
+after: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-megakernel-light-gain-20260623-same-process-changed-framebuffer.png
+diff: mcp/synthi-mcp/.gpu-hmr-test-artifacts/hiprt-light-math-warm-proof/hiprt-megakernel-light-gain-20260623-diff-amplified.png
+changed pixels: 35.40494791666667%
+mean abs delta 8-bit: 7.759528356481481
+max channel delta 8-bit: 110
+oracle-region nonblank: true
+oracle-region changed visible ratio: 0.9197007248071077
+adapter build: 71334ms
+same-process live recompile: 32718ms
+trigger wait: 748ms
+edit to first visual: 37546ms
+screenshot capture: 40501ms
+total validator wall: 348533.3747ms
+run-mode proof: runtime-run-mode-proof:sha256:b3024731a9269acf258397ad569f81fc9ab30826494ebf95105e3f1e6c2c10f8
+negative ABI edit refusal: agent-split-negative-edit-refusal:sha256:7ad67b17ba2154822ae576208675c1f837485d4e1574a310c463f8875476b46b
+negative refusal reasons: kernel_signature_changed, abi_layout_changed, hiprt_runtime_adapter_contract_rejects_layout_changed_abi
+visual inspection: before, after, and amplified diff PNGs were opened with the local image tool; the scene remains the same Cornell-style ray-traced setup while direct lighting increases, and the diff is visibly nonblank.
 ```
 
 MegaKernel direct-light-zero refusal:
