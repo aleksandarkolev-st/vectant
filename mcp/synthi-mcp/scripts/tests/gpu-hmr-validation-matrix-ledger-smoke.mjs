@@ -1779,6 +1779,13 @@ assert.equal(legacyAgentSplit?.matrixOutcome, 'unproven');
 assert.equal(legacyAgentSplit.targetId, 'unknown');
 
 assert.equal(ledger.summary.acceptedFullRuntimeGpuHmrRows, 4);
+assert.equal(ledger.summary.broadFullRuntimeGpuHmrRows, 0);
+assert.equal(ledger.summary.scopedFullRuntimeGpuHmrRows, 4);
+assert.equal(ledger.summary.allFullRuntimeGpuHmrRows, 4);
+assert.equal(
+  Object.values(ledger.summary.fullRuntimeScopeBreakdown).reduce((sum, count) => sum + count, 0),
+  ledger.summary.allFullRuntimeGpuHmrRows,
+);
 assert.equal(ledger.summary.refusalProvenRows, 4);
 assert.ok(ledger.summary.unprovenRows >= 1);
 

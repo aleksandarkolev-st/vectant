@@ -592,6 +592,37 @@ function rowRequiresPerTargetRunModes(row) {
   return row.coverageObligations?.perTargetRunModes === true;
 }
 
+function inferFullRuntimeAcceptanceScope(row) {
+  const declaredScope = firstText(row.acceptanceScope, row.acceptance_scope);
+  if (declaredScope) return declaredScope;
+  if (row.matrixOutcome !== 'full_runtime_gpu_hmr') return 'not_full_runtime';
+  if (
+    row.acceptanceClass === 'scoped_hip_module_runtime_hmr'
+    || row.proofMode === 'hip_module_runtime_readback'
+    || row.claimBoundary?.broadHipApplicationAcceptance === false
+    || row.claim_boundary?.broadHipApplicationAcceptance === false
+    || row.claim_boundary?.broad_hip_application_acceptance === false
+  ) {
+    return 'hip_module_declared_compute_readback';
+  }
+  if (row.backend === 'webgpu' && row.proofMode === 'webgpu_wgsl_runtime_compute') {
+    return 'webgpu_declared_compute_readback';
+  }
+  if (row.backend === 'webgpu') {
+    return 'webgpu_declared_pipeline_visual';
+  }
+  if (row.backend === 'hiprt') {
+    return 'hiprt_declared_visual_profile';
+  }
+  if (row.backend === 'hip' && row.proofMode === 'run_mode_proof') {
+    return 'generated_rocm_hip_preview_visual';
+  }
+  if (row.backend === 'hip' && row.proofMode === 'strict_runtime_ledger') {
+    return 'rocm_hip_declared_runtime_profile';
+  }
+  return 'declared_profile_scoped';
+}
+
 function finalizeRow(seed) {
   const row = {
     schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
@@ -602,6 +633,8 @@ function finalizeRow(seed) {
     row.validationTargetScope,
     row.validation_target_scope,
   ) ?? (row.coverageObligations.perTargetRunModes ? 'run_mode_target' : 'evidence_row');
+  row.acceptanceScope = inferFullRuntimeAcceptanceScope(row);
+  row.acceptance_scope = row.acceptanceScope;
   const safetyFailures = rowSafetyFailures(row);
   row.safety = {
     accepted: safetyFailures.length === 0,
@@ -3665,10 +3698,17 @@ function selectBestRows(rows) {
 }
 
 function rowIsScopedOnlyFullRuntime(row) {
-  return row.acceptanceClass === 'scoped_hip_module_runtime_hmr'
-    || row.claimBoundary?.broadHipApplicationAcceptance === false
-    || row.claim_boundary?.broadHipApplicationAcceptance === false
-    || row.claim_boundary?.broad_hip_application_acceptance === false;
+  return row.matrixOutcome === 'full_runtime_gpu_hmr'
+    && row.acceptanceScope !== 'broad_library_agnostic';
+}
+
+function fullRuntimeScopeBreakdown(rows) {
+  const out = {};
+  for (const row of rows) {
+    const scope = firstText(row.acceptanceScope, row.acceptance_scope) ?? 'unknown';
+    out[scope] = (out[scope] ?? 0) + 1;
+  }
+  return out;
 }
 
 function coverageSummary(rows) {
@@ -3680,7 +3720,7 @@ function coverageSummary(rows) {
   }
   const fullRuntimeRows = rows.filter((row) => row.matrixOutcome === 'full_runtime_gpu_hmr');
   const scopedRuntimeRows = fullRuntimeRows.filter(rowIsScopedOnlyFullRuntime);
-  const broadRuntimeRows = fullRuntimeRows.filter((row) => !rowIsScopedOnlyFullRuntime(row));
+  const broadRuntimeRows = fullRuntimeRows.filter((row) => row.acceptanceScope === 'broad_library_agnostic');
   const visualProfileRows = rows.filter((row) => row.matrixOutcome === 'visual_profile_accepted');
   const refusalRows = rows.filter((row) => row.matrixOutcome === 'refusal_proven');
   const preflightRows = rows.filter((row) => row.matrixOutcome === 'preflight_only');
@@ -3689,12 +3729,15 @@ function coverageSummary(rows) {
     rowCount: rows.length,
     byOutcome,
     byBackend,
-    acceptedFullRuntimeGpuHmrRows: broadRuntimeRows.length,
-    acceptedFullRuntimeTargets: compactStringList(broadRuntimeRows.map((row) => row.targetId)),
+    acceptedFullRuntimeGpuHmrRows: fullRuntimeRows.length,
+    acceptedFullRuntimeTargets: compactStringList(fullRuntimeRows.map((row) => row.targetId)),
+    broadFullRuntimeGpuHmrRows: broadRuntimeRows.length,
+    broadFullRuntimeTargets: compactStringList(broadRuntimeRows.map((row) => row.targetId)),
     scopedFullRuntimeGpuHmrRows: scopedRuntimeRows.length,
     scopedFullRuntimeTargets: compactStringList(scopedRuntimeRows.map((row) => row.targetId)),
     allFullRuntimeGpuHmrRows: fullRuntimeRows.length,
     allFullRuntimeTargets: compactStringList(fullRuntimeRows.map((row) => row.targetId)),
+    fullRuntimeScopeBreakdown: fullRuntimeScopeBreakdown(fullRuntimeRows),
     visualProfileAcceptedRows: visualProfileRows.length,
     visualProfileTargets: compactStringList(visualProfileRows.map((row) => row.targetId)),
     refusalProvenRows: refusalRows.length,
@@ -3719,6 +3762,7 @@ function rowRefs(rows) {
     proofMode: row.proofMode,
     acceptanceClass: row.acceptanceClass,
     supportedPipelineScope: row.supportedPipelineScope,
+    acceptanceScope: row.acceptanceScope,
     claimBoundaryAccepted: row.claimBoundaryAccepted,
     negativeAbiRefusalAccepted: row.negativeAbiRefusalAccepted,
     validationTargetScope: row.validationTargetScope,
@@ -4149,7 +4193,7 @@ function planCoverage(rows) {
   return [
     coverageEntry({
       id: 'rocm_hip_full_runtime',
-      requirement: 'ROCm/HIP full-runtime proof-ledger acceptance',
+      requirement: 'Generated/profiled ROCm/HIP device-artifact full-runtime proof-ledger acceptance',
       status: hipRuntimeRows.length > 0 ? 'accepted' : 'missing',
       rows: hipRuntimeRows,
       openGaps: hipRuntimeRows.length > 0 ? [] : ['hip_full_runtime_ledger_required'],
