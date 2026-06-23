@@ -8,6 +8,8 @@ import sharp from 'sharp';
 import {
   collectGpuHmrValidationMatrixLedger,
   GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+  queryGpuHmrValidationMatrixLedger,
 } from '../lib/gpu-hmr-validation-matrix-ledger.mjs';
 import {
   assessGeneratedGpuSplitGranularity,
@@ -1347,6 +1349,79 @@ assert.equal(acceptedFlow.visual.changedPixelRatio, 0.042);
 assert.ok(acceptedFlow.ledger.proofId.startsWith('gpu-ledger-proof:sha256:'));
 assert.equal(acceptedFlow.ledger.source, 'recomputed_ledger');
 assert.equal(acceptedFlow.runtimeProofArtifact.accepted, true);
+
+function acceptedMatrixRowMissingFirewall(targetId, firewallFields = {}) {
+  return {
+    schemaVersion: GPU_HMR_VALIDATION_MATRIX_ROW_SCHEMA_VERSION,
+    rowId: `gpu-validation-matrix-row:sha256:${sha256Hex(`missing-firewall:${targetId}`)}`,
+    backend: 'hip',
+    targetId,
+    proofMode: 'strict_runtime_ledger',
+    matrixOutcome: 'full_runtime_gpu_hmr',
+    acceptedForGpuHmr: true,
+    gpuHmrSuccess: true,
+    proofChainAccepted: true,
+    ledger: {
+      present: true,
+      source: 'recomputed_ledger',
+      gpuHmrSuccess: true,
+      failedInvariants: [],
+    },
+    runtimeProofArtifact: {
+      present: true,
+      accepted: true,
+      failedGates: [],
+    },
+    visual: {
+      required: false,
+      accepted: true,
+    },
+    ...firewallFields,
+  };
+}
+const missingFirewallQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    acceptedMatrixRowMissingFirewall('accepted-missing-cpu-firewall', {
+      fullRebuildUsed: false,
+      processRestarted: false,
+    }),
+    acceptedMatrixRowMissingFirewall('accepted-missing-full-rebuild-firewall', {
+      cpuHmrUsed: false,
+      processRestarted: false,
+    }),
+    acceptedMatrixRowMissingFirewall('accepted-missing-process-restart-firewall', {
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+    }),
+    acceptedMatrixRowMissingFirewall('accepted-null-cpu-firewall', {
+      cpuHmrUsed: null,
+      fullRebuildUsed: false,
+      processRestarted: false,
+    }),
+    acceptedMatrixRowMissingFirewall('accepted-null-full-rebuild-firewall', {
+      cpuHmrUsed: false,
+      fullRebuildUsed: null,
+      processRestarted: false,
+    }),
+    acceptedMatrixRowMissingFirewall('accepted-null-process-restart-firewall', {
+      cpuHmrUsed: false,
+      fullRebuildUsed: false,
+      processRestarted: null,
+    }),
+  ],
+});
+assert.equal(missingFirewallQuery.accepted, false);
+for (const expectedGate of [
+  'gpu_hmr_success_requires_cpu_hmr_false',
+  'gpu_hmr_success_requires_full_rebuild_false',
+  'gpu_hmr_success_requires_process_restart_false',
+]) {
+  assert.ok(
+    missingFirewallQuery.failedGates.some((gate) => gate.code === expectedGate),
+    `expected validation matrix safety gate ${expectedGate}`,
+  );
+}
 
 const opencl = ledger.rows.find((row) => row.backend === 'opencl');
 assert.equal(opencl?.matrixOutcome, 'refusal_proven');

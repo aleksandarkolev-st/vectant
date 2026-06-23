@@ -569,14 +569,26 @@ function rowSafetyFailures(row) {
   if (row.acceptedForGpuHmr === true && row.proofChainAccepted !== true) {
     failures.push({ code: 'gpu_hmr_success_requires_accepted_proof_chain' });
   }
-  if (row.acceptedForGpuHmr === true && row.cpuHmrUsed === true) {
-    failures.push({ code: 'gpu_hmr_success_cannot_use_cpu_hmr' });
+  if (row.acceptedForGpuHmr === true && row.cpuHmrUsed !== false) {
+    failures.push({
+      code: row.cpuHmrUsed === true
+        ? 'gpu_hmr_success_cannot_use_cpu_hmr'
+        : 'gpu_hmr_success_requires_cpu_hmr_false',
+    });
   }
-  if (row.acceptedForGpuHmr === true && row.fullRebuildUsed === true) {
-    failures.push({ code: 'gpu_hmr_success_cannot_use_full_rebuild' });
+  if (row.acceptedForGpuHmr === true && row.fullRebuildUsed !== false) {
+    failures.push({
+      code: row.fullRebuildUsed === true
+        ? 'gpu_hmr_success_cannot_use_full_rebuild'
+        : 'gpu_hmr_success_requires_full_rebuild_false',
+    });
   }
-  if (row.acceptedForGpuHmr === true && row.processRestarted === true) {
-    failures.push({ code: 'gpu_hmr_success_cannot_restart_process' });
+  if (row.acceptedForGpuHmr === true && row.processRestarted !== false) {
+    failures.push({
+      code: row.processRestarted === true
+        ? 'gpu_hmr_success_cannot_restart_process'
+        : 'gpu_hmr_success_requires_process_restart_false',
+    });
   }
   if (row.acceptedForGpuHmr === true && row.visual?.required === true && row.visual.accepted !== true) {
     failures.push({ code: 'visual_gpu_hmr_success_requires_readable_visual_artifacts' });
@@ -635,6 +647,9 @@ function ledgerFacet(json) {
     failedInvariants: failures.map((failure) => (
       isObject(failure) ? failure : { code: String(failure) }
     )),
+    invariantSummary: compactObject(query?.invariantSummary ?? query?.invariant_summary),
+    invariant_summary: compactObject(query?.invariantSummary ?? query?.invariant_summary),
+    record: compactObject(query?.record),
   };
 }
 
@@ -761,6 +776,35 @@ async function runtimeProofRow(json, filePath, context) {
     json.timing_metrics,
     json.timings,
   );
+  const derivedProofLedgerRecord = compactObject(
+    json.derivedProofLedgerRecord ?? json.derived_proof_ledger_record,
+  );
+  const ledgerInvariantSummary = compactObject(ledger.invariantSummary ?? ledger.invariant_summary);
+  const ledgerNormalizedRecord = compactObject(ledger.record);
+  const cpuHmrUsed = firstBool(
+    derivedProofLedgerRecord.cpuHmrUsed,
+    derivedProofLedgerRecord.cpu_hmr_used,
+    ledgerInvariantSummary.cpuHmrUsed,
+    ledgerInvariantSummary.cpu_hmr_used,
+    ledgerNormalizedRecord.cpuHmrUsed,
+    ledgerNormalizedRecord.cpu_hmr_used,
+  );
+  const fullRebuildUsed = firstBool(
+    derivedProofLedgerRecord.fullRebuildUsed,
+    derivedProofLedgerRecord.full_rebuild_used,
+    ledgerInvariantSummary.fullRebuildUsed,
+    ledgerInvariantSummary.full_rebuild_used,
+    ledgerNormalizedRecord.fullRebuildUsed,
+    ledgerNormalizedRecord.full_rebuild_used,
+  );
+  const processRestarted = firstBool(
+    derivedProofLedgerRecord.processRestarted,
+    derivedProofLedgerRecord.process_restarted,
+    ledgerInvariantSummary.processRestarted,
+    ledgerInvariantSummary.process_restarted,
+    ledgerNormalizedRecord.processRestarted,
+    ledgerNormalizedRecord.process_restarted,
+  );
   const visualPaths = compactStringList([
     ...artifactPathsFromValue(json.visualEvidenceArtifacts ?? json.visual_evidence_artifacts),
     ...artifactPathsFromValue(json.visualEvidenceRefs ?? json.visual_evidence_refs),
@@ -792,9 +836,9 @@ async function runtimeProofRow(json, filePath, context) {
     ledger,
     visual,
     runMode,
-    cpuHmrUsed: boolOrNull(json.derivedProofLedgerRecord?.cpuHmrUsed ?? json.derived_proof_ledger_record?.cpuHmrUsed),
-    fullRebuildUsed: boolOrNull(json.derivedProofLedgerRecord?.fullRebuildUsed ?? json.derived_proof_ledger_record?.fullRebuildUsed),
-    processRestarted: boolOrNull(json.derivedProofLedgerRecord?.processRestarted ?? json.derived_proof_ledger_record?.processRestarted),
+    cpuHmrUsed,
+    fullRebuildUsed,
+    processRestarted,
     reasons: accepted ? [] : compactStringList([
       json.degradedReason,
       ...(Array.isArray(json.limitations) ? json.limitations.map((item) => item?.degradedReason ?? item?.degraded_reason ?? item) : []),
