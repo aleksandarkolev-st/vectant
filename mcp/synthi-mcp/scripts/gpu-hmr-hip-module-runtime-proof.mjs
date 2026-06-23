@@ -1489,8 +1489,21 @@ async function main() {
     negativeEditRefusal: buildNegativeRefusal({ profile }),
     gpuHmrSuccess: accepted,
     accepted,
-    noHardcodedProjectBranch: true,
-    noShimApplied: true,
+    claimBoundary: {
+      proofAuthority: 'scoped_native_hip_module_runtime_trace',
+      acceptedScope: SUPPORTED_SCOPE,
+      executionBoundary: 'standalone_hip_module_probe',
+      arbitraryTargetRuntimeAccepted: false,
+      arbitraryLibraryAccepted: false,
+      broadHipApplicationAcceptance: false,
+      nativeApisRequired: nativeApiEvidence.required,
+      unsupportedWithoutEvidence: [
+        'target_app_without_declared_reload_hook',
+        'framework_owned_kernel_cache_without_epoch_trace',
+        'library_runtime_without_artifact_transport_trace',
+        'dispatch_without_raw_readback_or_visual_oracle',
+      ],
+    },
   };
   proofMaterial.proofId = `hip-module-runtime-proof:${sha256Text(stableJson({
     schema: proofMaterial.schema,
