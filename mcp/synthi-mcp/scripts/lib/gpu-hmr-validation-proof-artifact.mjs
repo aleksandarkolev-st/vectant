@@ -911,6 +911,62 @@ function targetProgressionGateLimitations(gates) {
     }));
 }
 
+function realRocmAppHookContractSnapshot(input = {}, validationContext = null) {
+  return objectOrNull(input.realRocmAppHookContract)
+    ?? objectOrNull(input.real_rocm_app_hook_contract)
+    ?? objectOrNull(input.appHookContract)
+    ?? objectOrNull(input.app_hook_contract)
+    ?? objectOrNull(validationContext?.realRocmAppHookContract)
+    ?? objectOrNull(validationContext?.real_rocm_app_hook_contract)
+    ?? objectOrNull(validationContext?.appHookContract)
+    ?? objectOrNull(validationContext?.app_hook_contract)
+    ?? null;
+}
+
+function realRocmAppHookContractLimitations(contract) {
+  if (!objectOrNull(contract)) return [];
+  const required = contract.required === true
+    || contract.appHookRequired === true
+    || contract.app_hook_required === true;
+  const proven = contract.canSatisfyRuntimeProof === true
+    || contract.can_satisfy_runtime_proof === true;
+  if (!required || proven) return [];
+  const blockingGaps = compactStringList([
+    ...(Array.isArray(contract.blockingGaps) ? contract.blockingGaps : []),
+    ...(Array.isArray(contract.blocking_gaps) ? contract.blocking_gaps : []),
+  ]);
+  const evidenceRefs = compactStringList([
+    ...(Array.isArray(contract.evidenceRefs) ? contract.evidenceRefs : []),
+    ...(Array.isArray(contract.evidence_refs) ? contract.evidence_refs : []),
+  ]);
+  const observedState = firstString(
+    contract.status,
+    contract.reason,
+    'real_rocm_app_hook_contract_unproven',
+  );
+  return [{
+    stageId: 'real-rocm-app-hook-contract',
+    stage_id: 'real-rocm-app-hook-contract',
+    status: 'blocked',
+    requiredState: 'gpu-hmr-real-rocm-app-hook-contract-proven',
+    required_state: 'gpu-hmr-real-rocm-app-hook-contract-proven',
+    observedState,
+    observed_state: observedState,
+    degradedState: 'gpu-hmr-real-rocm-app-hook-contract-unproven',
+    degraded_state: 'gpu-hmr-real-rocm-app-hook-contract-unproven',
+    degradedReason: observedState,
+    degraded_reason: observedState,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+    evidenceRefs,
+    evidence_refs: evidenceRefs,
+    proofArtifactPath: null,
+    proof_artifact_path: null,
+    phase: null,
+    name: null,
+  }];
+}
+
 function acceptanceContractLimitations(evaluation) {
   if (!objectOrNull(evaluation) || evaluation.accepted === true) return [];
   return compactObjects(evaluation.failedGates).map((gate) => ({
@@ -2449,6 +2505,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
   const targetProgression = targetProgressionSnapshot(input, validationContext);
   const targetProgressionLedger = targetProgressionLedgerSnapshot(input, validationContext);
   const targetProgressionGates = targetProgressionGatesSnapshot(input, validationContext);
+  const realRocmAppHookContract = realRocmAppHookContractSnapshot(input, validationContext);
   const adversarialPreflight = adversarialPreflightFacet(
     adversarialPreflightFromInput(input, validationContext),
   );
@@ -2546,6 +2603,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...adversarialPreflightLimitations(adversarialPreflight),
     ...proofLedgerSourceConsistencyLimitations(proofLedgerSourceConsistency),
     ...proofLedgerLimitations(proofLedgerQuery),
+    ...realRocmAppHookContractLimitations(realRocmAppHookContract),
     ...targetProgressionGateLimitations(targetProgressionGates),
   ];
   const proofFacets = proofFacetsSnapshot(input, visualEvidenceArtifacts);
@@ -2556,6 +2614,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     ...evidenceStringsFromValue(runtimeEvidence),
     ...evidenceStringsFromValue(targetProgressionLedger),
     ...evidenceStringsFromValue(adversarialPreflight),
+    ...evidenceStringsFromValue(realRocmAppHookContract),
   ]);
   const evidenceRefs = evidenceStrings.map((ref) =>
     evidenceRefObject(ref, createdAt, sessionId, visualArtifactsByPath)
@@ -2590,6 +2649,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgression,
     targetProgressionLedger,
     targetProgressionGates,
+    realRocmAppHookContract,
+    real_rocm_app_hook_contract: realRocmAppHookContract,
     adversarialPreflight,
     acceptanceContract,
     acceptanceContractEvaluation,
@@ -2621,6 +2682,7 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     targetProgression,
     targetProgressionLedger,
     targetProgressionGates,
+    realRocmAppHookContract,
     adversarialPreflight,
     acceptanceContract,
     acceptanceContractEvaluation,
@@ -2679,6 +2741,8 @@ export function buildValidationRuntimeProofArtifact(input = {}) {
     target_progression_ledger: targetProgressionLedger,
     targetProgressionGates,
     target_progression_gates: targetProgressionGates,
+    realRocmAppHookContract,
+    real_rocm_app_hook_contract: realRocmAppHookContract,
     adversarialPreflight,
     adversarial_preflight: adversarialPreflight,
     acceptanceContract,

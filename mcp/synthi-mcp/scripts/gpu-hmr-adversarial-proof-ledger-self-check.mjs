@@ -695,6 +695,67 @@ assert.equal(runtimeArtifact.proofLedgerQuery.gpuHmrSuccess, true);
 assert.equal(runtimeArtifact.gpuHmrSuccess, true);
 assert.equal(runtimeArtifact.acceptanceContractEvaluation.accepted, true);
 
+const rejectedRealRocmMissingAppHookArtifact = buildValidationRuntimeProofArtifact({
+  workspaceSlug: 'adversarial-large-rocm-project',
+  sourceEditId: 'gpu-artifact-edit',
+  ...baselineRuntimeMetricInput(),
+  backend: 'hip',
+  gpuArch: 'gfx1201',
+  processId: 'pid-1',
+  deviceUuid: 'device-1',
+  contextHandle: 'hip-context-1',
+  classification: baselineClassification(),
+  cpuHmrUsed: false,
+  fullRebuildUsed: false,
+  processRestarted: false,
+  firewallEvidence: {
+    route: 'gpu_device_sidecar_reload',
+    evidence_source: 'adversarial-self-check:reload-boundary',
+    cpu_hmr_used: false,
+    full_rebuild_used: false,
+    process_restarted: false,
+    process_id_before: 100,
+    process_id_after: 100,
+  },
+  modelProvenance: baselineModelProvenance(),
+  computeOracleArtifacts: baselineComputeOracleArtifacts(),
+  ...baselineProofComponents(),
+  acceptanceContract: baselineContract(),
+  proofLedgerRecord: baselineRecord(),
+  fullRuntimeProof: baselineFullRuntimeProof(),
+  validationContext: {
+    realRocmAppHookContract: {
+      required: true,
+      declared: false,
+      status: 'required_app_hook_contract_missing',
+      canSatisfyRuntimeProof: false,
+      blockingGaps: [
+        'app_hook_contract_not_declared',
+        'app_hook_artifact_transport_runtime_not_observed',
+        'app_hook_epoch_publication_runtime_not_observed',
+        'app_hook_dispatch_trace_runtime_not_observed',
+        'app_hook_output_oracle_runtime_not_observed',
+      ],
+      evidenceRefs: ['native-launch-boundary:observed'],
+    },
+  },
+});
+assert.equal(rejectedRealRocmMissingAppHookArtifact.proofLedgerQuery.gpuHmrSuccess, true);
+assert.equal(rejectedRealRocmMissingAppHookArtifact.acceptanceContractEvaluation.accepted, true);
+assert.equal(rejectedRealRocmMissingAppHookArtifact.gpuHmrSuccess, false);
+assert.equal(
+  rejectedRealRocmMissingAppHookArtifact.realRocmAppHookContract.status,
+  'required_app_hook_contract_missing',
+);
+assert.ok(
+  rejectedRealRocmMissingAppHookArtifact.limitations.some((limitation) =>
+    limitation.stageId === 'real-rocm-app-hook-contract'
+    && limitation.degradedReason === 'required_app_hook_contract_missing'
+    && limitation.blockingGaps.includes('app_hook_dispatch_trace_runtime_not_observed')
+  ),
+  `missing app-hook contract expected real-rocm-app-hook-contract limitation, got ${rejectedRealRocmMissingAppHookArtifact.limitations.map((l) => l.degradedReason).join(',')}`,
+);
+
 const rejectedBlankVisualArtifact = buildValidationRuntimeProofArtifact({
   workspaceSlug: 'adversarial-generic-project',
   sourceEditId: 'gpu-artifact-edit',
