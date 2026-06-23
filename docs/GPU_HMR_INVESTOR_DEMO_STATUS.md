@@ -51,6 +51,9 @@ global matrix summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold spl
 latest global matrix after real ROCm proof-obligation, firewall, target-progression, app-hook gating, runtime capability preflight surfacing, and the latest MIOpen no-device refusal rerun: gpu-validation-matrix-ledger:sha256:dbacec4f6aa3619eda9cc0380e045b674cadfa3e6558018a471aa280c1568e49
 latest global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T170606Z.json
 latest global matrix summary: 42 rows, 17 full-runtime GPU HMR, 15 refusals, 7 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
+history audit matrix: gpu-validation-matrix-ledger:sha256:51b02527c6b39fe56b4d03fc9643d795bcf14de7e50bebae78e164f29f17e282
+history audit path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix-unproven-audit/gpu-hmr-validation-matrix-20260623T171125Z.json
+history audit summary: 635 rows, including 593 historical unproven rows; query accepted because unproven rows stay non-success and carry missing-proof/refusal gaps
 global per-target run modes: accepted for 3 enrolled run-mode targets: generated Flow, generated ray-light, and scoped WebGPU WGSL; SAXPY remains a full-runtime evidence row outside that run-mode-suite target set
 HIPRT run modes: accepted for hiprt-camera-rays-horizontal-mirror with cold runtime visual evidence, hot-delta-1, hot-delta-2 different edit, and ABI-changing negative-edit refusal evidence
 focused Flow/ray-light matrix: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
@@ -200,6 +203,7 @@ historical matrix ledger for this matrix-multiplication run: gpu-validation-matr
 Latest implementation commits:
 
 ```text
+98f949bbf chore(gpu-hmr): add validation matrix history proof script
 3e524e72e test(gpu-hmr): surface ROCm runtime preflight failures
 56ab9db70 test(gpu-hmr): require explicit firewall safety fields
 0a80f4db0 test(gpu-hmr): require phase-specific target progression proof
