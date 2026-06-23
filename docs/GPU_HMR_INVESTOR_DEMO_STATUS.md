@@ -42,9 +42,9 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 23 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:cdfa6c49cbfa6aec2d304fe5ae37d4ef737910148834a42ffda82593cdba2db0
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T204254Z.json
-global matrix summary: 28 rows, 10 full-runtime GPU HMR, 10 refusals, 5 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
+global matrix: gpu-validation-matrix-ledger:sha256:f6bff9ac73b4b87828fe96f8ce4cfb9e928bc5ec749287f60e322adafb45144b
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T021526Z.json
+global matrix summary: 29 rows, 10 full-runtime GPU HMR, 11 refusals, 5 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 focused Flow/ray-light matrix: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 focused matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-focused-flow-ray-light-20260622T181300Z.json
 focused matrix coverage: ROCm/HIP full runtime accepted, Flow visual path accepted, ray-light visual path accepted, per-target run modes accepted, per-kernel/smallest-safe fission accepted
@@ -106,6 +106,10 @@ delta projection: src/kernels/MIOpenNeuron.cl -> src/kernels/activation_function
 accepted GPU HMR: false
 strict refusal: runtime_proof_artifact_missing and proof_state_missing for required gpu-hmr-full-runtime-proven
 visual proof: no MIOpen frame captured; not counted
+matrix row: real_rocm_repo_validation, backend=hip, outcome=refusal_proven, proof_chain=real_rocm_strict_runtime_refusal
+matrix proof id: real-rocm-validation:sha256:2fe1521364517a395d8c4a7beda162b9a6a070a0b17851ee471771d0e2a7b394
+matrix open gaps: strict_runtime_proof_artifact_required, proof_ledger_success_required, output_or_visual_oracle_proof_required
+plan coverage: large_real_rocm_repo=refused
 ```
 
 ## Current Hardening Status
@@ -113,6 +117,9 @@ visual proof: no MIOpen frame captured; not counted
 Latest implementation commits:
 
 ```text
+3ce8c73be fix(gpu-hmr): require artifact-backed real ROCm oracle
+84d9fde83 fix(gpu-hmr): ingest real ROCm validation rows
+562864cac docs(gpu-hmr): record MIOpen large ML validation
 31a081d6c feat(gpu-hmr): add MIOpen large ROCm ML profile
 480fc456b fix(gpu-hmr): trace real ROCm build dependencies
 c0a4f373c fix(gpu-hmr): recompute HIPRT oracle-region pixels
@@ -159,6 +166,7 @@ Narrow generated fission candidates now require topology binding to a content-ad
 The deterministic fission verifier accepts ray-light `trace_light_rays` and refuses Flow because the selected generated device role contains two kernels.
 The validation matrix now carries run-mode evidence, refuses WebGPU supplied-query-only proofs without an embedded ledger, and treats standalone external rejection proof artifacts as first-class refusal rows.
 HIPRT visual matrix acceptance now requires embedded proof-ledger/runtime-artifact materials plus a matrix-recomputed nonblank oracle-region check from persisted before/after PNG pixels; direct-light-zero is refused as blank render-region output.
+Large real ROCm repository rows are matrix-ingested generically from `real_rocm_profile` artifacts and fail closed unless strict runtime proof, recomputed ledger proof, and artifact-backed output or visual oracle proof are present; top-level oracle success booleans are not authority.
 Ray-light and Flow now have hot-delta-1 monotonic timing evidence from live MCP timing-matrix runs.
 Vulkan preflight now rejects missing ICD/tool evidence and cannot count as pipeline or frame-output proof.
 WebGPU preflight records Chrome launch flags, AMD RDNA4 adapter evidence, and a nonblank diagnostic screenshot, but still cannot count as shader/pipeline/frame HMR proof.
@@ -194,7 +202,7 @@ npm --prefix mcp/synthi-mcp run proof:external-project:self-check -> passed
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:cdfa6c49cbfa6aec2d304fe5ae37d4ef737910148834a42ffda82593cdba2db0
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:f6bff9ac73b4b87828fe96f8ce4cfb9e928bc5ec749287f60e322adafb45144b
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
