@@ -2641,6 +2641,107 @@ function validationRunModeCoverage(rows) {
   });
 }
 
+function backendRunModeCoverage({ rows, backend, id, requirement, missingGap }) {
+  const fullRuntimeRows = acceptedRows(rows, (row) => row.backend === backend);
+  if (fullRuntimeRows.length === 0) {
+    return coverageEntry({
+      id,
+      requirement,
+      status: 'missing',
+      openGaps: [missingGap],
+    });
+  }
+
+  const rowsByTarget = new Map();
+  for (const row of fullRuntimeRows) {
+    const key = `${row.backend}:${row.targetId}`;
+    rowsByTarget.set(key, [...(rowsByTarget.get(key) ?? []), row]);
+  }
+
+  const targetKeys = new Set(rowsByTarget.keys());
+  const fullRuntimeRowIds = new Set(fullRuntimeRows.map((row) => row.rowId));
+  const supportRows = rows.filter((row) =>
+    row.backend === backend
+    && !fullRuntimeRowIds.has(row.rowId)
+    && row.runMode?.accepted === true
+    && targetKeys.has(`${row.backend}:${row.targetId}`)
+  );
+  for (const row of supportRows) {
+    const key = `${row.backend}:${row.targetId}`;
+    rowsByTarget.set(key, [...(rowsByTarget.get(key) ?? []), row]);
+  }
+
+  const openGaps = [];
+  const targetCoverage = [];
+  for (const [targetKey, targetRows] of rowsByTarget) {
+    const targetGaps = [];
+    for (const requiredMode of REQUIRED_FULL_TARGET_RUN_MODES) {
+      const hasMode = targetRows.some((row) =>
+        row.runMode?.accepted === true && row.runMode.metricScope === requiredMode
+      );
+      if (!hasMode) targetGaps.push(`${targetKey}:${requiredMode}_evidence_missing`);
+    }
+
+    const hotDelta1EditHashes = new Set(targetRows
+      .filter((row) => row.runMode?.accepted === true && row.runMode.metricScope === 'hot_delta_1')
+      .map((row) => text(row.runMode?.editHash ?? row.runMode?.edit_hash))
+      .filter(Boolean));
+    const hasHotDelta2DifferentEdit = targetRows.some((row) =>
+      row.runMode?.accepted === true
+      && row.runMode.metricScope === 'hot_delta_2'
+      && hotDelta1EditHashes.size > 0
+      && text(row.runMode.editHash ?? row.runMode.edit_hash)
+      && !hotDelta1EditHashes.has(text(row.runMode.editHash ?? row.runMode.edit_hash))
+      && (
+        row.runMode.differentEdit === true
+        || row.runMode.different_edit === true
+        || row.runMode.editKind === 'different_gpu_edit'
+        || row.runMode.edit_kind === 'different_gpu_edit'
+      )
+    );
+    if (!hasHotDelta2DifferentEdit) {
+      targetGaps.push(`${targetKey}:hot_delta_2_different_edit_evidence_missing`);
+    }
+
+    const hasNegativeEditRefusal = targetRows.some((row) =>
+      row.matrixOutcome === 'refusal_proven'
+      && (
+        row.proofMode === 'negative_edit'
+        || row.evidenceKind === 'negative_edit'
+        || row.runMode?.editKind === 'negative_edit'
+        || row.runMode?.edit_kind === 'negative_edit'
+        || row.runMode?.metricScope === 'negative_edit'
+      )
+    );
+    if (!hasNegativeEditRefusal) {
+      targetGaps.push(`${targetKey}:negative_edit_refusal_evidence_missing`);
+    }
+
+    openGaps.push(...targetGaps);
+    const [targetBackend, ...targetIdParts] = targetKey.split(':');
+    targetCoverage.push({
+      targetKey,
+      backend: targetBackend,
+      targetId: targetIdParts.join(':'),
+      status: targetGaps.length === 0 ? 'accepted' : 'partial',
+      rowCount: targetRows.length,
+      rows: rowRefs(targetRows),
+      openGaps: compactStringList(targetGaps),
+    });
+  }
+
+  return coverageEntry({
+    id,
+    requirement,
+    status: openGaps.length === 0 ? 'accepted' : 'partial',
+    rows: [...new Set([...fullRuntimeRows, ...supportRows])],
+    openGaps,
+    targetCoverage,
+    acceptedTargetCount: targetCoverage.filter((entry) => entry.status === 'accepted').length,
+    incompleteTargetCount: targetCoverage.filter((entry) => entry.status !== 'accepted').length,
+  });
+}
+
 function acceptedOrRefusedCoverage({ rows, id, requirement, acceptedPredicate, refusalPredicate, missingGap }) {
   const accepted = acceptedRows(rows, acceptedPredicate);
   if (accepted.length > 0) {
@@ -2710,6 +2811,13 @@ function planCoverage(rows) {
       status: hiprtRows.length > 0 ? 'accepted' : 'missing',
       rows: hiprtRows,
       openGaps: hiprtRows.length > 0 ? [] : ['hiprt_visual_runtime_proof_required'],
+    }),
+    backendRunModeCoverage({
+      rows,
+      backend: 'hiprt',
+      id: 'hiprt_run_modes',
+      requirement: 'HIPRT cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit evidence',
+      missingGap: 'hiprt_run_mode_proof_required',
     }),
     coverageEntry({
       id: 'webgpu_scoped_runtime_visual',
