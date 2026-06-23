@@ -5276,6 +5276,140 @@ function saxpyExpectedOutputChecksum(source, { sourceFile, deltaAfter }) {
   };
 }
 
+function parseMatrixMultiplicationSourceConstants(source) {
+  const blockSizeMatch = /\bconstexpr\s+unsigned\s+int\s+block_size\s*=\s*(\d+)\s*;/m.exec(source);
+  const aRowsMatch = /\bconstexpr\s+unsigned\s+int\s+a_rows\s*=\s*(\d+)\s*;/m.exec(source);
+  const aColsMatch = /\bconstexpr\s+unsigned\s+int\s+a_cols\s*=\s*(\d+)\s*;/m.exec(source);
+  const bColsMatch = /\bconstexpr\s+unsigned\s+int\s+b_cols\s*=\s*(\d+)\s*;/m.exec(source);
+  const aFillMatch = /\bstd::fill\s*\(\s*A\.begin\s*\(\s*\)\s*,\s*A\.end\s*\(\s*\)\s*,\s*([^)]+?)\s*\)\s*;/m.exec(source);
+  const bValueMatch = /\bconstexpr\s+float\s+b_value\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?f?)\s*;/im.exec(source);
+  const blockSize = blockSizeMatch ? Number(blockSizeMatch[1]) : NaN;
+  const aRows = aRowsMatch ? Number(aRowsMatch[1]) : NaN;
+  const aCols = aColsMatch ? Number(aColsMatch[1]) : NaN;
+  const bCols = bColsMatch ? Number(bColsMatch[1]) : NaN;
+  const aFill = aFillMatch ? parseCppNumericLiteral(aFillMatch[1]) : null;
+  const bValue = bValueMatch ? parseCppNumericLiteral(bValueMatch[1]) : null;
+  const maxElements = 16 * 1024 * 1024;
+  if (
+    !Number.isInteger(blockSize)
+    || blockSize <= 0
+    || blockSize > 1024
+    || !Number.isInteger(aRows)
+    || aRows <= 0
+    || !Number.isInteger(aCols)
+    || aCols <= 0
+    || !Number.isInteger(bCols)
+    || bCols <= 0
+    || aRows * bCols > maxElements
+    || aRows % blockSize !== 0
+    || aCols % blockSize !== 0
+    || bCols % blockSize !== 0
+    || aFill === null
+    || bValue === null
+  ) {
+    return null;
+  }
+  return { blockSize, aRows, aCols, bCols, aFill, bValue };
+}
+
+function matrixBValueAfterDelta(deltaAfter) {
+  const match = /\bconstexpr\s+float\s+b_value\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?f?)\s*;/im.exec(
+    String(deltaAfter ?? ''),
+  );
+  return match ? parseCppNumericLiteral(match[1]) : null;
+}
+
+function matrixMultiplicationExpectedOutputChecksum(source, { sourceFile, deltaAfter }) {
+  const constants = parseMatrixMultiplicationSourceConstants(source);
+  const deltaBValue = matrixBValueAfterDelta(deltaAfter);
+  if (!constants || deltaBValue === null) return null;
+  const bytesForBValue = (bValue) => {
+    const elementCount = constants.aRows * constants.bCols;
+    const bytes = Buffer.allocUnsafe(elementCount * 4);
+    const expectedValue = Math.fround(
+      Math.fround(constants.aCols)
+      * Math.fround(constants.aFill)
+      * Math.fround(bValue),
+    );
+    for (let index = 0; index < elementCount; index += 1) {
+      bytes.writeFloatLE(expectedValue, index * 4);
+    }
+    return bytes;
+  };
+  const baselineBytes = bytesForBValue(constants.bValue);
+  const expectedBytes = bytesForBValue(deltaBValue);
+  const baselineSha256 = `sha256:${createHash('sha256').update(baselineBytes).digest('hex')}`;
+  const expectedSha256 = `sha256:${createHash('sha256').update(expectedBytes).digest('hex')}`;
+  const config = {
+    schemaVersion: 'synthi.real_rocm.output_oracle_profile.matrix_multiplication_readback_c.v1',
+    sourceFile,
+    outputTargetId: `${sourceFile}:C`,
+    aRows: constants.aRows,
+    aCols: constants.aCols,
+    bCols: constants.bCols,
+    blockSize: constants.blockSize,
+    aFill: constants.aFill,
+    baselineBValue: constants.bValue,
+    effectiveBValue: deltaBValue,
+    baselineSha256,
+    deltaAfterSha256: `sha256:${createHash('sha256').update(deltaAfter).digest('hex')}`,
+    expectedSha256,
+  };
+  const configJson = JSON.stringify(config);
+  const configHash = `sha256:${createHash('sha256').update(configJson).digest('hex')}`;
+  return {
+    ...config,
+    configHash,
+    oracleId: `oracle:real-rocm:matrix-readback-c:${configHash.slice('sha256:'.length, 'sha256:'.length + 16)}`,
+    producer: 'real_rocm_source_derived_output_profile',
+    probeMode: 'post_hmr_device_to_host_buffer_checksum',
+    probeEvidenceRef: 'evidence:output-oracle:real-rocm-matrix-c-buffer',
+    runtimeProfile: {
+      schemaVersion: 'synthi.gpu_hmr.runtime_output_oracle.v1',
+      enabled: true,
+      profileId: 'hip.matrix-multiplication.readback-c.v1',
+      oracleId: `oracle:real-rocm:matrix-readback-c:${configHash.slice('sha256:'.length, 'sha256:'.length + 16)}`,
+      baselineSha256,
+      expectedSha256,
+      producer: 'real_rocm_source_derived_output_profile',
+      outputTargetId: `${sourceFile}:C`,
+      kernelName: 'matrix_multiplication_kernel',
+      grid: [constants.bCols / constants.blockSize, constants.aRows / constants.blockSize, 1],
+      block: [constants.blockSize, constants.blockSize, 1],
+      buffers: [
+        {
+          name: 'A',
+          elementType: 'f32',
+          count: constants.aRows * constants.aCols,
+          initializer: { kind: 'fill', value: constants.aFill },
+        },
+        {
+          name: 'B',
+          elementType: 'f32',
+          count: constants.aCols * constants.bCols,
+          initializer: { kind: 'fill', value: deltaBValue },
+        },
+        {
+          name: 'C',
+          elementType: 'f32',
+          count: constants.aRows * constants.bCols,
+          initializer: { kind: 'zero' },
+        },
+      ],
+      args: [
+        { kind: 'buffer', name: 'A' },
+        { kind: 'buffer', name: 'B' },
+        { kind: 'buffer', name: 'C' },
+        { kind: 'scalar_u32', value: constants.aCols },
+      ],
+      outputBuffer: 'C',
+      probeMode: 'post_hmr_active_kernel_readback_checksum',
+      probeConfigHash: configHash,
+      probeEvidenceRef: 'evidence:output-oracle:real-rocm-matrix-runtime-probe',
+    },
+  };
+}
+
 function instrumentSaxpyOutputOracleSource(source, oracle, profileId) {
   if (!oracle) return null;
   if (source.includes('SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE')) {
@@ -5320,6 +5454,50 @@ ${indent}    "${oracle.probeEvidenceRef}");
   return withDeclaration.replace(copyMatch[0], copyMatch[0] + oracleCall);
 }
 
+function instrumentMatrixMultiplicationOutputOracleSource(source, oracle, profileId) {
+  if (!oracle) return null;
+  if (source.includes('SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE')) {
+    return source;
+  }
+  const declaration = `
+extern "C" bool synthi_gpu_record_output_buffer_checksum_with_probe(
+    const char* oracle_id,
+    const void* data,
+    std::size_t bytes,
+    const char* expected_sha256,
+    const char* producer,
+    const char* output_target_id,
+    const char* artifact_id,
+    const char* visual_evidence_ref,
+    const char* probe_mode,
+    const char* probe_config_hash,
+    const char* probe_evidence_ref);
+`;
+  const includeMatch = /^#include\s+<cstddef>\s*\r?\n/m.exec(source);
+  if (!includeMatch) return null;
+  const withDeclaration = source.replace(includeMatch[0], includeMatch[0] + declaration);
+  const copyMatch = /^([ \t]*)HIP_CHECK\s*\(\s*hipMemcpy\s*\(\s*C\.data\s*\(\s*\)\s*,\s*d_C\s*,\s*c_bytes\s*,\s*hipMemcpyDeviceToHost\s*\)\s*\)\s*;\s*\r?\n/m.exec(withDeclaration);
+  if (!copyMatch) return null;
+  const indent = copyMatch[1] ?? '    ';
+  const oracleCall = `
+${indent}// SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE:${profileId}
+${indent}// Actual post-dispatch matrix C readback proof.
+${indent}(void)synthi_gpu_record_output_buffer_checksum_with_probe(
+${indent}    "${oracle.oracleId}",
+${indent}    C.data(),
+${indent}    c_bytes,
+${indent}    "${oracle.expectedSha256}",
+${indent}    "${oracle.producer}",
+${indent}    "${oracle.outputTargetId}",
+${indent}    nullptr,
+${indent}    nullptr,
+${indent}    "${oracle.probeMode}",
+${indent}    "${oracle.configHash}",
+${indent}    "${oracle.probeEvidenceRef}");
+`;
+  return withDeclaration.replace(copyMatch[0], copyMatch[0] + oracleCall);
+}
+
 const SOURCE_DERIVED_OUTPUT_ORACLE_PROFILES = Object.freeze([
   {
     id: 'hip.saxpy.readback-y.v1',
@@ -5336,6 +5514,23 @@ const SOURCE_DERIVED_OUTPUT_ORACLE_PROFILES = Object.freeze([
     },
     instrument({ source, oracle }) {
       return instrumentSaxpyOutputOracleSource(source, oracle, this.id);
+    },
+  },
+  {
+    id: 'hip.matrix-multiplication.readback-c.v1',
+    aliases: Object.freeze(['matrix-multiplication-readback-c', 'matrix-c-buffer']),
+    label: 'HIP matrix multiplication post-copy C-buffer checksum',
+    derive({ source, sourceFile, deltaAfter }) {
+      const oracle = matrixMultiplicationExpectedOutputChecksum(source, { sourceFile, deltaAfter });
+      if (!oracle) return null;
+      return {
+        ...oracle,
+        profileId: this.id,
+        profileLabel: this.label,
+      };
+    },
+    instrument({ source, oracle }) {
+      return instrumentMatrixMultiplicationOutputOracleSource(source, oracle, this.id);
     },
   },
 ]);
@@ -8339,6 +8534,77 @@ int main()
     || !saxpyInstrumented.includes(saxpyOracle.expectedSha256)
   ) {
     throw new Error('source-derived output oracle profile self-check failed');
+  }
+  const matrixSelfCheckSource = `
+#include <cstddef>
+template<unsigned int BlockSize>
+__global__ void matrix_multiplication_kernel(const float* A, const float* B, float* C, const unsigned int a_cols)
+{
+}
+template<unsigned int BlockSize>
+void configure_parser(cli::Parser& parser)
+{
+    constexpr unsigned int a_rows = 4;
+    constexpr unsigned int a_cols = 4;
+    constexpr unsigned int b_cols = 4;
+}
+int main()
+{
+    constexpr unsigned int block_size = 2;
+    std::vector<float> A(a_cols * a_rows);
+    std::vector<float> B(b_cols * b_rows);
+    std::vector<float> C(c_cols * c_rows);
+    std::fill(A.begin(), A.end(), 1.F);
+    constexpr float b_value = 0.02F;
+    std::fill(B.begin(), B.end(), b_value);
+    matrix_multiplication_kernel<block_size>
+        <<<grid_dim, block_dim, 0, hipStreamDefault>>>(d_A, d_B, d_C, a_cols);
+    HIP_CHECK(hipMemcpy(C.data(), d_C, c_bytes, hipMemcpyDeviceToHost));
+}
+`;
+  const matrixDeltaAfter = 'constexpr float b_value = 0.03F;';
+  const matrixOracle = matrixMultiplicationExpectedOutputChecksum(matrixSelfCheckSource, {
+    sourceFile: 'self-check/matrix_multiplication/main.hip',
+    deltaAfter: matrixDeltaAfter,
+  });
+  const matrixProfile = SOURCE_DERIVED_OUTPUT_ORACLE_PROFILES.find(
+    (profile) => profile.id === 'hip.matrix-multiplication.readback-c.v1',
+  );
+  const matrixProfileCandidate = matrixProfile?.derive({
+    source: matrixSelfCheckSource,
+    sourceFile: 'self-check/matrix_multiplication/main.hip',
+    deltaAfter: matrixDeltaAfter,
+  });
+  const matrixInstrumented = instrumentMatrixMultiplicationOutputOracleSource(
+    matrixSelfCheckSource,
+    matrixOracle,
+    'hip.matrix-multiplication.readback-c.v1',
+  );
+  const matrixInstrumentedCrlf = instrumentMatrixMultiplicationOutputOracleSource(
+    matrixSelfCheckSource.replace(/\n/g, '\r\n'),
+    matrixOracle,
+    'hip.matrix-multiplication.readback-c.v1',
+  );
+  if (
+    !matrixOracle
+    || !matrixProfileCandidate
+    || matrixProfileCandidate.profileId !== 'hip.matrix-multiplication.readback-c.v1'
+    || matrixOracle.runtimeProfile?.kernelName !== 'matrix_multiplication_kernel'
+    || matrixOracle.runtimeProfile?.grid?.[0] !== 2
+    || matrixOracle.runtimeProfile?.grid?.[1] !== 2
+    || matrixOracle.runtimeProfile?.block?.[0] !== 2
+    || matrixOracle.runtimeProfile?.block?.[1] !== 2
+    || matrixOracle.runtimeProfile?.args?.length !== 4
+    || matrixOracle.runtimeProfile?.outputBuffer !== 'C'
+    || matrixOracle.baselineBValue !== 0.02
+    || matrixOracle.effectiveBValue !== 0.03
+    || matrixOracle.baselineSha256 === matrixOracle.expectedSha256
+    || !/^sha256:[0-9a-f]{64}$/i.test(matrixOracle.expectedSha256)
+    || !matrixInstrumented?.includes('SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE:hip.matrix-multiplication.readback-c.v1')
+    || !matrixInstrumentedCrlf?.includes('SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE:hip.matrix-multiplication.readback-c.v1')
+    || !matrixInstrumented.includes(matrixOracle.expectedSha256)
+  ) {
+    throw new Error('matrix multiplication output oracle profile self-check failed');
   }
   const profileRuntimeOracleContract = outputOracleContractFromRuntimeProfile({
     schemaVersion: 'synthi.gpu_hmr.runtime_output_oracle.v1',
