@@ -72,6 +72,12 @@
       "binding": 1
     },
     "expectedOutputChange": true,
+    "expectedOutput": {
+      "dataType": "float32",
+      "values": [3.0, 7.0, 12.5, 18.0, 28.0, 44.0, 69.0, 109.0],
+      "tolerance": 0.00001,
+      "required": true
+    },
     "deterministicSlice": {
       "offset": 0,
       "length": 32

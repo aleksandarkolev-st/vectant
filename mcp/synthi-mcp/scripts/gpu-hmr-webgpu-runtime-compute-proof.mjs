@@ -134,6 +134,66 @@ function finiteNumber(value, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function finiteNumberArrayOrNull(value) {
+  if (!Array.isArray(value)) return null;
+  const values = value.map((entry) => finiteNumber(entry));
+  return values.every((entry) => entry !== null) ? values : null;
+}
+
+function encodeExpectedFloat32(values) {
+  const array = new Float32Array(values);
+  return Buffer.from(array.buffer.slice(0));
+}
+
+function normalizeFloat32(values) {
+  return Array.from(new Float32Array(values));
+}
+
+function compareFloat32Values(actual, expected, tolerance) {
+  if (!Array.isArray(expected) || expected.length === 0) {
+    return {
+      declared: false,
+      matched: false,
+      compared: 0,
+      maxAbsDelta: null,
+      mismatches: [],
+    };
+  }
+  const normalizedExpected = normalizeFloat32(expected);
+  const compared = Math.min(actual.length, normalizedExpected.length);
+  const mismatches = [];
+  let maxAbsDelta = 0;
+  for (let index = 0; index < compared; index += 1) {
+    const delta = Math.abs(Number(actual[index]) - Number(normalizedExpected[index]));
+    maxAbsDelta = Math.max(maxAbsDelta, delta);
+    if (delta > tolerance) {
+      mismatches.push({
+        index,
+        actual: actual[index],
+        expected: normalizedExpected[index],
+        abs_delta: delta,
+      });
+    }
+  }
+  if (actual.length < normalizedExpected.length) {
+    for (let index = actual.length; index < normalizedExpected.length; index += 1) {
+      mismatches.push({
+        index,
+        actual: null,
+        expected: normalizedExpected[index],
+        abs_delta: null,
+      });
+    }
+  }
+  return {
+    declared: true,
+    matched: mismatches.length === 0,
+    compared,
+    maxAbsDelta,
+    mismatches,
+  };
+}
+
 function resolveRelative(baseDir, value) {
   if (!firstText(value)) return null;
   const candidate = String(value);
@@ -495,6 +555,21 @@ async function loadProfile(profilePath) {
   const sliceOffset = nonNegativeIntegerOrNull(deterministicSliceRaw.offset ?? deterministicSliceRaw.byte_offset) ?? 0;
   const sliceLength = positiveIntegerOrNull(deterministicSliceRaw.length ?? deterministicSliceRaw.byte_length)
     ?? Math.min(32, readbackResource.byteLength);
+  const expectedOutput = objectOrEmpty(oracle.expectedOutput ?? oracle.expected_output);
+  const expectedAfterValues = finiteNumberArrayOrNull(firstArray(
+    expectedOutput.values,
+    expectedOutput.afterValues,
+    expectedOutput.after_values,
+    oracle.expectedAfterValues,
+    oracle.expected_after_values,
+    oracle.expectedValues,
+    oracle.expected_values,
+  ));
+  const floatTolerance = Math.max(0, finiteNumber(
+    expectedOutput.tolerance ?? expectedOutput.floatTolerance ?? expectedOutput.float_tolerance
+      ?? oracle.floatTolerance ?? oracle.float_tolerance,
+    0.00001,
+  ));
   return {
     raw,
     schemaVersion: firstText(raw.schemaVersion, raw.schema_version) ?? 'synthi.gpu.hmr.webgpu_compute_profile.v1',
@@ -520,6 +595,12 @@ async function loadProfile(profilePath) {
       claim: firstText(oracle.claim) ?? 'WebGPU compute output changes after the epoch dispatch.',
       readbackResource,
       expectedOutputChange: oracle.expectedOutputChange !== false && oracle.expected_output_change !== false,
+      expectedOutput: {
+        dataType: firstText(expectedOutput.dataType, expectedOutput.data_type) ?? 'float32',
+        values: expectedAfterValues,
+        tolerance: floatTolerance,
+        required: expectedOutput.required !== false && oracle.expected_output_required !== false,
+      },
       deterministicSlice: {
         offset: sliceOffset,
         length: Math.min(sliceLength, readbackResource.byteLength - sliceOffset),
@@ -985,6 +1066,8 @@ function buildFissionReport({ profile, trace, processContinuity, oracleArtifacts
       kind: 'compute_readback',
       readback_resource: profile.computeOracle.readbackResource,
       raw_readback_hash: oracleArtifacts.raw_readback_hash,
+      expected_output_hash: oracleArtifacts.expected_output_hash,
+      expected_output_verified: oracleArtifacts.expected_output_verified,
       deterministic_slice: oracleArtifacts.deterministic_slice,
     },
     evidence_refs: [
@@ -1161,7 +1244,7 @@ function buildContract({ profile, trace, runMode, processContinuity, oracleArtif
   return contract;
 }
 
-async function renderComputeCard({ filePath, profile, beforeValues, afterValues, rawHash, sliceHash }) {
+async function renderComputeCard({ filePath, profile, beforeValues, afterValues, rawHash, sliceHash, expectedVerification }) {
   const width = 720;
   const height = 420;
   const maxAbs = Math.max(1, ...afterValues.map((value) => Math.abs(value)));
@@ -1175,6 +1258,9 @@ async function renderComputeCard({ filePath, profile, beforeValues, afterValues,
   }).join('');
   const beforeText = beforeValues.slice(0, 8).map((value) => value.toFixed(2)).join(', ');
   const afterText = afterValues.slice(0, 8).map((value) => value.toFixed(2)).join(', ');
+  const expectedText = expectedVerification.declared
+    ? `expected output verified: ${expectedVerification.matched ? 'true' : 'false'} max_delta=${expectedVerification.maxAbsDelta?.toFixed?.(6) ?? 'n/a'}`
+    : 'expected output verified: false (not declared)';
   const svg = `
 <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
   <rect width="100%" height="100%" fill="#0f172a"/>
@@ -1183,6 +1269,7 @@ async function renderComputeCard({ filePath, profile, beforeValues, afterValues,
   <text x="32" y="105" fill="#cbd5e1" font-family="Arial" font-size="13">raw ${rawHash.slice(0, 24)}... slice ${sliceHash.slice(0, 24)}...</text>
   <text x="32" y="134" fill="#cbd5e1" font-family="Arial" font-size="13">before[0..7] ${beforeText}</text>
   <text x="32" y="160" fill="#cbd5e1" font-family="Arial" font-size="13">after[0..7] ${afterText}</text>
+  <text x="32" y="186" fill="#cbd5e1" font-family="Arial" font-size="13">${expectedText}</text>
   <line x1="32" y1="300" x2="688" y2="300" stroke="#475569" stroke-width="1"/>
   ${bars}
   <text x="32" y="370" fill="#e2e8f0" font-family="Arial" font-size="13">Card is generated from the mapped GPU readback bytes, not a log-only assertion.</text>
@@ -1197,6 +1284,14 @@ async function writeComputeOracleArtifacts({ outDir, profile, trace }) {
   const afterValues = decodeFloat32(afterBytes);
   const rawHash = sha256Bytes(afterBytes);
   const beforeHash = sha256Bytes(beforeBytes);
+  const expectedValues = profile.computeOracle.expectedOutput.values;
+  const expectedVerification = compareFloat32Values(
+    afterValues,
+    expectedValues,
+    profile.computeOracle.expectedOutput.tolerance,
+  );
+  const expectedBytes = expectedVerification.declared ? encodeExpectedFloat32(expectedValues) : null;
+  const expectedHash = expectedBytes ? sha256Bytes(expectedBytes) : null;
   const slice = profile.computeOracle.deterministicSlice;
   const boundedSlice = {
     offset: Math.min(slice.offset, Math.max(0, afterBytes.length - 1)),
@@ -1220,6 +1315,16 @@ async function writeComputeOracleArtifacts({ outDir, profile, trace }) {
     dispatchId: trace.after.dispatchId,
     epoch: trace.after.epoch,
     rawReadbackHash: rawHash,
+    expectedOutput: {
+      dataType: profile.computeOracle.expectedOutput.dataType,
+      values: expectedValues,
+      tolerance: profile.computeOracle.expectedOutput.tolerance,
+      expectedHash,
+      verified: expectedVerification.matched,
+      maxAbsDelta: expectedVerification.maxAbsDelta,
+      compared: expectedVerification.compared,
+      mismatches: expectedVerification.mismatches,
+    },
     deterministicSlice: {
       ...boundedSlice,
       hash: sliceHash,
@@ -1235,6 +1340,7 @@ async function writeComputeOracleArtifacts({ outDir, profile, trace }) {
     afterValues,
     rawHash,
     sliceHash,
+    expectedVerification,
   });
   const schemaHash = sha256Bytes(await readFile(schemaPath));
   const cardHash = sha256Bytes(await readFile(cardPath));
@@ -1253,6 +1359,16 @@ async function writeComputeOracleArtifacts({ outDir, profile, trace }) {
     checksum_before: beforeHash,
     checksum_after: rawHash,
     output_change_expected: profile.computeOracle.expectedOutputChange,
+    expected_output_declared: expectedVerification.declared,
+    expected_output_required: profile.computeOracle.expectedOutput.required,
+    expected_output_data_type: profile.computeOracle.expectedOutput.dataType,
+    expected_output_values: expectedValues,
+    expected_output_hash: expectedHash,
+    expected_output_tolerance: profile.computeOracle.expectedOutput.tolerance,
+    expected_output_verified: expectedVerification.matched,
+    expected_output_max_abs_delta: expectedVerification.maxAbsDelta,
+    expected_output_compared: expectedVerification.compared,
+    expected_output_mismatches: expectedVerification.mismatches,
     deterministic_slice: {
       ...boundedSlice,
       hash: sliceHash,
@@ -1281,15 +1397,27 @@ async function writeComputeOracleArtifacts({ outDir, profile, trace }) {
 
 function computeOracleValidation({ artifacts }) {
   const changed = artifacts.checksum_before !== artifacts.checksum_after;
+  const expectedVerified = artifacts.expected_output_required === false
+    ? artifacts.expected_output_verified !== false
+    : artifacts.expected_output_declared === true && artifacts.expected_output_verified === true;
   return {
-    accepted: changed && artifacts.raw_readback_hash_verified === true && artifacts.deterministic_slice_hash_verified === true,
+    accepted: changed
+      && artifacts.raw_readback_hash_verified === true
+      && artifacts.deterministic_slice_hash_verified === true
+      && expectedVerified,
     checksumChanged: changed,
     rawReadbackHashVerified: artifacts.raw_readback_hash_verified === true,
     deterministicSliceHashVerified: artifacts.deterministic_slice_hash_verified === true,
+    expectedOutputDeclared: artifacts.expected_output_declared === true,
+    expectedOutputVerified: artifacts.expected_output_verified === true,
+    expectedOutputRequired: artifacts.expected_output_required !== false,
+    expectedOutputHash: artifacts.expected_output_hash,
+    expectedOutputMaxAbsDelta: artifacts.expected_output_max_abs_delta,
     failedGates: [
       changed ? null : 'compute_oracle_checksum_unchanged',
       artifacts.raw_readback_hash_verified === true ? null : 'compute_oracle_raw_readback_hash_unverified',
       artifacts.deterministic_slice_hash_verified === true ? null : 'compute_oracle_deterministic_slice_hash_unverified',
+      expectedVerified ? null : 'compute_oracle_expected_output_not_verified',
     ].filter(Boolean),
   };
 }

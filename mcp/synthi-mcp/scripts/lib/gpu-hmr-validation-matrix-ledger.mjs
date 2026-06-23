@@ -1936,6 +1936,11 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     false,
   );
   const computeValidation = compactObject(json.computeOracleValidation ?? json.compute_oracle_validation);
+  const expectedOutputVerified = directComputeArtifacts.expected_output_required === false
+    ? directComputeArtifacts.expected_output_verified !== false
+    : directComputeArtifacts.expected_output_declared === true
+      && directComputeArtifacts.expected_output_verified === true
+      && computeValidation.expectedOutputVerified === true;
   const accepted =
     json.gpuHmrSuccess === true
     && ledger.present === true
@@ -1944,6 +1949,7 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     && ledger.failedInvariants.length === 0
     && computeOracleFacet.accepted === true
     && computeValidation.accepted === true
+    && expectedOutputVerified
     && processContinuity.accepted === true
     && processContinuity.processRestarted === false
     && nativeApiEvidence.accepted === true
@@ -1971,6 +1977,10 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
     output_oracle_facet: computeOracleFacet,
     supportedPipelineScope,
     supported_pipeline_scope: supportedPipelineScope,
+    expectedOutputVerified,
+    expected_output_verified: expectedOutputVerified,
+    expectedOutputHash: directComputeArtifacts.expected_output_hash,
+    expected_output_hash: directComputeArtifacts.expected_output_hash,
     runtimeResourceTrace,
     runtime_resource_trace: runtimeResourceTrace,
     visual,
@@ -1995,6 +2005,7 @@ async function webGpuRuntimeComputeRow(json, filePath, context) {
       ledger.source === 'recomputed_ledger' ? null : 'proof_ledger_recomputed_query_missing',
       computeOracleFacet.accepted === true ? null : 'compute_oracle_files_not_accepted',
       computeValidation.accepted === true ? null : 'compute_oracle_validation_not_accepted',
+      expectedOutputVerified ? null : 'compute_oracle_expected_output_not_verified',
       processContinuity.accepted === true ? null : 'process_continuity_not_accepted',
       nativeApiEvidence.accepted === true ? null : 'native_webgpu_api_not_accepted',
       supportedPipelineScope === 'explicit-compute-profiled-layout-storage-uniform-float32-readback'
