@@ -1233,6 +1233,22 @@ await writeJson(path.join(forgedWebGpuVisualDir, 'forged-webgpu-query-only-proof
   },
 });
 
+await writeJson(path.join(artifactsRoot, 'webgpu-runtime-compute-proof', 'forged-webgpu-compute-proof.json'), {
+  schema: 'synthi.gpu_hmr.webgpu_runtime_compute_proof.v1',
+  proofId: 'webgpu-runtime-compute-proof:sha256:forged',
+  gpuHmrSuccess: true,
+  profile: { id: 'forged-webgpu-compute' },
+  computeOracleValidation: { accepted: true },
+  browser: { processContinuity: { accepted: true, processRestarted: false } },
+  nativeWebGpuApiEvidence: { accepted: true },
+  contract: {
+    webgpu_contract: {
+      pipeline_kind: 'compute',
+      supported_pipeline_scope: 'explicit-compute-profiled-layout-storage-uniform-float32-readback',
+    },
+  },
+});
+
 const hiprtDir = path.join(artifactsRoot, 'hiprt-light-math-warm-proof');
 const hiprtAcceptedBefore = path.join(hiprtDir, 'accepted-before.png');
 const hiprtAcceptedAfter = path.join(hiprtDir, 'accepted-after.png');
@@ -1732,6 +1748,13 @@ assert.equal(forgedWebGpuQueryOnly.ledger.present, false);
 assert.equal(forgedWebGpuQueryOnly.ledger.source, 'supplied_query_ignored_no_ledger');
 assert.ok(forgedWebGpuQueryOnly.reasons.includes('proof_ledger_record_missing'));
 
+const forgedWebGpuCompute = ledger.rows.find((row) => row.targetId === 'forged-webgpu-compute');
+assert.equal(forgedWebGpuCompute?.matrixOutcome, 'unproven');
+assert.equal(forgedWebGpuCompute.acceptedForGpuHmr, false);
+assert.equal(forgedWebGpuCompute.outputOracleFacet.accepted, false);
+assert.ok(forgedWebGpuCompute.reasons.includes('proof_ledger_record_missing'));
+assert.ok(forgedWebGpuCompute.reasons.includes('compute_oracle_files_not_accepted'));
+
 const acceptedHiprt = ledger.rows.find((row) =>
   row.targetId === 'accepted-hiprt-recomputed-oracle'
   && row.proofMode === 'same-process'
@@ -1767,6 +1790,7 @@ assert.ok(coverageById.get('large_real_rocm_repo')?.openGaps.includes('output_or
 assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_empty_layout_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('webgpu_profiled_layout_runtime_visual')?.status, 'missing');
+assert.equal(coverageById.get('webgpu_compute_runtime_readback')?.status, 'missing');
 assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'accepted');
 assert.equal(coverageById.get('per_target_run_modes')?.status, 'accepted');
 assert.ok(coverageById.get('per_target_run_modes')?.acceptedTargetCount > 0);

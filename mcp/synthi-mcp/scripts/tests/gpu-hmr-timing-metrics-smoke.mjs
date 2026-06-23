@@ -4,6 +4,7 @@ import {
   externalProjectTimingMetrics,
   hiprtWarmTimingMetrics,
   realRocmTimingMetrics,
+  webGpuRuntimeComputeTimingMetrics,
   webGpuRuntimeVisualTimingMetrics,
   GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
 } from '../lib/gpu-hmr-timing-metrics.mjs';
@@ -254,8 +255,55 @@ assert.equal(webgpu.editToFirstVisualMs, 67);
 assert.equal(webgpu.visualEvidence.changedPixelRatio, 0.29);
 assert.equal(webgpu.normalizedTimings.dispatchTraceTimeMs, 14.8);
 
+const webgpuCompute = webGpuRuntimeComputeTimingMetrics({
+  schema: 'synthi.gpu_hmr.webgpu_runtime_compute_proof.v1',
+  proofId: 'webgpu-runtime-compute-proof:sha256:test',
+  gpuHmrSuccess: true,
+  profile: { id: 'webgpu-wgsl-runtime-compute-storage' },
+  computeOracleArtifacts: {
+    raw_readback_hash: 'sha256:' + 'd'.repeat(64),
+    raw_readback_byte_length: 32,
+    deterministic_slice_hash: 'sha256:' + 'e'.repeat(64),
+    rendered_card_png: 'mcp/synthi-mcp/.gpu-hmr-test-artifacts/webgpu-runtime-compute-proof/card.png',
+  },
+  timings: {
+    static_discovery_time: 1_000_000,
+    ai_contract_synthesis_time: 0,
+    model_availability_check_time: 1_000_000,
+    artifact_hash_time: 2_000_000,
+    adapter_generation_time: 50_000_000,
+    device_compile_wall_time: 15_000_000,
+    artifact_load_time: 100_000,
+    epoch_publish_time: 100_000,
+    dispatch_trace_time: 14_800_000,
+    runtime_probe_time: 300_000_000,
+    oracle_analysis_time: 10_000_000,
+    trigger_to_visible_time: 67_000_000,
+    screenshot_capture_time: 0,
+    dispatch_to_output_proof_time: 55_000_000,
+    total_validator_wall_time: 951_000_000,
+  },
+  proofLedger: {
+    records: [{
+      metricScope: 'hot_delta_1',
+      cacheState: 'pipeline_cache_warm',
+      modelProvenance: {
+        split: { model_availability_check_time_ms: 1 },
+      },
+    }],
+  },
+});
+assertCommonShape(webgpuCompute);
+assert.equal(webgpuCompute.source, 'webgpu_runtime_compute');
+assert.equal(webgpuCompute.profileId, 'webgpu-wgsl-runtime-compute-storage');
+assert.equal(webgpuCompute.status, 'pass');
+assert.equal(webgpuCompute.totalWallMs, 951);
+assert.equal(webgpuCompute.computeEvidence.rawReadbackByteLength, 32);
+assert.equal(webgpuCompute.visualEvidence.screenshotCount, 1);
+assert.equal(webgpuCompute.normalizedTimings.dispatchToOutputProofTimeMs, 55);
+
 console.log(JSON.stringify({
   ok: true,
   schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
-  checkedProfiles: [external.profileId, hiprt.profileId, rocm.profileId, webgpu.profileId],
+  checkedProfiles: [external.profileId, hiprt.profileId, rocm.profileId, webgpu.profileId, webgpuCompute.profileId],
 }, null, 2));

@@ -295,6 +295,115 @@ export function webGpuRuntimeVisualTimingMetrics(proof) {
   };
 }
 
+export function webGpuRuntimeComputeTimingMetrics(proof) {
+  const timings = proof?.timings ?? {};
+  const modelProvenance = firstObject(
+    proof?.modelProvenance,
+    proof?.model_provenance,
+    proof?.proofLedger?.records?.[0]?.modelProvenance,
+    proof?.proofLedger?.records?.[0]?.model_provenance,
+  );
+  const modelAvailability = modelAvailabilityCheckMs(modelProvenance)
+    ?? timingNsToMs(timings, 'model_availability_check_time', 'modelAvailabilityCheckTime');
+  const totalWallMs = timingNsToMs(timings, 'total_validator_wall_time', 'totalValidatorWallTime');
+  const clockEvidence = {
+    metric_clock: 'monotonic_ns',
+    metricClock: 'monotonic_ns',
+    metric_unit: 'ms',
+    metricUnit: 'ms',
+    started_monotonic_ns: null,
+    startedMonotonicNs: null,
+    finished_monotonic_ns: null,
+    finishedMonotonicNs: null,
+    duration_monotonic_ns: finiteNsString(timings.total_validator_wall_time ?? timings.totalValidatorWallTime),
+    durationMonotonicNs: finiteNsString(timings.total_validator_wall_time ?? timings.totalValidatorWallTime),
+    duration_monotonic_ms: totalWallMs,
+    durationMonotonicMs: totalWallMs,
+  };
+  const normalizedTimings = normalizedTimingFields({
+    staticDiscoveryTimeMs: timingNsToMs(timings, 'static_discovery_time', 'staticDiscoveryTime'),
+    aiContractSynthesisTimeMs: timingNsToMs(timings, 'ai_contract_synthesis_time', 'aiContractSynthesisTime'),
+    modelAvailabilityCheckTimeMs: modelAvailability,
+    artifactHashTimeMs: timingNsToMs(timings, 'artifact_hash_time', 'artifactHashTime'),
+    adapterGenerationTimeMs: timingNsToMs(timings, 'adapter_generation_time', 'adapterGenerationTime'),
+    deviceCompileWallTimeMs: timingNsToMs(timings, 'device_compile_wall_time', 'deviceCompileWallTime'),
+    artifactLoadTimeMs: timingNsToMs(timings, 'artifact_load_time', 'artifactLoadTime'),
+    epochPublishTimeMs: timingNsToMs(timings, 'epoch_publish_time', 'epochPublishTime'),
+    dispatchTraceTimeMs: timingNsToMs(timings, 'dispatch_trace_time', 'dispatchTraceTime'),
+    runtimeProbeTimeMs: timingNsToMs(timings, 'runtime_probe_time', 'runtimeProbeTime'),
+    oracleAnalysisTimeMs: timingNsToMs(timings, 'oracle_analysis_time', 'oracleAnalysisTime'),
+    triggerToVisibleTimeMs: timingNsToMs(timings, 'trigger_to_visible_time', 'triggerToVisibleTime'),
+    screenshotCaptureTimeMs: timingNsToMs(timings, 'screenshot_capture_time', 'screenshotCaptureTime'),
+    dispatchToOutputProofTimeMs: timingNsToMs(timings, 'dispatch_to_output_proof_time', 'dispatchToOutputProofTime'),
+    totalValidatorWallTimeMs: totalWallMs,
+  });
+  const computeArtifacts = firstObject(
+    proof?.computeOracleArtifacts,
+    proof?.compute_oracle_artifacts,
+    proof?.proofLedger?.records?.[0]?.oracleArtifacts?.computeOracleArtifacts,
+    proof?.proofLedger?.records?.[0]?.oracle_artifacts?.compute_oracle_artifacts,
+  );
+  return {
+    schemaVersion: GPU_HMR_TIMING_METRICS_SCHEMA_VERSION,
+    source: 'webgpu_runtime_compute',
+    metricClock: 'monotonic_ns',
+    metric_clock: 'monotonic_ns',
+    metricUnit: 'ms',
+    metric_unit: 'ms',
+    metricScope: proof?.proofLedger?.records?.[0]?.metricScope ?? 'hot_delta_1',
+    metric_scope: proof?.proofLedger?.records?.[0]?.metric_scope ?? 'hot_delta_1',
+    cacheState: proof?.proofLedger?.records?.[0]?.cacheState ?? 'pipeline_cache_warm',
+    cache_state: proof?.proofLedger?.records?.[0]?.cache_state ?? 'pipeline_cache_warm',
+    profileId: proof?.profile?.id ?? null,
+    projectName: 'WebGPU runtime compute proof',
+    proofMode: 'webgpu_wgsl_runtime_compute',
+    status: proof?.gpuHmrSuccess === true ? 'pass' : 'fail',
+    totalWallMs,
+    setupBuildMs: null,
+    adapterBuildMs: normalizedTimings.adapterGenerationTimeMs,
+    runtimeReadyMs: normalizedTimings.runtimeProbeTimeMs,
+    initialCompileWallMs: null,
+    sourceWriteMs: null,
+    modelAvailabilityCheckMs: modelAvailability,
+    modelProvenance,
+    aiDeltaWallMs: null,
+    hotHmrCompileWallMs: normalizedTimings.deviceCompileWallTimeMs,
+    sameProcessLiveRecompileMs: normalizedTimings.deviceCompileWallTimeMs,
+    sameProcessTriggerWaitMs: null,
+    hotReloadSignalMs: normalizedTimings.epochPublishTimeMs,
+    editToFirstVisualMs: normalizedTimings.dispatchToOutputProofTimeMs,
+    beforeCaptureMs: null,
+    afterCaptureMs: null,
+    visualDiffMs: normalizedTimings.oracleAnalysisTimeMs,
+    teardownMs: null,
+    normalizedTimings,
+    normalized_timings: normalizedTimings.snake_case,
+    clockEvidence,
+    clock_evidence: clockEvidence,
+    computeEvidence: {
+      rawReadbackHash: computeArtifacts?.raw_readback_hash ?? computeArtifacts?.rawReadbackHash ?? null,
+      rawReadbackByteLength: computeArtifacts?.raw_readback_byte_length ?? computeArtifacts?.rawReadbackByteLength ?? null,
+      deterministicSliceHash: computeArtifacts?.deterministic_slice_hash ?? computeArtifacts?.deterministicSliceHash ?? null,
+      accepted: proof?.gpuHmrSuccess === true,
+    },
+    visualEvidence: {
+      screenshotCount: computeArtifacts?.rendered_card_png || computeArtifacts?.renderedCardPng ? 1 : 0,
+      changedPixelRatio: null,
+      meanAbsDelta8bit: null,
+      visiblePixelCount: null,
+      accepted: proof?.gpuHmrSuccess === true,
+    },
+    phases: [
+      phase('runtime_probe', normalizedTimings.runtimeProbeTimeMs, 'timings.runtime_probe_time'),
+      phase('artifact_load', normalizedTimings.artifactLoadTimeMs, 'timings.artifact_load_time'),
+      phase('epoch_publish', normalizedTimings.epochPublishTimeMs, 'timings.epoch_publish_time'),
+      phase('dispatch_trace', normalizedTimings.dispatchTraceTimeMs, 'timings.dispatch_trace_time'),
+      phase('dispatch_to_output_proof', normalizedTimings.dispatchToOutputProofTimeMs, 'timings.dispatch_to_output_proof_time'),
+      phase('oracle_analysis', normalizedTimings.oracleAnalysisTimeMs, 'timings.oracle_analysis_time'),
+    ],
+  };
+}
+
 export function externalProjectTimingMetrics(report) {
   const timings = report?.timings ?? {};
   const clockEvidence = timingClockEvidence(report, timings);

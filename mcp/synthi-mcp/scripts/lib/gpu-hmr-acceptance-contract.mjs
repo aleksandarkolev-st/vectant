@@ -123,6 +123,9 @@ const BACKEND_CONTRACT_COMPARABLE_FIELDS = {
       'pipeline_recreate_required',
       'pipeline_recreate_proven',
       'frame_used_new_pipeline_trace',
+      'pipeline_kind',
+      'compute_pipeline_trace',
+      'compute_readback_trace',
     ],
     unorderedListFields: new Set(['entry_points']),
   },
@@ -689,6 +692,10 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   ) {
     addFailure(failures, 'visual_backend_compute_target_unverified', { backend: contract.backend });
   }
+  const visualBackendComputeTarget =
+    VISUAL_OR_ENGINE_BACKENDS.has(contract.backend)
+    && outputOracleTargetKind(contract.output_oracle_target) === 'compute'
+    && computeOnlyOutputTargetVerified(contract.output_oracle_target);
   if (!contract.artifact_hash_before) addFailure(failures, 'artifact_hash_before_missing');
   if (!contract.artifact_hash_after) addFailure(failures, 'artifact_hash_after_missing');
   if (contract.artifact_hash_before && contract.artifact_hash_after
@@ -767,10 +774,13 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   if (!nonEmptyValue(state.device_uuid)) addFailure(failures, 'state_device_uuid_missing');
   if (!nonEmptyValue(state.context_or_device_handle)) addFailure(failures, 'state_context_or_device_handle_missing');
   if (!nonEmptyValue(state.queue_or_stream_handle)) addFailure(failures, 'state_queue_or_stream_handle_missing');
-  if (COMPUTE_BACKENDS.has(contract.backend) && !nonEmptyValue(state.persistent_gpu_allocations)) {
+  if (
+    (COMPUTE_BACKENDS.has(contract.backend) || visualBackendComputeTarget)
+    && !nonEmptyValue(state.persistent_gpu_allocations)
+  ) {
     addFailure(failures, 'state_persistent_gpu_allocations_missing');
   }
-  if (VISUAL_OR_ENGINE_BACKENDS.has(contract.backend)) {
+  if (VISUAL_OR_ENGINE_BACKENDS.has(contract.backend) && !visualBackendComputeTarget) {
     if (!nonEmptyValue(state.camera_state_hash)) addFailure(failures, 'state_camera_hash_missing');
     if (!nonEmptyValue(state.swapchain_or_framebuffer_identity)) {
       addFailure(failures, 'state_swapchain_or_framebuffer_identity_missing');
@@ -937,7 +947,17 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
   }
   if (contract.backend === 'webgpu' || contract.backend === 'bevy_wgsl') {
     const webgpu = contract.webgpu_contract;
-    for (const field of [
+    const pipelineKind = firstText(webgpu.pipeline_kind, webgpu.pipelineKind) ?? 'render';
+    const requiredFields = pipelineKind === 'compute' ? [
+      'wgsl_hash_before',
+      'wgsl_hash_after',
+      'shader_module_epoch',
+      'entry_points',
+      'bind_group_layout_hash',
+      'pipeline_layout_hash',
+      'compute_pipeline_trace',
+      'compute_readback_trace',
+    ] : [
       'wgsl_hash_before',
       'wgsl_hash_after',
       'shader_module_epoch',
@@ -947,7 +967,8 @@ export function evaluateGpuHmrAcceptanceContract(input = {}) {
       'vertex_buffer_layout_hash',
       'color_target_state_hash',
       'frame_used_new_pipeline_trace',
-    ]) {
+    ];
+    for (const field of requiredFields) {
       requireBackendField(failures, 'webgpu_contract', webgpu, field);
       requireBackendFieldEvidence(failures, 'webgpu_contract', webgpu, field);
     }

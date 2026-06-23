@@ -1891,6 +1891,120 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
   });
 }
 
+async function webGpuRuntimeComputeRow(json, filePath, context) {
+  const ledger = ledgerFacet(json);
+  const proofLedger = compactObject(json.proofLedger ?? json.proof_ledger);
+  const ledgerRecord = compactObject(proofLedger.records?.[0] ?? json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
+  const processContinuity = compactObject(json.browser?.processContinuity);
+  const nativeApiEvidence = compactObject(json.nativeWebGpuApiEvidence);
+  const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
+  const webgpuContract = compactObject(contract.webgpu_contract ?? contract.webgpuContract);
+  const runtimeResourceTrace = compactObject(
+    webgpuContract.runtime_resource_trace
+    ?? webgpuContract.runtimeResourceTrace
+    ?? ledgerRecord.runtime_resource_trace
+    ?? ledgerRecord.runtimeResourceTrace,
+  );
+  const supportedPipelineScope = firstText(
+    webgpuContract.supported_pipeline_scope,
+    webgpuContract.supportedPipelineScope,
+    contract.artifact_identity?.supported_pipeline_scope,
+    contract.artifactIdentity?.supportedPipelineScope,
+  );
+  const computeOracleFacet = await realRocmLedgerOutputOracleFacet(
+    ledger,
+    proofLedger,
+    { present: false, accepted: false },
+    context.repoRoot,
+    path.dirname(filePath),
+  );
+  const directComputeArtifacts = compactObject(
+    json.computeOracleArtifacts
+    ?? json.compute_oracle_artifacts
+    ?? ledgerRecord.oracle_artifacts?.compute_oracle_artifacts
+    ?? ledgerRecord.oracleArtifacts?.computeOracleArtifacts,
+  );
+  const visual = await visualArtifactEvidence(
+    [
+      directComputeArtifacts.rendered_card_png,
+      directComputeArtifacts.renderedCardPng,
+      computeOracleFacet.compute?.renderedCard?.path,
+    ],
+    context.repoRoot,
+    path.dirname(filePath),
+    {},
+    false,
+  );
+  const computeValidation = compactObject(json.computeOracleValidation ?? json.compute_oracle_validation);
+  const accepted =
+    json.gpuHmrSuccess === true
+    && ledger.present === true
+    && ledger.source === 'recomputed_ledger'
+    && ledger.gpuHmrSuccess === true
+    && ledger.failedInvariants.length === 0
+    && computeOracleFacet.accepted === true
+    && computeValidation.accepted === true
+    && processContinuity.accepted === true
+    && processContinuity.processRestarted === false
+    && nativeApiEvidence.accepted === true
+    && supportedPipelineScope === 'explicit-compute-profiled-layout-storage-uniform-float32-readback';
+  const profileId = firstText(json.profile?.targetId, json.profile?.target_id, json.profile?.id, json.slug);
+  return finalizeRow({
+    artifactSchema: json.schema,
+    artifactPath: relPath(filePath, context.repoRoot),
+    updatedAt: context.updatedAt,
+    backend: 'webgpu',
+    targetId: profileId,
+    profileId,
+    proofMode: 'webgpu_wgsl_runtime_compute',
+    evidenceKind: 'compute_oracle',
+    matrixOutcome: accepted ? 'full_runtime_gpu_hmr' : 'unproven',
+    acceptanceClass: accepted ? 'full_runtime_gpu_hmr' : 'webgpu_runtime_compute_rejected',
+    acceptedForGpuHmr: accepted,
+    gpuHmrSuccess: accepted,
+    refusalProven: false,
+    proofChainAccepted: accepted,
+    proofChain: accepted ? 'webgpu_ledger_process_native_compute_readback_chain' : 'webgpu_runtime_compute_chain_rejected',
+    proofIds: proofIdsFrom(json, ledger),
+    ledger,
+    outputOracleFacet: computeOracleFacet,
+    output_oracle_facet: computeOracleFacet,
+    supportedPipelineScope,
+    supported_pipeline_scope: supportedPipelineScope,
+    runtimeResourceTrace,
+    runtime_resource_trace: runtimeResourceTrace,
+    visual,
+    runMode: timingEvidence(
+      ledgerRecord,
+      json.timingMetrics,
+      json.timing_metrics,
+      json.timings,
+    ),
+    cpuHmrUsed: false,
+    fullRebuildUsed: false,
+    processRestarted: boolOrNull(processContinuity.processRestarted),
+    timings: {
+      totalValidatorWallTimeNs: finiteNumber(json.timings?.total_validator_wall_time),
+      dispatchToOutputProofTimeNs: finiteNumber(json.timings?.dispatch_to_output_proof_time),
+      oracleAnalysisTimeNs: finiteNumber(json.timings?.oracle_analysis_time),
+    },
+    reasons: accepted ? [] : compactStringList([
+      ...ledger.failedInvariants.map((failure) => failure.code),
+      ...((computeOracleFacet.failedGates ?? []).map((failure) => failure.code)),
+      ledger.present === true ? null : 'proof_ledger_record_missing',
+      ledger.source === 'recomputed_ledger' ? null : 'proof_ledger_recomputed_query_missing',
+      computeOracleFacet.accepted === true ? null : 'compute_oracle_files_not_accepted',
+      computeValidation.accepted === true ? null : 'compute_oracle_validation_not_accepted',
+      processContinuity.accepted === true ? null : 'process_continuity_not_accepted',
+      nativeApiEvidence.accepted === true ? null : 'native_webgpu_api_not_accepted',
+      supportedPipelineScope === 'explicit-compute-profiled-layout-storage-uniform-float32-readback'
+        ? null
+        : 'webgpu_compute_supported_pipeline_scope_missing',
+    ]),
+    openGaps: accepted ? [] : ['webgpu_runtime_compute_readback_proof_not_accepted'],
+  });
+}
+
 async function externalProjectRow(json, filePath, context) {
   const profileId = firstText(json.profile?.id, json.profileId, path.basename(filePath).replace(/-\d+-report\.json$/, ''));
   const backend = profileId?.includes('bevy') ? 'bevy_wgsl' : 'webgl';
@@ -3154,6 +3268,9 @@ async function classifyJsonArtifact(json, filePath, context) {
   if (schema.includes('webgpu_runtime_visual_proof') || proofId.startsWith('webgpu-runtime-visual-proof:')) {
     return webGpuRuntimeVisualRow(json, filePath, context);
   }
+  if (schema.includes('webgpu_runtime_compute_proof') || proofId.startsWith('webgpu-runtime-compute-proof:')) {
+    return webGpuRuntimeComputeRow(json, filePath, context);
+  }
   if (
     schema.includes('oidn_preflight')
     || schema.includes('opencl_preflight')
@@ -3580,6 +3697,12 @@ function planCoverage(rows) {
   const hipRuntimeRows = acceptedRows(rows, (row) => row.backend === 'hip');
   const hiprtRows = acceptedRows(rows, (row) => row.backend === 'hiprt');
   const webgpuRuntimeRows = acceptedRows(rows, (row) => row.backend === 'webgpu');
+  const webgpuComputeRows = acceptedRows(rows, (row) =>
+    row.backend === 'webgpu'
+    && row.proofMode === 'webgpu_wgsl_runtime_compute'
+    && row.outputOracleFacet?.kind === 'compute_oracle'
+    && row.outputOracleFacet?.accepted === true
+  );
   const webgpuEmptyLayoutRows = acceptedRows(rows, (row) =>
     row.backend === 'webgpu'
     && row.supportedPipelineScope === 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list'
@@ -3651,6 +3774,13 @@ function planCoverage(rows) {
       status: webgpuProfiledLayoutRows.length > 0 ? 'accepted' : 'missing',
       rows: webgpuProfiledLayoutRows,
       openGaps: webgpuProfiledLayoutRows.length > 0 ? [] : ['webgpu_profiled_layout_runtime_visual_required'],
+    }),
+    coverageEntry({
+      id: 'webgpu_compute_runtime_readback',
+      requirement: 'WebGPU compute pipeline proof with raw readback-backed compute oracle',
+      status: webgpuComputeRows.length > 0 ? 'accepted' : 'missing',
+      rows: webgpuComputeRows,
+      openGaps: webgpuComputeRows.length > 0 ? [] : ['webgpu_compute_runtime_readback_required'],
     }),
     coverageEntry({
       id: 'webgpu_runtime_preflight',

@@ -1,0 +1,132 @@
+{
+  "schemaVersion": "synthi.gpu.hmr.webgpu_compute_profile.v1",
+  "id": "webgpu-wgsl-runtime-compute-storage",
+  "project": {
+    "name": "WebGPU WGSL compute readback HMR proof",
+    "kind": "gpu_project"
+  },
+  "shader": {
+    "artifactKind": "wgsl",
+    "beforePath": "webgpu/compute-before.wgsl",
+    "afterPath": "webgpu/compute-after.wgsl",
+    "entryPoint": "main"
+  },
+  "pipeline": {
+    "layout": "explicit-compute-profiled",
+    "dispatchWorkgroups": [1, 1, 1],
+    "bindGroupLayouts": [
+      {
+        "label": "compute-readback-layout",
+        "entries": [
+          {
+            "binding": 0,
+            "visibility": "compute",
+            "buffer": {
+              "type": "read-only-storage",
+              "minBindingSize": 32
+            }
+          },
+          {
+            "binding": 1,
+            "visibility": "compute",
+            "buffer": {
+              "type": "storage",
+              "minBindingSize": 32
+            }
+          }
+        ]
+      }
+    ],
+    "bindGroups": [
+      {
+        "layoutIndex": 0,
+        "entries": [
+          {
+            "binding": 0,
+            "resource": {
+              "kind": "storage_buffer",
+              "dataType": "float32",
+              "access": "read_only",
+              "values": [1.0, 2.0, 3.5, 5.0, 8.0, 13.0, 21.0, 34.0]
+            }
+          },
+          {
+            "binding": 1,
+            "readback": true,
+            "resetBeforeDispatch": true,
+            "resource": {
+              "kind": "storage_buffer",
+              "dataType": "float32",
+              "access": "read_write",
+              "values": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "computeOracle": {
+    "claim": "The mapped output storage buffer changes after the WebGPU compute epoch dispatch.",
+    "readbackResource": {
+      "group": 0,
+      "binding": 1
+    },
+    "expectedOutputChange": true,
+    "deterministicSlice": {
+      "offset": 0,
+      "length": 32
+    }
+  },
+  "negativeEdit": {
+    "claim": "Changing the readback storage buffer into a sampler is not a compatible WebGPU compute ABI and must reject before GPU HMR acceptance.",
+    "pipeline": {
+      "layout": "explicit-compute-profiled",
+      "dispatchWorkgroups": [1, 1, 1],
+      "bindGroupLayouts": [
+        {
+          "entries": [
+            {
+              "binding": 0,
+              "visibility": "compute",
+              "buffer": {
+                "type": "read-only-storage",
+                "minBindingSize": 32
+              }
+            },
+            {
+              "binding": 1,
+              "visibility": "compute",
+              "buffer": {
+                "type": "sampler"
+              }
+            }
+          ]
+        }
+      ],
+      "bindGroups": [
+        {
+          "layoutIndex": 0,
+          "entries": [
+            {
+              "binding": 0,
+              "resource": {
+                "kind": "storage_buffer",
+                "dataType": "float32",
+                "values": [1.0, 2.0, 3.5, 5.0, 8.0, 13.0, 21.0, 34.0]
+              }
+            },
+            {
+              "binding": 1,
+              "readback": true,
+              "resource": {
+                "kind": "sampler",
+                "dataType": "float32",
+                "values": [0.0, 0.0, 0.0, 0.0]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
