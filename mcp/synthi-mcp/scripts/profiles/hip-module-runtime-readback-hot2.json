@@ -1,7 +1,7 @@
 {
   "schemaVersion": "synthi.gpu.hmr.hip_module_runtime_profile.v1",
   "id": "hip-module-runtime-readback-hot2",
-  "targetId": "hip-module-runtime-readback-hot2",
+  "targetId": "hip-module-runtime-readback",
   "project": {
     "name": "Generic HIP module runtime readback hot delta 2",
     "kind": "gpu_project"
