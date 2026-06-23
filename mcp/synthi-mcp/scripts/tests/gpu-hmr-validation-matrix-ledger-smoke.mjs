@@ -1765,6 +1765,8 @@ assert.equal(coverageById.get('bevy_file_loaded_wgsl')?.status, 'refused');
 assert.equal(coverageById.get('large_real_rocm_repo')?.status, 'refused');
 assert.ok(coverageById.get('large_real_rocm_repo')?.openGaps.includes('output_or_visual_oracle_proof_required'));
 assert.equal(coverageById.get('webgpu_scoped_runtime_visual')?.status, 'missing');
+assert.equal(coverageById.get('webgpu_empty_layout_runtime_visual')?.status, 'missing');
+assert.equal(coverageById.get('webgpu_profiled_layout_runtime_visual')?.status, 'missing');
 assert.equal(coverageById.get('per_kernel_smallest_safe_fission')?.status, 'accepted');
 assert.equal(coverageById.get('per_target_run_modes')?.status, 'accepted');
 assert.ok(coverageById.get('per_target_run_modes')?.acceptedTargetCount > 0);

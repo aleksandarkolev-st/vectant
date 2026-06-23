@@ -1815,6 +1815,20 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
   const ledgerRecord = compactObject(json.proofLedger?.records?.[0] ?? json.proof_ledger?.records?.[0]);
   const processContinuity = compactObject(json.browser?.processContinuity);
   const nativeApiEvidence = compactObject(json.nativeWebGpuApiEvidence);
+  const contract = compactObject(json.contract ?? json.acceptanceContract ?? json.acceptance_contract);
+  const webgpuContract = compactObject(contract.webgpu_contract ?? contract.webgpuContract);
+  const runtimeResourceTrace = compactObject(
+    webgpuContract.runtime_resource_trace
+    ?? webgpuContract.runtimeResourceTrace
+    ?? ledgerRecord.runtime_resource_trace
+    ?? ledgerRecord.runtimeResourceTrace,
+  );
+  const supportedPipelineScope = firstText(
+    webgpuContract.supported_pipeline_scope,
+    webgpuContract.supportedPipelineScope,
+    contract.artifact_identity?.supported_pipeline_scope,
+    contract.artifactIdentity?.supportedPipelineScope,
+  );
   const accepted =
     json.gpuHmrSuccess === true
     && ledger.present === true
@@ -1845,6 +1859,10 @@ async function webGpuRuntimeVisualRow(json, filePath, context) {
     proofChain: accepted ? 'webgpu_ledger_process_native_visual_chain' : 'webgpu_runtime_visual_chain_rejected',
     proofIds: proofIdsFrom(json, ledger),
     ledger,
+    supportedPipelineScope,
+    supported_pipeline_scope: supportedPipelineScope,
+    runtimeResourceTrace,
+    runtime_resource_trace: runtimeResourceTrace,
     visual,
     runMode: timingEvidence(
       ledgerRecord,
@@ -3562,6 +3580,17 @@ function planCoverage(rows) {
   const hipRuntimeRows = acceptedRows(rows, (row) => row.backend === 'hip');
   const hiprtRows = acceptedRows(rows, (row) => row.backend === 'hiprt');
   const webgpuRuntimeRows = acceptedRows(rows, (row) => row.backend === 'webgpu');
+  const webgpuEmptyLayoutRows = acceptedRows(rows, (row) =>
+    row.backend === 'webgpu'
+    && row.supportedPipelineScope === 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list'
+  );
+  const webgpuProfiledLayoutRows = acceptedRows(rows, (row) =>
+    row.backend === 'webgpu'
+    && row.supportedPipelineScope === 'explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list'
+    && row.runtimeResourceTrace?.resourceStateHash
+    && row.runtimeResourceTrace?.bindGroupCount > 0
+    && row.runtimeResourceTrace?.vertexBufferCount > 0
+  );
   const webgpuPreflightRows = preflightOnlyRows(rows, (row) => row.backend === 'webgpu');
   const externalVisualRows = visualProfileRows(rows, (row) => row.backend === 'webgl');
   const fissionRows = deterministicFissionRows(rows, () => true);
@@ -3608,6 +3637,20 @@ function planCoverage(rows) {
       status: webgpuRuntimeRows.length > 0 ? 'accepted' : 'missing',
       rows: webgpuRuntimeRows,
       openGaps: webgpuRuntimeRows.length > 0 ? [] : ['webgpu_runtime_visual_proof_required'],
+    }),
+    coverageEntry({
+      id: 'webgpu_empty_layout_runtime_visual',
+      requirement: 'WebGPU empty-layout WGSL render proof with deterministic visual oracle',
+      status: webgpuEmptyLayoutRows.length > 0 ? 'accepted' : 'missing',
+      rows: webgpuEmptyLayoutRows,
+      openGaps: webgpuEmptyLayoutRows.length > 0 ? [] : ['webgpu_empty_layout_runtime_visual_required'],
+    }),
+    coverageEntry({
+      id: 'webgpu_profiled_layout_runtime_visual',
+      requirement: 'WebGPU profiled pipeline layout proof with uniform bind group and vertex buffer runtime traces',
+      status: webgpuProfiledLayoutRows.length > 0 ? 'accepted' : 'missing',
+      rows: webgpuProfiledLayoutRows,
+      openGaps: webgpuProfiledLayoutRows.length > 0 ? [] : ['webgpu_profiled_layout_runtime_visual_required'],
     }),
     coverageEntry({
       id: 'webgpu_runtime_preflight',

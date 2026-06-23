@@ -111,7 +111,336 @@ function resolveRelative(baseDir, value) {
   return path.isAbsolute(candidate) ? candidate : path.resolve(baseDir, candidate);
 }
 
-function normalizeSupportedPipeline(rawPipeline = {}) {
+function objectOrEmpty(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function firstArray(...values) {
+  for (const value of values) {
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+function integerOrNull(value) {
+  const n = Number(value);
+  return Number.isInteger(n) ? n : null;
+}
+
+function positiveIntegerOrNull(value) {
+  const n = integerOrNull(value);
+  return n !== null && n > 0 ? n : null;
+}
+
+function nonNegativeIntegerOrNull(value) {
+  const n = integerOrNull(value);
+  return n !== null && n >= 0 ? n : null;
+}
+
+const WEBGPU_VERTEX_FORMAT_BYTES = Object.freeze({
+  float32: 4,
+  float32x2: 8,
+  float32x3: 12,
+  float32x4: 16,
+});
+
+function normalizeFloat32Values(rawValues, context, unsupported) {
+  const values = Array.isArray(rawValues) ? rawValues.map(Number) : [];
+  if (values.length === 0) {
+    unsupported.push(`${context}_float32_values_missing`);
+    return [];
+  }
+  const invalidIndex = values.findIndex((value) => !Number.isFinite(value));
+  if (invalidIndex >= 0) {
+    unsupported.push(`${context}_float32_value_not_finite:${invalidIndex}`);
+  }
+  return values;
+}
+
+function normalizeVisibilityTokens(rawVisibility, context, unsupported) {
+  const rawTokens = Array.isArray(rawVisibility)
+    ? rawVisibility
+    : firstText(rawVisibility)
+      ? String(rawVisibility).split(/[|,+\s]+/g)
+      : [];
+  const tokens = rawTokens
+    .map((token) => String(token).trim().toLowerCase())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    unsupported.push(`${context}_visibility_missing`);
+    return [];
+  }
+  const allowed = new Set(['vertex', 'fragment']);
+  const invalid = tokens.filter((token) => !allowed.has(token));
+  if (invalid.length > 0) {
+    unsupported.push(`${context}_visibility_unsupported:${[...new Set(invalid)].join(',')}`);
+  }
+  return [...new Set(tokens.filter((token) => allowed.has(token)))].sort();
+}
+
+function normalizeUniformBufferResource(rawEntry, context, unsupported) {
+  const resource = objectOrEmpty(rawEntry.resource ?? rawEntry.bufferResource ?? rawEntry.buffer_resource);
+  const kind = firstText(resource.kind, resource.resourceKind, resource.resource_kind, resource.type)
+    ?? 'uniform_buffer';
+  if (!['uniform_buffer', 'uniform-buffer', 'uniformBuffer'].includes(kind)) {
+    unsupported.push(`${context}_resource_kind_unsupported:${kind}`);
+  }
+  const dataType = firstText(resource.dataType, resource.data_type, resource.typeName, resource.type_name)
+    ?? 'float32';
+  if (dataType !== 'float32') {
+    unsupported.push(`${context}_resource_data_type_unsupported:${dataType}`);
+  }
+  const values = normalizeFloat32Values(
+    resource.values ?? resource.float32 ?? resource.data,
+    context,
+    unsupported,
+  );
+  const byteLength = values.length * 4;
+  const normalized = {
+    kind: 'uniform_buffer',
+    dataType: 'float32',
+    values,
+    byteLength,
+  };
+  return {
+    ...normalized,
+    resourceHash: sha256Text(stableJson(normalized)),
+  };
+}
+
+function normalizeVertexBufferResource(rawEntry, slot, layout, vertexCount, context, unsupported) {
+  const resource = objectOrEmpty(rawEntry);
+  const dataType = firstText(resource.dataType, resource.data_type, resource.typeName, resource.type_name)
+    ?? 'float32';
+  if (dataType !== 'float32') {
+    unsupported.push(`${context}_resource_data_type_unsupported:${dataType}`);
+  }
+  const values = normalizeFloat32Values(
+    resource.values ?? resource.float32 ?? resource.data,
+    context,
+    unsupported,
+  );
+  const byteLength = values.length * 4;
+  const minimumBytes = Number.isFinite(vertexCount) && vertexCount > 0
+    ? vertexCount * layout.arrayStride
+    : layout.arrayStride;
+  if (byteLength < minimumBytes) {
+    unsupported.push(`${context}_resource_too_small:${byteLength}<${minimumBytes}`);
+  }
+  const normalized = {
+    slot,
+    dataType: 'float32',
+    values,
+    byteLength,
+    vertexCount,
+  };
+  return {
+    ...normalized,
+    resourceHash: sha256Text(stableJson(normalized)),
+  };
+}
+
+function normalizeBindGroupLayouts(pipeline, unsupported) {
+  const rawLayouts = firstArray(pipeline.bindGroupLayouts, pipeline.bind_group_layouts);
+  const rawBindGroups = firstArray(pipeline.bindGroups, pipeline.bind_groups);
+  const bindGroupLayouts = [];
+  const bindGroups = [];
+
+  rawLayouts.forEach((rawLayout, groupIndex) => {
+    const layout = objectOrEmpty(rawLayout);
+    const rawEntries = firstArray(layout.entries, layout.bindings);
+    const seenBindings = new Set();
+    const entries = rawEntries.map((rawEntry, entryIndex) => {
+      const entry = objectOrEmpty(rawEntry);
+      const context = `bind_group_${groupIndex}_entry_${entryIndex}`;
+      const binding = nonNegativeIntegerOrNull(entry.binding);
+      if (binding === null) unsupported.push(`${context}_binding_invalid`);
+      if (seenBindings.has(binding)) unsupported.push(`${context}_binding_duplicate:${binding}`);
+      seenBindings.add(binding);
+      const visibility = normalizeVisibilityTokens(entry.visibility, context, unsupported);
+      const buffer = objectOrEmpty(entry.buffer);
+      const unsupportedKeys = Object.keys(entry)
+        .filter((key) => !['binding', 'visibility', 'buffer', 'label'].includes(key));
+      if (unsupportedKeys.length > 0) {
+        unsupported.push(`${context}_entry_keys_unsupported:${unsupportedKeys.join(',')}`);
+      }
+      const bufferType = firstText(buffer.type) ?? 'uniform';
+      if (bufferType !== 'uniform') {
+        unsupported.push(`${context}_buffer_type_unsupported:${bufferType}`);
+      }
+      if (buffer.hasDynamicOffset === true || buffer.has_dynamic_offset === true) {
+        unsupported.push(`${context}_dynamic_uniform_offsets_not_supported`);
+      }
+      const minBindingSizeRaw = buffer.minBindingSize ?? buffer.min_binding_size;
+      const minBindingSize = minBindingSizeRaw === undefined ? 0 : positiveIntegerOrNull(minBindingSizeRaw);
+      if (minBindingSizeRaw !== undefined && minBindingSize === null) {
+        unsupported.push(`${context}_min_binding_size_invalid`);
+      }
+      return {
+        binding: binding ?? 0,
+        visibility,
+        buffer: {
+          type: 'uniform',
+          minBindingSize: minBindingSize ?? 0,
+        },
+        ...(firstText(entry.label) ? { label: firstText(entry.label) } : {}),
+      };
+    });
+    const normalizedLayout = {
+      index: groupIndex,
+      entries,
+      ...(firstText(layout.label) ? { label: firstText(layout.label) } : {}),
+    };
+    bindGroupLayouts.push(normalizedLayout);
+
+    const rawGroup = rawBindGroups.find((candidate, candidateIndex) => {
+      const group = objectOrEmpty(candidate);
+      const declaredIndex = integerOrNull(group.layoutIndex ?? group.layout_index ?? group.index);
+      return declaredIndex === groupIndex || (declaredIndex === null && candidateIndex === groupIndex);
+    });
+    if (!rawGroup && entries.length > 0) {
+      unsupported.push(`bind_group_${groupIndex}_resources_missing`);
+    }
+    const group = objectOrEmpty(rawGroup);
+    const rawResourceEntries = firstArray(group.entries, group.bindings);
+    const resourceEntries = entries.map((layoutEntry) => {
+      const rawResourceEntry = rawResourceEntries.find((candidate) => {
+        const binding = integerOrNull(objectOrEmpty(candidate).binding);
+        return binding === layoutEntry.binding;
+      });
+      const context = `bind_group_${groupIndex}_binding_${layoutEntry.binding}`;
+      if (!rawResourceEntry) {
+        unsupported.push(`${context}_resource_missing`);
+        return {
+          binding: layoutEntry.binding,
+          resource: {
+            kind: 'uniform_buffer',
+            dataType: 'float32',
+            values: [],
+            byteLength: 0,
+            resourceHash: sha256Text('missing'),
+          },
+        };
+      }
+      const resource = normalizeUniformBufferResource(rawResourceEntry, context, unsupported);
+      const minBindingSize = layoutEntry.buffer.minBindingSize;
+      if (minBindingSize > 0 && resource.byteLength < minBindingSize) {
+        unsupported.push(`${context}_resource_below_min_binding_size:${resource.byteLength}<${minBindingSize}`);
+      }
+      return {
+        binding: layoutEntry.binding,
+        resource,
+      };
+    });
+    bindGroups.push({
+      layoutIndex: groupIndex,
+      entries: resourceEntries,
+      ...(firstText(group.label, layout.label) ? { label: firstText(group.label, layout.label) } : {}),
+    });
+  });
+
+  const extraGroups = rawBindGroups.filter((candidate, candidateIndex) => {
+    const group = objectOrEmpty(candidate);
+    const declaredIndex = integerOrNull(group.layoutIndex ?? group.layout_index ?? group.index);
+    const index = declaredIndex ?? candidateIndex;
+    return index < 0 || index >= rawLayouts.length;
+  });
+  if (extraGroups.length > 0) {
+    unsupported.push('bind_group_resources_without_layout');
+  }
+
+  return { bindGroupLayouts, bindGroups };
+}
+
+function normalizeVertexBufferLayouts(pipeline, vertexCount, unsupported) {
+  const rawLayouts = firstArray(pipeline.vertexBufferLayouts, pipeline.vertex_buffer_layouts);
+  const rawResources = firstArray(pipeline.vertexBuffers, pipeline.vertex_buffers);
+  const vertexBufferLayouts = [];
+  const vertexBuffers = [];
+
+  rawLayouts.forEach((rawLayout, slot) => {
+    const layout = objectOrEmpty(rawLayout);
+    const context = `vertex_buffer_${slot}`;
+    const arrayStride = positiveIntegerOrNull(layout.arrayStride ?? layout.array_stride);
+    if (arrayStride === null) unsupported.push(`${context}_array_stride_invalid`);
+    const stepMode = firstText(layout.stepMode, layout.step_mode) ?? 'vertex';
+    if (stepMode !== 'vertex') unsupported.push(`${context}_step_mode_unsupported:${stepMode}`);
+    const rawAttributes = firstArray(layout.attributes);
+    if (rawAttributes.length === 0) unsupported.push(`${context}_attributes_missing`);
+    let maxAttributeByte = 0;
+    const seenLocations = new Set();
+    const attributes = rawAttributes.map((rawAttribute, attributeIndex) => {
+      const attribute = objectOrEmpty(rawAttribute);
+      const attributeContext = `${context}_attribute_${attributeIndex}`;
+      const shaderLocation = nonNegativeIntegerOrNull(attribute.shaderLocation ?? attribute.shader_location);
+      if (shaderLocation === null) unsupported.push(`${attributeContext}_shader_location_invalid`);
+      if (seenLocations.has(shaderLocation)) {
+        unsupported.push(`${attributeContext}_shader_location_duplicate:${shaderLocation}`);
+      }
+      seenLocations.add(shaderLocation);
+      const offset = nonNegativeIntegerOrNull(attribute.offset ?? 0);
+      if (offset === null) unsupported.push(`${attributeContext}_offset_invalid`);
+      const format = firstText(attribute.format);
+      const byteSize = WEBGPU_VERTEX_FORMAT_BYTES[format];
+      if (!byteSize) unsupported.push(`${attributeContext}_format_unsupported:${format ?? 'missing'}`);
+      maxAttributeByte = Math.max(maxAttributeByte, (offset ?? 0) + (byteSize ?? 0));
+      return {
+        shaderLocation: shaderLocation ?? 0,
+        offset: offset ?? 0,
+        format: format ?? 'float32x2',
+      };
+    });
+    if (arrayStride !== null && maxAttributeByte > arrayStride) {
+      unsupported.push(`${context}_attributes_exceed_array_stride:${maxAttributeByte}>${arrayStride}`);
+    }
+    const normalizedLayout = {
+      arrayStride: arrayStride ?? 0,
+      stepMode: 'vertex',
+      attributes,
+    };
+    vertexBufferLayouts.push(normalizedLayout);
+
+    const rawResource = rawResources.find((candidate, candidateIndex) => {
+      const resource = objectOrEmpty(candidate);
+      const declaredSlot = integerOrNull(resource.slot ?? resource.index);
+      return declaredSlot === slot || (declaredSlot === null && candidateIndex === slot);
+    });
+    if (!rawResource) {
+      unsupported.push(`${context}_resource_missing`);
+      vertexBuffers.push({
+        slot,
+        dataType: 'float32',
+        values: [],
+        byteLength: 0,
+        vertexCount,
+        resourceHash: sha256Text('missing'),
+      });
+      return;
+    }
+    vertexBuffers.push(normalizeVertexBufferResource(
+      rawResource,
+      slot,
+      normalizedLayout,
+      vertexCount,
+      context,
+      unsupported,
+    ));
+  });
+
+  const extraResources = rawResources.filter((candidate, candidateIndex) => {
+    const resource = objectOrEmpty(candidate);
+    const declaredSlot = integerOrNull(resource.slot ?? resource.index);
+    const slot = declaredSlot ?? candidateIndex;
+    return slot < 0 || slot >= rawLayouts.length;
+  });
+  if (extraResources.length > 0) {
+    unsupported.push('vertex_buffer_resources_without_layout');
+  }
+
+  return { vertexBufferLayouts, vertexBuffers };
+}
+
+function normalizeSupportedPipeline(rawPipeline = {}, { vertexCount = 3 } = {}) {
   const pipeline = rawPipeline && typeof rawPipeline === 'object' && !Array.isArray(rawPipeline)
     ? rawPipeline
     : {};
@@ -120,11 +449,13 @@ function normalizeSupportedPipeline(rawPipeline = {}) {
     : Array.isArray(pipeline.bind_group_layouts)
       ? pipeline.bind_group_layouts
       : [];
+  const bindGroups = firstArray(pipeline.bindGroups, pipeline.bind_groups);
   const vertexBufferLayouts = Array.isArray(pipeline.vertexBufferLayouts)
     ? pipeline.vertexBufferLayouts
     : Array.isArray(pipeline.vertex_buffer_layouts)
       ? pipeline.vertex_buffer_layouts
       : [];
+  const vertexBuffers = firstArray(pipeline.vertexBuffers, pipeline.vertex_buffers);
   const colorTargetState = pipeline.colorTargetState ?? pipeline.color_target_state ?? {};
   const colorTargetKeys = Object.keys(
     colorTargetState && typeof colorTargetState === 'object' && !Array.isArray(colorTargetState)
@@ -136,9 +467,17 @@ function normalizeSupportedPipeline(rawPipeline = {}) {
   const primitiveTopology = firstText(pipeline.primitiveTopology, pipeline.primitive_topology)
     ?? 'triangle-list';
   const unsupported = [];
-  if (layout !== 'explicit-empty') unsupported.push('pipeline_layout_not_explicit_empty');
-  if (bindGroupLayouts.length !== 0) unsupported.push('bind_group_layouts_not_supported_by_runner');
-  if (vertexBufferLayouts.length !== 0) unsupported.push('vertex_buffer_layouts_not_supported_by_runner');
+  const hasProfiledPipelineResources =
+    bindGroupLayouts.length > 0
+    || bindGroups.length > 0
+    || vertexBufferLayouts.length > 0
+    || vertexBuffers.length > 0;
+  if (!hasProfiledPipelineResources && layout !== 'explicit-empty') {
+    unsupported.push('pipeline_layout_not_explicit_empty');
+  }
+  if (hasProfiledPipelineResources && layout !== 'explicit-profiled') {
+    unsupported.push('pipeline_layout_not_explicit_profiled_for_declared_resources');
+  }
   const unsupportedColorKeys = colorTargetKeys.filter((key) => !['format', 'alphaMode', 'alpha_mode'].includes(key));
   if (unsupportedColorKeys.length > 0) {
     unsupported.push(`color_target_state_keys_unsupported:${unsupportedColorKeys.join(',')}`);
@@ -154,17 +493,35 @@ function normalizeSupportedPipeline(rawPipeline = {}) {
   if (primitiveTopology !== 'triangle-list') {
     unsupported.push('primitive_topology_not_supported_by_runner');
   }
+  const normalizedBindGroups = normalizeBindGroupLayouts(pipeline, unsupported);
+  const normalizedVertexBuffers = normalizeVertexBufferLayouts(pipeline, vertexCount, unsupported);
   if (unsupported.length > 0) {
     const error = new Error(`unsupported WebGPU visual profile pipeline: ${unsupported.join(',')}`);
     error.unsupportedReasons = unsupported;
     throw error;
   }
+  const resourceStateHash = sha256Text(stableJson({
+    bindGroups: normalizedBindGroups.bindGroups,
+    vertexBuffers: normalizedVertexBuffers.vertexBuffers,
+  }));
+  const scope = hasProfiledPipelineResources
+    ? 'explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list'
+    : 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list';
   return {
-    scope: 'explicit-empty-layout-no-bindings-no-vertex-buffers-triangle-list',
+    scope,
     layout,
     primitiveTopology,
-    bindGroupLayouts: [],
-    vertexBufferLayouts: [],
+    bindGroupLayouts: normalizedBindGroups.bindGroupLayouts,
+    bindGroups: normalizedBindGroups.bindGroups,
+    vertexBufferLayouts: normalizedVertexBuffers.vertexBufferLayouts,
+    vertexBuffers: normalizedVertexBuffers.vertexBuffers,
+    resourceStateHash,
+    resourceCounts: {
+      bindGroupLayouts: normalizedBindGroups.bindGroupLayouts.length,
+      bindGroups: normalizedBindGroups.bindGroups.length,
+      vertexBufferLayouts: normalizedVertexBuffers.vertexBufferLayouts.length,
+      vertexBuffers: normalizedVertexBuffers.vertexBuffers.length,
+    },
     colorTargetState: {
       format: 'preferredCanvasFormat',
       alphaMode: 'opaque',
@@ -262,7 +619,10 @@ async function loadProfile(profilePath) {
   const height = finiteNumber(profile.canvas?.height ?? profile.visualProof?.height, 360);
   const minChangedPixelRatio = finiteNumber(profile.visualProof?.minChangedPixelRatio, 0.01);
   const minMeanAbsDelta8bit = finiteNumber(profile.visualProof?.minMeanAbsDelta8bit, 1.0);
-  const pipeline = normalizeSupportedPipeline(profile.pipeline);
+  const draw = {
+    vertexCount: finiteNumber(shader.draw?.vertexCount ?? shader.draw?.vertex_count, 3),
+  };
+  const pipeline = normalizeSupportedPipeline(profile.pipeline, draw);
   const negativeEdit = normalizeWebgpuNegativeEdit(profile.negativeEdit ?? profile.negative_edit);
   return {
     raw: profile,
@@ -290,9 +650,7 @@ async function loadProfile(profilePath) {
       vertex: firstText(entryPoints.vertex, shader.vertexEntryPoint, shader.vertex_entry_point) ?? 'vs',
       fragment: firstText(entryPoints.fragment, shader.fragmentEntryPoint, shader.fragment_entry_point) ?? 'fs',
     },
-    draw: {
-      vertexCount: finiteNumber(shader.draw?.vertexCount ?? shader.draw?.vertex_count, 3),
-    },
+    draw,
     pipeline,
     negativeEdit,
     visualProof: {
@@ -365,6 +723,17 @@ function diagnosticHtml(profile) {
     entryPoints: profile.entryPoints,
     primitiveTopology: profile.pipeline.primitiveTopology,
     vertexCount: profile.draw.vertexCount,
+    pipeline: {
+      layout: profile.pipeline.layout,
+      scope: profile.pipeline.scope,
+      primitiveTopology: profile.pipeline.primitiveTopology,
+      bindGroupLayouts: profile.pipeline.bindGroupLayouts,
+      bindGroups: profile.pipeline.bindGroups,
+      vertexBufferLayouts: profile.pipeline.vertexBufferLayouts,
+      vertexBuffers: profile.pipeline.vertexBuffers,
+      resourceStateHash: profile.pipeline.resourceStateHash,
+      resourceCounts: profile.pipeline.resourceCounts,
+    },
   };
   return `<!doctype html>
 <html>
@@ -399,6 +768,7 @@ function diagnosticHtml(profile) {
       pipelineSerial: 0,
       events: [],
       apiEvidence: null,
+      pipelineResources: null,
       pageInstanceId: (
         globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function'
           ? globalThis.crypto.randomUUID()
@@ -445,6 +815,9 @@ function diagnosticHtml(profile) {
         hasNavigatorGpu: Boolean(navigator.gpu),
         requestAdapterNative: requestAdapterSource.includes('[native code]'),
         requestDeviceNative: String(state.adapter.requestDevice || '').includes('[native code]'),
+        createBufferNative: String(state.device.createBuffer || '').includes('[native code]'),
+        createBindGroupLayoutNative: String(state.device.createBindGroupLayout || '').includes('[native code]'),
+        createBindGroupNative: String(state.device.createBindGroup || '').includes('[native code]'),
         createShaderModuleNative: String(state.device.createShaderModule || '').includes('[native code]'),
         createRenderPipelineNative: String(state.device.createRenderPipeline || '').includes('[native code]'),
       };
@@ -454,8 +827,123 @@ function diagnosticHtml(profile) {
       state.context.configure({ device: state.device, format: state.format, alphaMode: 'opaque' });
     }
 
+    function shaderStageMask(tokens) {
+      return (tokens || []).reduce((mask, token) => {
+        if (token === 'vertex') return mask | GPUShaderStage.VERTEX;
+        if (token === 'fragment') return mask | GPUShaderStage.FRAGMENT;
+        return mask;
+      }, 0);
+    }
+
+    function createFloat32Buffer(resource, usage, label) {
+      const values = new Float32Array(resource.values || []);
+      const size = Math.max(values.byteLength, 4);
+      const buffer = state.device.createBuffer({
+        label,
+        size,
+        usage,
+        mappedAtCreation: true,
+      });
+      new Float32Array(buffer.getMappedRange()).set(values);
+      buffer.unmap();
+      return { buffer, byteLength: values.byteLength };
+    }
+
+    function ensurePipelineResources() {
+      if (state.pipelineResources) return state.pipelineResources;
+      const pipeline = config.pipeline;
+      const bindGroupLayouts = pipeline.bindGroupLayouts.map((layout) => {
+        const entries = layout.entries.map((entry) => {
+          const buffer = { type: entry.buffer.type };
+          if (entry.buffer.minBindingSize > 0) buffer.minBindingSize = entry.buffer.minBindingSize;
+          return {
+            binding: entry.binding,
+            visibility: shaderStageMask(entry.visibility),
+            buffer,
+          };
+        });
+        return state.device.createBindGroupLayout({
+          label: layout.label || ('synthi-bind-group-layout-' + layout.index),
+          entries,
+        });
+      });
+      const bindGroupTrace = [];
+      const bindGroups = pipeline.bindGroups.map((group) => {
+        const entries = group.entries.map((entry) => {
+          const created = createFloat32Buffer(
+            entry.resource,
+            GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            'synthi-uniform-g' + group.layoutIndex + '-b' + entry.binding,
+          );
+          bindGroupTrace.push({
+            layoutIndex: group.layoutIndex,
+            binding: entry.binding,
+            byteLength: entry.resource.byteLength,
+            resourceHash: entry.resource.resourceHash,
+            resourceKind: entry.resource.kind,
+          });
+          return {
+            binding: entry.binding,
+            resource: {
+              buffer: created.buffer,
+              offset: 0,
+              size: entry.resource.byteLength,
+            },
+          };
+        });
+        return state.device.createBindGroup({
+          label: group.label || ('synthi-bind-group-' + group.layoutIndex),
+          layout: bindGroupLayouts[group.layoutIndex],
+          entries,
+        });
+      });
+      const vertexBufferTrace = [];
+      const vertexBuffers = pipeline.vertexBuffers.map((resource) => {
+        const created = createFloat32Buffer(
+          resource,
+          GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+          'synthi-vertex-buffer-' + resource.slot,
+        );
+        const trace = {
+          slot: resource.slot,
+          byteLength: resource.byteLength,
+          resourceHash: resource.resourceHash,
+          vertexCount: resource.vertexCount,
+        };
+        vertexBufferTrace.push(trace);
+        return {
+          slot: resource.slot,
+          buffer: created.buffer,
+          offset: 0,
+          size: resource.byteLength,
+          trace,
+        };
+      });
+      const resourceTrace = {
+        resourceStateHash: pipeline.resourceStateHash,
+        bindGroupLayoutCount: pipeline.bindGroupLayouts.length,
+        bindGroupCount: bindGroups.length,
+        vertexBufferLayoutCount: pipeline.vertexBufferLayouts.length,
+        vertexBufferCount: vertexBuffers.length,
+        bindGroupBindings: bindGroupTrace,
+        vertexBuffers: vertexBufferTrace,
+      };
+      state.pipelineResources = {
+        bindGroupLayouts,
+        bindGroups,
+        vertexBuffers,
+        trace: resourceTrace,
+      };
+      event('resource_init', {
+        label: 'persistent-webgpu-resources',
+        resourceTrace,
+      });
+      return state.pipelineResources;
+    }
+
     async function renderEpoch(code, artifactHash, label) {
       await ensureDevice();
+      const resources = ensurePipelineResources();
       state.epochCounter += 1;
       state.pipelineSerial += 1;
       const epoch = 'webgpu-epoch-' + state.epochCounter;
@@ -469,10 +957,24 @@ function diagnosticHtml(profile) {
         throw new Error(errors.map((message) => message.message).join('\\n'));
       }
       event('loader', { label, epoch, artifactHash });
-      const pipelineLayout = state.device.createPipelineLayout({ bindGroupLayouts: [] });
+      const pipelineLayout = state.device.createPipelineLayout({
+        bindGroupLayouts: resources.bindGroupLayouts,
+      });
       const pipeline = state.device.createRenderPipeline({
         layout: pipelineLayout,
-        vertex: { module, entryPoint: config.entryPoints.vertex, buffers: [] },
+        vertex: {
+          module,
+          entryPoint: config.entryPoints.vertex,
+          buffers: config.pipeline.vertexBufferLayouts.map((layout) => ({
+            arrayStride: layout.arrayStride,
+            stepMode: layout.stepMode,
+            attributes: layout.attributes.map((attribute) => ({
+              shaderLocation: attribute.shaderLocation,
+              offset: attribute.offset,
+              format: attribute.format,
+            })),
+          })),
+        },
         fragment: {
           module,
           entryPoint: config.entryPoints.fragment,
@@ -493,11 +995,27 @@ function diagnosticHtml(profile) {
         }],
       });
       pass.setPipeline(pipeline);
+      resources.bindGroups.forEach((bindGroup, groupIndex) => {
+        pass.setBindGroup(groupIndex, bindGroup);
+      });
+      resources.vertexBuffers.forEach((vertexBuffer) => {
+        pass.setVertexBuffer(vertexBuffer.slot, vertexBuffer.buffer, vertexBuffer.offset, vertexBuffer.size);
+      });
       pass.draw(config.vertexCount);
       pass.end();
       const commandBuffer = encoder.finish();
       const dispatchId = 'webgpu-dispatch-' + state.epochCounter;
-      event('dispatch', { label, epoch, artifactHash, pipelineId, pipelineEpoch, dispatchId });
+      event('dispatch', {
+        label,
+        epoch,
+        artifactHash,
+        pipelineId,
+        pipelineEpoch,
+        dispatchId,
+        resourceStateHash: resources.trace.resourceStateHash,
+        bindGroupBindings: resources.trace.bindGroupBindings,
+        vertexBufferBindings: resources.trace.vertexBuffers,
+      });
       state.device.queue.submit([commandBuffer]);
       await state.device.queue.onSubmittedWorkDone();
       state.frameNumber += 1;
@@ -534,6 +1052,7 @@ function diagnosticHtml(profile) {
         limits: state.limits,
         preferredCanvasFormat: state.format,
         apiEvidence: state.apiEvidence,
+        resourceTrace: resources.trace,
         events: state.events.slice(),
       };
     }
@@ -728,6 +1247,7 @@ function validateVisualThresholds({ profile, artifacts, metrics }) {
 
 function nativeWebGpuApiEvidence(trace) {
   const apiEvidence = trace.after.apiEvidence ?? {};
+  const resourceTrace = trace.after.resourceTrace ?? {};
   const required = [
     'hasNavigatorGpu',
     'requestAdapterNative',
@@ -735,9 +1255,17 @@ function nativeWebGpuApiEvidence(trace) {
     'createShaderModuleNative',
     'createRenderPipelineNative',
   ];
-  const failedGates = required.filter((key) => apiEvidence[key] !== true);
+  if ((resourceTrace.bindGroupCount ?? 0) > 0) {
+    required.push('createBufferNative', 'createBindGroupLayoutNative', 'createBindGroupNative');
+  }
+  if ((resourceTrace.vertexBufferCount ?? 0) > 0) {
+    required.push('createBufferNative');
+  }
+  const requiredGates = [...new Set(required)];
+  const failedGates = requiredGates.filter((key) => apiEvidence[key] !== true);
   return {
     accepted: failedGates.length === 0,
+    requiredGates,
     failedGates,
     ...apiEvidence,
   };
@@ -798,6 +1326,7 @@ function buildWebgpuFissionReport({
   bindGroupLayoutHash,
   pipelineLayoutHash,
   vertexBufferLayoutHash,
+  resourceStateHash,
   colorTargetStateHash,
   pipelineStateHash,
   hashes,
@@ -817,6 +1346,7 @@ function buildWebgpuFissionReport({
     bindGroupLayoutHash,
     pipelineLayoutHash,
     vertexBufferLayoutHash,
+    resourceStateHash,
     colorTargetStateHash,
     pipelineStateHash,
   };
@@ -868,9 +1398,10 @@ function buildContract({ profile, trace, hashes, runMode, processContinuity }) {
   const bindGroupLayoutHash = sha256Text(stableJson(profile.pipeline.bindGroupLayouts));
   const pipelineLayoutHash = sha256Text(stableJson({
     bindGroupLayouts: profile.pipeline.bindGroupLayouts,
-    layout: 'explicit-empty',
+    layout: profile.pipeline.layout,
   }));
   const vertexBufferLayoutHash = sha256Text(stableJson(profile.pipeline.vertexBufferLayouts));
+  const resourceStateHash = profile.pipeline.resourceStateHash;
   const colorTargetStateHash = sha256Text(stableJson({
     format: trace.after.preferredCanvasFormat,
     alphaMode: profile.pipeline.colorTargetState.alphaMode,
@@ -881,20 +1412,33 @@ function buildContract({ profile, trace, hashes, runMode, processContinuity }) {
     bindGroupLayoutHash,
     pipelineLayoutHash,
     vertexBufferLayoutHash,
+    resourceStateHash,
     colorTargetStateHash,
   }));
+  const runtimeResourceTrace = trace.after.resourceTrace ?? {
+    resourceStateHash,
+    bindGroupLayoutCount: profile.pipeline.bindGroupLayouts.length,
+    bindGroupCount: profile.pipeline.bindGroups.length,
+    vertexBufferLayoutCount: profile.pipeline.vertexBufferLayouts.length,
+    vertexBufferCount: profile.pipeline.vertexBuffers.length,
+    bindGroupBindings: [],
+    vertexBuffers: [],
+  };
+  const resourceEvidenceRef = `runtime:webgpu:resource-state:${runtimeResourceTrace.resourceStateHash ?? resourceStateHash}`;
   const fieldEvidenceRefs = [
     profile.profileHash,
     hashes.beforeImageHash,
     hashes.afterImageHash,
     hashes.diffImageHash,
     `${trace.after.dispatchId}:${trace.after.epoch}`,
+    resourceEvidenceRef,
   ];
   const fissionReport = buildWebgpuFissionReport({
     profile,
     bindGroupLayoutHash,
     pipelineLayoutHash,
     vertexBufferLayoutHash,
+    resourceStateHash,
     colorTargetStateHash,
     pipelineStateHash,
     hashes,
@@ -932,6 +1476,7 @@ function buildContract({ profile, trace, hashes, runMode, processContinuity }) {
         primitiveTopology: profile.pipeline.primitiveTopology,
         bindGroupLayoutHash,
         pipelineLayoutHash,
+        vertexBufferLayoutHash,
       })),
       supported_pipeline_scope: profile.pipeline.scope,
     },
@@ -948,7 +1493,13 @@ function buildContract({ profile, trace, hashes, runMode, processContinuity }) {
         bind_group_layout_hash: bindGroupLayoutHash,
         pipeline_layout_hash: pipelineLayoutHash,
         vertex_buffer_layout_hash: vertexBufferLayoutHash,
+        resource_state_hash: resourceStateHash,
         color_target_state_hash: colorTargetStateHash,
+        bind_group_layout_count: profile.pipeline.bindGroupLayouts.length,
+        bind_group_count: profile.pipeline.bindGroups.length,
+        vertex_buffer_layout_count: profile.pipeline.vertexBufferLayouts.length,
+        vertex_buffer_count: profile.pipeline.vertexBuffers.length,
+        runtime_resource_trace: runtimeResourceTrace,
         source: 'runtime_trace',
       },
       workgroup_or_launch_shape: {
@@ -973,6 +1524,7 @@ function buildContract({ profile, trace, hashes, runMode, processContinuity }) {
     reload_evidence_refs: [
       `runtime:webgpu:createShaderModule:${trace.after.epoch}`,
       `runtime:webgpu:createRenderPipeline:${trace.after.pipelineId}`,
+      resourceEvidenceRef,
     ],
     firewall_evidence: {
       route: 'gpu_runtime_epoch_reload',
@@ -996,6 +1548,11 @@ function buildContract({ profile, trace, hashes, runMode, processContinuity }) {
       device_uuid: deviceUuid,
       context_or_device_handle: `webgpu-page:${trace.after.pageInstanceId}`,
       queue_or_stream_handle: `webgpu-default-queue:${trace.after.pageInstanceId}`,
+      persistent_gpu_allocations: {
+        resource_state_hash: resourceStateHash,
+        runtime_resource_trace: runtimeResourceTrace,
+      },
+      engine_scene_handles: [],
       camera_state_hash: cameraStateHash,
       swapchain_or_framebuffer_identity: `webgpu-canvas:${profile.width}x${profile.height}:${trace.url}`,
     },
@@ -1017,11 +1574,15 @@ function buildContract({ profile, trace, hashes, runMode, processContinuity }) {
       bind_group_layout_hash: bindGroupLayoutHash,
       pipeline_layout_hash: pipelineLayoutHash,
       vertex_buffer_layout_hash: vertexBufferLayoutHash,
+      resource_state_hash: resourceStateHash,
       color_target_state_hash: colorTargetStateHash,
       pipeline_state_hash: pipelineStateHash,
       pipeline_recreate_required: true,
       pipeline_recreate_proven: true,
       supported_pipeline_scope: profile.pipeline.scope,
+      bind_group_layouts: profile.pipeline.bindGroupLayouts,
+      vertex_buffer_layouts: profile.pipeline.vertexBufferLayouts,
+      runtime_resource_trace: runtimeResourceTrace,
       unsupported_pipeline_reasons: profile.pipeline.unsupportedReasons,
       frame_used_new_pipeline_trace: `${trace.after.dispatchId}:${trace.after.epoch}:${profile.afterHash}`,
       field_evidence_refs: evidenceRefsForFields([
@@ -1032,8 +1593,10 @@ function buildContract({ profile, trace, hashes, runMode, processContinuity }) {
         'bind_group_layout_hash',
         'pipeline_layout_hash',
         'vertex_buffer_layout_hash',
+        'resource_state_hash',
         'color_target_state_hash',
         'pipeline_state_hash',
+        'runtime_resource_trace',
         'frame_used_new_pipeline_trace',
       ], fieldEvidenceRefs),
     },
@@ -1487,13 +2050,17 @@ function buildLedgerRecord({
   const afterEpoch = trace.after.epoch;
   const dispatchId = trace.after.dispatchId;
   const processId = processContinuity.processIdAfter;
+  const runtimeResourceTrace = trace.after.resourceTrace ?? {};
   const evidenceRefs = [
     profile.profileHash,
     artifacts.beforeImageHash,
     artifacts.afterImageHash,
     artifacts.diffImageHash,
     contract.contract_hash,
-  ];
+    runtimeResourceTrace.resourceStateHash
+      ? `runtime:webgpu:resource-state:${runtimeResourceTrace.resourceStateHash}`
+      : null,
+  ].filter(Boolean);
   const visualArtifacts = {
     before_image: artifacts.beforeImage,
     after_image: artifacts.afterImage,
@@ -1580,6 +2147,9 @@ function buildLedgerRecord({
       process_id: processId,
       pipeline_id: trace.after.pipelineId,
       pipeline_epoch: trace.after.pipelineEpoch,
+      resource_state_hash: runtimeResourceTrace.resourceStateHash ?? profile.pipeline.resourceStateHash,
+      bind_group_bindings: runtimeResourceTrace.bindGroupBindings ?? [],
+      vertex_buffer_bindings: runtimeResourceTrace.vertexBuffers ?? [],
       command: 'GPURenderPassEncoder.draw',
     },
     output_event: {
@@ -1614,6 +2184,7 @@ function buildLedgerRecord({
       same_page_instance_id: trace.after.pageInstanceId,
     },
     device_identity: deviceIdentity,
+    runtime_resource_trace: runtimeResourceTrace,
     firewall_evidence: {
       cpu_hmr_used: false,
       full_rebuild_used: false,
@@ -2082,15 +2653,75 @@ function selfCheckLedgerRecord(overrides = {}) {
 }
 
 function selfCheck() {
+  const supportedProfiledPipeline = normalizeSupportedPipeline({
+    layout: 'explicit-profiled',
+    primitiveTopology: 'triangle-list',
+    bindGroupLayouts: [{
+      entries: [{
+        binding: 0,
+        visibility: 'vertex|fragment',
+        buffer: { type: 'uniform', minBindingSize: 16 },
+      }],
+    }],
+    bindGroups: [{
+      layoutIndex: 0,
+      entries: [{
+        binding: 0,
+        resource: {
+          kind: 'uniform_buffer',
+          dataType: 'float32',
+          values: [1, 0, 0, 1],
+        },
+      }],
+    }],
+    vertexBufferLayouts: [{
+      arrayStride: 8,
+      attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }],
+    }],
+    vertexBuffers: [{
+      slot: 0,
+      dataType: 'float32',
+      values: [-1, -1, 0, 1, 1, -1],
+    }],
+  }, { vertexCount: 3 });
+  if (
+    supportedProfiledPipeline.scope !== 'explicit-profiled-layout-uniform-bindings-float32-vertex-buffers-triangle-list'
+    || supportedProfiledPipeline.resourceCounts.bindGroups !== 1
+    || supportedProfiledPipeline.resourceCounts.vertexBuffers !== 1
+    || !supportedProfiledPipeline.resourceStateHash
+  ) {
+    throw new Error('self-check failed to accept supported profiled WebGPU pipeline resources');
+  }
   let unsupportedPipelineRejected = false;
   try {
-    normalizeSupportedPipeline({ bindGroupLayouts: [{ entries: [] }] });
+    normalizeSupportedPipeline({
+      layout: 'explicit-profiled',
+      primitiveTopology: 'triangle-list',
+      bindGroupLayouts: [{
+        entries: [{
+          binding: 0,
+          visibility: 'fragment',
+          buffer: { type: 'storage' },
+        }],
+      }],
+      bindGroups: [{
+        layoutIndex: 0,
+        entries: [{
+          binding: 0,
+          resource: {
+            kind: 'uniform_buffer',
+            dataType: 'float32',
+            values: [1, 0, 0, 1],
+          },
+        }],
+      }],
+    });
   } catch (error) {
     unsupportedPipelineRejected = Array.isArray(error.unsupportedReasons)
-      && error.unsupportedReasons.includes('bind_group_layouts_not_supported_by_runner');
+      && error.unsupportedReasons.includes('bind_group_0_entry_0_buffer_type_unsupported:storage');
   }
   if (!unsupportedPipelineRejected) {
-    throw new Error('self-check failed to reject unsupported bind-group pipeline profile');
+    throw new Error('self-check failed to reject unsupported WebGPU pipeline resource profile');
   }
   const thresholdResult = validateVisualThresholds({
     profile: {
