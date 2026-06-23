@@ -1,6 +1,6 @@
 # GPU HMR Investor Demo Status
 
-Updated: 2026-06-22
+Updated: 2026-06-23
 
 ## Demo Position
 
@@ -20,12 +20,14 @@ Best demo surfaces:
 6. Strict ROCm/HIP compute ledger: strongest full-runtime proof artifact and output-oracle readback.
 7. HIPRT same-process CameraRays: scoped ray-traced visual full-runtime proof with embedded ledger/runtime artifact and nonblank oracle-region proof.
 8. HIPRT MegaKernel direct-light-zero: useful adversarial visual refusal proving blank render-region output is not accepted.
+9. MIOpen large ROCm ML infrastructure profile: useful serious-project refusal proving the harness can build/run upstream MIOpen, trace a launched activation kernel, and still refuse when Synthi full-runtime proof is missing.
 
 Do not claim:
 
 ```text
 CUDA was proven on this AMD GPU.
 Every arbitrary GPU project is production accepted.
+MIOpen large ML full-runtime HMR passed.
 Bevy or broad/general WebGPU has full-runtime proof-ledger acceptance.
 Broad HIPRT is accepted beyond the scoped CameraRays profile.
 OIDN HIP produced or validated the accepted visual output.
@@ -37,12 +39,12 @@ Flow's generated `.hip` file proves per-kernel or smallest-safe fission.
 Any proof succeeded because of a shim or hardcoded scenario path.
 ```
 
-Current June 22 proof snapshot:
+Current June 23 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:27cd98348de0654e1540426df51bec39111b41ac1b7a5ec62e53ef66526f918c
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T193336Z.json
-global matrix summary: 25 rows, 9 full-runtime GPU HMR, 10 refusals, 3 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
+global matrix: gpu-validation-matrix-ledger:sha256:cdfa6c49cbfa6aec2d304fe5ae37d4ef737910148834a42ffda82593cdba2db0
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T204254Z.json
+global matrix summary: 28 rows, 10 full-runtime GPU HMR, 10 refusals, 5 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 focused Flow/ray-light matrix: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 focused matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-focused-flow-ray-light-20260622T181300Z.json
 focused matrix coverage: ROCm/HIP full runtime accepted, Flow visual path accepted, ray-light visual path accepted, per-target run modes accepted, per-kernel/smallest-safe fission accepted
@@ -53,6 +55,7 @@ Current live previews:
 ```text
 Ray-light: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260622-embedded-ledger-10 -> HTTP 200
 Flow:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260622-embedded-ledger-10 -> HTTP 200
+Preview frontend: http://127.0.0.1:3000 -> HTTP 200 on 2026-06-23
 ```
 
 Current visual proof artifacts:
@@ -69,6 +72,14 @@ Flow hot1 ledger: gpu-ledger-proof:sha256:82171321eac0bc7b8a4bd5177e51766931a436
 Flow hot2 ledger: gpu-ledger-proof:sha256:c92876a2dc20d43f3811f4db236844838b8fd47b3668462c4049dbfbc211503c
 Flow visuals: before-after-diff.png, hot-delta-2-diff.png
 Flow timings: hot1 total_validator_wall_time=2961567300ns, hot2 total_validator_wall_time=2878428200ns
+
+WebGPU hot1 proof id: webgpu-runtime-visual-proof:sha256:cf42f6465d5f5d85fd2e158548c88cac679c4a4c4c0271b7ac0940f50dd77ed2
+WebGPU hot1 ledger: gpu-ledger-proof:sha256:326adf853c655cfbde76091a7fdaad8d456708b7e9f6b6395357a7da7760df63
+WebGPU hot1 timing: total_validator_wall_time=1381243000ns, trigger_to_visible_time=66979500ns, changed_pixel_ratio=0.29389322916666666
+WebGPU hot2 proof id: webgpu-runtime-visual-proof:sha256:bbfb53e28f06f4a8cf93cc94e2a6ba42101042bc0ed60c441e0df6f1738f4995
+WebGPU hot2 ledger: gpu-ledger-proof:sha256:08b548a7df18d1f8514930c8282e3199e03056d81883ba29af52d9b2071ced28
+WebGPU hot2 timing: total_validator_wall_time=1500198700ns, trigger_to_visible_time=151383400ns, changed_pixel_ratio=0.32245225694444446
+WebGPU hot2 visual inspection: before blue triangle, after green rotated triangle, diff nonblank
 ```
 
 Current HIPRT/OIDN caveat:
@@ -80,11 +91,30 @@ OIDN live preflight ran against /tmp/synthi-real-rocm/HIPRT-Path-Tracer and is r
 No compatibility shim, symlink, fake ICD, or project-specific branch was added.
 ```
 
+Current MIOpen large ROCm ML caveat:
+
+```text
+profile: real-rocm-miopen-activation-large-ml
+result slug: gpu-real-rocm-MIOpen-20260623012542
+result path: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results.json
+repo: ROCm/MIOpen @ 06977176afd94476c18d5290f21cb40745bb73a9
+target: MIOpenDriver activ -n 1 -c 1 -H 8 -W 8 -F 1 -V 1 -t 1
+native evidence: hipModuleGetFunction resolved MIOpenActiveFwdLite through native_runtime_intercept
+driver evidence: Forward Activation Verifies on CPU and GPU; GPU avg activation time 0.010436ms
+split projection: src/kernels/MIOpenNeuron.cl, 1532 files, 50331605 bytes
+delta projection: src/kernels/MIOpenNeuron.cl -> src/kernels/activation_functions.h, 1535 files, 50331470 bytes
+accepted GPU HMR: false
+strict refusal: runtime_proof_artifact_missing and proof_state_missing for required gpu-hmr-full-runtime-proven
+visual proof: no MIOpen frame captured; not counted
+```
+
 ## Current Hardening Status
 
 Latest implementation commits:
 
 ```text
+31a081d6c feat(gpu-hmr): add MIOpen large ROCm ML profile
+480fc456b fix(gpu-hmr): trace real ROCm build dependencies
 c0a4f373c fix(gpu-hmr): recompute HIPRT oracle-region pixels
 ae6bbce3b fix(gpu-hmr): require HIPRT oracle-region proof
 ffe70a830 fix(gpu-hmr): ignore stale cold-only coverage targets
@@ -164,7 +194,7 @@ npm --prefix mcp/synthi-mcp run proof:external-project:self-check -> passed
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:27cd98348de0654e1540426df51bec39111b41ac1b7a5ec62e53ef66526f918c
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:cdfa6c49cbfa6aec2d304fe5ae37d4ef737910148834a42ffda82593cdba2db0
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
@@ -742,10 +772,11 @@ These are generic hardening changes. They are not fixture-specific, and they do 
 
 - Full-runtime Bevy acceptance is not implemented.
 - Focused Flow/ray-light per-target run-mode coverage is complete: cold split, hot delta 1, hot delta 2 with a different edit, and negative-edit refusal all pass. The global matrix still has per-target run-mode gaps for older SAXPY, scoped HIPRT CameraRays, and scoped WebGPU rows; stale cold-only artifacts no longer create phantom full-runtime target gaps.
+- MIOpen large ROCm ML infrastructure now builds and runs under the proof harness, but full-runtime Synthi GPU HMR remains refused until the full ledger chain, same-process runtime proof artifact, epoch/dispatch proof, and output or visual oracle proof are produced.
 - CUDA needs a CUDA machine.
 - OIDN HIP needs a ROCm-compatible OIDN HIP build; no ABI shortcut should be used.
 - OpenCL needs a real vendor ICD plus dispatch/event/readback ledger proof; no synthesized ICD or shim should be used.
 - Vulkan needs a real ICD plus pipeline-layout, command-buffer, frame-boundary, and visual oracle ledger proof; no synthesized ICD or shim should be used.
 - WebGPU beyond the accepted explicit-empty-layout WGSL profile needs executed bind-group, vertex-buffer, engine-cache, pipeline-layout, frame trace, and output-oracle ledger proof; browser flags must remain evidence-only.
 - Per-kernel/smallest-safe fission is proven only for the ray-light generated `trace_light_rays` island; additional projects/backends need their own deterministic verifier evidence.
-- Browser plugin visual proof was unavailable because no in-app browser backend was exposed.
+- In-app browser visual proof was unavailable because the browser connector bootstrap failed with sandbox metadata; persisted WebGPU before/after/diff PNGs were inspected with the local visual tool instead.

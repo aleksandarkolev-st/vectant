@@ -1,6 +1,6 @@
 # GPU HMR Universal Acceptance Implementation Status
 
-Status date: 2026-06-22
+Status date: 2026-06-23
 
 This document records the current implementation status against `GPU_HMR_UNIVERSAL_ACCEPTANCE_PROOF_PLAN.md`.
 
@@ -15,17 +15,21 @@ Current accepted proof is broader than one fixture, but it is not universal prod
 - deterministic generated-split fission verification for ray-light `trace_light_rays`,
 - HIPRT same-process CameraRays ray-traced visual proof with embedded proof ledger, strict runtime proof artifact, shader-cache artifact binding, and data-derived nonblank oracle-region proof,
 - ThreeJS external runtime visual proof as an external screenshot profile,
-- WebGPU Chrome/AMD RDNA4 runtime visual HMR proof for an explicit-empty-layout WGSL shader/pipeline profile,
+- WebGPU Chrome/AMD RDNA4 runtime visual HMR proof for an explicit-empty-layout WGSL shader/pipeline profile.
+
+Current fail-closed evidence also includes:
+
+- large real ROCm ML infrastructure validation against upstream MIOpen, which builds and runs but is refused because full-runtime Synthi proof and output/visual oracle proof are missing,
 - negative/rejection evidence for HIPRT blank-frame direct-light-zero, OIDN HIP, Bevy, OpenCL, and Vulkan where proof is missing, blank, or the runtime dependency is incompatible.
 
 Current strict matrix behavior deliberately downgrades older HIPRT warm visual artifacts that lack an embedded proof ledger and data-derived oracle-region proof. HIPRT matrix ingestion now recomputes the oracle region from the persisted before/after PNG pixels; JSON claims about a nonblank region are not accepted by themselves. A fresh 2026-06-22 HIPRT CameraRays rerun is accepted as strict full-runtime HIPRT GPU HMR. The MegaKernel direct-light-zero profile is now a proven blank-oracle-region refusal, not a success. OIDN live preflight ran against the real HIPRT checkout and remains rejected for HIP output proof because the installed OIDN HIP device library depends on `libamdhip64.so.5`, which is absent on this ROCm 7 worker. No symlink, ABI shim, fake ICD, or synthesized runtime was added.
 
-The latest generated machine-readable validation matrix ledger reports 25 rows: 9 full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 10 structured refusal rows, 1 preflight-only row, 3 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
+The latest generated machine-readable validation matrix ledger reports 28 rows: 10 full-runtime GPU HMR rows, 1 deterministic generated-split fission verifier row, 1 external visual-profile row, 10 structured refusal rows, 1 preflight-only row, 5 cold split rows, and 0 unproven rows in the default included set. The matrix hash is:
 
 ```text
-gpu-validation-matrix-ledger:sha256:27cd98348de0654e1540426df51bec39111b41ac1b7a5ec62e53ef66526f918c
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T193336Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T193336Z.md
+gpu-validation-matrix-ledger:sha256:cdfa6c49cbfa6aec2d304fe5ae37d4ef737910148834a42ffda82593cdba2db0
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T204254Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T204254Z.md
 ```
 
 Current focused Flow/ray-light matrix:
@@ -44,6 +48,7 @@ Latest live preview URLs checked HTTP 200:
 ```text
 Ray-light: http://localhost:3000/workspace/ray-light-gpu-hmr-proof-20260622-embedded-ledger-10
 Flow:      http://localhost:3000/workspace/flow-gpu-hmr-proof-20260622-embedded-ledger-10
+Preview stack: frontend 127.0.0.1:3000 -> HTTP 200 on 2026-06-23; Postgres bound to 127.0.0.1:15432 because 5432 was unavailable.
 ```
 
 Latest ray-light visual proof:
@@ -72,12 +77,54 @@ visual metrics: hot1 changed_pixel_ratio=0.025272916666666666, hot2 changed_pixe
 fission: device_translation_unit_hmr only; per-kernel/smallest-safe fission remains refused
 ```
 
-This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths above, including the scoped HIPRT CameraRays path. CUDA, HIPRT MegaKernel direct-light-zero acceptance, OIDN HIP output proof, Vulkan, OpenCL full-runtime acceptance, Bevy, and broader WebGPU profiles with bind groups, vertex buffers, or engine-owned pipeline caches remain open or refused.
+Latest WebGPU run-mode visual proof:
+
+```text
+hot delta 1 proof id: webgpu-runtime-visual-proof:sha256:cf42f6465d5f5d85fd2e158548c88cac679c4a4c4c0271b7ac0940f50dd77ed2
+hot delta 1 ledger: gpu-ledger-proof:sha256:326adf853c655cfbde76091a7fdaad8d456708b7e9f6b6395357a7da7760df63
+hot delta 1 total validator wall time: 1381243000ns
+hot delta 1 trigger_to_visible_time: 66979500ns
+hot delta 1 changed_pixel_ratio: 0.29389322916666666
+hot delta 2 proof id: webgpu-runtime-visual-proof:sha256:bbfb53e28f06f4a8cf93cc94e2a6ba42101042bc0ed60c441e0df6f1738f4995
+hot delta 2 ledger: gpu-ledger-proof:sha256:08b548a7df18d1f8514930c8282e3199e03056d81883ba29af52d9b2071ced28
+hot delta 2 total validator wall time: 1500198700ns
+hot delta 2 trigger_to_visible_time: 151383400ns
+hot delta 2 changed_pixel_ratio: 0.32245225694444446
+visuals inspected locally: webgpu-runtime-runmodes-hot2-20260622-webgpu-wgsl-runtime-triangle-hot2-before.png, -after.png, -diff.png
+visual result: before blue triangle, after green rotated triangle, diff nonblank
+```
+
+Latest large ROCm ML infrastructure validation:
+
+```text
+profile: mcp/synthi-mcp/scripts/profiles/real-rocm-miopen-activation-large-ml.json
+command: npm --prefix mcp/synthi-mcp run proof:real-rocm:large-ml-miopen
+repo: https://github.com/ROCm/MIOpen.git @ 06977176afd94476c18d5290f21cb40745bb73a9
+result slug: gpu-real-rocm-MIOpen-20260623012542
+result path: mcp/synthi-mcp/.gpu-hmr-test-logs/real-rocm-results.json
+target: MIOpenDriver activ -n 1 -c 1 -H 8 -W 8 -F 1 -V 1 -t 1
+entry file: src/kernels/MIOpenNeuron.cl
+delta file: src/kernels/activation_functions.h
+repo files: 7869 git files, 8344 seeded text/proof-context files, 38 skipped text/binary limits
+upstream build/run: configure_ms=9971, build_ms=1734969, run_ms=244, run_exit_code=0
+native runtime evidence: hipModuleGetFunction resolved MIOpenActiveFwdLite through native_runtime_intercept
+MIOpen driver evidence: Forward Activation Verifies on CPU and GPU, GPU avg activation time 0.010436ms
+split projection: 1532 files, 50331605 bytes, coverage_trace=src/kernels/MIOpenNeuron.cl
+delta projection: 1535 files, 50331470 bytes, coverage_trace=src/kernels/MIOpenNeuron.cl -> src/kernels/activation_functions.h
+strict result: refused, gpu_hmr_success=false, runtime_proof_artifact=null, proof_artifacts=[]
+refusal reason: synthi_wait_hmr required gpu-hmr-full-runtime-proven; proof_state_missing; strict runtime proof artifact gate failed with runtime_proof_artifact_missing
+visual result: no MIOpen frame captured; screenshot proof unavailable and not counted
+```
+
+This is not yet production-grade acceptance for every arbitrary GPU project. The current accepted scope is ROCm/HIP plus the explicitly proven visual/runtime paths above, including the scoped HIPRT CameraRays and scoped WebGPU paths.
+
+Still open or refused: CUDA, MIOpen full-runtime GPU HMR, HIPRT MegaKernel direct-light-zero, OIDN HIP output proof, Vulkan, OpenCL full-runtime acceptance, Bevy, and broader WebGPU profiles with bind groups, vertex buffers, or engine-owned pipeline caches.
 
 ## Hard Rules Preserved
 
 - No hardcoded proof success paths were added.
 - No shims were added.
+- MIOpen was added as a profile-driven large real ROCm project validation target. The runner reads repo, target, build, launch, and oracle settings from the profile/env path; there is no MIOpen-specific success branch.
 - Docker proof runners now require explicit runtime configuration instead of baked-in endpoint/container/entry defaults.
 - Visual evidence must be readable image artifacts; invalid image placeholders are rejected.
 - `wait_hmr` now returns embedded proof ledger and runtime proof artifact materials for full-runtime GPU proof waits; matrix acceptance recomputes ledger invariants from those materials instead of trusting supplied summaries.
@@ -216,21 +263,22 @@ Latest generated matrix artifact:
 
 ```text
 schema: synthi.gpu.hmr.validation_matrix_ledger.v1
-proof id: gpu-validation-matrix-ledger:sha256:27cd98348de0654e1540426df51bec39111b41ac1b7a5ec62e53ef66526f918c
-json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T193336Z.json
-markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T193336Z.md
+proof id: gpu-validation-matrix-ledger:sha256:cdfa6c49cbfa6aec2d304fe5ae37d4ef737910148834a42ffda82593cdba2db0
+json: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T204254Z.json
+markdown: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260622T204254Z.md
 ```
 
 Matrix result:
 
 ```text
-row count: 25
-full-runtime GPU HMR rows: 9
+row count: 28
+full-runtime GPU HMR rows: 10
   flow
   ray-light
   saxpy_kernel+saxpy_init_kernel
   hiprt-camera-rays-horizontal-mirror
   webgpu-wgsl-runtime-triangle
+strict cold split rows: 5
 deterministic fission rows: 1
   trace_light_rays
 external visual-profile rows: 1
@@ -321,7 +369,7 @@ node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs
 npm --prefix mcp/synthi-mcp run proof:validation-matrix:self-check
 npm --prefix mcp/synthi-mcp run proof:validation-matrix
-  current result: passed, matrix gpu-validation-matrix-ledger:sha256:27cd98348de0654e1540426df51bec39111b41ac1b7a5ec62e53ef66526f918c
+  latest result: passed, matrix gpu-validation-matrix-ledger:sha256:cdfa6c49cbfa6aec2d304fe5ae37d4ef737910148834a42ffda82593cdba2db0
 
 ray-light live MCP visual proof with hot-delta timing
   workspace: ray-light-gpu-hmr-proof-20260609-timing-matrix
