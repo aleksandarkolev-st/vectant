@@ -42,8 +42,8 @@ Any proof succeeded because of a shim or hardcoded scenario path.
 Current June 23 proof snapshot:
 
 ```text
-global matrix: gpu-validation-matrix-ledger:sha256:569ebea78f35b91dea08a3be51227bb8e05630c306842a6d746248dfcc87b0a2
-global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T040705Z.json
+global matrix: gpu-validation-matrix-ledger:sha256:c6b83f10e3f2a67e1a910c6d6fd095b3150d741dc5f508bcb2a94e9811cda959
+global matrix path: mcp/synthi-mcp/.gpu-hmr-test-logs/validation-matrix/gpu-hmr-validation-matrix-20260623T041948Z.json
 global matrix summary: 29 rows, 10 full-runtime GPU HMR, 11 refusals, 5 cold splits, 1 deterministic fission, 1 visual profile, 1 preflight-only, 0 included unproven rows
 global per-target run modes: accepted for 2 enrolled generated visual run-mode targets; SAXPY, HIPRT CameraRays, and WebGPU triangle are full-runtime evidence rows but not enrolled run-mode-suite targets
 focused Flow/ray-light matrix: gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
@@ -121,6 +121,7 @@ plan coverage: large_real_rocm_repo=refused
 Latest implementation commits:
 
 ```text
+40d2436f5 fix(gpu-hmr): verify real ROCm compute oracle files
 918ecf566 fix(gpu-hmr): decode visual evidence before acceptance
 caeb106a1 fix(gpu-hmr): expose real ROCm oracle resolution in matrix
 446c89ad4 fix(gpu-hmr): report real ROCm oracle resolution
@@ -178,6 +179,7 @@ Per-target run-mode coverage is now reported as accepted, partial, or missing wi
 Run-mode-suite obligation is now row metadata: structured run-mode proof rows infer `validationTargetScope=run_mode_target`; other full-runtime evidence rows remain `evidence_row` unless an artifact declares a run-mode obligation.
 HIPRT visual matrix acceptance now requires embedded proof-ledger/runtime-artifact materials plus a matrix-recomputed nonblank oracle-region check from persisted before/after PNG pixels; direct-light-zero is refused as blank render-region output.
 Large real ROCm repository rows are matrix-ingested generically from `real_rocm_profile` artifacts and fail closed unless strict runtime proof, recomputed ledger proof, and artifact-backed output or visual oracle proof are present; top-level oracle success booleans are not authority.
+Large real ROCm compute oracle rows now re-read raw readback, schema, and rendered-card PNG files from disk; embedded file-integrity booleans are not authority, and compute-ledger rows cannot borrow unrelated top-level visual files to pass.
 Large real ROCm profiles can now supply generic runtime output-oracle profiles and target-progression defaults. The latest MIOpen result records oracle resolution explicitly: profile `none`, no selected oracle source, no contract, and no runtime profile.
 Real ROCm matrix rows now preserve `outputOracleResolution`, `targetProgression`, and `targetProgressionGates`, so the serious-project refusal reason is queryable from the matrix artifact instead of inferred from logs.
 Visual matrix evidence now requires decoded PNG images, not header-only files or screenshot existence. Run-mode visual proofs cannot opt out with `visualRequired=false`, and Flow/ray-light coverage only counts accepted visual rows.
@@ -216,7 +218,7 @@ npm --prefix mcp/synthi-mcp run proof:external-project:self-check -> passed
 node --check mcp/synthi-mcp/scripts/hiprt-light-math-warm-proof.mjs -> passed
 node --check mcp/synthi-mcp/scripts/lib/gpu-hmr-validation-matrix-ledger.mjs -> passed
 node --check mcp/synthi-mcp/scripts/tests/gpu-hmr-validation-matrix-ledger-smoke.mjs -> passed
-latest validation matrix -> gpu-validation-matrix-ledger:sha256:569ebea78f35b91dea08a3be51227bb8e05630c306842a6d746248dfcc87b0a2
+latest validation matrix -> gpu-validation-matrix-ledger:sha256:c6b83f10e3f2a67e1a910c6d6fd095b3150d741dc5f508bcb2a94e9811cda959
 focused Flow/ray-light matrix -> gpu-validation-matrix-ledger:sha256:0ad6ab6154848a2e87672df6f32d389f9d0250638bedf1a81c9d14bc1a52a534
 npm --prefix mcp/synthi-mcp run proof:strict-gates:self-check -> passed
 npm --prefix mcp/synthi-mcp run proof:timing-metrics:self-check -> passed
