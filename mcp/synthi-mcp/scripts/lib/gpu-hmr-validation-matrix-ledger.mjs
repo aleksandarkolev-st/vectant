@@ -638,6 +638,160 @@ function realRocmAppHookContractGate({
   };
 }
 
+function realRocmRuntimeCapabilityPreflightFacet(input = {}) {
+  const raw = compactObject(input);
+  if (Object.keys(raw).length === 0) {
+    return {
+      present: false,
+      accepted: null,
+      blockingGaps: [],
+      blocking_gaps: [],
+    };
+  }
+  const deviceCount = finiteNumber(raw.deviceCount ?? raw.device_count);
+  const deviceCountResult = finiteNumber(raw.deviceCountResult ?? raw.device_count_result);
+  const allocationResult = finiteNumber(raw.allocationResult ?? raw.allocation_result);
+  const exitCode = finiteNumber(raw.exitCode ?? raw.exit_code);
+  const allocationMatrixFailureCount = finiteNumber(
+    raw.allocationMatrixFailureCount ?? raw.allocation_matrix_failure_count,
+  );
+  const allocationMatrixTotal = finiteNumber(raw.allocationMatrixTotal ?? raw.allocation_matrix_total);
+  const textureResourceMatrixFailureCount = finiteNumber(
+    raw.textureResourceMatrixFailureCount ?? raw.texture_resource_matrix_failure_count,
+  );
+  const textureResourceMatrixTotal = finiteNumber(
+    raw.textureResourceMatrixTotal ?? raw.texture_resource_matrix_total,
+  );
+  const allocationUnavailable = firstBool(raw.allocationUnavailable, raw.allocation_unavailable);
+  const allocationAvailable =
+    firstBool(raw.allocationAvailable, raw.allocation_available)
+    ?? (allocationUnavailable === true ? false : null);
+  const anyAllocationAvailable = firstBool(raw.anyAllocationAvailable, raw.any_allocation_available);
+  const textureResourceFallbackAvailable = firstBool(
+    raw.textureResourceFallbackAvailable,
+    raw.texture_resource_fallback_available,
+  );
+  const degradedState = firstText(raw.degradedState, raw.degraded_state);
+  const degradedReason = firstText(raw.degradedReason, raw.degraded_reason, raw.reason);
+  const deviceCountError = firstText(raw.deviceCountError, raw.device_count_error);
+  const allocationError = firstText(raw.allocationError, raw.allocation_error);
+  const noDeviceEvidence = /no\s+(?:rocm-capable\s+)?device/i.test(
+    compactStringList([deviceCountError, allocationError, degradedReason]).join(' '),
+  );
+  const allAllocationMatrixFailed =
+    allocationMatrixTotal !== null
+    && allocationMatrixTotal > 0
+    && allocationMatrixFailureCount === allocationMatrixTotal;
+  const allTextureMatrixFailed =
+    textureResourceMatrixTotal !== null
+    && textureResourceMatrixTotal > 0
+    && textureResourceMatrixFailureCount === textureResourceMatrixTotal;
+  const blockingGaps = compactStringList([
+    degradedState,
+    noDeviceEvidence ? 'runtime_device_unavailable' : null,
+    deviceCount === 0 ? 'runtime_device_count_zero' : null,
+    deviceCountResult !== null && deviceCountResult !== 0 ? 'runtime_device_count_probe_failed' : null,
+    allocationResult !== null && allocationResult !== 0 ? 'runtime_array_allocation_probe_failed' : null,
+    allocationAvailable === false ? 'runtime_array_allocation_unavailable' : null,
+    anyAllocationAvailable === false ? 'runtime_any_array_allocation_unavailable' : null,
+    allAllocationMatrixFailed ? 'runtime_array_allocation_matrix_failed' : null,
+    textureResourceFallbackAvailable === false ? 'runtime_texture_fallback_unavailable' : null,
+    allTextureMatrixFailed ? 'runtime_texture_resource_matrix_failed' : null,
+    exitCode !== null && exitCode !== 0 ? 'runtime_capability_preflight_failed' : null,
+  ]);
+  const accepted = blockingGaps.length === 0;
+  const status = accepted
+    ? 'runtime_capability_preflight_observed'
+    : firstText(
+      degradedState,
+      noDeviceEvidence ? 'runtime_device_unavailable' : null,
+      allocationAvailable === false || anyAllocationAvailable === false
+        ? 'runtime_array_allocation_unavailable'
+        : null,
+      'runtime_capability_preflight_failed',
+    );
+  return {
+    schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_capability_preflight_facet.v1',
+    present: true,
+    accepted,
+    status,
+    proofAuthority: 'runtime_capability_preflight_evidence_only_not_gpu_hmr_success',
+    proof_authority: 'runtime_capability_preflight_evidence_only_not_gpu_hmr_success',
+    canSatisfyRuntimeProof: false,
+    can_satisfy_runtime_proof: false,
+    backend: firstText(raw.backend),
+    api: firstText(raw.api),
+    probe: firstText(raw.probe),
+    deviceCount,
+    device_count: deviceCount,
+    deviceCountResult,
+    device_count_result: deviceCountResult,
+    deviceCountError: deviceCountError ?? null,
+    device_count_error: deviceCountError ?? null,
+    allocationAvailable,
+    allocation_available: allocationAvailable,
+    anyAllocationAvailable,
+    any_allocation_available: anyAllocationAvailable,
+    allocationResult,
+    allocation_result: allocationResult,
+    allocationError: allocationError ?? null,
+    allocation_error: allocationError ?? null,
+    textureResourceFallbackAvailable,
+    texture_resource_fallback_available: textureResourceFallbackAvailable,
+    exitCode,
+    exit_code: exitCode,
+    degradedState: degradedState ?? null,
+    degraded_state: degradedState ?? null,
+    degradedReason: degradedReason ?? null,
+    degraded_reason: degradedReason ?? null,
+    blockingGaps,
+    blocking_gaps: blockingGaps,
+  };
+}
+
+function runtimeCapabilityPreflightDirect(value) {
+  const source = compactObject(value);
+  return compactObject(source.runtime_capability_preflight ?? source.runtimeCapabilityPreflight);
+}
+
+function runtimeCapabilityPreflightFromOriginalHostProof(value) {
+  const source = compactObject(value);
+  const originalHostPathProof = compactObject(source.original_host_path_proof ?? source.originalHostPathProof);
+  return runtimeCapabilityPreflightDirect(originalHostPathProof);
+}
+
+function runtimeCapabilityPreflightFromEvidence(value) {
+  const source = compactObject(value);
+  const evidence = source.evidence ?? source.evidence_refs ?? source.evidenceRefs;
+  const evidenceItems = Array.isArray(evidence) ? evidence : [evidence];
+  for (const item of evidenceItems) {
+    const direct = runtimeCapabilityPreflightDirect(item);
+    if (Object.keys(direct).length > 0) return direct;
+    const originalHost = runtimeCapabilityPreflightFromOriginalHostProof(item);
+    if (Object.keys(originalHost).length > 0) return originalHost;
+  }
+  return {};
+}
+
+function runtimeCapabilityPreflightFromSources({
+  json,
+  summary,
+  runtimeProofArtifact,
+}) {
+  const candidates = [
+    runtimeCapabilityPreflightDirect(json),
+    runtimeCapabilityPreflightFromEvidence(json),
+    runtimeCapabilityPreflightDirect(summary),
+    runtimeCapabilityPreflightFromEvidence(summary),
+    runtimeCapabilityPreflightDirect(runtimeProofArtifact),
+    runtimeCapabilityPreflightFromEvidence(runtimeProofArtifact),
+    runtimeCapabilityPreflightFromOriginalHostProof(json),
+    runtimeCapabilityPreflightFromOriginalHostProof(summary),
+    runtimeCapabilityPreflightFromOriginalHostProof(runtimeProofArtifact),
+  ];
+  return candidates.find((candidate) => Object.keys(candidate).length > 0) ?? {};
+}
+
 function rowSafetyFailures(row) {
   const failures = [];
   if (row.acceptedForGpuHmr === true && row.matrixOutcome !== 'full_runtime_gpu_hmr') {
@@ -719,6 +873,17 @@ function rowSafetyFailures(row) {
         code: appHookGate.missing
           ? 'gpu_hmr_success_requires_real_rocm_app_hook_contract'
           : 'gpu_hmr_success_requires_proven_real_rocm_app_hook_contract',
+      });
+    }
+    const runtimeCapabilityPreflight = compactObject(
+      row.realRocmRuntimeCapabilityPreflight
+      ?? row.real_rocm_runtime_capability_preflight
+      ?? row.runtimeCapabilityPreflight
+      ?? row.runtime_capability_preflight,
+    );
+    if (runtimeCapabilityPreflight.present === true && runtimeCapabilityPreflight.accepted === false) {
+      failures.push({
+        code: 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_capability_preflight',
       });
     }
   }
@@ -2361,6 +2526,13 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ?? runtimeProofArtifact.real_rocm_compile_bridge
     ?? runtimeProofArtifact.realRocmCompileBridge,
   );
+  const realRocmRuntimeCapabilityPreflight = realRocmRuntimeCapabilityPreflightFacet(
+    runtimeCapabilityPreflightFromSources({
+      json,
+      summary,
+      runtimeProofArtifact,
+    }),
+  );
   const nativeRocmBoundaryGaps = compactStringList([
     ...(Array.isArray(nativeRocmLaunchBoundary.blockingGaps) ? nativeRocmLaunchBoundary.blockingGaps : []),
     ...(Array.isArray(nativeRocmLaunchBoundary.blocking_gaps) ? nativeRocmLaunchBoundary.blocking_gaps : []),
@@ -2389,6 +2561,14 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     ...(Array.isArray(realRocmCompileBridge.blockingGaps) ? realRocmCompileBridge.blockingGaps : []),
     ...(Array.isArray(realRocmCompileBridge.blocking_gaps) ? realRocmCompileBridge.blocking_gaps : []),
   ]);
+  const realRocmRuntimeCapabilityPreflightGaps = compactStringList([
+    ...(Array.isArray(realRocmRuntimeCapabilityPreflight.blockingGaps)
+      ? realRocmRuntimeCapabilityPreflight.blockingGaps
+      : []),
+    ...(Array.isArray(realRocmRuntimeCapabilityPreflight.blocking_gaps)
+      ? realRocmRuntimeCapabilityPreflight.blocking_gaps
+      : []),
+  ]);
   const nativeRocmBoundaryReason =
     Object.keys(nativeRocmLaunchBoundary).length > 0
       ? firstText(nativeRocmLaunchBoundary.status, nativeRocmLaunchBoundary.reason)
@@ -2416,6 +2596,10 @@ async function realRocmRepoValidationRow(json, filePath, context) {
   const realRocmCompileBridgeReason =
     Object.keys(realRocmCompileBridge).length > 0
       ? firstText(realRocmCompileBridge.status, realRocmCompileBridge.reason)
+      : null;
+  const realRocmRuntimeCapabilityPreflightReason =
+    realRocmRuntimeCapabilityPreflight.present === true
+      ? firstText(realRocmRuntimeCapabilityPreflight.status, realRocmRuntimeCapabilityPreflight.reason)
       : null;
   const hmrWaitDetail = realRocmCheckDetailJson(checks, 'real_repo_user_source_delta_hmr')
     ?? realRocmCheckDetailJson(checks, 'first_real_repo_ai_split_compile');
@@ -2465,6 +2649,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     realRocmProfile: profile,
   });
   const appHookContractAccepted = appHookContractGate.accepted === true;
+  const runtimeCapabilityPreflightAccepted = realRocmRuntimeCapabilityPreflight.accepted !== false;
   const sidecarRuntimeBackendMismatch =
     realRocmSidecarRuntimeConsistencyGaps.includes('sidecar_runtime_backend_mismatch');
   const sidecarRuntimeConsistencyAccepted = !sidecarRuntimeBackendMismatch;
@@ -2491,6 +2676,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     && runtimeProofArtifactGate.accepted === true
     && outputOrVisualOracleAccepted === true
     && appHookContractAccepted === true
+    && runtimeCapabilityPreflightAccepted === true
     && sidecarRuntimeConsistencyAccepted === true
     && profileProofObligationsAccepted === true
     && targetProgressionGateFailures.length === 0
@@ -2598,6 +2784,8 @@ async function realRocmRepoValidationRow(json, filePath, context) {
     real_rocm_sidecar_runtime_consistency: realRocmSidecarRuntimeConsistency,
     realRocmCompileBridge,
     real_rocm_compile_bridge: realRocmCompileBridge,
+    realRocmRuntimeCapabilityPreflight,
+    real_rocm_runtime_capability_preflight: realRocmRuntimeCapabilityPreflight,
     timings: compactObject(runMode.present ? json.timingMetrics ?? json.timing_metrics ?? summary.timings?.timingMetrics : {}),
     reasons: compactStringList([
       ...strictGateFailures,
@@ -2623,11 +2811,18 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...(!accepted ? realRocmSidecarRuntimeConsistencyGaps.map((gap) => `real_rocm_sidecar_runtime_consistency:${gap}`) : []),
       realRocmCompileBridgeReason ? `real_rocm_compile_bridge:${realRocmCompileBridgeReason}` : null,
       ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
+      realRocmRuntimeCapabilityPreflightReason
+        ? `real_rocm_runtime_capability_preflight:${realRocmRuntimeCapabilityPreflightReason}`
+        : null,
+      ...realRocmRuntimeCapabilityPreflightGaps.map((gap) =>
+        `real_rocm_runtime_capability_preflight:${gap}`
+      ),
       ...(Array.isArray(ledger.failedInvariants) ? ledger.failedInvariants.map((failure) => failure.code) : []),
       ...realRocmFirewall.failedGates.map((failure) => failure.code),
       hmrProofValidation.reason,
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_missing',
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required_not_proven',
+      runtimeCapabilityPreflightAccepted ? null : 'real_rocm_runtime_capability_preflight_not_proven',
       sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_not_proven',
       profileProofObligationsAccepted ? null : 'real_rocm_profile_proof_obligations_not_met',
       realRocmFirewall.accepted ? null : 'real_rocm_cpu_gpu_firewall_not_proven',
@@ -2640,6 +2835,7 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       outputOrVisualOracleAccepted ? null : 'output_or_visual_oracle_proof_required',
       appHookContractAccepted ? null : 'real_rocm_app_hook_contract_required',
       ...appHookContractGate.failedGaps,
+      runtimeCapabilityPreflightAccepted ? null : 'real_rocm_runtime_capability_preflight_failed',
       sidecarRuntimeConsistencyAccepted ? null : 'real_rocm_sidecar_runtime_consistency_required',
       profileProofObligationsAccepted ? null : 'real_rocm_profile_proof_obligations_required',
       realRocmFirewall.accepted ? null : 'real_rocm_cpu_gpu_firewall_required',
@@ -2652,6 +2848,9 @@ async function realRocmRepoValidationRow(json, filePath, context) {
       ...realRocmDeviceSidecarContractGaps.map((gap) => `real_rocm_device_sidecar_contract:${gap}`),
       ...realRocmSidecarRuntimeConsistencyGaps.map((gap) => `real_rocm_sidecar_runtime_consistency:${gap}`),
       ...realRocmCompileBridgeGaps.map((gap) => `real_rocm_compile_bridge:${gap}`),
+      ...realRocmRuntimeCapabilityPreflightGaps.map((gap) =>
+        `real_rocm_runtime_capability_preflight:${gap}`
+      ),
       ...realRocmFirewall.failedGates.map((failure) => `real_rocm_cpu_gpu_firewall:${failure.code}`),
     ]),
   });

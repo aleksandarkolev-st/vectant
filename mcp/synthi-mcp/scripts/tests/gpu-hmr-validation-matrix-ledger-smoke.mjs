@@ -934,6 +934,29 @@ await writeJson(path.join(logsRoot, 'external-projects', 'bevy-wgsl-shader-mater
   proofId: 'external-rejection-proof:sha256:synthetic-bevy',
 });
 
+const noDeviceRuntimeCapabilityPreflight = {
+  schemaVersion: 'synthi.real_rocm.array_allocation_capability.v1',
+  backend: 'rocm',
+  api: 'hipMallocArray',
+  probe: 'hip_array_allocation_preflight',
+  deviceCountResult: 100,
+  deviceCountError: 'no ROCm-capable device is detected',
+  deviceCount: 0,
+  allocationResult: 100,
+  allocationError: 'no ROCm-capable device is detected',
+  allocationAvailable: false,
+  allocationUnavailable: true,
+  anyAllocationAvailable: false,
+  allocationMatrixTotal: 8,
+  allocationMatrixFailureCount: 8,
+  textureResourceFallbackAvailable: false,
+  textureResourceMatrixTotal: 4,
+  textureResourceMatrixFailureCount: 4,
+  exitCode: 70,
+  degradedState: 'gpu-runtime-array-allocation-unavailable',
+  degradedReason: 'HIP array allocation matrix failed 8/8 entries; no ROCm-capable device is detected',
+};
+
 await writeJson(path.join(logsRoot, 'real-rocm-results.json'), {
   slug: 'gpu-real-rocm-large-lib-20260623',
   real_rocm_profile: {
@@ -954,6 +977,7 @@ await writeJson(path.join(logsRoot, 'real-rocm-results.json'), {
   full_runtime_proof_required: true,
   full_runtime_proven: false,
   gpu_hmr_success: false,
+  runtime_capability_preflight: noDeviceRuntimeCapabilityPreflight,
   runtime_proof_artifact: null,
   proof_artifacts: [],
   output_oracle_resolution: {
@@ -1130,6 +1154,39 @@ await writeJson(path.join(logsRoot, 'real-rocm-results.json'), {
       })}`,
     },
     { name: 'strict runtime proof artifact presence', status: 'fail', detail: 'failures=runtime_proof_artifact_missing' },
+  ],
+});
+
+const originalHostPreflightRocmDir = path.join(logsRoot, 'real-rocm-original-host-preflight');
+await writeJson(path.join(originalHostPreflightRocmDir, 'real-rocm-original-host-preflight.json'), {
+  slug: 'gpu-real-rocm-original-host-preflight-20260623',
+  real_rocm_profile: { id: 'real-rocm-original-host-preflight' },
+  source_url: 'https://example.invalid/rocm/original-host-preflight.git',
+  repo_commit: '0123456789abcdef0123456789abcdef01234567',
+  entry_file: 'src/kernels/original_host_preflight.hip',
+  delta_file: 'src/kernels/original_host_preflight.hip',
+  target_name: 'OriginalHostPreflightDriver',
+  gpu_vendor: 'rocm',
+  full_runtime_proven: false,
+  gpu_hmr_success: false,
+  originalHostPathProof: {
+    runtimeCapabilityPreflightObserved: true,
+    runtimeCapabilityPreflight: noDeviceRuntimeCapabilityPreflight,
+  },
+  checks: [
+    {
+      name: 'real ROCm repo',
+      status: 'pass',
+      detail: 'https://example.invalid/rocm/original-host-preflight.git @ 0123456789ab files=2000',
+    },
+    {
+      name: 'real_repo_user_source_delta_hmr',
+      status: 'warn',
+      detail: JSON.stringify({
+        wait_hmr_status: 'timeout',
+        gpu_proof_validation: { reason: 'proof_state_missing', satisfied: false },
+      }),
+    },
   ],
 });
 
@@ -1445,6 +1502,30 @@ assert.equal(missingRequiredHookSafetyQuery.accepted, false);
 assert.ok(missingRequiredHookSafetyQuery.failedGates.some((gate) =>
   gate.code === 'gpu_hmr_success_requires_real_rocm_app_hook_contract'
 ));
+const failedRuntimeCapabilityPreflightSafetyQuery = queryGpuHmrValidationMatrixLedger({
+  schemaVersion: GPU_HMR_VALIDATION_MATRIX_LEDGER_SCHEMA_VERSION,
+  rows: [
+    {
+      ...acceptedMatrixRowMissingFirewall('accepted-failed-runtime-capability-preflight', {
+        cpuHmrUsed: false,
+        fullRebuildUsed: false,
+        processRestarted: false,
+      }),
+      proofMode: 'real_rocm_repo_validation',
+      realRocmRuntimeCapabilityPreflight: {
+        schemaVersion: 'synthi.gpu_hmr.real_rocm_runtime_capability_preflight_facet.v1',
+        present: true,
+        accepted: false,
+        blockingGaps: ['runtime_device_unavailable'],
+        blocking_gaps: ['runtime_device_unavailable'],
+      },
+    },
+  ],
+});
+assert.equal(failedRuntimeCapabilityPreflightSafetyQuery.accepted, false);
+assert.ok(failedRuntimeCapabilityPreflightSafetyQuery.failedGates.some((gate) =>
+  gate.code === 'gpu_hmr_success_cannot_have_failed_real_rocm_runtime_capability_preflight'
+));
 
 const opencl = ledger.rows.find((row) => row.backend === 'opencl');
 assert.equal(opencl?.matrixOutcome, 'refusal_proven');
@@ -1459,7 +1540,10 @@ assert.ok(bevy.reasons.includes('mcp_no_decoded_frames'));
 assert.ok(bevy.reasons.includes('mcp_request_timeout'));
 assert.ok(bevy.reasons.includes('visual_frame_missing'));
 
-const largeRocm = ledger.rows.find((row) => row.proofMode === 'real_rocm_repo_validation');
+const largeRocm = ledger.rows.find((row) =>
+  row.proofMode === 'real_rocm_repo_validation'
+  && row.targetId === 'real-rocm-large-lib'
+);
 assert.equal(largeRocm?.targetId, 'real-rocm-large-lib');
 assert.equal(largeRocm.backend, 'hip');
 assert.equal(largeRocm.matrixOutcome, 'refusal_proven');
@@ -1467,6 +1551,15 @@ assert.equal(largeRocm.acceptedForGpuHmr, false);
 assert.equal(largeRocm.gpuHmrSuccess, false);
 assert.equal(largeRocm.refusalProven, true);
 assert.equal(largeRocm.runtimeProofArtifact.present, false);
+assert.equal(largeRocm.realRocmRuntimeCapabilityPreflight.present, true);
+assert.equal(largeRocm.realRocmRuntimeCapabilityPreflight.accepted, false);
+assert.equal(largeRocm.realRocmRuntimeCapabilityPreflight.deviceCount, 0);
+assert.equal(largeRocm.realRocmRuntimeCapabilityPreflight.status, 'gpu-runtime-array-allocation-unavailable');
+assert.ok(largeRocm.realRocmRuntimeCapabilityPreflight.blockingGaps.includes('runtime_device_unavailable'));
+assert.ok(largeRocm.realRocmRuntimeCapabilityPreflight.blockingGaps.includes('runtime_device_count_zero'));
+assert.ok(largeRocm.realRocmRuntimeCapabilityPreflight.blockingGaps.includes(
+  'runtime_array_allocation_unavailable',
+));
 assert.equal(largeRocm.outputOracleResolution.disabledReason, 'profile_disabled');
 assert.equal(largeRocm.outputOracleResolution.sourceDerivedCandidateCount, 0);
 assert.equal(largeRocm.outputOracleResolution.contractPresent, false);
@@ -1497,8 +1590,18 @@ assert.ok(largeRocm.reasons.includes(
 assert.ok(largeRocm.reasons.includes(
   'real_rocm_sidecar_runtime_consistency:sidecar_runtime_sidecar_observation_missing',
 ));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_runtime_capability_preflight:gpu-runtime-array-allocation-unavailable',
+));
+assert.ok(largeRocm.reasons.includes(
+  'real_rocm_runtime_capability_preflight:runtime_device_unavailable',
+));
 assert.ok(largeRocm.openGaps.includes('output_or_visual_oracle_proof_required'));
 assert.ok(largeRocm.openGaps.includes('target_progression_gates_failed'));
+assert.ok(largeRocm.openGaps.includes('real_rocm_runtime_capability_preflight_failed'));
+assert.ok(largeRocm.openGaps.includes(
+  'real_rocm_runtime_capability_preflight:runtime_device_unavailable',
+));
 assert.ok(largeRocm.openGaps.includes('real_rocm_profile_proof_obligations_required'));
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_profile_proof_obligations:proof_obligation_output_oracle_profile_missing',
@@ -1517,6 +1620,23 @@ assert.ok(largeRocm.openGaps.includes(
 ));
 assert.ok(largeRocm.openGaps.includes(
   'real_rocm_sidecar_runtime_consistency:sidecar_runtime_sidecar_observation_missing',
+));
+
+const originalHostPreflightRocm = ledger.rows.find((row) =>
+  row.proofMode === 'real_rocm_repo_validation'
+  && row.targetId === 'real-rocm-original-host-preflight'
+);
+assert.equal(originalHostPreflightRocm?.matrixOutcome, 'unproven');
+assert.equal(originalHostPreflightRocm.acceptedForGpuHmr, false);
+assert.equal(originalHostPreflightRocm.realRocmRuntimeCapabilityPreflight.present, true);
+assert.equal(originalHostPreflightRocm.realRocmRuntimeCapabilityPreflight.accepted, false);
+assert.equal(originalHostPreflightRocm.realRocmRuntimeCapabilityPreflight.allocationAvailable, false);
+assert.ok(originalHostPreflightRocm.realRocmRuntimeCapabilityPreflight.blockingGaps.includes(
+  'runtime_device_unavailable',
+));
+assert.ok(originalHostPreflightRocm.openGaps.includes('real_rocm_runtime_capability_preflight_failed'));
+assert.ok(originalHostPreflightRocm.reasons.includes(
+  'real_rocm_runtime_capability_preflight:gpu-runtime-array-allocation-unavailable',
 ));
 
 const requiredProgressionRocmDir = path.join(logsRoot, 'real-rocm-required-progression-runtime');
