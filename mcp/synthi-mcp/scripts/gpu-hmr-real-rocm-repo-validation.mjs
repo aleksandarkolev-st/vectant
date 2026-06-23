@@ -200,6 +200,10 @@ function normalizeRealRocmProfile(rawProfile, source) {
   const secondDelta = objectOrEmpty(sourceDelta.second ?? sourceDelta.secondDelta, 'sourceDelta.second');
   const outputOracle = objectOrEmpty(raw.outputOracle ?? raw.output_oracle, 'outputOracle');
   const preview = objectOrEmpty(raw.preview, 'preview');
+  const targetProgression = objectOrEmpty(
+    raw.targetProgression ?? raw.target_progression,
+    'targetProgression',
+  );
   return {
     schemaVersion,
     id: requiredProfileString(raw.id, 'id'),
@@ -242,12 +246,29 @@ function normalizeRealRocmProfile(rawProfile, source) {
       contract: outputOracle.contract && typeof outputOracle.contract === 'object' && !Array.isArray(outputOracle.contract)
         ? outputOracle.contract
         : null,
+      runtimeProfile:
+        (outputOracle.runtimeProfile ?? outputOracle.runtime_profile)
+        && typeof (outputOracle.runtimeProfile ?? outputOracle.runtime_profile) === 'object'
+        && !Array.isArray(outputOracle.runtimeProfile ?? outputOracle.runtime_profile)
+          ? outputOracle.runtimeProfile ?? outputOracle.runtime_profile
+          : null,
     },
     preview: {
       renderPreview: optionalProfileBoolean(preview.renderPreview, 'preview.renderPreview'),
       expectScreenshot: optionalProfileBoolean(preview.expectScreenshot, 'preview.expectScreenshot'),
       width: optionalProfileNumber(preview.width, 'preview.width'),
       height: optionalProfileNumber(preview.height, 'preview.height'),
+    },
+    targetProgression: {
+      phase: optionalProfileString(
+        targetProgression.phase ?? targetProgression.targetProgressionPhase ?? targetProgression.target_progression_phase,
+        'targetProgression.phase',
+      ),
+      finalAcceptanceTarget: optionalProfileString(
+        targetProgression.finalAcceptanceTarget ?? targetProgression.final_acceptance_target,
+        'targetProgression.finalAcceptanceTarget',
+      ),
+      required: optionalProfileBoolean(targetProgression.required, 'targetProgression.required'),
     },
   };
 }
@@ -299,7 +320,8 @@ async function selfCheckRealRocmProfiles() {
     seen.add(profile.id);
     if (profile.outputOracle.profile !== 'none' && profile.outputOracle.profile !== 'auto') {
       const known = outputOracleProfilesByName().has(profile.outputOracle.profile.toLowerCase());
-      if (!known) {
+      const profileRuntimeProfilePresent = Boolean(profile.outputOracle.runtimeProfile);
+      if (!known && !profileRuntimeProfilePresent) {
         throw new Error(`real ROCm profile ${profile.id} references unknown output oracle profile: ${profile.outputOracle.profile}`);
       }
     }
@@ -1078,12 +1100,18 @@ const CFG = {
     ?? REAL_ROCM_PROFILE.target.deltaFile)
     || REAL_ROCM_PROFILE.target.entryFile,
   targetName: process.env.SYNTHI_REAL_ROCM_TARGET ?? REAL_ROCM_PROFILE.target.targetName,
-  targetProgressionPhase: process.env.SYNTHI_REAL_ROCM_TARGET_PROGRESSION_PHASE ?? '',
-  finalAcceptanceTarget: process.env.SYNTHI_REAL_ROCM_FINAL_ACCEPTANCE_TARGET ?? '',
+  targetProgressionPhase:
+    process.env.SYNTHI_REAL_ROCM_TARGET_PROGRESSION_PHASE
+    ?? REAL_ROCM_PROFILE.targetProgression.phase
+    ?? '',
+  finalAcceptanceTarget:
+    process.env.SYNTHI_REAL_ROCM_FINAL_ACCEPTANCE_TARGET
+    ?? REAL_ROCM_PROFILE.targetProgression.finalAcceptanceTarget
+    ?? '',
   requireTargetProgression: booleanFromEnv(
     process.env,
     'SYNTHI_REAL_ROCM_REQUIRE_TARGET_PROGRESSION',
-    false,
+    REAL_ROCM_PROFILE.targetProgression.required === true,
   ),
   targetProgressionLedger: parseTargetProgressionLedger(
     configuredTargetProgressionLedgerInput.raw,
@@ -1218,6 +1246,7 @@ const CFG = {
   outputOracleContract: parseOutputOracleContract(
     configuredOutputOracleJson,
   ),
+  outputOracleRuntimeProfile: REAL_ROCM_PROFILE.outputOracle.runtimeProfile,
   outputOracleProfile: outputOracleProfileMode(
     process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_PROFILE
       ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_PROFILE
@@ -1334,6 +1363,19 @@ const report = {
   output_oracle_adaptations: [],
   output_oracle_runtime_profile_path: WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH,
   output_oracle_runtime_profile: null,
+  output_oracle_resolution: {
+    schemaVersion: 'synthi.real_rocm.output_oracle_resolution.v1',
+    requestedProfile: CFG.outputOracleProfile,
+    mode: CFG.outputOracleProfile,
+    sourceDerivedCandidateCount: 0,
+    selectedSource: null,
+    disabledReason: null,
+    contractPresent: CFG.outputOracleContract !== null,
+    runtimeProfilePresent: false,
+    runtimeProfilePath: WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH,
+    runtimeProfileSynced: false,
+    failedReason: null,
+  },
   render_preview_enabled: CFG.renderPreview,
   runtime_capability_preflight: null,
   upstream_run_environment: null,
@@ -1452,6 +1494,8 @@ function execTextAllowPartialOutput(cmd, args, timeoutMs = 30000, opts = {}) {
 
 async function syncWorkerRuntimeOutputOracleProfile(profile) {
   if (CFG.mcpTransport !== 'docker') {
+    report.output_oracle_resolution.runtimeProfileSynced = false;
+    report.output_oracle_resolution.syncSkippedReason = `transport_${CFG.mcpTransport}`;
     record(
       'runtime output oracle profile sync',
       profile ? 'warn' : 'info',
@@ -1477,6 +1521,8 @@ async function syncWorkerRuntimeOutputOracleProfile(profile) {
       'info',
       `cleared=${WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH}`,
     );
+    report.output_oracle_resolution.runtimeProfileSynced = false;
+    report.output_oracle_resolution.syncSkippedReason = 'runtime_profile_absent';
     return;
   }
   const payload = `${JSON.stringify(profile, null, 2)}\n`;
@@ -1498,6 +1544,8 @@ async function syncWorkerRuntimeOutputOracleProfile(profile) {
     'pass',
     `profile=${profile.profileId} kernel=${profile.kernelName} path=${WORKER_RUNTIME_OUTPUT_ORACLE_PROFILE_PATH}`,
   );
+  report.output_oracle_resolution.runtimeProfileSynced = true;
+  report.output_oracle_resolution.syncSkippedReason = null;
 }
 
 function shouldFetchRequestedCommit({ requestedCommit, localCommitAvailable }) {
@@ -4838,6 +4886,27 @@ function outputOracleProfileModeDisabled(mode) {
   return ['0', 'false', 'off', 'none', 'disabled'].includes(String(mode ?? '').trim().toLowerCase());
 }
 
+function outputOracleContractFromRuntimeProfile(runtimeProfile) {
+  if (!runtimeProfile || typeof runtimeProfile !== 'object' || Array.isArray(runtimeProfile)) return null;
+  const contract = {};
+  const fieldMap = {
+    oracleId: ['oracleId', 'oracle_id', 'id'],
+    requiredOracleId: ['requiredOracleId', 'required_oracle_id', 'oracleId', 'oracle_id', 'id'],
+    kind: ['kind'],
+    expected: ['expected', 'expectedSha256', 'expected_sha256', 'expectedHash', 'expected_hash'],
+    producer: ['producer', 'producerId', 'producer_id'],
+    outputTargetId: ['outputTargetId', 'output_target_id', 'target'],
+    artifactId: ['artifactId', 'artifact_id'],
+    runtimeSessionId: ['runtimeSessionId', 'runtime_session_id'],
+    kernelSymbol: ['kernelSymbol', 'kernel_symbol', 'kernelName', 'kernel_name'],
+  };
+  for (const [canonical, fields] of Object.entries(fieldMap)) {
+    const value = stringField(runtimeProfile, fields);
+    if (value) contract[canonical] = value;
+  }
+  return Object.keys(contract).length > 0 ? contract : null;
+}
+
 function candidateOutputOracleAdaptations(files) {
   const file = files.find((candidate) => candidate.path === CFG.deltaFile);
   if (!file) return [];
@@ -4869,8 +4938,31 @@ function candidateOutputOracleAdaptations(files) {
 
 function selectedOutputOracleAdaptation(files) {
   const mode = CFG.outputOracleProfile;
-  if (outputOracleProfileModeDisabled(mode)) return null;
+  if (outputOracleProfileModeDisabled(mode)) {
+    report.output_oracle_resolution = {
+      ...report.output_oracle_resolution,
+      requestedProfile: mode,
+      mode,
+      sourceDerivedCandidateCount: 0,
+      selectedSource: null,
+      disabledReason: 'profile_disabled',
+      failedReason: null,
+      contractPresent: report.output_oracle_contract !== null,
+      runtimeProfilePresent: report.output_oracle_runtime_profile !== null,
+    };
+    return null;
+  }
   const candidates = candidateOutputOracleAdaptations(files);
+  report.output_oracle_resolution = {
+    ...report.output_oracle_resolution,
+    requestedProfile: mode,
+    mode,
+    sourceDerivedCandidateCount: candidates.length,
+    disabledReason: null,
+    failedReason: candidates.length === 0 ? 'source_derived_oracle_not_found' : null,
+    contractPresent: report.output_oracle_contract !== null,
+    runtimeProfilePresent: report.output_oracle_runtime_profile !== null,
+  };
   if (mode === 'auto') {
     if (candidates.length <= 1) return candidates[0] ?? null;
     const names = candidates.map((candidate) => candidate.profile.id).join(', ');
@@ -4878,6 +4970,15 @@ function selectedOutputOracleAdaptation(files) {
   }
   const requested = outputOracleProfilesByName().get(mode);
   if (!requested) {
+    if (CFG.outputOracleRuntimeProfile) {
+      report.output_oracle_resolution = {
+        ...report.output_oracle_resolution,
+        failedReason: null,
+        selectedSource: 'profile_runtime_profile',
+        runtimeProfilePresent: true,
+      };
+      return null;
+    }
     const available = SOURCE_DERIVED_OUTPUT_ORACLE_PROFILES
       .map((profile) => profile.id)
       .join(', ');
@@ -4885,6 +4986,15 @@ function selectedOutputOracleAdaptation(files) {
   }
   const selected = candidates.find((candidate) => candidate.profile.id === requested.id);
   if (!selected) {
+    if (CFG.outputOracleRuntimeProfile) {
+      report.output_oracle_resolution = {
+        ...report.output_oracle_resolution,
+        failedReason: null,
+        selectedSource: 'profile_runtime_profile',
+        runtimeProfilePresent: true,
+      };
+      return null;
+    }
     throw new Error(
       `output oracle profile "${requested.id}" could not derive a valid oracle from ${CFG.deltaFile}; `
       + 'the source constants, delta math, or readback instrumentation anchors did not match',
@@ -4896,6 +5006,52 @@ function selectedOutputOracleAdaptation(files) {
 function applyOutputOracleProfileAdaptation(files, updateFileContent) {
   const adaptation = selectedOutputOracleAdaptation(files);
   if (!adaptation) {
+    if (CFG.outputOracleRuntimeProfile) {
+      report.output_oracle_runtime_profile = CFG.outputOracleRuntimeProfile;
+      if (!report.output_oracle_contract) {
+        report.output_oracle_contract =
+          outputOracleContractFromRuntimeProfile(CFG.outputOracleRuntimeProfile);
+      }
+      report.output_oracle_resolution = {
+        ...report.output_oracle_resolution,
+        selectedSource: 'profile_runtime_profile',
+        disabledReason: null,
+        failedReason: report.output_oracle_contract
+          ? null
+          : 'profile_runtime_profile_missing_contract_fields',
+        contractPresent: report.output_oracle_contract !== null,
+        runtimeProfilePresent: true,
+      };
+      report.output_oracle_adaptations.push({
+        profileId: stringField(CFG.outputOracleRuntimeProfile, ['profileId', 'profile_id', 'id'])
+          || 'profile-runtime-output-oracle',
+        profileLabel: 'Profile-provided runtime output oracle',
+        kind: 'profile_runtime_output_oracle',
+        file: CFG.deltaFile,
+        oracleId: stringField(CFG.outputOracleRuntimeProfile, ['oracleId', 'oracle_id', 'id']) || null,
+        expectedSha256: stringField(CFG.outputOracleRuntimeProfile, ['expectedSha256', 'expected_sha256', 'expected']) || null,
+        producer: stringField(CFG.outputOracleRuntimeProfile, ['producer']) || null,
+        outputTargetId: stringField(CFG.outputOracleRuntimeProfile, ['outputTargetId', 'output_target_id', 'target']) || null,
+        probeMode: stringField(CFG.outputOracleRuntimeProfile, ['probeMode', 'probe_mode']) || null,
+        probeEvidenceRef: stringField(CFG.outputOracleRuntimeProfile, ['probeEvidenceRef', 'probe_evidence_ref']) || null,
+        runtimeProbeMode: stringField(CFG.outputOracleRuntimeProfile, ['probeMode', 'probe_mode']) || null,
+        runtimeProbeEvidenceRef: stringField(CFG.outputOracleRuntimeProfile, ['probeEvidenceRef', 'probe_evidence_ref']) || null,
+      });
+      record(
+        'profile runtime output oracle',
+        report.output_oracle_contract ? 'pass' : 'warn',
+        report.output_oracle_contract
+          ? `profile=${stringField(CFG.outputOracleRuntimeProfile, ['profileId', 'profile_id', 'id']) || 'profile-runtime-output-oracle'}`
+          : 'runtime profile supplied but no supported contract fields were found',
+      );
+      return { runtimeProfile: CFG.outputOracleRuntimeProfile };
+    }
+    report.output_oracle_resolution = {
+      ...report.output_oracle_resolution,
+      selectedSource: null,
+      contractPresent: report.output_oracle_contract !== null,
+      runtimeProfilePresent: report.output_oracle_runtime_profile !== null,
+    };
     record(
       'source-derived output oracle profile',
       outputOracleProfileModeDisabled(CFG.outputOracleProfile) ? 'info' : 'warn',
@@ -4917,6 +5073,16 @@ function applyOutputOracleProfileAdaptation(files, updateFileContent) {
   };
   report.output_oracle_contract = contract;
   report.output_oracle_runtime_profile = oracle.runtimeProfile ?? null;
+  report.output_oracle_resolution = {
+    ...report.output_oracle_resolution,
+    selectedSource: 'source_derived_profile',
+    selectedProfileId: profile.id,
+    selectedOracleId: oracle.oracleId,
+    disabledReason: null,
+    failedReason: null,
+    contractPresent: true,
+    runtimeProfilePresent: report.output_oracle_runtime_profile !== null,
+  };
   report.output_oracle_adaptations.push({
     profileId: profile.id,
     profileLabel: profile.label,
@@ -6979,6 +7145,25 @@ int main()
     || !saxpyInstrumented.includes(saxpyOracle.expectedSha256)
   ) {
     throw new Error('source-derived output oracle profile self-check failed');
+  }
+  const profileRuntimeOracleContract = outputOracleContractFromRuntimeProfile({
+    schemaVersion: 'synthi.gpu_hmr.runtime_output_oracle.v1',
+    profileId: 'custom.tensor.checksum.v1',
+    oracleId: 'oracle:custom:tensor',
+    expectedSha256: 'sha256:abc',
+    producer: 'profile_runtime_output_oracle',
+    outputTargetId: 'tensor:y',
+    kernelName: 'custom_kernel',
+    probeMode: 'post_hmr_active_kernel_readback_checksum',
+  });
+  if (
+    profileRuntimeOracleContract?.oracleId !== 'oracle:custom:tensor'
+    || profileRuntimeOracleContract.requiredOracleId !== 'oracle:custom:tensor'
+    || profileRuntimeOracleContract.expected !== 'sha256:abc'
+    || profileRuntimeOracleContract.outputTargetId !== 'tensor:y'
+    || profileRuntimeOracleContract.kernelSymbol !== 'custom_kernel'
+  ) {
+    throw new Error('profile runtime output oracle contract self-check failed');
   }
   const visualOnlyProof = classifyGpuHmrOutputProof({
     dispatchSafeProven: true,
