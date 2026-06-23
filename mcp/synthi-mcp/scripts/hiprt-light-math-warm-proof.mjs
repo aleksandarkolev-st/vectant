@@ -213,6 +213,29 @@ const CFG = {
   ),
   requireStrictProvenance:
     (process.env.SYNTHI_GPU_HMR_RUNTIME_REQUIRE_STRICT_PROVENANCE ?? process.env.SYNTHI_HIPRT_WARM_REQUIRE_STRICT_PROVENANCE) !== '0',
+  metricScope: parseMetricScope(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_METRIC_SCOPE
+      ?? process.env.SYNTHI_HIPRT_WARM_METRIC_SCOPE
+      ?? PROFILE.runMode?.metricScope
+      ?? 'hot_delta_1',
+  ),
+  cacheState: parseCacheState(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_CACHE_STATE
+      ?? process.env.SYNTHI_HIPRT_WARM_CACHE_STATE
+      ?? PROFILE.runMode?.cacheState
+      ?? 'compiler_cache_warm',
+  ),
+  runModeEditKind:
+    process.env.SYNTHI_GPU_HMR_RUNTIME_EDIT_KIND
+    ?? process.env.SYNTHI_HIPRT_WARM_EDIT_KIND
+    ?? PROFILE.runMode?.editKind
+    ?? null,
+  runModeDifferentEdit: parseBooleanEnv(
+    process.env.SYNTHI_GPU_HMR_RUNTIME_DIFFERENT_EDIT
+      ?? process.env.SYNTHI_HIPRT_WARM_DIFFERENT_EDIT,
+    PROFILE.runMode?.differentEdit ?? null,
+    'SYNTHI_HIPRT_WARM_DIFFERENT_EDIT',
+  ),
   allowRejected: (process.env.SYNTHI_GPU_HMR_RUNTIME_ALLOW_REJECTED ?? process.env.SYNTHI_HIPRT_WARM_ALLOW_REJECTED) === '1',
   runtimeProfile: PROFILE.runtimeProfile,
 };
@@ -287,6 +310,30 @@ function parseJsonObjectEnv(raw, fallback, label) {
     throw new Error(`${label} must be a JSON object`);
   }
   return source;
+}
+
+function parseBooleanEnv(raw, fallback, label) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
+  const normalized = String(raw).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'n'].includes(normalized)) return false;
+  throw new Error(`${label} must be a boolean value`);
+}
+
+function parseMetricScope(raw) {
+  const value = String(raw ?? '').trim().toLowerCase();
+  if (!['hot_delta_1', 'hot_delta_2'].includes(value)) {
+    throw new Error(`HIPRT warm runtime metric scope must be hot_delta_1 or hot_delta_2, got ${value || '<empty>'}`);
+  }
+  return value;
+}
+
+function parseCacheState(raw) {
+  const value = String(raw ?? '').trim().toLowerCase();
+  if (!['compiler_cache_warm', 'pipeline_cache_warm'].includes(value)) {
+    throw new Error(`HIPRT warm runtime cache state must be compiler_cache_warm or pipeline_cache_warm, got ${value || '<empty>'}`);
+  }
+  return value;
 }
 
 function shellExports(envMap) {
@@ -2241,12 +2288,12 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     deterministic_visual_mode: deterministicVisualMode,
     output_oracle_target: contractInput.outputProof.outputOracleTarget,
     metric_clock: 'monotonic_ns',
-    metric_scope: 'hot_delta_1',
-    cache_state: 'compiler_cache_warm',
+    metric_scope: CFG.metricScope,
+    cache_state: CFG.cacheState,
     timings: {
       metric_clock: 'monotonic_ns',
-      metric_scope: 'hot_delta_1',
-      cache_state: 'compiler_cache_warm',
+      metric_scope: CFG.metricScope,
+      cache_state: CFG.cacheState,
       timing_metrics: buildFullTimingMetricsForLedger(proof),
     },
     model_provenance: modelProvenance(),
@@ -2354,6 +2401,231 @@ function buildHiprtStrictRuntimeProofArtifact(proof) {
     deterministicVisualModeEvaluation,
     strictGate,
   };
+}
+
+function hotRunModeEditKind() {
+  return CFG.runModeEditKind
+    ?? (CFG.metricScope === 'hot_delta_2' ? 'different_gpu_edit' : 'gpu_artifact_edit');
+}
+
+function hotRunModeDifferentEdit() {
+  return CFG.runModeDifferentEdit ?? CFG.metricScope === 'hot_delta_2';
+}
+
+function runtimeRunModeMetadata({
+  metricScope,
+  cacheState,
+  editId,
+  editHash,
+  editKind,
+  differentEdit,
+}) {
+  return {
+    metric_clock: 'monotonic_ns',
+    metricClock: 'monotonic_ns',
+    metric_scope: metricScope,
+    metricScope,
+    cache_state: cacheState,
+    cacheState,
+    edit_id: editId,
+    editId,
+    edit_hash: editHash,
+    editHash,
+    edit_kind: editKind,
+    editKind,
+    different_edit: differentEdit,
+    differentEdit,
+  };
+}
+
+function hiprtColdRuntimeRunModeMetadata(proof) {
+  return runtimeRunModeMetadata({
+    metricScope: 'cold',
+    cacheState: 'clean',
+    editId: `${CFG.profileId}:hiprt-cold-runtime-initial:${proof.source.baselineHash}`,
+    editHash: proof.source.baselineHash,
+    editKind: 'cold_runtime_initial',
+    differentEdit: false,
+  });
+}
+
+function hiprtHotRuntimeRunModeMetadata(proof) {
+  return runtimeRunModeMetadata({
+    metricScope: CFG.metricScope,
+    cacheState: CFG.cacheState,
+    editId: `${CFG.profileId}:hiprt-${CFG.metricScope}:${proof.source.changedHash}`,
+    editHash: proof.source.changedHash,
+    editKind: hotRunModeEditKind(),
+    differentEdit: hotRunModeDifferentEdit(),
+  });
+}
+
+function visualArtifactsForHiprtRunMode(proof) {
+  return {
+    beforeImage: proof.baseline.path,
+    before_image: proof.baseline.path,
+    afterImage: proof.changed.path,
+    after_image: proof.changed.path,
+    diffImage: proof.diff.path,
+    diff_image: proof.diff.path,
+    beforeImageHash: proof.baseline.contentHash,
+    before_image_hash: proof.baseline.contentHash,
+    afterImageHash: proof.changed.contentHash,
+    after_image_hash: proof.changed.contentHash,
+    diffImageHash: proof.diff.contentHash,
+    diff_image_hash: proof.diff.contentHash,
+  };
+}
+
+function visualMetricsForHiprtRunMode(proof) {
+  return {
+    changedPixelRatio: proof.diff.changedPixelRatioThreshold4,
+    changed_pixel_ratio: proof.diff.changedPixelRatioThreshold4,
+    meanAbsDelta8bit: proof.diff.meanAbsDelta8bit,
+    mean_abs_delta_8bit: proof.diff.meanAbsDelta8bit,
+    visiblePixelCount: proof.diff.oracleRegion?.changed?.visiblePixels ?? proof.changed.visiblePixels,
+    visible_pixel_count: proof.diff.oracleRegion?.changed?.visiblePixels ?? proof.changed.visiblePixels,
+  };
+}
+
+function hiprtRunModeProofId(kind, seed) {
+  return `runtime-run-mode-proof:${sha256Json({
+    schema: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+    backend: 'hiprt',
+    kind,
+    profileId: CFG.profileId,
+    seed,
+  })}`;
+}
+
+async function writeHiprtRuntimeRunModeProofArtifacts(proof) {
+  const artifacts = [];
+  const coldRunMode = hiprtColdRuntimeRunModeMetadata(proof);
+  const coldArtifact = {
+    schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+    proofId: hiprtRunModeProofId('cold', {
+      proofId: proof.proofId,
+      baselineImageHash: proof.baseline.contentHash,
+      runMode: coldRunMode,
+    }),
+    backend: 'hiprt',
+    targetId: CFG.profileId,
+    target_id: CFG.profileId,
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    coldRuntimeInitialProven: proof.acceptance.baselineCapture === true,
+    cold_runtime_initial_proven: proof.acceptance.baselineCapture === true,
+    acceptedForGpuHmr: false,
+    accepted_for_gpu_hmr: false,
+    gpuHmrSuccess: false,
+    gpu_hmr_success: false,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    visualRequired: true,
+    visual_required: true,
+    visualArtifacts: {
+      beforeImage: proof.baseline.path,
+      before_image: proof.baseline.path,
+      beforeImageHash: proof.baseline.contentHash,
+      before_image_hash: proof.baseline.contentHash,
+    },
+    visualMetrics: {
+      visiblePixelCount: proof.baseline.visiblePixels,
+      visible_pixel_count: proof.baseline.visiblePixels,
+    },
+    runMode: coldRunMode,
+    run_mode: coldRunMode,
+    timingMetrics: coldRunMode,
+    timing_metrics: coldRunMode,
+    sourceProofId: proof.proofId,
+    source_proof_id: proof.proofId,
+    evidenceKind: 'cold_runtime_initial_visual_oracle',
+    evidence_kind: 'cold_runtime_initial_visual_oracle',
+    coverageObligations: { hiprtRunModes: true, perTargetRunModes: false },
+    coverage_obligations: { hiprt_run_modes: true, per_target_run_modes: false },
+    validationTargetScope: 'hiprt_run_mode_support',
+    validation_target_scope: 'hiprt_run_mode_support',
+  };
+  const coldPath = path.join(
+    CFG.outputDir,
+    `${cleanIdentifier(proof.slug)}-runtime-run-mode-cold.json`,
+  );
+  await fs.writeFile(coldPath, `${JSON.stringify(coldArtifact, null, 2)}\n`);
+  artifacts.push({ kind: 'cold_runtime_initial', path: coldPath, proofId: coldArtifact.proofId });
+
+  const hotRunMode = hiprtHotRuntimeRunModeMetadata(proof);
+  const hotArtifact = {
+    schemaVersion: 'synthi.gpu.hmr.runtime_run_mode_proof.v1',
+    proofId: hiprtRunModeProofId(CFG.metricScope, {
+      proofId: proof.proofId,
+      runtimeProofArtifactId: proof.runtimeProofArtifact.proofId,
+      ledgerProofId: proof.proofLedger.proofId,
+      diffImageHash: proof.diff.contentHash,
+      runMode: hotRunMode,
+    }),
+    backend: 'hiprt',
+    targetId: CFG.profileId,
+    target_id: CFG.profileId,
+    profileId: CFG.profileId,
+    profile_id: CFG.profileId,
+    acceptedForGpuHmr: proof.gpuHmrSuccess === true,
+    accepted_for_gpu_hmr: proof.gpuHmrSuccess === true,
+    gpuHmrSuccess: proof.gpuHmrSuccess === true,
+    gpu_hmr_success: proof.gpuHmrSuccess === true,
+    cpuHmrUsed: false,
+    cpu_hmr_used: false,
+    fullRebuildUsed: false,
+    full_rebuild_used: false,
+    processRestarted: false,
+    process_restarted: false,
+    visualRequired: true,
+    visual_required: true,
+    visualArtifacts: visualArtifactsForHiprtRunMode(proof),
+    visual_oracle_artifacts: visualArtifactsForHiprtRunMode(proof),
+    visualMetrics: visualMetricsForHiprtRunMode(proof),
+    visual_metrics: visualMetricsForHiprtRunMode(proof),
+    runMode: hotRunMode,
+    run_mode: hotRunMode,
+    timingMetrics: {
+      ...proof.timingMetrics,
+      ...hotRunMode,
+    },
+    timing_metrics: {
+      ...proof.timingMetrics,
+      ...hotRunMode,
+    },
+    timings: proof.runtimeProofArtifact.proofLedger?.records?.[0]?.timings ?? proof.proofLedger.records?.[0]?.timings,
+    runtimeProofArtifact: proof.runtimeProofArtifact,
+    runtime_proof_artifact: proof.runtimeProofArtifact,
+    proofLedger: proof.proofLedger,
+    proof_ledger: proof.proofLedger,
+    proofLedgerQuery: proof.proofLedgerQuery,
+    proof_ledger_query: proof.proofLedgerQuery,
+    acceptanceContract: proof.acceptanceContract,
+    acceptance_contract: proof.acceptanceContract,
+    deterministicVisualMode: proof.deterministicVisualMode,
+    deterministic_visual_mode: proof.deterministicVisualMode,
+    sourceProofId: proof.proofId,
+    source_proof_id: proof.proofId,
+    evidenceKind: 'raytraced_visual_oracle',
+    evidence_kind: 'raytraced_visual_oracle',
+    coverageObligations: { hiprtRunModes: true, perTargetRunModes: false },
+    coverage_obligations: { hiprt_run_modes: true, per_target_run_modes: false },
+    validationTargetScope: 'hiprt_run_mode_target',
+    validation_target_scope: 'hiprt_run_mode_target',
+  };
+  const hotPath = path.join(
+    CFG.outputDir,
+    `${cleanIdentifier(proof.slug)}-runtime-run-mode-${CFG.metricScope}.json`,
+  );
+  await fs.writeFile(hotPath, `${JSON.stringify(hotArtifact, null, 2)}\n`);
+  artifacts.push({ kind: CFG.metricScope, path: hotPath, proofId: hotArtifact.proofId });
+
+  return artifacts;
 }
 
 async function findStrictProofJson() {
@@ -2569,10 +2841,10 @@ async function main() {
     slug: CFG.slug,
     createdAt: new Date().toISOString(),
     mode: CFG.mode,
-    metricScope: 'hot_delta_1',
-    metric_scope: 'hot_delta_1',
-    cacheState: 'compiler_cache_warm',
-    cache_state: 'compiler_cache_warm',
+    metricScope: CFG.metricScope,
+    metric_scope: CFG.metricScope,
+    cacheState: CFG.cacheState,
+    cache_state: CFG.cacheState,
     profile: {
       id: CFG.profileId,
       requiredKernels: CFG.requiredKernels,
@@ -2688,6 +2960,8 @@ async function main() {
     acceptanceContractHash: proof.acceptanceContract.contract_hash,
   }));
   proof.proofId = `hiprt-warm-runtime-proof:sha256:${sha256Hex(proofBytesForId)}`;
+  proof.runModeProofArtifacts = await writeHiprtRuntimeRunModeProofArtifacts(proof);
+  proof.run_mode_proof_artifacts = proof.runModeProofArtifacts;
   const proofPath = path.join(CFG.outputDir, `${cleanIdentifier(CFG.slug)}-proof.json`);
   await fs.writeFile(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
   console.log(JSON.stringify({

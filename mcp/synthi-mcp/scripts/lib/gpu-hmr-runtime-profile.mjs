@@ -88,6 +88,45 @@ function optionalBoolean(value, field) {
   return value;
 }
 
+function optionalEnum(value, field, accepted) {
+  const normalized = optionalString(value, field);
+  if (normalized === null) return null;
+  const lower = normalized.toLowerCase();
+  if (!accepted.includes(lower)) {
+    throw new Error(`runtime profile ${field} must be one of ${accepted.join(', ')}`);
+  }
+  return lower;
+}
+
+function normalizeRunMode(value) {
+  if (value === undefined || value === null) {
+    return {
+      metricScope: null,
+      cacheState: null,
+      editKind: null,
+      differentEdit: null,
+    };
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('runtime profile runMode must be an object');
+  }
+  return {
+    metricScope: optionalEnum(value.metricScope ?? value.metric_scope, 'runMode.metricScope', [
+      'cold',
+      'warm',
+      'hot_delta_1',
+      'hot_delta_2',
+    ]),
+    cacheState: optionalEnum(value.cacheState ?? value.cache_state, 'runMode.cacheState', [
+      'clean',
+      'compiler_cache_warm',
+      'pipeline_cache_warm',
+    ]),
+    editKind: optionalString(value.editKind ?? value.edit_kind, 'runMode.editKind'),
+    differentEdit: optionalBoolean(value.differentEdit ?? value.different_edit, 'runMode.differentEdit'),
+  };
+}
+
 function normalizeDeterministicVisualMode(value) {
   if (value === undefined || value === null) return null;
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -272,6 +311,7 @@ export function normalizeRuntimeProofProfile(rawProfile, opts = {}) {
     deterministicVisualMode: normalizeDeterministicVisualMode(
       raw.deterministicVisualMode ?? visual.deterministicVisualMode,
     ),
+    runMode: normalizeRunMode(raw.runMode ?? runtime.runMode ?? visual.runMode),
     proof: {
       requireStrictProvenance: raw.proof && typeof raw.proof === 'object'
         ? raw.proof.requireStrictProvenance !== false
@@ -314,6 +354,7 @@ export function runtimeProfileToLegacyHiprtWarmProfile(profile) {
     cmakeArgs: normalized.build.cmakeArgs,
     buildEnv: normalized.build.env,
     deterministicVisualMode: normalized.deterministicVisualMode,
+    runMode: normalized.runMode,
   };
 }
 
@@ -349,6 +390,12 @@ export function runtimeProfileToHiprtWarmEnv(profile) {
   if (Object.keys(normalized.build.env).length > 0) env.SYNTHI_HIPRT_WARM_BUILD_ENV_JSON = JSON.stringify(normalized.build.env);
   if (normalized.deterministicVisualMode) {
     env.SYNTHI_HIPRT_WARM_DETERMINISTIC_VISUAL_MODE_JSON = JSON.stringify(normalized.deterministicVisualMode);
+  }
+  if (normalized.runMode.metricScope) env.SYNTHI_HIPRT_WARM_METRIC_SCOPE = normalized.runMode.metricScope;
+  if (normalized.runMode.cacheState) env.SYNTHI_HIPRT_WARM_CACHE_STATE = normalized.runMode.cacheState;
+  if (normalized.runMode.editKind) env.SYNTHI_HIPRT_WARM_EDIT_KIND = normalized.runMode.editKind;
+  if (normalized.runMode.differentEdit !== null) {
+    env.SYNTHI_HIPRT_WARM_DIFFERENT_EDIT = normalized.runMode.differentEdit ? '1' : '0';
   }
   return env;
 }
